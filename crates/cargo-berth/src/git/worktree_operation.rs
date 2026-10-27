@@ -3,10 +3,32 @@
 use std::path::Path;
 
 use super::constants::GIT_CHERRY_PICK_STATE_PATH;
+use super::constants::GIT_INDEX_LOCK_PATH;
 use super::constants::GIT_MERGE_STATE_PATH;
 use super::constants::GIT_REBASE_APPLY_STATE_PATH;
 use super::constants::GIT_REBASE_MERGE_STATE_PATH;
 use super::constants::GIT_REVERT_STATE_PATH;
+
+/// Whether Git is currently replacing this worktree's index and checking out paths.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorktreeSettlement {
+    Settled,
+    GitOperationInProgress,
+}
+
+impl WorktreeSettlement {
+    /// Linked worktrees have their own index lock, separate from the common Git directory.
+    pub(crate) fn observe(worktree_administrative_directory: &Path) -> Self {
+        if worktree_administrative_directory
+            .join(GIT_INDEX_LOCK_PATH)
+            .exists()
+        {
+            Self::GitOperationInProgress
+        } else {
+            Self::Settled
+        }
+    }
+}
 
 /// The operation Git records in a worktree's administrative directory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

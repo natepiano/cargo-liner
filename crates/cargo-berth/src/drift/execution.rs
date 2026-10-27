@@ -42,6 +42,7 @@ use crate::coordination_identity::IssuingWorktreeRun;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::edge::RepositorySnapshot;
 use crate::git::WorktreeOperation;
+use crate::git::WorktreeSettlement;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger;
@@ -511,6 +512,8 @@ enum WorktreeComparability {
     IdentityNotRecorded,
     /// Git has a pending operation, so its intermediate changes are not lane work.
     DeferredPendingOperation,
+    /// Git is writing the index and the working tree does not yet describe a finished write.
+    DeferredGitOperationInProgress,
 }
 
 /// Whether drift should observe the worktree or return its completed no-change report.
@@ -532,6 +535,12 @@ fn comparable_worktree(
     worktree_context: &WorktreeContext,
     request: &DriftRequest,
 ) -> Result<WorktreeComparability, DriftExecutionError> {
+    match WorktreeSettlement::observe(worktree_context.administrative_directory()) {
+        WorktreeSettlement::GitOperationInProgress => {
+            return Ok(WorktreeComparability::DeferredGitOperationInProgress);
+        },
+        WorktreeSettlement::Settled => {},
+    }
     let worktree_id =
         match ledger::read_worktree_identity(worktree_context.administrative_directory()) {
             Ok(worktree_id) => worktree_id,
@@ -566,7 +575,8 @@ fn prepare_worktree_comparison(
             WorktreeComparisonReadiness::Ready(worktree_id)
         },
         WorktreeComparability::IdentityNotRecorded
-        | WorktreeComparability::DeferredPendingOperation => {
+        | WorktreeComparability::DeferredPendingOperation
+        | WorktreeComparability::DeferredGitOperationInProgress => {
             WorktreeComparisonReadiness::CompletedUnchanged(Box::new(DriftReport::unchanged(
                 comparison.report_mode(),
                 &[],
