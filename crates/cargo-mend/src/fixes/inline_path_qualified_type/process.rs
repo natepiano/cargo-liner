@@ -250,7 +250,11 @@ fn record_occurrence(
     let import_path = &resolved.import_path;
 
     findings.push(Finding {
-        severity:        Severity::Warning,
+        disposition:     Finding::disposition(
+            DiagnosticCode::InlinePathQualifiedType,
+            Severity::Warning,
+            FixSupport::InlinePathQualifiedType,
+        ),
         diagnostic_code: DiagnosticCode::InlinePathQualifiedType,
         path:            ctx.display_path.to_string(),
         line:            resolved.location.start.line,
@@ -263,7 +267,6 @@ fn record_occurrence(
             occ.import_name
         ),
         suggestion:      Some(format!("consider adding: `use {import_path};`")),
-        fix_support:     FixSupport::InlinePathQualifiedType,
         related:         None,
         item_visibility: ItemVisibility::default(),
     });

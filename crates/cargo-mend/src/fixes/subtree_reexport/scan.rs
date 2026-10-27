@@ -131,7 +131,7 @@ fn fixable_facts(report: &Report) -> (Vec<&SubtreeReexportFixFact>, usize) {
     let mut skipped = 0;
     for finding in &report.findings {
         if finding.diagnostic_code != DiagnosticCode::PubUseOutsideSubtree
-            || finding.fix_support != FixSupport::PubUseOutsideSubtree
+            || finding.fix_support() != FixSupport::PubUseOutsideSubtree
         {
             continue;
         }
