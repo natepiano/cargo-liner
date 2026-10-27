@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::Component;
@@ -241,11 +242,7 @@ impl ModuleDirectories {
 /// layout instead, it names a module that does not exist and the crate stops
 /// compiling.
 pub(crate) struct ModuleMap {
-    declarations: FxHashMap<PathBuf, Vec<Vec<String>>>,
-    /// The declared files some chain of `mod` declarations reaches with no
-    /// `#[cfg(test)]` on any link; every other declared file compiles only
-    /// under test.
-    ungated:      FxHashSet<PathBuf>,
+    declarations: FxHashMap<PathBuf, DeclaredFile>,
 }
 
 impl ModuleMap {
@@ -261,7 +258,6 @@ impl ModuleMap {
     pub(super) fn for_crate_roots(crate_roots: &[PathBuf], sources: &ParsedSources) -> Self {
         let mut merged = Self {
             declarations: FxHashMap::default(),
-            ungated:      FxHashSet::default(),
         };
         for crate_root in crate_roots {
             merged.absorb(Self::for_crate_root(crate_root, sources));
@@ -275,7 +271,6 @@ impl ModuleMap {
         let mut walk = ModuleWalk {
             sources,
             declarations: FxHashMap::default(),
-            ungated: FxHashSet::default(),
             visiting: FxHashSet::default(),
         };
         let root = Declared {
@@ -290,18 +285,16 @@ impl ModuleMap {
         );
         Self {
             declarations: walk.declarations,
-            ungated:      walk.ungated,
         }
     }
 
     fn absorb(&mut self, other: Self) {
-        self.ungated.extend(other.ungated);
-        for (file, module_paths) in other.declarations {
-            let declared = self.declarations.entry(file).or_default();
-            for module_path in module_paths {
-                if !declared.contains(&module_path) {
-                    declared.push(module_path);
-                }
+        for (file, declared) in other.declarations {
+            match self.declarations.entry(file) {
+                Entry::Vacant(entry) => {
+                    entry.insert(declared);
+                },
+                Entry::Occupied(mut entry) => entry.get_mut().merge(declared),
             }
         }
     }
@@ -327,9 +320,9 @@ impl ModuleMap {
     /// Every file the walk declared, with the module path it occupies. Paths
     /// are lexically normalized, not canonicalized.
     pub(crate) fn declared_files(&self) -> impl Iterator<Item = (&Path, FileModulePath)> {
-        self.declarations.iter().filter_map(|(file, module_paths)| {
-            Some((file.as_path(), declared_module_path(module_paths)?))
-        })
+        self.declarations
+            .iter()
+            .map(|(file, declared)| (file.as_path(), declared.mounts.module_path()))
     }
 
     /// Whether every `mod` declaration chain reaching `file` carries
@@ -337,7 +330,9 @@ impl ModuleMap {
     /// file compiles only under test. `false` for a file no chain declares.
     pub(crate) fn is_test_only(&self, file: &Path) -> bool {
         let file = lexically_normalized(file);
-        self.declarations.contains_key(&file) && !self.ungated.contains(&file)
+        self.declarations
+            .get(&file)
+            .is_some_and(|declared| matches!(declared.builds, DeclaredBuilds::TestOnly))
     }
 
     /// The module path `file` occupies.
@@ -354,18 +349,64 @@ impl ModuleMap {
     ) -> Option<FileModulePath> {
         self.declarations
             .get(&lexically_normalized(file))
-            .and_then(|module_paths| declared_module_path(module_paths))
+            .map(|declared| declared.mounts.module_path())
             .or_else(|| file_module_path(source_root, file).map(FileModulePath::Known))
     }
 }
 
-/// Where a file the walk declared at `module_paths` sits; `None` when no
-/// declaration recorded a path.
-fn declared_module_path(module_paths: &[Vec<String>]) -> Option<FileModulePath> {
-    match module_paths {
-        [module_path] => Some(FileModulePath::Known(module_path.clone())),
-        [_, _, ..] => Some(FileModulePath::SeveralParents),
-        [] => None,
+/// A declared file always has a first mount, so it cannot disappear from iteration or
+/// fall back to its directory layout because its declaration entry was empty.
+struct DeclaredMounts {
+    first:      Vec<String>,
+    additional: Vec<Vec<String>>,
+}
+
+impl DeclaredMounts {
+    fn insert(&mut self, module_path: Vec<String>) {
+        if module_path != self.first && !self.additional.contains(&module_path) {
+            self.additional.push(module_path);
+        }
+    }
+
+    fn module_path(&self) -> FileModulePath {
+        if self.additional.is_empty() {
+            FileModulePath::Known(self.first.clone())
+        } else {
+            FileModulePath::SeveralParents
+        }
+    }
+}
+
+/// Build reach belongs to a declared file, never to an independent membership set.
+/// A file is test-only only when every mount chain includes `#[cfg(test)]`.
+#[derive(Clone, Copy)]
+enum DeclaredBuilds {
+    AllBuilds,
+    TestOnly,
+}
+
+impl DeclaredBuilds {
+    const fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::TestOnly, Self::TestOnly) => Self::TestOnly,
+            (Self::AllBuilds, Self::AllBuilds | Self::TestOnly)
+            | (Self::TestOnly, Self::AllBuilds) => Self::AllBuilds,
+        }
+    }
+}
+
+struct DeclaredFile {
+    mounts: DeclaredMounts,
+    builds: DeclaredBuilds,
+}
+
+impl DeclaredFile {
+    fn merge(&mut self, other: Self) {
+        self.builds = self.builds.merge(other.builds);
+        self.mounts.insert(other.mounts.first);
+        for module_path in other.mounts.additional {
+            self.mounts.insert(module_path);
+        }
     }
 }
 
@@ -378,8 +419,7 @@ struct Declared {
 
 struct ModuleWalk<'a> {
     sources:      &'a ParsedSources,
-    declarations: FxHashMap<PathBuf, Vec<Vec<String>>>,
-    ungated:      FxHashSet<PathBuf>,
+    declarations: FxHashMap<PathBuf, DeclaredFile>,
     /// The `(file, module path)` pairs already being walked, so a `#[path]`
     /// cycle terminates while a file declared at two paths still records both.
     visiting:     FxHashSet<(PathBuf, Vec<String>)>,
@@ -388,12 +428,30 @@ struct ModuleWalk<'a> {
 impl ModuleWalk<'_> {
     fn declare(&mut self, file: &Path, module: &Declared) {
         let file = lexically_normalized(file);
-        if !module.test_only {
-            self.ungated.insert(file.clone());
-        }
-        let declared = self.declarations.entry(file).or_default();
-        if !declared.contains(&module.module_path) {
-            declared.push(module.module_path.clone());
+        let builds = if module.test_only {
+            DeclaredBuilds::TestOnly
+        } else {
+            DeclaredBuilds::AllBuilds
+        };
+        match self.declarations.entry(file) {
+            Entry::Vacant(entry) => {
+                entry.insert(DeclaredFile {
+                    mounts: DeclaredMounts {
+                        first:      module.module_path.clone(),
+                        additional: Vec::new(),
+                    },
+                    builds,
+                });
+            },
+            Entry::Occupied(mut entry) => {
+                let declared = entry.get_mut();
+                declared.builds = declared.builds.merge(builds);
+                if module.module_path != declared.mounts.first
+                    && !declared.mounts.additional.contains(&module.module_path)
+                {
+                    declared.mounts.additional.push(module.module_path.clone());
+                }
+            },
         }
     }
 
@@ -516,6 +574,73 @@ mod tests {
     use super::ModuleDirectories;
     use super::ModuleMap;
     use crate::rust_syntax::ParsedSources;
+
+    #[test]
+    fn declarations_keep_the_first_mount_including_the_empty_crate_root_path() {
+        let sources = ParsedSources::default();
+        let mut walk = super::ModuleWalk {
+            sources:      &sources,
+            declarations: rustc_hash::FxHashMap::default(),
+            visiting:     rustc_hash::FxHashSet::default(),
+        };
+        let file = Path::new("/repo/src/shared.rs");
+        let root = super::Declared {
+            module_path: Vec::new(),
+            test_only:   true,
+        };
+        walk.declare(file, &root);
+        walk.declare(file, &root);
+        let mut map = ModuleMap {
+            declarations: walk.declarations,
+        };
+        assert!(map.is_test_only(file));
+        assert!(!map.is_test_only(Path::new("/repo/src/undeclared.rs")));
+        assert_eq!(
+            map.declared_files().collect::<Vec<_>>(),
+            vec![(file, FileModulePath::Known(Vec::new()))],
+        );
+        assert_eq!(
+            map.file_module_path(Path::new("/repo/src"), file),
+            Some(FileModulePath::Known(Vec::new())),
+        );
+        let declared = map.declarations.get_mut(file).expect("declared root");
+        declared.mounts.insert(vec!["second".to_string()]);
+        declared.mounts.insert(vec!["second".to_string()]);
+        assert_eq!(declared.mounts.additional.len(), 1);
+        assert_eq!(
+            map.declared_files().collect::<Vec<_>>(),
+            vec![(file, FileModulePath::SeveralParents)],
+        );
+    }
+
+    #[test]
+    fn merging_mount_chains_keeps_all_builds_when_any_target_is_ungated() {
+        let crate_dir = tempdir().expect("create merged mount crate");
+        let source_root = crate_dir.path();
+        let gated = source_root.join("gated.rs");
+        let plain = source_root.join("plain.rs");
+        let shared = source_root.join("shared.rs");
+        fs::write(&gated, "#[cfg(test)] #[path = \"shared.rs\"] mod shared;")
+            .expect("write gated root");
+        fs::write(&plain, "#[path = \"shared.rs\"] mod shared;").expect("write plain root");
+        fs::write(&shared, "").expect("write shared module");
+        let sources = ParsedSources::default();
+        let gated_map = ModuleMap::for_crate_roots(&[gated.clone(), gated.clone()], &sources);
+        assert!(gated_map.is_test_only(&shared));
+        for roots in [
+            [gated.clone(), plain.clone()],
+            [plain.clone(), gated],
+            [plain.clone(), plain],
+        ] {
+            let map = ModuleMap::for_crate_roots(&roots, &sources);
+            assert!(!map.is_test_only(&shared));
+            assert_eq!(
+                map.file_module_path(source_root, &shared),
+                Some(FileModulePath::Known(vec!["shared".to_string()])),
+            );
+            assert_eq!(map.declarations[&shared].mounts.additional.len(), 0);
+        }
+    }
 
     #[test]
     fn module_mounts_preserve_explicit_precedence_and_nested_conditional_order() {

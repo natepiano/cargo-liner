@@ -6,6 +6,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 
 pub(crate) use lexical_regions::LexicalRegions;
+pub(crate) use lexical_regions::SourceEndpoint;
 pub(crate) use module_map::FileModulePath;
 pub(crate) use module_map::ModuleDirectories;
 pub(crate) use module_map::ModuleMap;
