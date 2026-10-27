@@ -73,10 +73,26 @@ fn scan_file(
         .to_string_lossy()
         .replace('\\', "/");
 
-    Ok(in_body_use_finder::scan(
-        syntax,
-        source.text(),
-        path,
-        &display_path,
-    ))
+    in_body_use_finder::scan(syntax, source.text(), path, &display_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::fixes::imports::ImportSource;
+    use crate::rust_syntax::ParsedSources;
+
+    #[test]
+    fn file_scan_keeps_diagnostic_bytes_with_one_checked_index() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("lib.rs");
+        let line = "fn f() { /* é */ use crate::a::Thing; }";
+        std::fs::write(&path, format!("// header\n{line}\n"))?;
+        let before = ImportSource::construction_count();
+        let (findings, fixes) = super::scan_file(dir.path(), &path, &ParsedSources::default())?;
+        assert_eq!(ImportSource::construction_count() - before, 1);
+        assert_eq!(findings[0].source_line, line);
+        assert_eq!(findings[0].path, "lib.rs");
+        assert_eq!(fixes[0].replacement, "use crate::a::Thing;\n");
+        Ok(())
+    }
 }
