@@ -5,12 +5,23 @@
 use std::time::Instant;
 
 use super::FavoritesOverlay;
-use super::FavoritesOverlayFrameOutcome;
 use crate::AttractHost;
+use crate::FavoriteRemovalTarget;
 use crate::KeyBind;
 use crate::KeyOutcome;
 use crate::Keymap;
 use crate::Repaint;
+
+/// Time-driven work owed by the favorites overlay.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum FavoritesOverlayFrameOutcome {
+    /// No row is fading and no frame is owed.
+    Quiet,
+    /// A removal fade is in progress.
+    Repaint,
+    /// The fade finished and this row must be removed from the file.
+    CommitRemoval(FavoriteRemovalTarget),
+}
 
 /// An app that carries the favorites overlay on top of its attract screen.
 ///
