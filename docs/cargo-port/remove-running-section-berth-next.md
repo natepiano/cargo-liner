@@ -858,3 +858,14 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - `WorktreeSettlement::{Settled, GitOperationInProgress}` (`src/git/worktree_operation.rs`): `index.lock` in the worktree's own git dir means git is still writing. The hook and shared drift preparation record nothing then; the next hook reads the settled tree. `MERGE_HEAD` trial-merge handling is unchanged.
 - No journal, disposition, output contract or replay change.
 - Proof: `post_tool_use_defers_a_background_bash_launch` and `post_tool_use_defers_a_worktrees_index_lock` (`tests/hooks.rs`) failed before (each opened a first-touch reservation). Guard: `an_integrated_merge_fast_forward_without_a_reservation_is_not_a_write` (`tests/drift.rs`). 1303/1303.
+
+### Phase 37 — A git lock is reported, never read as a clear worktree  · status: done
+
+#### As-built
+
+- Why: the Claude review of phase 36 (2026-10-27) found two defects. A stale `index.lock` made every PostToolUse hook silent for good, and an explicit `cargo-berth drift` printed the unchanged report although nothing was compared. The drift-level lock check had no test that could fail, because the hook returned before drift ran.
+- Drift is the only place that checks `index.lock`. It reads the worktree's own git dir (a linked worktree's too) before reconciliation, journal work or fingerprint reads. The hook's own settlement check and `WorktreeContext::discover` call were removed; the hook goes through drift like every other caller.
+- `DriftOutcome::{Checked(Box<DriftReport>), NotChecked { not_checked: DriftNotCheckedReason }}` with `DriftNotCheckedReason::GitOperationInProgress` (crate-private). Status `git_operation_in_progress`; the message says drift was not checked. It writes no journal event, fingerprint or told-once record. `DeferredGitOperationInProgress` was removed from `WorktreeComparability`. The checked-report wire shape is unchanged; the output contract was regenerated (version stays 6).
+- The PostToolUse hook prints nothing for `NotChecked`; explicit `cargo-berth drift` shows it, so a stale lock is visible. Post-commit warns. Berth does not delete or age the lock.
+- No journal, disposition, ledger schema or replay change.
+- Proof: `drift_reports_an_index_lock_without_comparing_or_writing` (`tests/drift.rs`) failed before (status `clear`). It snapshots the berth state and the linked git dir, so any write fails it. The phase 36 hook tests and the phase 34 fast-forward guards stay green. 1304/1304; 5/5 support.
