@@ -36,6 +36,7 @@ pub enum AppPaneId {
     CiRuns,
     Output,
     Finder,
+    Sccache,
 }
 
 pub const fn vim_mode_from_config(navigation_keys: NavigationKeys) -> VimMode {
@@ -62,6 +63,7 @@ impl AppPaneId {
             Self::CiRuns => PaneId::CiRuns,
             Self::Output => PaneId::Output,
             Self::Finder => PaneId::Finder,
+            Self::Sccache => PaneId::Sccache,
         }
     }
 
@@ -77,7 +79,8 @@ impl AppPaneId {
             PaneId::CiRuns => Some(Self::CiRuns),
             PaneId::Output => Some(Self::Output),
             PaneId::Finder => Some(Self::Finder),
-            PaneId::Settings | PaneId::Keymap | PaneId::Toasts | PaneId::Sccache => None,
+            PaneId::Sccache => Some(Self::Sccache),
+            PaneId::Settings | PaneId::Keymap | PaneId::Toasts => None,
         }
     }
 }
@@ -229,8 +232,10 @@ mod tests {
             (AppPaneId::Git, PaneId::Git),
             (AppPaneId::Output, PaneId::Output),
             (AppPaneId::Finder, PaneId::Finder),
+            (AppPaneId::Sccache, PaneId::Sccache),
         ] {
             assert_eq!(app_id.to_legacy(), legacy);
+            assert_eq!(AppPaneId::from_legacy(legacy), Some(app_id));
         }
     }
 }
