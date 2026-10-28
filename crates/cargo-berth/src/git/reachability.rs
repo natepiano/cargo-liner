@@ -37,13 +37,15 @@ use super::constants::GIT_PATHSPEC_SEPARATOR;
 use super::constants::GIT_REV_LIST_COMMAND;
 use super::constants::GIT_STDIN_ARG;
 use super::constants::GIT_WRITE_TREE_ARG;
-use super::constants::UNMERGED_BRANCH_PATH_GIT_QUERIES;
 use super::error;
 use super::error::GitError;
+use super::history;
 use super::object::CommitAvailability;
 use super::object::CommitObjectResolution;
 use super::patch::HistoricalIntegrationCandidateDiscovery;
 use super::patch::ScopedPatchTargetHistory;
+use super::read;
+use super::read::RepositoryRead;
 use super::refs::IntegrationProofRef;
 use super::refs::LocalTargetUpstream;
 use super::snapshot::RepositorySnapshot;
@@ -489,8 +491,33 @@ pub(crate) fn unmerged_branch_paths(
     trunk: &GitObjectId,
     head: &GitObjectId,
 ) -> Result<Vec<ReservationScopePath>, GitError> {
+    observe_unmerged_branch_paths(repository_root, trunk, head).map(|observation| observation.paths)
+}
+
+/// The merge extent and the subprocess work actually required to obtain it.
+pub(super) struct UnmergedBranchPaths {
+    pub(super) paths:       Vec<ReservationScopePath>,
+    pub(super) git_queries: u64,
+}
+
+pub(super) fn observe_unmerged_branch_paths(
+    repository_root: &Path,
+    trunk: &GitObjectId,
+    head: &GitObjectId,
+) -> Result<UnmergedBranchPaths, GitError> {
     if trunk == head {
-        return Ok(Vec::new());
+        return Ok(UnmergedBranchPaths {
+            paths:       Vec::new(),
+            git_queries: 0,
+        });
+    }
+    if let RepositoryRead::InProcess(history) = history::read(repository_root, &trunk.to_string())?
+        && history.parents.contains_key(head)
+    {
+        return Ok(UnmergedBranchPaths {
+            paths:       Vec::new(),
+            git_queries: 0,
+        });
     }
     let merge_arguments = [
         GIT_MERGE_TREE_COMMAND.to_owned(),
@@ -528,42 +555,37 @@ pub(crate) fn unmerged_branch_paths(
         .map(|path| path.parse().map_err(GitError::InvalidReservationPath))
         .collect::<Result<Vec<ReservationScopePath>, _>>()?;
 
-    let diff_arguments = [
-        GIT_DIFF_COMMAND.to_owned(),
-        GIT_NAME_ONLY_ARG.to_owned(),
-        GIT_NUL_TERMINATED_ARG.to_owned(),
-        GIT_NO_RENAMES_ARG.to_owned(),
-        trunk.to_string(),
-        result_tree.to_string(),
-        GIT_PATHSPEC_SEPARATOR.to_owned(),
-    ];
-    let diff_output = command::git_output_dynamic(repository_root, &diff_arguments)?;
-    if !diff_output.status.success() {
-        return Err(GitError::CommandFailed {
-            command: GIT_DIFF_COMMAND,
-            stderr:  String::from_utf8_lossy(&diff_output.stderr)
-                .trim()
-                .to_owned(),
-        });
-    }
-    for path in String::from_utf8(diff_output.stdout)
-        .map_err(GitError::InvalidOutput)?
-        .split_terminator('\0')
-    {
-        paths.push(path.parse().map_err(GitError::InvalidReservationPath)?);
-    }
+    let mut git_queries = 1;
+    let changed = read::merge_result_paths(repository_root, trunk, &result_tree)?.or_git(|| {
+        git_queries += 1;
+        let diff_arguments = [
+            GIT_DIFF_COMMAND.to_owned(),
+            GIT_NAME_ONLY_ARG.to_owned(),
+            GIT_NUL_TERMINATED_ARG.to_owned(),
+            GIT_NO_RENAMES_ARG.to_owned(),
+            trunk.to_string(),
+            result_tree.to_string(),
+            GIT_PATHSPEC_SEPARATOR.to_owned(),
+        ];
+        let diff_output = command::git_output_dynamic(repository_root, &diff_arguments)?;
+        if !diff_output.status.success() {
+            return Err(GitError::CommandFailed {
+                command: GIT_DIFF_COMMAND,
+                stderr:  String::from_utf8_lossy(&diff_output.stderr)
+                    .trim()
+                    .to_owned(),
+            });
+        }
+        String::from_utf8(diff_output.stdout)
+            .map_err(GitError::InvalidOutput)?
+            .split_terminator('\0')
+            .map(|path| path.parse().map_err(GitError::InvalidReservationPath))
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+    paths.extend(changed);
     paths.sort_by_cached_key(ToString::to_string);
     paths.dedup();
-    Ok(paths)
-}
-
-/// Return how many git invocations `unmerged_branch_paths` makes for these two commits.
-pub(crate) fn unmerged_branch_path_queries(trunk: &GitObjectId, head: &GitObjectId) -> u64 {
-    if trunk == head {
-        0
-    } else {
-        UNMERGED_BRANCH_PATH_GIT_QUERIES
-    }
+    Ok(UnmergedBranchPaths { paths, git_queries })
 }
 
 /// Return every commit that would become reachable from `proposed` but not `previous`.
@@ -948,6 +970,17 @@ fn target_commit_history(
     repository_root: &Path,
     target_expression: &str,
 ) -> Result<ResolvedTargetCommitHistory, GitError> {
+    match history::read(repository_root, target_expression)? {
+        RepositoryRead::InProcess(history) => {
+            return Ok(ResolvedTargetCommitHistory {
+                target: history.target,
+                graph:  CommitAncestryGraph {
+                    parents_by_commit: history.parents,
+                },
+            });
+        },
+        RepositoryRead::GitRequired(_) => {},
+    }
     let arguments = [
         GIT_REV_LIST_COMMAND.to_owned(),
         GIT_PARENTS_ARG.to_owned(),
@@ -1252,7 +1285,6 @@ mod tests {
     use super::ahead_behind_for_heads;
     use super::descendant_commits;
     use super::reachability;
-    use super::unmerged_branch_path_queries;
     use super::unmerged_branch_paths;
     use crate::git::GitError;
     use crate::git::fixture::FixtureResult;
@@ -1590,7 +1622,10 @@ mod tests {
             unmerged_branch_paths(&missing_root, &head, &head)?,
             [] as [ReservationScopePath; 0]
         );
-        assert_eq!(unmerged_branch_path_queries(&head, &head), 0);
+        assert_eq!(
+            super::observe_unmerged_branch_paths(&missing_root, &head, &head)?.git_queries,
+            0
+        );
         assert_eq!(
             reachability(&missing_root, &head, &head)?,
             Reachability::Ancestor

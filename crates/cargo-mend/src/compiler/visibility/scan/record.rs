@@ -2077,7 +2077,7 @@ fn maybe_record_narrow_to_pub_crate_nested(
     };
     let combined_required_reach = signature_exposure.combined_with(required, ctx);
     let crate_reach = VisibilityAnnotation::Crate.reach(item.def_id, ctx.tcx);
-    if parent_facade_analysis.nearest.spelling_conflict
+    if parent_facade_analysis.nearest.spelling_agreement == FacadeSpellingAgreement::Conflicting
         || !reach_is_pub_crate(combined_required_reach, ctx)
         || !matches!(
             crate_reach.compare(combined_required_reach, ctx.tcx),
@@ -2141,7 +2141,7 @@ fn parent_facade_reach(
     policy::parent_facade_reach_for_occurrence(
         ctx,
         occurrence,
-        policy::facade_spelling_agreement(parent_facade_analysis.nearest.spelling_conflict),
+        parent_facade_analysis.nearest.spelling_agreement,
     )
 }
 
@@ -2858,6 +2858,7 @@ mod tests {
     use crate::compiler::facade::ParentFacadeSpelling;
     use crate::compiler::facade::ParentFacadeUsage;
     use crate::compiler::facade::ParentReach;
+    use crate::compiler::visibility::VisibilityAudience;
     use crate::compiler::visibility::annotation::VisibilityReach;
     use crate::compiler::visibility::annotation::VisibilitySyntax;
     use crate::compiler::visibility::policy::NoFacadeVisibilityRepair;
@@ -2882,14 +2883,14 @@ mod tests {
         assert!(
             requirements
                 .required_reach()
-                .is_some_and(VisibilityReach::is_public)
+                .is_some_and(|reach| reach.audience() == VisibilityAudience::Public)
         );
         let signature = ReachRequirements::SignatureOnly { required };
         assert!(signature.facade_reach().is_none());
         assert!(
             signature
                 .required_reach()
-                .is_some_and(VisibilityReach::is_public)
+                .is_some_and(|reach| reach.audience() == VisibilityAudience::Public)
         );
         assert!(ReachRequirements::Unconstrained.facade_reach().is_none());
         assert!(ReachRequirements::Unconstrained.required_reach().is_none());
@@ -3030,7 +3031,7 @@ mod tests {
             owner_module: CRATE_DEF_ID,
             visibility,
             facade_spelling: ParentFacadeSpelling::Crate,
-            spelling_conflict: false,
+            spelling_agreement: FacadeSpellingAgreement::Consistent,
             use_kind: FacadeUseKind::Glob,
             alias: None,
             export_names: Vec::new(),
@@ -3039,9 +3040,9 @@ mod tests {
         };
         let analysis = ParentFacadeAnalysis {
             nearest:                     ParentFacadeOccurrences {
-                selected:          &occurrence,
-                matching:          vec![&occurrence],
-                spelling_conflict: false,
+                selected:           &occurrence,
+                matching:           vec![&occurrence],
+                spelling_agreement: FacadeSpellingAgreement::Consistent,
             },
             chain:                       FacadeChainResolution::Unresolvable {
                 blocker: FacadeChainBlocker::Glob(&occurrence),

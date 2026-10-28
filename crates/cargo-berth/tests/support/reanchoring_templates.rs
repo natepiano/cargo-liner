@@ -48,6 +48,45 @@ pub(super) const REWRITE_MAIN: RepositoryTemplate = RepositoryTemplate {
     build:            build_rewrite_main,
 };
 
+/// An active phase containing both protected hunks, before either split workflow.
+pub(super) const SPLIT_ACTIVE_PHASE: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "split-active-phase",
+        build: |root| build_split_phase(root, SplitReservationStage::Active),
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+/// The same protected interval, checkpointed before either split workflow.
+pub(super) const SPLIT_OUTSTANDING_PHASE: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "split-outstanding-phase",
+        build: |root| build_split_phase(root, SplitReservationStage::Outstanding),
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
+
+/// The reservation and original tip shared by both split workflows.
+#[derive(Serialize, Deserialize)]
+pub(super) struct SplitPhaseState {
+    pub(super) id:      String,
+    pub(super) old_tip: String,
+}
+
+fn build_split_phase(root: &Path, stage: SplitReservationStage) {
+    REWRITE_MAIN.restore_into(root);
+    let fixture = RewriteRepository::at_root(root);
+    let id = fixture.start_phase();
+    fixture.commit("one", "two");
+    let old_tip = fixture.head();
+    if matches!(stage, SplitReservationStage::Outstanding) {
+        fixture.checkpoint(&id);
+    }
+    write_state(root, &SplitPhaseState { id, old_tip });
+}
+
 /// Two outstanding checkpoints after their second real rebase, with pending markers.
 pub(super) const TWO_REBASE_HISTORY: LedgerTemplate = LedgerTemplate {
     repository:   RepositoryTemplate {
