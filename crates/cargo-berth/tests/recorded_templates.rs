@@ -168,7 +168,7 @@ fn main() {
     }
 }
 
-const fn recorded_populations() -> [LedgerTemplate; 32] {
+const fn recorded_populations() -> [LedgerTemplate; 34] {
     [
         edges_templates::RECORDED_PROJECTION,
         edges_templates::MERGE_EXTENT_MAIN,
@@ -197,6 +197,8 @@ const fn recorded_populations() -> [LedgerTemplate; 32] {
         gate_templates::UNENROLLED_PAIR,
         gate_templates::REVALIDATED_CROSS_TARGET_LANDING,
         reanchoring_templates::TWO_REBASE_HISTORY,
+        reanchoring_templates::SPLIT_ACTIVE_PHASE,
+        reanchoring_templates::SPLIT_OUTSTANDING_PHASE,
         reanchoring_templates::DRAINED_SPLIT_RETENTION_CHECKPOINT,
         reanchoring_templates::DRAINED_SPLIT_SIBLING_CHECKPOINT,
         reanchoring_templates::STACKED_UPPER_CHECKPOINT,

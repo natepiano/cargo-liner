@@ -269,9 +269,9 @@ pub(crate) struct ReconciliationGitCost {
 struct MergeExtentGitCost {
     /// Includes attempted status reads that report an observation failure.
     worktree_status_queries: u64,
-    /// Counts both invocations of each `git::unmerged_branch_paths` read, including failed
-    /// reads and fresh committed-path reads needed to settle a cached extent, plus the ancestry
-    /// read that ends a clean run whose head trunk contains.
+    /// Actual subprocess queries from fresh committed-path reads, plus the ancestry read
+    /// that ends a clean run whose head trunk contains. In-process reads and cache hits
+    /// contribute no subprocess queries.
     path_queries:            u64,
 }
 
