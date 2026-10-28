@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::env::VarError;
 use std::io::ErrorKind;
+use std::ops::ControlFlow;
 use std::path::Path;
 
 use gix::Repository;
@@ -51,6 +52,7 @@ use super::refs::HeadAttachment;
 use super::refs::ReferenceLookup;
 use super::refs::RetentionRefMutation;
 use crate::ids::GitObjectId;
+use crate::ids::ReservationScopePath;
 
 /// Cases outside the in-process reader's compatibility contract.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,6 +85,8 @@ pub(super) enum GitReadRequirement {
     AnnotatedTag,
     /// Revision syntax and abbreviated object names retain the existing batch protocol.
     RevisionExpression,
+    /// Git owns shallow boundaries and legacy grafted parent links.
+    HistoryOverrides,
     /// Git chooses the first merge ref when a branch configures several upstreams.
     MultipleUpstreamBranches,
     /// Git resolves HEAD when it is configured as a local branch upstream.
@@ -117,6 +121,7 @@ impl GitReadRequirement {
             | Self::SymbolicReference
             | Self::AnnotatedTag
             | Self::RevisionExpression
+            | Self::HistoryOverrides
             | Self::MultipleUpstreamBranches
             | Self::LocalUpstreamHead => subprocess(),
         }
@@ -190,7 +195,7 @@ impl RetentionRefReader {
 }
 
 /// Load strict configuration from every Git source, including its installation prefix.
-fn open(root: &Path) -> Result<RepositoryRead<Repository>, GitError> {
+pub(super) fn open(root: &Path) -> Result<RepositoryRead<Repository>, GitError> {
     if GIT_REPOSITORY_ENVIRONMENT
         .iter()
         .any(|name| std::env::var_os(name).is_some())
@@ -207,7 +212,26 @@ fn open(root: &Path) -> Result<RepositoryRead<Repository>, GitError> {
     // an explicit, bounded command and gix receives the discovered file directly.
     match command::with_spawn_lock(|| gix::open_opts(root, options))? {
         Ok(repository) => match repository_format(repository.config_snapshot().plumbing()) {
-            RepositoryRead::InProcess(()) => Ok(RepositoryRead::InProcess(repository)),
+            RepositoryRead::InProcess(()) => {
+                // gix 0.89 does not enable Git's default replacement refs. Delegate
+                // object semantics whenever replacement history could be selected.
+                let references = repository
+                    .references()
+                    .map_err(|error| failure("read replacement references", error))?;
+                let mut replacements = references
+                    .prefixed("refs/replace/")
+                    .map_err(|error| failure("read replacement references", error))?;
+                if std::env::var_os("GIT_REPLACE_REF_BASE").is_some()
+                    || replacements.next().is_some()
+                {
+                    return Ok(RepositoryRead::GitRequired(
+                        GitReadRequirement::HistoryOverrides,
+                    ));
+                }
+                drop(replacements);
+                drop(references);
+                Ok(RepositoryRead::InProcess(repository))
+            },
             RepositoryRead::GitRequired(reason) => Ok(RepositoryRead::GitRequired(reason)),
         },
         Err(error) => {
@@ -277,7 +301,7 @@ fn repository_format(config: &File) -> RepositoryRead<()> {
 }
 
 /// Convert backend failures at the boundary, retaining the failed operation.
-fn failure(activity: &'static str, error: impl std::fmt::Display) -> GitError {
+pub(super) fn failure(activity: &'static str, error: impl std::fmt::Display) -> GitError {
     GitError::RepositoryReadFailed {
         activity,
         diagnostic: error.to_string(),
@@ -543,7 +567,7 @@ pub(super) fn reference(
     }
 }
 
-/// Read only exact full refs and HEAD here. Other expressions keep the shared Git batch.
+/// Read exact object IDs, full refs and HEAD. Other expressions keep the shared Git batch.
 pub(super) fn commit(
     root: &Path,
     expression: &str,
@@ -551,7 +575,11 @@ pub(super) fn commit(
     let reference_name = expression
         .strip_suffix(GIT_COMMIT_PEEL_SUFFIX)
         .unwrap_or(expression);
-    if reference_name != GIT_HEAD_REVISION && !reference_name.starts_with("refs/") {
+    let exact_object = reference_name.parse::<GitObjectId>().ok();
+    if exact_object.is_none()
+        && reference_name != GIT_HEAD_REVISION
+        && !reference_name.starts_with("refs/")
+    {
         return Ok(RepositoryRead::GitRequired(
             GitReadRequirement::RevisionExpression,
         ));
@@ -568,7 +596,12 @@ pub(super) fn commit(
         RepositoryRead::InProcess(repository) => repository,
         RepositoryRead::GitRequired(reason) => return Ok(RepositoryRead::GitRequired(reason)),
     };
-    let id = if reference_name == GIT_HEAD_REVISION {
+    let id = if let Some(id) = exact_object {
+        Some(
+            gix::ObjectId::from_hex(id.to_string().as_bytes())
+                .map_err(|error| failure("read exact object id", error))?,
+        )
+    } else if reference_name == GIT_HEAD_REVISION {
         let head = repository
             .head()
             .map_err(|error| failure("read HEAD", error))?;
@@ -623,6 +656,56 @@ pub(super) fn commit(
         },
     };
     Ok(RepositoryRead::InProcess(resolution))
+}
+
+/// Compare a commit tree with a merge-result tree, retaining both sides of a rename.
+pub(super) fn merge_result_paths(
+    root: &Path,
+    trunk: &GitObjectId,
+    result_tree: &GitObjectId,
+) -> Result<RepositoryRead<Vec<ReservationScopePath>>, GitError> {
+    let repository = match open(root)? {
+        RepositoryRead::InProcess(repository) => repository,
+        RepositoryRead::GitRequired(reason) => return Ok(RepositoryRead::GitRequired(reason)),
+    };
+    command::with_spawn_lock(|| {
+        let object_id = |id: &GitObjectId| {
+            gix::ObjectId::from_hex(id.to_string().as_bytes())
+                .map_err(|error| failure("read tree object id", error))
+        };
+        let trunk = repository
+            .find_commit(object_id(trunk)?)
+            .map_err(|error| failure("read trunk commit", error))?
+            .tree()
+            .map_err(|error| failure("read trunk tree", error))?;
+        let result = repository
+            .find_tree(object_id(result_tree)?)
+            .map_err(|error| failure("read merge result tree", error))?;
+        let mut names = Vec::new();
+        trunk
+            .changes()
+            .map_err(|error| failure("prepare tree comparison", error))?
+            .options(|options| {
+                options.track_path().track_rewrites(None);
+            })
+            .for_each_to_obtain_tree(&result, |change| {
+                if !change.entry_mode().is_tree() {
+                    names.push(change.location().to_vec());
+                }
+                Ok(ControlFlow::Continue(()))
+            })
+            .map_err(|error| failure("compare merge result tree", error))?;
+        let paths = names
+            .into_iter()
+            .map(|name| {
+                String::from_utf8(name)
+                    .map_err(GitError::InvalidOutput)?
+                    .parse()
+                    .map_err(GitError::InvalidReservationPath)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(RepositoryRead::InProcess(paths))
+    })?
 }
 
 /// Resolve configured tracking refs without treating an unconfigured upstream as a failed read.
@@ -814,6 +897,47 @@ mod tests {
         fixture.write(".gitignore", "ignored.txt\n")?;
         fixture.write("ignored.txt", "ignored\n")?;
         assert_eq!(in_process(status(fixture.root())?)?, git_status(&fixture)?);
+        Ok(())
+    }
+
+    #[test]
+    fn merge_result_paths_match_git_for_renames_and_file_directory_transitions() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        fixture.write("was-file", "file\n")?;
+        fixture.write("was-directory/child", "child\n")?;
+        let trunk = fixture.commit("before path transitions")?;
+        fixture.git(&["mv", PRIMARY_PATH, "renamed file"])?;
+        fixture.remove("was-file")?;
+        fixture.write("was-file/child", "new child\n")?;
+        std::fs::remove_dir_all(fixture.root().join("was-directory"))?;
+        fixture.write("was-directory", "new file\n")?;
+        let head = fixture.commit("after path transitions")?;
+        let tree_expression = format!("{head}^{{tree}}");
+        let tree = command::git_output(fixture.root(), ["rev-parse", &tree_expression])?;
+        assert!(tree.status.success(), "{tree:?}");
+        let tree = String::from_utf8(tree.stdout)?.trim().parse()?;
+        let mut actual = in_process(super::merge_result_paths(fixture.root(), &trunk, &tree)?)?
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        actual.sort();
+        let expected = command::git_output(
+            fixture.root(),
+            [
+                "diff",
+                "--name-only",
+                "-z",
+                "--no-renames",
+                &trunk.to_string(),
+                &head.to_string(),
+                "--",
+            ],
+        )?;
+        assert!(expected.status.success(), "{expected:?}");
+        let expected = String::from_utf8(expected.stdout)?;
+        let expected = expected.split_terminator('\0').collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 6);
         Ok(())
     }
 

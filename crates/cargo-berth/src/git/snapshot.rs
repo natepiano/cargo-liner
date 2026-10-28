@@ -19,6 +19,7 @@ use super::error::GitError;
 use super::object::CommitAvailability;
 use super::object::CommitObjectResolution;
 use super::object::OperationObjectReader;
+use super::reachability;
 use super::read;
 use super::refs::HeadAttachment;
 use crate::ids::GitObjectId;
@@ -202,8 +203,9 @@ impl RepositorySnapshot {
             .clone();
         let mut queries = 0;
         let paths = fact.read(|| {
-            queries = super::unmerged_branch_path_queries(trunk, head);
-            super::unmerged_branch_paths(checkout, trunk, head)
+            let observation = reachability::observe_unmerged_branch_paths(checkout, trunk, head)?;
+            queries = observation.git_queries;
+            Ok(observation.paths)
         })?;
         Ok((paths.clone(), queries))
     }
@@ -365,12 +367,15 @@ mod tests {
                 assert!(paths.is_empty(), "the new commit changes no tree paths");
                 queries += started;
             }
-            assert_eq!(queries, 2, "all workers share one branch-path read");
+            assert_eq!(
+                queries, 1,
+                "all workers share one merge-tree read; tree comparison starts no child"
+            );
             Ok(())
         })?;
         let (_, queries) = fresh.unmerged_branch_paths(fixture.root(), &head, current_head)?;
         assert_eq!(
-            queries, 2,
+            queries, 1,
             "a fresh pass reads its own branch-path evidence"
         );
         Ok(())
