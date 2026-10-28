@@ -488,6 +488,11 @@ cargo_berth_classify_record() {
     fi
     case $3 in
         refs/heads/*)
+            # Packing or verifying a ref can report its unchanged value. The binary's
+            # ReferenceMovement classifies this as NoMove in either actionable phase.
+            if cargo_berth_object "$1" && cargo_berth_object "$2" && cargo_berth_full_ref "$3" && [ "$1" = "$2" ]; then
+                return
+            fi
             if [ "$cargo_berth_phase" = "committed" ] || ! cargo_berth_object "$1" || ! cargo_berth_object "$2" || ! cargo_berth_full_ref "$3"; then
                 cargo_berth_dispatch=1
             fi
