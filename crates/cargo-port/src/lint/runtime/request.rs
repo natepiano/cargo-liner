@@ -26,7 +26,7 @@ impl RegisterProjectRequest {
 }
 
 pub fn project_is_eligible(
-    lint: &LintConfig,
+    lint_config: &LintConfig,
     project_label: &str,
     abs_path: &Path,
     is_rust: bool,
@@ -35,7 +35,7 @@ pub fn project_is_eligible(
         return false;
     }
     supervisor::should_watch_project(
-        lint,
+        lint_config,
         &RegisterProjectRequest::new(project_label, AbsolutePath::from(abs_path)),
     )
 }
