@@ -15,6 +15,7 @@ use rustc_middle::ty::Visibility;
 use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
 
+use super::VisibilityAudience;
 use super::annotation;
 use super::annotation::ReachBoundary;
 use super::annotation::VisibilityReach;
@@ -99,7 +100,7 @@ impl SignatureExposure {
     pub(super) fn reaches_outside_crate(self) -> bool {
         match self {
             Self::Contained => false,
-            Self::ExposedAt(reach) => reach.is_public(),
+            Self::ExposedAt(reach) => reach.audience() == VisibilityAudience::Public,
         }
     }
 
@@ -1076,7 +1077,7 @@ pub(super) fn parent_facade_export_status(
             parent_facade_reach: parent_facade_reach_for_occurrence(
                 ctx,
                 occurrence,
-                facade_spelling_agreement(occurrence.spelling_conflict),
+                occurrence.spelling_agreement,
             ),
             usage_by_name: &occurrence.usage_by_name,
             export_names: &occurrence.export_names,
@@ -1103,15 +1104,6 @@ fn select_parent_facade_status(
         }
     }
     Ok(selected_status)
-}
-
-/// Convert the upstream source-spelling flag once before facade policy consumes it.
-pub(super) const fn facade_spelling_agreement(conflict: bool) -> FacadeSpellingAgreement {
-    if conflict {
-        FacadeSpellingAgreement::Conflicting
-    } else {
-        FacadeSpellingAgreement::Consistent
-    }
 }
 
 pub(super) fn parent_facade_reach_for_occurrence(
@@ -1371,18 +1363,6 @@ mod tests {
             }
         }
         Ok(())
-    }
-
-    #[test]
-    fn upstream_spelling_flags_convert_at_the_policy_boundary() {
-        assert_eq!(
-            super::facade_spelling_agreement(false),
-            super::FacadeSpellingAgreement::Consistent,
-        );
-        assert_eq!(
-            super::facade_spelling_agreement(true),
-            super::FacadeSpellingAgreement::Conflicting,
-        );
     }
 
     #[test]
