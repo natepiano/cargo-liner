@@ -58,6 +58,56 @@ pub(in crate::compiler) struct ModuleSourceMap {
     module_contexts_by_file:    RefCell<FxHashMap<PathBuf, Rc<[ModuleContext]>>>,
 }
 
+/// Whether a source file defines the expected module path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ModuleDefinitionPresence {
+    Present,
+    Absent,
+}
+
+/// A span selects a source declaration only when its resolved canonical file matches.
+/// Unavailable span files cannot select a declaration, just like a different file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::compiler) enum SpanFileMatch {
+    Matched,
+    DifferentOrUnavailable,
+}
+
+impl SpanFileMatch {
+    fn for_files(resolved: Option<&Path>, canonical_file: &Path) -> Self {
+        if resolved.is_some_and(|file| file == canonical_file) {
+            Self::Matched
+        } else {
+            Self::DifferentOrUnavailable
+        }
+    }
+}
+
+/// The ancestry walk includes the ancestor itself and stops outside at the crate root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::compiler) enum ModuleContainment {
+    Within,
+    Outside,
+}
+
+impl ModuleContainment {
+    fn for_ancestry(
+        mut candidate: LocalDefId,
+        ancestor: LocalDefId,
+        parent_module: impl Fn(LocalDefId) -> LocalDefId,
+    ) -> Self {
+        loop {
+            if candidate == ancestor {
+                return Self::Within;
+            }
+            if candidate == CRATE_DEF_ID {
+                return Self::Outside;
+            }
+            candidate = parent_module(candidate);
+        }
+    }
+}
+
 impl ModuleSourceMap {
     /// The modules `source_file` defines, computed once per file per run.
     ///
@@ -205,14 +255,16 @@ impl ModuleSourceMap {
     /// `canonical_file` must already be canonical: `canonical_span_file`
     /// canonicalizes what it returns, so an uncanonical argument never compares
     /// equal.
-    pub(in crate::compiler) fn span_is_in_file(
+    pub(in crate::compiler) fn span_file_match(
         &self,
         tcx: TyCtxt<'_>,
         span: Span,
         canonical_file: &Path,
-    ) -> bool {
-        self.canonical_span_file(tcx, span)
-            .is_some_and(|file| file == canonical_file)
+    ) -> SpanFileMatch {
+        SpanFileMatch::for_files(
+            self.canonical_span_file(tcx, span).as_deref(),
+            canonical_file,
+        )
     }
 
     pub(in crate::compiler) fn root_modules_for_file(
@@ -275,21 +327,15 @@ impl ModuleSourceMap {
     }
 
     /// Whether `candidate` is `ancestor` or is nested inside it.
-    pub(in crate::compiler) fn module_is_within(
+    pub(in crate::compiler) fn module_containment(
         &self,
         tcx: TyCtxt<'_>,
-        mut candidate: LocalDefId,
+        candidate: LocalDefId,
         ancestor: LocalDefId,
-    ) -> bool {
-        loop {
-            if candidate == ancestor {
-                return true;
-            }
-            if candidate == CRATE_DEF_ID {
-                return false;
-            }
-            candidate = self.parent_module(tcx, candidate);
-        }
+    ) -> ModuleContainment {
+        ModuleContainment::for_ancestry(candidate, ancestor, |module| {
+            self.parent_module(tcx, module)
+        })
     }
 
     fn nearest_active_ancestor(&self, module_path: &[String]) -> LocalDefId {
@@ -305,20 +351,26 @@ impl ModuleSourceMap {
         self.files_by_module.get(&module).map_or(&[], Vec::as_slice)
     }
 
-    pub(in crate::compiler) fn file_contains_module_path(
+    pub(super) fn module_definition_presence(
         &self,
         tcx: TyCtxt<'_>,
         source_file: &Path,
         expected: &[String],
-    ) -> bool {
+    ) -> ModuleDefinitionPresence {
         let canonical_source_file = self.canonical_source_file(source_file);
-        self.modules_by_file
+        if self
+            .modules_by_file
             .get(canonical_source_file.as_ref())
             .is_some_and(|modules| {
                 modules
                     .iter()
                     .any(|module| module_path(tcx, *module) == expected)
             })
+        {
+            ModuleDefinitionPresence::Present
+        } else {
+            ModuleDefinitionPresence::Absent
+        }
     }
 }
 
@@ -404,5 +456,66 @@ fn real_file_path(tcx: TyCtxt<'_>, span: Span) -> Option<PathBuf> {
             .local_path()
             .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::path::Path;
+
+    use rustc_span::def_id::CRATE_DEF_ID;
+    use rustc_span::def_id::DefIndex;
+    use rustc_span::def_id::LocalDefId;
+
+    use super::ModuleContainment;
+    use super::SpanFileMatch;
+
+    #[test]
+    fn span_file_matching_requires_an_available_equal_canonical_path() {
+        let expected = Path::new("/project/src/lib.rs");
+        for (resolved, result) in [
+            (Some(expected), SpanFileMatch::Matched),
+            (
+                Some(Path::new("/project/src/child.rs")),
+                SpanFileMatch::DifferentOrUnavailable,
+            ),
+            (None, SpanFileMatch::DifferentOrUnavailable),
+        ] {
+            assert_eq!(SpanFileMatch::for_files(resolved, expected), result);
+        }
+    }
+
+    #[test]
+    fn containment_includes_self_and_ancestors_and_stops_at_root() {
+        let parent = LocalDefId {
+            local_def_index: DefIndex::from_u32(1),
+        };
+        let child = LocalDefId {
+            local_def_index: DefIndex::from_u32(2),
+        };
+        let sibling = LocalDefId {
+            local_def_index: DefIndex::from_u32(3),
+        };
+        for (candidate, ancestor, expected, steps) in [
+            (child, child, ModuleContainment::Within, 0),
+            (child, parent, ModuleContainment::Within, 1),
+            (child, CRATE_DEF_ID, ModuleContainment::Within, 2),
+            (child, sibling, ModuleContainment::Outside, 2),
+            (CRATE_DEF_ID, child, ModuleContainment::Outside, 0),
+            (CRATE_DEF_ID, CRATE_DEF_ID, ModuleContainment::Within, 0),
+        ] {
+            let calls = Cell::new(0);
+            let result = ModuleContainment::for_ancestry(candidate, ancestor, |module| {
+                calls.set(calls.get() + 1);
+                if module == child {
+                    parent
+                } else {
+                    CRATE_DEF_ID
+                }
+            });
+            assert_eq!(result, expected);
+            assert_eq!(calls.get(), steps);
+        }
     }
 }

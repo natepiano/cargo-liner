@@ -30,8 +30,11 @@ use super::visitor::OutwardDeclaration;
 use super::visitor::OutwardDeclarationClassification;
 use super::visitor::OutwardDeclarationKind;
 use crate::compiler::facade;
+use crate::compiler::facade::ExternalFacadeUsage;
+use crate::compiler::facade::ModuleContainment;
 use crate::compiler::facade::ModuleSourceMap;
 use crate::compiler::facade::ParentFacadeUsage;
+use crate::compiler::facade::SpanFileMatch;
 use crate::compiler::settings::DriverSettings;
 use crate::compiler::source_cache::NameMention;
 use crate::compiler::source_cache::SourceCache;
@@ -663,7 +666,8 @@ fn sibling_boundary_signature_exposes_item(
         for module_scope in &candidate_file.module_scopes {
             if ctx
                 .module_sources
-                .module_is_within(ctx.tcx, module_scope.module, child_module)
+                .module_containment(ctx.tcx, module_scope.module, child_module)
+                == ModuleContainment::Within
             {
                 continue;
             }
@@ -725,7 +729,8 @@ fn boundary_scopes<'source>(
                 module_scope.module != boundary
                     && ctx
                         .module_sources
-                        .module_is_within(ctx.tcx, module_scope.module, boundary)
+                        .module_containment(ctx.tcx, module_scope.module, boundary)
+                        == ModuleContainment::Within
             })
             .collect();
         if !inside.is_empty() {
@@ -1240,14 +1245,15 @@ fn parent_export_usage(
     exposing_item_name: &str,
 ) -> Result<ParentExportUsage> {
     let exposing_names = [exposing_item_name.to_string()];
-    if facade::path_exists_outside_module(
+    if facade::external_facade_usage(
         ctx.source_cache,
         ctx.source_root,
         ctx.tcx,
         ctx.module_sources,
         parent_module_path,
         &exposing_names,
-    ) {
+    ) == ExternalFacadeUsage::Present
+    {
         return Ok(ParentExportUsage::UsedOutsideSubtree);
     }
 
@@ -1300,11 +1306,12 @@ fn resolve_active_declaration(
         let Some(declaration_span) = ctx.tcx.def_ident_span(local_def_id.to_def_id()) else {
             continue;
         };
-        if !ctx.module_sources.span_is_in_file(
+        if ctx.module_sources.span_file_match(
             ctx.tcx,
             declaration_span,
             canonical_source_file.as_ref(),
-        ) || rustc_source_byte_position(ctx.tcx, declaration_span) != source_byte_position
+        ) == SpanFileMatch::DifferentOrUnavailable
+            || rustc_source_byte_position(ctx.tcx, declaration_span) != source_byte_position
         {
             continue;
         }
@@ -1369,13 +1376,14 @@ fn resolve_impl_signature_carrier(
         {
             continue;
         }
-        // `resolve_impl_signature_carrier` applies `ModuleSourceMap::span_is_in_file`
+        // `resolve_impl_signature_carrier` applies `ModuleSourceMap::span_file_match`
         // last because resolving a span's file is the widest test:
         // only a candidate already matching on module, name, and byte offset
         // reaches it.
-        if !ctx
+        if ctx
             .module_sources
-            .span_is_in_file(ctx.tcx, item.span, canonical_source_file.as_ref())
+            .span_file_match(ctx.tcx, item.span, canonical_source_file.as_ref())
+            == SpanFileMatch::DifferentOrUnavailable
         {
             continue;
         }
@@ -1477,9 +1485,10 @@ fn resolve_field_signature_carrier(
     };
     let canonical_source_file = ctx.module_sources.canonical_source_file(source_file);
     for field in variant_data.fields() {
-        if !ctx
+        if ctx
             .module_sources
-            .span_is_in_file(ctx.tcx, field.span, canonical_source_file.as_ref())
+            .span_file_match(ctx.tcx, field.span, canonical_source_file.as_ref())
+            == SpanFileMatch::DifferentOrUnavailable
             || source_identity.hir_field_match(ctx.tcx, field) == FieldIdentityMatch::Different
         {
             continue;
