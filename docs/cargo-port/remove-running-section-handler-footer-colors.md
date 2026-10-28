@@ -854,6 +854,38 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** fitting each tile on its own at the grid's width (it cut status words and dropped type with free cells); a tile-count planner in cargo-handler (`ColumnLayout` is the only chooser).
 
+### Phase 37 — Band dividers never get fewer rows than their minimum gaps  · status: done
+
+#### As-built
+
+- Checkpoint 6733d610. Phase 27 let `fits` accept `ColumnPacking::WidthLimited` when one tile height fit, and `column_layout` put every position into the columns left, so a column could hold more residents than its rows admit (20 cells in two columns of ten at 80x47, floor 6). The motion pass then panicked at the `band_piece_dividers` clamp ("min > max. min = 5, max = 1").
+- `RowAdmissibleColumnLayout` (private, `grid.rs`) is built only by `ColumnLayout::checked`. `ColumnPlan::{Columns, InsufficientWidth, InsufficientRows}`. N residents need N × (min_tile_height − 1) + 1 rows; the summary counts once in column zero with its held depth; the band below a widened summary is checked on its own; no saturating arithmetic. `column_layout` and `ColumnLayout::for_summary` return the checked layout after every redistribution; `fits` (no WidthLimited height exemption), `holds_in`, admission, summary share and depth and `queued_slot_column` read it. Commands that do not fit stay in demands and the summary. `band_piece_dividers` is unchanged.
+- Tests: `width_limited_admission_keeps_resident_motion_within_the_band_budget` (fail-before, panicked at HEAD), `width_limited_columns_keep_the_exact_resident_capacity`, `summary_redistribution_checks_the_remaining_resident_band`. The handler 34x50 fixture count is 2 group tiles (was 20), summary 43.
+
+**Files:** `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/CHANGELOG.md`, `crates/cargo-handler/src/render/narrow_width_tests.rs`
+
+**Binds later work:** every column layout goes through `ColumnLayout::checked`; a width policy (`CompressSingleColumn`) never relaxes the height floor. A cached motion endpoint after a floor change belongs to "Motion endpoints keep the band floor after a floor change".
+
+### Phase 38 — Motion endpoints keep the band floor after a floor change  · status: todo
+
+**Depends on:** Phase 37
+
+#### Work Order
+
+**Goal:** a change of the minimum tile height during motion never lets a cached motion endpoint give a band fewer rows than its residents need.
+
+**Source:** Phase 37 code review, 2026-10-28. `holds_in` (`grid.rs` ≈3077) checks reconstructed layouts against the full viewport, but `advance` can reuse a painted source whose widened-summary band no longer fits the current floor. Constructed case: 80×47, minimum width 40, Redistribute(4), widened summary, nine groups demanding 3 rows, summary demand 33; paint at floor 3, raise the floor to 6, sync. The old right band has 13 rows and five residents, so the divider bounds are 39..26 although admission passes.
+
+**Spec:**
+1. A floor or area change revalidates every cached motion endpoint (painted source, queued steps) through the Phase 37 checked layout; an endpoint that fails it is not reused as a motion source.
+2. A fail-before regression for the constructed case; under one second.
+
+**Files:** `crates/tui_pane/src/tiles/grid.rs` and its tests; `crates/tui_pane/CHANGELOG.md` if the fix is visible.
+
+**Workers:** 1 writer (`test`).
+
+**Acceptance gate:** `verify.sh lint tui_pane`, `verify.sh test tui_pane`, `verify.sh test cargo-tile`, `verify.sh test cargo-handler` clean; no test takes a second. Its own fix checkpoint, ahead of Phase 36.
+
 ### Phase 36 — Handler tiles show no row-count readout  · status: todo
 
 **Depends on:** Phase 27
