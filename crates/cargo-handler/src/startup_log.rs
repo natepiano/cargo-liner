@@ -37,7 +37,9 @@ struct StartupAnswerMilestones {
 }
 
 impl StartupAnswerMilestones {
-    /// Emit milestones without counting transport-only carriers as agents.
+    /// `StartupAnswerMilestones::record` emits milestones and uses `AgentRow::is_visible`
+    /// to exclude transport-only carriers from the `StartupAnswerMilestones::first_agent`
+    /// milestone.
     fn record(&self, rows: &[AgentRow], mut emit: impl FnMut(&str)) {
         if !self.first_local.swap(true, Ordering::Relaxed) {
             emit(&format!("first_local_answer rows={}", rows.len()));
@@ -78,7 +80,8 @@ pub(crate) fn startup_stage<T>(stage: &str, body: impl FnOnce() -> T) -> T {
     result
 }
 
-/// Record when a local answer is ready, independently of when the UI drains it.
+/// `startup_local_answer` calls `StartupAnswerMilestones::record` when a local answer is ready,
+/// independently of when `crate::terminal::Ticker::drain_census` receives it for the UI.
 pub(crate) fn startup_local_answer(rows: &[AgentRow]) {
     ANSWER_MILESTONES.record(rows, startup_event);
 }
@@ -123,7 +126,8 @@ pub(crate) fn init() {
 mod tests {
     use super::*;
 
-    /// A transport-only answer must not consume the first visible-agent milestone.
+    /// `StartupAnswerMilestones::record` must use `AgentRow::is_visible` so a transport-only
+    /// answer does not consume the first visible-agent milestone.
     #[test]
     fn transport_hosts_do_not_record_the_first_agent_milestone() {
         let milestones = StartupAnswerMilestones {
