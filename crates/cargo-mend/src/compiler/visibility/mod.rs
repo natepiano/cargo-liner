@@ -6,6 +6,9 @@ mod scan;
 mod source;
 mod use_sites;
 
+use annotation::ReachDominance;
+use annotation::ReachWidening;
+use annotation::VisibilityAudience;
 pub(super) use annotation::VisibilityReach;
 pub(super) use annotation::anchored;
 pub(super) use annotation::capped_by_enclosing_modules;
