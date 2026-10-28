@@ -14,8 +14,8 @@ pub(super) fn run_independent_probes<A: Send, B: Send>(
 }
 
 /// Preserve a probe panic on the caller after its scoped thread completes.
-pub(super) fn finish_probe<T>(probe: ScopedJoinHandle<'_, T>) -> T {
-    probe
+pub(super) fn finish_probe<T>(scoped_join_handle: ScopedJoinHandle<'_, T>) -> T {
+    scoped_join_handle
         .join()
         .unwrap_or_else(|error| std::panic::resume_unwind(error))
 }
@@ -30,11 +30,11 @@ mod tests {
 
     #[test]
     fn independent_git_probes_run_outside_the_callers_rayon_pool() {
-        let pool = rayon::ThreadPoolBuilder::new()
+        let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .build()
             .expect("create probe caller pool");
-        pool.install(|| {
+        thread_pool.install(|| {
             assert!(rayon::current_thread_index().is_some());
             let (left, right) =
                 run_independent_probes(rayon::current_thread_index, rayon::current_thread_index);
