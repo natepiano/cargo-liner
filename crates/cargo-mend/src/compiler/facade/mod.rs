@@ -3,12 +3,17 @@ mod exports;
 mod reference;
 
 pub(super) use boundary::LogicalParentBoundary;
+pub(super) use boundary::ModuleContainment;
 pub(super) use boundary::ModuleSourceMap;
+pub(super) use boundary::SpanFileMatch;
+pub(super) use exports::ExportMultiplicity;
+pub(super) use exports::FacadeSpellingAgreement;
 pub(super) use exports::ParentFacadeExportRequest;
 pub(super) use exports::ParentFacadeExportStatus;
 pub(super) use exports::ParentFacadeFixSupport;
 pub(super) use exports::ParentFacadeReach;
 pub(super) use exports::ParentFacadeSpelling;
+pub(super) use exports::ParentReach;
 #[cfg(all(test, feature = "test-counters"))]
 pub(super) use exports::facade_resolution_count;
 #[cfg(all(test, feature = "test-counters"))]
@@ -22,10 +27,12 @@ pub(super) use exports::record_facade_resolution;
 pub(super) use exports::record_facade_resolution_request;
 #[cfg(all(test, feature = "test-counters"))]
 pub(super) use exports::reset_performance_counters;
+pub(super) use reference::ExternalChildUsage;
+pub(super) use reference::ExternalFacadeUsage;
 pub(super) use reference::ParentFacadeUsage;
 pub(super) use reference::ParentFacadeUsageByName;
-pub(super) use reference::path_exists_outside_child_module;
-pub(super) use reference::path_exists_outside_module;
+pub(super) use reference::external_child_usage;
+pub(super) use reference::external_facade_usage;
 pub(super) use reference::workspace_source_parent_export_literal_usage;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::LocalDefId;
