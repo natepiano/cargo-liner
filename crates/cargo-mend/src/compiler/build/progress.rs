@@ -26,13 +26,26 @@ use crate::compiler::constants::PROGRESS_FRAMES;
 use crate::compiler::constants::PROGRESS_INTERVAL;
 
 pub(super) trait ProgressDisplay {
-    fn is_active(&self) -> bool;
+    fn activity(&self) -> ProgressActivity;
 
     fn record_unit_counter(&mut self, unit_counter: UnitCounter);
 
     fn write_status_notice(&mut self, notice: &str);
 
     fn stop_for_forwarded_output(&mut self);
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum ProgressActivity {
+    Active,
+    #[default]
+    Inactive,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameUpdate {
+    Draw,
+    Retain,
 }
 
 /// Cargo's count of its build plan, as its progress bar draws it: units finished
@@ -118,7 +131,7 @@ impl CargoProgress {
                 let targets = analyzing::targets_in_flight(&thread_analyzing_dir);
                 if let Ok(mut status_line) = thread_status_line.lock() {
                     let status = analyzing_status(&targets, message, status_line.unit_counter);
-                    if status_line.needs_redraw(&status, redraw) {
+                    if status_line.frame_update(&status, redraw) == FrameUpdate::Draw {
                         status_line.draw(status, frame_index);
                         frame_index = (frame_index + 1) % PROGRESS_FRAMES.len();
                     }
@@ -154,7 +167,13 @@ impl Drop for CargoProgress {
 }
 
 impl ProgressDisplay for CargoProgress {
-    fn is_active(&self) -> bool { self.state.is_some() }
+    fn activity(&self) -> ProgressActivity {
+        if self.state.is_some() {
+            ProgressActivity::Active
+        } else {
+            ProgressActivity::Inactive
+        }
+    }
 
     fn record_unit_counter(&mut self, unit_counter: UnitCounter) {
         if let Some(state) = self.state.as_ref()
@@ -193,10 +212,16 @@ impl CargoProgressState {
 }
 
 impl StatusLine {
-    fn needs_redraw(&self, status: &str, redraw: Redraw) -> bool {
+    fn frame_update(&self, status: &str, redraw: Redraw) -> FrameUpdate {
         match redraw {
-            Redraw::EveryTick => true,
-            Redraw::OnChange => self.drawn.as_deref() != Some(status),
+            Redraw::EveryTick => FrameUpdate::Draw,
+            Redraw::OnChange => {
+                if self.drawn.as_deref() == Some(status) {
+                    FrameUpdate::Retain
+                } else {
+                    FrameUpdate::Draw
+                }
+            },
         }
     }
 
@@ -311,6 +336,12 @@ fn clear_progress_line(width: usize) -> String { format!("\r{}\r", " ".repeat(wi
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use super::CargoProgress;
+    use super::FrameUpdate;
+    use super::ProgressActivity;
+    use super::ProgressDisplay;
+    use super::Redraw;
+    use super::StatusLine;
     use super::UnitCounter;
     use super::analyzing_status;
     use super::clear_progress_line;
@@ -322,6 +353,36 @@ mod tests {
     use crate::compiler::constants::PROGRESS_BAR_HEAD;
     use crate::compiler::constants::PROGRESS_BAR_WIDTH;
     use crate::compiler::constants::PROGRESS_FRAMES;
+
+    #[test]
+    fn redraw_policy_keeps_only_unchanged_pipe_frames() {
+        let mut line = StatusLine::default();
+        assert_eq!(
+            line.frame_update("analyzing", Redraw::OnChange),
+            FrameUpdate::Draw
+        );
+        line.drawn = Some("analyzing".to_string());
+        assert_eq!(
+            line.frame_update("analyzing", Redraw::OnChange),
+            FrameUpdate::Retain
+        );
+        assert_eq!(
+            line.frame_update("checking", Redraw::OnChange),
+            FrameUpdate::Draw
+        );
+        assert_eq!(
+            line.frame_update("analyzing", Redraw::EveryTick),
+            FrameUpdate::Draw
+        );
+    }
+
+    #[test]
+    fn inactive_progress_stays_inactive_after_stop() {
+        let mut progress = CargoProgress { state: None };
+        assert_eq!(progress.activity(), ProgressActivity::Inactive);
+        progress.stop();
+        assert_eq!(progress.activity(), ProgressActivity::Inactive);
+    }
 
     #[test]
     fn quiet_mode_uses_validation_status_message() {
