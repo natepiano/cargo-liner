@@ -27,10 +27,13 @@ use super::classify::VisibilityFindingContext;
 use crate::compiler::cfg_excluded_references::CfgExcludedReference;
 use crate::compiler::constants::PRELUDE_MODULE_NAME;
 use crate::compiler::facade;
+use crate::compiler::facade::ExternalChildUsage;
+use crate::compiler::facade::FacadeSpellingAgreement;
 use crate::compiler::facade::ParentFacadeExportStatus;
 use crate::compiler::facade::ParentFacadeFixSupport;
 use crate::compiler::facade::ParentFacadeReach;
 use crate::compiler::facade::ParentFacadeSpelling;
+use crate::compiler::facade::ParentReach;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::persistence::StoredCallerReconciliation;
 use crate::compiler::persistence::StoredConstraintOutcome;
@@ -217,14 +220,14 @@ fn maybe_record_unused_pub(
         matches!(signature_exposure, SignatureExposure::ExposedAt(_))
             && signature_exposure.is_satisfied_by(annotation.reach(item.def_id, ctx.tcx), ctx);
     if parent_facade_exports_item(parent_facade_analysis)
-        || facade::path_exists_outside_child_module(
+        || facade::external_child_usage(
             ctx.source_cache,
             ctx.source_root,
             ctx.tcx,
             ctx.module_sources,
             &use_sites::parent_module_path_segments(ctx.tcx, item.def_id),
             name,
-        )
+        ) == ExternalChildUsage::Present
         || annotation_reaches_signature
     {
         return Ok(());
@@ -832,26 +835,24 @@ fn overbroad_pub_crate_parent_facade_reason(
     module_location: ModuleLocation,
 ) -> OverbroadPubCrateSuggestionReason {
     let parent_facade_reach = parent_facade_reach(parent_facade_analysis, ctx);
-    if !parent_facade_reach.reaches_parent {
+    if parent_facade_reach.parent_reach == ParentReach::RestrictedToChild {
         return OverbroadPubCrateSuggestionReason::LocationPolicy { module_location };
     }
     let boundary_path = resolved_facade_boundary_path(parent_facade_analysis, ctx);
-    match (
-        parent_facade_reach.spelling,
-        parent_facade_reach.spelling_conflict,
-        boundary_path,
-    ) {
-        (ParentFacadeSpelling::Super, false, Some(boundary_path)) => {
-            OverbroadPubCrateSuggestionReason::ExactPubSuperParentFacade { boundary_path }
-        },
-        (ParentFacadeSpelling::Super, false, None) => {
-            OverbroadPubCrateSuggestionReason::ExactPubSuperParentFacadeWithoutKnownBoundary
-        },
-        (_, _, Some(boundary_path)) => {
-            OverbroadPubCrateSuggestionReason::ParentFacade { boundary_path }
-        },
-        (_, _, None) => OverbroadPubCrateSuggestionReason::ParentFacadeWithoutKnownBoundary,
+    if parent_facade_reach.spelling == ParentFacadeSpelling::Super
+        && parent_facade_reach.spelling_agreement == FacadeSpellingAgreement::Consistent
+    {
+        return boundary_path.map_or(
+            OverbroadPubCrateSuggestionReason::ExactPubSuperParentFacadeWithoutKnownBoundary,
+            |boundary_path| OverbroadPubCrateSuggestionReason::ExactPubSuperParentFacade {
+                boundary_path,
+            },
+        );
     }
+    boundary_path.map_or(
+        OverbroadPubCrateSuggestionReason::ParentFacadeWithoutKnownBoundary,
+        |boundary_path| OverbroadPubCrateSuggestionReason::ParentFacade { boundary_path },
+    )
 }
 
 fn overbroad_pub_crate_no_facade_advice(
@@ -2140,7 +2141,7 @@ fn parent_facade_reach(
     policy::parent_facade_reach_for_occurrence(
         ctx,
         occurrence,
-        parent_facade_analysis.nearest.spelling_conflict,
+        policy::facade_spelling_agreement(parent_facade_analysis.nearest.spelling_conflict),
     )
 }
 
@@ -2850,11 +2851,13 @@ mod tests {
     use super::PubCrateNarrowing;
     use super::ReachRequirements;
     use super::ValidatedRestrictedBoundary;
+    use crate::compiler::facade::FacadeSpellingAgreement;
     use crate::compiler::facade::ParentFacadeExportStatus;
     use crate::compiler::facade::ParentFacadeFixSupport;
     use crate::compiler::facade::ParentFacadeReach;
     use crate::compiler::facade::ParentFacadeSpelling;
     use crate::compiler::facade::ParentFacadeUsage;
+    use crate::compiler::facade::ParentReach;
     use crate::compiler::visibility::annotation::VisibilityReach;
     use crate::compiler::visibility::annotation::VisibilitySyntax;
     use crate::compiler::visibility::policy::NoFacadeVisibilityRepair;
@@ -3002,9 +3005,9 @@ mod tests {
             usage:               ParentFacadeUsage::Unused,
             fix_support:         ParentFacadeFixSupport::Unsupported,
             parent_facade_reach: ParentFacadeReach {
-                reaches_parent:    true,
-                spelling:          ParentFacadeSpelling::Crate,
-                spelling_conflict: false,
+                parent_reach:       ParentReach::ReachesParent,
+                spelling:           ParentFacadeSpelling::Crate,
+                spelling_agreement: FacadeSpellingAgreement::Consistent,
             },
             parent_path:         "src/lib.rs".into(),
             parent_rel_path:     "src/lib.rs".into(),

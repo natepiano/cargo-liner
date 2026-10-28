@@ -72,6 +72,7 @@ use super::growth::TileGrowth;
 use super::settings::CellRowDemand;
 use super::settings::SummaryRowAllocation;
 use super::settings::TileSettings;
+use super::settings::TileWidthFloor;
 use crate::CycleDirection;
 use crate::PaneAxisSize;
 use crate::PaneFrame;
@@ -1332,9 +1333,14 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         }
     }
 
-    /// Sets the narrowest width a tile may occupy, including its frame.
+    /// Sets the core width, including its frame. The floor is required by default.
     pub fn set_min_tile_width(&mut self, width: u16) {
         self.settings.min_tile_width = width.max(super::constants::MIN_TILE_WIDTH);
+    }
+
+    /// Sets whether a terminal below the core width keeps a compressed column.
+    pub const fn set_tile_width_floor(&mut self, floor: TileWidthFloor) {
+        self.settings.tile_width_floor = floor;
     }
 
     /// Sets the rule that chooses command cells or the summary alone.
@@ -1915,13 +1921,20 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         if !self.growth.widen_summary {
             return 1;
         }
-        summary_span(
+        match column_layout(
+            self.count(),
+            self.depth,
+            self.growth,
             self.area,
-            column_layout(self.count(), self.depth, self.growth)
-                .widths
-                .len(),
-            self.demands.summary_width,
-        )
+            &self.settings,
+        ) {
+            ColumnPlan::Columns(layout) => summary_span(
+                self.area,
+                layout.columns.widths.len(),
+                self.demands.summary_width,
+            ),
+            ColumnPlan::InsufficientWidth | ColumnPlan::InsufficientRows => 1,
+        }
     }
 
     /// Cells the grid holds, the summary included.
@@ -1939,10 +1952,23 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         growth: TileGrowth,
     ) -> Vec<(TileContent<Id>, u16)> {
         let held = self.demand_measurement_held();
+        let ColumnPlan::Columns(layout) = column_layout(
+            self.count(),
+            held.summary_depth,
+            growth,
+            area,
+            &self.settings,
+        ) else {
+            return vec![(TileContent::Summary, frame_inner(area).width)];
+        };
+        let ColumnPlan::Columns(layout) = layout.for_summary(area, &held, &self.settings) else {
+            return vec![(TileContent::Summary, frame_inner(area).width)];
+        };
         let ColumnLayout {
             widths: column_heights,
             summary_depth: depth,
-        } = column_layout(self.count(), held.summary_depth, growth);
+            ..
+        } = layout.columns;
         let opened: Vec<Rect> =
             Layout::horizontal(constraints_for_sizes(&fills(column_heights.len())))
                 .split(area)
@@ -2238,16 +2264,29 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     fn admitted(&self, arrangement: &[Slot<Id>], live: Vec<Id>, growth: TileGrowth) -> Vec<Id> {
         let mut spare = arrangement
             .iter()
-            .filter(|slot| matches!(**slot, Slot::Empty(_)))
+            .filter(|slot| matches!(slot, Slot::Empty(_)))
             .count();
-        let mut count = arrangement.len();
+        let mut count = spare;
+        let mut retained = Vec::new();
+        let all_fit = self.fits(arrangement.len() + TABLE_CELL, growth);
+        for slot in arrangement {
+            if let Slot::Group(id) = slot
+                && (all_fit || self.fits(count + TABLE_CELL + 1, growth))
+            {
+                retained.push(id);
+                count += 1;
+            }
+        }
         live.into_iter()
             .filter(|id| {
+                if retained.contains(&id) {
+                    return true;
+                }
                 if arrangement
                     .iter()
                     .any(|slot| matches!(slot, Slot::Group(held) if held == id))
                 {
-                    return true;
+                    return false;
                 }
                 if spare > 0 {
                     spare -= 1;
@@ -2468,13 +2507,21 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         }
         moves.retain(|(slots, depth, _)| {
             queued_cells_keep_endpoint_columns(
-                &start_slots,
-                headed,
-                &final_slots,
-                wanted,
-                slots,
-                *depth,
+                &QueuedArrangement {
+                    slots:         &start_slots,
+                    summary_depth: headed,
+                },
+                &QueuedArrangement {
+                    slots:         &final_slots,
+                    summary_depth: wanted,
+                },
+                &QueuedArrangement {
+                    slots,
+                    summary_depth: *depth,
+                },
                 self.growth,
+                self.area,
+                &self.settings,
             )
         });
         self.queue_steps(moves);
@@ -2993,17 +3040,51 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// Whether every cell of a `count`-cell grid would be big enough to
     /// draw in the rect the last frame used.
     fn fits(&self, count: usize, growth: TileGrowth) -> bool {
-        fits(self.area, count, growth, &self.settings)
+        if !fits(self.area, count, growth, &self.settings) {
+            return false;
+        }
+        if self.settings.summary_row_allocation == SummaryRowAllocation::Shared {
+            return true;
+        }
+        let ColumnPlan::Columns(plan) = column_layout(count, 1, growth, self.area, &self.settings)
+        else {
+            return false;
+        };
+        let mut rows = vec![self.settings.demanded_rows(0); count];
+        rows[0] = self.settings.demanded_rows(self.demands.summary);
+        let held = HeldCellLayout {
+            rows,
+            focused: FocusLocation::Departing,
+            summary_span: if growth.widen_summary {
+                summary_span(
+                    self.area,
+                    plan.columns.widths.len(),
+                    self.demands.summary_width,
+                )
+            } else {
+                1
+            },
+            summary_depth: 1,
+        };
+        matches!(
+            plan.for_summary(self.area, &held, &self.settings),
+            ColumnPlan::Columns(_)
+        )
     }
 
     /// Whether every arrangement that may still be drawn fits in `area`.
     pub(super) fn holds_in(&self, area: Rect, growth: TileGrowth) -> bool {
         let arrangement_fits = |slots: &[Slot<Id>], depth: usize| {
-            let positions = slots
-                .len()
-                .saturating_add(TABLE_CELL)
-                .saturating_add(depth.saturating_sub(1));
-            fits(area, positions, growth, &self.settings)
+            matches!(
+                column_layout(
+                    slots.len() + TABLE_CELL,
+                    depth,
+                    growth,
+                    area,
+                    &self.settings
+                ),
+                ColumnPlan::Columns(_)
+            )
         };
         arrangement_fits(&self.slots, self.depth)
             && match &self.motion {
@@ -3498,37 +3579,193 @@ impl RowProbeLayout<'_> {
             height: rows,
         };
         if self.first_cell.saturating_add(row) == TABLE_CELL {
-            let reached = reach(
-                self.opened,
-                self.widths,
-                cell,
-                self.summary_span,
-                self.settings,
-            );
+            let reached = match self.settings.summary_row_allocation {
+                SummaryRowAllocation::Shared => reach(
+                    self.opened,
+                    self.widths,
+                    cell,
+                    self.summary_span,
+                    self.settings,
+                ),
+                SummaryRowAllocation::BeforeTiles => self.summary_span,
+            };
             cell = widened(cell, self.opened.get(reached.saturating_sub(1)).copied());
         }
         draw::content_area(frame_inner(share_borders(cell, self.area)))
     }
 }
 
-/// Columns and summary depth that account for exactly the logical cells.
+/// A checked arrangement, or the floor that prevents it from being drawn.
+enum ColumnPlan {
+    Columns(RowAdmissibleColumnLayout),
+    InsufficientWidth,
+    InsufficientRows,
+}
+
+/// A proposed distribution of logical positions, before its row budget is checked.
 struct ColumnLayout {
     widths:        Vec<usize>,
     summary_depth: usize,
+    summary_span:  usize,
 }
 
-/// Use the deepest held summary that still fits in column zero.
-fn column_layout(count: usize, held_depth: usize, growth: TileGrowth) -> ColumnLayout {
-    let mut depth = held_depth.max(1);
-    loop {
-        let widths = columns(count + depth - 1, growth);
-        if depth == 1 || widths.first().is_some_and(|&height| depth <= height) {
+/// Every physical column can hold its residents at the configured height floor.
+struct RowAdmissibleColumnLayout {
+    columns: ColumnLayout,
+}
+
+impl ColumnLayout {
+    /// Count the summary once, however many logical positions it occupies.
+    fn residents(&self, column: usize) -> usize {
+        if column == 0 {
+            self.widths[0] - self.summary_depth + 1
+        } else {
+            self.widths[column]
+        }
+    }
+
+    /// The only boundary that admits a proposed column layout for drawing.
+    fn checked(self, area: Rect, settings: &TileSettings, summary_rows: u16) -> ColumnPlan {
+        let opened =
+            Layout::horizontal(constraints_for_sizes(&fills(self.widths.len()))).split(area);
+        if area.width == 0
+            || opened.iter().any(|&column| {
+                share_borders(column, area).width < settings.min_tile_width
+                    && !(self.widths.len() == 1
+                        && settings.tile_width_floor == TileWidthFloor::CompressSingleColumn)
+            })
+        {
+            return ColumnPlan::InsufficientWidth;
+        }
+        let gap = usize::from(settings.min_tile_height - 1);
+        for column in 0..self.widths.len() {
+            let residents = self.residents(column);
+            let (height, reservation, mates) = if column == 0 {
+                // Keep held growth positions and any larger content reservation.
+                // The last piece owns its closing row; other pieces share it.
+                let content_gap = summary_rows.saturating_sub(u16::from(residents == 1));
+                (
+                    area.height,
+                    usize::from(content_gap).max(self.summary_depth * gap),
+                    residents - 1,
+                )
+            } else {
+                let height = if column < self.summary_span {
+                    area.height.saturating_sub(summary_rows)
+                } else {
+                    area.height
+                };
+                (height, 0, residents)
+            };
+            let available = usize::from(height.saturating_sub(1));
+            if height == 0 || reservation > available || mates > (available - reservation) / gap {
+                return ColumnPlan::InsufficientRows;
+            }
+        }
+        ColumnPlan::Columns(RowAdmissibleColumnLayout { columns: self })
+    }
+}
+
+/// Use the deepest held summary whose physical residents fit the viewport.
+fn column_layout(
+    count: usize,
+    held_depth: usize,
+    growth: TileGrowth,
+    area: Rect,
+    settings: &TileSettings,
+) -> ColumnPlan {
+    for depth in (1..=held_depth.max(1)).rev() {
+        let positions = count.saturating_add(depth - 1);
+        let natural = columns(positions, growth);
+        if depth > 1 && natural.first().is_none_or(|&height| depth > height) {
+            continue;
+        }
+        let Some(opened) = (1..=natural.len()).rev().find(|&candidate| {
+            let columns = Layout::horizontal(constraints_for_sizes(&fills(candidate))).split(area);
+            columns
+                .iter()
+                .all(|&column| share_borders(column, area).width >= settings.min_tile_width)
+                || (candidate == 1
+                    && area.width > 0
+                    && settings.tile_width_floor == TileWidthFloor::CompressSingleColumn)
+        }) else {
+            return ColumnPlan::InsufficientWidth;
+        };
+        let widths = if opened == natural.len() {
+            natural
+        } else {
+            let low = positions / opened;
+            let extra = positions % opened;
+            (0..opened)
+                .map(|column| low + usize::from(column < extra))
+                .collect()
+        };
+        if depth > widths[0] {
+            continue;
+        }
+        return ColumnLayout {
+            widths,
+            summary_depth: depth,
+            summary_span: 1,
+        }
+        .checked(area, settings, 0);
+    }
+    ColumnPlan::InsufficientRows
+}
+
+impl RowAdmissibleColumnLayout {
+    /// Recheck each redistributed candidate, including bands below the summary.
+    fn for_summary(self, area: Rect, held: &HeldCellLayout, settings: &TileSettings) -> ColumnPlan {
+        let columns = self.columns;
+        let initial_columns = columns.widths.len();
+        if settings.summary_row_allocation != SummaryRowAllocation::BeforeTiles {
             return ColumnLayout {
+                summary_span: held.summary_span.min(initial_columns).max(1),
+                ..columns
+            }
+            .checked(area, settings, 0);
+        }
+        let positions = columns.widths.iter().sum::<usize>();
+        for count in (1..=initial_columns).rev() {
+            let widths = if count == initial_columns {
+                columns.widths.clone()
+            } else {
+                let low = positions / count;
+                let extra = positions % count;
+                (0..count)
+                    .map(|column| low + usize::from(column < extra))
+                    .collect()
+            };
+            let depth = columns.summary_depth.min(widths[0]);
+            let candidate = ColumnLayout {
                 widths,
                 summary_depth: depth,
+                summary_span: held
+                    .summary_span
+                    .saturating_mul(count)
+                    .div_ceil(initial_columns)
+                    .max(1),
             };
+            let wants = &held.rows[..candidate.residents(0).min(held.rows.len())];
+            let shared = shares(
+                wants,
+                area.height,
+                ColumnHead::Summary(depth),
+                ColumnFocus::Outside,
+                settings.min_tile_height,
+            );
+            let reserved =
+                summary_before_tiles(wants, area.height, settings.min_tile_height, shared);
+            let summary_rows = reserved.first().map_or(0, |size| match size {
+                PaneAxisSize::Fixed(rows) => *rows,
+                PaneAxisSize::Fill(_) => 0,
+            });
+            let plan = candidate.checked(area, settings, summary_rows);
+            if matches!(plan, ColumnPlan::Columns(_)) {
+                return plan;
+            }
         }
-        depth -= 1;
+        ColumnPlan::InsufficientRows
     }
 }
 
@@ -3629,10 +3866,19 @@ impl Grid {
         mut readings: GridRowReadings<'_>,
     ) -> Self {
         let count = held.rows.len();
+        let ColumnPlan::Columns(layout) =
+            column_layout(count, held.summary_depth, growth, area, settings)
+        else {
+            return Self::summary_only(area, settings);
+        };
+        let ColumnPlan::Columns(layout) = layout.for_summary(area, held, settings) else {
+            return Self::summary_only(area, settings);
+        };
         let ColumnLayout {
             widths,
             summary_depth: depth,
-        } = column_layout(count, held.summary_depth, growth);
+            summary_span: planned_span,
+        } = layout.columns;
         let opened: Vec<Rect> = Layout::horizontal(constraints_for_sizes(&fills(widths.len())))
             .split(area)
             .to_vec();
@@ -3670,7 +3916,7 @@ impl Grid {
                 cells: wants.len(),
                 opened: &opened,
                 widths: &widths,
-                summary_span: held.summary_span,
+                summary_span: planned_span,
                 settings,
             };
             let shares = readings.column_shares(wants, &probe, column_head, focused);
@@ -3681,7 +3927,7 @@ impl Grid {
             {
                 let index = first_cell + row;
                 let cell = if index == TABLE_CELL {
-                    span = reach(&opened, &widths, cell, held.summary_span, settings);
+                    span = reach(&opened, &widths, cell, planned_span, settings);
                     for (band, column) in bands.iter_mut().zip(&opened).take(span).skip(1) {
                         *band = below(*column, cell);
                     }
@@ -3705,6 +3951,22 @@ impl Grid {
                 .map(|&column| share_borders(column, area))
                 .collect(),
             span,
+            min_tile_height: settings.min_tile_height,
+        }
+    }
+
+    /// No column arrangement meets the configured floors in this area.
+    fn summary_only(area: Rect, settings: &TileSettings) -> Self {
+        Self {
+            area,
+            widths: vec![1],
+            depth: 1,
+            resolved: ResolvedPaneLayout::new(vec![ResolvedPane {
+                pane: TABLE_CELL,
+                area,
+            }]),
+            columns: Vec::new(),
+            span: 1,
             min_tile_height: settings.min_tile_height,
         }
     }
@@ -4476,15 +4738,10 @@ fn donation_row_limit(
 
 /// Whether the positions of a grid retain a readable minimum size.
 fn fits(area: Rect, count: usize, growth: TileGrowth, settings: &TileSettings) -> bool {
-    let widths = columns(count, growth);
-    let (Ok(opened), Some(&tallest)) = (u16::try_from(widths.len()), widths.iter().max()) else {
-        return false;
-    };
-    let Ok(tallest) = u16::try_from(tallest) else {
-        return false;
-    };
-    area.width >= shared_run(opened, settings.min_tile_width)
-        && area.height >= shared_run(tallest, settings.min_tile_height)
+    matches!(
+        column_layout(count, 1, growth, area, settings),
+        ColumnPlan::Columns(_)
+    )
 }
 
 /// Rows the first column allocates to a summary of `depth` positions.
@@ -4494,15 +4751,18 @@ fn summary_share(
     depth: usize,
     growth: TileGrowth,
     floor: u16,
+    area: Rect,
+    settings: &TileSettings,
 ) -> u16 {
-    let Some(&positions) = columns(wants.len() + depth - 1, growth).first() else {
+    let ColumnPlan::Columns(plan) = column_layout(wants.len(), depth, growth, area, settings)
+    else {
         return 0;
     };
-    let pieces = positions.saturating_sub(depth).saturating_add(1);
+    let pieces = plan.columns.residents(0);
     let shares = shares(
         &wants[..pieces.min(wants.len())],
         height,
-        ColumnHead::Summary(depth),
+        ColumnHead::Summary(plan.columns.summary_depth),
         ColumnFocus::Outside,
         floor,
     );
@@ -4536,14 +4796,18 @@ fn summary_depth(
             depth,
             growth,
             settings.min_tile_height,
+            area,
+            settings,
         ) >= asked
         {
             return depth;
         }
         let next = depth + 1;
-        if next > columns(wants.len() + next - 1, growth)[0]
-            || !fits(area, wants.len() + next - 1, growth, settings)
-        {
+        let ColumnPlan::Columns(plan) = column_layout(wants.len(), next, growth, area, settings)
+        else {
+            return depth;
+        };
+        if next > plan.columns.summary_depth {
             return depth;
         }
         depth = next;
@@ -5856,34 +6120,67 @@ fn queued_slot_column<Id: Eq>(
     depth: usize,
     slot: &Slot<Id>,
     growth: TileGrowth,
+    area: Rect,
+    settings: &TileSettings,
 ) -> Option<usize> {
     let cell = slots
         .iter()
         .position(|held| held == slot)?
         .saturating_add(TABLE_CELL + 1);
-    let layout = column_layout(slots.len() + TABLE_CELL, depth, growth);
-    let laid_out = cell.saturating_add(layout.summary_depth.saturating_sub(1));
-    position(&layout.widths, laid_out).map(|(column, _)| column)
+    let ColumnPlan::Columns(layout) =
+        column_layout(slots.len() + TABLE_CELL, depth, growth, area, settings)
+    else {
+        return None;
+    };
+    let laid_out = cell.saturating_add(layout.columns.summary_depth.saturating_sub(1));
+    position(&layout.columns.widths, laid_out).map(|(column, _)| column)
+}
+
+/// Cell order and summary depth at one step of a queued movement.
+struct QueuedArrangement<'a, Id> {
+    slots:         &'a [Slot<Id>],
+    summary_depth: usize,
 }
 
 /// Whether every surviving cell uses one of its two endpoint columns.
 fn queued_cells_keep_endpoint_columns<Id: Eq>(
-    start_slots: &[Slot<Id>],
-    start_depth: usize,
-    final_slots: &[Slot<Id>],
-    final_depth: usize,
-    candidate_slots: &[Slot<Id>],
-    candidate_depth: usize,
+    start: &QueuedArrangement<'_, Id>,
+    finish: &QueuedArrangement<'_, Id>,
+    candidate: &QueuedArrangement<'_, Id>,
     growth: TileGrowth,
+    area: Rect,
+    settings: &TileSettings,
 ) -> bool {
-    start_slots
+    start
+        .slots
         .iter()
-        .filter(|slot| final_slots.contains(slot) && candidate_slots.contains(slot))
+        .filter(|slot| finish.slots.contains(slot) && candidate.slots.contains(slot))
         .all(|slot| {
-            let start = queued_slot_column(start_slots, start_depth, slot, growth);
-            let finish = queued_slot_column(final_slots, final_depth, slot, growth);
-            let candidate = queued_slot_column(candidate_slots, candidate_depth, slot, growth);
-            candidate == start || candidate == finish
+            let start_column = queued_slot_column(
+                start.slots,
+                start.summary_depth,
+                slot,
+                growth,
+                area,
+                settings,
+            );
+            let final_column = queued_slot_column(
+                finish.slots,
+                finish.summary_depth,
+                slot,
+                growth,
+                area,
+                settings,
+            );
+            let candidate_column = queued_slot_column(
+                candidate.slots,
+                candidate.summary_depth,
+                slot,
+                growth,
+                area,
+                settings,
+            );
+            candidate_column == start_column || candidate_column == final_column
         })
 }
 
@@ -6668,14 +6965,28 @@ mod tests {
             assert!(
                 !fits(
                     Rect {
-                        width: width - 1,
+                        // No core-width column fits, even after reducing the column count.
+                        width: TEST_TILE_WIDTH - 1,
                         ..area
                     },
                     count,
                     growth,
                     &settings,
                 ),
-                "{count} below {width}"
+                "{count} below the column floor"
+            );
+            let layout = match column_layout(count, 1, growth, area, &settings) {
+                ColumnPlan::Columns(layout) => Some(layout),
+                ColumnPlan::InsufficientWidth | ColumnPlan::InsufficientRows => None,
+            }
+            .expect("the positive threshold admits columns");
+            let opened =
+                Layout::horizontal(constraints_for_sizes(&fills(layout.columns.widths.len())))
+                    .split(area);
+            assert!(
+                opened
+                    .iter()
+                    .all(|&column| share_borders(column, area).width >= TEST_TILE_WIDTH)
             );
         }
     }
@@ -6740,6 +7051,105 @@ mod tests {
                 "cell {cell} is under the floor: {rect:?}"
             );
         }
+    }
+
+    #[test]
+    fn width_limited_columns_keep_the_exact_resident_capacity() {
+        let area = Rect::new(0, 0, 80, 47);
+        let settings = TileSettings {
+            min_tile_width: 40,
+            min_tile_height: 6,
+            ..TileSettings::default()
+        };
+        assert!(fits(area, 18, redistribute(4), &settings));
+        assert!(!fits(area, 19, redistribute(4), &settings));
+        assert!(!fits(
+            Rect::new(0, 0, 40, u16::MAX),
+            2,
+            redistribute(4),
+            &TileSettings {
+                min_tile_height: u16::MAX,
+                ..settings
+            }
+        ));
+    }
+
+    #[test]
+    fn summary_redistribution_checks_the_remaining_resident_band() {
+        let settings = TileSettings {
+            min_tile_width: 40,
+            min_tile_height: 6,
+            summary_row_allocation: SummaryRowAllocation::BeforeTiles,
+            ..TileSettings::default()
+        };
+        let held = HeldCellLayout {
+            rows: row_demands(&[40; 16]),
+            summary_span: 2,
+            ..even(16)
+        };
+        for (height, fits_summary) in [(47, false), (83, true)] {
+            let area = Rect::new(0, 0, 80, height);
+            let plan = match column_layout(16, 1, redistribute(4), area, &settings) {
+                ColumnPlan::Columns(plan) => plan.for_summary(area, &held, &settings),
+                unavailable => unavailable,
+            };
+            assert_eq!(matches!(plan, ColumnPlan::Columns(_)), fits_summary);
+            if fits_summary {
+                let grid = Grid::new(area, &held, redistribute(4), &settings);
+                assert_eq!(grid.span, 2);
+                assert_eq!(grid.resolved.panes.len(), 16);
+                assert!(grid.resolved.panes.iter().all(|pane| pane.area.height >= 6));
+            }
+        }
+    }
+
+    #[test]
+    fn width_limited_admission_keeps_resident_motion_within_the_band_budget() {
+        let area = Rect::new(0, 0, 80, 47);
+        let growth = TileGrowth {
+            initial_rows:  4,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let mut grid = TileGrid::<u32>::new();
+        grid.set_min_tile_width(40);
+        grid.set_min_tile_height(6);
+        grid.set_layout(area, growth);
+        let mut demands = TileDemands {
+            summary:       0,
+            summary_width: 0,
+            groups:        (1..=19).map(|id| TileDemand { id, rows: 1 }).collect(),
+        };
+        grid.sync(&demands, growth);
+        grid.settle_for_test();
+        demands.groups[0].rows = 12;
+        grid.sync(&demands, growth);
+        let progress = PROGRESS_SCALE / 2;
+        grid.measure_row_steps(
+            area,
+            growth,
+            progress,
+            |_, content| content.height,
+            |_, content| content.height,
+        );
+        let drawing = grid.drawing_at_with_height_snap(area, growth, progress, &HeightSnap::Off);
+        assert!(!drawing.pieces.is_empty());
+        for piece in &drawing.pieces {
+            let frame = piece.placement.frame.clip();
+            assert!(
+                frame.height >= 6,
+                "a resident must keep its framed floor: {frame:?}"
+            );
+            assert!(
+                frame.top() >= area.top() && frame.bottom() <= area.bottom(),
+                "a resident must stay within its band: {frame:?}"
+            );
+        }
+        assert!(
+            grid.slots.len() + TABLE_CELL <= 18,
+            "two 47-row columns admit at most nine six-row residents each"
+        );
+        assert_eq!(grid.demands.groups.len(), 19);
     }
 
     #[test]
@@ -6872,15 +7282,10 @@ mod tests {
         let growth = redistribute(1);
         let mut grid = TileGrid::<u32>::new();
         grid.set_min_tile_width(TEST_TILE_WIDTH);
-        grid.slots = vec![
-            Slot::Empty(0),
-            Slot::Empty(1),
-            Slot::Empty(2),
-            Slot::Empty(3),
-            Slot::Empty(4),
-        ];
+        grid.slots = vec![Slot::Empty(0), Slot::Empty(1), Slot::Empty(2)];
         grid.depth = 2;
-        let area = Rect::new(0, 0, 79, u16::MAX);
+        // Two columns hold two floor-height cells each, but not the extra summary position.
+        let area = Rect::new(0, 0, 80, 5);
 
         assert!(fits(area, grid.count(), growth, &grid.settings));
         assert!(!grid.holds_in(area, growth));
@@ -8121,7 +8526,8 @@ mod tests {
     fn placements_are_the_summary_alone_while_the_cells_are_hidden() {
         let growth = redistribute(4);
         let wide_area = Rect::new(0, 0, 200, TEST_HEIGHT);
-        let narrow_area = Rect::new(0, 0, 100, TEST_HEIGHT);
+        // No core-width tile fits, so only the summary can be placed.
+        let narrow_area = Rect::new(0, 0, TEST_TILE_WIDTH - 1, TEST_HEIGHT);
         let mut grid = TileGrid::new();
         grid.set_min_tile_width(TEST_TILE_WIDTH);
         grid.set_layout(wide_area, growth);
@@ -8427,13 +8833,21 @@ mod tests {
             {
                 assert!(
                     queued_cells_keep_endpoint_columns(
-                        &start,
-                        start_depth,
-                        &finish,
-                        final_depth,
-                        slots,
-                        depth,
+                        &QueuedArrangement {
+                            slots:         &start,
+                            summary_depth: start_depth,
+                        },
+                        &QueuedArrangement {
+                            slots:         &finish,
+                            summary_depth: final_depth,
+                        },
+                        &QueuedArrangement {
+                            slots,
+                            summary_depth: depth
+                        },
                         growth,
+                        area,
+                        &grid.settings,
                     ),
                     "{before:?}@{start_depth} -> {after:?}@{final_depth} queued {slots:?}@{depth}"
                 );
@@ -11561,7 +11975,15 @@ mod tests {
                     depth
                 );
                 assert_eq!(
-                    summary_share(&wants, TEST_HEIGHT, depth, redistribute(4), MIN_TILE_HEIGHT),
+                    summary_share(
+                        &wants,
+                        TEST_HEIGHT,
+                        depth,
+                        redistribute(4),
+                        MIN_TILE_HEIGHT,
+                        test_area(),
+                        &TileSettings::default()
+                    ),
                     rows
                 );
             }
@@ -11715,8 +12137,15 @@ mod tests {
             assert!(!fits(area, 3, growth, &settings));
             assert_eq!(summary_depth(area, &wants, growth, &settings), 1);
             assert!(
-                summary_share(&wants, area.height, 1, growth, MIN_TILE_HEIGHT)
-                    < wants[0].stepped_framed()
+                summary_share(
+                    &wants,
+                    area.height,
+                    1,
+                    growth,
+                    MIN_TILE_HEIGHT,
+                    area,
+                    &TileSettings::default()
+                ) < wants[0].stepped_framed()
             );
         }
 
@@ -11958,10 +12387,20 @@ mod tests {
             capped.settle_for_test();
             assert_eq!(capped.depth, 7);
             capped.set_layout(test_area(), growth);
-            let resolved = column_layout(capped.count(), capped.depth, growth);
-            assert_eq!(resolved.widths.len(), 1);
-            assert!(resolved.summary_depth < capped.depth);
-            assert_eq!(capped.wanted_span(), resolved.widths.len());
+            let resolved = match column_layout(
+                capped.count(),
+                capped.depth,
+                growth,
+                capped.area,
+                &capped.settings,
+            ) {
+                ColumnPlan::Columns(layout) => Some(layout),
+                ColumnPlan::InsufficientWidth | ColumnPlan::InsufficientRows => None,
+            }
+            .expect("the test area admits columns");
+            assert_eq!(resolved.columns.widths.len(), 1);
+            assert!(resolved.columns.summary_depth < capped.depth);
+            assert_eq!(capped.wanted_span(), resolved.columns.widths.len());
         }
     }
 }

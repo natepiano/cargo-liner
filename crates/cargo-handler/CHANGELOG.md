@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Select rows with Up, Down, PageUp, PageDown, Home and End, click a row, or scroll the tile under the pointer. Selection follows sessions and worker seats as their work changes. Role and status widths follow the painted rows while age units remain aligned through scrolling.
 
 ### Changed
+- Narrow terminals show fewer agent tiles in a row so each keeps its session, role and status whole; cut text ends with “…” and uses complete graphemes.
 - Accounts headings and column headers stay in view while account rows scroll; the summary receives its measured rows before agent tiles.
 - The accounts table drops optional columns before it wraps, keeps account and error lines in view, and marks cut summary titles with “…”.
 - Reset shades follow time order: the soonest reset takes the nearest shade. On dark themes the shades go from yellow-green (soonest) to sea green (latest). On light themes a brighter violet means a sooner reset.
