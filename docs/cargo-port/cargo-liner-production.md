@@ -4,12 +4,13 @@
 
 ## Production Context
 
+- **Formerly:** `remove-running-section`
 - **Source plans:** one plan, which the showrunner wrote on 2026-10-06 from the user's request, with no producer split. It shipped, and the as-built doc `docs/cargo-port/as-built/targets-pane.md` replaced it. The cargo-tile unit ran a plan it wrote in its worktree. All three phases shipped, and the as-built doc `docs/cargo-tile/as-built/summary-depth.md` replaced it.
 - **Repository:** `/home/natepiano/rust/cargo-liner`
 - **Merge branch:** `main`. The unit merges here, and only the showrunner pushes it.
 - **Showrunner checkout:** `/home/natepiano/rust/cargo-liner`
 - **Showrunner session:** cargo-liner
-- **Log:** `docs/cargo-port/remove-running-section-log.md`. It is git-excluded and holds one line per event.
+- **Log:** `docs/cargo-port/cargo-liner-log.md`. It is git-excluded and holds one line per event.
 - **Change review:** `~/rust/hanadocs/change-review/change-review - cargo-liner.md`
 - **Proposals:** `~/rust/hanadocs/issues`
 - **Review pool:** code
