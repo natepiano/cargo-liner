@@ -4915,8 +4915,8 @@ fn assert_batched_full_attribution_commands(commands: &[String]) {
             .iter()
             .filter(|command| command.as_str() == "rev-list")
             .count(),
-        1,
-        "full observation spends one batched phase-range ancestry walk",
+        0,
+        "ordinary phase-range ancestry is read in process",
     );
     assert!(!commands.iter().any(|command| command == "metadata"));
 }

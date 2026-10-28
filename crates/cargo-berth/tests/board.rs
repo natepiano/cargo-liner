@@ -63,13 +63,6 @@ const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     build:            build_initialized_repository,
 };
 
-/// The empty-ledger main checkout shared by the integration-target scenarios.
-const INTEGRATION_MAIN: RepositoryTemplate = RepositoryTemplate {
-    name: "integration-main",
-    build: build_integration_main,
-    ..INITIALIZED_REPOSITORY
-};
-
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -101,7 +94,7 @@ const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
 
 #[test]
 fn engine_cover_has_a_cover_source_and_targets_main() {
-    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repo.lane("board-cover-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -121,7 +114,7 @@ fn engine_cover_has_a_cover_source_and_targets_main() {
 
 #[test]
 fn target_without_a_registered_checkout_alerts_and_keeps_merged_lane_outstanding() {
-    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repo.lane("uncovered-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -188,7 +181,7 @@ fn target_without_a_registered_checkout_alerts_and_keeps_merged_lane_outstanding
 
 #[test]
 fn deleted_target_uses_main_without_an_uncovered_alert() {
-    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repo.lane("deleted-target-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -229,7 +222,7 @@ fn deleted_target_uses_main_without_an_uncovered_alert() {
 
 #[test]
 fn an_existing_reservation_covers_only_when_it_targets_the_integration_parent() {
-    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     repo.git(repo.root(), &["branch", "other-target", "main"]);
     let baseline = repo.capture();
     for unrelated_target in [false, true] {
@@ -318,7 +311,7 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 
 #[test]
 fn targets_include_the_repository_trunk_and_only_non_released_reservations() {
-    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let a = repo.lane("board-target-a", "integration");
     let b = repo.lane("board-target-b", "integration");
     let main_claim = repo.claim(repo.root(), "file:main.txt", FIRST_RUN, None);
@@ -437,7 +430,7 @@ fn f003_board_json_schema_requires_a_non_nullable_row_target() {
 
 #[test]
 fn board_target_evidence_extents_lifecycle_and_alerts_do_not_depend_on_invoker() {
-    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let a = repo.lane("invoker-a", "integration");
     let _ = repo.lane("invoker-b", "integration");
     let claimed = repo.claim(&a, "file:invoker.txt", FIRST_RUN, None);
@@ -3462,7 +3455,7 @@ fn board_git_cost_separates_each_scaling_dimension() {
             .lines()
             .filter(|line| *line == "cat-file --batch-check=%(objectname) %(objecttype)")
             .count(),
-        1
+        0
     );
     assert_eq!(
         trace
@@ -5667,8 +5660,8 @@ fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservati
             );
 
             let expected_argv_total = match target_rewrite {
-                TargetRewrite::Equivalent => 7,
-                TargetRewrite::Different => 6,
+                TargetRewrite::Equivalent => 6,
+                TargetRewrite::Different => 5,
             };
             assert_eq!(historical_candidate_queries(&one_trace), 1);
             assert_eq!(historical_candidate_queries(&two_trace), 1);
@@ -6219,7 +6212,7 @@ fn assert_batched_evidence_and_retention_queries(trace: &str) {
             .lines()
             .filter(|line| line.starts_with("cat-file --batch-check"))
             .count(),
-        1
+        0
     );
     assert_eq!(
         trace
@@ -7817,10 +7810,6 @@ fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
 }
 
 fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
-
-fn build_integration_main(root: &Path) {
-    IntegrationRepository::build_main_template(root, BERTH_EXECUTABLE);
-}
 
 fn build_initialized_repository(repository_root: &Path) {
     git(
