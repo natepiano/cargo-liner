@@ -22,6 +22,7 @@ use anyhow::bail;
 use serde_json::to_string;
 
 use super::progress::CargoProgress;
+use super::progress::ProgressActivity;
 use super::progress::ProgressDisplay;
 use super::source_transaction::CompilerFixTransaction;
 use super::stderr;
@@ -96,6 +97,20 @@ struct CommandOutcome {
 enum CargoFixFeatures {
     All,
     Plan,
+}
+
+/// An absent, unreadable or mismatched alias must be replaced before reuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WrapperAliasResolution {
+    Current,
+    NeedsReplacement,
+}
+
+/// Explicit feature flags preserve the user's selection during the fix pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FeatureSelection {
+    Explicit,
+    Automatic,
 }
 
 pub(crate) struct SelectionResult {
@@ -235,7 +250,7 @@ fn wrapper_alias(target_directory: &Path, current_exe: &Path) -> Option<PathBuf>
         .join(settings::current_analysis_fingerprint());
     fs::create_dir_all(&alias_dir).ok()?;
     let alias = alias_dir.join(current_exe.file_name()?);
-    if alias_points_at(&alias, current_exe) {
+    if wrapper_alias_resolution(&alias, current_exe) == WrapperAliasResolution::Current {
         return Some(alias);
     }
     replace_wrapper_alias(current_exe, &alias).ok()?;
@@ -243,11 +258,15 @@ fn wrapper_alias(target_directory: &Path, current_exe: &Path) -> Option<PathBuf>
 }
 
 /// Whether `alias` already resolves to `current_exe`, making a rewrite needless.
-fn alias_points_at(alias: &Path, current_exe: &Path) -> bool {
+fn wrapper_alias_resolution(alias: &Path, current_exe: &Path) -> WrapperAliasResolution {
     let Ok(resolved) = fs::canonicalize(alias) else {
-        return false;
+        return WrapperAliasResolution::NeedsReplacement;
     };
-    fs::canonicalize(current_exe).is_ok_and(|target| resolved == target)
+    if fs::canonicalize(current_exe).is_ok_and(|target| resolved == target) {
+        WrapperAliasResolution::Current
+    } else {
+        WrapperAliasResolution::NeedsReplacement
+    }
 }
 
 /// Points `alias` at `current_exe` without ever leaving the alias path absent.
@@ -407,12 +426,15 @@ fn cargo_fix_features_for(
     cargo_args: &[OsString],
     all_features_coverage: AllFeaturesCoverage,
 ) -> CargoFixFeatures {
-    match (
-        has_explicit_feature_selection(cargo_args),
-        all_features_coverage,
-    ) {
-        (false, AllFeaturesCoverage::Superset) => CargoFixFeatures::All,
-        (true, _) | (false, AllFeaturesCoverage::NotGuaranteed) => CargoFixFeatures::Plan,
+    match (feature_selection(cargo_args), all_features_coverage) {
+        (FeatureSelection::Automatic, AllFeaturesCoverage::Superset) => CargoFixFeatures::All,
+        (
+            FeatureSelection::Explicit,
+            AllFeaturesCoverage::Superset | AllFeaturesCoverage::NotGuaranteed,
+        )
+        | (FeatureSelection::Automatic, AllFeaturesCoverage::NotGuaranteed) => {
+            CargoFixFeatures::Plan
+        },
     }
 }
 
@@ -474,8 +496,8 @@ fn run_cargo_fix_command(
         .context("failed to run cargo fix")
 }
 
-fn has_explicit_feature_selection(cargo_args: &[OsString]) -> bool {
-    cargo_args.iter().any(|arg| {
+fn feature_selection(cargo_args: &[OsString]) -> FeatureSelection {
+    if cargo_args.iter().any(|arg| {
         arg == CARGO_FLAG_ALL_FEATURES
             || arg == CARGO_FLAG_FEATURES
             || arg == CARGO_FLAG_NO_DEFAULT_FEATURES
@@ -483,7 +505,11 @@ fn has_explicit_feature_selection(cargo_args: &[OsString]) -> bool {
                 .to_str()
                 .and_then(|arg| arg.strip_prefix(CARGO_FLAG_FEATURES))
                 .is_some_and(|suffix| suffix.starts_with('='))
-    })
+    }) {
+        FeatureSelection::Explicit
+    } else {
+        FeatureSelection::Automatic
+    }
 }
 
 fn run_cargo_command(
@@ -498,7 +524,7 @@ fn run_cargo_command(
     let progress = CargoProgress::start(output_mode, analyzing_dir);
     // The status line takes its counter from cargo's bar, which cargo draws on
     // a pipe only when asked to and given a width to draw it at.
-    if progress.is_active() {
+    if progress.activity() == ProgressActivity::Active {
         command
             .env(
                 CARGO_TERM_PROGRESS_WHEN_ENV,
@@ -543,12 +569,65 @@ fn run_cargo_command(
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::fs;
 
-    use super::has_explicit_feature_selection;
+    use super::CargoFixFeatures;
+    use super::FeatureSelection;
+    use super::WrapperAliasResolution;
+    use super::cargo_fix_features_for;
+    use super::feature_selection;
+    use super::wrapper_alias_resolution;
     use crate::compiler::constants::CARGO_FLAG_ALL_FEATURES;
     use crate::compiler::constants::CARGO_FLAG_FEATURES;
     use crate::compiler::constants::CARGO_FLAG_MANIFEST_PATH;
     use crate::compiler::constants::CARGO_FLAG_NO_DEFAULT_FEATURES;
+    use crate::reporting::AllFeaturesCoverage;
+
+    #[test]
+    fn alias_resolution_replaces_missing_mismatched_and_unresolvable_paths() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let current = directory.path().join("mend");
+        let stale = directory.path().join("old-mend");
+        let missing = directory.path().join("missing");
+        fs::write(&current, "current")?;
+        fs::write(&stale, "stale")?;
+        assert_eq!(
+            wrapper_alias_resolution(&current, &current),
+            WrapperAliasResolution::Current
+        );
+        for (alias, target) in [
+            (&missing, &current),
+            (&stale, &current),
+            (&current, &missing),
+        ] {
+            assert_eq!(
+                wrapper_alias_resolution(alias, target),
+                WrapperAliasResolution::NeedsReplacement
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_features_and_incomplete_coverage_keep_the_plan() {
+        for coverage in [
+            AllFeaturesCoverage::Superset,
+            AllFeaturesCoverage::NotGuaranteed,
+        ] {
+            assert_eq!(
+                cargo_fix_features_for(&[OsString::from(CARGO_FLAG_ALL_FEATURES)], coverage),
+                CargoFixFeatures::Plan
+            );
+        }
+        assert_eq!(
+            cargo_fix_features_for(&[], AllFeaturesCoverage::Superset),
+            CargoFixFeatures::All
+        );
+        assert_eq!(
+            cargo_fix_features_for(&[], AllFeaturesCoverage::NotGuaranteed),
+            CargoFixFeatures::Plan
+        );
+    }
 
     #[test]
     fn detects_explicit_cargo_feature_selections() {
@@ -562,7 +641,7 @@ mod tests {
             vec![OsString::from(CARGO_FLAG_NO_DEFAULT_FEATURES)],
         ];
         for cargo_args in selections {
-            assert!(has_explicit_feature_selection(&cargo_args));
+            assert_eq!(feature_selection(&cargo_args), FeatureSelection::Explicit);
         }
     }
 
@@ -573,6 +652,6 @@ mod tests {
             OsString::from("Cargo.toml"),
         ];
 
-        assert!(!has_explicit_feature_selection(&cargo_args));
+        assert_eq!(feature_selection(&cargo_args), FeatureSelection::Automatic);
     }
 }
