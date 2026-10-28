@@ -1,11 +1,11 @@
-//! The command line, which opens the grid, or with the hidden `probe`
-//! subcommand prints this machine's agents as JSON for a remote
-//! summary to read.
+//! `Cli::run` calls `terminal::run` to open the grid. With the hidden
+//! `Command::Probe` subcommand, it calls `probe::print` to print this
+//! machine's agents as JSON for a remote summary to read.
 //!
-//! Both spellings reach the same place. `cargo handler` works because
-//! cargo runs any `cargo-`-prefixed binary on the path as a subcommand
-//! of its own, and [`Cli::parse_arguments`] takes the extra word cargo
-//! hands over so that `cargo handler` and `cargo-handler` parse alike.
+//! `cargo handler` and `cargo-handler` both use `Cli::parse_arguments`.
+//! Cargo runs any `cargo-`-prefixed binary on the path as a subcommand.
+//! `Cli::parse_arguments` uses `without_subcommand_name` to remove Cargo's
+//! extra argument, so both forms parse alike.
 
 use std::env;
 use std::ffi::OsStr;
@@ -22,10 +22,10 @@ use crate::constants::PROBE_COMMAND;
 use crate::constants::SUBCOMMAND_NAME;
 use crate::terminal;
 
-/// `cargo-handler`, as the command line sees it.
+/// `Cli` defines the `cargo-handler` command line for clap parsing.
 ///
-/// No options: parsing answers `--help` and `--version`, takes the
-/// hidden `probe` subcommand, and turns away anything else.
+/// It has no options. Clap handles `--help` and `--version`, accepts the
+/// hidden `Command::Probe` subcommand, and rejects anything else.
 #[derive(Debug, Parser)]
 #[command(name = BINARY_NAME, version, about = CLI_ABOUT, long_about = None)]
 pub(crate) struct Cli {
@@ -49,8 +49,8 @@ impl Cli {
         Self::parse_from(without_subcommand_name(env::args_os().collect()))
     }
 
-    /// Do what the command line asked for: open the grid, or print the
-    /// probe.
+    /// `Cli::run` calls `terminal::run` to open the grid when no command is set.
+    /// `Command::Probe` selects `probe::print` to print the probe.
     pub(crate) fn run(self) -> ExitCode {
         // Destructured so an option added to `Cli` has to be handled here.
         let Self { command } = self;
@@ -61,11 +61,11 @@ impl Cli {
     }
 }
 
-/// The arguments with cargo's echo of the subcommand name taken out.
+/// `without_subcommand_name` removes `arguments[1]` only when it equals
+/// `SUBCOMMAND_NAME`, the subcommand name Cargo inserts after the binary.
 ///
-/// Only the word directly after the binary counts. Further along it is
-/// an argument like any other, and a `handler` there belongs to whoever
-/// wrote it.
+/// Later `handler` arguments belong to the caller, like any other argument,
+/// so `without_subcommand_name` preserves them.
 fn without_subcommand_name(mut arguments: Vec<OsString>) -> Vec<OsString> {
     if arguments
         .get(1)
@@ -85,8 +85,8 @@ mod tests {
 
     use super::*;
 
-    /// Whether the command line parses as cargo or a shell would hand
-    /// it over.
+    /// `parses` normalizes Cargo or shell arguments with `without_subcommand_name`
+    /// and checks whether `Cli::try_parse_from` accepts them.
     fn parses(arguments: &[&str]) -> bool {
         Cli::try_parse_from(without_subcommand_name(
             arguments.iter().map(OsString::from).collect(),
@@ -107,8 +107,8 @@ mod tests {
         assert!(parses(&[BINARY_NAME, SUBCOMMAND_NAME]));
     }
 
-    /// The probe parses on its own and behind cargo's echo, and `--help`
-    /// leaves it out.
+    /// `Cli::try_parse_from` accepts direct and Cargo-prefixed probe arguments
+    /// after `without_subcommand_name` normalization. `--help` omits `super::Command::Probe`.
     #[test]
     fn the_probe_parses_and_stays_out_of_help() {
         assert!(parses(&[BINARY_NAME, PROBE_COMMAND]));
@@ -117,8 +117,8 @@ mod tests {
         assert!(!help.contains(PROBE_COMMAND), "{help}");
     }
 
-    /// Dropping every `handler` rather than only cargo's would eat an
-    /// argument the caller meant.
+    /// `without_subcommand_name` preserves later `SUBCOMMAND_NAME` arguments after
+    /// index-1 normalization. Removing them would discard arguments the caller intended.
     #[test]
     fn the_subcommand_name_further_along_is_left_where_it_is() {
         let arguments = [BINARY_NAME, "--verbose", SUBCOMMAND_NAME]

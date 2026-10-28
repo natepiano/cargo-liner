@@ -16,6 +16,19 @@ enum SurfaceReferenceMatch {
     Found,
 }
 
+/// Trait members are outward through their contract; inherent members need explicit visibility.
+#[derive(Clone, Copy)]
+enum ImplSurfaceAccess {
+    TraitContract,
+    ExplicitMembers,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DeclarationVisibility {
+    Inherited,
+    Explicit,
+}
+
 struct ItemSurfaceReferenceVisitor<'a> {
     item_name: &'a str,
     found:     SurfaceReferenceMatch,
@@ -81,28 +94,42 @@ impl<'ast> Visit<'ast> for ItemSurfaceReferenceVisitor<'_> {
 
 pub(super) fn classify_outward_declaration(item: &Item) -> OutwardDeclarationClassification<'_> {
     let (identifier, kind) = match item {
-        Item::Const(item) if has_explicit_visibility(&item.vis) => {
+        Item::Const(item)
+            if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
+        {
             (&item.ident, OutwardDeclarationKind::Const)
         },
-        Item::Enum(item) if has_explicit_visibility(&item.vis) => {
+        Item::Enum(item)
+            if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
+        {
             (&item.ident, OutwardDeclarationKind::Enum)
         },
-        Item::Fn(item) if has_explicit_visibility(&item.vis) => {
+        Item::Fn(item) if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit => {
             (&item.sig.ident, OutwardDeclarationKind::Function)
         },
-        Item::Static(item) if has_explicit_visibility(&item.vis) => {
+        Item::Static(item)
+            if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
+        {
             (&item.ident, OutwardDeclarationKind::Static)
         },
-        Item::Struct(item) if has_explicit_visibility(&item.vis) => {
+        Item::Struct(item)
+            if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
+        {
             (&item.ident, OutwardDeclarationKind::Struct)
         },
-        Item::Trait(item) if has_explicit_visibility(&item.vis) => {
+        Item::Trait(item)
+            if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
+        {
             (&item.ident, OutwardDeclarationKind::Trait)
         },
-        Item::Type(item) if has_explicit_visibility(&item.vis) => {
+        Item::Type(item)
+            if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
+        {
             (&item.ident, OutwardDeclarationKind::TypeAlias)
         },
-        Item::Union(item) if has_explicit_visibility(&item.vis) => {
+        Item::Union(item)
+            if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
+        {
             (&item.ident, OutwardDeclarationKind::Union)
         },
         _ => return OutwardDeclarationClassification::NotOutward,
@@ -126,21 +153,29 @@ pub(super) fn potentially_outward_item_surface_carriers_mentioning_name<'syntax>
     let mut carriers = Vec::new();
     let mut visitor = ItemSurfaceReferenceVisitor::new(item_name);
     match item {
-        Item::Const(item) if has_explicit_visibility(&item.vis) => {
+        Item::Const(item)
+            if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
+        {
             visitor.visit_type(&item.ty);
         },
-        Item::Enum(item) if has_explicit_visibility(&item.vis) => {
+        Item::Enum(item)
+            if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
+        {
             for variant in &item.variants {
                 visit_field_types(&mut visitor, &variant.fields);
             }
         },
-        Item::Fn(item) if has_explicit_visibility(&item.vis) => {
+        Item::Fn(item) if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit => {
             visitor.visit_signature(&item.sig);
         },
-        Item::Static(item) if has_explicit_visibility(&item.vis) => {
+        Item::Static(item)
+            if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
+        {
             visitor.visit_type(&item.ty);
         },
-        Item::Struct(item) if has_explicit_visibility(&item.vis) => {
+        Item::Struct(item)
+            if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
+        {
             match &item.fields {
                 Fields::Named(fields) => carriers.extend(visible_field_carriers(
                     fields.named.iter().enumerate(),
@@ -154,7 +189,9 @@ pub(super) fn potentially_outward_item_surface_carriers_mentioning_name<'syntax>
             }
             return carriers;
         },
-        Item::Trait(item) if has_explicit_visibility(&item.vis) => {
+        Item::Trait(item)
+            if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
+        {
             for trait_item in &item.items {
                 match trait_item {
                     TraitItem::Fn(item) => visitor.visit_signature(&item.sig),
@@ -168,10 +205,14 @@ pub(super) fn potentially_outward_item_surface_carriers_mentioning_name<'syntax>
                 }
             }
         },
-        Item::Type(item) if has_explicit_visibility(&item.vis) => {
+        Item::Type(item)
+            if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
+        {
             visitor.visit_type(&item.ty);
         },
-        Item::Union(item) if has_explicit_visibility(&item.vis) => {
+        Item::Union(item)
+            if declaration_visibility(&item.vis) == DeclarationVisibility::Explicit =>
+        {
             carriers.extend(visible_field_carriers(
                 item.fields.named.iter().enumerate(),
                 item_name,
@@ -191,8 +232,8 @@ fn visible_field_carriers<'syntax>(
     item_name: &str,
 ) -> Vec<ItemSignatureCarrier<'syntax>> {
     fields
-        .filter(|(_, field)| has_explicit_visibility(&field.vis))
-        .filter(|(_, field)| field_type_mentions_name(field, item_name))
+        .filter(|(_, field)| declaration_visibility(&field.vis) == DeclarationVisibility::Explicit)
+        .filter(|(_, field)| field_type_reference(field, item_name) == SurfaceReferenceMatch::Found)
         .map(|(field_index, field)| ItemSignatureCarrier::StructOrUnionField { field, field_index })
         .collect()
 }
@@ -217,30 +258,44 @@ pub(super) fn potentially_outward_impl_surface_items_mentioning_name<'syntax>(
     item_impl: &'syntax ItemImpl,
     item_name: &str,
 ) -> Vec<&'syntax ImplItem> {
-    let outward = item_impl.trait_.is_some();
+    let access = match &item_impl.trait_ {
+        Some(_) => ImplSurfaceAccess::TraitContract,
+        None => ImplSurfaceAccess::ExplicitMembers,
+    };
 
     item_impl
         .items
         .iter()
-        .filter(|impl_item| outward || impl_item_has_explicit_visibility(impl_item))
-        .filter(|impl_item| impl_item_surface_mentions_name(impl_item, item_name))
+        .filter(|impl_item| match access {
+            ImplSurfaceAccess::TraitContract => true,
+            ImplSurfaceAccess::ExplicitMembers => {
+                impl_item_visibility(impl_item) == DeclarationVisibility::Explicit
+            },
+        })
+        .filter(|impl_item| {
+            impl_item_surface_reference(impl_item, item_name) == SurfaceReferenceMatch::Found
+        })
         .collect()
 }
 
-const fn has_explicit_visibility(visibility: &Visibility) -> bool {
-    !matches!(visibility, Visibility::Inherited)
-}
-
-const fn impl_item_has_explicit_visibility(item: &ImplItem) -> bool {
-    match item {
-        ImplItem::Const(item) => has_explicit_visibility(&item.vis),
-        ImplItem::Fn(item) => has_explicit_visibility(&item.vis),
-        ImplItem::Type(item) => has_explicit_visibility(&item.vis),
-        _ => false,
+const fn declaration_visibility(visibility: &Visibility) -> DeclarationVisibility {
+    match visibility {
+        Visibility::Inherited => DeclarationVisibility::Inherited,
+        Visibility::Public(_) | Visibility::Restricted(_) => DeclarationVisibility::Explicit,
     }
 }
 
-fn impl_item_surface_mentions_name(item: &ImplItem, item_name: &str) -> bool {
+const fn impl_item_visibility(item: &ImplItem) -> DeclarationVisibility {
+    match item {
+        ImplItem::Const(item) => declaration_visibility(&item.vis),
+        ImplItem::Fn(item) => declaration_visibility(&item.vis),
+        ImplItem::Type(item) => declaration_visibility(&item.vis),
+        // syn::ImplItem is non-exhaustive; unsupported syntax has no known visibility.
+        _ => DeclarationVisibility::Inherited,
+    }
+}
+
+fn impl_item_surface_reference(item: &ImplItem, item_name: &str) -> SurfaceReferenceMatch {
     let mut visitor = ItemSurfaceReferenceVisitor::new(item_name);
     match item {
         ImplItem::Fn(item) => {
@@ -254,11 +309,137 @@ fn impl_item_surface_mentions_name(item: &ImplItem, item_name: &str) -> bool {
         },
         _ => {},
     }
-    visitor.found == SurfaceReferenceMatch::Found
+    visitor.found
 }
 
-fn field_type_mentions_name(field: &Field, item_name: &str) -> bool {
+fn field_type_reference(field: &Field, item_name: &str) -> SurfaceReferenceMatch {
     let mut visitor = ItemSurfaceReferenceVisitor::new(item_name);
     visitor.visit_type(&field.ty);
-    visitor.found == SurfaceReferenceMatch::Found
+    visitor.found
+}
+
+#[cfg(test)]
+mod tests {
+    use syn::ImplItem;
+    use syn::Item;
+    use syn::ItemImpl;
+    use syn::Visibility;
+
+    use super::DeclarationVisibility;
+    use super::ItemSignatureCarrier;
+    use super::OutwardDeclarationClassification;
+    use super::SurfaceReferenceMatch;
+    use super::classify_outward_declaration;
+    use super::declaration_visibility;
+    use super::field_type_reference;
+    use super::impl_item_surface_reference;
+    use super::impl_item_visibility;
+    use super::potentially_outward_impl_surface_items_mentioning_name;
+    use super::potentially_outward_item_surface_carriers_mentioning_name;
+
+    #[test]
+    fn declaration_visibility_keeps_restricted_items_outward() -> anyhow::Result<()> {
+        for spelling in ["pub", "pub(crate)", "pub(super)", "pub(in crate::parent)"] {
+            let visibility: Visibility = syn::parse_str(spelling)?;
+            assert_eq!(
+                declaration_visibility(&visibility),
+                DeclarationVisibility::Explicit
+            );
+            let item: Item = syn::parse_str(&format!("{spelling} struct r#type;"))?;
+            let OutwardDeclarationClassification::Outward(declaration) =
+                classify_outward_declaration(&item)
+            else {
+                anyhow::bail!("explicit declaration was rejected");
+            };
+            assert_eq!(declaration.name, "type");
+        }
+        assert_eq!(
+            declaration_visibility(&syn::Visibility::Inherited),
+            DeclarationVisibility::Inherited,
+        );
+        let item: Item = syn::parse_str("struct Private;")?;
+        assert!(matches!(
+            classify_outward_declaration(&item),
+            OutwardDeclarationClassification::NotOutward,
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn trait_contract_and_inherent_visibility_select_the_same_signature_members()
+    -> anyhow::Result<()> {
+        let members = concat!(
+            "fn hidden() -> Target { loop {} } ",
+            "pub(crate) fn visible() -> Target { loop {} } ",
+            "pub fn body_only() { let _: Target; } ",
+            "const VALUE: Target = loop {}; type Alias = Target;"
+        );
+        let inherent: ItemImpl = syn::parse_str(&format!("impl Owner {{ {members} }}"))?;
+        let contract: ItemImpl =
+            syn::parse_str(&format!("impl Contract for Owner {{ {members} }}"))?;
+        assert_eq!(
+            potentially_outward_impl_surface_items_mentioning_name(&inherent, "Target").len(),
+            1,
+        );
+        assert_eq!(
+            potentially_outward_impl_surface_items_mentioning_name(&contract, "Target").len(),
+            4,
+        );
+        for (source, visibility, reference) in [
+            (
+                "fn f() -> Target {}",
+                DeclarationVisibility::Inherited,
+                SurfaceReferenceMatch::Found,
+            ),
+            (
+                "pub fn f() {}",
+                DeclarationVisibility::Explicit,
+                SurfaceReferenceMatch::Missing,
+            ),
+            (
+                "make!();",
+                DeclarationVisibility::Inherited,
+                SurfaceReferenceMatch::Missing,
+            ),
+        ] {
+            let item: ImplItem = syn::parse_str(source)?;
+            assert_eq!(impl_item_visibility(&item), visibility);
+            assert_eq!(impl_item_surface_reference(&item, "Target"), reference);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn field_selection_keeps_only_visible_type_references_and_their_indices() -> anyhow::Result<()>
+    {
+        let item: Item = syn::parse_str(concat!(
+            "pub struct Owner { hidden: Target, pub visible: Vec<Target>, ",
+            "pub unrelated: usize, pub(crate) nested: Option<Target> }"
+        ))?;
+        let carriers = potentially_outward_item_surface_carriers_mentioning_name(&item, "Target");
+        let mut indices = Vec::new();
+        for carrier in carriers {
+            match carrier {
+                ItemSignatureCarrier::Declaration => anyhow::bail!("field became declaration"),
+                ItemSignatureCarrier::StructOrUnionField { field, field_index } => {
+                    assert_eq!(
+                        field_type_reference(field, "Target"),
+                        SurfaceReferenceMatch::Found
+                    );
+                    assert_eq!(
+                        field_type_reference(field, "Missing"),
+                        SurfaceReferenceMatch::Missing
+                    );
+                    indices.push(field_index);
+                },
+            }
+        }
+        assert_eq!(indices, [1, 3]);
+        let private: Item = syn::parse_str("struct Owner(pub Target);")?;
+        assert!(
+            potentially_outward_item_surface_carriers_mentioning_name(&private, "Target")
+                .is_empty()
+        );
+        Ok(())
+    }
 }

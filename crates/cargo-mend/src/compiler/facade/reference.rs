@@ -17,7 +17,6 @@ use super::boundary;
 use super::boundary::ModuleContext;
 use super::boundary::ModuleSourceMap;
 use super::boundary::ParentBoundary;
-use super::exports::ParentFacadeExports;
 use crate::compiler::settings::DriverSettings;
 use crate::compiler::source_cache;
 use crate::compiler::source_cache::ExtractedPaths;
@@ -26,8 +25,8 @@ use crate::compiler::source_cache::PathOrigin;
 use crate::compiler::source_cache::SourceCache;
 use crate::compiler::source_cache::UseRename;
 use crate::rust_syntax;
-use crate::rust_syntax::LexicalRegions;
 use crate::rust_syntax::PathAnchor;
+use crate::rust_syntax::SourceEndpoint;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::compiler) enum ParentFacadeUsage {
@@ -124,10 +123,9 @@ pub(super) fn scan_facade_usage(
     tcx: TyCtxt<'_>,
     module_sources: &ModuleSourceMap,
     parent_boundary: &ParentBoundary,
-    exported_names: &ParentFacadeExports,
+    exported_names: &[String],
 ) -> Result<ParentFacadeUsageByName> {
     let mut usage_by_name = exported_names
-        .explicit
         .iter()
         .map(|name| {
             (
@@ -136,7 +134,7 @@ pub(super) fn scan_facade_usage(
             )
         })
         .collect::<ParentFacadeUsageByName>();
-    let explicit_names = ExportNameIndex::new(&exported_names.explicit);
+    let explicit_names = ExportNameIndex::new(exported_names);
 
     for source_path in source_cache.source_files() {
         if file_mentions_no_export(source_cache, source_path, &explicit_names) {
@@ -176,7 +174,7 @@ pub(super) fn scan_facade_usage(
         tcx,
         module_sources,
         &parent_boundary.module_path,
-        &exported_names.explicit,
+        exported_names,
     )?;
     for (name, literal_usage) in literal_usage_by_name {
         merge_usage_for_name(&mut usage_by_name, &name, literal_usage);
@@ -222,8 +220,8 @@ pub(in crate::compiler) fn workspace_source_parent_export_literal_usage(
         if root_modules.is_empty() {
             continue;
         }
-        let source = source_cache.read_source(file)?;
         let lexical_regions = source_cache.lexical_regions(file)?;
+        let source = lexical_regions.source();
         let mut matches = Vec::new();
         for export in &export_spellings {
             if source_cache.name_mention(file, export.name) == NameMention::Absent {
@@ -232,12 +230,9 @@ pub(in crate::compiler) fn workspace_source_parent_export_literal_usage(
             for item_spelling in &export.spellings {
                 matches.extend(source.match_indices(item_spelling.as_str()).filter_map(
                     |(item_offset, matched_item)| {
-                        let path_offset = literal_crate_path_start(
-                            source,
-                            lexical_regions,
-                            item_offset,
-                            module_path,
-                        )?;
+                        let item_start = lexical_regions.endpoint(item_offset)?;
+                        let path_start = literal_crate_path_start(item_start, module_path)?;
+                        let path_offset = path_start.offset();
                         let path_length = item_offset + matched_item.len() - path_offset;
                         literal_match_has_identifier_boundaries(source, path_offset, path_length)
                             .then_some((path_offset, export.name))
@@ -353,53 +348,33 @@ fn export_spellings(exported_names: &[String]) -> Vec<ExportSpellings<'_>> {
         .collect()
 }
 
-fn literal_crate_path_start(
-    source: &str,
-    lexical_regions: &LexicalRegions,
-    item_start: usize,
+fn literal_crate_path_start<'source>(
+    item_start: SourceEndpoint<'source>,
     module_path: &[String],
-) -> Option<usize> {
-    let mut separator_offset = path_separator_before(source, lexical_regions, item_start)?;
+) -> Option<SourceEndpoint<'source>> {
+    let mut separator = path_separator_before(item_start)?;
     for expected_segment in module_path.iter().rev() {
-        let segment_end = lexical_regions.trivia_start_before(source, separator_offset);
-        let segment_start = literal_identifier_start(source, segment_end);
-        let source_segment = source.get(segment_start..segment_end)?.trim();
+        let segment_end = separator.trivia_start_before();
+        let segment_start = literal_identifier_start(segment_end);
+        let source_segment = &segment_end.prefix()[segment_start.offset()..];
         if normalized_export_name(source_segment) != normalized_export_name(expected_segment) {
             return None;
         }
-        separator_offset = path_separator_before(source, lexical_regions, segment_start)?;
+        separator = path_separator_before(segment_start)?;
     }
 
-    let crate_end = lexical_regions.trivia_start_before(source, separator_offset);
-    let crate_start = literal_identifier_start(source, crate_end);
-    (source.get(crate_start..crate_end)? == "crate").then_some(crate_start)
+    let crate_end = separator.trivia_start_before();
+    let crate_start = literal_identifier_start(crate_end);
+    (&crate_end.prefix()[crate_start.offset()..] == "crate").then_some(crate_start)
 }
 
-fn path_separator_before(
-    source: &str,
-    lexical_regions: &LexicalRegions,
-    segment_start: usize,
-) -> Option<usize> {
-    let separator_end = lexical_regions.trivia_start_before(source, segment_start);
-    source
-        .get(..separator_end)?
-        .strip_suffix("::")
-        .map(str::len)
+fn path_separator_before(segment_start: SourceEndpoint<'_>) -> Option<SourceEndpoint<'_>> {
+    segment_start.trivia_start_before().strip_suffix("::")
 }
 
-fn literal_identifier_start(source: &str, segment_end: usize) -> usize {
-    let mut start = segment_end;
-    while let Some((offset, character)) = source[..start].char_indices().next_back() {
-        if !rust_syntax::identifier_character(character) {
-            break;
-        }
-        start = offset;
-    }
-    if start >= 2 && source.get(start - 2..start) == Some("r#") {
-        start - 2
-    } else {
-        start
-    }
+fn literal_identifier_start(segment_end: SourceEndpoint<'_>) -> SourceEndpoint<'_> {
+    let start = segment_end.trim_end_matches(rust_syntax::identifier_character);
+    start.strip_suffix("r#").unwrap_or(start)
 }
 
 fn literal_match_has_identifier_boundaries(source: &str, offset: usize, length: usize) -> bool {
@@ -1033,6 +1008,38 @@ mod tests {
                 ParentFacadeUsage::UsedOutsideSubtree
             );
         }
+    }
+
+    #[test]
+    fn literal_paths_walk_checked_endpoints_through_trivia_and_raw_identifiers() {
+        let module_path = ["type", "café"].map(String::from);
+        for (source, expected) in [
+            ("crate::r#type::café::Thing", Some(0)),
+            (
+                "x crate /* c */ :: r#type :: café // line\n :: Thing",
+                Some(2),
+            ),
+            ("crate::wrong::café::Thing", None),
+            ("other::r#type::café::Thing", None),
+            ("crate::r#type::café Thing", None),
+            ("Thing", None),
+        ] {
+            let regions = crate::rust_syntax::LexicalRegions::from(source.to_owned());
+            let result = source
+                .find("Thing")
+                .and_then(|offset| regions.endpoint(offset))
+                .and_then(|end| super::literal_crate_path_start(end, &module_path))
+                .map(crate::rust_syntax::SourceEndpoint::offset);
+            assert_eq!(result, expected, "{source}");
+        }
+        let root = crate::rust_syntax::LexicalRegions::from("crate :: Thing".to_owned());
+        assert_eq!(
+            root.endpoint(9)
+                .and_then(|end| super::literal_crate_path_start(end, &[]))
+                .map(crate::rust_syntax::SourceEndpoint::offset),
+            Some(0),
+        );
+        assert!(root.endpoint(root.source().len() + 1).is_none());
     }
 
     #[test]
