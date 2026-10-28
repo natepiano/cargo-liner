@@ -49,7 +49,7 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
     } = build_lines(&app.overlays.sccache_pane);
     let hints = shortcut_hints(app);
     let width = content_width(&lines)
-        .max(content_width(std::slice::from_ref(&hints)))
+        .max(content_width(std::slice::from_ref(&hints)).saturating_add(1))
         .min(frame.area().width.saturating_sub(POPUP_HORIZONTAL_MARGIN));
     let height = popup_height(lines.len() + 1, frame.area().height);
     let popup = PopupFrame {
@@ -66,7 +66,12 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
     if popup.inner.height > 0 {
         frame.render_widget(
             Paragraph::new(hints),
-            Rect::new(popup.inner.x, inner.bottom(), popup.inner.width, 1),
+            Rect::new(
+                popup.inner.x.saturating_add(1),
+                inner.bottom(),
+                popup.inner.width.saturating_sub(1),
+                1,
+            ),
         );
     }
 
@@ -394,7 +399,7 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains(&hints));
+        assert!(rendered.contains(&format!("│ {hints}")));
         assert!(rendered.contains("Loading sccache stats"));
         assert_eq!(app.overlays.sccache_pane.viewport.len(), 0);
         println!("Before Sccache body (unchanged build_lines):\n{before}");
