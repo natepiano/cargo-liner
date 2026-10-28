@@ -1,3 +1,4 @@
+mod cache;
 mod execute;
 mod progress;
 mod source_transaction;

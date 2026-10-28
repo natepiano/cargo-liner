@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::path::PathBuf;
 
 use serde_json::Value;
 use tempfile::TempDir;
@@ -649,6 +650,107 @@ edition = "2024"
         third_count, baseline_count,
         "default selection should still see the cached finding after the --all-targets run"
     );
+}
+
+#[test]
+fn fresh_units_with_another_builds_reports_are_examined_on_the_first_run() {
+    assert_fresh_units_repaired(CachedReportDamage::AnotherBuild);
+}
+
+#[test]
+fn fresh_units_without_reports_are_examined_on_the_first_run() {
+    assert_fresh_units_repaired(CachedReportDamage::Missing);
+}
+
+#[derive(Clone, Copy)]
+enum CachedReportDamage {
+    AnotherBuild,
+    Missing,
+}
+
+fn assert_fresh_units_repaired(damage: CachedReportDamage) {
+    let temp = tempdir().expect("create cache fixture");
+    fs::create_dir(temp.path().join("src")).expect("create source directory");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"cache_repair\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[lib]\ntest = false\nbench = false\n[workspace]\n",
+    )
+    .expect("write manifest");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "#![no_std]\npub fn examined() {}\n",
+    )
+    .expect("write source");
+    let root = temp.path().canonicalize().expect("canonical fixture path");
+    let manifest = root.join("Cargo.toml");
+    let reports = prepare_fresh_cache_units(&root);
+    assert!(!reports.is_empty(), "Cargo must prepare an analyzable unit");
+    for path in &reports {
+        if matches!(damage, CachedReportDamage::AnotherBuild) {
+            let stored = serde_json::json!({
+                "version": 35, "analysis_fingerprint": "previous-mend-build",
+                "config_fingerprint": "previous-config", "package_root": root,
+                "crate_root_file": root.join("src/lib.rs"), "findings": [],
+            });
+            fs::write(path, serde_json::to_vec(&stored).expect("serialize report"))
+                .expect("write old build's report");
+        }
+    }
+
+    let output = mend_command_for(&manifest)
+        .arg("--json")
+        .output()
+        .expect("run mend");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for path in reports {
+        let stored: Value = serde_json::from_slice(&fs::read(path).expect("read repaired report"))
+            .expect("parse repaired report");
+        assert_ne!(stored["analysis_fingerprint"], "previous-mend-build");
+    }
+}
+
+/// Prepare actual Cargo fingerprints through the same wrapper path, with driver
+/// configuration absent so setup only compiles. Mend must repair the resulting
+/// fresh units on its first invocation; changing wrapper identity would leave
+/// these exact report paths unrepaired and fail the assertions above.
+fn prepare_fresh_cache_units(root: &Path) -> Vec<PathBuf> {
+    let fingerprint = format!(
+        "{}+{}+{}",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("MEND_GIT_HASH").unwrap_or("nogit"),
+        option_env!("MEND_BUILD_ID").unwrap_or("nobuild"),
+    );
+    let binary = Path::new(env!("CARGO_BIN_EXE_cargo-mend"));
+    let alias_dir = root.join("target/mend-wrapper").join(fingerprint);
+    fs::create_dir_all(&alias_dir).expect("create wrapper directory");
+    let alias = alias_dir.join(binary.file_name().expect("binary name"));
+    fs::hard_link(binary, &alias)
+        .or_else(|_| fs::copy(binary, &alias).map(drop))
+        .expect("retain wrapper executable");
+    let output = cargo_command()
+        .args(["check", "--all-targets", "--message-format=json"])
+        .arg("--manifest-path")
+        .arg(root.join("Cargo.toml"))
+        .env("RUSTC_WORKSPACE_WRAPPER", alias)
+        .env("MEND_DRIVER", "1")
+        .env_remove("MEND_CONFIG_ROOT")
+        .current_dir(root)
+        .output()
+        .expect("prepare fresh Cargo units");
+    assert!(output.status.success(), "{output:?}");
+    fs::read_dir(root.join("target/debug/deps"))
+        .expect("read artifacts")
+        .map(|entry| entry.expect("read artifact").path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "rmeta")
+        })
+        .map(|path| path.with_extension("mend.json"))
+        .collect()
 }
 
 #[test]
