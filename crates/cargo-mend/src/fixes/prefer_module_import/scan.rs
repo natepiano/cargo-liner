@@ -945,6 +945,60 @@ mod tests {
     use crate::rust_syntax::ParsedSources;
 
     #[test]
+    fn module_import_fix_keeps_if_let_registration_row_local() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "mod invocation_rows; mod consumer;",
+        )?;
+        std::fs::write(
+            dir.path().join("invocation_rows.rs"),
+            "pub struct Row { pub invocation_id: u64 } pub fn row() {}",
+        )?;
+        let path = dir.path().join("consumer.rs");
+        let text = r"use super::invocation_rows::row;
+fn registration_row() -> Result<super::invocation_rows::Row, ()> {
+    Ok(super::invocation_rows::Row { invocation_id: 0 })
+}
+fn collect(identity: u64) {
+    row();
+    let mut rows = Vec::new();
+    if let Ok(mut row) = registration_row() {
+        row.invocation_id = identity;
+        rows.push(row);
+    } else {
+        row();
+    }
+    row();
+}
+";
+        std::fs::write(&path, text)?;
+        let sources = ParsedSources::default();
+        let module_map = sources.module_map(dir.path());
+        let (findings, fixes) = super::scan_file(
+            dir.path(),
+            super::CrateSources {
+                source_root: dir.path(),
+                sources:     &sources,
+            },
+            &path,
+            &module_map,
+        )?;
+        assert_eq!(findings.len(), 1);
+        crate::fixes::imports::apply_fixes(&fixes.try_into()?)?;
+        let rewritten = std::fs::read_to_string(&path)?;
+        assert_eq!(
+            rewritten,
+            text.replace(
+                "use super::invocation_rows::row;",
+                "use super::invocation_rows;"
+            )
+            .replace("row();", "invocation_rows::row();")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn full_file_scan_shares_one_index_across_both_detectors() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("lib.rs");

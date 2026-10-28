@@ -10,6 +10,8 @@ use syn::Block;
 use syn::Expr;
 use syn::ExprClosure;
 use syn::ExprForLoop;
+use syn::ExprIf;
+use syn::ExprWhile;
 use syn::FieldValue;
 use syn::FnArg;
 use syn::Ident;
@@ -141,6 +143,29 @@ impl<'a> ReferenceCollector<'a> {
             Err(error) => self.references = Err(error),
         }
     }
+
+    /// A successful let-chain operand binds names for the operands to its
+    /// right and the conditional body. Its initializer still sees the outer
+    /// bindings. Both `if` and `while` use this traversal in a temporary scope.
+    fn visit_condition(&mut self, condition: &Expr) {
+        match condition {
+            Expr::Let(binding) => {
+                for attr in &binding.attrs {
+                    self.visit_attribute(attr);
+                }
+                self.visit_expr(&binding.expr);
+                collect_pat_bindings(&binding.pat, &mut self.active_scope);
+            },
+            Expr::Binary(binary) if matches!(binary.op, syn::BinOp::And(_)) => {
+                for attr in &binary.attrs {
+                    self.visit_attribute(attr);
+                }
+                self.visit_condition(&binary.left);
+                self.visit_condition(&binary.right);
+            },
+            _ => self.visit_expr(condition),
+        }
+    }
 }
 
 impl Visit<'_> for ReferenceCollector<'_> {
@@ -245,6 +270,32 @@ impl Visit<'_> for ReferenceCollector<'_> {
         collect_pat_bindings(&for_loop.pat, &mut bindings);
         self.enter_scope_with(bindings);
         self.visit_block(&for_loop.body);
+        self.exit_scope();
+    }
+
+    fn visit_expr_if(&mut self, conditional: &ExprIf) {
+        for attr in &conditional.attrs {
+            self.visit_attribute(attr);
+        }
+        self.enter_scope_with(BTreeSet::new());
+        self.visit_condition(&conditional.cond);
+        self.visit_block(&conditional.then_branch);
+        self.exit_scope();
+        if let Some((_, branch)) = &conditional.else_branch {
+            self.visit_expr(branch);
+        }
+    }
+
+    fn visit_expr_while(&mut self, conditional: &ExprWhile) {
+        for attr in &conditional.attrs {
+            self.visit_attribute(attr);
+        }
+        if let Some(label) = &conditional.label {
+            self.visit_label(label);
+        }
+        self.enter_scope_with(BTreeSet::new());
+        self.visit_condition(&conditional.cond);
+        self.visit_block(&conditional.body);
         self.exit_scope();
     }
 
@@ -495,6 +546,57 @@ mod tests {
     use super::ReferenceCollector;
     use super::collect_bare_refs_from_tokens;
     use crate::fixes::imports::ImportSource;
+
+    #[test]
+    fn conditional_bindings_resolve_initializers_chains_bodies_and_else_separately()
+    -> anyhow::Result<()> {
+        for body in [
+            "if let Ok(mut row) = /* import */row() { use_row(row); } else { /* import */row(); } /* import */row();",
+            "if let Some(ref row @ Row { .. }) = /* import */row() && ready(row) && let Some(next) = other(row) && ready(row) { use_row(row); } else if let Some(row) = /* import */row() { use_row(row); } else { /* import */row(); } /* import */row();",
+            "while let Some((ref row, _)) = /* import */row() && ready(row) { use_row(row); } /* import */row();",
+            "while let Some(Row { value: row @ Some(_), .. }) = /* import */row() { use_row(row); } /* import */row();",
+            "if let Some([row, ..]) = /* import */row() { assert!(ready(row)); if let Some(row) = other(row) { use_row(row); } use_row(row); } /* import */row();",
+        ] {
+            assert_import_references(body)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn existing_binding_forms_keep_locals_and_resolve_only_outer_import_uses() -> anyhow::Result<()>
+    {
+        for body in [
+            "{ let mut row = /* import */row(); use_row(row); } /* import */row();",
+            "{ let Some(ref row) = /* import */row() else { /* import */row(); return; }; use_row(row); } /* import */row();",
+            "match /* import */row() { Some(row @ Row { .. }) if ready(row) => use_row(row), _ => { /* import */row(); } } /* import */row();",
+            "let closure = |(ref row, _): (Row, ())| { use_row(row); }; /* import */row();",
+            "for Row { value: ref row, .. } in /* import */row() { use_row(row); } /* import */row();",
+            "fn nested((mut row, _): (Row, ())) { use_row(row); } /* import */row();",
+        ] {
+            assert_import_references(body)?;
+        }
+        Ok(())
+    }
+
+    fn assert_import_references(body: &str) -> anyhow::Result<()> {
+        let text = format!("fn inspect() {{ {body} }}");
+        let syntax = syn::parse_file(&text)?;
+        let source = ImportSource::new(&text);
+        let names = BTreeSet::from(["row".to_string()]);
+        let mut collector = ReferenceCollector::new(&source, &names);
+        collector.visit_file(&syntax);
+        let actual = collector
+            .references?
+            .into_iter()
+            .map(|reference| reference.byte_start)
+            .collect::<Vec<_>>();
+        let expected = text
+            .match_indices("/* import */row")
+            .map(|(start, _)| start + "/* import */".len())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "{text}");
+        Ok(())
+    }
 
     #[test]
     fn collect_bare_refs_finds_ident_in_macro_tokens() {
