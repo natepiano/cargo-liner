@@ -144,6 +144,8 @@ exit "$SHIM_TEST_EXIT_STATUS"
     struct InstalledToolchain {
         /// All subprocess writes, including the default capture root, stay here.
         directory:    TempDir,
+        /// Executables in this fixture toolchain.
+        bin:          PathBuf,
         /// The selected capture directory is independent of the real `/tmp` root.
         root:         PathBuf,
         /// Every numeric account directory lives under this sticky parent.
@@ -155,19 +157,38 @@ exit "$SHIM_TEST_EXIT_STATUS"
     }
 
     impl InstalledToolchain {
-        /// Copy the shim beside a recording cargo executable, as installation does.
+        /// Install the shim over a recording cargo executable in an isolated rustup home.
         fn new() -> Self {
             let directory = tempfile::tempdir().expect("create isolated toolchain");
             let parent = directory.path().join("capture");
             let uid = fs::metadata(directory.path()).expect("fixture owner").uid();
             let root = parent.join(uid.to_string());
             let observations = directory.path().join("observations");
-            let bin = directory.path().join("toolchain/bin");
+            let bin = directory.path().join("rustup/toolchains/fixture/bin");
             let launcher = directory.path().join("invoke-shim");
             fs::create_dir_all(&bin).expect("create toolchain bin directory");
             fs::create_dir(&observations).expect("create cargo observations directory");
             fs::create_dir(directory.path().join("home")).expect("create isolated HOME");
-            let source = include_str!("../src/cargo-capture-shim.sh");
+            write_executable(
+                &bin.join("cargo"),
+                &["#!/bin/sh\nset -eu\n", DESCRIPTOR_PROBE, CARGO_STAND_IN].concat(),
+            );
+            let installed = Command::new(env!("CARGO_BIN_EXE_cargo-tile"))
+                .arg("install")
+                .env_clear()
+                .env(
+                    "PATH",
+                    env::var_os("PATH").expect("locate system utilities"),
+                )
+                .env("HOME", directory.path().join("home"))
+                .env("RUSTUP_HOME", directory.path().join("rustup"))
+                .env("XDG_CONFIG_HOME", directory.path().join("config"))
+                .stdin(Stdio::null())
+                .output()
+                .expect("install the fixture capture shim");
+            assert!(installed.status.success(), "{installed:?}");
+            assert!(installed.stderr.is_empty(), "{installed:?}");
+            let source = fs::read_to_string(bin.join("cargo")).expect("read installed shim");
             let assignment = "capture_parent=/tmp/cargo-tile";
             assert_eq!(source.lines().filter(|line| *line == assignment).count(), 1);
             let source = source.replace(
@@ -178,10 +199,6 @@ exit "$SHIM_TEST_EXIT_STATUS"
                 ),
             );
             write_executable(&bin.join("cargo"), &source);
-            write_executable(
-                &bin.join("cargo-tile-real"),
-                &["#!/bin/sh\nset -eu\n", DESCRIPTOR_PROBE, CARGO_STAND_IN].concat(),
-            );
             // The launcher execs the shim, so the pid it records is the shim's.
             // `SHIM_TEST_CALLER_REDIRECTIONS` opens or closes descriptors the way
             // a caller of cargo would before handing them down.
@@ -203,6 +220,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             );
             Self {
                 directory,
+                bin,
                 root,
                 parent,
                 observations,
@@ -244,18 +262,14 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             let mut command = self.command(capture_path, arguments);
             let search_path = env::var_os("PATH").expect("fixture inherits system utilities");
             let search_path = env::join_paths(
-                std::iter::once(self.directory.path().join("toolchain/bin"))
-                    .chain(env::split_paths(&search_path)),
+                std::iter::once(self.bin.clone()).chain(env::split_paths(&search_path)),
             )
             .expect("prepend fixture utilities to PATH");
             command
                 .current_dir(self.directory.path().join("home"))
                 .env("SHIM_TEST_DEFAULT_ROOT", &self.root)
                 .env("SHIM_TEST_OBSERVATIONS", &self.observations)
-                .env(
-                    "SHIM_TEST_SHIM",
-                    self.directory.path().join("toolchain/bin/cargo"),
-                )
+                .env("SHIM_TEST_SHIM", self.bin.join("cargo"))
                 .env("SHIM_TEST_CALLER_UMASK", format!("{caller_umask:04o}"))
                 .env("SHIM_TEST_EXIT_STATUS", "37")
                 .env("PATH", search_path)
@@ -334,7 +348,7 @@ exec sh "$SHIM_TEST_SHIM" "$@"
             assert!(tee.status.success());
             let tee = String::from_utf8(tee.stdout).expect("UTF-8 tee path");
             write_executable(
-                &self.directory.path().join("toolchain/bin/tee"),
+                &self.bin.join("tee"),
                 &[
                     "#!/bin/sh\nset -eu\n",
                     DESCRIPTOR_PROBE,
@@ -585,7 +599,7 @@ done
                 .trim_end(),
         );
         write_executable(
-            &toolchain.directory.path().join("toolchain/bin/ln"),
+            &toolchain.bin.join("ln"),
             &format!(
                 r#"#!/bin/sh
 set -eu
@@ -648,7 +662,7 @@ exec {link} "$@"
                 assert!(link.status.success());
                 let link = String::from_utf8(link.stdout).expect("UTF-8 utility path");
                 write_executable(
-                    &toolchain.directory.path().join("toolchain/bin/ln"),
+                    &toolchain.bin.join("ln"),
                     &format!(
                         r#"#!/bin/sh
 set -eu
@@ -683,7 +697,7 @@ exec {} "$@"
         assert!(cat.status.success());
         let cat = String::from_utf8(cat.stdout).expect("UTF-8 utility path");
         write_executable(
-            &toolchain.directory.path().join("toolchain/bin/cat"),
+            &toolchain.bin.join("cat"),
             &format!(
                 r#"#!/bin/sh
 case "$1" in /proc/sys/kernel/random/uuid) exit 1 ;; esac
@@ -692,10 +706,7 @@ exec {} "$@"
                 shell_word(cat.trim_end())
             ),
         );
-        write_executable(
-            &toolchain.directory.path().join("toolchain/bin/uuidgen"),
-            "#!/bin/sh\nexit 1\n",
-        );
+        write_executable(&toolchain.bin.join("uuidgen"), "#!/bin/sh\nexit 1\n");
         let arguments = ["check", "--quiet", "--message-format=json", "--", "a b", ""];
         let output = toolchain.run(
             CapturePath::NoTerminal,
@@ -880,7 +891,7 @@ exec {} "$@"
             fs::create_dir_all(&foreign).expect("create directory owned by fixture uid");
             fs::write(foreign.join("keep"), b"untouched").expect("seed foreign directory");
             write_executable(
-                &toolchain.directory.path().join("toolchain/bin/id"),
+                &toolchain.bin.join("id"),
                 "#!/bin/sh\ncase \"$1\" in -u) printf '0\\n' ;; -un) printf 'root\\n' ;; *) exit 93 ;; esac\n",
             );
             let arguments = ["check", "--quiet", "--message-format=json", "--", "a b"];
@@ -933,7 +944,7 @@ exec {} "$@"
         assert!(chmod.status.success());
         let chmod = String::from_utf8(chmod.stdout).expect("UTF-8 chmod");
         write_executable(
-            &toolchain.directory.path().join("toolchain/bin/chmod"),
+            &toolchain.bin.join("chmod"),
             &format!(
                 r#"#!/bin/sh
 {} "$@" || exit $?

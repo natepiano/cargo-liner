@@ -174,11 +174,11 @@ fn decode_timeval(bytes: &[u8]) -> io::Result<Duration> {
             .map_err(|_| incomplete())?,
     );
     let seconds = u64::try_from(seconds).map_err(|_| incomplete())?;
-    let microseconds = u32::try_from(microseconds).map_err(|_| incomplete())?;
+    let microseconds = u64::try_from(microseconds).map_err(|_| incomplete())?;
     if seconds == 0 || microseconds >= BIRTH_MICROSECONDS_PER_SECOND {
         return Err(incomplete());
     }
-    Ok(Duration::from_secs(seconds) + Duration::from_micros(u64::from(microseconds)))
+    Ok(Duration::from_secs(seconds) + Duration::from_micros(microseconds))
 }
 
 /// A partial or invalid reply preserves the record instead of claiming it ended.

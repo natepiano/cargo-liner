@@ -1,5 +1,8 @@
 //! Exercise the installed binary without accessing a real rustup toolchain.
 
+#[path = "../src/constants/shim_options.rs"]
+mod shim_options;
+
 /// Each child owns an environment pointing exclusively at temporary fixture data.
 #[cfg(test)]
 #[allow(
@@ -25,6 +28,9 @@ mod tests {
     use std::time::Duration;
 
     use tempfile::TempDir;
+
+    use super::shim_options::SHIM_GLOBAL_OPTIONS_PLACEHOLDER;
+    use super::shim_options::SHIM_OPTION_PATTERN_SEPARATOR;
 
     /// Preserve argument boundaries and record publication before the shim cleans up.
     const FIXTURE_CARGO: &str = r#"#!/bin/sh
@@ -173,6 +179,25 @@ exit 37
         assert_eq!(output.stderr, b"fixture cargo stderr\n");
     }
 
+    /// Compare every script byte while allowing the installer's generated option pattern.
+    fn assert_installed_shim(path: &Path) {
+        let template = include_str!("../src/cargo-capture-shim.sh");
+        let (prefix, suffix) = template
+            .split_once(SHIM_GLOBAL_OPTIONS_PLACEHOLDER)
+            .expect("shim option slot");
+        let installed = fs::read_to_string(path).expect("read installed shim");
+        let options = installed
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(suffix))
+            .expect("installed shim matches the template outside its option slot");
+        assert!(!options.is_empty(), "global option pattern is populated");
+        assert!(
+            options.split(SHIM_OPTION_PATTERN_SEPARATOR).all(|option| {
+                option.starts_with('-') && !option.chars().any(char::is_whitespace)
+            })
+        );
+    }
+
     /// Observe publication from inside cargo, then check cleanup after its shim exits.
     fn assert_shim_execution(fixture: &ToolchainLifecycle) {
         let source = fs::read_to_string(&fixture.cargo).expect("read installed shim");
@@ -262,10 +287,7 @@ exit 37
                 .any(|line| line == format!("{TOOLCHAIN}: capture shim installed"))
         );
         assert_original_cargo(&saved, &original);
-        assert_eq!(
-            fs::read(&fixture.cargo).expect("read installed shim"),
-            include_bytes!("../src/cargo-capture-shim.sh")
-        );
+        assert_installed_shim(&fixture.cargo);
         assert_eq!(
             fixture.cli(&["status"]),
             format!("{TOOLCHAIN}: capturing\n")
@@ -346,10 +368,7 @@ exit 37
         assert!(output.stderr.is_empty(), "{output:?}");
         if operation == "install" {
             assert_original_cargo(&fixture.cargo.with_file_name("cargo-tile-real"), &original);
-            assert_eq!(
-                fs::read(&fixture.cargo).expect("completed installation"),
-                include_bytes!("../src/cargo-capture-shim.sh")
-            );
+            assert_installed_shim(&fixture.cargo);
         } else {
             assert_original_cargo(&fixture.cargo, &original);
             assert!(!fixture.cargo.with_file_name("cargo-tile-real").exists());

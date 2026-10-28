@@ -72,7 +72,7 @@ impl SummaryTree {
         assert_eq!(groups[0].lead.pid, driver);
         assert_eq!(groups[0].rest.len(), self.argv.len() - 1);
         let mut roster = Roster::new();
-        roster.observe(groups, Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, Instant::now()));
         roster
     }
 
@@ -128,7 +128,7 @@ impl SummaryTree {
             .collect();
         let groups = samples.last().expect("thirteen observations").clone();
         let mut roster = Roster::new();
-        roster.observe(groups, Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, Instant::now()));
         roster
     }
 
@@ -182,7 +182,9 @@ impl SummaryTree {
             Measurement::Reading("50%")
         };
         let mut roster = Roster::new();
-        roster.observe(groups.to_vec(), Instant::now());
+        roster.observe_invocations(
+            &roster.fixture_with_ended_absences(groups.to_vec(), Instant::now()),
+        );
         let rows = command_cpu(&roster);
         assert!(
             rows.contains(&(first, parent_cpu.map(str::to_owned))),
@@ -244,7 +246,7 @@ impl SummaryTree {
             "the injected invocation must survive group assembly"
         );
         let mut roster = Roster::new();
-        roster.observe(groups, Instant::now());
+        roster.observe_invocations(&roster.fixture_with_ended_absences(groups, Instant::now()));
         roster
     }
 

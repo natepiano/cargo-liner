@@ -1,9 +1,14 @@
 //! Invocation identity and continuity across scans.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ffi::OsString;
+use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::path::Path;
 
+use rustix::io::Errno;
 use sysinfo::Pid;
 use uuid::Uuid;
 
@@ -11,6 +16,7 @@ use super::command_text;
 use crate::birth_stamp::BirthStamp;
 use crate::birth_stamp::LifetimeEvidence;
 use crate::birth_stamp::ProcessLifetime;
+use crate::birth_stamp::Verification;
 use crate::constants::CARGO_SUBCOMMAND_PREFIX;
 use crate::progress::capture::CaptureKey;
 use crate::progress::capture::CaptureRootIndex;
@@ -96,6 +102,42 @@ pub(crate) struct RunId {
     pub(crate) birth:       BirthStamp,
 }
 
+/// Only matching registration and native birth evidence authorizes native adoption.
+pub(super) struct LifetimeMatch {
+    native: InvocationId,
+}
+
+/// Unknown evidence cannot authorize a join, just as contradictory evidence cannot.
+pub(super) enum LifetimeContradiction {
+    Different,
+    Unavailable,
+}
+
+impl LifetimeMatch {
+    pub(super) fn prove(
+        run: &RunId,
+        evidence: &LifetimeEvidence,
+    ) -> Result<Self, LifetimeContradiction> {
+        match evidence {
+            LifetimeEvidence::Available(lifetime) => {
+                match lifetime.compare_registration(&run.birth) {
+                    Verification::Confirmed => Ok(Self {
+                        native: InvocationId::Process(ProcessIdentity::Known {
+                            pid:      run.shim_pid,
+                            lifetime: lifetime.clone(),
+                        }),
+                    }),
+                    Verification::Ended => Err(LifetimeContradiction::Different),
+                    Verification::Unknown => Err(LifetimeContradiction::Unavailable),
+                }
+            },
+            LifetimeEvidence::Unavailable => Err(LifetimeContradiction::Unavailable),
+        }
+    }
+
+    pub(super) fn into_native(self) -> InvocationId { self.native }
+}
+
 /// Process lifetime evidence never substitutes registration comparison seconds.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) enum ProcessIdentity {
@@ -110,16 +152,125 @@ pub(crate) enum ProcessIdentity {
     Unavailable {
         /// Retain the displayed process even when its lifetime cannot be read.
         pid:         u32,
-        /// Retired once this pid disappears from a scan, even if the pid returns.
+        /// Retired only when an end or a contradicting native birth is proven.
         observation: Uuid,
     },
 }
 
-/// Retain unavailable row identities only while their pids remain continuously observed.
+/// Every retired lifetime stays terminal through later cycles on the same PID.
+/// Each retirement supplies the next stable replacement observation.
+#[derive(Default)]
+pub(super) struct TerminalIdentities(HashMap<Pid, TerminalIdentity>);
+
+struct TerminalIdentity {
+    ended:       HashSet<InvocationId>,
+    replacement: InvocationId,
+}
+
+impl TerminalIdentities {
+    pub(super) fn end(&mut self, pid: Pid, identity: &InvocationId) {
+        let terminal = self.0.entry(pid).or_insert_with(|| TerminalIdentity {
+            ended:       HashSet::new(),
+            replacement: identity.clone(),
+        });
+        if terminal.ended.insert(identity.clone()) {
+            terminal.replacement = InvocationId::Process(ProcessIdentity::observed(
+                pid.as_u32(),
+                LifetimeEvidence::Unavailable,
+            ));
+        }
+    }
+
+    /// Terminal aliases remain only while a retained observation or binding names them.
+    pub(super) fn retain(&mut self, evidence: &HashSet<InvocationId>) {
+        self.0.retain(|_, terminal| {
+            terminal
+                .ended
+                .retain(|identity| evidence.contains(identity));
+            !terminal.ended.is_empty()
+        });
+    }
+
+    pub(super) fn subsequent(&self, pid: Pid, identity: &InvocationId) -> InvocationId {
+        self.0
+            .get(&pid)
+            .filter(|terminal| terminal.ended.contains(identity))
+            .map_or_else(|| identity.clone(), |terminal| terminal.replacement.clone())
+    }
+}
+
+/// Missing observations retain their identity until an end or replacement is proven.
 #[derive(Default)]
 pub(crate) struct ProcessIdentities {
-    /// This map is replaced by each scan, so absent pids cannot retain row continuity.
-    present: HashMap<Pid, ProcessIdentity>,
+    /// Both present and missing processes own their original identity.
+    present: HashMap<Pid, ObservedProcess>,
+}
+
+/// A missing kernel read cannot contradict the last known start time.
+#[derive(Clone)]
+enum ProcessLifetimeObservation {
+    Known(ProcessLifetime),
+    Unreadable,
+}
+
+struct ObservedProcess {
+    identity: ProcessIdentity,
+    lifetime: ProcessLifetimeObservation,
+}
+
+/// Only a successful kernel absence probe can retire a missing identity.
+pub(crate) struct ProvenProcessEnd {
+    pid: Pid,
+}
+
+/// A present process, an invalid pid, and a failed kernel probe are distinct evidence.
+#[derive(Debug)]
+pub(super) enum ProcessEndUnproven {
+    Alive,
+    PidOutOfRange,
+    Probe(Errno),
+}
+
+impl Display for ProcessEndUnproven {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Alive => formatter.write_str("process is alive"),
+            Self::PidOutOfRange => formatter.write_str("pid is outside the native pid range"),
+            Self::Probe(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl ProvenProcessEnd {
+    pub(super) fn probe(pid: Pid) -> Result<Self, ProcessEndUnproven> {
+        let native = rustix::process::Pid::from_raw(
+            i32::try_from(pid.as_u32()).map_err(|_| ProcessEndUnproven::PidOutOfRange)?,
+        )
+        .ok_or(ProcessEndUnproven::PidOutOfRange)?;
+        match rustix::process::test_kill_process(native) {
+            Err(rustix::io::Errno::SRCH) => Ok(Self { pid }),
+            Err(error) => Err(ProcessEndUnproven::Probe(error)),
+            Ok(()) => Err(ProcessEndUnproven::Alive),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(pid: Pid) -> Self { Self { pid } }
+}
+
+impl From<&LifetimeEvidence> for ProcessLifetimeObservation {
+    fn from(evidence: &LifetimeEvidence) -> Self {
+        match evidence {
+            LifetimeEvidence::Available(start) => Self::Known(start.clone()),
+            LifetimeEvidence::Unavailable => Self::Unreadable,
+        }
+    }
+}
+
+impl ProcessLifetimeObservation {
+    fn contradicts(&self, other: &Self) -> bool {
+        matches!((self, other), (Self::Known(a), Self::Known(b)) if a != b)
+    }
 }
 
 impl ProcessIdentities {
@@ -128,24 +279,56 @@ impl ProcessIdentities {
         &mut self,
         lifetimes: &HashMap<Pid, LifetimeEvidence>,
     ) -> HashMap<Pid, InvocationId> {
-        self.present = lifetimes
-            .iter()
-            .map(|(&pid, lifetime)| {
-                let identity = match (lifetime, self.present.get(&pid)) {
-                    (
-                        LifetimeEvidence::Unavailable,
-                        Some(identity @ ProcessIdentity::Unavailable { .. }),
-                    ) => identity.clone(),
-                    _ => ProcessIdentity::observed(pid.as_u32(), lifetime.clone()),
-                };
-                (pid, identity)
-            })
-            .collect();
-        self.present
-            .iter()
-            .map(|(&pid, identity)| (pid, InvocationId::Process(identity.clone())))
-            .collect()
+        let mut observed = HashMap::new();
+        for (&pid, lifetime) in lifetimes {
+            let reading = ProcessLifetimeObservation::from(lifetime);
+            let previous = self
+                .present
+                .get(&pid)
+                .filter(|old| !old.lifetime.contradicts(&reading));
+            let identity = previous.map_or_else(
+                || ProcessIdentity::observed(pid.as_u32(), lifetime.clone()),
+                |old| old.identity.clone(),
+            );
+            let lifetime = match reading {
+                ProcessLifetimeObservation::Unreadable => {
+                    previous.map_or_else(|| reading.clone(), |old| old.lifetime.clone())
+                },
+                known @ ProcessLifetimeObservation::Known(_) => known,
+            };
+            observed.insert(pid, InvocationId::Process(identity.clone()));
+            self.present
+                .insert(pid, ObservedProcess { identity, lifetime });
+        }
+        observed
     }
+
+    /// Remove missing subjects only after a kernel absence proof for that pid.
+    pub(super) fn retire_missing(
+        &mut self,
+        lifetimes: &HashMap<Pid, LifetimeEvidence>,
+        mut probe: impl FnMut(Pid) -> Result<ProvenProcessEnd, ProcessEndUnproven>,
+    ) {
+        let ended: Vec<_> = self
+            .present
+            .keys()
+            .copied()
+            .filter(|pid| !lifetimes.contains_key(pid))
+            .filter_map(|pid| probe(pid).ok())
+            .collect();
+        for proof in ended {
+            self.finish(&proof);
+        }
+    }
+
+    pub(super) fn retained(&self) -> impl Iterator<Item = InvocationId> + '_ {
+        self.present
+            .values()
+            .map(|process| InvocationId::Process(process.identity.clone()))
+    }
+
+    /// The caller must carry the end proof for the exact PID being retired.
+    pub(crate) fn finish(&mut self, ended: &ProvenProcessEnd) { self.present.remove(&ended.pid); }
 }
 
 impl InvocationId {

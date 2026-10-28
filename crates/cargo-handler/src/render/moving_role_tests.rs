@@ -2,6 +2,8 @@
 
 #![expect(clippy::expect_used, reason = "rendered fixture rows must exist")]
 
+use tui_pane::AdmissibleCell;
+use tui_pane::NotAdmissible;
 use tui_pane::TileGrid;
 use tui_pane::TileGrowth;
 
@@ -15,10 +17,14 @@ use crate::census::transcript::SubagentRole;
 
 struct ShrinkingCells<'a> {
     cells:        Cells<'a>,
-    summary_rows: usize,
+    summary_rows: NonZeroU16,
 }
 
 impl TileCells<TileKey> for ShrinkingCells<'_> {
+    fn admission(&self, id: &TileKey) -> Result<AdmissibleCell<TileKey>, NotAdmissible<TileKey>> {
+        self.cells.admission(id)
+    }
+
     fn summary_title(&self) -> &'static str { "summary" }
 
     fn prepare_frame(&self, allocations: impl FnOnce() -> Vec<(TileContent, Rect)>) {
@@ -35,7 +41,7 @@ impl TileCells<TileKey> for ShrinkingCells<'_> {
 
     fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands {
         let mut demand = self.cells.demands(widths);
-        demand.summary = self.summary_rows;
+        demand.summary = SummaryDemand::new(usize::from(self.summary_rows.get()), []);
         demand
     }
 
@@ -82,7 +88,7 @@ fn shrinking_tiles_keep_the_entire_role_and_its_width_during_motion() {
             &HashMap::new(),
             SummarySort::default(),
         ),
-        summary_rows: 1,
+        summary_rows: NonZeroU16::MIN,
     };
     let growth = TileGrowth {
         initial_rows: 8,
@@ -106,7 +112,7 @@ fn shrinking_tiles_keep_the_entire_role_and_its_width_during_motion() {
     paint(&mut grid, &cells);
     grid.settle_for_test();
     let before = paint(&mut grid, &cells);
-    cells.summary_rows = 12;
+    cells.summary_rows = NonZeroU16::MIN.saturating_add(11);
     paint(&mut grid, &cells); // Establish the new destination before preparing the next frame.
     let moving = paint(&mut grid, &cells);
     let later = paint(&mut grid, &cells);

@@ -16,6 +16,36 @@ pub(crate) const ACCOUNT_HEADING_OPEN: &str = "[";
 /// Fewest cells retained from a shortened directory's last component.
 pub(crate) const HEADING_MIN_TAIL: u16 = 8;
 
+// census readers
+/// Detail readers sample four process groups at a time.
+pub(crate) const CENSUS_DETAIL_READER_COUNT: usize = 4;
+
+// census threads
+/// Thread attributing process resource use.
+pub(crate) const CENSUS_ATTRIBUTION_THREAD_NAME: &str = "cargo-tile-attribution";
+/// Thread reading capture registrations.
+pub(crate) const CENSUS_CAPTURE_THREAD_NAME: &str = "cargo-tile-capture";
+/// Prefix for numbered process metadata reader threads.
+pub(crate) const CENSUS_DETAIL_THREAD_PREFIX: &str = "cargo-tile-detail";
+/// Thread refreshing the process snapshot.
+pub(crate) const CENSUS_REFRESH_THREAD_NAME: &str = "cargo-tile-refresh";
+/// Thread publishing the process census.
+pub(crate) const CENSUS_THREAD_NAME: &str = "cargo-tile-census";
+
+// command arguments
+/// Direct cargo argv starts after its executable.
+pub(crate) const DIRECT_CARGO_ARGUMENTS_START: usize = 1;
+/// Wrapped cargo argv starts after the wrapper and cargo executable.
+pub(crate) const WRAPPED_CARGO_ARGUMENTS_START: usize = 2;
+
+// shell arguments
+/// POSIX shell arguments use a single quote delimiter.
+pub(crate) const SHELL_SINGLE_QUOTE: u8 = b'\'';
+/// Close a shell quote, escape one quote, then open it again.
+pub(crate) const SHELL_ESCAPED_SINGLE_QUOTE: &[u8] = b"'\\''";
+/// Each quoted argument ends before the next space.
+pub(crate) const SHELL_QUOTED_ARGUMENT_END: &[u8] = b"' ";
+
 // configuration
 /// Argument names shown before the full-arguments key is enabled.
 pub(crate) const DEFAULT_ARGUMENTS: [&str; 3] = ["all-targets", "fix", "workspace"];
@@ -174,8 +204,6 @@ pub(crate) const SUMMARY_WITHOUT_ROWS_READOUT_WIDTH: u16 = 28;
 /// Seconds a finished row stays on screen, greyed, before it goes, when
 /// `config.toml` says nothing.
 pub(crate) const DEFAULT_FADE_SECONDS: u64 = 3;
-/// Distance between fade alpha levels that keep built-in ink contrast monotone.
-pub(crate) const FADE_ALPHA_STEP: u8 = 2;
 /// Contrast floor for a finished row through the first half of its fade.
 #[cfg(test)]
 pub(crate) const MIN_FINISHED_ROW_CONTRAST: f64 = 3.0;
@@ -294,9 +322,13 @@ pub(crate) const CENSUS_TEST_CPU_REPORT_MILLIS: u64 = 50;
 /// The CPU smoothing window in PTY tests, in milliseconds.
 #[cfg(test)]
 pub(crate) const CENSUS_TEST_CPU_SMOOTHING_MILLIS: u64 = 100;
+/// Frame borders and the content readout around a command body.
+pub(crate) const CELL_FRAME_CHROME_ROWS: u16 = 3;
 /// Index of the `command` column in [`TABLE_HEADERS`], ahead of the
 /// compiler and run counts that describe an invocation.
 pub(crate) const COMMAND_COLUMN: usize = 7;
+/// Header, path and first process row needed for a command body.
+pub(crate) const COMMAND_FIRST_CONTENT_ROWS: u16 = TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT + 1;
 /// Index of the `compiler` column in [`TABLE_HEADERS`].
 pub(crate) const COMPILER_COLUMN: usize = 8;
 /// Compiler driver names counted under each cargo invocation, in
@@ -373,6 +405,8 @@ pub(crate) const MANAGED_COLUMN: usize = 9;
 pub(crate) const MEMORY_COLUMN: usize = 5;
 /// Unit suffix for resident-memory readings.
 pub(crate) const MEMORY_UNIT: &str = "G";
+/// Fresh discovery observations retaining an invocation with an inconclusive absence probe.
+pub(crate) const MISSING_SCAN_LIMIT: u64 = 2;
 /// Shown in place of the table when no cargo is running.
 pub(crate) const NO_PROCESSES_NOTE: &str = "no cargo processes running";
 /// Index of the `parent` column in [`TABLE_HEADERS`], which names what
@@ -624,6 +658,12 @@ pub(crate) const CAPTURE_UNUSED_SELECTED_UNCONFIRMED: &str =
     "selected root is unconfirmed; another root cannot supply its fields";
 
 // capture shim
+#[path = "constants/shim_options.rs"]
+mod shim_options;
+
+pub(crate) use shim_options::SHIM_GLOBAL_OPTIONS_PLACEHOLDER;
+pub(crate) use shim_options::SHIM_OPTION_PATTERN_SEPARATOR;
+
 /// Every account can traverse and execute the staged executable; only its owner can write.
 pub(crate) const ACCOUNT_EXECUTABLE_MODE: u32 = 0o755;
 /// A random suffix keeps concurrent administrative commands in separate directories.
@@ -736,13 +776,19 @@ pub(crate) const BIRTH_MACOS_BOOT_SEPARATOR: &str = ", usec = ";
 /// Everything after this delimiter is sysctl's localized display date.
 pub(crate) const BIRTH_MACOS_BOOT_SUFFIX: &str = " }";
 /// A timeval has strictly fewer than one million fractional microseconds.
-pub(crate) const BIRTH_MICROSECONDS_PER_SECOND: u32 = 1_000_000;
+pub(crate) const BIRTH_MICROSECONDS_PER_SECOND: u64 = 1_000_000;
 /// Process stat files supply the unrounded kernel start counter.
 #[cfg(target_os = "linux")]
 pub(crate) const BIRTH_PROC_DIRECTORY: &str = "/proc";
 /// The process name ends at the final parenthesis, even if it contains spaces.
 #[cfg(target_os = "linux")]
 pub(crate) const BIRTH_STAT_COMM_END: u8 = b')';
+/// Separate the command name from the process state in a stat record.
+#[cfg(target_os = "linux")]
+pub(crate) const BIRTH_STAT_COMM_SEPARATOR: &str = ") ";
+/// A zombie process cannot provide live invocation evidence.
+#[cfg(target_os = "linux")]
+pub(crate) const BIRTH_STAT_ZOMBIE_STATE: char = 'Z';
 /// Each pid directory exposes its birth counter in this kernel-generated file.
 #[cfg(target_os = "linux")]
 pub(crate) const BIRTH_STAT_FILENAME: &str = "stat";

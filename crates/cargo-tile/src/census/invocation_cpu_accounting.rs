@@ -29,7 +29,6 @@ use super::cpu_observation;
 #[cfg(test)]
 use super::cpu_observation::CpuScanPublication;
 use super::process_identity::InvocationId;
-use super::process_identity::ProcessIdentities;
 use super::process_identity::ProcessIdentity;
 #[cfg(test)]
 use super::scan;
@@ -270,8 +269,6 @@ pub(super) struct InvocationCpuAccounting {
     pub(super) targets:         HashMap<InvocationId, HashSet<PathBuf>>,
     /// A compiler lifetime can never donate its accumulated history to another invocation.
     pub(super) cache_owners:    HashMap<ProcessIdentity, InvocationId>,
-    /// Unavailable lifetime reads retain rows only during continuous pid presence.
-    pub(super) identities:      ProcessIdentities,
     /// Bind the pre-refresh counters to the lifetime observed with their last sample.
     pub(super) observed:        HashMap<Pid, LifetimeEvidence>,
     /// Where each invocation's reading has settled, moved on every scan.
@@ -714,11 +711,13 @@ impl InvocationCpuAccounting {
             present.insert(process.clone());
             let owner = self
                 .owners
-                .entry(process)
+                .entry(process.clone())
                 .or_insert_with(|| identity.clone());
             if let InvocationId::Captured(_) = identity {
                 let previous = std::mem::replace(owner, identity.clone());
                 if matches!(previous, InvocationId::Process(_)) {
+                    #[cfg(test)]
+                    cpu_observation::owner_join(&process, &previous, identity);
                     self.reidentify_owner(&previous, identity);
                 }
             }

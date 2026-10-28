@@ -279,8 +279,8 @@ mod tests {
     #[test]
     fn macos_discards_fractional_seconds_but_linux_keeps_individual_ticks() {
         let record = BirthStamp::from_fields("boot", "101");
-        let birth = Duration::from_secs(101)
-            + Duration::from_micros(u64::from(BIRTH_MICROSECONDS_PER_SECOND - 1));
+        let birth =
+            Duration::from_secs(101) + Duration::from_micros(BIRTH_MICROSECONDS_PER_SECOND - 1);
         assert_eq!(
             record.compare(&Observation::Present(BirthStamp::macos(
                 "boot".to_owned(),

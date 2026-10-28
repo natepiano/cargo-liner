@@ -20,6 +20,7 @@ import select
 import shlex
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -36,8 +37,53 @@ if TYPE_CHECKING:
     Foreground = tuple[int, ...] | None
     Snapshot = tuple[str, list[list[Foreground]]]
 
+def watch_scenario(root: Path) -> None:
+    """The Rust owner's pipe is the lifetime of all registered process groups."""
+    groups: set[int] = set()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(root / 'cleanup.sock'))
+        listener.listen()
+        print('ready', flush=True)
+        try:
+            while True:
+                readable, _, _ = select.select([sys.stdin, listener], [], [])
+                if sys.stdin in readable and not os.read(sys.stdin.fileno(), 1):
+                    break
+                if listener in readable:
+                    with listener.accept()[0] as connection:
+                        group = int(connection.makefile('rb').readline())
+                        assert group > 1 and group != os.getpgrp(), group
+                        groups.add(group)
+                        connection.sendall(b'R')
+        finally:
+            # Closing the listener prevents a late child from running unregistered.
+            listener.close()
+            for group in groups:
+                try:
+                    os.killpg(group, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            shutil.rmtree(root)
+
+
+def register_scenario_group(root: Path) -> None:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.connect(str(root / 'cleanup.sock'))
+        connection.sendall((str(os.getpgrp()) + '\n').encode())
+        assert connection.recv(1) == b'R', 'scenario owner closed before group registration'
+
+
+if sys.argv[1] == '--watch-scenario':
+    watch_scenario(Path(sys.argv[2]))
+    sys.exit(0)
+
+if sys.argv[1] == '--owned-exec':
+    register_scenario_group(Path(sys.argv[2]))
+    os.execvpe(sys.argv[3], sys.argv[3:], os.environ)
+
 root = Path(sys.argv[1]).resolve()
 binary, source, scenario, observation_argument, smoothing_argument, *deadline_arguments = sys.argv[2:]
+register_scenario_group(root)
 timestamps_requested = os.environ.get('CARGO_TILE_READER_TIMESTAMPS') == '1'
 timestamp_origin = time.monotonic()
 previous_timestamp = timestamp_origin
@@ -71,9 +117,11 @@ READER_SCENARIOS = (
 SELF_CHECK_SCENARIOS = (
     '--cpu-duplicate-self-check', '--cpu-kernel-self-check', '--cpu-boundary-self-check',
     '--cpu-changing-load-self-check', '--cpu-delayed-drain-self-check',
+    '--cpu-stopped-snapshot-self-check', '--cpu-pending-self-check', '--cpu-owner-join-self-check',
     '--blocked-invocation-self-check',
     '--concurrent-deadline-self-check', '--cpu-observation-self-check', '--reader-end-self-check',
     '--scenario-deadline-self-check', '--terminal-frame-self-check',
+    '--driver-death-self-check',
 )
 assert scenario in READER_SCENARIOS or scenario in SELF_CHECK_SCENARIOS, scenario
 assert len(deadline_arguments) <= 1, deadline_arguments
@@ -287,6 +335,7 @@ def start_reader_process(reader_environment: dict[str, str]) -> None:
     record_timestamp('reader exec')
     reader, terminal = pty.fork()
     if reader == 0:
+        register_scenario_group(root)
         _ = fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
         os.chdir(root)
         if scenario == 'settings-scroll-burst':
@@ -348,6 +397,10 @@ class LaunchedWriter:
         self.writer_home = writer_home
         self.nested_observations = nested_observations
 
+def owned_group_command(arguments: list[str]) -> list[str]:
+    return [sys.executable, '-S', __file__, '--owned-exec', str(root), *arguments]
+
+
 def launch_writer(name: str, writer_home: Path, command: str = 'build',
                   directory: Path = work, arguments: tuple[str, ...] = (),
                   additional_environment: tuple[tuple[str, str], ...] = (),
@@ -363,7 +416,7 @@ def launch_writer(name: str, writer_home: Path, command: str = 'build',
         nested.mkdir()
         writer_notifications[nested] = WriterNotification(nested)
     with (observations / 'output').open('wb') as output:
-        child = subprocess.Popen(['sh', str(bin_directory / 'cargo'), command, name, *arguments],
+        child = subprocess.Popen(owned_group_command(['sh', str(bin_directory / 'cargo'), command, name, *arguments]),
                                  cwd=directory, env=child_environment, stdin=subprocess.DEVNULL,
                                  stdout=output, stderr=output, start_new_session=True)
     writers.append((child, observations))
@@ -548,7 +601,7 @@ IFS= read -r notification < "$OBSERVED/notification"
     # A new session keeps the compiler server outside every cargo process tree.
     with (server / 'output').open('wb') as output:
         server_process = subprocess.Popen(
-            [str(bin_directory / 'sccache'), str(service)], env=server_environment,
+            owned_group_command([str(bin_directory / 'sccache'), str(service)]), env=server_environment,
             stdin=subprocess.DEVNULL, stdout=output, stderr=output, start_new_session=True)
     cache_server_process = server_process
     detached_servers.append(server_process)
@@ -710,6 +763,20 @@ def assert_compiler_counter(recorded: float, independent: float) -> None:
         'recorded compiler CPU differs from its stopped kernel counter', recorded, independent)
 
 
+def compiler_counter_reaches_stop(recorded: float, independent: float) -> bool:
+    return recorded >= independent - 0.001
+
+
+def assert_stopped_compiler_snapshot() -> None:
+    assert not compiler_counter_reaches_stop(1.442, 1.486304375), \
+        'an attribution reply with a discovery counter from before SIGSTOP completes the kernel check'
+    assert compiler_counter_reaches_stop(1.486, 1.486304375)
+    assert compiler_counter_reaches_stop(1.486304375, 1.486304375)
+    assert not compiler_counter_reaches_stop(0.001486304375, 1.486304375)
+    assert_rejected(lambda: assert_compiler_counter(1486.304375, 1.486304375),
+                    'a larger counter in wrong units is accepted after stop')
+
+
 class MacProcessUsage(ctypes.Structure):
     # sys/resource.h::rusage_info_v0, selected by RUSAGE_INFO_V0 (0).
     _fields_ = [('uuid', ctypes.c_ubyte * 16),
@@ -748,17 +815,16 @@ def stopped_compiler_cpu(compiler: int, scan_path: Path, deadline: float) -> Non
             assert read_timebase(ctypes.byref(timebase)) == 0, 'read Mach CPU timebase'
             ticks = usage.user_time + usage.system_time
             independent = ticks * timebase.numerator / timebase.denominator / NANOSECONDS_PER_SECOND
-        last = read_cpu_scans(scan_path)[-1].number
-        # One scan can have read its counters before SIGSTOP. The following scan
-        # must read the stopped compiler. Completion follows scan sequence events.
+        # Attribution can complete after SIGSTOP using an older discovery snapshot.
+        # Wait for the recorded counter to reach the sealed stopped kernel counter.
         def next_stopped_scan() -> bool:
             scans = read_cpu_scans(scan_path)
-            if scans[-1].number < last + 2:
-                return False
             counters = [counter for groups in scans[-1].counters.values()
                         for group in groups.values() for identity, counter in group.items()
                         if process_identity_pid(identity) == compiler]
             assert len(counters) == 1, ('stopped compiler contribution count', counters)
+            if not compiler_counter_reaches_stop(counters[0], independent):
+                return False
             assert_compiler_counter(counters[0], independent)
             return True
         wait_for(next_stopped_scan, 'reader does not scan the stopped compiler', pause=0, deadline=deadline)
@@ -790,6 +856,7 @@ class UniqueProcessContributions:
 @dataclass(frozen=True)
 class FixtureCpuOwnership:
     processes: dict[int, frozenset[int]]
+    carried: dict[str, tuple[int, float]] = field(default_factory=dict)
 
     @classmethod
     def observe(cls, requester: int, unrelated: int, compiler: int) -> FixtureCpuOwnership:
@@ -811,10 +878,29 @@ class FixtureCpuOwnership:
             unique = UniqueProcessContributions.from_groups(scan.counters.get(owner, {}))
             actual = [process_identity_pid(identity) for identity in unique.counters]
             assert len(actual) == len(set(actual)), ('one live pid has multiple CPU identities', actual)
-            assert set(actual) == expected, ('CPU process set differs from fixture ancestry', owner, actual, expected)
+            pending = {process_identity_pid(identity): (identity, counter)
+                       for identity, counter in scan.pending_metadata.items()}
+            missing = expected - set(actual)
+            assert set(actual) <= expected and missing <= pending.keys(), \
+                ('CPU process set differs from fixture ancestry', scan.number, owner, actual, expected, {pid: pending[pid] for pid in expected & pending.keys()})
+            for pid in missing:
+                identity, counter = pending[pid]
+                previous_owner, previous_counter = self.carried.get(identity, (owner, 0.0))
+                assert previous_owner == owner, ('pending CPU changes expected owner', identity, owner)
+                self.carried[identity] = (owner, max(previous_counter, counter))
+            for identity, counter in unique.counters.items():
+                if identity in self.carried:
+                    expected_owner, carried_counter = self.carried[identity]
+                    assert owner == expected_owner and counter >= carried_counter, \
+                        ('first attributed scan loses carried CPU', identity, owner, counter, expected_owner, carried_counter)
+                    del self.carried[identity]
             assert charged.isdisjoint(actual), ('process CPU belongs to two invocations', actual)
             charged.update(actual)
             assert not scan.nested.get(owner), ('CPU fixture has no nested invocation', scan)
+
+
+    def finish(self) -> None:
+        assert not self.carried, ('pending CPU has no completed attribution', self.carried)
 
 
 
@@ -862,6 +948,57 @@ def assert_exact_cpu_deadlines() -> None:
             assert abs(cpu_percent(shown) - 100 * math.exp(-1)) < 0.000001, shown
 
 
+def assert_native_owner_join() -> None:
+    native = 'Known { pid: 10, lifetime: first }'
+    previous = 'Process(' + native + ')'
+    captured = 'Captured(requester)'
+    oracle = NativeCpuOracle()
+    first = CpuScan(1, 0, owners={10: ('Reading(0.0)', previous)},
+                    counters={10: {'tree': {native: 0.1}}})
+    oracle.observe(first)
+    joined = CpuScan(2, 100_000_000, owners={10: ('Reading(0.0)', captured)},
+                     counters={10: {'tree': {native: 0.2}}})
+    joined.owner_joins = [(native, previous, captured)]
+    oracle.observe(joined)
+    assert isinstance(oracle.histories[captured].baseline, CpuCounterBaseline)
+    assert oracle.histories[captured].baseline.counter == 0.2
+    assert isinstance(oracle.reported[captured], CpuPercent), 'capture join keeps the prior native sample'
+    replacement = 'Known { pid: 10, lifetime: second }'
+    reused = CpuScan(3, 200_000_000, owners={10: ('Reading(0.0)', 'Process(' + replacement + ')')},
+                     counters={10: {'tree': {replacement: 0.01}}})
+    shown = oracle.observe(reused)[10]
+    assert isinstance(shown, UnavailableCpuReading), 'a different lifetime starts with FirstObservation'
+    reused.owner_joins = [(replacement, previous, 'Captured(other)')]
+    assert_rejected(lambda: oracle.observe(reused), 'a join with a different native lifetime is accepted')
+
+
+def assert_pending_cpu_carry() -> None:
+    requester = 'Known { pid: 10, lifetime: requester }'
+    compiler = 'Known { pid: 30, lifetime: compiler }'
+    ownership = FixtureCpuOwnership({10: frozenset({10, 30})})
+    pending = CpuScan(1, 0, owners={10: ('Reading(0.0)', 'requester')},
+                      counters={10: {'tree': {requester: 0.1}}})
+    pending.pending_metadata = {compiler: 0.2}
+    ownership.check(pending)
+    complete = CpuScan(2, 100_000_000, owners={10: ('Reading(0.0)', 'requester')},
+                       counters={10: {'tree': {requester: 0.1}, 'compiler': {compiler: 0.35}}})
+    ownership.check(complete)
+    # A recorded pending interval must reach the expected owner in the first reply.
+    ownership.check(pending)
+    complete.counters[10]['compiler'][compiler] = 0.05
+    assert_rejected(lambda: ownership.check(complete), 'pending compiler CPU is dropped')
+    complete.counters = {10: {'tree': {requester: 0.1}}, 20: {'compiler': {compiler: 0.35}}}
+    assert_rejected(lambda: ownership.check(complete), 'pending compiler CPU changes owner')
+    complete.counters = {10: {'tree': {requester: 0.1}, 'compiler': {compiler: 0.35}}}
+    ownership.check(complete)
+    assert not ownership.carried, ('completed counter leaves a carry', ownership.carried)
+    ownership.check(pending)
+    assert_rejected(ownership.finish, 'unfinished pending CPU is accepted')
+    ownership.check(complete)
+    unmarked = CpuScan(3, 200_000_000, counters={10: {'tree': {requester: 0.1}}})
+    assert_rejected(lambda: ownership.check(unmarked), 'unmarked missing compiler CPU is accepted')
+
+
 class CounterRetention(Enum):
     REAPED_CHILDREN = 'true'
     PROCESS_LIFETIMES = 'false'
@@ -873,6 +1010,8 @@ class CpuScan:
     cadence: tuple[int, int, int, CounterRetention] = (50_000_000, 50_000_000, 100_000_000, CounterRetention.PROCESS_LIFETIMES)
     owners: dict[int, tuple[str, str]] = field(default_factory=dict)
     counters: dict[int, dict[str, dict[str, float]]] = field(default_factory=dict)
+    owner_joins: list[tuple[str, str, str]] = field(default_factory=list)
+    pending_metadata: dict[str, float] = field(default_factory=dict)
     nested: dict[int, dict[str, float]] = field(default_factory=dict)
     results: dict[int, tuple[float, CpuReading, CpuReading, CpuReading]] = field(default_factory=dict)
 
@@ -944,6 +1083,10 @@ def read_cpu_scans(path: Path) -> list[CpuScan]:
                 group = pending.counters.setdefault(int(fields[1]), {}).setdefault(fields[2], {})
                 assert fields[3] not in group, ('duplicate counter record', fields)
                 group[fields[3]] = float(fields[4])
+            elif fields[0] == 'owner-join':
+                pending.owner_joins.append((fields[1], fields[2], fields[3]))
+            elif fields[0] == 'pending-metadata':
+                pending.pending_metadata[fields[1]] = float(fields[2])
             elif fields[0] == 'nested':
                 pending.nested.setdefault(int(fields[1]), {})[fields[2]] = float(fields[3])
             elif fields[0] == 'result':
@@ -989,6 +1132,7 @@ class NativeCpuOracle:
     """Apply the public accounting rules independently to supplied native inputs."""
     def __init__(self) -> None:
         self.histories: dict[str, NativeCpuHistory] = {}
+        self.native_owners: dict[str, str] = {}
         self.settled: dict[str, CpuReading] = {}
         self.reported: dict[str, CpuReading] = {}
         self.previous: ObservedCpuTime | CpuScanClock = CpuScanClock.AWAITING_FIRST_SCAN
@@ -999,6 +1143,19 @@ class NativeCpuOracle:
         elapsed = poll if isinstance(self.previous, CpuScanClock) else scan.at - self.previous.at
         self.previous = ObservedCpuTime(scan.at)
         alpha = 1 - math.exp(-elapsed / smoothing)
+        for native, previous, captured in scan.owner_joins:
+            assert previous == 'Process(' + native + ')', ('join names a different native lifetime', native, previous)
+            assert self.native_owners.get(native, previous) == previous, ('native owner differs before join', native, previous)
+            if previous in self.histories:
+                self.histories.setdefault(captured, self.histories.pop(previous))
+            self.native_owners[native] = captured
+        native_present = set(scan.pending_metadata)
+        for pid, (_, owner) in scan.owners.items():
+            for native in scan.counters.get(pid, {}).get('tree', {}):
+                if native.startswith('Known {') and process_identity_pid(native) == pid:
+                    self.native_owners[native] = owner
+                    native_present.add(native)
+        self.native_owners = {native: owner for native, owner in self.native_owners.items() if native in native_present}
         present = {identity for _, identity in scan.owners.values()}
         self.histories = {key: value for key, value in self.histories.items() if key in present}
         self.settled = {key: value for key, value in self.settled.items() if key in present}
@@ -1049,6 +1206,7 @@ def assert_cpu_attribution(frames: list[tuple[int, int, str]], writer: StartedWr
     for scan in scans:
         ownership.check(scan)
         expected[scan.number] = oracle.observe(scan)
+    ownership.finish()
     by_number = {scan.number: scan for scan in scans}
     compiler = int((root / 'cpu-server/compiler-pid').read_text())
     requester = int((writer[1] / 'cargo-pid').read_text())
@@ -1058,7 +1216,9 @@ def assert_cpu_attribution(frames: list[tuple[int, int, str]], writer: StartedWr
         compiler_owners = {pid for pid, groups in scan.counters.items()
                            for group, counters in groups.items() if group != 'tree'
                            and any(re.match(r'Known \{ pid: ' + str(compiler) + r',', identity) for identity in counters)}
-        assert compiler_owners == {requester}, ('compiler CPU has the wrong invocation', compiler_owners, scan)
+        compiler_pending = any(process_identity_pid(identity) == compiler for identity in scan.pending_metadata)
+        assert compiler_owners <= {requester} and (compiler_pending or compiler_owners == {requester}), \
+            ('compiler CPU has the wrong invocation', compiler_owners, scan)
         for observed, charged in cpu_readings_in_frame(rendered, (writer, unrelated)):
             pid = requester if observed[1] == writer[1] else other
             value = expected[number][pid]
@@ -1687,6 +1847,7 @@ def assert_reader_end_bounds_output_writer() -> None:
     global reader, terminal
     reader, terminal = pty.fork()
     if reader == 0:
+        register_scenario_group(root)
         _ = signal.setitimer(signal.ITIMER_REAL, 0)
         _ = signal.signal(signal.SIGTERM, signal.SIG_IGN)
         _ = os.write(1, b'reader ready\n')
@@ -1738,8 +1899,17 @@ if scenario == '--blocked-invocation-self-check':
 if scenario == '--cpu-duplicate-self-check':
     assert_duplicate_cpu_counter()
     sys.exit(0)
+if scenario == '--cpu-owner-join-self-check':
+    assert_native_owner_join()
+    sys.exit(0)
+if scenario == '--cpu-pending-self-check':
+    assert_pending_cpu_carry()
+    sys.exit(0)
 if scenario == '--cpu-kernel-self-check':
     assert_independent_compiler_counter()
+    sys.exit(0)
+if scenario == '--cpu-stopped-snapshot-self-check':
+    assert_stopped_compiler_snapshot()
     sys.exit(0)
 if scenario == '--cpu-boundary-self-check':
     assert_exact_cpu_deadlines()
@@ -1782,6 +1952,14 @@ if scenario == '--scenario-deadline-self-check':
         wait_for(lambda: False, 'deadline self-check predicate')
     finally:
         record_timestamp('cleanup')
+
+if scenario == '--driver-death-self-check':
+    prepare_fixture()
+    launch = launch_writer('probe-first', home)
+    finish_writer_start(launch)
+    print(launch.child.pid, flush=True)
+    signal.pause()
+    raise AssertionError('driver must be killed by its Rust owner')
 
 try:
     prepare_fixture()
@@ -1905,9 +2083,9 @@ IFS= read -r notification < "$OBSERVED/notification"
                     'probe-nested-' + root.name + '-' + command,
                     (enclosing_writer[1] / command / 'cargo-pid').read_text().strip(), rendered)
                 for command in ('check', 'test'))
-        elif scenario in ('locale', 'quiet-json-long'):
+        elif scenario in ('locale', 'quiet-json-long', 'root-headings'):
             marker_is_ready = blocked_invocation_in_rendered(marker, rendered)
-            if scenario == 'quiet-json-long':
+            if scenario in ('quiet-json-long', 'root-headings'):
                 cargo_pid = (first[1] / 'cargo-pid').read_text().strip()
                 marker_is_ready = marker_is_ready and native_invocation_is_ready(
                     marker, cargo_pid, rendered)
@@ -1977,6 +2155,7 @@ except Exception:
         except OSError as error:
             output = 'cannot read retained server output: ' + str(error)
         print('cache server output before cleanup:\n' + output, file=sys.stderr)
+
     raise
 finally:
     record_timestamp('cleanup start')

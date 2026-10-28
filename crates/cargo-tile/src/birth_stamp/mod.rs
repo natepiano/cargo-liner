@@ -62,7 +62,7 @@ impl BirthStamp {
             else {
                 return IdentityEvidence::Unavailable;
             };
-            if microseconds >= u64::from(BIRTH_MICROSECONDS_PER_SECOND) {
+            if microseconds >= BIRTH_MICROSECONDS_PER_SECOND {
                 return IdentityEvidence::Unavailable;
             }
             format!(

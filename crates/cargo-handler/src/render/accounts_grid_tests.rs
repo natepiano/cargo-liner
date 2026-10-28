@@ -74,7 +74,7 @@ fn draw_grid(app: &mut App) -> Buffer {
         0,
         // An 80-cell terminal must retain all rows even when a sort arrow adds demand.
         80,
-        u16::try_from(demand.summary + 3).expect("small summary"),
+        u16::try_from(demand.summary.required().saturating_add(3)).expect("fixture summary height"),
     );
     let mut buffer = Buffer::empty(area);
     tui_pane::draw_tile_grid(
@@ -111,6 +111,24 @@ fn draw_grid(app: &mut App) -> Buffer {
     *app.painted_summary.borrow_mut() = cells.painted_summary.into_inner();
     app.selections = cells.selections.into_inner();
     content
+}
+
+#[test]
+fn no_machines_and_no_accounts_reserve_no_summary_rows() {
+    let app = App::new_for_test().expect("test app");
+    let cells = Cells::new(
+        Vec::new(),
+        NOW,
+        app.footer_colors.colors(),
+        &app.tree_sorts,
+        app.summary_sort,
+    );
+    let demand = cells.demands(&[(TileContent::Summary, 80)]);
+    assert_eq!(
+        demand.summary.required(),
+        0,
+        "an empty summary must reserve no content row"
+    );
 }
 
 #[test]

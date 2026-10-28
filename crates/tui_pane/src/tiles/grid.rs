@@ -53,13 +53,18 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::num::NonZeroU16;
+use std::ops::Deref;
+use std::sync::Arc;
 use std::sync::OnceLock;
+use std::time::Duration;
 use std::time::Instant;
 
 use ratatui::layout::Layout;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
+use super::CellLifecycleTiming;
+use super::EndedCellDeparture;
 use super::action::TileAction;
 use super::constants::MIN_INITIAL_ROWS;
 use super::constants::MIN_TILE_HEIGHT;
@@ -67,7 +72,24 @@ use super::constants::MOVING_HEIGHT_PROBE_STEP;
 use super::constants::PROGRESS_SCALE;
 use super::constants::SUMMARY_SLOT_SHORTFALL_DIVISOR;
 use super::constants::TABLE_CELL;
+#[cfg(any(test, feature = "test-clock"))]
+use super::constants::TEST_MOTION_STEP_DIVISOR;
+use super::constants::TILE_BORDER_ROWS;
 use super::draw;
+use super::draw::CandidateCells;
+use super::draw::CellAdmission;
+use super::draw::CellContinuity;
+use super::draw::CellDeparture;
+use super::draw::CellEntryTimeline;
+use super::draw::CellFadeProgress;
+use super::draw::CellLifecycle;
+use super::draw::CellPresentation;
+use super::draw::DrawableCell;
+use super::draw::DrawableFragment;
+use super::draw::EndedCell;
+use super::draw::MeasuredDrawing;
+use super::draw::SummaryRowDeparture;
+use super::draw::VisibleInk;
 use super::growth::TileGrowth;
 use super::settings::CellRowDemand;
 use super::settings::SummaryRowAllocation;
@@ -100,6 +122,112 @@ pub struct TileDemand<Id> {
     pub rows: usize,
 }
 
+/// Summary rows measured by `TileCells`, with one family owner for each invocation row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SummaryDemand<Id>(SummaryRowDemand<Id>);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SummaryRowDemand<Id> {
+    Empty,
+    Rows { header: usize, owners: Vec<Id> },
+}
+
+impl<Id> SummaryDemand<Id> {
+    /// Check the empty case and retain the family owner of each painted invocation row.
+    #[must_use]
+    pub fn new(header: usize, owners: impl IntoIterator<Item = Id>) -> Self {
+        let owners = owners.into_iter().collect::<Vec<_>>();
+        Self(if header == 0 && owners.is_empty() {
+            SummaryRowDemand::Empty
+        } else {
+            SummaryRowDemand::Rows { header, owners }
+        })
+    }
+
+    /// Required content rows, excluding the shared outer borders.
+    #[must_use]
+    pub fn required(&self) -> usize {
+        match &self.0 {
+            SummaryRowDemand::Empty => 0,
+            SummaryRowDemand::Rows { header, owners } => header + owners.len(),
+        }
+    }
+
+    /// One family owner for each invocation row represented by this summary.
+    #[must_use]
+    pub fn listed(&self) -> &[Id] {
+        match &self.0 {
+            SummaryRowDemand::Empty => &[],
+            SummaryRowDemand::Rows { owners, .. } => owners,
+        }
+    }
+
+    const fn header(&self) -> usize {
+        match &self.0 {
+            SummaryRowDemand::Empty => 0,
+            SummaryRowDemand::Rows { header, .. } => *header,
+        }
+    }
+
+    pub(super) fn add_readout(&mut self, rows: u16) {
+        if let SummaryRowDemand::Rows { header, .. } = &mut self.0 {
+            *header += usize::from(rows);
+        }
+    }
+}
+
+impl<Id> Default for SummaryDemand<Id> {
+    fn default() -> Self { Self::new(1, []) }
+}
+
+/// Live commands represented by required summary rows, in discovery order.
+#[derive(Clone, Debug)]
+struct ListedCommands<Id>(Vec<Id>);
+
+impl<Id> ListedCommands<Id> {
+    /// Each command here has no cell in this frame.
+    #[must_use]
+    fn ids(&self) -> &[Id] { &self.0 }
+}
+
+/// Checked cell owners and the live commands that remain listed.
+#[derive(Clone, Debug)]
+pub struct FramePlacement<Id> {
+    cells:  Vec<Id>,
+    listed: ListedCommands<Id>,
+}
+
+impl<Id: Clone + Eq> FramePlacement<Id> {
+    /// The complement is constructed together with the drawn membership.
+    pub(super) fn from_outcome<'a>(required: &[Id], drawn: impl Iterator<Item = &'a Id>) -> Self
+    where
+        Id: 'a,
+    {
+        let mut cells = Vec::new();
+        for id in drawn {
+            if !cells.contains(id) {
+                cells.push(id.clone());
+            }
+        }
+        let listed = ListedCommands(
+            required
+                .iter()
+                .filter(|id| !cells.contains(id))
+                .cloned()
+                .collect(),
+        );
+        Self { cells, listed }
+    }
+
+    /// Commands with a whole cell in the published drawing.
+    #[must_use]
+    pub fn celled(&self) -> &[Id] { &self.cells }
+
+    /// Commands whose required row belongs to the summary.
+    #[must_use]
+    pub(super) fn listed(&self) -> &[Id] { self.listed.ids() }
+}
+
 /// What every cell of the grid is asking for, as one scan left it.
 ///
 /// Kept apart from the arrangement on purpose. The arrangement says
@@ -110,8 +238,8 @@ pub struct TileDemand<Id> {
 /// only re-divides the column it is already in.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TileDemands<Id> {
-    /// Rows the summary cell would draw given all the room it wants.
-    pub summary:       usize,
+    /// Required summary rows and the live commands listed there rather than in cells.
+    pub summary:       SummaryDemand<Id>,
     /// Columns the summary's widest line takes, inside the cell's
     /// borders. Read only under [`TileGrowth::widen_summary`], where the
     /// summary widens across columns until it holds this many; zero
@@ -124,7 +252,7 @@ pub struct TileDemands<Id> {
 impl<Id> Default for TileDemands<Id> {
     fn default() -> Self {
         Self {
-            summary:       0,
+            summary:       SummaryDemand::default(),
             summary_width: 0,
             groups:        Vec::new(),
         }
@@ -142,7 +270,13 @@ impl<Id: Clone + Eq + Debug> TileDemands<Id> {
     }
 
     /// The identity of every group that gets a cell, in order.
-    fn ids(&self) -> Vec<Id> { self.groups.iter().map(|demand| demand.id.clone()).collect() }
+    fn ids(&self) -> Vec<Id> {
+        self.groups
+            .iter()
+            .filter(|demand| demand.rows > 0)
+            .map(|demand| demand.id.clone())
+            .collect()
+    }
 
     /// Whether this scan still carries `id`, which is what tells a cell
     /// closing to make way for the order apart from one whose command
@@ -192,25 +326,57 @@ pub(super) struct TilePiece<Id> {
     identity:               CellIdentity<Id>,
     /// What and where the piece draws.
     pub(super) placement:   TilePlacement<Id>,
+    /// Ink sampled once before publication from the cell-owned lifecycle.
+    pub(super) ink:         PieceInk,
     /// Whether this piece draws the cell's name.
     pub(super) name:        PieceName,
     /// How this piece participates in motion-height probing.
     pub(super) height_snap: PieceHeightSnap,
 }
 
+/// The entering variant can carry only ink visible against its ground.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum PieceInk {
+    Entering(VisibleInk),
+    Leaving(CellFadeProgress),
+    Resident,
+}
+
+impl PieceInk {
+    pub(super) const fn amount(self) -> u8 {
+        match self {
+            Self::Entering(ink) => ink.fade().amount(),
+            Self::Leaving(ink) => ink.amount(),
+            Self::Resident => 0,
+        }
+    }
+}
+
 #[cfg(test)]
 impl<Id: Clone> TilePiece<Id> {
+    pub(super) fn copy_for_test(&self) -> Self {
+        Self {
+            identity:    self.identity.clone(),
+            placement:   TilePlacement {
+                content: self.placement.content.clone(),
+                frame:   self.placement.frame,
+            },
+            ink:         self.ink,
+            name:        self.name,
+            height_snap: self.height_snap,
+        }
+    }
+
     /// A hand-built paint fixture, with the same identity as its content.
     pub(super) fn for_test(content: TileContent<Id>, frame: PaneFrame, name: PieceName) -> Self {
         let identity = match &content {
             TileContent::Summary => CellIdentity::Summary,
-            TileContent::Group(id) => CellIdentity::Slot(Slot::Group(id.clone())),
-            TileContent::Empty(index) => {
-                CellIdentity::Slot(Slot::Empty(u64::try_from(*index).unwrap_or(u64::MAX)))
-            },
+            TileContent::Group(id) => CellIdentity::Group(id.clone()),
+            TileContent::Empty(index) => CellIdentity::Empty(tests::empty_cell_serial(*index)),
         };
         Self {
             identity,
+            ink: PieceInk::Resident,
             placement: TilePlacement { content, frame },
             name,
             height_snap: PieceHeightSnap::Settled,
@@ -240,6 +406,1081 @@ pub(super) struct TileDrawing<Id> {
     pub(super) pieces:       Vec<TilePiece<Id>>,
     /// Each column's band at the same point in the transition.
     pub(super) column_bands: Vec<Rect>,
+}
+
+/// `fit_painted_prefixes` rejects one retained assignment without withdrawing a cell.
+struct RetainedAssignmentDoesNotFit;
+
+/// `fit_required_viewport` rejects one packing; `capacity_columns` tries the next one.
+struct CandidateDoesNotFit;
+
+/// `capacity_columns` stores provider body measurements at each candidate width.
+enum CandidateMeasurements<Id> {
+    LayoutOnly,
+    Measured(Vec<CandidateBody<Id>>),
+}
+
+struct CandidateBody<Id> {
+    width:                 u16,
+    current_cell_capacity: CurrentCellCapacity<Id>,
+}
+
+/// `CellPackingRows` selects the rows checked by `fit_assigned_capacity`; painted prefixes never
+/// prove required fit.
+#[derive(Clone, Copy)]
+enum CellPackingRows {
+    Required,
+    Painted,
+    Prefix { oldest_cells: usize },
+}
+
+/// `RequiredMinima::check` returns `InsufficientViewport` when required rows do not fit.
+pub(super) struct InsufficientViewport;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CapacityPreparation {
+    Published,
+    Measure,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum AllocationFit {
+    Drawable,
+    TooShort,
+}
+
+#[derive(Clone, Copy)]
+enum CellMotionPhase {
+    Resident,
+    Opening,
+    Departure,
+}
+
+#[derive(Clone, Copy)]
+enum SurplusOrder {
+    Departures,
+    Residents,
+}
+
+#[derive(Clone, Copy)]
+enum ColumnLimit {
+    Unbounded,
+    AtMost(NonZeroU16),
+    NoColumns,
+}
+
+impl From<u16> for ColumnLimit {
+    fn from(columns: u16) -> Self { NonZeroU16::new(columns).map_or(Self::NoColumns, Self::AtMost) }
+}
+
+impl ColumnLimit {
+    fn cap(self, available: u16) -> u16 {
+        match self {
+            Self::Unbounded => available,
+            Self::AtMost(limit) => available.min(limit.get()),
+            Self::NoColumns => 0,
+        }
+    }
+}
+
+/// `RequiredMinima::check` authorizes capacity withdrawal from required bodies; optional rows do
+/// not enter the check.
+struct RequiredMinima<'a, Id> {
+    grid:    &'a TileGrid<Id>,
+    cells:   &'a [&'a DrawableCell<Id>],
+    summary: NonZeroU16,
+}
+
+impl<Id: Clone + Eq + Debug> RequiredMinima<'_, Id> {
+    /// Check every column count. Compact trials fill each column in order;
+    /// moving a boundary earlier cannot leave more room for the remaining suffix.
+    fn check(
+        &self,
+        area: Rect,
+        limit: ColumnLimit,
+    ) -> Result<WholeCellDrawing<Id>, InsufficientViewport> {
+        if area.width < self.grid.settings.min_tile_width {
+            return Err(InsufficientViewport);
+        }
+        let cells = self.cells;
+        let room = AdmissionRoom {
+            summary_minimum: self.summary,
+        };
+        let columns =
+            limit.cap(u16::try_from(column_limit(area, &self.grid.settings)).unwrap_or(u16::MAX));
+        if columns == 0 {
+            return Err(InsufficientViewport);
+        }
+        let summary_height = room.summary_minimum.get();
+        let columns_held = self.grid.capacity_columns_for(area, cells);
+        if let CapacityColumns::Assigned {
+            viewport,
+            summary,
+            cells: assigned,
+            ..
+        } = &columns_held
+            && *viewport == area
+        {
+            let summary = Rect::new(summary.x, area.y, summary.width, summary_height);
+            if let Ok(drawing) = self.grid.fit_assigned_capacity(
+                area,
+                cells,
+                summary,
+                assigned,
+                CellPackingRows::Required,
+            ) {
+                return Ok(drawing);
+            }
+        }
+        let destination = columns_with_limit(
+            cells.len() + TABLE_CELL + self.grid.target_depth().saturating_sub(1),
+            self.grid.growth,
+            usize::from(columns),
+        );
+        if destination.len() > 1
+            && let Ok(drawing) =
+                self.grid
+                    .fit_capacity_columns(area, cells, summary_height, &destination)
+        {
+            return Ok(drawing);
+        }
+        for columns in 1..=columns {
+            let compact = vec![cells.len() + self.grid.target_depth(); usize::from(columns)];
+            if let Ok(drawing) =
+                self.grid
+                    .fit_capacity_columns(area, cells, summary_height, &compact)
+            {
+                return Ok(drawing);
+            }
+        }
+        Err(InsufficientViewport)
+    }
+}
+
+/// `InsufficientViewport::summarize` lists live commands absent from the retained allocation.
+#[derive(Clone)]
+struct SummarizedCommands<Id>(Vec<Id>);
+
+impl<Id> SummarizedCommands<Id> {
+    const fn none() -> Self { Self(Vec::new()) }
+}
+
+impl InsufficientViewport {
+    fn summarize<Id: Clone + Eq>(
+        required: &[&DrawableCell<Id>],
+        kept: &[&DrawableCell<Id>],
+    ) -> SummarizedCommands<Id> {
+        SummarizedCommands(
+            required
+                .iter()
+                .filter(|cell| {
+                    !kept.iter().any(|held| held.id == cell.id) && !cell.owns_visible_departure()
+                })
+                .map(|cell| cell.id.clone())
+                .collect(),
+        )
+    }
+}
+
+/// `FirstPaint` starts a `DrawableCell` entry clock when its first body row is painted.
+pub(super) struct FirstPaint(Instant);
+
+impl From<Instant> for FirstPaint {
+    fn from(at: Instant) -> Self { Self(at) }
+}
+
+impl FirstPaint {
+    pub(super) const fn at(self) -> Instant { self.0 }
+}
+
+/// `StartedCellDrawing` lets `publish_painted_drawing` accept cells whose entry clocks have
+/// started.
+pub(super) struct StartedCellDrawing<Id>(ViewportDrawing<Id>);
+
+/// `WaitingAdmissions::Placed` gives a waiting command required membership only after a whole free
+/// allocation.
+enum WaitingAdmissions<Id> {
+    NoFreeAllocation,
+    Placed(ViewportDrawing<Id>),
+}
+
+/// `AllocatedArrival` retains the free allocation before the queued destination runs.
+struct AllocatedArrival<Id> {
+    cell:       DrawableCell<Id>,
+    target:     Slot<Id>,
+    allocation: PaneFrame,
+}
+
+impl<Id: Clone> AllocatedArrival<Id> {
+    fn allocated(cell: DrawableCell<Id>, allocation: PaneFrame) -> Self {
+        Self {
+            target: Slot::Group(cell.clone()),
+            cell,
+            allocation,
+        }
+    }
+}
+
+/// Admission can reserve only the summary's minimum, independently of waiters.
+#[derive(Clone, Copy)]
+struct AdmissionRoom {
+    summary_minimum: NonZeroU16,
+}
+
+/// First-fit trials inherit columns already owned by a resident resize.
+#[derive(Clone, Copy)]
+struct FreeAllocationRoom {
+    columns: ColumnLimit,
+    summary: AdmissionRoom,
+}
+
+/// A published capacity assignment survives summary remeasurement.
+#[derive(Clone, Default)]
+enum CapacityColumns<Id> {
+    #[default]
+    Unassigned,
+    Assigned {
+        viewport: Rect,
+        required: Arc<[Id]>,
+        summary:  Rect,
+        cells:    Arc<[(Id, Rect)]>,
+    },
+}
+
+impl<Id: Clone> CapacityColumns<Id> {
+    fn assigned(
+        viewport: Rect,
+        drawing: &TileDrawing<Id>,
+        required: &RequiredCommands<'_, Id>,
+    ) -> Self {
+        let Some(summary) = drawing
+            .pieces
+            .iter()
+            .find(|piece| matches!(piece.placement.content, TileContent::Summary))
+            .map(|piece| piece.placement.frame.clip())
+        else {
+            return Self::Unassigned;
+        };
+        Self::Assigned {
+            viewport,
+            required: required.cells.iter().map(|cell| cell.id.clone()).collect(),
+            summary,
+            cells: drawing
+                .pieces
+                .iter()
+                .filter_map(|piece| match &piece.placement.content {
+                    TileContent::Group(id) => Some((id.clone(), piece.placement.frame.clip())),
+                    TileContent::Summary | TileContent::Empty(_) => None,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Generic summaries retain layout demand; invocation partitions reserve their exact rows.
+#[derive(Clone, Default)]
+enum FrameSummaryMinimum<Id> {
+    #[default]
+    Candidate,
+    LayoutManaged,
+    Measured(SummaryDemand<Id>),
+}
+
+/// Space below both the source allocation and its painted motion clip.
+struct FreeColumnRows(u16);
+
+/// A growth grant cannot move a column's painted clip beyond its viewport.
+#[derive(Clone, Copy)]
+struct ColumnGrowth(u16);
+
+/// Removing only the surplus above a checked summary minimum keeps its body whole.
+#[derive(Clone, Copy)]
+struct ColumnReduction(u16);
+
+impl FreeColumnRows {
+    fn grant(self, requested: u16) -> ColumnGrowth { ColumnGrowth(requested.min(self.0)) }
+}
+
+/// Column replacement requires every measured rectangle to stay in its viewport.
+struct BoundedColumn(Vec<Rect>);
+
+impl BoundedColumn {
+    fn check(frames: Vec<Rect>, viewport: Rect) -> Result<Self, CandidateDoesNotFit> {
+        if frames
+            .iter()
+            .all(|frame| frame.intersection(viewport) == *frame)
+        {
+            Ok(Self(frames))
+        } else {
+            Err(CandidateDoesNotFit)
+        }
+    }
+}
+
+/// Complete, bounded cells produced by the current-minimum packing pass.
+struct WholeCellDrawing<Id>(TileDrawing<Id>);
+
+impl<Id: Clone + Eq> WholeCellDrawing<Id> {
+    /// Optional summary detail uses only space below the already placed column.
+    /// Growing this span shifts its mates by the same amount, so every live body
+    /// retains its complete allocation and remains within the viewport.
+    fn with_optional_summary_rows(
+        mut self,
+        viewport: Rect,
+        provider: &impl draw::TileCells<Id>,
+    ) -> Self {
+        let Some(index) = self
+            .0
+            .pieces
+            .iter()
+            .position(|piece| matches!(piece.placement.content, TileContent::Summary))
+        else {
+            return self;
+        };
+        let frame = self.0.pieces[index].placement.frame;
+        // A clipped moving span owns only its motion allocation.
+        if frame.clip() != frame.rect() {
+            return self;
+        }
+        let rect = frame.rect();
+        if self.0.pieces.iter().any(|piece| {
+            let other = piece.placement.frame.rect();
+            (other.x != rect.x || other.width != rect.width)
+                && other.left() < rect.right().saturating_sub(1)
+                && rect.left() < other.right().saturating_sub(1)
+        }) {
+            return self;
+        }
+        let free = self.free_rows(viewport, rect.x);
+        let maximum = rect.height.saturating_add(free.0);
+        let usage = |height| {
+            provider.rows_drawn(
+                &TileContent::Summary,
+                draw::content_area(frame_inner(Rect { height, ..rect })),
+            )
+        };
+        let current = usage(rect.height);
+        let best = usage(maximum);
+        if best > current {
+            let height = (rect.height..=maximum)
+                .find(|&height| usage(height) == best)
+                .unwrap_or(maximum);
+            self.grow_span(index, free.grant(height.saturating_sub(rect.height)));
+        }
+        self
+    }
+
+    /// Divide each live column with the same measured row priorities as motion.
+    fn with_shared_rows(
+        mut self,
+        viewport: Rect,
+        required: &RequiredCommands<'_, Id>,
+        provider: &impl draw::TileCells<Id>,
+        settings: &TileSettings,
+    ) -> Self {
+        let mut columns = Vec::new();
+        for piece in &self.0.pieces {
+            let x = piece.placement.frame.rect().x;
+            if !columns.contains(&x) {
+                columns.push(x);
+            }
+        }
+
+        self.share_painted_prefixes(viewport, required, settings);
+        for x in columns {
+            let indices = self
+                .0
+                .pieces
+                .iter()
+                .enumerate()
+                .filter_map(|(index, piece)| (piece.placement.frame.rect().x == x).then_some(index))
+                .collect::<Vec<_>>();
+            let live = indices
+                .iter()
+                .all(|&index| match &self.0.pieces[index].placement.content {
+                    TileContent::Summary => true,
+                    TileContent::Group(id) => required.cells.iter().any(|cell| {
+                        &cell.id == id
+                            && cell.continuity == CellContinuity::Running
+                            && !cell.owns_visible_departure()
+                    }),
+                    TileContent::Empty(_) => false,
+                });
+            if !live {
+                if let Some(&index) = indices.iter().find(|&&index| {
+                    matches!(self.0.pieces[index].placement.content, TileContent::Summary)
+                }) {
+                    let frame = self.0.pieces[index].placement.frame;
+                    if frame.rect() == frame.clip()
+                        && indices.iter().all(|&index| {
+                            let frame = self.0.pieces[index].placement.frame;
+                            frame.rect() == frame.clip()
+                        })
+                    {
+                        let minimum = match required.summary {
+                            SummaryReservation::Unreserved => required.summary_minimum.height(),
+                            SummaryReservation::Resizing { height } => {
+                                height.max(required.summary_minimum.height())
+                            },
+                        };
+                        self.shrink_span(
+                            index,
+                            ColumnReduction(frame.rect().height.saturating_sub(minimum)),
+                        );
+                    }
+                }
+                self.grow_live_bodies(viewport, &indices, required, provider, settings);
+                continue;
+            }
+            let frames = self.shared_column(viewport, &indices, required, provider, settings);
+            let fits =
+                indices.iter().zip(&frames).all(|(&index, frame)| {
+                    match &self.0.pieces[index].placement.content {
+                        TileContent::Group(id) => required.cells.iter().any(|cell| {
+                            &cell.id == id
+                                && frame.height
+                                    >= cell
+                                        .preferred_height
+                                        .get()
+                                        .min(cell.lifecycle_height(
+                                            frame.width,
+                                            settings.min_tile_height,
+                                        ))
+                                        .max(
+                                            cell.first_height
+                                                .get()
+                                                .saturating_add(cell.painted_prefix_rows()),
+                                        )
+                                        .min(self.0.pieces[index].placement.frame.rect().height)
+                                        .max(cell.first_height.get())
+                        }),
+                        TileContent::Summary => frame.height >= required.summary_minimum.height(),
+                        TileContent::Empty(_) => false,
+                    }
+                });
+
+            if fits && let Ok(frames) = BoundedColumn::check(frames, viewport) {
+                for (&index, frame) in indices.iter().zip(frames.0) {
+                    let piece = &mut self.0.pieces[index];
+                    piece.placement.frame =
+                        PaneFrame::new(frame).with_focus(piece.placement.frame.is_focused());
+                }
+            } else {
+                self.grow_live_bodies(viewport, &indices, required, provider, settings);
+            }
+        }
+        self
+    }
+
+    /// Required bodies keep their assignment. Retained prefixes use only its free rows.
+    fn share_painted_prefixes(
+        &mut self,
+        viewport: Rect,
+        required: &RequiredCommands<'_, Id>,
+        settings: &TileSettings,
+    ) {
+        for index in 0..self.0.pieces.len() {
+            let piece = &self.0.pieces[index].placement;
+            let TileContent::Group(id) = &piece.content else {
+                continue;
+            };
+            let Some(cell) = required
+                .cells
+                .iter()
+                .find(|cell| &cell.id == id && !cell.owns_visible_departure())
+            else {
+                continue;
+            };
+            let frame = piece.frame;
+            if frame.rect() != frame.clip() {
+                continue;
+            }
+            let target = cell
+                .first_height
+                .get()
+                .saturating_add(cell.painted_prefix_rows())
+                .max(settings.min_tile_height)
+                .min(cell.lifecycle_height(frame.rect().width, settings.min_tile_height));
+            let free = self.free_rows(viewport, frame.rect().x);
+            self.grow_span(
+                index,
+                free.grant(target.saturating_sub(frame.rect().height)),
+            );
+        }
+    }
+
+    /// A departure keeps its measured span. Free rows below that span can
+    /// still reveal more of a live body without taking any protected row.
+    fn grow_live_bodies(
+        &mut self,
+        viewport: Rect,
+        indices: &[usize],
+        required: &RequiredCommands<'_, Id>,
+        provider: &impl draw::TileCells<Id>,
+        settings: &TileSettings,
+    ) {
+        for &index in indices {
+            let piece = &self.0.pieces[index].placement;
+            let TileContent::Group(id) = &piece.content else {
+                continue;
+            };
+            let Some(cell) = required.cells.iter().find(|cell| {
+                &cell.id == id
+                    && cell.continuity == CellContinuity::Running
+                    && !cell.owns_visible_departure()
+            }) else {
+                continue;
+            };
+            let frame = piece.frame;
+            if frame.rect() != frame.clip() {
+                continue;
+            }
+            let rect = frame.rect();
+            let free = self.free_rows(viewport, rect.x);
+            let maximum = rect
+                .height
+                .saturating_add(free.0)
+                .min(cell.lifecycle_height(rect.width, settings.min_tile_height));
+            let usage = |height| {
+                provider.rows_drawn(
+                    &piece.content,
+                    draw::content_area(frame_inner(Rect { height, ..rect })),
+                )
+            };
+            let current = usage(rect.height);
+            let best = usage(maximum);
+            if best > current {
+                let height = (rect.height..=maximum)
+                    .find(|&height| usage(height) == best)
+                    .unwrap_or(maximum);
+                self.grow_span(index, free.grant(height.saturating_sub(rect.height)));
+            }
+        }
+    }
+
+    fn shared_column(
+        &self,
+        viewport: Rect,
+        indices: &[usize],
+        required: &RequiredCommands<'_, Id>,
+        provider: &impl draw::TileCells<Id>,
+        settings: &TileSettings,
+    ) -> Vec<Rect> {
+        let first = &self.0.pieces[indices[0]].placement;
+        let width = first.frame.rect().width;
+        let wants = indices
+            .iter()
+            .map(|&index| {
+                let piece = &self.0.pieces[index].placement;
+                let height = match &piece.content {
+                    TileContent::Group(id) => required
+                        .cells
+                        .iter()
+                        .find(|cell| &cell.id == id)
+                        .map_or_else(
+                            || piece.frame.rect().height,
+                            |cell| cell.lifecycle_height(width, settings.min_tile_height),
+                        ),
+                    TileContent::Summary => match required.summary {
+                        SummaryReservation::Unreserved => required.summary_minimum.height(),
+                        SummaryReservation::Resizing { height } => {
+                            height.max(required.summary_minimum.height())
+                        },
+                    },
+                    TileContent::Empty(_) => piece.frame.rect().height,
+                };
+                CellRowDemand::uniform(height)
+            })
+            .collect::<Vec<_>>();
+        let head = if matches!(first.content, TileContent::Summary) {
+            ColumnHead::Summary(1)
+        } else {
+            ColumnHead::Cell
+        };
+        let shares = shares_with_directional_row_usage(
+            &wants,
+            viewport.bottom().saturating_sub(first.frame.rect().y),
+            head,
+            ColumnFocus::Outside,
+            settings.min_tile_height,
+            &mut |row, rows, purpose| {
+                let framed = rows.saturating_add(u16::from(row + 1 < indices.len()));
+                let area = draw::content_area(frame_inner(Rect::new(0, 0, width, framed)));
+                let content = &self.0.pieces[indices[row]].placement.content;
+                let used = match purpose {
+                    RowUsePurpose::RetainContent => provider.rows_kept(content, area),
+                    RowUsePurpose::PaintContent => provider.rows_drawn(content, area),
+                };
+                area.height.saturating_sub(used)
+            },
+        );
+        let shares: Vec<_> = shares
+            .into_iter()
+            .zip(indices)
+            .map(|(share, &index)| {
+                let limit = match &self.0.pieces[index].placement.content {
+                    TileContent::Group(id) => required
+                        .cells
+                        .iter()
+                        .find(|cell| &cell.id == id)
+                        .map_or(u16::MAX, |cell| {
+                            cell.lifecycle_height(width, settings.min_tile_height)
+                                .saturating_sub(1)
+                        }),
+                    TileContent::Summary | TileContent::Empty(_) => u16::MAX,
+                };
+                match share {
+                    PaneAxisSize::Fixed(rows) => PaneAxisSize::Fixed(rows.min(limit)),
+                    PaneAxisSize::Fill(weight) => PaneAxisSize::Fill(weight),
+                }
+            })
+            .collect();
+        let top = first.frame.rect().y;
+        let band = Rect::new(
+            first.frame.rect().x,
+            top,
+            width,
+            viewport.bottom().saturating_sub(top),
+        );
+        fixed_row_rects(&shares, band)
+            .iter()
+            .map(|frame| Rect {
+                height: frame
+                    .height
+                    .saturating_add(u16::from(frame.bottom() < viewport.bottom())),
+                ..*frame
+            })
+            .collect()
+    }
+
+    fn free_rows(&self, viewport: Rect, x: u16) -> FreeColumnRows {
+        let bottom = self
+            .0
+            .pieces
+            .iter()
+            .filter(|piece| piece.placement.frame.rect().x == x)
+            .map(|piece| {
+                let frame = piece.placement.frame;
+                frame.rect().bottom().max(frame.clip().bottom())
+            })
+            .max()
+            .unwrap_or_else(|| viewport.bottom());
+        FreeColumnRows(viewport.bottom().saturating_sub(bottom))
+    }
+
+    fn shrink_span(&mut self, index: usize, reduction: ColumnReduction) {
+        let ColumnReduction(rows) = reduction;
+        let rect = self.0.pieces[index].placement.frame.rect();
+        for (offset, piece) in self.0.pieces.iter_mut().enumerate() {
+            let frame = piece.placement.frame;
+            let mut next = frame.rect();
+            let mut clip = frame.clip();
+            if next.x != rect.x {
+                continue;
+            }
+            if offset == index {
+                next.height -= rows;
+                clip.height -= rows;
+            } else if next.y > rect.y {
+                next.y -= rows;
+                clip.y -= rows;
+            }
+            piece.placement.frame =
+                PaneFrame::shifted(next, frame.shift(), clip).with_focus(frame.is_focused());
+        }
+    }
+
+    fn grow_span(&mut self, index: usize, growth: ColumnGrowth) {
+        let ColumnGrowth(rows) = growth;
+        if rows == 0 {
+            return;
+        }
+        let rect = self.0.pieces[index].placement.frame.rect();
+        for (offset, piece) in self.0.pieces.iter_mut().enumerate() {
+            let frame = piece.placement.frame;
+            let mut next = frame.rect();
+            let mut clip = frame.clip();
+            if next.x != rect.x {
+                continue;
+            }
+            if offset == index {
+                next.height += rows;
+                clip.height += rows;
+            } else if next.y > rect.y {
+                next.y += rows;
+                clip.y += rows;
+            }
+            // Free summary rows move the existing clipped bodies, preserving
+            // the source rows and motion bounds already checked for this frame.
+            piece.placement.frame =
+                PaneFrame::shifted(next, frame.shift(), clip).with_focus(frame.is_focused());
+        }
+    }
+}
+
+/// `CurrentCellCapacity` keeps the current body measurement separate from a retained allocation.
+enum CurrentCellCapacity<Id> {
+    Drawable(DrawableCell<Id>),
+    TooTall(DrawableCell<Id>),
+}
+
+impl<Id> CurrentCellCapacity<Id> {
+    const fn cell(&self) -> &DrawableCell<Id> {
+        match self {
+            Self::Drawable(cell) | Self::TooTall(cell) => cell,
+        }
+    }
+}
+
+/// `SummaryReservation::Resizing` reserves summary depth before later arrivals can use those rows.
+#[derive(Clone, Copy)]
+enum SummaryReservation {
+    Unreserved,
+    Resizing { height: u16 },
+}
+
+#[derive(Clone, Copy)]
+enum RequiredSummary {
+    #[cfg(test)]
+    Absent,
+    Rows(NonZeroU16),
+}
+
+impl RequiredSummary {
+    const fn height(self) -> u16 {
+        match self {
+            #[cfg(test)]
+            Self::Absent => 0,
+            Self::Rows(rows) => rows.get(),
+        }
+    }
+}
+
+/// `RequiredCommands` gives `prepare_painted_frame` the required membership for one frame.
+pub(super) struct RequiredCommands<'a, Id> {
+    pub(super) cells: &'a [&'a DrawableCell<Id>],
+    measurements:     &'a [CurrentCellCapacity<Id>],
+    admitted:         &'a [DrawableCell<Id>],
+    summary:          SummaryReservation,
+    summary_minimum:  RequiredSummary,
+}
+
+#[cfg(test)]
+impl<'frame, Id> RequiredCommands<'frame, Id> {
+    pub(super) const fn for_admitted(admitted: &'frame [DrawableCell<Id>]) -> Self {
+        Self {
+            cells: &[],
+            measurements: &[],
+            admitted,
+            summary: SummaryReservation::Unreserved,
+            summary_minimum: RequiredSummary::Absent,
+        }
+    }
+}
+
+/// Published pieces each own at least one visible body row. Column rails cannot
+/// manufacture horizontal edges for a piece that has not acquired a body.
+struct BodyDrawing<Id>(TileDrawing<Id>);
+
+impl<Id> Deref for BodyDrawing<Id> {
+    type Target = TileDrawing<Id>;
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+
+/// Capacity packing may choose different widths from the motion's allocation.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum DrawingAllocation {
+    Motion,
+    Capacity,
+}
+
+/// `PaintedAllocation::WholeBodyCapacity` retains a complete-body drawing across frames.
+enum PaintedAllocation<Id> {
+    Motion,
+    LayoutManagedCapacity,
+    WholeBodyCapacity(TileDrawing<Id>),
+}
+
+/// `ViewportDrawing` is accepted by `prepare_painted_frame`; every clip is inside its viewport.
+pub(super) struct ViewportDrawing<Id> {
+    drawing:               BodyDrawing<Id>,
+    pub(super) allocation: DrawingAllocation,
+    capacity_columns:      CapacityColumns<Id>,
+    viewport:              Rect,
+    summary_live:          Vec<Id>,
+    dropped_ended:         Vec<Id>,
+}
+
+impl<Id> Deref for ViewportDrawing<Id> {
+    type Target = TileDrawing<Id>;
+    fn deref(&self) -> &Self::Target { &self.drawing }
+}
+
+impl<Id: Clone + Eq> ViewportDrawing<Id> {
+    pub(super) fn placement(&self, required: &[Id]) -> FramePlacement<Id> {
+        FramePlacement::from_outcome(
+            required,
+            self.pieces
+                .iter()
+                .filter_map(|piece| match &piece.placement.content {
+                    TileContent::Group(id) => Some(id),
+                    _ => None,
+                }),
+        )
+    }
+
+    fn focus_on(&self, slot: &Slot<Id>, slots: &[Slot<Id>]) -> Focus<Id> {
+        for piece in &self.drawing.pieces {
+            let matches = DrawnSlot::matches_content(slot, &piece.placement.content, slots);
+            if matches && draw::has_visible_body_row(piece.placement.frame) {
+                return Focus::Cell(DrawnSlot { slot: slot.clone() });
+            }
+        }
+        Focus::Summary
+    }
+
+    /// Concealing the attract screen's summary does not change command membership.
+    pub(super) fn conceal_summary(&mut self) {
+        self.drawing
+            .0
+            .pieces
+            .retain(|piece| !matches!(piece.placement.content, TileContent::Summary));
+    }
+
+    pub(super) fn checked(
+        mut drawing: TileDrawing<Id>,
+        viewport: Rect,
+        required: &RequiredCommands<'_, Id>,
+        previously_released: &[Id],
+    ) -> Result<Self, ColumnCapacityFailure> {
+        let outside = drawing.pieces.iter().any(|piece| {
+            piece.placement.frame.clip().intersection(viewport) != piece.placement.frame.clip()
+        });
+        drawing
+            .pieces
+            .retain(|piece| draw::has_visible_body_row(piece.placement.frame));
+        let drawing = BodyDrawing(drawing);
+        // A queued destination cannot grant ownership to a waiting invocation.
+        // Every command in this outcome must carry its acquired allocation.
+        if drawing
+            .pieces
+            .iter()
+            .any(|piece| match &piece.placement.content {
+                TileContent::Group(id) => {
+                    !required.cells.iter().any(|cell| &cell.id == id)
+                        && !required.admitted.iter().any(|cell| {
+                            &cell.id == id && cell.continuity == CellContinuity::LayoutManaged
+                        })
+                },
+                TileContent::Summary | TileContent::Empty(_) => false,
+            })
+        {
+            return Err(ColumnCapacityFailure);
+        }
+        if let RequiredSummary::Rows(minimum) = required.summary_minimum
+            && !drawing.pieces.iter().any(|piece| {
+                matches!(piece.placement.content, TileContent::Summary)
+                    && piece.placement.frame.clip().height >= minimum.get()
+            })
+        {
+            return Err(ColumnCapacityFailure);
+        }
+
+        Self::check_summary_room(&drawing, viewport, required)?;
+        Self::check_body_separation(&drawing)?;
+        if outside
+            || drawing
+                .column_bands
+                .iter()
+                .any(|band| band.intersection(viewport) != *band)
+        {
+            return Err(ColumnCapacityFailure);
+        }
+        let summary_live = Vec::new();
+        let dropped_ended = previously_released.to_vec();
+        for cell in required.cells {
+            let mut pieces = drawing
+                .pieces
+                .iter()
+                .filter(|piece| piece.placement.content == TileContent::Group(cell.id.clone()));
+            match (pieces.next(), pieces.next()) {
+                (Some(piece), None)
+                    if !required.measurements.iter().any(|measured| {
+                        matches!(measured,
+                        CurrentCellCapacity::TooTall(too_tall) if too_tall.id == cell.id)
+                    }) && (cell.continuity != CellContinuity::Running
+                        || draw::content_area(frame_inner(piece.placement.frame.clip()))
+                            .height
+                            >= cell.painted_content_height().min(
+                                draw::content_area(frame_inner(Rect::new(
+                                    0,
+                                    0,
+                                    piece.placement.frame.rect().width,
+                                    cell.full_height(piece.placement.frame.rect().width),
+                                )))
+                                .height,
+                            ))
+                        && matches!(
+                            cell.fragment(piece.placement.frame),
+                            DrawableFragment::Content(_) | DrawableFragment::Closing(_)
+                        ) => {},
+                _ => return Err(ColumnCapacityFailure),
+            }
+        }
+        Ok(Self {
+            drawing,
+            allocation: DrawingAllocation::Motion,
+            capacity_columns: CapacityColumns::Unassigned,
+            viewport,
+            summary_live,
+            dropped_ended,
+        })
+    }
+
+    /// Source-frame recovery may enlarge a motion clip. Reject it if another
+    /// piece would paint a border or body through that recovered interior.
+    fn check_body_separation(drawing: &BodyDrawing<Id>) -> Result<(), ColumnCapacityFailure> {
+        for (index, piece) in drawing.pieces.iter().enumerate() {
+            let frame = piece.placement.frame.clip();
+            if drawing.pieces[index + 1..].iter().any(|other| {
+                let other = other.placement.frame.clip();
+                !frame_inner(frame).intersection(other).is_empty()
+                    || !frame_inner(other).intersection(frame).is_empty()
+            }) {
+                return Err(ColumnCapacityFailure);
+            }
+        }
+        Ok(())
+    }
+
+    /// A summary resize reserves only the space its owned column leaves free.
+    fn check_summary_room(
+        drawing: &BodyDrawing<Id>,
+        viewport: Rect,
+        required: &RequiredCommands<'_, Id>,
+    ) -> Result<(), ColumnCapacityFailure> {
+        if let SummaryReservation::Resizing { height } = required.summary {
+            let Some(summary) = drawing
+                .pieces
+                .iter()
+                .find(|piece| matches!(piece.placement.content, TileContent::Summary))
+            else {
+                return Err(ColumnCapacityFailure);
+            };
+            let frame = summary.placement.frame.clip();
+            let occupied = drawing
+                .pieces
+                .iter()
+                .filter(|piece| {
+                    matches!(piece.placement.content, TileContent::Group(_))
+                        && piece.placement.frame.clip().x == frame.x
+                })
+                .fold(0_u16, |rows, piece| {
+                    rows.saturating_add(piece.placement.frame.clip().height.saturating_sub(1))
+                });
+            // A resize reserves the room left by the cells this outcome owns.
+            // Its requested summary cannot evict those bodies to reach its target.
+            let reserved = height.min(viewport.height.saturating_sub(occupied));
+            if frame.height < reserved {
+                return Err(ColumnCapacityFailure);
+            }
+        }
+        Ok(())
+    }
+
+    /// Packing has already proved every retained rectangle and complete body.
+    /// Membership is always the full required set minus the painted set.
+    fn from_whole_cells(
+        whole: WholeCellDrawing<Id>,
+        viewport: Rect,
+        required: &RequiredCommands<'_, Id>,
+        previously_released: &[Id],
+        summarized: SummarizedCommands<Id>,
+    ) -> Self {
+        let WholeCellDrawing(drawing) = whole;
+        let drawing = BodyDrawing(drawing);
+        let mut summary_live = summarized.0;
+        let mut dropped_ended = previously_released.to_vec();
+        for cell in required.cells {
+            if !drawing
+                .pieces
+                .iter()
+                .any(|piece| piece.placement.content == TileContent::Group(cell.id.clone()))
+                && cell.owns_visible_departure()
+            {
+                Self::missing_cell(cell, &mut summary_live, &mut dropped_ended);
+            }
+        }
+        let capacity_columns = CapacityColumns::assigned(viewport, &drawing, required);
+        Self {
+            drawing,
+            allocation: DrawingAllocation::Capacity,
+            capacity_columns,
+            viewport,
+            summary_live,
+            dropped_ended,
+        }
+    }
+
+    /// Even the summary-only terminal outcome derives all membership from required cells.
+    fn summary_only(
+        viewport: Rect,
+        required: &RequiredCommands<'_, Id>,
+        previously_released: &[Id],
+        pressure: &InsufficientViewport,
+    ) -> Self {
+        let mut summary_live = Vec::new();
+        let mut dropped_ended = previously_released.to_vec();
+        let InsufficientViewport = pressure;
+        for cell in required.cells {
+            Self::missing_cell(cell, &mut summary_live, &mut dropped_ended);
+        }
+        Self {
+            drawing: BodyDrawing(TileDrawing {
+                pieces:       if draw::has_visible_body_row(PaneFrame::new(viewport)) {
+                    vec![TilePiece {
+                        identity:    CellIdentity::Summary,
+                        ink:         PieceInk::Resident,
+                        placement:   TilePlacement {
+                            content: TileContent::Summary,
+                            frame:   PaneFrame::new(viewport).with_focus(true),
+                        },
+                        name:        PieceName::Shown,
+                        height_snap: PieceHeightSnap::Settled,
+                    }]
+                } else {
+                    Vec::new()
+                },
+                column_bands: Vec::new(),
+            }),
+            allocation: DrawingAllocation::Capacity,
+            capacity_columns: CapacityColumns::Assigned {
+                viewport,
+                required: required.cells.iter().map(|cell| cell.id.clone()).collect(),
+                summary: viewport,
+                cells: Arc::from([]),
+            },
+            viewport,
+            summary_live,
+            dropped_ended,
+        }
+    }
+
+    fn missing_cell(
+        cell: &DrawableCell<Id>,
+        summary_live: &mut Vec<Id>,
+        dropped_ended: &mut Vec<Id>,
+    ) {
+        if matches!(&*cell.lifecycle(), CellLifecycle::Leaving(_)) {
+            if !dropped_ended.contains(&cell.id) {
+                dropped_ended.push(cell.id.clone());
+            }
+        } else {
+            summary_live.push(cell.id.clone());
+        }
+    }
+
+    pub(super) fn into_drawing(self) -> TileDrawing<Id> { self.drawing.0 }
 }
 
 /// One answer from a cell at a content-area size considered this frame.
@@ -459,7 +1700,7 @@ enum PieceHeightPath<'a> {
     DrawSelected(&'a [u16]),
 }
 
-impl<Id: Eq> HeightSnap<'_, Id> {
+impl<Id: Clone + Eq> HeightSnap<'_, Id> {
     /// Whether a measured content step cannot give up a single row.
     fn has_content_step_gap(&self, content: &TileContent<Id>) -> bool {
         let Self::Frame { row_usage, .. } = self else {
@@ -483,7 +1724,7 @@ impl<Id: Eq> HeightSnap<'_, Id> {
             return FrameHeightFit::Filled;
         };
         let area = draw::content_area(frame_inner(rect));
-        frame_height_fit(row_usage, &piece.drawn.content, area)
+        frame_height_fit(row_usage, &piece.drawn.content(), area)
     }
 
     /// Whether `piece` fills `rect` or is whole inside it.
@@ -501,7 +1742,7 @@ impl<Id: Eq> HeightSnap<'_, Id> {
         if matches!(piece.drawn.content, TileContent::Empty(_)) {
             return area.height;
         }
-        match frame_retained_rows(row_usage, &piece.drawn.content, area) {
+        match frame_retained_rows(row_usage, &piece.drawn.content(), area) {
             RetainedRows::Unmeasured => 0,
             RetainedRows::Measured(kept) => area.height.saturating_sub(kept),
         }
@@ -648,7 +1889,7 @@ fn fill_retargeted_columns<Id: Clone + Eq>(
             .filter_map(|(index, pane)| (pane.area.x == column.x).then_some(index))
             .collect::<Vec<_>>();
         let total = column.height.saturating_sub(1);
-        let ColumnHeightBalance::SpareRows(free) = release_retargeted_rows(
+        let Ok(free) = release_retargeted_rows(
             &members,
             panes,
             constraints,
@@ -694,14 +1935,6 @@ fn fill_retargeted_columns<Id: Clone + Eq>(
     FilledColumnFit::Fits
 }
 
-/// Rows available after the permitted donors have supplied a column.
-enum ColumnHeightBalance {
-    /// Rows left for a piece that can fill them.
-    SpareRows(u16),
-    /// The bounds leave more height in use than the column has.
-    InsufficientRoom,
-}
-
 /// Release rows from filled donors within their remaining motion bounds.
 fn release_retargeted_rows<Id: Clone + Eq>(
     members: &[usize],
@@ -711,15 +1944,15 @@ fn release_retargeted_rows<Id: Clone + Eq>(
     row_usage: &mut Vec<FrameCellRowUsage<Id>>,
     rows_drawn: &mut impl FnMut(&TileContent<Id>, Rect) -> u16,
     rows_kept: &mut impl FnMut(&TileContent<Id>, Rect) -> u16,
-) -> ColumnHeightBalance {
+) -> Result<u16, ColumnCapacityFailure> {
     let contents = constraints.contents;
     let bounds = constraints.bounds;
     let changed = constraints.changed_demands;
     let used = members
         .iter()
-        .map(|&index| panes[index].area.height.saturating_sub(1))
-        .sum::<u16>();
-    let mut excess = used.saturating_sub(total);
+        .map(|&index| u64::from(panes[index].area.height.saturating_sub(1)))
+        .sum::<u64>();
+    let mut excess = used.saturating_sub(u64::from(total));
     let mut donors = members.to_vec();
     donors.sort_by_key(|&index| !changed[panes[index].pane.saturating_sub(TABLE_CELL)]);
     for index in donors {
@@ -729,7 +1962,9 @@ fn release_retargeted_rows<Id: Clone + Eq>(
         let pane = &mut panes[index];
         let content = &contents[pane.pane.saturating_sub(TABLE_CELL)];
         let span = pane.area.height.saturating_sub(1);
-        let target = span.saturating_sub(excess).max(bounds[index].smallest);
+        let target = span
+            .saturating_sub(u16::try_from(excess).unwrap_or(u16::MAX))
+            .max(bounds[index].smallest);
         let next = measured_filled_span(
             row_usage,
             content,
@@ -743,16 +1978,16 @@ fn release_retargeted_rows<Id: Clone + Eq>(
             continue;
         };
         pane.area.height = next.saturating_add(1);
-        excess = excess.saturating_sub(span.saturating_sub(next));
+        excess = excess.saturating_sub(u64::from(span.saturating_sub(next)));
     }
     let used = members
         .iter()
-        .map(|&index| panes[index].area.height.saturating_sub(1))
-        .sum::<u16>();
-    if used > total {
-        ColumnHeightBalance::InsufficientRoom
+        .map(|&index| u64::from(panes[index].area.height.saturating_sub(1)))
+        .sum::<u64>();
+    if used > u64::from(total) {
+        Err(ColumnCapacityFailure)
     } else {
-        ColumnHeightBalance::SpareRows(total.saturating_sub(used))
+        Ok(total.saturating_sub(u16::try_from(used).unwrap_or(u16::MAX)))
     }
 }
 
@@ -955,7 +2190,7 @@ impl<Id> TileDrawing<Id> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Slot<Id> {
     /// The tile drawing one command's rows.
-    Group(Id),
+    Group(DrawableCell<Id>),
     /// A cell opened with `+` and not yet claimed. The number is only
     /// an identity -- it is never shown, and no two empties share one --
     /// so an empty cell can be told from its neighbour while the grid
@@ -973,7 +2208,57 @@ enum Focus<Id> {
     /// The summary, where focus starts and where it falls back to.
     Summary,
     /// One of the cells after it.
-    Cell(Slot<Id>),
+    Cell(DrawnSlot<Id>),
+}
+
+/// Before the first paint, public selection publishes its checked initial geometry.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CapacityPublication {
+    BeforePaint,
+    Painted,
+}
+
+/// A focus target can be constructed only from a published body-bearing placement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DrawnSlot<Id> {
+    slot: Slot<Id>,
+}
+
+impl<Id: Clone + Eq> DrawnSlot<Id> {
+    fn matches_content(slot: &Slot<Id>, content: &TileContent<Id>, slots: &[Slot<Id>]) -> bool {
+        match (content, slot) {
+            (TileContent::Group(id), Slot::Group(cell)) => id == &cell.id,
+            (TileContent::Empty(index), Slot::Empty(_)) => {
+                index
+                    .checked_sub(TABLE_CELL + 1)
+                    .and_then(|position| slots.get(position))
+                    == Some(slot)
+            },
+            _ => false,
+        }
+    }
+
+    fn in_placements(
+        slot: &Slot<Id>,
+        slots: &[Slot<Id>],
+        placements: &[TilePlacement<Id>],
+    ) -> Focus<Id> {
+        let drawn = placements.iter().any(|placement| {
+            let matches = Self::matches_content(slot, &placement.content, slots);
+            matches && draw::has_visible_body_row(placement.frame)
+        });
+        if drawn {
+            Focus::Cell(Self { slot: slot.clone() })
+        } else {
+            Focus::Summary
+        }
+    }
+}
+
+impl<Id: Eq> Focus<Id> {
+    fn holds(&self, slot: &Slot<Id>) -> bool {
+        matches!(self, Self::Cell(drawn) if &drawn.slot == slot)
+    }
 }
 
 /// One step of the focus ring, named for the arrow that asks for it.
@@ -995,7 +2280,7 @@ struct CellAppearance<Id> {
     /// The cell whose contents this piece paints, independent of its number.
     identity: CellIdentity<Id>,
     /// What the cell draws.
-    content:  TileContent<Id>,
+    content:  TileContent<DrawableCell<Id>>,
     /// Whether the cell holds focus, which is what lights its border.
     focused:  bool,
 }
@@ -1004,7 +2289,17 @@ struct CellAppearance<Id> {
 #[derive(Clone)]
 enum CellIdentity<Id> {
     Summary,
-    Slot(Slot<Id>),
+    Group(Id),
+    Empty(u64),
+}
+
+impl<Id: Clone> From<&Slot<Id>> for CellIdentity<Id> {
+    fn from(slot: &Slot<Id>) -> Self {
+        match slot {
+            Slot::Group(cell) => Self::Group(cell.id.clone()),
+            Slot::Empty(serial) => Self::Empty(*serial),
+        }
+    }
 }
 
 /// Click geometry from the most recent grid paint, before any focus change.
@@ -1030,10 +2325,26 @@ pub(super) enum CellHit<Id> {
 }
 
 impl<Id: Clone> CellAppearance<Id> {
+    /// Convert owned drawable evidence at the public placement boundary.
+    fn content(&self) -> TileContent<Id> {
+        match &self.content {
+            TileContent::Summary => TileContent::Summary,
+            TileContent::Empty(number) => TileContent::Empty(*number),
+            TileContent::Group(cell) => TileContent::Group(cell.id.clone()),
+        }
+    }
+
     /// This cell drawn at `frame`, focus carried onto it.
     fn at(&self, frame: PaneFrame) -> TilePlacement<Id> {
+        let frame = match &self.content {
+            TileContent::Group(cell) => match &*cell.lifecycle() {
+                CellLifecycle::Leaving(ended) => ended.frame(frame),
+                _ => frame,
+            },
+            _ => frame,
+        };
         TilePlacement {
-            content: self.content.clone(),
+            content: self.content(),
             frame:   frame.with_focus(self.focused),
         }
     }
@@ -1230,17 +2541,130 @@ struct Transition<Id> {
     depth_status: DestinationDepthStatus,
 }
 
+/// A queued destination contains live commands and empty positions only.
+/// Its slots can be replaced only through the current live-demand boundary;
+/// departure geometry remains in the active source and the owned fade set.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LiveDestination<Id>(Vec<Slot<Id>>);
+
+impl<Id> Deref for LiveDestination<Id> {
+    type Target = Vec<Slot<Id>>;
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+
+impl<Id: Clone + Eq + Debug> LiveDestination<Id> {
+    fn from_live(slots: Vec<Slot<Id>>, demands: &TileDemands<Id>) -> Self {
+        Self(
+            slots
+                .into_iter()
+                .filter(|slot| match slot {
+                    Slot::Group(cell) => {
+                        demands.rows_for(cell) > 0 && !cell.owns_visible_departure()
+                    },
+                    Slot::Empty(_) => true,
+                })
+                .collect(),
+        )
+    }
+
+    fn refresh(&mut self, admission: &[DrawableCell<Id>], demands: &TileDemands<Id>) {
+        let slots = std::mem::take(&mut self.0)
+            .into_iter()
+            .map(|slot| match slot {
+                Slot::Group(cell) => Slot::Group(
+                    admission
+                        .iter()
+                        .find(|live| live.id == cell.id)
+                        .unwrap_or(&cell)
+                        .clone(),
+                ),
+                empty @ Slot::Empty(_) => empty,
+            })
+            .collect();
+        *self = Self::from_live(slots, demands);
+    }
+
+    fn withdraw(&mut self, ids: &[Id]) {
+        self.0
+            .retain(|slot| !matches!(slot, Slot::Group(cell) if ids.contains(&cell.id)));
+    }
+
+    fn claim(&mut self, empty: &Slot<Id>, cell: &DrawableCell<Id>, demands: &TileDemands<Id>) {
+        let slots = std::mem::take(&mut self.0)
+            .into_iter()
+            .map(|slot| {
+                if &slot == empty {
+                    Slot::Group(cell.clone())
+                } else {
+                    slot
+                }
+            })
+            .collect();
+        *self = Self::from_live(slots, demands);
+    }
+}
+
 /// One arrangement waiting its turn, and how long the move into it
 /// takes once it comes up.
-struct Step<Id> {
+struct LiveStep<Id> {
     /// The cells as this step leaves them.
-    slots:        Vec<Slot<Id>>,
+    slots:        LiveDestination<Id>,
     /// Summary depth at the end of this step.
     depth:        usize,
     /// How long the move into `slots` runs for.
     millis:       u64,
     /// Whether the destination depth has seen its drawn widths.
     depth_status: DestinationDepthStatus,
+}
+
+impl<Id: Clone + Eq + Debug> LiveStep<Id> {
+    /// The only construction boundary for a queued destination.
+    fn admitted(
+        slots: Vec<Slot<Id>>,
+        demands: &TileDemands<Id>,
+        depth: usize,
+        millis: u64,
+        depth_status: DestinationDepthStatus,
+    ) -> Self {
+        let slots = LiveDestination::from_live(slots, demands);
+        Self {
+            slots,
+            depth,
+            millis,
+            depth_status,
+        }
+    }
+
+    /// Rebuild the destination when the set of admissible ids changes.
+    fn retain_live(&mut self, demands: &TileDemands<Id>) {
+        *self = Self::admitted(
+            std::mem::take(&mut self.slots.0),
+            demands,
+            self.depth,
+            self.millis,
+            self.depth_status,
+        );
+    }
+}
+
+/// Time source used by resident and cell lifecycle motion.
+#[derive(Default)]
+enum MotionClock {
+    #[default]
+    Wall,
+    Injected(Duration),
+}
+
+/// One exact clock sample shared by a frame's geometry and ink.
+#[derive(Default)]
+enum MotionFrameClock {
+    #[default]
+    Unmeasured,
+    Sampled {
+        started:  Instant,
+        elapsed:  Duration,
+        progress: u32,
+    },
 }
 
 /// The grid's cells and the transition it is playing, if any.
@@ -1251,51 +2675,101 @@ struct Step<Id> {
 /// what [`Self::placements`] hands back, and moves it on with
 /// [`Self::tick`] and [`Self::apply`].
 pub struct TileGrid<Id> {
-    /// Cells after the summary, in cell order. The summary is cell one
-    /// and is not held here, so the grid never falls below one cell.
-    slots:                  Vec<Slot<Id>>,
+    /// Measured candidates at the render boundary; every admitted slot owns its clone.
+    admission:               Vec<DrawableCell<Id>>,
+    allocated_arrivals:      Vec<AllocatedArrival<Id>>,
+    /// Capacity owns geometry until the entire queued motion reaches its destination.
+    capacity_columns:        CapacityColumns<Id>,
+    /// Ended commands remain owned independently of destination membership.
+    fading_cells:            Vec<DrawableCell<Id>>,
+    /// Cells after the summary, each owning its drawable allocation evidence.
+    slots:                   Vec<Slot<Id>>,
     /// Summary depth of `slots`.
-    depth:                  usize,
+    depth:                   usize,
     /// Arrangements waiting their turn, each one cell's move from the
     /// one before it. Only ever one of them is in flight, which is what
     /// makes a change propagate through the grid instead of happening
     /// to every cell at once.
-    pending:                VecDeque<Step<Id>>,
+    pending:                 VecDeque<LiveStep<Id>>,
     /// What each cell is currently drawn at, which is what a change
     /// animates away from. Empty until the first scan settles it.
-    held:                   HeldCellLayout,
+    held:                    HeldCellLayout,
     /// What every cell is asking for, as the last scan left it.
-    demands:                TileDemands<Id>,
+    demands:                 TileDemands<Id>,
+    frame_summary_minimum:   FrameSummaryMinimum<Id>,
     /// Whether the geometry is settled or playing a timed move.
-    motion:                 GridMotion<Id>,
+    motion:                  GridMotion<Id>,
+    /// Clock policy, including deterministic test observations.
+    motion_clock:            MotionClock,
+    entry_timeline:          CellEntryTimeline,
+    summary_departures:      Vec<SummaryRowDeparture<Id>>,
+    /// Exact time read once for the frame being painted.
+    motion_frame_clock:      MotionFrameClock,
     /// The rect the last frame laid out, so [`Self::add`] can tell
     /// whether the cells it would create still fit on screen.
-    area:                   Rect,
+    area:                    Rect,
     /// How the grid grows, as the last frame had it. Retained so a
     /// mouse click can resolve the same geometry the frame drew without
     /// the caller carrying the settings to every hit test.
-    growth:                 TileGrowth,
+    growth:                  TileGrowth,
     /// The view drawing, hit-testing and focus movement share until a
     /// settled frame commits another one.
-    held_display:           GridDisplay,
+    held_display:            GridDisplay,
     /// Identity for the next cell opened or emptied.
-    next_slot:              u64,
+    next_slot:               u64,
     /// The cell the focus ring is on.
-    focus:                  Focus<Id>,
+    focus:                   Focus<Id>,
     /// The sizes and timings the grid is laid out and animated with.
-    settings:               TileSettings,
+    settings:                TileSettings,
     /// Summary clip rectangles painted by the last grid draw.
-    painted_summary_frames: Vec<Rect>,
+    painted_summary_frames:  Vec<Rect>,
+    painted_placements:      Vec<TilePlacement<Id>>,
+    current_cell_capacities: Vec<CurrentCellCapacity<Id>>,
+    candidate_measurements:  CandidateMeasurements<Id>,
+    capacity_publication:    CapacityPublication,
+    /// Which allocator produced the geometry used by the next preparation pass.
+    painted_allocation:      PaintedAllocation<Id>,
+    painted_viewport:        Rect,
+    summary_live:            Vec<Id>,
+    dropped_ended:           Vec<Id>,
     /// Stable identities and geometry retained from the frame input refers to.
-    painted_cells:          PaintedCells<Id>,
+    painted_cells:           PaintedCells<Id>,
     /// Content-row usage at every size inspected during the current frame.
-    frame_row_usage:        Vec<FrameCellRowUsage<Id>>,
+    frame_row_usage:         Vec<FrameCellRowUsage<Id>>,
     /// Cell geometry drawn by the last settled frame.
-    last_settled_geometry:  LastSettledCellGeometry,
+    last_settled_geometry:   LastSettledCellGeometry,
     /// One-way heights selected by the current motion's earlier frames.
-    motion_heights:         MotionHeightPath,
+    motion_heights:          MotionHeightPath,
     /// Filled destination geometry constrained by a content change in flight.
-    retargeted_destination: RetargetedMotionDestination,
+    retargeted_destination:  RetargetedMotionDestination,
+}
+
+/// Residents are mandatory; fitting can admit arrivals but cannot evict residents.
+struct LiveColumnFit<Id> {
+    cells: Vec<DrawableCell<Id>>,
+}
+
+impl<Id: Eq> LiveColumnFit<Id> {
+    const fn keeping(cells: Vec<DrawableCell<Id>>) -> Self { Self { cells } }
+
+    fn contains(&self, cell: &DrawableCell<Id>) -> bool { self.cells.contains(cell) }
+
+    fn admit(
+        &mut self,
+        position: usize,
+        cell: DrawableCell<Id>,
+        fits: impl FnOnce(&[DrawableCell<Id>]) -> bool,
+    ) where
+        Id: Clone,
+    {
+        let mut proposed = self.cells.clone();
+        proposed.insert(position, cell);
+        if fits(&proposed) {
+            self.cells = proposed;
+        }
+    }
+
+    fn into_cells(self) -> Vec<DrawableCell<Id>> { self.cells }
 }
 
 impl<Id: Clone + Eq + Debug> Default for TileGrid<Id> {
@@ -1303,33 +2777,156 @@ impl<Id: Clone + Eq + Debug> Default for TileGrid<Id> {
 }
 
 impl<Id: Clone + Eq + Debug> TileGrid<Id> {
+    /// A Joined live publication changes the key without starting another cell.
+    pub(super) fn promote_cell(&mut self, previous: &Id, canonical: &Id) {
+        if !self
+            .admission
+            .iter()
+            .chain(&self.fading_cells)
+            .any(|cell| &cell.id == previous)
+            && !self
+                .slots
+                .iter()
+                .any(|slot| matches!(slot, Slot::Group(cell) if &cell.id == previous))
+        {
+            return;
+        }
+        let promote_id = |id: &mut Id| {
+            if &*id == previous {
+                id.clone_from(canonical);
+            }
+        };
+        let promote_cell = |cell: &mut DrawableCell<Id>| cell.promote_identity(previous, canonical);
+        let promote_slot = |slot: &mut Slot<Id>| {
+            if let Slot::Group(cell) = slot {
+                promote_cell(cell);
+            }
+        };
+        let promote_identity = |identity: &mut CellIdentity<Id>| {
+            if let CellIdentity::Group(id) = identity {
+                promote_id(id);
+            }
+        };
+        let promote_content = |content: &mut TileContent<Id>| {
+            if let TileContent::Group(id) = content {
+                promote_id(id);
+            }
+        };
+        for cell in self.admission.iter_mut().chain(&mut self.fading_cells) {
+            promote_cell(cell);
+        }
+        for slot in &mut self.slots {
+            promote_slot(slot);
+        }
+        for arrival in &mut self.allocated_arrivals {
+            promote_cell(&mut arrival.cell);
+            promote_slot(&mut arrival.target);
+        }
+        for step in &mut self.pending {
+            for slot in &mut step.slots.0 {
+                promote_slot(slot);
+            }
+        }
+        if let GridMotion::Moving(transition) = &mut self.motion {
+            for slot in &mut transition.from {
+                promote_slot(slot);
+            }
+        }
+        if let Focus::Cell(focused) = &mut self.focus {
+            promote_slot(&mut focused.slot);
+        }
+        for demand in &mut self.demands.groups {
+            promote_id(&mut demand.id);
+        }
+        for id in self.summary_live.iter_mut().chain(&mut self.dropped_ended) {
+            promote_id(id);
+        }
+        for placement in &mut self.painted_placements {
+            promote_content(&mut placement.content);
+        }
+        if let PaintedCells::Drawn(cells) = &mut self.painted_cells {
+            for cell in cells {
+                promote_identity(&mut cell.identity);
+            }
+        }
+        if let CapacityColumns::Assigned {
+            required, cells, ..
+        } = &mut self.capacity_columns
+        {
+            for id in Arc::make_mut(required) {
+                promote_id(id);
+            }
+            for (id, _) in Arc::make_mut(cells) {
+                promote_id(id);
+            }
+        }
+        if let PaintedAllocation::WholeBodyCapacity(drawing) = &mut self.painted_allocation {
+            for piece in &mut drawing.pieces {
+                promote_identity(&mut piece.identity);
+                promote_content(&mut piece.placement.content);
+            }
+        }
+        self.current_cell_capacities.clear();
+        self.candidate_measurements = CandidateMeasurements::LayoutOnly;
+        self.frame_row_usage.clear();
+    }
+
+    pub(super) fn previous_placement(&self, required: &[Id]) -> FramePlacement<Id> {
+        FramePlacement::from_outcome(
+            required,
+            self.painted_placements
+                .iter()
+                .filter_map(|placement| match &placement.content {
+                    TileContent::Group(id) => Some(id),
+                    _ => None,
+                }),
+        )
+    }
+
     /// A grid holding nothing but the summary.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            slots:                  Vec::new(),
-            depth:                  1,
-            pending:                VecDeque::new(),
-            held:                   HeldCellLayout {
+            admission:               Vec::new(),
+            allocated_arrivals:      Vec::new(),
+            capacity_columns:        CapacityColumns::Unassigned,
+            fading_cells:            Vec::new(),
+            slots:                   Vec::new(),
+            depth:                   1,
+            pending:                 VecDeque::new(),
+            held:                    HeldCellLayout {
                 rows:          Vec::new(),
                 focused:       FocusLocation::Departing,
                 summary_span:  1,
                 summary_depth: 1,
             },
-            demands:                TileDemands::default(),
-            motion:                 GridMotion::Settled,
-            area:                   Rect::ZERO,
-            growth:                 TileGrowth::default(),
-            held_display:           GridDisplay::Cells,
-            next_slot:              0,
-            focus:                  Focus::Summary,
-            settings:               TileSettings::default(),
-            painted_summary_frames: Vec::new(),
-            painted_cells:          PaintedCells::Undrawn,
-            frame_row_usage:        Vec::new(),
-            last_settled_geometry:  LastSettledCellGeometry::default(),
-            motion_heights:         MotionHeightPath::default(),
-            retargeted_destination: RetargetedMotionDestination::default(),
+            demands:                 TileDemands::default(),
+            frame_summary_minimum:   FrameSummaryMinimum::Candidate,
+            motion:                  GridMotion::Settled,
+            motion_clock:            MotionClock::default(),
+            entry_timeline:          CellEntryTimeline::default(),
+            summary_departures:      Vec::new(),
+            motion_frame_clock:      MotionFrameClock::default(),
+            area:                    Rect::ZERO,
+            growth:                  TileGrowth::default(),
+            held_display:            GridDisplay::Cells,
+            next_slot:               0,
+            focus:                   Focus::Summary,
+            settings:                TileSettings::default(),
+            painted_summary_frames:  Vec::new(),
+            painted_placements:      Vec::new(),
+            current_cell_capacities: Vec::new(),
+            candidate_measurements:  CandidateMeasurements::LayoutOnly,
+            capacity_publication:    CapacityPublication::BeforePaint,
+            painted_allocation:      PaintedAllocation::Motion,
+            painted_viewport:        Rect::ZERO,
+            summary_live:            Vec::new(),
+            dropped_ended:           Vec::new(),
+            painted_cells:           PaintedCells::Undrawn,
+            frame_row_usage:         Vec::new(),
+            last_settled_geometry:   LastSettledCellGeometry::default(),
+            motion_heights:          MotionHeightPath::default(),
+            retargeted_destination:  RetargetedMotionDestination::default(),
         }
     }
 
@@ -1361,6 +2958,75 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// Sets the shortest height a tile may occupy, including its frame.
     pub fn set_min_tile_height(&mut self, height: u16) {
         self.settings.min_tile_height = height.max(super::constants::MIN_TILE_HEIGHT);
+    }
+
+    /// Prepare row policy at the readable floor, independent of painted geometry.
+    pub(super) fn readable_preparation_height(
+        &self,
+        first_height: u16,
+        body_width: u16,
+        viewport_height: u16,
+    ) -> u16 {
+        let frame = Rect::new(
+            0,
+            0,
+            body_width.saturating_add(TILE_BORDER_ROWS),
+            self.settings
+                .min_tile_height
+                .max(first_height)
+                .min(viewport_height),
+        );
+        draw::content_area(frame_inner(frame)).height
+    }
+
+    /// Checked placement supplies the exact summary rows for this draw.
+    pub(super) fn measure_frame_summary(
+        &mut self,
+        summary: SummaryDemand<Id>,
+        drawing: &ViewportDrawing<Id>,
+        continuity: CellContinuity,
+    ) {
+        self.dropped_ended.clone_from(&drawing.dropped_ended);
+        self.demands.summary = summary.clone();
+        self.frame_summary_minimum = match continuity {
+            CellContinuity::LayoutManaged => FrameSummaryMinimum::LayoutManaged,
+            CellContinuity::Running | CellContinuity::FrozenAfterEnd => {
+                FrameSummaryMinimum::Measured(summary)
+            },
+        };
+    }
+
+    /// Admission can change the listed set of an initial summary estimate.
+    pub(super) fn measure_candidate_summary(
+        &mut self,
+        summary: SummaryDemand<Id>,
+        continuity: CellContinuity,
+    ) {
+        self.demands.summary = summary;
+        self.frame_summary_minimum = match continuity {
+            CellContinuity::LayoutManaged => FrameSummaryMinimum::LayoutManaged,
+            CellContinuity::Running | CellContinuity::FrozenAfterEnd => {
+                FrameSummaryMinimum::Candidate
+            },
+        };
+    }
+
+    /// A retained layout step uses the summary rows of the current assignment.
+    fn frame_held(&self, held: &HeldCellLayout) -> HeldCellLayout {
+        let mut held = held.clone();
+        let required = self.required_cells();
+        let celled = required.iter().collect::<Vec<_>>();
+        let minimum = self.admission_room(&celled).summary_minimum.get();
+        if let Some(summary) = held.rows.first_mut() {
+            let exact = match self.frame_summary_minimum {
+                FrameSummaryMinimum::Candidate | FrameSummaryMinimum::LayoutManaged => {
+                    summary.exact_framed().max(minimum)
+                },
+                FrameSummaryMinimum::Measured(_) => minimum,
+            };
+            *summary = summary.with_exact_from(CellRowDemand::uniform(exact));
+        }
+        held
     }
 
     /// Choose whether the summary keeps its measured rows before the tiles.
@@ -1397,7 +3063,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 rows: FrameCellRowAnswers::default(),
             })
             .collect();
-        let held = self.drawn_held();
+        let held = self.frame_held(&self.drawn_held());
         let cells_grid = Grid::with_row_use(
             area,
             &held,
@@ -1422,6 +3088,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                     }
                 })
             },
+            SummaryDepthPolicy::for_cells(&self.admission),
         );
         let cells_grid = self.bound_retargeted_destination(
             cells_grid,
@@ -1442,8 +3109,6 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             } else {
                 LastSettledCellGeometry::NoCellsFrame
             };
-            self.motion_heights = MotionHeightPath::default();
-            return;
         }
         if self.held_display != GridDisplay::Cells || !matches!(self.motion, GridMotion::Moving(_))
         {
@@ -1503,7 +3168,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .map(|(index, content)| {
                 let source_cell = match content {
                     TileContent::Summary => Some(TABLE_CELL),
-                    TileContent::Group(id) => cell_of(&transition.from, &Slot::Group(id.clone())),
+                    TileContent::Group(id) => cell_of_id(&transition.from, id),
                     TileContent::Empty(_) => None,
                 };
                 source_cell
@@ -1600,7 +3265,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             }
             let source_cell = match content {
                 TileContent::Summary => Some(TABLE_CELL),
-                TileContent::Group(id) => cell_of(&transition.from, &Slot::Group(id.clone())),
+                TileContent::Group(id) => cell_of_id(&transition.from, id),
                 TileContent::Empty(cell) => cell
                     .checked_sub(TABLE_CELL + 1)
                     .and_then(|index| self.slots.get(index))
@@ -1632,7 +3297,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 }
             }
             let span = pane.area.height.saturating_sub(1);
-            let retained = span.clamp(bounds[index].smallest, bounds[index].largest);
+            let Ok(limits) = DividerBounds::new(bounds[index].smallest, bounds[index].largest)
+            else {
+                return DestinationHeightBounds::Ordinary;
+            };
+            let retained = limits.clamp(span);
             constrained |= retained != span;
             pane.area.height = retained.saturating_add(1);
         }
@@ -1740,10 +3409,14 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             } else {
                 interpolated
             };
-            let toward_end = match probe_from.cmp(&end) {
-                Ordering::Less => probe_from.saturating_add(MOVING_HEIGHT_PROBE_STEP),
-                Ordering::Equal => probe_from,
-                Ordering::Greater => probe_from.saturating_sub(MOVING_HEIGHT_PROBE_STEP),
+            let toward_end = if previous < MIN_TILE_HEIGHT {
+                MIN_TILE_HEIGHT
+            } else {
+                match probe_from.cmp(&end) {
+                    Ordering::Less => probe_from.saturating_add(MOVING_HEIGHT_PROBE_STEP),
+                    Ordering::Equal => probe_from,
+                    Ordering::Greater => probe_from.saturating_sub(MOVING_HEIGHT_PROBE_STEP),
+                }
             }
             .clamp(lower, upper);
             for height in [interpolated, previous, toward_end, end] {
@@ -1838,7 +3511,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .collect();
         let mut grid = Grid::with_row_use(
             area,
-            held,
+            &self.frame_held(held),
             growth,
             &self.settings,
             &mut |index, area, purpose| {
@@ -1851,6 +3524,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                         },
                     })
             },
+            SummaryDepthPolicy::for_cells(&self.admission),
         );
         if slots == self.slots && self.apply_retargeted_destination(&mut grid) {
             return grid;
@@ -1927,6 +3601,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             self.growth,
             self.area,
             &self.settings,
+            SummaryDepthPolicy::for_cells(&self.admission),
         ) {
             ColumnPlan::Columns(layout) => {
                 summary_span(self.area, layout.widths.len(), self.demands.summary_width)
@@ -1949,6 +3624,13 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         area: Rect,
         growth: TileGrowth,
     ) -> Vec<(TileContent<Id>, u16)> {
+        if self.prepares_published_capacity(area) == CapacityPreparation::Published {
+            return self
+                .painted_placements
+                .iter()
+                .map(|piece| (piece.content.clone(), frame_inner(piece.frame.rect()).width))
+                .collect();
+        }
         let held = self.demand_measurement_held();
         let ColumnPlan::Columns(layout) = column_layout(
             self.count(),
@@ -1956,6 +3638,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             growth,
             area,
             &self.settings,
+            SummaryDepthPolicy::for_cells(&self.admission),
         ) else {
             return vec![(TileContent::Summary, frame_inner(area).width)];
         };
@@ -2003,6 +3686,18 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         area: Rect,
         growth: TileGrowth,
     ) -> Vec<(TileContent<Id>, Rect)> {
+        if self.prepares_published_capacity(area) == CapacityPreparation::Published {
+            return self
+                .painted_placements
+                .iter()
+                .map(|piece| {
+                    (
+                        piece.content.clone(),
+                        draw::content_area(frame_inner(piece.frame.rect())),
+                    )
+                })
+                .collect();
+        }
         if self.display() == GridDisplay::SummaryAlone {
             return vec![(TileContent::Summary, draw::content_area(frame_inner(area)))];
         }
@@ -2017,6 +3712,26 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .collect()
     }
 
+    /// Explicit slot edits must measure their new widths before depth can settle.
+    /// Otherwise capacity prepares the allocation it owns rather than hidden motion.
+    fn prepares_published_capacity(&self, area: Rect) -> CapacityPreparation {
+        if !matches!(self.painted_allocation, PaintedAllocation::Motion)
+            && matches!(&self.capacity_columns, CapacityColumns::Assigned { viewport, .. } if *viewport == area)
+            && self.painted_viewport == area
+            && !matches!(
+                self.motion,
+                GridMotion::Moving(Transition {
+                    depth_status: DestinationDepthStatus::AwaitingMeasuredWidths,
+                    ..
+                })
+            )
+        {
+            CapacityPreparation::Published
+        } else {
+            CapacityPreparation::Measure
+        }
+    }
+
     /// Destination allocations with enough rows for either endpoint of a move.
     /// Source geometry is retained for the whole transition, so intermediate
     /// heights cannot change a provider's measured visible slice.
@@ -2026,6 +3741,17 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         growth: TileGrowth,
     ) -> Vec<(TileContent<Id>, Rect)> {
         let mut allocations = self.preparation_allocations(area, growth);
+        let destination = self.resolved_grid(area, &self.demand_measurement_held(), growth);
+        let destination_cells = cells(&self.slots);
+        for (content, allocation) in &mut allocations {
+            if let Some((_, index)) = destination_cells.iter().find(|(cell, _)| cell == content)
+                && let Some(rect) = destination.cell(*index)
+            {
+                allocation.height = allocation
+                    .height
+                    .max(draw::content_area(frame_inner(rect)).height);
+            }
+        }
         if let GridMotion::Moving(transition) = &self.motion {
             let source_cells = cells(&transition.from);
             for (content, allocation) in &mut allocations {
@@ -2073,6 +3799,31 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         }
     }
 
+    pub(super) fn summary_row_ink(
+        &mut self,
+        id: &Id,
+        end: Option<EndedCellDeparture>,
+    ) -> CellFadeProgress {
+        if let Some(end) = end
+            && !self.summary_departures.iter().any(|row| &row.id == id)
+        {
+            let clock = self
+                .entry_timeline
+                .start(FirstPaint(Instant::now()), end.timing);
+            self.summary_departures
+                .push(SummaryRowDeparture::new(id.clone(), clock, end));
+        }
+        self.summary_departures
+            .iter_mut()
+            .find(|row| &row.id == id)
+            .map_or(CellFadeProgress::new(0), SummaryRowDeparture::ink)
+    }
+
+    pub(super) fn retain_summary_departures(&mut self, painted: &[Id]) {
+        self.summary_departures
+            .retain(|row| painted.contains(&row.id));
+    }
+
     /// Take the grid to its next step once the one in flight has run
     /// its course, reporting whether it still wants repainting.
     ///
@@ -2082,16 +3833,316 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// overlaid on each other are not.
     pub fn tick(&mut self) -> bool {
         if matches!(self.motion, GridMotion::Settled) {
-            return false;
+            return self
+                .summary_departures
+                .iter()
+                .any(SummaryRowDeparture::needs_paint);
         }
-        if self.progress() >= PROGRESS_SCALE {
+        if self.motion_elapsed() >= self.motion_duration() {
             self.advance();
         }
         true
     }
 
-    /// Give every running command a cell and take back the cells whose
-    /// command has gone.
+    /// Queued geometry keeps its budget; the final step also finishes its ink clocks.
+    fn motion_duration(&self) -> Duration {
+        let GridMotion::Moving(step) = &self.motion else {
+            return Duration::ZERO;
+        };
+        let mut end = Duration::from_millis(step.millis);
+        if self.pending.is_empty() {
+            for cell in self.drawable_groups() {
+                let lifecycle = cell.lifecycle();
+                let remaining = match &*lifecycle {
+                    CellLifecycle::Entering(clock) => {
+                        clock.timing.duration().saturating_sub(clock.elapsed())
+                    },
+                    CellLifecycle::Leaving(ended) => ended
+                        .clock()
+                        .timing
+                        .duration()
+                        .saturating_sub(ended.clock().elapsed(self.motion_elapsed())),
+                    CellLifecycle::Waiting | CellLifecycle::Resident => continue,
+                };
+                drop(lifecycle);
+                let finishes = self.motion_elapsed().saturating_add(remaining);
+                end = end.max(finishes);
+            }
+        }
+        end
+    }
+
+    /// Remove hidden groups from `Transition::from`, `slots` and every `pending` step.
+    pub(super) fn withdraw_immediately(&mut self, ids: &[Id]) {
+        if ids.is_empty() {
+            return;
+        }
+        let removed_any = self
+            .drawable_groups()
+            .iter()
+            .any(|cell| ids.contains(&cell.id))
+            || self.pending.iter().any(|step| {
+                step.slots
+                    .iter()
+                    .any(|slot| matches!(slot, Slot::Group(cell) if ids.contains(&cell.id)))
+            });
+        if !removed_any {
+            return;
+        }
+        self.release_withdrawn_cells(ids);
+        let keep = |slot: &Slot<Id>| !matches!(slot, Slot::Group(cell) if ids.contains(&cell.id));
+        let mut destination = self.slots.clone();
+        destination.retain(keep);
+        let depth = summary_depth_for_cells(
+            self.area,
+            &cell_wants(&self.demands, &destination, &self.settings),
+            self.growth,
+            &self.settings,
+            &self.admission,
+        );
+        self.pending.push_front(LiveStep::admitted(
+            destination,
+            &self.demands,
+            depth,
+            self.settings.animation_millis,
+            DestinationDepthStatus::Resolved,
+        ));
+        // `advance` carries every older departure and rebases its own clock.
+        // Prune only the explicitly withdrawn identities from that source.
+        self.advance();
+        if let GridMotion::Moving(step) = &mut self.motion {
+            let removed = step
+                .from
+                .iter()
+                .enumerate()
+                .filter_map(|(index, slot)| (!keep(slot)).then_some(index + TABLE_CELL + 1))
+                .collect::<Vec<_>>();
+            let columns = removed
+                .iter()
+                .filter_map(|&cell| step.source.column_of(cell))
+                .collect::<Vec<_>>();
+            for column in columns {
+                step.source.widths[column] = step.source.widths[column].saturating_sub(1);
+            }
+            step.source
+                .resolved
+                .panes
+                .retain(|pane| !removed.contains(&pane.pane));
+            for pane in &mut step.source.resolved.panes {
+                pane.pane -= removed.iter().filter(|&&index| index < pane.pane).count();
+            }
+            step.held.rows = step
+                .held
+                .rows
+                .iter()
+                .copied()
+                .enumerate()
+                .filter_map(|(index, rows)| {
+                    (!removed.contains(&(index + TABLE_CELL))).then_some(rows)
+                })
+                .collect();
+            step.from.retain(keep);
+        }
+        for step in &mut self.pending {
+            step.slots.withdraw(ids);
+            step.depth = summary_depth_for_cells(
+                self.area,
+                &cell_wants(&self.demands, &step.slots, &self.settings),
+                self.growth,
+                &self.settings,
+                &self.admission,
+            );
+        }
+        self.held = self.settled_held();
+        self.last_settled_geometry = LastSettledCellGeometry::NoCellsFrame;
+        self.motion_heights = MotionHeightPath::default();
+        self.retargeted_destination = RetargetedMotionDestination::Unconstrained;
+    }
+
+    /// Withdrawal completes the receipt and releases every retained allocation.
+    fn release_withdrawn_cells(&mut self, ids: &[Id]) {
+        for cell in self
+            .drawable_groups()
+            .iter()
+            .filter(|cell| ids.contains(&cell.id))
+        {
+            cell.complete_withdrawal();
+        }
+        self.fading_cells.retain(|cell| !ids.contains(&cell.id));
+        self.admission.retain(|cell| !ids.contains(&cell.id));
+        self.allocated_arrivals
+            .retain(|arrival| !ids.contains(&arrival.cell.id));
+        self.current_cell_capacities
+            .retain(|measured| !ids.contains(&measured.cell().id));
+    }
+
+    /// Whether this group still owns a departure allocation on its fade clock.
+    #[cfg(test)]
+    pub(super) fn has_departing(&self, id: &Id) -> bool {
+        self.drawable_groups()
+            .iter()
+            .any(|cell| &cell.id == id && cell.is_leaving())
+    }
+
+    /// Ended bodies belong to the departure set, never to live destinations.
+    pub(super) fn retain_fading_cells(
+        &mut self,
+        demands: &mut TileDemands<Id>,
+        provider: &impl draw::TileCells<Id>,
+    ) {
+        let elapsed = self.motion_elapsed();
+        let occupants = self.drawable_groups();
+        for cell in &occupants {
+            if cell.continuity == CellContinuity::LayoutManaged
+                || (demands.holds(&cell.id)
+                    && !matches!(provider.departure(&cell.id), CellDeparture::Fading(_)))
+            {
+                continue;
+            }
+            let mut lifecycle = cell.lifecycle();
+            if !matches!(*lifecycle, CellLifecycle::Leaving(_)) {
+                let CellDeparture::Fading(end) = provider.departure(&cell.id) else {
+                    continue;
+                };
+                let Some(frame) = cell.departure_frame() else {
+                    continue;
+                };
+                *lifecycle = cell.end(end, provider, elapsed, frame);
+            }
+            if let CellLifecycle::Leaving(ended) = &mut *lifecycle {
+                ended.shrink_at(elapsed);
+                if ended.height() > 0 {
+                    if !self.fading_cells.iter().any(|held| held.id == cell.id) {
+                        self.fading_cells.push(cell.clone());
+                    }
+                    demands.groups.retain(|demand| demand.id != cell.id);
+                }
+            }
+        }
+        self.fading_cells.retain(|cell| {
+            matches!(&*cell.lifecycle(),
+                CellLifecycle::Leaving(ended) if ended.height() > 0)
+        });
+    }
+
+    /// An owned fade needs a ticking motion even when its first height is unchanged.
+    pub(super) fn begin_owned_fade_motion(&mut self) {
+        if matches!(self.motion, GridMotion::Settled)
+            && self
+                .drawable_groups()
+                .iter()
+                .any(super::draw::DrawableCell::is_leaving)
+        {
+            self.pending.push_back(LiveStep::admitted(
+                self.slots.clone(),
+                &self.demands,
+                self.depth,
+                self.settings.animation_millis,
+                DestinationDepthStatus::Resolved,
+            ));
+            self.advance();
+        }
+    }
+
+    /// Set each drawable group's lifecycle independently of resident motion.
+    pub(super) fn set_lifecycle_timing(&mut self, cells: &impl draw::TileCells<Id>) {
+        let elapsed = self.motion_elapsed();
+        let occupants = self.drawable_groups();
+        let GridMotion::Moving(step) = &mut self.motion else {
+            return;
+        };
+        let mut end = Duration::from_millis(step.millis);
+        for cell in occupants {
+            let mut lifecycle = cell.lifecycle();
+            if !matches!(*lifecycle, CellLifecycle::Leaving(_))
+                && let Some(end) = match cells.departure(&cell.id) {
+                    CellDeparture::Fading(end) => Some(end),
+                    CellDeparture::Live
+                        if cell.continuity == CellContinuity::LayoutManaged
+                            && !self.demands.holds(&cell.id) =>
+                    {
+                        Some(EndedCellDeparture::new(
+                            Instant::now(),
+                            CellLifecycleTiming::opening(),
+                        ))
+                    },
+                    CellDeparture::Live | CellDeparture::Immediate => None,
+                }
+                && let Some(frame) = cell.departure_frame()
+            {
+                *lifecycle = cell.end(end, cells, elapsed, frame);
+            }
+            if let CellLifecycle::Leaving(ended) = &mut *lifecycle {
+                ended.shrink_at(elapsed);
+            }
+            match &*lifecycle {
+                CellLifecycle::Leaving(ended) if self.pending.is_empty() => {
+                    let clock = ended.clock();
+                    end = end.max(
+                        elapsed.saturating_add(
+                            clock
+                                .timing
+                                .duration()
+                                .saturating_sub(clock.elapsed(elapsed)),
+                        ),
+                    );
+                },
+                CellLifecycle::Waiting
+                | CellLifecycle::Resident
+                | CellLifecycle::Entering(_)
+                | CellLifecycle::Leaving(_) => {},
+            }
+        }
+        step.millis = u64::try_from(end.as_millis()).unwrap_or(u64::MAX);
+    }
+
+    /// Read ink from the same owned clock that advances the cell's geometry.
+    #[cfg(test)]
+    pub(super) fn lifecycle_fade(&self, content: &TileContent<Id>) -> CellFadeProgress {
+        let TileContent::Group(id) = content else {
+            return CellFadeProgress::new(0);
+        };
+        let from = match &self.motion {
+            GridMotion::Moving(step) => step.from.as_slice(),
+            GridMotion::Settled => &[],
+        };
+        let Some(cell) = self
+            .slots
+            .iter()
+            .chain(from)
+            .filter_map(|slot| match slot {
+                Slot::Group(cell) => Some(cell),
+                Slot::Empty(_) => None,
+            })
+            .chain(&self.fading_cells)
+            .chain(self.allocated_arrivals.iter().map(|arrival| &arrival.cell))
+            .find(|cell| &cell.id == id)
+        else {
+            return CellFadeProgress::new(0);
+        };
+        let lifecycle = cell.lifecycle();
+        let amount = match &*lifecycle {
+            CellLifecycle::Waiting => u8::MAX,
+            CellLifecycle::Entering(clock) => {
+                u8::MAX
+                    - u8::try_from(
+                        u64::from(clock.progress()) * u64::from(u8::MAX)
+                            / u64::from(PROGRESS_SCALE),
+                    )
+                    .unwrap_or(u8::MAX)
+            },
+            CellLifecycle::Leaving(ended) => ended.ink().amount(),
+            CellLifecycle::Resident => 0,
+        };
+        drop(lifecycle);
+        CellFadeProgress::new(amount)
+    }
+
+    /// Reconcile demands for measured cells and take back ended commands.
+    ///
+    /// New identities wait for [`draw_tile_grid`](crate::draw_tile_grid), which
+    /// measures content and its first drawable allocation. A positive row count
+    /// alone never constructs a placed cell.
     ///
     /// A command arriving takes the first cell `+` opened and nothing has
     /// claimed, so a developer who made room in advance sees the build
@@ -2119,12 +4170,91 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// that has taken on enough new invocations to want another unit of
     /// its column travels there the same way a cell opening does.
     pub fn sync(&mut self, demands: &TileDemands<Id>, growth: TileGrowth) {
+        // A count cannot establish drawable content. New identities wait for the
+        // provider measurement in draw_tile_grid; existing evidence may move.
+        self.admission = self
+            .drawable_groups()
+            .into_iter()
+            .filter(|cell| demands.rows_for(&cell.id) > 0)
+            .collect();
         self.sync_demands(demands, growth, DemandSync::Independent);
     }
 
     /// Fold demands measured by the current render into its destination.
+    #[cfg(test)]
     pub(super) fn sync_rendered_demands(&mut self, demands: &TileDemands<Id>, growth: TileGrowth) {
+        let prepared = self.measured_test_groups(demands);
+        self.sync_drawable_groups(demands, prepared, growth);
+    }
+
+    /// Transfer checked candidates into slots; a group slot always owns its evidence.
+    pub(super) fn sync_drawable_groups(
+        &mut self,
+        demands: &TileDemands<Id>,
+        prepared: Vec<DrawableCell<Id>>,
+        growth: TileGrowth,
+    ) {
+        self.frame_summary_minimum = FrameSummaryMinimum::Candidate;
+        self.admission = prepared;
+        self.allocated_arrivals
+            .retain(|arrival| self.admission.iter().any(|cell| cell.id == arrival.cell.id));
+        // Refresh residents with evidence measured at the new width before checking
+        // their allocations. No resident bypasses admission after a resize.
+        let refresh = |slot: &mut Slot<Id>| {
+            if let Slot::Group(cell) = slot
+                && let Some(prepared) = self.admission.iter().find(|held| held.id == cell.id)
+            {
+                *cell = prepared.clone();
+            }
+        };
+        self.slots.iter_mut().for_each(refresh);
+        if let GridMotion::Moving(step) = &mut self.motion {
+            step.from.iter_mut().for_each(refresh);
+        }
+        for step in &mut self.pending {
+            step.slots.refresh(&self.admission, demands);
+        }
+        self.demands = demands.clone();
+        for step in &mut self.pending {
+            step.retain_live(demands);
+        }
+        // A window that cannot hold the arrangement displays the summary alone.
+        // Its hidden command layout remains intact until the window fits again.
+        if !self.slots.is_empty() && !self.holds_in(self.area, growth) {
+            return;
+        }
         self.sync_demands(demands, growth, DemandSync::CurrentRender);
+    }
+
+    /// Drawable content travels with each resident, source and queued group slot.
+    pub(super) fn drawable_groups(&self) -> Vec<DrawableCell<Id>> {
+        let source = match &self.motion {
+            GridMotion::Settled => &[][..],
+            GridMotion::Moving(step) => &step.from,
+        };
+        let mut cells = union(source, &self.slots)
+            .into_iter()
+            .filter_map(|slot| match slot {
+                Slot::Group(cell) => Some(cell),
+                Slot::Empty(_) => None,
+            })
+            .collect::<Vec<_>>();
+        for cell in self
+            .pending
+            .iter()
+            .flat_map(|step| step.slots.iter())
+            .filter_map(|slot| match slot {
+                Slot::Group(cell) => Some(cell),
+                Slot::Empty(_) => None,
+            })
+            .chain(self.fading_cells.iter())
+            .chain(self.allocated_arrivals.iter().map(|arrival| &arrival.cell))
+        {
+            if !cells.iter().any(|held| held.id == cell.id) {
+                cells.push(cell.clone());
+            }
+        }
+        cells
     }
 
     /// Reconcile one demand observation with the headed arrangement.
@@ -2139,91 +4269,45 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         if demand_sync == DemandSync::CurrentRender {
             self.fold_rendered_claims();
         }
-        let mut arrangement = self.target();
-        let mut steps: Vec<Vec<Slot<Id>>> = Vec::new();
+        self.trim_departed_destinations(demands);
         let live = demands.ids();
-        while let Some(index) = arrangement.iter().position(|slot| match slot {
-            Slot::Group(id) => !live.contains(id),
-            Slot::Empty(_) => false,
-        }) {
-            Self::close(&mut arrangement, index, &mut steps);
-        }
-        // Worked out against the cells the departed have already given
-        // back, so a command arriving in the same scan another leaves
-        // takes the room that leaving freed.
-        let ids = self.admitted(&arrangement, live, growth);
-        // Every cell from the first one out of order onward goes, and
-        // the cells before it are the run the grid gets to keep.
-        let standing = kept(&arrangement, &ids);
-        let mut reopening: Vec<Id> = Vec::new();
-        while let Some((index, id)) =
-            arrangement
-                .iter()
-                .enumerate()
-                .find_map(|(index, slot)| match slot {
-                    Slot::Group(id) if !ids.iter().take(standing).any(|held| held == id) => {
-                        Some((index, id.clone()))
-                    },
-                    _ => None,
-                })
-        {
-            reopening.push(id);
-            Self::close(&mut arrangement, index, &mut steps);
-        }
-        for id in ids {
-            if arrangement
-                .iter()
-                .any(|slot| matches!(slot, Slot::Group(held) if held == &id))
-            {
-                continue;
-            }
-            // Behind every cell already carrying a command, because the
-            // ones still standing are exactly the commands that sort
-            // ahead of this one. An empty cell keeps its place: it is a
-            // place the reader made, and only a command genuinely
-            // arriving claims one -- a cell that closed to let the order
-            // through brings its own back rather than eating it.
-            let behind = arrangement
-                .iter()
-                .rposition(|slot| matches!(*slot, Slot::Group(_)))
-                .map_or(0, |index| index.saturating_add(1));
-            let claimed = if reopening.contains(&id) {
-                None
-            } else {
-                arrangement
+        let original = self.target();
+        let admitted = self.admitted(&original, live, growth);
+        let (arrangement, planned) = arrangement_steps(&original, &admitted);
+        let mut preceding = original;
+        let mut steps = Vec::new();
+        for next in planned {
+            let handover = if preceding.len() == next.len() {
+                preceding
                     .iter()
-                    .skip(behind)
-                    .position(|slot| matches!(*slot, Slot::Empty(_)))
-                    .map(|offset| behind.saturating_add(offset))
+                    .zip(&next)
+                    .find_map(|(before, after)| match (before, after) {
+                        (Slot::Empty(_), Slot::Group(cell)) if claims(before, after) => {
+                            Some((before, cell))
+                        },
+                        _ => None,
+                    })
+            } else {
+                None
             };
-            match claimed {
-                Some(index) => {
-                    let empty = arrangement[index].clone();
-                    arrangement[index] = Slot::Group(id.clone());
-                    if demand_sync != DemandSync::CurrentRender
-                        || !self.claim_moving_empty(&empty, &id)
-                    {
-                        steps.push(arrangement.clone());
-                    }
-                },
-                // Refusing beats a cell too small to read: the command
-                // is still in the summary, which is never crowded out.
-                None if self.fits(arrangement.len() + TABLE_CELL + 1, growth) => {
-                    arrangement.insert(behind, Slot::Group(id));
-                    steps.push(arrangement.clone());
-                },
-                None => (),
+            let folded = demand_sync == DemandSync::CurrentRender
+                && handover.is_some_and(|(empty, cell)| self.claim_moving_empty(empty, cell));
+            if !folded {
+                steps.push(next.clone());
             }
+            preceding = next;
         }
+
         // Nothing moved, but the cells standing still may have changed
         // what they are asking for. Re-dividing the column is a step
         // like any other, and queued as one so it travels rather than
         // snapping.
-        let wanted_depth = summary_depth(
+        let wanted_depth = summary_depth_for_cells(
             self.area,
             &cell_wants(&self.demands, &arrangement, &self.settings),
             growth,
             &self.settings,
+            &self.admission,
         );
         if steps.is_empty() && matches!(self.motion, GridMotion::Moving(_)) {
             if demand_sync == DemandSync::CurrentRender {
@@ -2247,6 +4331,52 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         self.queue_with_depth(steps, wanted_depth, DestinationDepthStatus::Resolved);
     }
 
+    /// Departure interrupts the destination before arrivals or resident moves.
+    fn trim_departed_destinations(&mut self, demands: &TileDemands<Id>) {
+        for step in &mut self.pending {
+            step.retain_live(demands);
+            step.depth = summary_depth_for_cells(
+                self.area,
+                &cell_wants(demands, &step.slots, &self.settings),
+                self.growth,
+                &self.settings,
+                &self.admission,
+            );
+        }
+
+        if self.slots.iter().any(|slot| {
+            matches!(slot, Slot::Group(cell)
+                if demands.rows_for(cell) == 0)
+        }) {
+            let millis = match &self.motion {
+                GridMotion::Settled => self.settings.animation_millis,
+                GridMotion::Moving(step) => step
+                    .millis
+                    .min(self.settings.animation_millis)
+                    .saturating_sub(
+                        u64::try_from(self.motion_elapsed().as_millis()).unwrap_or(u64::MAX),
+                    )
+                    .max(self.settings.min_step_millis),
+            };
+            let mut departure = LiveStep::admitted(
+                self.slots.clone(),
+                demands,
+                self.depth,
+                millis,
+                DestinationDepthStatus::Resolved,
+            );
+            departure.depth = summary_depth_for_cells(
+                self.area,
+                &cell_wants(demands, &departure.slots, &self.settings),
+                self.growth,
+                &self.settings,
+                &self.admission,
+            );
+            self.pending.push_front(departure);
+            self.advance();
+        }
+    }
+
     /// Which of `live` the grid can actually give a cell to: the ones
     /// already holding one, plus as many of the rest as there is room
     /// to open.
@@ -2256,31 +4386,73 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// stop the order at its own place and send every cell behind it
     /// through a close and an open to make way for a cell that never
     /// opens.
-    fn admitted(&self, arrangement: &[Slot<Id>], live: Vec<Id>, growth: TileGrowth) -> Vec<Id> {
-        let mut spare = arrangement
+    fn admitted(
+        &self,
+        arrangement: &[Slot<Id>],
+        live: Vec<Id>,
+        growth: TileGrowth,
+    ) -> Vec<DrawableCell<Id>> {
+        let candidates: Vec<_> = live
+            .into_iter()
+            .filter_map(|id| self.admission.iter().find(|cell| cell.id == id).cloned())
+            .collect();
+        let fits = |cells: &[DrawableCell<Id>]| {
+            let (proposed, _) = arrangement_steps(arrangement, cells);
+            self.fits(proposed.len() + TABLE_CELL, growth)
+                && self.allocations_drawable(&proposed, growth) == AllocationFit::Drawable
+        };
+        if fits(&candidates) {
+            return candidates;
+        }
+        // An arrival that cannot draw must not evict a fitting resident merely
+        // because it sorts before that resident. Start with the live residents,
+        // then reconsider every waiting arrival in the same placement order.
+        let residents = candidates
             .iter()
-            .filter(|slot| matches!(**slot, Slot::Empty(_)))
-            .count();
-        let mut count = arrangement.len();
-        live.into_iter()
-            .filter(|id| {
-                if arrangement
+            .filter(|cell| {
+                arrangement
                     .iter()
-                    .any(|slot| matches!(slot, Slot::Group(held) if held == id))
-                {
-                    return true;
-                }
-                if spare > 0 {
-                    spare -= 1;
-                    return true;
-                }
-                if self.fits(count + TABLE_CELL + 1, growth) {
-                    count += 1;
-                    return true;
-                }
-                false
+                    .any(|slot| matches!(slot, Slot::Group(held) if held.id == cell.id))
             })
-            .collect()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut admitted = LiveColumnFit::keeping(residents);
+        for (index, candidate) in candidates.iter().enumerate() {
+            if admitted.contains(candidate) {
+                continue;
+            }
+            let position = admitted
+                .cells
+                .iter()
+                .take_while(|cell| candidates[..index].contains(cell))
+                .count();
+            admitted.admit(position, candidate.clone(), fits);
+        }
+        admitted.into_cells()
+    }
+
+    /// Validate actual resident and candidate allocations against their owned evidence.
+    fn allocations_drawable(&self, slots: &[Slot<Id>], growth: TileGrowth) -> AllocationFit {
+        let rows = cell_wants(&self.demands, slots, &self.settings);
+        let depth =
+            summary_depth_for_cells(self.area, &rows, growth, &self.settings, &self.admission);
+        let held = HeldCellLayout {
+            rows,
+            focused: FocusLocation::Departing,
+            summary_span: 1,
+            summary_depth: depth,
+        };
+        let grid = self.resolved_grid_for(self.area, slots, &held, growth);
+        if slots.iter().enumerate().all(|(index, slot)| match slot {
+            Slot::Group(cell) => grid
+                .cell(slot_cell(index))
+                .is_some_and(|area| area.height >= cell.first_height.get()),
+            Slot::Empty(_) => true,
+        }) {
+            AllocationFit::Drawable
+        } else {
+            AllocationFit::TooShort
+        }
     }
 
     /// Push the step that closes the cell at `index`.
@@ -2307,70 +4479,21 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// border and a row: the grid stops growing at the point the
     /// terminal stops being able to show it.
     fn add(&mut self, growth: TileGrowth) {
-        if self.open_waiting_commands_in_current_motion() {
+        let mut arrangement = self.target();
+        // A waiting command already owns the opening requested by this key.
+        // Keep its queued destination and clock instead of adding an empty cell.
+        if arrangement
+            .iter()
+            .any(|slot| matches!(slot, Slot::Group(_)) && !self.slots.contains(slot))
+        {
             return;
         }
-        let mut arrangement = self.target();
         if !self.fits(arrangement.len() + TABLE_CELL + 1, growth) {
             return;
         }
         arrangement.push(Slot::Empty(self.next_slot));
         self.next_slot = self.next_slot.saturating_add(1);
         self.queue(vec![arrangement]);
-    }
-
-    /// A requested opening serves commands already waiting for their cells.
-    fn open_waiting_commands_in_current_motion(&mut self) -> bool {
-        if !matches!(self.motion, GridMotion::Moving(_)) || self.pending.is_empty() {
-            return false;
-        }
-        let target = self.target();
-        if target.len() <= self.slots.len() {
-            return false;
-        }
-        let mut preceding = &self.slots;
-        for step in &self.pending {
-            if !preceding.iter().all(|slot| step.slots.contains(slot))
-                || step
-                    .slots
-                    .iter()
-                    .any(|slot| !preceding.contains(slot) && matches!(slot, Slot::Empty(_)))
-            {
-                return false;
-            }
-            preceding = &step.slots;
-        }
-        let progress = self.motion_heights.progress;
-        let drawn = self.drawing_at(self.area, self.growth, progress);
-        self.pending.clear();
-        self.slots = target;
-        self.retargeted_destination = RetargetedMotionDestination::Unconstrained;
-        self.resolve_key_destination_depth();
-        if !self.motion_heights.piece_heights.is_empty() {
-            let next = self.drawing_at_with_height_snap(
-                self.area,
-                self.growth,
-                progress,
-                &HeightSnap::Off,
-            );
-            self.motion_heights.piece_heights = next
-                .pieces
-                .iter()
-                .map(|piece| {
-                    let placement = &piece.placement;
-                    drawn
-                        .pieces
-                        .iter()
-                        .map(|piece| &piece.placement)
-                        .find(|previous| {
-                            previous.content == placement.content
-                                && previous.frame.clip().x == placement.frame.clip().x
-                        })
-                        .map_or(1, |previous| previous.frame.clip().height)
-                })
-                .collect();
-        }
-        true
     }
 
     /// Close an empty cell: the focused one when focus is on one,
@@ -2398,7 +4521,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// Which cell `-` takes out of `arrangement`, or `None` when it
     /// holds no empty one.
     fn removable(&self, arrangement: &[Slot<Id>]) -> Option<usize> {
-        if let Focus::Cell(slot @ Slot::Empty(_)) = &self.focus
+        if let Focus::Cell(DrawnSlot {
+            slot: slot @ Slot::Empty(_),
+        }) = &self.focus
             && let Some(index) = arrangement.iter().position(|held| held == slot)
         {
             return Some(index);
@@ -2413,7 +4538,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     fn target(&self) -> Vec<Slot<Id>> {
         self.pending
             .back()
-            .map_or_else(|| self.slots.clone(), |step| step.slots.clone())
+            .map_or_else(|| self.slots.clone(), |step| step.slots.to_vec())
     }
 
     /// Summary depth at the end of the queued arrangement.
@@ -2433,7 +4558,13 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     fn queue(&mut self, steps: Vec<Vec<Slot<Id>>>) {
         let final_slots = steps.last().cloned().unwrap_or_else(|| self.target());
         let wants = cell_wants(&self.demands, &final_slots, &self.settings);
-        let wanted = summary_depth(self.area, &wants, self.growth, &self.settings);
+        let wanted = summary_depth_for_cells(
+            self.area,
+            &wants,
+            self.growth,
+            &self.settings,
+            &self.admission,
+        );
         self.queue_with_depth(
             steps,
             wanted,
@@ -2472,11 +4603,12 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 depth = if final_step {
                     wanted
                 } else {
-                    summary_depth(
+                    summary_depth_for_cells(
                         self.area,
                         &cell_wants(&self.demands, &slots, &self.settings),
                         self.growth,
                         &self.settings,
+                        &self.admission,
                     )
                 };
                 let depth_status = if final_step {
@@ -2504,6 +4636,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 self.growth,
                 self.area,
                 &self.settings,
+                SummaryDepthPolicy::for_cells(&self.admission),
             )
         });
         self.queue_steps(moves);
@@ -2511,11 +4644,12 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
 
     /// Give the active and queued destinations their current rendered demands.
     fn resolve_key_destination_depth(&mut self) {
-        let wanted = summary_depth(
+        let wanted = summary_depth_for_cells(
             self.area,
             &cell_wants(&self.demands, &self.slots, &self.settings),
             self.growth,
             &self.settings,
+            &self.admission,
         );
         let GridMotion::Moving(transition) = &mut self.motion else {
             return;
@@ -2524,11 +4658,12 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         self.depth = wanted;
         self.held = self.settled_held();
         for step in &mut self.pending {
-            step.depth = summary_depth(
+            step.depth = summary_depth_for_cells(
                 self.area,
                 &cell_wants(&self.demands, &step.slots, &self.settings),
                 self.growth,
                 &self.settings,
+                &self.admission,
             );
         }
     }
@@ -2545,11 +4680,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             let only_claims = preceding.len() == step.slots.len()
                 && preceding
                     .iter()
-                    .zip(&step.slots)
+                    .zip(step.slots.iter())
                     .all(|(before, after)| before == after || claims(before, after));
             if only_claims {
                 let start = handovers.len();
-                for (before, after) in preceding.iter().zip(&step.slots) {
+                for (before, after) in preceding.iter().zip(step.slots.iter()) {
                     if let (Slot::Empty(_), Slot::Group(id)) = (before, after) {
                         handovers.push((before.clone(), id.clone()));
                     }
@@ -2572,26 +4707,91 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     }
 
     /// Replace the same empty identity wherever a running motion carries it.
-    fn claim_moving_empty(&mut self, empty: &Slot<Id>, id: &Id) -> bool {
+    fn claim_moving_empty(&mut self, empty: &Slot<Id>, cell: &DrawableCell<Id>) -> bool {
         let GridMotion::Moving(transition) = &mut self.motion else {
             return false;
         };
         let claim = |slots: &mut [Slot<Id>]| {
             for slot in slots {
                 if slot == empty {
-                    *slot = Slot::Group(id.clone());
+                    *slot = Slot::Group(cell.clone());
                 }
             }
         };
         claim(&mut transition.from);
         claim(&mut self.slots);
         for step in &mut self.pending {
-            claim(&mut step.slots);
+            step.slots.claim(empty, cell, &self.demands);
         }
-        if self.focus == Focus::Cell(empty.clone()) {
-            self.focus = Focus::Cell(Slot::Group(id.clone()));
+        if self.focus.holds(empty) {
+            self.focus = self
+                .slots
+                .iter()
+                .position(|slot| matches!(slot, Slot::Group(held) if held.id == cell.id))
+                .map_or(Focus::Summary, |position| {
+                    self.claim_published_allocation(slot_cell(position), cell)
+                });
         }
         true
+    }
+
+    /// Transfer a published empty allocation only when it proves the claimant's body.
+    fn claim_published_allocation(&mut self, index: usize, cell: &DrawableCell<Id>) -> Focus<Id> {
+        let allocated = self.painted_placements.iter().any(|piece| {
+            piece.content == TileContent::Empty(index)
+                && matches!(cell.fragment(piece.frame), DrawableFragment::Content(_))
+        });
+        if !allocated || self.painted_viewport != self.area {
+            return Focus::Summary;
+        }
+        let pieces = self
+            .painted_placements
+            .iter()
+            .map(|piece| TilePiece {
+                identity:    if piece.content == TileContent::Empty(index) {
+                    CellIdentity::Group(cell.id.clone())
+                } else {
+                    self.identity_for_content(&piece.content)
+                },
+                ink:         PieceInk::Resident,
+                placement:   TilePlacement {
+                    content: if piece.content == TileContent::Empty(index) {
+                        TileContent::Group(cell.id.clone())
+                    } else {
+                        piece.content.clone()
+                    },
+                    frame:   piece.frame,
+                },
+                name:        PieceName::Shown,
+                height_snap: PieceHeightSnap::Settled,
+            })
+            .collect();
+        let mut required = self.required_cells();
+        if !required.iter().any(|held| held.id == cell.id) {
+            required.push(cell.clone());
+        }
+        let cell_references = required.iter().collect::<Vec<_>>();
+        let drawing = ViewportDrawing::from_whole_cells(
+            WholeCellDrawing(TileDrawing {
+                pieces,
+                column_bands: Vec::new(),
+            }),
+            self.painted_viewport,
+            &RequiredCommands {
+                cells:           &cell_references,
+                measurements:    &[],
+                admitted:        &[],
+                summary:         self.summary_reservation(),
+                summary_minimum: RequiredSummary::Rows(
+                    self.admission_room(&cell_references).summary_minimum,
+                ),
+            },
+            &self.dropped_ended,
+            SummarizedCommands::none(),
+        );
+        self.focus = drawing.focus_on(&Slot::Group(cell.clone()), &self.slots);
+        self.publish_drawing(drawing);
+        self.focus.clone()
     }
 
     /// Queue arrangements paired with their summary depth.
@@ -2605,23 +4805,45 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .unwrap_or(self.settings.animation_millis)
             .max(self.settings.min_step_millis);
         self.pending
-            .extend(steps.into_iter().map(|(slots, depth, depth_status)| Step {
-                slots,
-                depth,
-                millis,
-                depth_status,
+            .extend(steps.into_iter().map(|(slots, depth, depth_status)| {
+                LiveStep::admitted(slots, &self.demands, depth, millis, depth_status)
             }));
         if self.pending.len() > self.settings.max_pending_steps
             && let Some(last) = self.pending.pop_back()
         {
             self.pending.clear();
-            self.pending.push_back(Step {
+            self.pending.push_back(LiveStep {
                 millis: self.settings.animation_millis,
                 ..last
             });
         }
-        if matches!(self.motion, GridMotion::Settled) {
+        if let GridMotion::Moving(active) = &mut self.motion {
+            active.millis = active.millis.min(self.settings.animation_millis);
+            // Preserve the current motion's clock. Arrivals share only the
+            // remaining budget; every queued destination keeps its order.
+            let count = u64::try_from(self.pending.len()).unwrap_or(u64::MAX);
+            let millis = (self.settings.animation_millis.saturating_sub(active.millis) / count)
+                .max(self.settings.min_step_millis);
+            for step in &mut self.pending {
+                step.millis = millis;
+            }
+        } else {
             self.advance();
+        }
+    }
+
+    /// Settled `slots` have completed their entry clock and retain full ink.
+    fn finish_entry_clocks(&self) {
+        for slot in &self.slots {
+            if let Slot::Group(cell) = slot {
+                let mut lifecycle = cell.lifecycle();
+                if matches!(
+                    *lifecycle,
+                    CellLifecycle::Entering(ref clock) if clock.elapsed() >= clock.timing.duration()
+                ) {
+                    *lifecycle = CellLifecycle::Resident;
+                }
+            }
         }
     }
 
@@ -2635,13 +4857,13 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     fn advance(&mut self) {
         let drawn_held = self.drawn_held();
         let Some(step) = self.pending.pop_front() else {
-            self.motion_heights = MotionHeightPath::default();
-            self.motion = GridMotion::Settled;
-            self.held = drawn_held;
-            self.last_settled_geometry = LastSettledCellGeometry::NoCellsFrame;
+            self.settle_after_last_step(drawn_held);
             return;
         };
         let was_settled = matches!(self.motion, GridMotion::Settled);
+        if was_settled {
+            self.finish_fade_clocks();
+        }
         let last_settled_geometry = std::mem::take(&mut self.last_settled_geometry);
         let source = match (was_settled, last_settled_geometry) {
             (true, LastSettledCellGeometry::Drawn { area, growth, grid })
@@ -2651,13 +4873,71 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             },
             _ => self.resolved_grid(self.area, &drawn_held, self.growth),
         };
-        let source = self.last_drawn_motion_source(source, &step.slots);
+        let mut source = self.last_drawn_motion_source(source, &step.slots);
+        let mut previous = self.slots.clone();
+        if let GridMotion::Moving(active) = &self.motion {
+            let elapsed = self.motion_elapsed();
+            let previous_slots = union(&active.from, &previous);
+            self.rebase_unplaced_fades(&previous_slots, elapsed);
+            let old_drawing = self.layout_at(self.area, self.growth, self.progress());
+            let mut retained = Vec::new();
+            for slot in union(&active.from, &previous) {
+                if let Slot::Group(cell) = &slot {
+                    let mut lifecycle = cell.lifecycle();
+                    if let CellLifecycle::Leaving(ended) = &mut *lifecycle {
+                        ended.rebase(elapsed);
+                    }
+                    match &*lifecycle {
+                        CellLifecycle::Leaving(ended)
+                            if ended.clock().elapsed >= ended.clock().timing.duration() =>
+                        {
+                            continue;
+                        },
+                        CellLifecycle::Entering(clock)
+                            if clock.elapsed() >= clock.timing.duration() =>
+                        {
+                            *lifecycle = CellLifecycle::Resident;
+                        },
+                        _ => {},
+                    }
+                }
+                if previous.contains(&slot)
+                    || matches!(&slot, Slot::Group(cell) if cell.is_leaving())
+                {
+                    retained.push(slot);
+                }
+            }
+            if retained != previous {
+                let contents = cells(&retained);
+                source.resolved = ResolvedPaneLayout::new(
+                    contents
+                        .iter()
+                        .filter_map(|(content, pane)| {
+                            old_drawing
+                                .pieces
+                                .iter()
+                                .find(|piece| &piece.placement.content == content)
+                                .map(|piece| ResolvedPane {
+                                    pane: *pane,
+                                    area: piece.placement.frame.clip(),
+                                })
+                        })
+                        .collect(),
+                );
+                previous = retained;
+            }
+        }
         self.retargeted_destination = RetargetedMotionDestination::Unconstrained;
         self.motion_heights = MotionHeightPath::default();
-        let previous = std::mem::replace(&mut self.slots, step.slots);
+        self.slots = step.slots.0;
         self.depth = step.depth;
         self.settle_focus(&previous);
         self.held = self.settled_held();
+        self.motion_clock = match self.motion_clock {
+            MotionClock::Injected(_) => MotionClock::Injected(Duration::ZERO),
+            MotionClock::Wall => MotionClock::Wall,
+        };
+        self.motion_frame_clock = MotionFrameClock::Unmeasured;
         self.motion = GridMotion::Moving(Transition {
             from:         previous,
             held:         drawn_held,
@@ -2668,6 +4948,42 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         });
     }
 
+    /// Finish owned lifecycle clocks before resetting the final motion step.
+    fn settle_after_last_step(&mut self, drawn_held: HeldCellLayout) {
+        self.finish_fade_clocks();
+        self.finish_entry_clocks();
+        self.motion_heights = MotionHeightPath::default();
+        self.motion = GridMotion::Settled;
+        if matches!(self.motion_clock, MotionClock::Injected(_)) {
+            self.motion_clock = MotionClock::Injected(Duration::ZERO);
+        }
+        self.held = drawn_held;
+        self.last_settled_geometry = LastSettledCellGeometry::NoCellsFrame;
+    }
+
+    /// Consume the final step before its clock is reset to the settled state.
+    fn finish_fade_clocks(&self) {
+        let elapsed = self.motion_elapsed();
+        for cell in self.drawable_groups() {
+            if let CellLifecycle::Leaving(ended) = &mut *cell.lifecycle() {
+                ended.shrink_at(elapsed);
+                ended.rebase(elapsed);
+            }
+        }
+    }
+
+    fn rebase_unplaced_fades(&self, slots: &[Slot<Id>], elapsed: Duration) {
+        for cell in &self.fading_cells {
+            if !slots
+                .iter()
+                .any(|slot| matches!(slot, Slot::Group(held) if held.id == cell.id))
+                && let CellLifecycle::Leaving(ended) = &mut *cell.lifecycle()
+            {
+                ended.rebase(elapsed);
+            }
+        }
+    }
+
     /// Keep the drawn heights when a queued key follows a column's motion.
     fn last_drawn_motion_source(&self, mut source: Grid, next_slots: &[Slot<Id>]) -> Grid {
         if self.motion_heights.piece_heights.is_empty()
@@ -2676,7 +4992,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         {
             return source;
         }
-        let drawing = self.drawing_at(self.area, self.growth, self.motion_heights.progress);
+        let drawing = self.layout_at(self.area, self.growth, self.motion_heights.progress);
         if drawing.column_bands != source.columns {
             return source;
         }
@@ -2732,12 +5048,13 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         if matches!(self.motion, GridMotion::Moving(_)) || self.settled_held() == self.held {
             return;
         }
-        self.pending.push_back(Step {
-            slots:        self.slots.clone(),
-            depth:        self.depth,
-            millis:       self.settings.focus_animation_millis,
-            depth_status: DestinationDepthStatus::Resolved,
-        });
+        self.pending.push_back(LiveStep::admitted(
+            self.slots.clone(),
+            &self.demands,
+            self.depth,
+            self.settings.focus_animation_millis,
+            DestinationDepthStatus::Resolved,
+        ));
         self.advance();
     }
 
@@ -2756,7 +5073,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// again. [`Self::focused_cell`] already answers `FocusLocation::Departing` while the
     /// slot is off the grid, so nothing is drawn holding it meanwhile.
     fn settle_focus(&mut self, previous: &[Slot<Id>]) {
-        let Focus::Cell(slot) = &self.focus else {
+        let Focus::Cell(DrawnSlot { slot }) = &self.focus else {
             return;
         };
         if self.slots.contains(slot) {
@@ -2767,12 +5084,18 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         {
             return;
         }
-        self.focus = previous
+        let claim = previous
             .iter()
             .position(|held| held == slot)
-            .and_then(|index| self.slots.get(index))
-            .filter(|taken| claims(slot, taken))
-            .map_or(Focus::Summary, |taken| Focus::Cell(taken.clone()));
+            .and_then(|position| self.slots.get(position).map(|taken| (position, taken)))
+            .filter(|(_, taken)| claims(slot, taken))
+            .and_then(|(position, taken)| match taken {
+                Slot::Group(cell) => Some((slot_cell(position), cell.clone())),
+                Slot::Empty(_) => None,
+            });
+        self.focus = claim.map_or(Focus::Summary, |(index, cell)| {
+            self.claim_published_allocation(index, &cell)
+        });
     }
 
     /// Play every queued step at once, for tests that care where the
@@ -2784,7 +5107,20 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         while !self.pending.is_empty() {
             self.advance();
         }
+        self.finish_fade_clocks();
+        for cell in self.drawable_groups() {
+            let mut lifecycle = cell.lifecycle();
+            if matches!(
+                *lifecycle,
+                CellLifecycle::Waiting | CellLifecycle::Entering(_)
+            ) {
+                *lifecycle = CellLifecycle::Resident;
+            }
+        }
         self.motion = GridMotion::Settled;
+        if matches!(self.motion_clock, MotionClock::Injected(_)) {
+            self.motion_clock = MotionClock::Injected(Duration::ZERO);
+        }
         self.last_settled_geometry = LastSettledCellGeometry::NoCellsFrame;
         self.motion_heights = MotionHeightPath::default();
     }
@@ -2795,9 +5131,79 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         self.settings.max_pending_steps = 1;
     }
 
+    /// Exercise a direct endpoint crossing independently of departure priority.
+    #[cfg(test)]
+    pub(super) fn collapse_active_destination_for_test(&mut self) {
+        if let Some(last) = self.pending.pop_back() {
+            self.slots = last.slots.0;
+            self.depth = last.depth;
+            self.held = self.settled_held();
+            self.pending.clear();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn queued_group_ids_for_test(&self) -> Vec<Vec<Id>> {
+        self.pending
+            .iter()
+            .map(|step| {
+                step.slots
+                    .iter()
+                    .filter_map(|slot| match slot {
+                        Slot::Group(cell) => Some(cell.id.clone()),
+                        Slot::Empty(_) => None,
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
     /// Complete only the active motion so tests can inspect each queued arrival.
     #[cfg(test)]
     pub(super) fn finish_motion_for_test(&mut self) { self.advance(); }
+
+    /// Shorten motion clocks in small frame-by-frame render fixtures.
+    #[cfg(any(test, feature = "test-clock"))]
+    pub fn set_motion_duration_for_test(&mut self, duration: Duration) {
+        self.settings.animation_millis = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        self.settings.min_step_millis =
+            (self.settings.animation_millis / TEST_MOTION_STEP_DIVISOR).max(1);
+    }
+
+    /// Inject elapsed time into the active motion without a wall-clock wait.
+    #[cfg(any(test, feature = "test-clock"))]
+    #[doc(hidden)]
+    pub fn set_motion_elapsed_for_test(&mut self, elapsed: Duration) {
+        let delta = match self.motion_clock {
+            MotionClock::Injected(before) => elapsed.saturating_sub(before),
+            MotionClock::Wall => elapsed,
+        };
+        self.entry_timeline.advance_for_test(delta);
+        self.motion_clock = MotionClock::Injected(elapsed);
+        self.motion_frame_clock = MotionFrameClock::Unmeasured;
+        if let GridMotion::Moving(transition) = &mut self.motion {
+            let now = Instant::now();
+            transition.started = now.checked_sub(elapsed).unwrap_or(now);
+            self.motion_clock = MotionClock::Injected(elapsed);
+            self.motion_frame_clock = MotionFrameClock::Unmeasured;
+        }
+    }
+
+    /// Advance the injected clock as the UI ticker would, retaining queued steps.
+    #[cfg(any(test, feature = "test-clock"))]
+    #[doc(hidden)]
+    pub fn elapse_for_test(&mut self, mut elapsed: Duration) {
+        while matches!(self.motion, GridMotion::Moving(_)) {
+            let remaining = self.motion_duration().saturating_sub(self.motion_elapsed());
+            if elapsed < remaining {
+                break;
+            }
+            self.set_motion_elapsed_for_test(self.motion_elapsed().saturating_add(remaining));
+            self.tick();
+            elapsed = elapsed.saturating_sub(remaining);
+        }
+        self.set_motion_elapsed_for_test(self.motion_elapsed().saturating_add(elapsed));
+    }
 
     /// Read a motion's clock without sampling elapsed time.
     #[cfg(test)]
@@ -2902,15 +5308,20 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// and a sideways step from it goes on to the first column it does
     /// not cover.
     fn focus_step(&mut self, direction: Direction, growth: TileGrowth) {
-        if self.display() == GridDisplay::SummaryAlone {
+        if self.display() == GridDisplay::SummaryAlone
+            && (self.painted_placements.is_empty() || self.painted_viewport != self.area)
+        {
             return;
         }
         let FocusLocation::Cell(cell) = self.focused_cell() else {
             return;
         };
-        let lanes = self
-            .resolved_grid(self.area, &self.drawn_held(), growth)
-            .lanes();
+        let lanes = if self.capacity_publication == CapacityPublication::BeforePaint {
+            self.resolved_grid(self.area, &self.drawn_held(), growth)
+                .lanes()
+        } else {
+            self.painted_lanes()
+        };
         let Some((column, row)) = lanes.iter().enumerate().find_map(|(column, lane)| {
             lane.iter()
                 .position(|&held| held == cell)
@@ -2951,50 +5362,114 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// the framework knows the key was spent here rather than on the
     /// pane cycle.
     pub fn cycle_focus(&mut self, direction: CycleDirection) -> bool {
-        if self.display() == GridDisplay::SummaryAlone {
+        if self.display() == GridDisplay::SummaryAlone && self.painted_viewport != self.area {
             return false;
         }
-        let last = self.count();
+        let order = if self.capacity_publication == CapacityPublication::BeforePaint {
+            if self.display() == GridDisplay::SummaryAlone {
+                return false;
+            }
+            (TABLE_CELL..=self.count()).collect::<Vec<_>>()
+        } else {
+            self.painted_placements
+                .iter()
+                .filter_map(|piece| self.placement_index(&piece.content))
+                .collect::<Vec<_>>()
+        };
+        if order.len() < 2 {
+            return false;
+        }
         let FocusLocation::Cell(cell) = self.focused_cell() else {
             return false;
         };
-        let next = match direction {
-            CycleDirection::Next if cell >= last => TABLE_CELL,
-            CycleDirection::Next => cell.saturating_add(1),
-            CycleDirection::Prev if cell <= TABLE_CELL => last,
-            CycleDirection::Prev => cell.saturating_sub(1),
+        let Some(position) = order.iter().position(|&index| index == cell) else {
+            return false;
         };
+        let next = order[match direction {
+            CycleDirection::Next => (position + 1) % order.len(),
+            CycleDirection::Prev => (position + order.len() - 1) % order.len(),
+        }];
         self.focus = self.focus_at(next);
         self.resize_for_focus();
         true
+    }
+
+    /// Columns and rows are read from the same published placements as pointer hits.
+    fn painted_lanes(&self) -> Vec<Vec<usize>> {
+        let mut columns = self
+            .painted_placements
+            .iter()
+            .map(|piece| piece.frame.clip().x)
+            .collect::<Vec<_>>();
+        columns.sort_unstable();
+        columns.dedup();
+        columns
+            .into_iter()
+            .map(|x| {
+                let mut pieces = self
+                    .painted_placements
+                    .iter()
+                    .filter(|piece| {
+                        let rect = piece.frame.clip();
+                        rect.x == x
+                            || matches!(piece.content, TileContent::Summary)
+                                && rect.left() <= x
+                                && x < rect.right().saturating_sub(1)
+                    })
+                    .collect::<Vec<_>>();
+                pieces.sort_by_key(|piece| piece.frame.clip().y);
+                pieces
+                    .into_iter()
+                    .filter_map(|piece| self.placement_index(&piece.content))
+                    .collect()
+            })
+            .collect()
     }
 
     /// The cell number focus rests on, or its departure from the arrangement.
     pub fn focused_cell(&self) -> FocusLocation {
         match &self.focus {
             Focus::Summary => FocusLocation::Cell(TABLE_CELL),
-            Focus::Cell(slot) => {
-                cell_of(&self.slots, slot).map_or(FocusLocation::Departing, FocusLocation::Cell)
+            Focus::Cell(DrawnSlot { slot }) => {
+                let index = match slot {
+                    Slot::Group(cell) => self.placement_index(&TileContent::Group(cell.id.clone())),
+                    Slot::Empty(_) => cell_of(&self.slots, slot),
+                };
+                index.map_or(FocusLocation::Departing, FocusLocation::Cell)
             },
         }
     }
 
     /// What focus becomes on landing at cell `index`, left where it is
     /// when the grid has no such cell.
-    fn focus_at(&self, index: usize) -> Focus<Id> {
+    fn focus_at(&mut self, index: usize) -> Focus<Id> {
         if index == TABLE_CELL {
             return Focus::Summary;
+        }
+        if self.capacity_publication == CapacityPublication::BeforePaint {
+            let drawing = self.drawing_at(self.area, self.growth, self.progress());
+            self.publish_drawing(drawing);
         }
         index
             .checked_sub(TABLE_CELL + 1)
             .and_then(|position| self.slots.get(position))
-            .map_or_else(|| self.focus.clone(), |slot| Focus::Cell(slot.clone()))
+            .or_else(|| self.arrival_target(index))
+            .map_or_else(
+                || self.focus.clone(),
+                |slot| DrawnSlot::in_placements(slot, &self.slots, &self.painted_placements),
+            )
     }
 
     /// Put focus on cell `index`, leaving it where it is when the grid
     /// has no such cell.
     pub fn focus_cell(&mut self, index: usize) {
-        if self.display() == GridDisplay::SummaryAlone {
+        if self.display() == GridDisplay::SummaryAlone
+            && (self.painted_viewport != self.area
+                || !self
+                    .painted_placements
+                    .iter()
+                    .any(|piece| matches!(piece.content, TileContent::Group(_))))
+        {
             return;
         }
         self.focus = self.focus_at(index);
@@ -3004,10 +5479,16 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// The cell `pos` lands in, or `None` when the point is outside the
     /// grid.
     ///
-    /// Answered against the settled grid rather than against a
-    /// transition in flight: a cell mid-travel is a transient, and
-    /// clicking one is asking for where it is going.
+    /// The last painted capacity outcome owns the answer. Before the first
+    /// paint, the settled layout supplies the initial geometry.
     pub fn cell_at(&self, pos: Position) -> Option<usize> {
+        if self.capacity_publication == CapacityPublication::Painted {
+            return self
+                .painted_placements
+                .iter()
+                .find(|piece| piece.frame.clip().contains(pos))
+                .and_then(|piece| self.placement_index(&piece.content));
+        }
         if self.display() == GridDisplay::SummaryAlone {
             return self.area.contains(pos).then_some(TABLE_CELL);
         }
@@ -3038,7 +5519,14 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             && match &self.motion {
                 GridMotion::Settled => true,
                 GridMotion::Moving(transition) => {
-                    arrangement_fits(&transition.from, transition.held.summary_depth)
+                    // Retained departures share the already drawn source bands;
+                    // they do not open additional columns.
+                    area.width
+                        >= shared_run(
+                            u16::try_from(transition.source.columns.len()).unwrap_or(u16::MAX),
+                            self.settings.min_tile_width,
+                        )
+                        && area.height >= self.settings.min_tile_height
                 },
             }
             && self
@@ -3062,7 +5550,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let GridMotion::Moving(transition) = &self.motion else {
             return PROGRESS_SCALE;
         };
-        let elapsed = transition.started.elapsed().as_millis();
+        let elapsed = self.motion_elapsed().as_millis();
         let total = u128::from(transition.millis);
         if total == 0 || elapsed >= total {
             return PROGRESS_SCALE;
@@ -3070,8 +5558,71 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         u32::try_from(elapsed * u128::from(PROGRESS_SCALE) / total).unwrap_or(PROGRESS_SCALE)
     }
 
+    /// Read the active transition's time source.
+    fn motion_elapsed(&self) -> Duration {
+        match self.motion_clock {
+            MotionClock::Injected(elapsed) => elapsed,
+            MotionClock::Wall => match &self.motion {
+                GridMotion::Settled => Duration::ZERO,
+                GridMotion::Moving(step) => step.started.elapsed(),
+            },
+        }
+    }
+
+    /// Sample once so long departures cannot quantize a short entry's clock.
+    pub(super) fn sample_frame_clock(&mut self) -> u32 {
+        let elapsed = self.motion_elapsed();
+        let progress = self.progress();
+        if let GridMotion::Moving(step) = &self.motion {
+            self.motion_frame_clock = MotionFrameClock::Sampled {
+                started: step.started,
+                elapsed,
+                progress,
+            };
+        }
+        progress
+    }
+
+    /// Read an exact sampled frame, or the explicit progress requested by a probe.
+    fn elapsed_at(&self, raw: u32) -> Duration {
+        let GridMotion::Moving(step) = &self.motion else {
+            return Duration::ZERO;
+        };
+        if let MotionFrameClock::Sampled {
+            started,
+            elapsed,
+            progress,
+        } = self.motion_frame_clock
+            && started == step.started
+            && progress == raw
+        {
+            return elapsed;
+        }
+        Duration::from_millis(
+            step.millis.saturating_mul(u64::from(raw)) / u64::from(PROGRESS_SCALE),
+        )
+    }
+
     /// Every piece to draw this frame, in cell order.
     pub fn placements(&self, area: Rect, growth: TileGrowth) -> Vec<TilePlacement<Id>> {
+        if self.capacity_publication == CapacityPublication::Painted
+            && self.painted_viewport == area
+            && self.growth == growth
+        {
+            return self
+                .painted_placements
+                .iter()
+                .map(|piece| TilePlacement {
+                    content: piece.content.clone(),
+                    frame:   piece.frame.with_focus(match &self.focus {
+                        Focus::Summary => matches!(piece.content, TileContent::Summary),
+                        Focus::Cell(drawn) => {
+                            DrawnSlot::matches_content(&drawn.slot, &piece.content, &self.slots)
+                        },
+                    }),
+                })
+                .collect();
+        }
         self.drawing(area, growth)
             .pieces
             .into_iter()
@@ -3083,8 +5634,171 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     #[must_use]
     pub fn painted_summary_frames(&self) -> &[Rect] { &self.painted_summary_frames }
 
+    /// Placements from the last draw, without evaluating the layout a second time.
+    #[cfg(any(test, feature = "test-clock"))]
+    #[must_use]
+    pub fn painted_placements_for_test(&self) -> &[TilePlacement<Id>] { &self.painted_placements }
+
+    pub(super) fn record_viewport_capacity(&mut self, drawing: &ViewportDrawing<Id>) {
+        self.painted_viewport = drawing.viewport;
+        self.summary_live.clone_from(&drawing.summary_live);
+        self.dropped_ended.clone_from(&drawing.dropped_ended);
+    }
+
+    /// Record the same presentations as painting, starting and sampling their one clock.
+    pub(super) fn start_painted_entries(
+        &self,
+        drawing: MeasuredDrawing<Id>,
+        retained: &[DrawableCell<Id>],
+    ) -> StartedCellDrawing<Id> {
+        let mut drawing = drawing.into_drawing();
+        for cell in retained {
+            let mut pieces = drawing.drawing.0.pieces.iter_mut().filter(|piece| {
+                matches!(&piece.placement.content, TileContent::Group(id) if id == &cell.id)
+            });
+            let presentation = if let Some(piece) = pieces.next() {
+                let mut lifecycle = cell.lifecycle();
+                piece.ink = match &mut *lifecycle {
+                    CellLifecycle::Waiting => {
+                        let mut clock = self.entry_timeline.start(
+                            FirstPaint(Instant::now()),
+                            CellLifecycleTiming::new(Duration::from_millis(
+                                self.settings.animation_millis,
+                            )),
+                        );
+                        let ink = PieceInk::Entering(clock.painted_ink());
+                        *lifecycle = CellLifecycle::Entering(clock);
+                        ink
+                    },
+                    CellLifecycle::Entering(clock) => PieceInk::Entering(clock.painted_ink()),
+                    CellLifecycle::Leaving(ended) => PieceInk::Leaving(ended.ink()),
+                    CellLifecycle::Resident => PieceInk::Resident,
+                };
+                drop(lifecycle);
+                let presentation = CellPresentation::Drawn {
+                    frame: piece.placement.frame,
+                    ink:   CellFadeProgress::new(piece.ink.amount()),
+                };
+                for fragment in pieces {
+                    fragment.ink = piece.ink;
+                }
+                presentation
+            } else {
+                CellPresentation::NotDrawn
+            };
+            cell.record_presentation(presentation);
+        }
+        StartedCellDrawing(drawing)
+    }
+
+    /// Painting replaces initial selection geometry with the actual frame outcome.
+    pub(super) fn publish_painted_drawing(
+        &mut self,
+        drawing: StartedCellDrawing<Id>,
+    ) -> ViewportDrawing<Id> {
+        let StartedCellDrawing(drawing) = drawing;
+        self.painted_allocation = match drawing.allocation {
+            DrawingAllocation::Motion => PaintedAllocation::Motion,
+            DrawingAllocation::Capacity
+                if self
+                    .admission
+                    .iter()
+                    .any(|cell| cell.continuity == CellContinuity::LayoutManaged) =>
+            {
+                PaintedAllocation::LayoutManagedCapacity
+            },
+            DrawingAllocation::Capacity => PaintedAllocation::WholeBodyCapacity(TileDrawing {
+                pieces:       drawing
+                    .pieces
+                    .iter()
+                    .map(|piece| TilePiece {
+                        identity:    piece.identity.clone(),
+                        placement:   TilePlacement {
+                            content: piece.placement.content.clone(),
+                            frame:   piece.placement.frame,
+                        },
+                        ink:         piece.ink,
+                        name:        piece.name,
+                        height_snap: piece.height_snap,
+                    })
+                    .collect(),
+                column_bands: drawing.column_bands.clone(),
+            }),
+        };
+        if drawing.allocation == DrawingAllocation::Capacity {
+            for arrival in &mut self.allocated_arrivals {
+                if let Some(piece) = drawing.pieces.iter().find(|piece| {
+                    piece.placement.content == TileContent::Group(arrival.cell.id.clone())
+                }) {
+                    arrival.allocation = piece.placement.frame;
+                }
+            }
+            self.capacity_columns.clone_from(&drawing.capacity_columns);
+        }
+        self.capacity_publication = CapacityPublication::Painted;
+        self.publish_drawing(drawing)
+    }
+
+    /// Publish one outcome with a focus proof belonging to that outcome's drawn set.
+    pub(super) fn publish_drawing(
+        &mut self,
+        mut drawing: ViewportDrawing<Id>,
+    ) -> ViewportDrawing<Id> {
+        let focus = match &self.focus {
+            Focus::Summary => Focus::Summary,
+            Focus::Cell(drawn) => drawing.focus_on(&drawn.slot, &self.slots),
+        };
+        self.painted_placements = drawing
+            .drawing
+            .0
+            .pieces
+            .iter_mut()
+            .map(|piece| {
+                let focused = match &focus {
+                    Focus::Summary => matches!(piece.placement.content, TileContent::Summary),
+                    Focus::Cell(drawn) => DrawnSlot::matches_content(
+                        &drawn.slot,
+                        &piece.placement.content,
+                        &self.slots,
+                    ),
+                };
+                piece.placement.frame = piece.placement.frame.with_focus(focused);
+                TilePlacement {
+                    content: piece.placement.content.clone(),
+                    frame:   piece.placement.frame,
+                }
+            })
+            .collect();
+        self.focus = focus;
+        self.record_viewport_capacity(&drawing);
+        drawing
+    }
+
+    /// Live commands counted by the summary because required bodies do not fit.
+    #[cfg(any(test, feature = "test-clock"))]
+    #[must_use]
+    pub fn summary_live_for_test(&self) -> &[Id] { &self.summary_live }
+
+    /// Departures removed by the same insufficient-viewport decision.
+    #[cfg(any(test, feature = "test-clock"))]
+    #[must_use]
+    pub fn capacity_ended_for_test(&self) -> &[Id] { &self.dropped_ended }
+
+    /// Exact grid viewport of the last painted frame.
+    #[cfg(any(test, feature = "test-clock"))]
+    #[must_use]
+    pub const fn painted_viewport_for_test(&self) -> Rect { self.painted_viewport }
+
     pub(super) fn record_painted_summary_frames(&mut self, frames: Vec<Rect>) {
         self.painted_summary_frames = frames;
+    }
+
+    fn identity_for_content(&self, content: &TileContent<Id>) -> CellIdentity<Id> {
+        match content {
+            TileContent::Summary => CellIdentity::Summary,
+            TileContent::Group(id) => CellIdentity::Group(id.clone()),
+            TileContent::Empty(index) => CellIdentity::from(&self.slots[index - TABLE_CELL - 1]),
+        }
     }
 
     /// Retain exactly the pieces that the grid painted, in paint order.
@@ -3131,18 +5845,25 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         else {
             return CellHit::Missed;
         };
-        let index = match &piece.identity {
-            CellIdentity::Summary => TABLE_CELL,
-            CellIdentity::Slot(slot) => {
-                let Some(index) = cell_of(&self.slots, slot) else {
+        let (index, content) = match &piece.identity {
+            CellIdentity::Summary => (TABLE_CELL, TileContent::Summary),
+            CellIdentity::Group(id) => {
+                let Some(index) = self.placement_index(&TileContent::Group(id.clone())) else {
                     return CellHit::Retired;
                 };
-                index
+                (index, TileContent::Group(id.clone()))
             },
-        };
-        let content = match &piece.identity {
-            CellIdentity::Summary => TileContent::Summary,
-            CellIdentity::Slot(slot) => content_of(slot, index),
+            CellIdentity::Empty(serial) => {
+                let Some(offset) = self
+                    .slots
+                    .iter()
+                    .position(|slot| matches!(slot, Slot::Empty(current) if current == serial))
+                else {
+                    return CellHit::Retired;
+                };
+                let index = slot_cell(offset);
+                (index, TileContent::Empty(index))
+            },
         };
         CellHit::Current {
             index,
@@ -3155,12 +5876,14 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// transition clock.
     pub(super) fn drawing(&self, area: Rect, growth: TileGrowth) -> TileDrawing<Id> {
         self.drawing_at(area, growth, self.progress())
+            .into_drawing()
     }
 
     /// The summary filling an area whose cells do not fit.
     fn summary_alone_drawing(area: Rect) -> TileDrawing<Id> {
         TileDrawing {
             pieces:       vec![TilePiece {
+                ink:         PieceInk::Resident,
                 identity:    CellIdentity::Summary,
                 placement:   TilePlacement {
                     content: TileContent::Summary,
@@ -3176,20 +5899,31 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// The grid's pieces after its current arrangement has settled.
     fn settled_drawing(&self, settled: &Grid) -> TileDrawing<Id> {
         let focused = self.focused_cell();
-        let pieces = cells(&self.slots)
-            .into_iter()
-            .filter_map(|(content, index)| {
-                Some(TilePiece {
-                    identity:    if index == TABLE_CELL {
+        let contents =
+            std::iter::once(TileContent::Summary).chain(self.slots.iter().enumerate().map(
+                |(offset, slot)| match slot {
+                    Slot::Group(cell) => TileContent::Group(cell.clone()),
+                    Slot::Empty(_) => TileContent::Empty(slot_cell(offset)),
+                },
+            ));
+        let pieces = contents
+            .enumerate()
+            .filter_map(|(offset, content)| {
+                let index = TABLE_CELL + offset;
+                let frame = PaneFrame::new(settled.cell(index)?);
+                let drawn = CellAppearance {
+                    identity: if index == TABLE_CELL {
                         CellIdentity::Summary
                     } else {
-                        CellIdentity::Slot(self.slots[index - TABLE_CELL - 1].clone())
+                        CellIdentity::from(&self.slots[index - TABLE_CELL - 1])
                     },
-                    placement:   TilePlacement {
-                        content,
-                        frame: PaneFrame::new(settled.cell(index)?)
-                            .with_focus(focused == FocusLocation::Cell(index)),
-                    },
+                    content,
+                    focused: focused == FocusLocation::Cell(index),
+                };
+                Some(TilePiece {
+                    identity:    drawn.identity.clone(),
+                    ink:         PieceInk::Resident,
+                    placement:   drawn.at(frame),
                     name:        PieceName::Shown,
                     height_snap: PieceHeightSnap::Settled,
                 })
@@ -3199,6 +5933,1535 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             pieces,
             column_bands: settled.columns.clone(),
         }
+    }
+
+    /// Every paint and hit-test receives the same complete, viewport-bounded outcome.
+    pub(super) fn drawing_with_cells(
+        &mut self,
+        area: Rect,
+        growth: TileGrowth,
+        raw: u32,
+        cells: &impl draw::TileCells<Id>,
+    ) -> ViewportDrawing<Id> {
+        let admitted = self.drawable_groups();
+        let mut candidate = self.complete_drawing_at(area, growth, raw);
+        if self.settings.view == TileView::Summary {
+            candidate
+                .pieces
+                .retain(|piece| draw::has_visible_body_row(piece.placement.frame));
+            return ViewportDrawing::from_whole_cells(
+                WholeCellDrawing(candidate),
+                area,
+                &RequiredCommands {
+                    cells:           &[],
+                    measurements:    &[],
+                    admitted:        &[],
+                    summary:         self.summary_reservation(),
+                    summary_minimum: RequiredSummary::Rows(
+                        self.candidate_room(&[], self.summary_probe_width(area), cells)
+                            .summary_minimum,
+                    ),
+                },
+                &self.dropped_ended,
+                SummarizedCommands::none(),
+            );
+        }
+        if let Ok(drawing) = self.checked_painted_capacity(area, cells) {
+            return drawing;
+        }
+        // A queued slot does not own its arrival until its normal geometry can
+        // replace the whole free allocation. Until then the arrival stays required.
+        let motion_owns_destination =
+            matches!(self.motion, GridMotion::Settled) && self.pending.is_empty();
+        self.allocated_arrivals.retain(|arrival| {
+            !motion_owns_destination
+                || !candidate.pieces.iter().any(|piece| {
+                    piece.placement.content == TileContent::Group(arrival.cell.id.clone())
+                        && piece.placement.frame.clip() == piece.placement.frame.rect()
+                        && piece.placement.frame.shift() == 0
+                })
+        });
+        // Running commands need admission even when an unpainted motion candidate
+        // includes them: capacity may retain a different column assignment.
+        // Generic cells continue to acquire the layout-managed destination.
+        if self.admission.iter().any(|cell| {
+            !cell.has_drawn_body()
+                && (cell.continuity == CellContinuity::Running
+                    || !candidate.pieces.iter().any(|piece| {
+                        piece.placement.content == TileContent::Group(cell.id.clone())
+                    }))
+        }) && let WaitingAdmissions::Placed(drawing) =
+            self.admit_in_free_allocations(area, cells)
+        {
+            return drawing;
+        }
+        self.current_cell_capacities = self.measure_drawing_cells(&candidate, area, cells);
+        let drawing_cells = self
+            .current_cell_capacities
+            .iter()
+            .map(CurrentCellCapacity::cell)
+            .collect::<Vec<_>>();
+        let required = RequiredCommands {
+            cells:           &drawing_cells,
+            measurements:    &self.current_cell_capacities,
+            admitted:        &admitted,
+            summary:         self.summary_reservation(),
+            summary_minimum: RequiredSummary::Rows(
+                self.candidate_room(&drawing_cells, self.summary_probe_width(area), cells)
+                    .summary_minimum,
+            ),
+        };
+        if (!self.capacity_assignment_holds(area, &drawing_cells)
+            || self.preserves_capacity_columns(&candidate))
+            && let Ok(drawing) =
+                ViewportDrawing::checked(candidate, area, &required, &self.dropped_ended)
+        {
+            return drawing;
+        }
+        self.measure_capacity_cells(area, cells);
+        let required_cells = self
+            .current_cell_capacities
+            .iter()
+            .map(CurrentCellCapacity::cell)
+            .collect::<Vec<_>>();
+        self.capacity_drawing_with_rooms(
+            area,
+            &RequiredCommands {
+                cells:           &required_cells,
+                measurements:    &self.current_cell_capacities,
+                admitted:        &[],
+                summary:         self.summary_reservation(),
+                summary_minimum: RequiredSummary::Rows(
+                    self.candidate_room(&required_cells, self.summary_probe_width(area), cells)
+                        .summary_minimum,
+                ),
+            },
+            |celled| self.candidate_room(celled, self.summary_probe_width(area), cells),
+        )
+    }
+
+    /// An unchanged capacity frame keeps its columns after current body checks.
+    fn checked_painted_capacity(
+        &mut self,
+        area: Rect,
+        cells: &impl draw::TileCells<Id>,
+    ) -> Result<ViewportDrawing<Id>, ColumnCapacityFailure> {
+        if self.prepares_published_capacity(area) == CapacityPreparation::Measure
+            || !matches!(self.motion, GridMotion::Settled)
+            || self.admission.iter().any(|cell| !cell.has_drawn_body())
+        {
+            return Err(ColumnCapacityFailure);
+        }
+        let PaintedAllocation::WholeBodyCapacity(held) = &self.painted_allocation else {
+            return Err(ColumnCapacityFailure);
+        };
+        let candidate = TileDrawing {
+            pieces:       held
+                .pieces
+                .iter()
+                .map(|piece| {
+                    let placement = &piece.placement;
+                    let focused = match &self.focus {
+                        Focus::Summary => matches!(placement.content, TileContent::Summary),
+                        Focus::Cell(drawn) => {
+                            DrawnSlot::matches_content(&drawn.slot, &placement.content, &self.slots)
+                        },
+                    };
+                    TilePiece {
+                        identity:    piece.identity.clone(),
+                        placement:   TilePlacement {
+                            content: placement.content.clone(),
+                            frame:   placement.frame.with_focus(focused),
+                        },
+                        ink:         piece.ink,
+                        name:        piece.name,
+                        height_snap: piece.height_snap,
+                    }
+                })
+                .collect(),
+            column_bands: held.column_bands.clone(),
+        };
+        self.current_cell_capacities = self.measure_drawing_cells(&candidate, area, cells);
+        let cell_references = self
+            .current_cell_capacities
+            .iter()
+            .map(CurrentCellCapacity::cell)
+            .collect::<Vec<_>>();
+        let admitted = self.drawable_groups();
+        let required = RequiredCommands {
+            cells:           &cell_references,
+            measurements:    &self.current_cell_capacities,
+            admitted:        &admitted,
+            summary:         self.summary_reservation(),
+            summary_minimum: RequiredSummary::Rows(
+                self.candidate_room(&cell_references, self.summary_probe_width(area), cells)
+                    .summary_minimum,
+            ),
+        };
+        let mut drawing =
+            ViewportDrawing::checked(candidate, area, &required, &self.dropped_ended)?;
+        drawing.allocation = DrawingAllocation::Capacity;
+        drawing.capacity_columns = CapacityColumns::assigned(area, &drawing, &required);
+        Ok(drawing)
+    }
+
+    /// Measure complete command bodies through this drawing's current widths and form.
+    fn measure_drawing_cells(
+        &self,
+        candidate: &TileDrawing<Id>,
+        area: Rect,
+        cells: &impl draw::TileCells<Id>,
+    ) -> Vec<CurrentCellCapacity<Id>> {
+        let widths = candidate
+            .pieces
+            .iter()
+            .map(|piece| {
+                (
+                    piece.placement.content.clone(),
+                    piece
+                        .placement
+                        .frame
+                        .rect()
+                        .width
+                        .saturating_sub(TILE_BORDER_ROWS),
+                )
+            })
+            .collect::<Vec<_>>();
+        let demands = cells.demands(&widths);
+        self.required_cells()
+            .iter()
+            .map(|cell| {
+                let measured = candidate
+                    .pieces
+                    .iter()
+                    .find(|piece| piece.placement.content == TileContent::Group(cell.id.clone()));
+                let Some(piece) = measured else {
+                    return CurrentCellCapacity::TooTall(cell.clone());
+                };
+                let width = piece
+                    .placement
+                    .frame
+                    .rect()
+                    .width
+                    .saturating_sub(TILE_BORDER_ROWS);
+                let rows = demands
+                    .groups
+                    .iter()
+                    .find(|demand| demand.id == cell.id)
+                    .map_or_else(|| cell.last_measured_rows(), |demand| demand.rows);
+                match cell.capacity_at(rows, width, area.height, cells) {
+                    CellAdmission::Drawable(cell) => CurrentCellCapacity::Drawable(cell),
+                    CellAdmission::Waiting => CurrentCellCapacity::TooTall(cell.clone()),
+                }
+            })
+            .collect()
+    }
+
+    /// Capacity admission shares free rows through the measured body allocator.
+    pub(super) fn share_capacity_rows(
+        &self,
+        drawing: ViewportDrawing<Id>,
+        area: Rect,
+        provider: &impl draw::TileCells<Id>,
+    ) -> ViewportDrawing<Id> {
+        let required_ids = self
+            .demands
+            .groups
+            .iter()
+            .map(|group| group.id.clone())
+            .collect::<Vec<_>>();
+        let placement = drawing.placement(&required_ids);
+        let width = drawing
+            .pieces
+            .iter()
+            .find(|piece| matches!(piece.placement.content, TileContent::Summary))
+            .map_or_else(
+                || area.width.saturating_sub(TILE_BORDER_ROWS),
+                |piece| frame_inner(piece.placement.frame.rect()).width,
+            );
+        let drawn = self
+            .current_cell_capacities
+            .iter()
+            .map(CurrentCellCapacity::cell)
+            .filter(|cell| placement.celled().contains(&cell.id))
+            .collect::<Vec<_>>();
+        let minimum = self.candidate_room(&drawn, width, provider).summary_minimum;
+        let provider = &CandidateCells {
+            live: provider,
+            placement,
+        };
+        if drawing.allocation != DrawingAllocation::Capacity {
+            let ViewportDrawing {
+                drawing,
+                allocation,
+                capacity_columns,
+                viewport,
+                summary_live,
+                dropped_ended,
+            } = drawing;
+            let whole = WholeCellDrawing(drawing.0);
+            let whole = if matches!(
+                self.frame_summary_minimum,
+                FrameSummaryMinimum::LayoutManaged
+            ) {
+                whole
+            } else {
+                let cell_references = self
+                    .current_cell_capacities
+                    .iter()
+                    .map(CurrentCellCapacity::cell)
+                    .collect::<Vec<_>>();
+                let required = RequiredCommands {
+                    cells:           &cell_references,
+                    measurements:    &self.current_cell_capacities,
+                    admitted:        &[],
+                    summary:         self.summary_reservation(),
+                    summary_minimum: RequiredSummary::Rows(minimum),
+                };
+                whole.with_shared_rows(area, &required, provider, &self.settings)
+            };
+            let whole = whole.with_optional_summary_rows(area, provider);
+            return ViewportDrawing {
+                drawing: BodyDrawing(whole.0),
+                allocation,
+                capacity_columns,
+                viewport,
+                summary_live,
+                dropped_ended,
+            };
+        }
+        let cell_references = self
+            .current_cell_capacities
+            .iter()
+            .map(CurrentCellCapacity::cell)
+            .collect::<Vec<_>>();
+        let required = RequiredCommands {
+            cells:           &cell_references,
+            measurements:    &self.current_cell_capacities,
+            admitted:        &[],
+            summary:         self.summary_reservation(),
+            summary_minimum: RequiredSummary::Rows(minimum),
+        };
+        let summarized = SummarizedCommands(drawing.summary_live.clone());
+        let released = drawing.dropped_ended.clone();
+        let whole = WholeCellDrawing(drawing.into_drawing())
+            .with_shared_rows(area, &required, provider, &self.settings)
+            .with_optional_summary_rows(area, provider);
+        ViewportDrawing::from_whole_cells(whole, area, &required, &released, summarized)
+    }
+
+    /// Motion can share capacity's allocation only while retaining its column topology.
+    /// Capacity keeps ownership until the queued destination settles, even when a
+    /// matching motion frame supplies the summary's measured height.
+    fn preserves_capacity_columns(&self, candidate: &TileDrawing<Id>) -> bool {
+        self.painted_placements.iter().all(|held| {
+            candidate
+                .pieces
+                .iter()
+                .find(|piece| piece.placement.content == held.content)
+                .is_none_or(|piece| {
+                    let before = held.frame.clip();
+                    let after = piece.placement.frame.clip();
+                    before.x == after.x
+                        && before.width == after.width
+                        && (before.bottom() != self.painted_viewport.bottom()
+                            || candidate.pieces.iter().any(|piece| {
+                                let frame = piece.placement.frame.clip();
+                                frame.x == before.x
+                                    && frame.bottom() == self.painted_viewport.bottom()
+                            }))
+                })
+        })
+    }
+
+    /// Rows committed to a resize are part of this frame's capacity contract.
+    fn summary_reservation(&self) -> SummaryReservation {
+        match &self.motion {
+            GridMotion::Moving(step)
+                if step.from == self.slots && step.held.needs_motion_from(&self.held) =>
+            {
+                SummaryReservation::Resizing {
+                    height: self
+                        .held
+                        .rows
+                        .first()
+                        .copied()
+                        .unwrap_or_default()
+                        .exact_framed()
+                        .min(self.requested_summary_height()),
+                }
+            },
+            GridMotion::Settled | GridMotion::Moving(_) => SummaryReservation::Unreserved,
+        }
+    }
+
+    /// A waiting command cannot displace an owned departure or live allocation.
+    /// Each successful trial carries all existing bodies plus the new whole body.
+    fn admit_in_free_allocations(
+        &mut self,
+        area: Rect,
+        provider: &impl draw::TileCells<Id>,
+    ) -> WaitingAdmissions<Id> {
+        if self.admission.iter().all(DrawableCell::has_drawn_body) {
+            return WaitingAdmissions::NoFreeAllocation;
+        }
+        self.measure_capacity_cells(area, provider);
+        // Required membership includes every painted occupant; candidate widths
+        // have already been measured independently for the same admission set.
+        for cell in self.drawable_groups() {
+            if cell.has_drawn_body()
+                && !self
+                    .current_cell_capacities
+                    .iter()
+                    .any(|held| held.cell().id == cell.id)
+            {
+                self.current_cell_capacities
+                    .push(CurrentCellCapacity::Drawable(cell));
+            }
+        }
+        // Running commands may claim genuinely free room immediately. Generic
+        // layout-managed cells still need the destination's allocation proof;
+        // packing them at a different width cannot overrule a refused opening.
+        let destination = self
+            .pending
+            .back()
+            .map_or(self.slots.as_slice(), |step| step.slots.as_slice());
+        let waiting = self
+            .admission
+            .iter()
+            .filter(|cell| {
+                !cell.has_drawn_body()
+                    && (cell.continuity == CellContinuity::Running
+                        || destination.iter().any(
+                            |slot| matches!(slot, Slot::Group(placed) if placed.id == cell.id),
+                        ))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let room = self.free_allocation_room(area, destination.len());
+        let mut outcome = WaitingAdmissions::NoFreeAllocation;
+        for cell in waiting {
+            let mut candidate = self
+                .current_cell_capacities
+                .iter()
+                .map(CurrentCellCapacity::cell)
+                .collect::<Vec<_>>();
+            candidate.push(&cell);
+            let summary = self.candidate_room(&candidate, self.summary_probe_width(area), provider);
+            if let WaitingAdmissions::Placed(drawing) =
+                self.allocate_waiter(area, &cell, FreeAllocationRoom { summary, ..room })
+            {
+                outcome = WaitingAdmissions::Placed(drawing);
+            }
+        }
+        outcome
+    }
+
+    /// A successful whole-body trial acquires its allocation, target and clock together.
+    fn allocate_waiter(
+        &mut self,
+        area: Rect,
+        cell: &DrawableCell<Id>,
+        room: FreeAllocationRoom,
+    ) -> WaitingAdmissions<Id> {
+        let waiting_cell = cell.clone();
+        self.current_cell_capacities
+            .push(CurrentCellCapacity::Drawable(cell.clone()));
+        let cell_references = self
+            .current_cell_capacities
+            .iter()
+            .map(CurrentCellCapacity::cell)
+            .collect::<Vec<_>>();
+        let Ok(whole) =
+            self.fit_required_viewport(area, &cell_references, room.summary, room.columns)
+        else {
+            self.current_cell_capacities.pop();
+            return WaitingAdmissions::NoFreeAllocation;
+        };
+        let whole =
+            self.prefer_optional_rows(whole, area, &cell_references, room.summary, room.columns);
+        let required = RequiredCommands {
+            cells:           &cell_references,
+            measurements:    &self.current_cell_capacities,
+            admitted:        &[],
+            summary:         self.summary_reservation(),
+            summary_minimum: RequiredSummary::Rows(room.summary.summary_minimum),
+        };
+        let drawing = ViewportDrawing::from_whole_cells(
+            whole,
+            area,
+            &required,
+            &self.dropped_ended,
+            SummarizedCommands::none(),
+        );
+        let Some(allocation) = drawing
+            .pieces
+            .iter()
+            .find(|piece| piece.placement.content == TileContent::Group(waiting_cell.id.clone()))
+            .map(|piece| piece.placement.frame)
+        else {
+            self.current_cell_capacities.pop();
+            return WaitingAdmissions::NoFreeAllocation;
+        };
+        self.allocated_arrivals
+            .push(AllocatedArrival::allocated(waiting_cell, allocation));
+        WaitingAdmissions::Placed(drawing)
+    }
+
+    /// A body resize owns its columns, but unused rows in them remain available.
+    fn free_allocation_room(&self, area: Rect, destination_count: usize) -> FreeAllocationRoom {
+        let columns = if matches!(
+            self.summary_reservation(),
+            SummaryReservation::Resizing { .. }
+        ) {
+            match &self.motion {
+                GridMotion::Moving(step) => {
+                    ColumnLimit::from(u16::try_from(step.source.widths.len()).unwrap_or(u16::MAX))
+                },
+                GridMotion::Settled => ColumnLimit::Unbounded,
+            }
+        } else if self.owns_running_cells() {
+            ColumnLimit::Unbounded
+        } else {
+            ColumnLimit::from(
+                u16::try_from(
+                    columns_with_limit(
+                        destination_count + TABLE_CELL + self.target_depth().saturating_sub(1),
+                        self.growth,
+                        column_limit(area, &self.settings),
+                    )
+                    .len(),
+                )
+                .unwrap_or(u16::MAX),
+            )
+        };
+        FreeAllocationRoom {
+            columns,
+            summary: self.admission_room(&[]),
+        }
+    }
+
+    /// Previously measured capacity also serves layout queries outside painting.
+    pub(super) fn drawing_at(
+        &self,
+        area: Rect,
+        growth: TileGrowth,
+        raw: u32,
+    ) -> ViewportDrawing<Id> {
+        let admitted = self.drawable_groups();
+        let cells = self.required_cells();
+        let cell_references = cells
+            .iter()
+            .map(|cell| {
+                self.current_cell_capacities
+                    .iter()
+                    .find(|measured| measured.cell().id == cell.id)
+                    .map_or(cell, CurrentCellCapacity::cell)
+            })
+            .collect::<Vec<_>>();
+        let required = RequiredCommands {
+            cells:           &cell_references,
+            measurements:    &self.current_cell_capacities,
+            admitted:        &admitted,
+            summary:         self.summary_reservation(),
+            summary_minimum: RequiredSummary::Rows(
+                self.admission_room(&cell_references).summary_minimum,
+            ),
+        };
+        let candidate = self.complete_drawing_at(area, growth, raw);
+        if (!self.capacity_assignment_holds(area, &cell_references)
+            || self.preserves_capacity_columns(&candidate))
+            && let Ok(drawing) =
+                ViewportDrawing::checked(candidate, area, &required, &self.dropped_ended)
+        {
+            return drawing;
+        }
+        self.capacity_drawing(area, &required)
+    }
+
+    /// Previously drawn commands remain required even while counted by the summary.
+    fn required_cells(&self) -> Vec<DrawableCell<Id>> {
+        if self.settings.view == TileView::Summary {
+            return Vec::new();
+        }
+        self.drawable_groups()
+            .into_iter()
+            .filter(|cell| {
+                (cell.continuity == CellContinuity::Running
+                    || cell.owns_visible_departure()
+                    || self
+                        .allocated_arrivals
+                        .iter()
+                        .any(|arrival| arrival.cell.id == cell.id))
+                    && cell.has_drawn_body()
+                    && !matches!(&*cell.lifecycle(),
+                    CellLifecycle::Leaving(ended) if ended.height() == 0)
+            })
+            .collect()
+    }
+
+    /// Every candidate owns measurements at its exact content widths. This work
+    /// runs only when admission or a failed motion frame needs capacity packing.
+    pub(super) fn measure_capacity_cells(
+        &mut self,
+        area: Rect,
+        provider: &impl draw::TileCells<Id>,
+    ) {
+        self.current_cell_capacities = self
+            .required_cells()
+            .into_iter()
+            .map(CurrentCellCapacity::Drawable)
+            .collect();
+        let mut candidates = self.drawable_groups();
+        for cell in &self.admission {
+            if !candidates.iter().any(|held| held.id == cell.id) {
+                candidates.push(cell.clone());
+            }
+        }
+        let mut measurements = Vec::new();
+        let mut widths = self.capacity_widths(area);
+        if self.painted_viewport == area {
+            for piece in &self.painted_placements {
+                if matches!(piece.content, TileContent::Group(_)) {
+                    let width = piece.frame.clip().width.saturating_sub(TILE_BORDER_ROWS);
+                    if !widths.contains(&width) {
+                        widths.push(width);
+                    }
+                }
+            }
+        }
+        for width in widths {
+            let demands = provider.demands(&[(TileContent::Summary, width)]);
+            for cell in &candidates {
+                let rows = demands
+                    .groups
+                    .iter()
+                    .find(|demand| demand.id == cell.id)
+                    .map_or_else(|| cell.last_measured_rows(), |demand| demand.rows);
+                let capacity = match cell.capacity_at(rows, width, area.height, provider) {
+                    CellAdmission::Drawable(cell) => CurrentCellCapacity::Drawable(cell),
+                    CellAdmission::Waiting => CurrentCellCapacity::TooTall(cell.clone()),
+                };
+                measurements.push(CandidateBody {
+                    width,
+                    current_cell_capacity: capacity,
+                });
+            }
+        }
+        self.candidate_measurements = CandidateMeasurements::Measured(measurements);
+    }
+
+    /// Both equal-pitch columns and the remainder column have their own widths.
+    pub(super) fn capacity_widths(&self, area: Rect) -> Vec<u16> {
+        if area.width < self.settings.min_tile_width {
+            return Vec::new();
+        }
+        let columns = u16::try_from(column_limit(area, &self.settings)).unwrap_or(u16::MAX);
+        let mut widths = Vec::new();
+        for count in 1..=columns {
+            let pitch = area.width.saturating_sub(1) / count;
+            for framed in [pitch + 1, area.width - (count - 1) * pitch] {
+                let width = framed.saturating_sub(TILE_BORDER_ROWS);
+                if !widths.contains(&width) {
+                    widths.push(width);
+                }
+            }
+        }
+        widths
+    }
+
+    fn candidate_body<'a>(
+        &'a self,
+        cell: &'a DrawableCell<Id>,
+        width: u16,
+    ) -> Result<&'a DrawableCell<Id>, CandidateDoesNotFit> {
+        if cell.owns_visible_departure() {
+            return Ok(cell);
+        }
+        let CandidateMeasurements::Measured(measurements) = &self.candidate_measurements else {
+            return Ok(cell);
+        };
+        match measurements
+            .iter()
+            .find(|body| body.width == width && body.current_cell_capacity.cell().id == cell.id)
+        {
+            Some(CandidateBody {
+                current_cell_capacity: CurrentCellCapacity::Drawable(cell),
+                ..
+            }) => Ok(cell),
+            Some(_) | None => Err(CandidateDoesNotFit),
+        }
+    }
+
+    /// Requested summary rows are spent only after whole command allocations fit.
+    fn requested_summary_height(&self) -> u16 {
+        u16::try_from(self.demands.summary.required())
+            .unwrap_or(u16::MAX)
+            .saturating_add(TILE_BORDER_ROWS)
+    }
+
+    fn summary_probe_width(&self, area: Rect) -> u16 {
+        self.capacity_widths(area)
+            .into_iter()
+            .min()
+            .unwrap_or_else(|| area.width.saturating_sub(TILE_BORDER_ROWS))
+    }
+
+    fn candidate_room(
+        &self,
+        celled: &[&DrawableCell<Id>],
+        width: u16,
+        provider: &impl draw::TileCells<Id>,
+    ) -> AdmissionRoom {
+        if matches!(
+            self.frame_summary_minimum,
+            FrameSummaryMinimum::LayoutManaged
+        ) {
+            return self.admission_room(celled);
+        }
+        let required = self
+            .demands
+            .groups
+            .iter()
+            .map(|group| group.id.clone())
+            .collect::<Vec<_>>();
+        let placement = FramePlacement::from_outcome(&required, celled.iter().map(|cell| &cell.id));
+        let summary = provider.summary_demand_for(&placement, width);
+        let height = draw::summary_frame_rows(&summary, width);
+        AdmissionRoom {
+            summary_minimum: self.required_summary_height(height, summary.listed().len(), celled),
+        }
+    }
+
+    fn admission_room(&self, celled: &[&DrawableCell<Id>]) -> AdmissionRoom {
+        // Layout-managed cells use the ordinary grid floor. They do not publish
+        // the invocation partition whose listed rows reserve extra summary room.
+        if self
+            .admission
+            .iter()
+            .all(|cell| cell.continuity == CellContinuity::LayoutManaged)
+            && celled
+                .iter()
+                .all(|cell| cell.continuity == CellContinuity::LayoutManaged)
+        {
+            return AdmissionRoom {
+                summary_minimum: NonZeroU16::new(self.settings.min_tile_height)
+                    .unwrap_or(NonZeroU16::MIN),
+            };
+        }
+        let summary = match &self.frame_summary_minimum {
+            FrameSummaryMinimum::Measured(summary) => summary,
+            FrameSummaryMinimum::Candidate | FrameSummaryMinimum::LayoutManaged => {
+                &self.demands.summary
+            },
+        };
+        let listed = summary
+            .listed()
+            .iter()
+            .filter(|owner| !celled.iter().any(|cell| &cell.id == *owner))
+            .count();
+        let height = u16::try_from(summary.header() + listed)
+            .unwrap_or(u16::MAX)
+            .saturating_add(TILE_BORDER_ROWS);
+        AdmissionRoom {
+            summary_minimum: self.required_summary_height(height, listed, celled),
+        }
+    }
+
+    /// An owned departure keeps its clocked rows before optional summary height.
+    fn required_summary_height(
+        &self,
+        required: u16,
+        listed: usize,
+        cells: &[&DrawableCell<Id>],
+    ) -> NonZeroU16 {
+        let height = if listed > 0 && !cells.iter().any(|cell| cell.owns_visible_departure()) {
+            required.max(self.settings.min_tile_height)
+        } else {
+            required
+        };
+        NonZeroU16::new(height).unwrap_or(NonZeroU16::MIN)
+    }
+
+    /// Whole-body capacity retains columns; layout-managed cells use checked motion.
+    fn capacity_assignment_holds(&self, area: Rect, cells: &[&DrawableCell<Id>]) -> bool {
+        matches!(
+            self.painted_allocation,
+            PaintedAllocation::WholeBodyCapacity(_)
+        ) && matches!(&self.capacity_columns, CapacityColumns::Assigned { viewport, required, .. }
+                if *viewport == area && required.len() == cells.len()
+                    && cells.iter().all(|cell| required.contains(&cell.id)))
+    }
+
+    /// Entering capacity inherits the last published assignment for the same set.
+    /// Subsequent capacity frames share that assignment without rebuilding it.
+    fn capacity_columns_for(&self, area: Rect, cells: &[&DrawableCell<Id>]) -> CapacityColumns<Id> {
+        if let CapacityColumns::Assigned {
+            viewport,
+            cells: assigned,
+            ..
+        } = &self.capacity_columns
+            && *viewport == area
+            && assigned.len() == cells.len()
+            && cells
+                .iter()
+                .all(|cell| assigned.iter().any(|(id, _)| id == &cell.id))
+        {
+            return self.capacity_columns.clone();
+        }
+        let painted = self
+            .painted_placements
+            .iter()
+            .filter_map(|piece| match &piece.content {
+                TileContent::Group(id) => Some((id, piece.frame.clip())),
+                TileContent::Summary | TileContent::Empty(_) => None,
+            })
+            .collect::<Vec<_>>();
+        if self.painted_viewport != area
+            || painted.len() != cells.len()
+            || cells
+                .iter()
+                .any(|cell| !painted.iter().any(|(id, _)| *id == &cell.id))
+        {
+            return CapacityColumns::Unassigned;
+        }
+        let Some(summary) = self
+            .painted_placements
+            .iter()
+            .find(|piece| matches!(piece.content, TileContent::Summary))
+            .map(|piece| piece.frame.clip())
+        else {
+            return CapacityColumns::Unassigned;
+        };
+        CapacityColumns::Assigned {
+            viewport: area,
+            required: cells.iter().map(|cell| cell.id.clone()).collect(),
+            summary,
+            cells: painted
+                .into_iter()
+                .map(|(id, frame)| (id.clone(), frame))
+                .collect(),
+        }
+    }
+
+    /// Reuse each command's published column; summary demand cannot reassign it.
+    fn fit_assigned_capacity(
+        &self,
+        area: Rect,
+        cells: &[&DrawableCell<Id>],
+        summary: Rect,
+        assigned: &[(Id, Rect)],
+        row_policy: CellPackingRows,
+    ) -> Result<WholeCellDrawing<Id>, RetainedAssignmentDoesNotFit> {
+        if assigned
+            .iter()
+            .map(|(_, frame)| frame.right())
+            .chain([summary.right()])
+            .max()
+            != Some(area.right())
+        {
+            return Err(RetainedAssignmentDoesNotFit);
+        }
+        let columns = assigned
+            .iter()
+            .map(|(_, frame)| *frame)
+            .chain([summary])
+            .collect::<Vec<_>>();
+        if columns.iter().any(|first| {
+            columns.iter().any(|second| {
+                (first.x != second.x || first.width != second.width)
+                    && first.left() < second.right().saturating_sub(1)
+                    && second.left() < first.right().saturating_sub(1)
+            })
+        }) {
+            return Err(RetainedAssignmentDoesNotFit);
+        }
+        let mut pieces = vec![TilePiece {
+            identity:    CellIdentity::Summary,
+            ink:         PieceInk::Resident,
+            placement:   TilePlacement {
+                content: TileContent::Summary,
+                frame:   PaneFrame::new(summary),
+            },
+            name:        PieceName::Shown,
+            height_snap: PieceHeightSnap::Settled,
+        }];
+        let mut tops = vec![(summary.x, summary.y + summary.height.saturating_sub(1))];
+        for (index, cell) in cells.iter().enumerate() {
+            let (_, column) = assigned
+                .iter()
+                .find(|(id, _)| id == &cell.id)
+                .ok_or(RetainedAssignmentDoesNotFit)?;
+            let cell = self
+                .candidate_body(cell, column.width.saturating_sub(TILE_BORDER_ROWS))
+                .map_err(|CandidateDoesNotFit| RetainedAssignmentDoesNotFit)?;
+            let position = tops
+                .iter()
+                .position(|(x, _)| *x == column.x)
+                .unwrap_or_else(|| {
+                    tops.push((column.x, area.y));
+                    tops.len() - 1
+                });
+            let height = match &*cell.lifecycle() {
+                CellLifecycle::Leaving(ended) => ended.height(),
+                _ => match row_policy {
+                    CellPackingRows::Required => cell.first_height.get(),
+                    CellPackingRows::Painted => cell.preferred_height.get(),
+                    CellPackingRows::Prefix { oldest_cells } => cell
+                        .first_height
+                        .get()
+                        .saturating_add(if index < oldest_cells {
+                            cell.painted_prefix_rows()
+                        } else {
+                            0
+                        }),
+                }
+                .max(self.settings.min_tile_height),
+            };
+            let top = &mut tops[position].1;
+            if top.saturating_add(height) > area.bottom() {
+                return Err(RetainedAssignmentDoesNotFit);
+            }
+            let frame = PaneFrame::new(Rect::new(column.x, *top, column.width, height));
+            let (DrawableFragment::Content(frame) | DrawableFragment::Closing(frame)) =
+                cell.fragment(frame)
+            else {
+                return Err(RetainedAssignmentDoesNotFit);
+            };
+            pieces.push(TilePiece {
+                identity:    CellIdentity::Group(cell.id.clone()),
+                ink:         PieceInk::Resident,
+                placement:   TilePlacement {
+                    content: TileContent::Group(cell.id.clone()),
+                    frame,
+                },
+                name:        PieceName::Shown,
+                height_snap: PieceHeightSnap::Settled,
+            });
+            *top += height.saturating_sub(1);
+        }
+        Ok(WholeCellDrawing(TileDrawing {
+            pieces,
+            column_bands: Vec::new(),
+        }))
+    }
+
+    /// Capacity failure changes whole-cell membership, never a cell's visible fragment.
+    fn capacity_drawing(
+        &self,
+        area: Rect,
+        required: &RequiredCommands<'_, Id>,
+    ) -> ViewportDrawing<Id> {
+        self.capacity_drawing_with_rooms(area, required, |cells| self.admission_room(cells))
+    }
+
+    fn capacity_drawing_with_rooms(
+        &self,
+        area: Rect,
+        required: &RequiredCommands<'_, Id>,
+        room_for: impl Fn(&[&DrawableCell<Id>]) -> AdmissionRoom,
+    ) -> ViewportDrawing<Id> {
+        let room = room_for(required.cells);
+        let minimum =
+            self.fit_required_viewport(area, required.cells, room, ColumnLimit::Unbounded);
+        let pressure = match minimum {
+            Ok(drawing) => {
+                let drawing = self.prefer_optional_rows(
+                    drawing,
+                    area,
+                    required.cells,
+                    room,
+                    ColumnLimit::Unbounded,
+                );
+                return ViewportDrawing::from_whole_cells(
+                    drawing,
+                    area,
+                    required,
+                    &self.dropped_ended,
+                    SummarizedCommands::none(),
+                );
+            },
+            Err(pressure) => pressure,
+        };
+        let mut kept = required.cells.to_vec();
+        loop {
+            let position = kept
+                .iter()
+                .rposition(|cell| matches!(&*cell.lifecycle(), CellLifecycle::Leaving(_)))
+                .unwrap_or_else(|| kept.len().saturating_sub(1));
+            if !kept.is_empty() {
+                kept.remove(position);
+            }
+            let outcome = if kept.is_empty() {
+                Some(ViewportDrawing::summary_only(
+                    area,
+                    required,
+                    &self.dropped_ended,
+                    &pressure,
+                ))
+            } else {
+                self.fit_required_viewport(area, &kept, room_for(&kept), ColumnLimit::Unbounded)
+                    .map(|drawing| {
+                        ViewportDrawing::from_whole_cells(
+                            drawing,
+                            area,
+                            required,
+                            &self.dropped_ended,
+                            InsufficientViewport::summarize(required.cells, &kept),
+                        )
+                    })
+                    .ok()
+            };
+            if let Some(drawing) = outcome {
+                for cell in required
+                    .cells
+                    .iter()
+                    .filter(|cell| drawing.dropped_ended.contains(&cell.id))
+                {
+                    if let CellLifecycle::Leaving(ended) = &mut *cell.lifecycle() {
+                        ended.release_for_capacity(&pressure);
+                    }
+                }
+                return drawing;
+            }
+        }
+    }
+
+    /// Checked fragments emitted after the height solver has retained every span.
+    fn complete_drawing_at(&self, area: Rect, growth: TileGrowth, raw: u32) -> TileDrawing<Id> {
+        let mut drawing = self.layout_at(area, growth, raw);
+        let cells = self.drawable_groups();
+        drawing.pieces.retain_mut(|piece| {
+            let TileContent::Group(id) = &piece.placement.content else {
+                return true;
+            };
+            let Some(cell) = cells.iter().find(|cell| &cell.id == id) else {
+                return false;
+            };
+            match cell.fragment(piece.placement.frame) {
+                DrawableFragment::Content(frame) | DrawableFragment::Closing(frame) => {
+                    piece.placement.frame = frame;
+                    true
+                },
+                DrawableFragment::OutsideContent => {
+                    let clipped = PaneFrame::new(piece.placement.frame.clip())
+                        .with_focus(piece.placement.frame.is_focused());
+                    match cell.fragment(clipped) {
+                        DrawableFragment::Content(frame) | DrawableFragment::Closing(frame) => {
+                            piece.placement.frame = frame;
+                            true
+                        },
+                        DrawableFragment::OutsideContent => {
+                            let owned = PaneFrame::new(piece.placement.frame.rect())
+                                .with_focus(piece.placement.frame.is_focused());
+                            if cell.continuity == CellContinuity::Running
+                                && cell.has_drawn_body()
+                                && owned.rect().intersection(area) == owned.rect()
+                                && let DrawableFragment::Content(frame)
+                                | DrawableFragment::Closing(frame) = cell.fragment(owned)
+                            {
+                                piece.placement.frame = frame;
+                                true
+                            } else {
+                                false
+                            }
+                        },
+                    }
+                },
+            }
+        });
+        drawing
+    }
+
+    /// Optional composition starts only after a complete required-body proof.
+    fn prefer_optional_rows(
+        &self,
+        minimum: WholeCellDrawing<Id>,
+        area: Rect,
+        cells: &[&DrawableCell<Id>],
+        room: AdmissionRoom,
+        columns: ColumnLimit,
+    ) -> WholeCellDrawing<Id> {
+        self.fit_painted_prefixes(&minimum, area, cells, room, columns)
+            .or_else(|_| {
+                self.fit_preferred_viewport(area, cells, room, columns, CellPackingRows::Painted)
+            })
+            .unwrap_or(minimum)
+    }
+
+    /// Painted prefixes yield newest first when required demand uses their rows.
+    /// A failed preference does not authorize a capacity withdrawal.
+    fn fit_painted_prefixes(
+        &self,
+        minimum: &WholeCellDrawing<Id>,
+        area: Rect,
+        cells: &[&DrawableCell<Id>],
+        room: AdmissionRoom,
+        columns: ColumnLimit,
+    ) -> Result<WholeCellDrawing<Id>, CandidateDoesNotFit> {
+        let prefix_limits = std::iter::once(cells.len()).chain(
+            cells
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, cell)| cell.painted_prefix_rows() > 0)
+                .map(|(index, _)| index),
+        );
+        for oldest_cells in prefix_limits {
+            let policy = CellPackingRows::Prefix { oldest_cells };
+            if let Ok(drawing) = self.extend_painted_columns(minimum, area, cells, room, policy) {
+                return Ok(drawing);
+            }
+            if let CapacityColumns::Assigned {
+                summary,
+                cells: assigned,
+                ..
+            } = self.capacity_columns_for(area, cells)
+            {
+                let summary =
+                    Rect::new(summary.x, area.y, summary.width, room.summary_minimum.get());
+                if let Ok(drawing) =
+                    self.fit_assigned_capacity(area, cells, summary, &assigned, policy)
+                {
+                    return Ok(drawing);
+                }
+            }
+            if let Ok(drawing) = self.fit_preferred_viewport(area, cells, room, columns, policy) {
+                return Ok(drawing);
+            }
+        }
+        Err(CandidateDoesNotFit)
+    }
+
+    /// Keep painted columns while new cells use a column with room for their body.
+    /// This is an optional packing; failure leaves the required-body proof intact.
+    fn extend_painted_columns(
+        &self,
+        minimum: &WholeCellDrawing<Id>,
+        area: Rect,
+        cells: &[&DrawableCell<Id>],
+        room: AdmissionRoom,
+        policy: CellPackingRows,
+    ) -> Result<WholeCellDrawing<Id>, RetainedAssignmentDoesNotFit> {
+        if self.painted_viewport != area {
+            return Err(RetainedAssignmentDoesNotFit);
+        }
+        let summary = minimum
+            .0
+            .pieces
+            .iter()
+            .find(|piece| matches!(piece.placement.content, TileContent::Summary))
+            .map(|piece| piece.placement.frame.rect())
+            .ok_or(RetainedAssignmentDoesNotFit)?;
+        let summary = Rect::new(summary.x, area.y, summary.width, room.summary_minimum.get());
+        let mut columns = Vec::new();
+        for piece in &minimum.0.pieces {
+            let frame = piece.placement.frame.rect();
+            if !columns.iter().any(|column: &Rect| column.x == frame.x) {
+                columns.push(frame);
+            }
+        }
+        let mut assigned = Vec::new();
+        for cell in cells {
+            if let Some(frame) = self.painted_placements.iter().find_map(|piece| {
+                (piece.content == TileContent::Group(cell.id.clone())).then_some(piece.frame.clip())
+            }) {
+                if !columns
+                    .iter()
+                    .any(|column| column.x == frame.x && column.width == frame.width)
+                {
+                    return Err(RetainedAssignmentDoesNotFit);
+                }
+                assigned.push((cell.id.clone(), frame));
+            }
+        }
+        if assigned.is_empty() {
+            return Err(RetainedAssignmentDoesNotFit);
+        }
+        for cell in cells {
+            if assigned.iter().any(|(id, _)| id == &cell.id) {
+                continue;
+            }
+            let mut candidates = Vec::new();
+            for column in &columns {
+                let mut trial = assigned.clone();
+                trial.push((cell.id.clone(), *column));
+                let subset = cells
+                    .iter()
+                    .copied()
+                    .filter(|cell| trial.iter().any(|(id, _)| id == &cell.id))
+                    .collect::<Vec<_>>();
+                if let Ok(drawing) =
+                    self.fit_assigned_capacity(area, &subset, summary, &trial, policy)
+                {
+                    let bottom = drawing
+                        .0
+                        .pieces
+                        .iter()
+                        .filter(|piece| piece.placement.frame.rect().x == column.x)
+                        .map(|piece| piece.placement.frame.rect().bottom())
+                        .max()
+                        .unwrap_or(area.y);
+                    candidates.push((bottom, trial));
+                }
+            }
+            assigned = candidates
+                .into_iter()
+                .min_by_key(|(bottom, _)| *bottom)
+                .map(|(_, assigned)| assigned)
+                .ok_or(RetainedAssignmentDoesNotFit)?;
+        }
+        self.fit_assigned_capacity(area, cells, summary, &assigned, policy)
+    }
+
+    /// A smaller viewport still reserves every resident's complete body and foot.
+    fn fit_required_viewport(
+        &self,
+        area: Rect,
+        cells: &[&DrawableCell<Id>],
+        room: AdmissionRoom,
+        column_limit: ColumnLimit,
+    ) -> Result<WholeCellDrawing<Id>, InsufficientViewport> {
+        RequiredMinima {
+            grid: self,
+            cells,
+            summary: room.summary_minimum,
+        }
+        .check(area, column_limit)
+    }
+
+    /// Prefer the destination's column distribution when it fits every owned body.
+    /// Compact trials offer every remaining cell a slot in each column and advance
+    /// only at the row boundary.
+    fn fit_capacity_columns(
+        &self,
+        area: Rect,
+        cells: &[&DrawableCell<Id>],
+        summary_height: u16,
+        column_slots: &[usize],
+    ) -> Result<WholeCellDrawing<Id>, CandidateDoesNotFit> {
+        self.fit_columns_with(
+            area,
+            cells,
+            summary_height,
+            column_slots,
+            CellPackingRows::Required,
+        )
+    }
+
+    /// Relayout may borrow table rows while retaining an already painted prefix.
+    fn fit_preferred_viewport(
+        &self,
+        area: Rect,
+        cells: &[&DrawableCell<Id>],
+        room: AdmissionRoom,
+        limit: ColumnLimit,
+        policy: CellPackingRows,
+    ) -> Result<WholeCellDrawing<Id>, CandidateDoesNotFit> {
+        if area.width < self.settings.min_tile_width {
+            return Err(CandidateDoesNotFit);
+        }
+        let columns =
+            limit.cap(u16::try_from(column_limit(area, &self.settings)).unwrap_or(u16::MAX));
+        let destination = columns_with_limit(
+            cells.len() + TABLE_CELL + self.target_depth().saturating_sub(1),
+            self.growth,
+            usize::from(columns),
+        );
+        if columns > 0
+            && let Ok(drawing) = self.fit_columns_with(
+                area,
+                cells,
+                room.summary_minimum.get(),
+                &destination,
+                policy,
+            )
+        {
+            return Ok(drawing);
+        }
+        for count in 1..=columns {
+            let slots = vec![cells.len() + self.target_depth(); usize::from(count)];
+            if let Ok(drawing) =
+                self.fit_columns_with(area, cells, room.summary_minimum.get(), &slots, policy)
+            {
+                return Ok(drawing);
+            }
+        }
+        Err(CandidateDoesNotFit)
+    }
+
+    /// Required or retained rows used by both column packing searches.
+    fn packing_height(
+        &self,
+        cell: &DrawableCell<Id>,
+        index: usize,
+        row_policy: CellPackingRows,
+    ) -> u16 {
+        match &*cell.lifecycle() {
+            CellLifecycle::Leaving(ended) => ended.height(),
+            _ => match row_policy {
+                CellPackingRows::Required => cell.first_height.get(),
+                CellPackingRows::Painted => cell.preferred_height.get(),
+                CellPackingRows::Prefix { oldest_cells } => {
+                    cell.first_height
+                        .get()
+                        .saturating_add(if index < oldest_cells {
+                            cell.painted_prefix_rows()
+                        } else {
+                            0
+                        })
+                },
+            }
+            .max(self.settings.min_tile_height),
+        }
+    }
+
+    fn fit_columns_with(
+        &self,
+        area: Rect,
+        cells: &[&DrawableCell<Id>],
+        summary_height: u16,
+        column_slots: &[usize],
+        row_policy: CellPackingRows,
+    ) -> Result<WholeCellDrawing<Id>, CandidateDoesNotFit> {
+        if cells.iter().any(|cell| cell.owns_visible_departure()) {
+            return self.fit_around_departures(
+                area,
+                cells,
+                summary_height,
+                column_slots.len(),
+                row_policy,
+            );
+        }
+        let columns = u16::try_from(column_slots.len()).unwrap_or(u16::MAX);
+        let mut column = 0_u16;
+        let mut top = area.top();
+        let pitch = area.width.saturating_sub(1) / columns;
+        if summary_height > area.height {
+            return Err(CandidateDoesNotFit);
+        }
+        let summary = Rect::new(area.x, area.y, pitch + 1, summary_height);
+        if !draw::has_visible_body_row(PaneFrame::new(summary)) {
+            return Err(CandidateDoesNotFit);
+        }
+        let mut pieces = vec![TilePiece {
+            identity:    CellIdentity::Summary,
+            ink:         PieceInk::Resident,
+            placement:   TilePlacement {
+                content: TileContent::Summary,
+                frame:   PaneFrame::new(summary).with_focus(self.focus == Focus::Summary),
+            },
+            name:        PieceName::Shown,
+            height_snap: PieceHeightSnap::Settled,
+        }];
+        top += summary_height.saturating_sub(1);
+        let mut remaining = column_slots[0].saturating_sub(self.target_depth());
+        for (index, required) in cells.iter().enumerate() {
+            let (cell, height, x, width) = loop {
+                if column >= columns {
+                    return Err(CandidateDoesNotFit);
+                }
+                let x = area.x + column * pitch;
+                let width = if column + 1 == columns {
+                    area.right() - x
+                } else {
+                    pitch + 1
+                };
+                let measured =
+                    self.candidate_body(required, width.saturating_sub(TILE_BORDER_ROWS));
+                if let Ok(cell) = measured {
+                    let height = self.packing_height(cell, index, row_policy);
+                    if remaining > 0 && top.saturating_add(height) <= area.bottom() {
+                        break (cell, height, x, width);
+                    }
+                }
+                column += 1;
+                top = area.top();
+                remaining = column_slots.get(usize::from(column)).copied().unwrap_or(0);
+            };
+            let drawn = CellAppearance {
+                identity: CellIdentity::Group(cell.id.clone()),
+                content:  TileContent::Group((*cell).clone()),
+                focused:  self.focus.holds(&Slot::Group((*cell).clone())),
+            };
+            let frame = PaneFrame::new(Rect::new(x, top, width, height)).with_focus(drawn.focused);
+            let (DrawableFragment::Content(frame) | DrawableFragment::Closing(frame)) =
+                cell.fragment(frame)
+            else {
+                return Err(CandidateDoesNotFit);
+            };
+            pieces.push(TilePiece {
+                identity:    CellIdentity::Group(cell.id.clone()),
+                ink:         PieceInk::Resident,
+                placement:   TilePlacement {
+                    content: drawn.content(),
+                    frame,
+                },
+                name:        PieceName::Shown,
+                height_snap: PieceHeightSnap::Settled,
+            });
+            top += height.saturating_sub(1);
+            remaining = remaining.saturating_sub(1);
+        }
+        // A declared trailing column cannot leave a half-width packing behind.
+        if column + 1 != columns {
+            return Err(CandidateDoesNotFit);
+        }
+        Ok(WholeCellDrawing(TileDrawing {
+            pieces,
+            column_bands: Vec::new(),
+        }))
+    }
+
+    /// Fading cells own their painted column spans while live minima use its free rows.
+    fn fit_around_departures(
+        &self,
+        area: Rect,
+        cells: &[&DrawableCell<Id>],
+        summary_height: u16,
+        columns: usize,
+        row_policy: CellPackingRows,
+    ) -> Result<WholeCellDrawing<Id>, CandidateDoesNotFit> {
+        let columns = u16::try_from(columns).map_err(|_| CandidateDoesNotFit)?;
+        let pitch = area
+            .width
+            .saturating_sub(1)
+            .checked_div(columns)
+            .ok_or(CandidateDoesNotFit)?;
+        if summary_height > area.height {
+            return Err(CandidateDoesNotFit);
+        }
+        let mut tops = vec![area.top(); usize::from(columns)];
+        let summary = Rect::new(area.x, area.y, pitch + 1, summary_height);
+        if !draw::has_visible_body_row(PaneFrame::new(summary)) {
+            return Err(CandidateDoesNotFit);
+        }
+        let mut pieces = vec![TilePiece {
+            identity:    CellIdentity::Summary,
+            ink:         PieceInk::Resident,
+            placement:   TilePlacement {
+                content: TileContent::Summary,
+                frame:   PaneFrame::new(summary).with_focus(self.focus == Focus::Summary),
+            },
+            name:        PieceName::Shown,
+            height_snap: PieceHeightSnap::Settled,
+        }];
+        tops[0] += summary_height.saturating_sub(1);
+        let ordered = cells
+            .iter()
+            .enumerate()
+            .filter(|(_, cell)| cell.owns_visible_departure())
+            .chain(
+                cells
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cell)| !cell.owns_visible_departure()),
+            );
+        for (index, required) in ordered {
+            let departure = match required.presentation() {
+                CellPresentation::Drawn { frame, .. } if required.owns_visible_departure() => {
+                    Some(frame.clip())
+                },
+                _ => None,
+            };
+            let allocation = if let Some(owned) = departure {
+                let affected = (0..columns)
+                    .filter(|column| {
+                        let left = area.x + column * pitch;
+                        let right = if column + 1 == columns {
+                            area.right()
+                        } else {
+                            left + pitch + 1
+                        };
+                        owned.left() < right.saturating_sub(1)
+                            && owned.right().saturating_sub(1) > left
+                    })
+                    .collect::<Vec<_>>();
+                let top = affected
+                    .iter()
+                    .map(|column| tops[usize::from(*column)])
+                    .max()
+                    .unwrap_or_else(|| area.top());
+                let cell =
+                    self.candidate_body(required, owned.width.saturating_sub(TILE_BORDER_ROWS))?;
+                let height = self.packing_height(cell, index, row_policy);
+                if top.saturating_add(height) > area.bottom() {
+                    return Err(CandidateDoesNotFit);
+                }
+                let frame = PaneFrame::new(Rect::new(owned.x, top, owned.width, height));
+                let (DrawableFragment::Content(frame) | DrawableFragment::Closing(frame)) =
+                    cell.fragment(frame)
+                else {
+                    return Err(CandidateDoesNotFit);
+                };
+                for column in affected {
+                    tops[usize::from(column)] = top + height.saturating_sub(1);
+                }
+                Some((
+                    cell,
+                    frame.with_focus(self.focus.holds(&Slot::Group((*cell).clone()))),
+                ))
+            } else {
+                self.live_column_allocation(area, required, &mut tops, index, row_policy)
+            };
+            let (cell, frame) = allocation.ok_or(CandidateDoesNotFit)?;
+            pieces.push(TilePiece {
+                identity:    CellIdentity::Group(cell.id.clone()),
+                ink:         PieceInk::Resident,
+                placement:   TilePlacement {
+                    content: TileContent::Group(cell.id.clone()),
+                    frame,
+                },
+                name:        PieceName::Shown,
+                height_snap: PieceHeightSnap::Settled,
+            });
+        }
+        Ok(WholeCellDrawing(TileDrawing {
+            pieces,
+            column_bands: Vec::new(),
+        }))
+    }
+
+    /// A live cell takes the first column band with room for its selected rows.
+    fn live_column_allocation<'a>(
+        &'a self,
+        area: Rect,
+        required: &'a DrawableCell<Id>,
+        tops: &mut [u16],
+        index: usize,
+        row_policy: CellPackingRows,
+    ) -> Option<(&'a DrawableCell<Id>, PaneFrame)> {
+        let columns = u16::try_from(tops.len()).ok()?;
+        let pitch = area.width.saturating_sub(1).checked_div(columns)?;
+        for column in 0..columns {
+            let x = area.x + column * pitch;
+            let width = if column + 1 == columns {
+                area.right() - x
+            } else {
+                pitch + 1
+            };
+            let Ok(cell) = self.candidate_body(required, width.saturating_sub(TILE_BORDER_ROWS))
+            else {
+                continue;
+            };
+            let height = self.packing_height(cell, index, row_policy);
+            let top = tops[usize::from(column)];
+            if top.saturating_add(height) > area.bottom() {
+                continue;
+            }
+            let frame = PaneFrame::new(Rect::new(x, top, width, height));
+            let (DrawableFragment::Content(frame) | DrawableFragment::Closing(frame)) =
+                cell.fragment(frame)
+            else {
+                continue;
+            };
+            tops[usize::from(column)] += height.saturating_sub(1);
+            return Some((
+                cell,
+                frame.with_focus(self.focus.holds(&Slot::Group((*cell).clone()))),
+            ));
+        }
+        None
     }
 
     /// Both sides of each change to a fixed provider's integer geometry inputs.
@@ -3236,8 +7499,8 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         steps
     }
 
-    /// Every piece and column frame at an exact point in the transition.
-    pub(super) fn drawing_at(&self, area: Rect, growth: TileGrowth, raw: u32) -> TileDrawing<Id> {
+    /// Every allocated span, including fragments currently outside their content.
+    pub(super) fn layout_at(&self, area: Rect, growth: TileGrowth, raw: u32) -> TileDrawing<Id> {
         let height_snap = if raw >= PROGRESS_SCALE || self.motion_heights.piece_heights.is_empty() {
             HeightSnap::Off
         } else if raw == self.motion_heights.progress {
@@ -3254,6 +7517,55 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         self.drawing_at_with_height_snap(area, growth, raw, &height_snap)
     }
 
+    /// Lifecycle geometry uses the same easing as its text.
+    fn lifecycle_progress(&self, transition: &Transition<Id>, raw: u32) -> (MotionEasing, u32) {
+        let phase = union(&transition.from, &self.slots).iter().fold(
+            CellMotionPhase::Resident,
+            |phase, slot| match slot {
+                Slot::Group(cell) => match &*cell.lifecycle() {
+                    CellLifecycle::Entering(_) => CellMotionPhase::Opening,
+                    CellLifecycle::Leaving(_) if !matches!(phase, CellMotionPhase::Opening) => {
+                        CellMotionPhase::Departure
+                    },
+                    CellLifecycle::Waiting
+                        if transition.from.contains(slot) != self.slots.contains(slot)
+                            && matches!(phase, CellMotionPhase::Resident) =>
+                    {
+                        CellMotionPhase::Departure
+                    },
+                    _ => phase,
+                },
+                Slot::Empty(_) => phase,
+            },
+        );
+        match phase {
+            CellMotionPhase::Resident => (MotionEasing::Resident, eased(raw)),
+            CellMotionPhase::Opening => {
+                let timing = CellLifecycleTiming::new(Duration::from_millis(
+                    transition.millis.min(self.settings.animation_millis),
+                ));
+                (
+                    MotionEasing::Lifecycle,
+                    timing.entry_progress(self.elapsed_at(raw)),
+                )
+            },
+            CellMotionPhase::Departure => {
+                let timing = CellLifecycleTiming::new(Duration::from_millis(transition.millis));
+                (
+                    MotionEasing::Lifecycle,
+                    timing.progress(self.elapsed_at(raw)),
+                )
+            },
+        }
+    }
+
+    /// A painted running command keeps its allocation through later fits.
+    fn owns_running_cells(&self) -> bool {
+        self.drawable_groups()
+            .iter()
+            .any(|cell| cell.continuity == CellContinuity::Running && cell.has_drawn_body())
+    }
+
     /// Draw one exact motion point with or without its content-aware height pass.
     fn drawing_at_with_height_snap(
         &self,
@@ -3262,14 +7574,17 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         raw: u32,
         height_snap: &HeightSnap<'_, Id>,
     ) -> TileDrawing<Id> {
-        if self.held_display == GridDisplay::SummaryAlone || !self.holds_in(area, growth) {
+        if self.settings.view == TileView::Summary
+            || (!self.owns_running_cells()
+                && (self.held_display == GridDisplay::SummaryAlone || !self.holds_in(area, growth)))
+        {
             return Self::summary_alone_drawing(area);
         }
         let settled = self.resolved_grid(area, &self.drawn_held(), growth);
         self.drawing_from_destination(area, raw, height_snap, &settled)
     }
 
-    /// Use the destination already resolved with this measurement pass's rows.
+    /// Use geometry resolved with this measurement pass's current rows.
     fn drawing_from_destination(
         &self,
         area: Rect,
@@ -3285,27 +7600,16 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             return self.settled_drawing(destination);
         }
 
-        let progress = eased(raw);
+        let (lifecycle, progress) = self.lifecycle_progress(transition, raw);
         let column_bands = column_bands(before, destination, progress);
         let turns = Turns::of(before, destination);
         let mut pieces = Vec::new();
-        // The summary keeps cell one throughout, but the grid around it
-        // resizes, so it still has somewhere to travel.
-        moving_cell(
-            before,
-            destination,
-            CellTransition::PresentAtBothEnds {
-                before_cell: TABLE_CELL,
-                after_cell:  TABLE_CELL,
-            },
-            eased(turns.summary(raw)),
-            CellAppearance {
-                identity: CellIdentity::Summary,
-                content:  TileContent::Summary,
-                focused:  self.focus == Focus::Summary,
-            },
-            &mut pieces,
-        );
+        let summary_progress = if lifecycle == MotionEasing::Lifecycle {
+            progress
+        } else {
+            eased(turns.summary(raw))
+        };
+        self.push_summary_motion(before, destination, summary_progress, &mut pieces);
         for slot in union(&transition.from, &self.slots) {
             // A slot handed over in place is not a cell arriving and a
             // cell leaving, however it looks in the arrangement: the
@@ -3347,29 +7651,92 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 (Some(before_cell), None) => CellTransition::Departing { before_cell },
                 (None, None) => continue,
             };
-            let content = content_of(&slot, new.or(old).unwrap_or(TABLE_CELL));
-            let piece_progress = if turns.covers(before, destination, transition) {
-                eased(turns.covered(raw))
-            } else {
-                progress
+            let content = match &slot {
+                Slot::Group(cell) => TileContent::Group(cell.clone()),
+                Slot::Empty(_) => TileContent::Empty(new.or(old).unwrap_or(TABLE_CELL)),
             };
+            let piece_progress = self.cell_motion_progress(
+                &slot,
+                before,
+                destination,
+                transition,
+                raw,
+                (lifecycle, progress),
+            );
             moving_cell(
                 before,
                 destination,
                 transition,
                 piece_progress,
                 CellAppearance {
-                    identity: CellIdentity::Slot(slot.clone()),
+                    identity: CellIdentity::from(&slot),
                     content,
-                    focused: self.focus == Focus::Cell(slot),
+                    focused: self.focus.holds(&slot),
                 },
                 &mut pieces,
             );
         }
-        let pieces = place_band_pieces(before, destination, &column_bands, pieces, height_snap);
-        TileDrawing {
+        place_band_pieces(before, destination, &column_bands, pieces, height_snap).map_or_else(
+            |_| Self::summary_alone_drawing(area),
+            |pieces| TileDrawing {
+                pieces,
+                column_bands,
+            },
+        )
+    }
+
+    /// The summary keeps cell one while its surrounding grid moves.
+    fn push_summary_motion(
+        &self,
+        before: &Grid,
+        after: &Grid,
+        progress: u32,
+        pieces: &mut Vec<BandPiece<Id>>,
+    ) {
+        moving_cell(
+            before,
+            after,
+            CellTransition::PresentAtBothEnds {
+                before_cell: TABLE_CELL,
+                after_cell:  TABLE_CELL,
+            },
+            progress,
+            CellAppearance {
+                identity: CellIdentity::Summary,
+                content:  TileContent::Summary,
+                focused:  self.focus == Focus::Summary,
+            },
             pieces,
-            column_bands,
+        );
+    }
+
+    /// A group's own clock controls its pieces; resident crossings keep their step.
+    fn cell_motion_progress(
+        &self,
+        slot: &Slot<Id>,
+        before: &Grid,
+        after: &Grid,
+        transition: CellTransition,
+        raw: u32,
+        timing: (MotionEasing, u32),
+    ) -> u32 {
+        let (lifecycle, progress) = timing;
+        let turns = Turns::of(before, after);
+        if let Slot::Group(cell) = slot {
+            let owned = cell.lifecycle();
+            match &*owned {
+                CellLifecycle::Entering(clock) => return clock.progress(),
+                CellLifecycle::Leaving(ended) => {
+                    return ended.clock().progress(self.elapsed_at(raw));
+                },
+                CellLifecycle::Waiting | CellLifecycle::Resident => {},
+            }
+            drop(owned);
+        }
+        if lifecycle == MotionEasing::Resident && turns.covers(before, after, transition) {
+            eased(turns.covered(raw))
+        } else {
+            progress
         }
     }
 
@@ -3388,6 +7755,80 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             TileAction::FocusDown => self.focus_step(Direction::Down, growth),
         }
     }
+
+    fn arrival_target(&self, index: usize) -> Option<&Slot<Id>> {
+        index
+            .checked_sub(TABLE_CELL + self.slots.len() + 1)
+            .and_then(|offset| {
+                self.allocated_arrivals
+                    .iter()
+                    .filter(|arrival| !self.slots.contains(&arrival.target))
+                    .filter(|arrival| draw::has_visible_body_row(arrival.allocation))
+                    .nth(offset)
+            })
+            .map(|arrival| &arrival.target)
+    }
+
+    fn placement_index(&self, content: &TileContent<Id>) -> Option<usize> {
+        match content {
+            TileContent::Summary => Some(TABLE_CELL),
+            TileContent::Group(id) => cell_of_id(&self.slots, id).or_else(|| {
+                self.allocated_arrivals
+                    .iter()
+                    .filter(|arrival| !self.slots.contains(&arrival.target))
+                    .position(|arrival| &arrival.cell.id == id)
+                    .map(|position| TABLE_CELL + self.slots.len() + 1 + position)
+            }),
+            TileContent::Empty(index) => Some(*index),
+        }
+    }
+
+    /// The painted cell content under a press, excluding its frame and readout.
+    #[cfg(test)]
+    pub(super) fn cell_content_at(&self, pos: Position) -> Option<(usize, TileContent<Id>, Rect)> {
+        if self.capacity_publication == CapacityPublication::Painted {
+            let piece = self
+                .painted_placements
+                .iter()
+                .find(|piece| piece.frame.clip().contains(pos))?;
+            let area = draw::content_area(frame_inner(piece.frame.clip()));
+            return area
+                .contains(pos)
+                .then(|| {
+                    (
+                        self.placement_index(&piece.content),
+                        piece.content.clone(),
+                        area,
+                    )
+                })
+                .and_then(|(index, content, area)| index.map(|index| (index, content, area)));
+        }
+        let (index, area) = if self.display() == GridDisplay::SummaryAlone {
+            (TABLE_CELL, self.area)
+        } else {
+            let grid = self.resolved_grid(self.area, &self.drawn_held(), self.growth);
+            let pane = grid
+                .resolved
+                .panes
+                .iter()
+                .find(|pane| pane.area.contains(pos))?;
+            (pane.pane, pane.area)
+        };
+        let area = draw::content_area(frame_inner(area));
+        if !area.contains(pos) {
+            return None;
+        }
+        cells(&self.slots)
+            .into_iter()
+            .find_map(|(content, cell)| (cell == index).then_some((index, content, area)))
+    }
+}
+
+/// Geometry easing for a step with lifecycle changes or only resident moves.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum MotionEasing {
+    Lifecycle,
+    Resident,
 }
 
 /// What each slot draws and the cell it sits at, the summary first.
@@ -3409,10 +7850,144 @@ fn cell_of<Id: Eq>(slots: &[Slot<Id>], slot: &Slot<Id>) -> Option<usize> {
         .map(|position| position + TABLE_CELL + 1)
 }
 
+/// Find a group by its app identity without manufacturing placement evidence.
+fn cell_of_id<Id: Eq>(slots: &[Slot<Id>], id: &Id) -> Option<usize> {
+    slots
+        .iter()
+        .position(|slot| matches!(slot, Slot::Group(cell) if &cell.id == id))
+        .map(|position| position + TABLE_CELL + 1)
+}
+
+/// Plan both admission and sync through the same closing, reopening and empty
+/// claim rules. A candidate is checked in exactly the destination it will use.
+fn arrangement_steps<Id: Clone + Eq>(
+    original: &[Slot<Id>],
+    admitted: &[DrawableCell<Id>],
+) -> (Vec<Slot<Id>>, Vec<Vec<Slot<Id>>>) {
+    let ids = admitted
+        .iter()
+        .map(|cell| cell.id.clone())
+        .collect::<Vec<_>>();
+    let mut arrangement = original.to_vec();
+    let mut steps = Vec::new();
+    while let Some(index) = arrangement
+        .iter()
+        .position(|slot| matches!(slot, Slot::Group(cell) if !ids.contains(&cell.id)))
+    {
+        arrangement.remove(index);
+        steps.push(arrangement.clone());
+    }
+    let standing = kept(&arrangement, &ids);
+    let continuous = arrangement.iter().any(|slot| {
+        matches!(slot, Slot::Group(cell)
+        if cell.continuity == draw::CellContinuity::Running
+            || cell.is_leaving())
+    });
+    if continuous {
+        ResidentOrder::continuing(&arrangement, admitted).apply(&mut arrangement);
+        if arrangement != original {
+            steps.push(arrangement.clone());
+        }
+    } else {
+        let mut reopening = Vec::new();
+        while let Some((index, id)) =
+            arrangement
+                .iter()
+                .enumerate()
+                .find_map(|(index, slot)| match slot {
+                    Slot::Group(cell) if !ids.iter().take(standing).any(|id| *id == cell.id) => {
+                        Some((index, cell.id.clone()))
+                    },
+                    _ => None,
+                })
+        {
+            reopening.push(id);
+            arrangement.remove(index);
+            steps.push(arrangement.clone());
+        }
+        for cell in admitted {
+            if !arrangement
+                .iter()
+                .any(|slot| matches!(slot, Slot::Group(held) if held.id == cell.id))
+            {
+                insert_group(&mut arrangement, cell.clone(), &reopening);
+                steps.push(arrangement.clone());
+            }
+        }
+    }
+    (arrangement, steps)
+}
+
+/// A permutation owns all continuing cells and can only replace their positions.
+/// Unlike a close/reopen plan, applying it has no destination with a missing cell.
+struct ResidentOrder<Id> {
+    cells: Vec<DrawableCell<Id>>,
+}
+
+impl<Id: Clone + Eq> ResidentOrder<Id> {
+    fn continuing(slots: &[Slot<Id>], admitted: &[DrawableCell<Id>]) -> Self {
+        let mut cells = slots
+            .iter()
+            .filter_map(|slot| match slot {
+                Slot::Group(cell) => admitted
+                    .iter()
+                    .find(|candidate| candidate.id == cell.id)
+                    .cloned(),
+                Slot::Empty(_) => None,
+            })
+            .collect::<Vec<_>>();
+        for cell in admitted {
+            if !cells.iter().any(|held| held.id == cell.id) {
+                cells.push(cell.clone());
+            }
+        }
+        // Ended allocations keep their relative position while their rows fade.
+        Self { cells }
+    }
+
+    fn apply(self, slots: &mut Vec<Slot<Id>>) {
+        let mut cells = self.cells.into_iter();
+        for slot in slots
+            .iter_mut()
+            .filter(|slot| matches!(slot, Slot::Group(_)))
+        {
+            if let Some(cell) = cells.next() {
+                *slot = Slot::Group(cell);
+            }
+        }
+        for cell in cells {
+            insert_group(slots, cell, &[]);
+        }
+    }
+}
+
+/// Insert at the same position used by admission and synchronization.
+fn insert_group<Id: Clone + Eq>(
+    slots: &mut Vec<Slot<Id>>,
+    cell: DrawableCell<Id>,
+    reopening: &[Id],
+) -> Option<Slot<Id>> {
+    let behind = slots
+        .iter()
+        .rposition(|slot| matches!(slot, Slot::Group(_)))
+        .map_or(0, |index| index + 1);
+    if !reopening.contains(&cell.id)
+        && let Some(index) = slots
+            .iter()
+            .enumerate()
+            .skip(behind)
+            .find_map(|(index, slot)| matches!(slot, Slot::Empty(_)).then_some(index))
+    {
+        return Some(std::mem::replace(&mut slots[index], Slot::Group(cell)));
+    }
+    slots.insert(behind, Slot::Group(cell));
+    None
+}
+
 /// What a slot draws once it knows the cell it landed at.
 fn content_of<Id: Clone>(slot: &Slot<Id>, index: usize) -> TileContent<Id> {
     match slot {
-        Slot::Group(id) => TileContent::Group(id.clone()),
+        Slot::Group(cell) => TileContent::Group(cell.id.clone()),
         Slot::Empty(_) => TileContent::Empty(index),
     }
 }
@@ -3457,7 +8032,7 @@ fn kept<Id: Eq>(arrangement: &[Slot<Id>], ids: &[Id]) -> usize {
         let Some(offset) = arrangement
             .iter()
             .skip(cursor)
-            .position(|slot| matches!(slot, Slot::Group(held) if held == id))
+            .position(|slot| matches!(slot, Slot::Group(held) if held.id == *id))
         else {
             break;
         };
@@ -3493,7 +8068,7 @@ struct Grid {
 }
 
 /// Choose retained content for donors and painted content for receiving steps.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum RowUsePurpose {
     RetainContent,
     PaintContent,
@@ -3543,6 +8118,26 @@ impl RowProbeLayout<'_> {
     }
 }
 
+/// Which depth rule follows the cells' captured continuity.
+#[derive(Clone, Copy)]
+enum SummaryDepthPolicy {
+    LayoutManaged,
+    ViewportBounded,
+}
+
+impl SummaryDepthPolicy {
+    fn for_cells<Id>(cells: &[DrawableCell<Id>]) -> Self {
+        if cells
+            .iter()
+            .all(|cell| cell.continuity == CellContinuity::LayoutManaged)
+        {
+            Self::LayoutManaged
+        } else {
+            Self::ViewportBounded
+        }
+    }
+}
+
 /// Whether the available width admits any column at the configured floor.
 enum ColumnPlan {
     Columns(ColumnLayout),
@@ -3570,13 +8165,17 @@ fn column_layout(
     growth: TileGrowth,
     area: Rect,
     settings: &TileSettings,
+    policy: SummaryDepthPolicy,
 ) -> ColumnPlan {
     // Candidate counts and depths are finite. Check the actual shared-border
     // geometry because rounding an equal split can leave its last column short.
     for depth in (1..=held_depth.max(1)).rev() {
         let positions = count.saturating_add(depth - 1);
         let natural = columns(positions, growth);
-        if depth > 1 && natural.first().is_none_or(|&height| depth > height) {
+        if matches!(policy, SummaryDepthPolicy::LayoutManaged)
+            && depth > 1
+            && natural.first().is_none_or(|&height| depth > height)
+        {
             continue;
         }
         let Some(opened) = (1..=natural.len()).rev().find(|&candidate| {
@@ -3598,11 +8197,18 @@ fn column_layout(
         let widths = if opened == natural.len() {
             natural
         } else {
-            let low = positions / opened;
-            let extra = positions % opened;
-            (0..opened)
-                .map(|column| low + usize::from(column < extra))
-                .collect()
+            match policy {
+                SummaryDepthPolicy::ViewportBounded => {
+                    columns_with_limit(positions, growth, opened)
+                },
+                SummaryDepthPolicy::LayoutManaged => {
+                    let low = positions / opened;
+                    let extra = positions % opened;
+                    (0..opened)
+                        .map(|column| low + usize::from(column < extra))
+                        .collect()
+                },
+            }
         };
         if depth == 1 || widths.first().is_some_and(|&height| depth <= height) {
             return ColumnPlan::Columns(ColumnLayout {
@@ -3709,10 +8315,19 @@ impl GridRowReadings<'_> {
             ),
             Self::Measured(rows_use) => {
                 let first = probe.first_cell - TABLE_CELL;
+                let mut answers = Vec::new();
                 let mut unused_rows = |row: usize, rows: u16, purpose: RowUsePurpose| {
                     let available = probe.content_area(row, rows);
-                    let kept = rows_use(first.saturating_add(row), available, purpose)
-                        .min(available.height);
+                    let key = (row, available.width, available.height, purpose);
+                    let kept =
+                        if let Some((_, answer)) = answers.iter().find(|(held, _)| *held == key) {
+                            *answer
+                        } else {
+                            let answer = rows_use(first.saturating_add(row), available, purpose)
+                                .min(available.height);
+                            answers.push((key, answer));
+                            answer
+                        };
                     available.height.saturating_sub(kept)
                 };
                 shares_with_directional_row_usage(
@@ -3751,7 +8366,14 @@ impl Grid {
     /// only what is left below it.
     #[cfg(test)]
     fn new(area: Rect, held: &HeldCellLayout, growth: TileGrowth, settings: &TileSettings) -> Self {
-        Self::with_row_readings(area, held, growth, settings, GridRowReadings::Intrinsic)
+        Self::with_row_readings(
+            area,
+            held,
+            growth,
+            settings,
+            GridRowReadings::Intrinsic,
+            SummaryDepthPolicy::ViewportBounded,
+        )
     }
 
     /// Resolve cells while moving room only in steps their contents retain.
@@ -3761,6 +8383,7 @@ impl Grid {
         growth: TileGrowth,
         settings: &TileSettings,
         rows_use: &mut impl FnMut(usize, Rect, RowUsePurpose) -> u16,
+        policy: SummaryDepthPolicy,
     ) -> Self {
         Self::with_row_readings(
             area,
@@ -3768,6 +8391,7 @@ impl Grid {
             growth,
             settings,
             GridRowReadings::Measured(rows_use),
+            policy,
         )
     }
 
@@ -3778,10 +8402,11 @@ impl Grid {
         growth: TileGrowth,
         settings: &TileSettings,
         mut readings: GridRowReadings<'_>,
+        policy: SummaryDepthPolicy,
     ) -> Self {
         let count = held.rows.len();
         let ColumnPlan::Columns(layout) =
-            column_layout(count, held.summary_depth, growth, area, settings)
+            column_layout(count, held.summary_depth, growth, area, settings, policy)
         else {
             return Self {
                 area,
@@ -3843,11 +8468,7 @@ impl Grid {
                 settings,
             };
             let shares = readings.column_shares(wants, &probe, column_head, focused);
-            for (row, &cell) in Layout::vertical(constraints_for_sizes(&shares))
-                .split(band)
-                .iter()
-                .enumerate()
-            {
+            for (row, &cell) in fixed_row_rects(&shares, band).iter().enumerate() {
                 let index = first_cell + row;
                 let cell = if index == TABLE_CELL {
                     span = match settings.summary_row_allocation {
@@ -3921,12 +8542,8 @@ impl Grid {
     /// The column cell `index` falls in, or `None` when the grid has no
     /// such cell.
     fn column_of(&self, index: usize) -> Option<usize> {
-        let slot = if index == TABLE_CELL {
-            TABLE_CELL
-        } else {
-            index + self.depth - 1
-        };
-        position(&self.widths, slot).map(|(column, _)| column)
+        let rect = self.cell(index)?;
+        self.columns.iter().position(|column| column.x == rect.x)
     }
 
     /// The rect column `column` occupies, full height.
@@ -4053,6 +8670,34 @@ fn columns(count: usize, growth: TileGrowth) -> Vec<usize> {
     }
 }
 
+/// Keep the normal column order, filling existing bands when another cannot fit.
+fn columns_with_limit(count: usize, growth: TileGrowth, limit: usize) -> Vec<usize> {
+    let widths = columns(count, growth);
+    let opened = limit.max(1);
+    if widths.len() <= opened {
+        return widths;
+    }
+    match growth.fill {
+        TileFill::AddNew => {
+            let tallest = count.div_ceil(opened);
+            let mut widths = vec![tallest; count.div_ceil(tallest).saturating_sub(1)];
+            widths.push(count - widths.len() * tallest);
+            widths
+        },
+        TileFill::Redistribute => (0..opened)
+            .map(|column| count / opened + usize::from(column < count % opened))
+            .collect(),
+    }
+}
+
+/// Available column bands at the configured shared-border width floor.
+const fn slot_cell(position: usize) -> usize { TABLE_CELL + position + 1 }
+
+fn column_limit(area: Rect, settings: &TileSettings) -> usize {
+    usize::from(area.width.saturating_sub(1) / settings.min_tile_width.saturating_sub(1).max(1))
+        .max(1)
+}
+
 /// Smallest `side` with `side * side >= value`.
 const fn ceil_sqrt(value: usize) -> usize {
     let mut side = 1;
@@ -4060,6 +8705,34 @@ const fn ceil_sqrt(value: usize) -> usize {
         side += 1;
     }
     side
+}
+
+/// Row shares already solved by the content allocator need no constraint solver.
+/// Overflow and weighted sizes retain the general layout semantics.
+fn fixed_row_rects(shares: &[PaneAxisSize], area: Rect) -> Vec<Rect> {
+    let sizes: Option<Vec<_>> = shares
+        .iter()
+        .map(|share| match share {
+            PaneAxisSize::Fixed(rows) => Some(*rows),
+            PaneAxisSize::Fill(_) => None,
+        })
+        .collect();
+    if let Some(sizes) = sizes
+        && sizes.iter().map(|&height| u32::from(height)).sum::<u32>() <= u32::from(area.height)
+    {
+        let mut top = area.y;
+        return sizes
+            .into_iter()
+            .map(|height| {
+                let rect = Rect::new(area.x, top, area.width, height);
+                top = top.saturating_add(height);
+                rect
+            })
+            .collect();
+    }
+    Layout::vertical(constraints_for_sizes(shares))
+        .split(area)
+        .to_vec()
 }
 
 /// `count` equal shares of one axis.
@@ -4135,6 +8808,13 @@ fn shares(
     )
 }
 
+/// Whether row readings can prove that more allocation paints no more content.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SaturationEvidence {
+    DemandOnly,
+    Measured,
+}
+
 /// Keep the shared allocation unless the summary needs more rows than its share.
 fn summary_before_tiles(
     wants: &[CellRowDemand],
@@ -4170,6 +8850,8 @@ fn summary_before_tiles(
 
 /// Row-use readings available to a column's shared allocation solver.
 trait ColumnRowReadings {
+    /// Only measured drawing can establish an allocation saturation cap.
+    fn measures_saturation(&self) -> SaturationEvidence { SaturationEvidence::DemandOnly }
     fn unused(&mut self, index: usize, rows: u16, purpose: RowUsePurpose) -> u16;
 }
 
@@ -4207,6 +8889,7 @@ impl<'m, F: FnMut(usize, u16, RowUsePurpose) -> u16> ColumnRowUse<'m, F> {
 }
 
 impl<F: FnMut(usize, u16, RowUsePurpose) -> u16> ColumnRowReadings for ColumnRowUse<'_, F> {
+    fn measures_saturation(&self) -> SaturationEvidence { SaturationEvidence::Measured }
     fn unused(&mut self, index: usize, rows: u16, purpose: RowUsePurpose) -> u16 {
         let purpose_index = match purpose {
             RowUsePurpose::RetainContent => 0,
@@ -4268,6 +8951,16 @@ fn solve_column_shares(
         floor,
     );
     let mut minimum = disjoint_demands(std::iter::repeat_n(floor, count), height, floor);
+    if matches!(head, ColumnHead::Summary(_))
+        && measured.measures_saturation() == SaturationEvidence::Measured
+    {
+        // A short summary can use its exact demand below the command height floor.
+        let summary_minimum = wants[0]
+            .exact_framed()
+            .min(height)
+            .saturating_sub(u16::from(count > 1));
+        minimum[0] = minimum[0].min(summary_minimum);
+    }
 
     let mut short: Vec<u16> = want
         .iter()
@@ -4333,7 +9026,97 @@ fn solve_column_shares(
         }
     }
     serve_directional_shortfalls(&mut settled, &exact, &minimum, measured);
+    cap_saturated_allocations(&mut settled, &minimum, height, measured);
     settled.into_iter().map(PaneAxisSize::Fixed).collect()
+}
+
+/// Leave surplus in the column after preserving every painted and retained row.
+fn cap_saturated_allocations(
+    settled: &mut [u16],
+    minimum: &[u16],
+    height: u16,
+    measured: &mut impl ColumnRowReadings,
+) {
+    if measured.measures_saturation() == SaturationEvidence::Measured {
+        for (index, rows) in settled.iter_mut().enumerate() {
+            let retained_unused = measured.unused(index, *rows, RowUsePurpose::RetainContent);
+            let painted_unused = measured.unused(index, *rows, RowUsePurpose::PaintContent);
+            if retained_unused == 0 || painted_unused == 0 {
+                continue;
+            }
+            let retained = rows.saturating_sub(retained_unused);
+            let painted = rows.saturating_sub(painted_unused);
+            let lower = minimum[index].min(*rows);
+            if let Some(saturated) = (lower..=*rows).find(|&candidate| {
+                candidate.saturating_sub(measured.unused(
+                    index,
+                    candidate,
+                    RowUsePurpose::RetainContent,
+                )) >= retained
+                    && candidate.saturating_sub(measured.unused(
+                        index,
+                        candidate,
+                        RowUsePurpose::PaintContent,
+                    )) >= painted
+            }) {
+                *rows = saturated;
+            }
+        }
+    }
+    serve_unallocated_content(settled, height, measured);
+    // A last cell that stops above the column foot shares its closing border
+    // just like its predecessors. The probe included that border in its last
+    // share, so leave it to share_borders once the column has free space.
+    if measured.measures_saturation() == SaturationEvidence::Measured
+        && settled.iter().copied().map(u32::from).sum::<u32>() < u32::from(height)
+        && let Some(last) = settled.last_mut()
+    {
+        *last = last
+            .saturating_sub(1)
+            .max(minimum.last().copied().unwrap_or_default());
+    }
+}
+
+/// Spend free column rows only on allocations that increase painted content and
+/// preserve retained content. Each successful grant reduces the finite free run.
+fn serve_unallocated_content(
+    settled: &mut [u16],
+    height: u16,
+    measured: &mut impl ColumnRowReadings,
+) {
+    if measured.measures_saturation() == SaturationEvidence::DemandOnly {
+        return;
+    }
+    let mut free = height.saturating_sub(settled.iter().copied().fold(0, u16::saturating_add));
+    while free > 0 {
+        let grant = settled
+            .iter()
+            .copied()
+            .enumerate()
+            .find_map(|(index, held)| {
+                let painted =
+                    held.saturating_sub(measured.unused(index, held, RowUsePurpose::PaintContent));
+                let retained =
+                    held.saturating_sub(measured.unused(index, held, RowUsePurpose::RetainContent));
+                (1..=free).find_map(|extra| {
+                    match RecipientRowStep::measure(
+                        index,
+                        held.saturating_add(extra),
+                        painted,
+                        retained,
+                        measured,
+                    ) {
+                        RecipientRowStep::Gain(gain) => Some((index, gain.rows, extra)),
+                        RecipientRowStep::NoContentGain => None,
+                    }
+                })
+            });
+        let Some((index, rows, extra)) = grant else {
+            break;
+        };
+        settled[index] = rows;
+        free -= extra;
+    }
 }
 
 /// Convert framed demands into disjoint layout rows. Every piece except the
@@ -4650,7 +9433,14 @@ fn donation_row_limit(
 
 /// Whether the positions of a grid retain a readable minimum size.
 fn fits(area: Rect, count: usize, growth: TileGrowth, settings: &TileSettings) -> bool {
-    let ColumnPlan::Columns(plan) = column_layout(count, 1, growth, area, settings) else {
+    let ColumnPlan::Columns(plan) = column_layout(
+        count,
+        1,
+        growth,
+        area,
+        settings,
+        SummaryDepthPolicy::LayoutManaged,
+    ) else {
         return false;
     };
     let Some(&tallest) = plan.widths.iter().max() else {
@@ -4668,17 +9458,35 @@ fn fits(area: Rect, count: usize, growth: TileGrowth, settings: &TileSettings) -
     area.width > 0 && area.height >= height
 }
 
+fn fits_with_limit(
+    area: Rect,
+    count: usize,
+    growth: TileGrowth,
+    settings: &TileSettings,
+    limit: usize,
+) -> bool {
+    let widths = columns_with_limit(count, growth, limit);
+    let (Ok(opened), Some(&tallest)) = (u16::try_from(widths.len()), widths.iter().max()) else {
+        return false;
+    };
+    let Ok(tallest) = u16::try_from(tallest) else {
+        return false;
+    };
+    area.width >= shared_run(opened, settings.min_tile_width)
+        && area.height >= shared_run(tallest, settings.min_tile_height)
+}
+
 /// Rows the first column allocates to a summary of `depth` positions.
 fn summary_share(
     wants: &[CellRowDemand],
-    height: u16,
     depth: usize,
     growth: TileGrowth,
-    floor: u16,
     area: Rect,
     settings: &TileSettings,
+    policy: SummaryDepthPolicy,
 ) -> u16 {
-    let ColumnPlan::Columns(plan) = column_layout(wants.len(), depth, growth, area, settings)
+    let ColumnPlan::Columns(plan) =
+        column_layout(wants.len(), depth, growth, area, settings, policy)
     else {
         return 0;
     };
@@ -4688,25 +9496,60 @@ fn summary_share(
     let pieces = positions.saturating_sub(depth).saturating_add(1);
     let shares = shares(
         &wants[..pieces.min(wants.len())],
-        height,
+        area.height,
         ColumnHead::Summary(depth),
         ColumnFocus::Outside,
-        floor,
+        settings.min_tile_height,
     );
     match shares.first() {
         Some(PaneAxisSize::Fixed(rows)) => {
-            rows.saturating_add(u16::from(height > 0 && shares.len() > 1))
+            rows.saturating_add(u16::from(area.height > 0 && shares.len() > 1))
         },
         _ => 0,
     }
 }
 
 /// Fewest summary positions that hold its current demand within the fit limit.
+#[cfg(test)]
 fn summary_depth(
     area: Rect,
     wants: &[CellRowDemand],
     growth: TileGrowth,
     settings: &TileSettings,
+) -> usize {
+    summary_depth_with_policy(
+        area,
+        wants,
+        growth,
+        settings,
+        SummaryDepthPolicy::ViewportBounded,
+    )
+}
+
+/// Layout-managed summaries keep the host's shared-depth rule. Running cells
+/// select viewport-bounded depth before the common row solver receives demands.
+fn summary_depth_for_cells<Id>(
+    area: Rect,
+    wants: &[CellRowDemand],
+    growth: TileGrowth,
+    settings: &TileSettings,
+    cells: &[DrawableCell<Id>],
+) -> usize {
+    summary_depth_with_policy(
+        area,
+        wants,
+        growth,
+        settings,
+        SummaryDepthPolicy::for_cells(cells),
+    )
+}
+
+fn summary_depth_with_policy(
+    area: Rect,
+    wants: &[CellRowDemand],
+    growth: TileGrowth,
+    settings: &TileSettings,
+    policy: SummaryDepthPolicy,
 ) -> usize {
     let Some(asked) = wants.first().map(|demand| demand.stepped_framed()) else {
         return 1;
@@ -4717,24 +9560,29 @@ fn summary_depth(
         .collect();
     let mut depth = 1;
     loop {
-        if summary_share(
-            &stepped,
-            area.height,
-            depth,
-            growth,
-            settings.min_tile_height,
-            area,
-            settings,
-        ) >= asked
-        {
+        if summary_share(&stepped, depth, growth, area, settings, policy) >= asked {
             return depth;
         }
         let next = depth + 1;
-        let ColumnPlan::Columns(plan) = column_layout(wants.len(), next, growth, area, settings)
+        let ColumnPlan::Columns(plan) =
+            column_layout(wants.len(), next, growth, area, settings, policy)
         else {
             return depth;
         };
-        if next > plan.summary_depth || !fits(area, wants.len() + next - 1, growth, settings) {
+        let positions = wants.len() + next - 1;
+        let (maximum_depth, fits_next) = match policy {
+            SummaryDepthPolicy::LayoutManaged => {
+                (plan.summary_depth, fits(area, positions, growth, settings))
+            },
+            SummaryDepthPolicy::ViewportBounded => {
+                let limit = column_limit(area, settings);
+                (
+                    columns_with_limit(positions, growth, limit)[0],
+                    fits_with_limit(area, positions, growth, settings, limit),
+                )
+            },
+        };
+        if next > maximum_depth || !fits_next {
             return depth;
         }
         depth = next;
@@ -4797,9 +9645,12 @@ fn cell_wants<Id: Clone + Eq + Debug>(
     settings: &TileSettings,
 ) -> Vec<CellRowDemand> {
     let mut wants = Vec::with_capacity(slots.len() + TABLE_CELL);
-    wants.push(settings.demanded_rows(demands.summary));
+    wants.push(settings.demanded_rows(demands.summary.required()));
     wants.extend(slots.iter().map(|slot| match slot {
-        Slot::Group(id) => settings.demanded_rows(demands.rows_for(id)),
+        Slot::Group(cell) => match &*cell.lifecycle() {
+            CellLifecycle::Leaving(ended) => CellRowDemand::uniform(ended.height()),
+            _ => settings.demanded_rows(demands.rows_for(cell)),
+        },
         Slot::Empty(_) => settings.demanded_rows(0),
     }));
     wants
@@ -5203,7 +10054,7 @@ fn place_band_pieces<Id: Clone + Eq>(
     bands: &[Rect],
     pieces: Vec<BandPiece<Id>>,
     height_snap: &HeightSnap<'_, Id>,
-) -> Vec<TilePiece<Id>> {
+) -> Result<Vec<TilePiece<Id>>, ColumnCapacityFailure> {
     let mut rects = vec![Rect::ZERO; pieces.len()];
     let mut height_snaps = vec![PieceHeightSnap::Settled; pieces.len()];
     let from_bands = column_bands(before, after, 0);
@@ -5225,7 +10076,8 @@ fn place_band_pieces<Id: Clone + Eq>(
             min_tile_height: after.min_tile_height,
             height_snap,
         };
-        let dividers = band_piece_dividers(&search, from_band, to_band);
+        let dividers = band_piece_dividers(&search, from_band, to_band)?;
+
         let mut before_top = from_band.top();
         let mut after_top = to_band.top();
         for (position, &index) in in_band.iter().enumerate() {
@@ -5233,17 +10085,8 @@ fn place_band_pieces<Id: Clone + Eq>(
             let divider = dividers[position];
             let bottom = dividers[position + 1];
             rects[index] = band_piece_rect(before, after, piece, band, divider, bottom);
-            let last = position.saturating_add(1) == in_band.len();
-            let before_bottom = if last {
-                from_band.bottom().saturating_sub(1)
-            } else {
-                piece.motion.before_bottom(from_band, before_top)
-            };
-            let after_bottom = if last {
-                to_band.bottom().saturating_sub(1)
-            } else {
-                piece.motion.after_bottom(to_band, after_top)
-            };
+            let before_bottom = piece.motion.before_bottom(from_band, before_top);
+            let after_bottom = piece.motion.after_bottom(to_band, after_top);
             height_snaps[index] =
                 if matches!(piece.motion, BandPieceMotion::ClosingWithColumn { .. }) {
                     PieceHeightSnap::KeepStartingHeight
@@ -5256,26 +10099,271 @@ fn place_band_pieces<Id: Clone + Eq>(
             after_top = after_bottom;
         }
     }
-    let frames = pieces
-        .iter()
-        .zip(&rects)
-        .map(|(piece, &rect)| piece_frame(piece.motion, rect, bands[piece.column]))
-        .collect::<Vec<_>>();
+    let frames = band_content_frames(&pieces, &rects, bands);
     let names = (0..pieces.len())
         .map(|index| piece_name(index, &pieces, &frames))
         .collect::<Vec<_>>();
-    pieces
+    // Ownership is decided from the sliding source frames before fitting.
+    // A crossing carries one required block, never two independent minima.
+    for (column, &band) in bands.iter().enumerate() {
+        let in_band = pieces
+            .iter()
+            .enumerate()
+            .filter_map(|(index, piece)| (piece.column == column).then_some(index))
+            .collect::<Vec<_>>();
+        let search = BandHeightSearch {
+            before_grid: before,
+            after_grid: after,
+            pieces: &pieces,
+            in_band: &in_band,
+            band,
+            min_tile_height: after.min_tile_height,
+            height_snap,
+        };
+        let mut dividers = in_band
+            .iter()
+            .map(|&index| rects[index].top())
+            .collect::<Vec<_>>();
+        dividers.push(in_band.last().map_or_else(
+            || band.top(),
+            |&index| rects[index].bottom().saturating_sub(1),
+        ));
+        let dividers = allocate_lifecycle_spans(&search, &names, &dividers)?;
+        for (position, &index) in in_band.iter().enumerate() {
+            rects[index] = band_piece_rect(
+                before,
+                after,
+                &pieces[index],
+                band,
+                dividers[position],
+                dividers[position + 1],
+            );
+        }
+    }
+    let frames = band_content_frames(&pieces, &rects, bands);
+    Ok(pieces
         .into_iter()
         .zip(frames)
         .zip(names)
         .zip(height_snaps)
-        .map(|(((piece, frame), name), height_snap)| TilePiece {
-            identity: piece.drawn.identity.clone(),
-            placement: piece.drawn.at(frame),
-            name,
-            height_snap,
+        .filter_map(|(((piece, frame), name), height_snap)| {
+            owned_tile_piece(&piece, frame, name, height_snap)
+        })
+        .collect())
+}
+
+/// Emit a crossing's required content block only from the piece that owns it.
+fn owned_tile_piece<Id: Clone>(
+    piece: &BandPiece<Id>,
+    frame: PaneFrame,
+    name: PieceName,
+    height_snap: PieceHeightSnap,
+) -> Option<TilePiece<Id>> {
+    if name == PieceName::OnTheOtherPiece
+        && matches!(&piece.drawn.content, TileContent::Group(cell)
+            if cell.has_retained_prefix())
+    {
+        return None;
+    }
+    Some(TilePiece {
+        identity: piece.drawn.identity.clone(),
+        ink: PieceInk::Resident,
+        placement: piece.drawn.at(frame),
+        name,
+        height_snap,
+    })
+}
+
+/// Preserve resident sliding while lifecycle allocations keep their complete body.
+fn band_content_frames<Id>(
+    pieces: &[BandPiece<Id>],
+    rects: &[Rect],
+    bands: &[Rect],
+) -> Vec<PaneFrame> {
+    pieces
+        .iter()
+        .zip(rects)
+        .map(|(piece, &rect)| {
+            let rect = match &piece.drawn.content {
+                TileContent::Group(cell) => match &*cell.lifecycle() {
+                    CellLifecycle::Leaving(ended) => Rect {
+                        height: rect.height.min(ended.height()),
+                        ..rect
+                    },
+                    _ => rect,
+                },
+                _ => rect,
+            };
+            let lifecycle_frame = matches!(&piece.drawn.content, TileContent::Group(cell)
+            if cell.has_retained_prefix()
+                && !matches!(*cell.lifecycle(), CellLifecycle::Resident));
+            if lifecycle_frame {
+                PaneFrame::new(rect)
+            } else {
+                piece_frame(piece.motion, rect, bands[piece.column])
+            }
         })
         .collect()
+}
+
+/// An occupied live span has no empty or erased representation.
+struct LiveCellSpan {
+    minimum: NonZeroU16,
+    wanted:  u16,
+}
+
+/// Each fit receives the operations its occupant's lifetime permits.
+enum ColumnOccupant {
+    Live(LiveCellSpan),
+    Fading(EndedCell),
+    Unclaimed { minimum: u16, wanted: u16 },
+}
+
+impl ColumnOccupant {
+    const fn minimum(&self) -> u16 {
+        match self {
+            Self::Live(live) => live.minimum.get(),
+            Self::Fading(ended) => ended.height().saturating_sub(1),
+            Self::Unclaimed { minimum, .. } => *minimum,
+        }
+    }
+
+    fn wanted(&self) -> u16 {
+        match self {
+            Self::Live(live) => live.wanted.max(live.minimum.get()),
+            Self::Fading(ended) => ended.height().saturating_sub(1),
+            Self::Unclaimed { minimum, wanted } => (*wanted).max(*minimum),
+        }
+    }
+}
+
+/// The required bodies cannot share this transient band. Keep the source arrangement.
+#[derive(Debug)]
+pub(super) struct ColumnCapacityFailure;
+
+/// Inclusive divider limits, constructed only after capacity proves their order.
+struct DividerBounds {
+    minimum: u16,
+    maximum: u16,
+}
+
+impl DividerBounds {
+    const fn new(minimum: u16, maximum: u16) -> Result<Self, ColumnCapacityFailure> {
+        if minimum > maximum {
+            Err(ColumnCapacityFailure)
+        } else {
+            Ok(Self { minimum, maximum })
+        }
+    }
+
+    fn clamp(&self, divider: u16) -> u16 { divider.clamp(self.minimum, self.maximum) }
+}
+
+/// Fit all occupants together; a later occupant's minimum is reserved first.
+fn allocate_lifecycle_spans<Id>(
+    search: &BandHeightSearch<'_, Id>,
+    names: &[PieceName],
+    dividers: &[u16],
+) -> Result<Vec<u16>, ColumnCapacityFailure> {
+    let occupants = search
+        .in_band
+        .iter()
+        .enumerate()
+        .map(|(position, &index)| {
+            let wanted = dividers[position + 1].saturating_sub(dividers[position]);
+            match &search.pieces[index].drawn.content {
+                TileContent::Group(_) if names[index] == PieceName::OnTheOtherPiece => {
+                    ColumnOccupant::Unclaimed { minimum: 0, wanted }
+                },
+                TileContent::Group(cell) => {
+                    let lifecycle = cell.lifecycle().clone();
+                    match lifecycle {
+                        CellLifecycle::Leaving(ended) => ColumnOccupant::Fading(ended),
+                        _ if cell.continuity == CellContinuity::LayoutManaged
+                            && wanted < cell.first_height.get().saturating_sub(1)
+                            && !cell.has_drawn_body() =>
+                        {
+                            ColumnOccupant::Unclaimed { minimum: 0, wanted }
+                        },
+                        _ if cell.continuity == CellContinuity::Running => {
+                            ColumnOccupant::Live(LiveCellSpan {
+                                wanted:  wanted.min(
+                                    cell.lifecycle_height(
+                                        search.band.width,
+                                        search.min_tile_height,
+                                    )
+                                    .saturating_sub(1),
+                                ),
+                                minimum: NonZeroU16::new(cell.first_height.get().saturating_sub(1))
+                                    .unwrap_or(NonZeroU16::MIN),
+                            })
+                        },
+                        _ => ColumnOccupant::Unclaimed { minimum: 0, wanted },
+                    }
+                },
+                TileContent::Summary => ColumnOccupant::Unclaimed {
+                    minimum: search.min_tile_height.saturating_sub(1),
+                    wanted,
+                },
+                TileContent::Empty(_) => ColumnOccupant::Unclaimed { minimum: 0, wanted },
+            }
+        })
+        .collect::<Vec<_>>();
+    if !occupants.iter().any(|occupant| {
+        matches!(
+            occupant,
+            ColumnOccupant::Live(_) | ColumnOccupant::Fading(_)
+        )
+    }) {
+        return Ok(dividers.to_vec());
+    }
+    let spans = fit_lifecycle_spans(&occupants, search.band.height.saturating_sub(1))?;
+    let mut fitted = Vec::with_capacity(dividers.len());
+    let mut top = search.band.top();
+    fitted.push(top);
+    for span in spans {
+        top = top.saturating_add(span);
+        fitted.push(top);
+    }
+    Ok(fitted)
+}
+
+/// Aggregate demand can exceed u16 even when every individual cell fits that type.
+fn fit_lifecycle_spans(
+    occupants: &[ColumnOccupant],
+    capacity: u16,
+) -> Result<Vec<u16>, ColumnCapacityFailure> {
+    let mut spans = occupants
+        .iter()
+        .map(ColumnOccupant::wanted)
+        .collect::<Vec<_>>();
+    let mut overflow = spans
+        .iter()
+        .map(|span| u64::from(*span))
+        .sum::<u64>()
+        .saturating_sub(u64::from(capacity));
+    // Ended content gives back surplus before a running command changes height.
+    for order in [SurplusOrder::Departures, SurplusOrder::Residents] {
+        for (span, occupant) in spans.iter_mut().zip(occupants) {
+            if !matches!(
+                (occupant, order),
+                (ColumnOccupant::Fading(_), SurplusOrder::Departures)
+                    | (
+                        ColumnOccupant::Live(_) | ColumnOccupant::Unclaimed { .. },
+                        SurplusOrder::Residents
+                    )
+            ) {
+                continue;
+            }
+            let taken = u64::from(span.saturating_sub(occupant.minimum())).min(overflow);
+            *span -= u16::try_from(taken).unwrap_or(u16::MAX);
+            overflow -= taken;
+        }
+    }
+    if overflow != 0 {
+        return Err(ColumnCapacityFailure);
+    }
+    Ok(spans)
 }
 
 /// The framed rect one pair of shared dividers gives `piece`.
@@ -5333,8 +10421,19 @@ fn piece_name<Id>(index: usize, pieces: &[BandPiece<Id>], frames: &[PaneFrame]) 
     } else {
         return PieceName::Shown;
     };
-    let entering_draws = draw::name_row_is_visible(entering_frame)
-        || (!draw::name_row_is_visible(leaving_frame) && entering_frame.clip().height >= 2);
+    let entering_draws = match &pieces[index].drawn.content {
+        TileContent::Group(cell) if cell.has_retained_prefix() => {
+            // The name travels with the whole required heading/content block.
+            // A border row alone cannot take ownership from its source piece.
+            entering_frame.clip().width > leaving_frame.clip().width
+                || (entering_frame.clip().width == leaving_frame.clip().width
+                    && entering_frame.clip().height >= cell.first_height.get())
+        },
+        TileContent::Summary | TileContent::Group(_) | TileContent::Empty(_) => {
+            draw::name_row_is_visible(entering_frame)
+                || (!draw::name_row_is_visible(leaving_frame) && entering_frame.clip().height >= 2)
+        },
+    };
     if entering == entering_draws {
         PieceName::Shown
     } else {
@@ -5398,7 +10497,7 @@ fn ordered_height_changes(before: &[u16], after: &[u16], growing: bool) -> Vec<P
 }
 
 /// Shared dividers whose piece heights advance through one fixed path.
-fn monotone_band_dividers<Id: Eq>(
+fn monotone_band_dividers<Id: Clone + Eq>(
     pieces: &[BandPiece<Id>],
     in_band: &[usize],
     before: &[u16],
@@ -5420,7 +10519,7 @@ fn monotone_band_dividers<Id: Eq>(
     let round_each_piece = matches!(height_snap, HeightSnap::Off)
         || in_band
             .iter()
-            .any(|&index| height_snap.has_content_step_gap(&pieces[index].drawn.content));
+            .any(|&index| height_snap.has_content_step_gap(&pieces[index].drawn.content()));
     let grown = before_spans
         .iter()
         .zip(&after_spans)
@@ -5447,12 +10546,22 @@ fn monotone_band_dividers<Id: Eq>(
             }
         })
         .fold(0_u32, u32::saturating_add);
+    let balanced = before.last() == after.last();
     let transfers = usize::try_from(grown.min(shrunk) / PROGRESS_SCALE).unwrap_or(usize::MAX);
+    let growth = if balanced {
+        transfers
+    } else {
+        usize::try_from(grown / PROGRESS_SCALE).unwrap_or(usize::MAX)
+    };
     let mut spans = before_spans;
-    for change in growing.iter().take(transfers) {
+    for change in growing.iter().take(growth) {
         spans[change.position] = spans[change.position].saturating_add(1);
     }
-    for change in shrinking.iter().take(transfers) {
+    for change in shrinking.iter().take(if balanced {
+        transfers
+    } else {
+        usize::try_from(shrunk / PROGRESS_SCALE).unwrap_or(usize::MAX)
+    }) {
         spans[change.position] = spans[change.position].saturating_sub(1);
     }
     let mut dividers = Vec::with_capacity(spans.len().saturating_add(1));
@@ -5469,11 +10578,11 @@ fn monotone_band_dividers<Id: Eq>(
 }
 
 /// Inclusive row dividers shared by every ordered piece in one band.
-fn band_piece_dividers<Id: Eq>(
+fn band_piece_dividers<Id: Clone + Eq>(
     search: &BandHeightSearch<'_, Id>,
     from_band: Rect,
     to_band: Rect,
-) -> Vec<u16> {
+) -> Result<Vec<u16>, ColumnCapacityFailure> {
     let BandHeightSearch {
         pieces,
         in_band,
@@ -5488,8 +10597,6 @@ fn band_piece_dividers<Id: Eq>(
         before.push(motion.before_bottom(from_band, before[before.len() - 1]));
         after.push(motion.after_bottom(to_band, after[after.len() - 1]));
     }
-    before[in_band.len()] = from_band.bottom().saturating_sub(1);
-    after[in_band.len()] = to_band.bottom().saturating_sub(1);
 
     let floor = band.bottom().saturating_sub(1);
     let same_band = from_band.top() == to_band.top()
@@ -5499,22 +10606,26 @@ fn band_piece_dividers<Id: Eq>(
     } else {
         let mut dividers = vec![band.top()];
         for (position, &index) in in_band.iter().enumerate() {
-            let bottom = if position + 1 == in_band.len() {
-                floor
-            } else {
-                lerp(
-                    before[position + 1],
-                    after[position + 1],
-                    pieces[index].progress,
-                )
-                .clamp(dividers[dividers.len() - 1], floor)
-            };
+            let bottom = lerp(
+                before[position + 1],
+                after[position + 1],
+                pieces[index].progress,
+            );
+            let bottom = DividerBounds::new(dividers[dividers.len() - 1], floor)?.clamp(bottom);
             dividers.push(bottom);
         }
         dividers
     };
     if let Some(last) = dividers.last_mut() {
-        *last = (*last).min(floor);
+        let starts_full = before.last().copied() == Some(from_band.bottom().saturating_sub(1))
+            || from_band.width <= 1;
+        let ends_full =
+            after.last().copied() == Some(to_band.bottom().saturating_sub(1)) || to_band.width <= 1;
+        *last = if matches!(search.height_snap, HeightSnap::Off) && starts_full && ends_full {
+            floor
+        } else {
+            (*last).min(floor)
+        };
     }
     let resident_gap = min_tile_height.saturating_sub(1);
     let minimum_gaps = in_band
@@ -5531,10 +10642,35 @@ fn band_piece_dividers<Id: Eq>(
     for position in (0..in_band.len()).rev() {
         latest[position] = latest[position + 1].saturating_sub(minimum_gaps[position]);
     }
-    for position in 1..in_band.len() {
+    for position in 1..=in_band.len() {
         let earliest = dividers[position - 1].saturating_add(minimum_gaps[position - 1]);
-        dividers[position] = dividers[position].clamp(earliest, latest[position]);
+        dividers[position] =
+            DividerBounds::new(earliest, latest[position])?.clamp(dividers[position]);
     }
+    collapse_single_row_band_gaps(pieces, in_band, &mut dividers);
+    let HeightSnap::Frame { row_usage, .. } = search.height_snap else {
+        return Ok(dividers);
+    };
+    if row_usage.is_empty() {
+        return Ok(dividers);
+    }
+    if in_band.iter().any(|&index| {
+        matches!(&pieces[index].drawn.content, TileContent::Group(cell)
+            if cell.is_leaving())
+    }) {
+        return Ok(dividers);
+    }
+    Ok(snapped_band_piece_dividers(
+        search, &before, &after, &dividers,
+    ))
+}
+
+/// Remove one-row fragments without reopening a neighbouring divider gap.
+fn collapse_single_row_band_gaps<Id>(
+    pieces: &[BandPiece<Id>],
+    in_band: &[usize],
+    dividers: &mut [u16],
+) {
     for position in (0..in_band.len()).rev() {
         if dividers[position + 1].saturating_sub(dividers[position]) != 1 {
             continue;
@@ -5563,13 +10699,6 @@ fn band_piece_dividers<Id: Eq>(
             dividers[position + 1] = dividers[position];
         }
     }
-    let HeightSnap::Frame { row_usage, .. } = search.height_snap else {
-        return dividers;
-    };
-    if row_usage.is_empty() {
-        return dividers;
-    }
-    snapped_band_piece_dividers(search, &before, &after, &dividers)
 }
 
 /// One candidate for all shared dividers reached so far in a band.
@@ -5692,7 +10821,7 @@ impl PieceCandidateFit {
 }
 
 /// Pick the nearest jointly valid set of shared dividers in one band.
-fn snapped_band_piece_dividers<Id: Eq>(
+fn snapped_band_piece_dividers<Id: Clone + Eq>(
     search: &BandHeightSearch<'_, Id>,
     before: &[u16],
     after: &[u16],
@@ -5768,7 +10897,7 @@ fn snapped_band_piece_dividers<Id: Eq>(
 }
 
 /// Find the nearest shared dividers within every piece's remaining path.
-fn nearest_band_piece_dividers<Id: Eq>(
+fn nearest_band_piece_dividers<Id: Clone + Eq>(
     search: &BandHeightSearch<'_, Id>,
     before: &[u16],
     after: &[u16],
@@ -5847,34 +10976,68 @@ fn nearest_band_piece_dividers<Id: Eq>(
         }
         candidates = next;
     }
+    finish_band_candidates(search, before, after, spare_rows, candidates, bottom)
+}
+
+/// Allow a column's free tail to absorb a row that no cell can paint.
+fn finish_band_candidates<Id: Clone + Eq>(
+    search: &BandHeightSearch<'_, Id>,
+    before: &[u16],
+    after: &[u16],
+    spare_rows: SpareRowPreference<'_>,
+    candidates: Vec<BandDividerCandidate>,
+    bottom: u16,
+) -> FilledBandPath {
+    let in_band = search.in_band;
+    let top = search.band.top();
+    let last = in_band.len().saturating_sub(1);
+    let Some((lower_span, upper_span)) = piece_span_bounds(search, before, after, last, spare_rows)
+    else {
+        return FilledBandPath::NoFilledPath;
+    };
     candidates
         .into_iter()
-        .filter_map(|mut candidate| {
-            let fit = snapped_piece_fit(
-                search,
-                before,
-                after,
-                in_band.len().saturating_sub(1),
-                *candidate.dividers.last().unwrap_or(&top),
-                bottom,
-                spare_rows,
-            );
-            if !fit.meets_required_fit() {
-                return None;
-            }
-            candidate.record(fit);
-            Some(candidate)
+        .flat_map(|candidate| {
+            let top = *candidate.dividers.last().unwrap_or(&top);
+            let lower = top.saturating_add(lower_span);
+            let upper = top
+                .saturating_add(upper_span)
+                .min(search.band.bottom().saturating_sub(1));
+            (lower..=upper).filter_map(move |ending| {
+                // A free tail needs an interior row between the cell's closing
+                // border and the column border. Keep the joined boundary until
+                // that space exists rather than drawing two adjacent rules.
+                if ending.saturating_add(1) == search.band.bottom().saturating_sub(1) {
+                    return None;
+                }
+                let mut candidate = candidate.clone();
+                let fit = snapped_piece_fit(
+                    search,
+                    before,
+                    after,
+                    in_band.len().saturating_sub(1),
+                    *candidate.dividers.last().unwrap_or(&top),
+                    ending,
+                    spare_rows,
+                );
+                if !fit.meets_required_fit() {
+                    return None;
+                }
+                candidate.record(fit);
+                candidate.distance = candidate
+                    .distance
+                    .saturating_add(u32::from(ending.abs_diff(bottom)));
+                candidate.dividers.push(ending);
+                Some(candidate)
+            })
         })
         .min_by_key(|candidate| spare_rows.score(candidate))
-        .map(|mut candidate| {
-            candidate.dividers.push(bottom);
-            candidate.dividers
-        })
+        .map(|candidate| candidate.dividers)
         .map_or(FilledBandPath::NoFilledPath, FilledBandPath::Filled)
 }
 
 /// Framed-span interval one piece may use on its remaining path.
-fn piece_span_bounds<Id: Eq>(
+fn piece_span_bounds<Id: Clone + Eq>(
     search: &BandHeightSearch<'_, Id>,
     before: &[u16],
     after: &[u16],
@@ -5907,7 +11070,7 @@ fn piece_span_bounds<Id: Eq>(
         && let HeightSnap::Frame { row_usage, .. } = search.height_snap
     {
         let area = draw::content_area(frame_inner(previous_rect));
-        let filled = frame_painted_rows(row_usage, &piece.drawn.content, area)
+        let filled = frame_painted_rows(row_usage, &piece.drawn.content(), area)
             .saturating_add(previous_span.saturating_sub(area.height));
         lower = lower.min(filled);
     }
@@ -5928,6 +11091,14 @@ fn piece_span_bounds<Id: Eq>(
             upper = upper.min(nearest);
         }
     }
+    // A collapsed entry first takes only the rows needed for a body. The
+    // nearest-divider search must not skip that boundary to consume free space.
+    if previous_span == 0
+        && search.height_snap.previous_height(index).is_some()
+        && matches!(piece.motion, BandPieceMotion::Entering { .. })
+    {
+        upper = upper.min(search.min_tile_height.saturating_sub(1));
+    }
     match piece.motion {
         BandPieceMotion::Resident { .. } => {
             lower = lower.max(search.min_tile_height.saturating_sub(1));
@@ -5937,6 +11108,8 @@ fn piece_span_bounds<Id: Eq>(
             upper = upper.min(before_span);
         },
         BandPieceMotion::Leaving { .. } if piece.progress < PROGRESS_SCALE => {
+            // The leaving frame slides through its clip down to one visible body
+            // row. The allocation floor still applies to resident frames.
             lower = lower.max(before_span.min(MIN_TILE_HEIGHT.saturating_sub(1)));
         },
         BandPieceMotion::Entering { .. } | BandPieceMotion::Leaving { .. } => {},
@@ -5944,8 +11117,8 @@ fn piece_span_bounds<Id: Eq>(
     (lower <= upper).then_some((lower, upper))
 }
 
-/// How one candidate piece keeps its motion and fills its content area.
-fn snapped_piece_fit<Id: Eq>(
+/// `snapped_piece_fit` checks motion bounds and content fit for one `BandHeightSearch` candidate.
+fn snapped_piece_fit<Id: Clone + Eq>(
     search: &BandHeightSearch<'_, Id>,
     before: &[u16],
     after: &[u16],
@@ -6049,14 +11222,20 @@ fn queued_slot_column<Id: Eq>(
     growth: TileGrowth,
     area: Rect,
     settings: &TileSettings,
+    policy: SummaryDepthPolicy,
 ) -> Option<usize> {
     let cell = slots
         .iter()
         .position(|held| held == slot)?
         .saturating_add(TABLE_CELL + 1);
-    let ColumnPlan::Columns(layout) =
-        column_layout(slots.len() + TABLE_CELL, depth, growth, area, settings)
-    else {
+    let ColumnPlan::Columns(layout) = column_layout(
+        slots.len() + TABLE_CELL,
+        depth,
+        growth,
+        area,
+        settings,
+        policy,
+    ) else {
         return None;
     };
     let laid_out = cell.saturating_add(layout.summary_depth.saturating_sub(1));
@@ -6077,6 +11256,7 @@ fn queued_cells_keep_endpoint_columns<Id: Eq>(
     growth: TileGrowth,
     area: Rect,
     settings: &TileSettings,
+    policy: SummaryDepthPolicy,
 ) -> bool {
     start
         .slots
@@ -6090,6 +11270,7 @@ fn queued_cells_keep_endpoint_columns<Id: Eq>(
                 growth,
                 area,
                 settings,
+                policy,
             );
             let final_column = queued_slot_column(
                 finish.slots,
@@ -6098,6 +11279,7 @@ fn queued_cells_keep_endpoint_columns<Id: Eq>(
                 growth,
                 area,
                 settings,
+                policy,
             );
             let candidate_column = queued_slot_column(
                 candidate.slots,
@@ -6106,6 +11288,7 @@ fn queued_cells_keep_endpoint_columns<Id: Eq>(
                 growth,
                 area,
                 settings,
+                policy,
             );
             candidate_column == start_column || candidate_column == final_column
         })
@@ -6161,13 +11344,27 @@ fn eased(progress: u32) -> u32 {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    pub(super) fn empty_cell_serial(index: usize) -> u64 {
+        u64::try_from(index).expect("tile index fits u64")
+    }
+
     use std::ops::RangeInclusive;
 
     use ratatui::buffer::Buffer;
     use ratatui::layout::Margin;
     use ratatui::style::Color;
+    use ratatui::widgets::Paragraph;
+    use ratatui::widgets::Widget;
 
+    use super::EndedCellDeparture;
+    use super::draw::AdmissibleCell;
+    use super::draw::CellAdmission;
+    use super::draw::CellContinuity;
+    use super::draw::CellDepartureReceipt;
+    use super::draw::NotAdmissible;
+    use super::draw::TileCells;
     use super::*;
+    use crate::FRAME_POLL_MILLIS;
     use crate::TileGridContents;
     use crate::tiles::constants::LARGE_CONTENT_TEST_CELLS;
     use crate::tiles::constants::LARGE_CONTENT_TEST_HEIGHT;
@@ -6183,7 +11380,361 @@ mod tests {
     use crate::tiles::constants::TILE_DEMAND_STEP;
     use crate::tiles::constants::TILE_ROWS_READOUT_HEIGHT;
 
+    #[test]
+    fn a_missing_painted_focus_does_not_consume_tab() {
+        let growth = redistribute(4);
+        let mut grid = seeded_grid::<u32>();
+        grid.sync(&busy(&[(1, 2), (2, 2)]), growth);
+        grid.settle_for_test();
+        grid.slots = grid
+            .measured_test_groups(&busy(&[(1, 2), (2, 2)]))
+            .into_iter()
+            .map(Slot::Group)
+            .collect();
+        grid.focus = declared_focus(1);
+        assert_eq!(grid.focused_cell(), FocusLocation::Cell(TABLE_CELL + 1));
+        grid.capacity_publication = CapacityPublication::Painted;
+        grid.painted_viewport = grid.area;
+        grid.painted_placements = vec![
+            TilePlacement {
+                content: TileContent::Summary,
+                frame:   PaneFrame::new(Rect::new(0, 0, 40, 8)),
+            },
+            TilePlacement {
+                content: TileContent::Group(2),
+                frame:   PaneFrame::new(Rect::new(0, 7, 40, 8)),
+            },
+        ];
+        assert!(
+            !grid.cycle_focus(CycleDirection::Next),
+            "Tab must remain available when the focused cell is not painted"
+        );
+        assert_eq!(grid.focus, declared_focus(1));
+    }
+
+    #[test]
+    fn a_collapsed_entry_uses_the_configured_body_floor() {
+        let band = Rect::new(0, 0, 40, 24);
+        let floor = MIN_TILE_HEIGHT + 3;
+        let held = HeldCellLayout {
+            rows: row_demands(&[24]),
+            ..HeldCellLayout::default()
+        };
+        let grid = Grid::new(band, &held, TileGrowth::default(), &TileSettings::default());
+        let pieces = [BandPiece {
+            column:   0,
+            motion:   BandPieceMotion::Entering {
+                edge:    BandEdge::Top,
+                after:   band,
+                sliding: false,
+            },
+            progress: 1,
+            drawn:    CellAppearance {
+                identity: CellIdentity::Group(1u32),
+                content:  drawable_test_content(TileContent::Group(1u32)),
+                focused:  false,
+            },
+        }];
+        let snap = HeightSnap::Frame {
+            row_usage: &[],
+            path:      PieceHeightPath::AdvanceFrom(&[1]),
+        };
+        let search = BandHeightSearch {
+            before_grid: &grid,
+            after_grid: &grid,
+            pieces: &pieces,
+            in_band: &[0],
+            band,
+            min_tile_height: floor,
+            height_snap: &snap,
+        };
+        let (lower, upper) = piece_span_bounds(
+            &search,
+            &[0, 0],
+            &[0, band.height - 1],
+            0,
+            SpareRowPreference::Nearest,
+        )
+        .expect("entry bounds");
+        assert!(
+            lower < floor && upper == floor - 1,
+            "a collapsed entry must first reach its configured readable floor: {lower}..={upper}, floor {floor}"
+        );
+    }
+
+    fn summary_demand(rows: usize) -> SummaryDemand<u32> { SummaryDemand::new(rows, []) }
+
+    #[derive(Debug)]
+    struct TestLiveInvocation;
+
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    enum TestCommandState {
+        Live,
+        Ended,
+    }
+    impl From<bool> for TestCommandState {
+        fn from(ended: bool) -> Self { if ended { Self::Ended } else { Self::Live } }
+    }
+
+    fn test_admission<Id>(
+        id: Id,
+        state: impl Into<TestCommandState>,
+    ) -> Result<AdmissibleCell<Id>, NotAdmissible<Id>> {
+        if state.into() == TestCommandState::Ended {
+            Err(NotAdmissible::MissingEvidence(id))
+        } else {
+            Ok(AdmissibleCell::new(
+                id,
+                std::iter::empty(),
+                TestLiveInvocation,
+            ))
+        }
+    }
+
+    fn area_lines(buffer: &Buffer, area: Rect) -> Vec<String> {
+        (area.top()..area.bottom())
+            .map(|y| {
+                (area.left()..area.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// A provider distinguishes a live command, an owned fade and withdrawal.
+    struct WithdrawalCells {
+        live:    Vec<u32>,
+        ended:   Vec<u32>,
+        started: Instant,
+    }
+
+    impl TileCells<u32> for WithdrawalCells {
+        fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+            test_admission(*id, !self.live.contains(id))
+        }
+        fn summary_title(&self) -> &'static str { "summary" }
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            busy(&self.live.iter().map(|&id| (id, 8)).collect::<Vec<_>>())
+        }
+
+        fn rows_drawn(&self, _: &TileContent<u32>, area: Rect) -> u16 { area.height.min(8) }
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, area: Rect, _: Color) {
+            if let TileContent::Group(id) = content {
+                Paragraph::new(format!("command {id} body")).render(area, buffer);
+            }
+        }
+
+        fn departure(&self, id: &u32) -> CellDeparture {
+            match (self.live.contains(id), self.ended.contains(id)) {
+                (_, true) => CellDeparture::Fading(EndedCellDeparture::new(
+                    self.started,
+                    CellLifecycleTiming::new(Duration::from_secs(30)),
+                )),
+                (true, false) => CellDeparture::Live,
+                (false, false) => CellDeparture::Immediate,
+            }
+        }
+
+        fn required_commands(&self) -> Vec<u32> {
+            self.demands(&[])
+                .groups
+                .into_iter()
+                .filter(|demand| matches!(self.departure(&demand.id), CellDeparture::Live))
+                .map(|demand| demand.id)
+                .collect()
+        }
+    }
+
+    fn withdrawal_frame(grid: &mut TileGrid<u32>, cells: &WithdrawalCells) -> Buffer {
+        let area = Rect::new(0, 0, 80, 80);
+        let mut buffer = Buffer::empty(area);
+        draw::draw_tile_grid(
+            &mut buffer,
+            grid,
+            area,
+            TileGrowth::default(),
+            TileGridContents::Shown,
+            cells,
+        );
+        buffer
+    }
+
+    #[test]
+    fn hiding_a_departing_command_withdraws_its_frozen_body_on_the_next_frame() {
+        let mut grid = TileGrid::new();
+        let mut cells = WithdrawalCells {
+            live:    vec![1, 2],
+            ended:   Vec::new(),
+            started: Instant::now() + Duration::from_secs(60),
+        };
+        withdrawal_frame(&mut grid, &cells);
+        grid.settle_for_test();
+        withdrawal_frame(&mut grid, &cells);
+        cells.live = vec![2];
+        cells.ended = vec![1];
+        let fading = withdrawal_frame(&mut grid, &cells);
+        assert!(
+            area_lines(&fading, fading.area)
+                .join("\n")
+                .contains("command 1 body")
+        );
+        cells.ended.clear();
+        let hidden = withdrawal_frame(&mut grid, &cells);
+        assert!(
+            !area_lines(&hidden, hidden.area)
+                .join("\n")
+                .contains("command 1 body")
+        );
+        assert!(
+            !grid
+                .painted_placements_for_test()
+                .iter()
+                .any(|piece| piece.content == TileContent::Group(1))
+        );
+        assert!(
+            area_lines(&hidden, hidden.area)
+                .join("\n")
+                .contains("command 2 body")
+        );
+    }
+
+    #[test]
+    fn queued_destinations_release_an_ended_command_while_its_body_keeps_fading() {
+        let mut grid = TileGrid::new();
+        let mut cells = WithdrawalCells {
+            live:    vec![1, 2],
+            ended:   Vec::new(),
+            started: Instant::now() + Duration::from_secs(60),
+        };
+        withdrawal_frame(&mut grid, &cells);
+        grid.settle_for_test();
+        withdrawal_frame(&mut grid, &cells);
+        for _ in 0..3 {
+            grid.apply(TileAction::Add, TileGrowth::default());
+        }
+        assert!(
+            grid.queued_group_ids_for_test().len() > 1,
+            "exercise a backlog"
+        );
+        cells.live.retain(|&id| id != 1);
+        cells.ended.push(1);
+        let buffer = withdrawal_frame(&mut grid, &cells);
+        let queued = grid.queued_group_ids_for_test();
+        assert!(!queued.is_empty(), "backlog survives the end");
+        assert!(
+            queued.iter().all(|ids| !ids.contains(&1)),
+            "ended command in queued destination: {queued:?}"
+        );
+        assert!(grid.has_departing(&1));
+        assert!(
+            area_lines(&buffer, buffer.area)
+                .join("\n")
+                .contains("command 1 body")
+        );
+    }
+
+    /// Geometry fixtures paint their requested content through checked admission.
+    struct GeometryCells<'a, Id>(&'a TileDemands<Id>);
+
+    impl<Id: Clone + Eq + Debug> TileCells<Id> for GeometryCells<'_, Id> {
+        fn admission(&self, id: &Id) -> Result<AdmissibleCell<Id>, NotAdmissible<Id>> {
+            test_admission(
+                id.clone(),
+                !matches!(self.departure(id), CellDeparture::Live),
+            )
+        }
+        fn summary_title(&self) -> &'static str { "summary" }
+        fn demands(&self, _: &[(TileContent<Id>, u16)]) -> TileDemands<Id> { self.0.clone() }
+        fn draw(&self, buffer: &mut Buffer, _: &TileContent<Id>, area: Rect, _: Color) {
+            for y in area.top()..area.bottom() {
+                buffer[(area.x, y)].set_symbol("x");
+            }
+        }
+    }
+
+    /// Content that paints only when its complete body fits above the foot.
+    struct CompleteBodyCells(TileDemands<u32>);
+
+    impl TileCells<u32> for CompleteBodyCells {
+        fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+            test_admission(*id, !matches!(self.departure(id), CellDeparture::Live))
+        }
+        fn summary_title(&self) -> &'static str { "summary" }
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> { self.0.clone() }
+        fn first_content_rows(&self, content: &TileContent<u32>) -> u16 {
+            match content {
+                TileContent::Group(id) => u16::try_from(self.0.rows_for(id)).unwrap_or(u16::MAX),
+                TileContent::Summary | TileContent::Empty(_) => 1,
+            }
+        }
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            let rows = self.first_content_rows(content);
+            if area.height >= rows { rows } else { 0 }
+        }
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, area: Rect, _: Color) {
+            for y in area.top()..area.top() + self.rows_drawn(content, area) {
+                buffer[(area.x, y)].set_symbol("x");
+            }
+        }
+    }
+
+    impl<Id: Clone + Eq + Debug> TileGrid<Id> {
+        /// Measure fixture content before testing arrangement and motion.
+        pub(super) fn measured_test_groups(
+            &self,
+            demands: &TileDemands<Id>,
+        ) -> Vec<DrawableCell<Id>> {
+            let cells = GeometryCells(demands);
+            demands
+                .groups
+                .iter()
+                .filter_map(|demand| {
+                    match DrawableCell::prepare(
+                        AdmissibleCell::new(
+                            demand.id.clone(),
+                            std::iter::empty(),
+                            TestLiveInvocation,
+                        ),
+                        demand.rows,
+                        self.area.width.saturating_sub(TILE_BORDER_ROWS),
+                        self.area.height,
+                        &cells,
+                        &[],
+                    ) {
+                        CellAdmission::Waiting => None,
+                        CellAdmission::Drawable(cell) => Some(cell),
+                    }
+                })
+                .collect()
+        }
+
+        /// Synchronize measured geometry fixtures independently of rendering.
+        pub(in crate::tiles) fn sync_test_cells(
+            &mut self,
+            demands: &TileDemands<Id>,
+            growth: TileGrowth,
+        ) {
+            self.admission = self.measured_test_groups(demands);
+            self.sync_demands(demands, growth, DemandSync::Independent);
+        }
+    }
+
+    /// A checked single-row fixture for explicit slot geometry.
+    fn declared_focus<Id: Clone + Eq + Debug>(id: Id) -> Focus<Id> {
+        Focus::Cell(DrawnSlot {
+            slot: declared_slot(id),
+        })
+    }
+
+    fn declared_slot<Id: Clone + Eq + Debug>(id: Id) -> Slot<Id> {
+        let demands = quiet(&[id]);
+        let grid = seeded_grid();
+        Slot::Group(grid.measured_test_groups(&demands).remove(0))
+    }
+
     mod motion_rules {
+        use super::AdmissibleCell;
+        use super::draw::NotAdmissible;
         use super::*;
         use crate::TileCells;
         use crate::tiles::constants::COLUMN_FOOT_TEST_AREA;
@@ -6225,11 +11776,16 @@ mod tests {
         }
 
         impl TileCells<u32> for MotionRuleCells {
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+                test_admission(*id, !matches!(self.departure(id), CellDeparture::Live))
+            }
             fn summary_title(&self) -> &'static str { LENDING_TEST_SUMMARY_TITLE }
 
             fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
                 TileDemands {
-                    summary:       usize::from(self.entries * CONTENT_CHANGE_TEST_PROJECT_ROWS),
+                    summary:       summary_demand(usize::from(
+                        self.entries * CONTENT_CHANGE_TEST_PROJECT_ROWS,
+                    )),
                     summary_width: 0,
                     groups:        (self.departed_commands + 1..=self.commands)
                         .map(|id| TileDemand {
@@ -6277,7 +11833,8 @@ mod tests {
             let growth = redistribute(SLIDING_TEST_INITIAL_ROWS);
             let widths = grid.content_widths(area, growth);
             let mut demands = cells.demands(&widths);
-            demands.summary += usize::from(TILE_ROWS_READOUT_HEIGHT);
+            demands.summary =
+                summary_demand(demands.summary.required() + usize::from(TILE_ROWS_READOUT_HEIGHT));
             for group in &mut demands.groups {
                 group.rows += usize::from(TILE_ROWS_READOUT_HEIGHT);
             }
@@ -6294,7 +11851,7 @@ mod tests {
                 |content, area| cells.rows_drawn(content, area),
                 |content, area| cells.rows_kept(content, area),
             );
-            let drawing = grid.drawing_at(area, growth, raw);
+            let drawing = grid.layout_at(area, growth, raw);
             let mut buffer = Buffer::empty(area);
             draw::draw_placements(
                 &mut buffer,
@@ -6315,11 +11872,11 @@ mod tests {
                     5,
                     5,
                     vec![
-                        Slot::Group(1),
-                        Slot::Group(2),
-                        Slot::Group(3),
-                        Slot::Group(4),
-                        Slot::Group(5),
+                        Slot::Empty(0),
+                        declared_slot(2),
+                        declared_slot(3),
+                        declared_slot(4),
+                        declared_slot(5),
                         Slot::Empty(1),
                         Slot::Empty(2),
                     ],
@@ -6328,7 +11885,7 @@ mod tests {
                 MotionRuleKey::CommandOpening => (
                     2,
                     1,
-                    vec![Slot::Group(1)],
+                    vec![declared_slot(1)],
                     COMMAND_OPENING_TEST_SPANS.as_slice(),
                 ),
                 MotionRuleKey::EmptyDeparture => (
@@ -6336,9 +11893,9 @@ mod tests {
                     3,
                     vec![
                         Slot::Empty(0),
-                        Slot::Group(1),
-                        Slot::Group(2),
-                        Slot::Group(3),
+                        declared_slot(1),
+                        declared_slot(2),
+                        declared_slot(3),
                     ],
                     EMPTY_DEPARTURE_TEST_SPANS.as_slice(),
                 ),
@@ -6385,14 +11942,18 @@ mod tests {
                 MotionRuleKey::CommandOpening => {
                     cells.commands = 2;
                     let mut demands = cells.demands(&[]);
-                    demands.summary += usize::from(TILE_ROWS_READOUT_HEIGHT);
+                    demands.summary = summary_demand(
+                        demands.summary.required() + usize::from(TILE_ROWS_READOUT_HEIGHT),
+                    );
                     for group in &mut demands.groups {
                         group.rows += usize::from(TILE_ROWS_READOUT_HEIGHT);
                     }
-                    grid.sync(&demands, growth);
+                    grid.sync_test_cells(&demands, growth);
                 },
                 MotionRuleKey::EmptyDeparture => {
-                    grid.focus = Focus::Cell(Slot::Empty(0));
+                    grid.focus = Focus::Cell(DrawnSlot {
+                        slot: Slot::Empty(0),
+                    });
                     grid.apply(TileAction::Remove, growth);
                 },
             }
@@ -6463,7 +12024,9 @@ mod tests {
                 if rows < whole && area.height > 0 {
                     assert_eq!(
                         buffer[(area.x, area.bottom() - 1)].symbol(),
-                        CONTENT_CHANGE_TEST_ROW
+                        CONTENT_CHANGE_TEST_ROW,
+                        "{key:?} {raw}: {role:?} {:?} in {clip:?}",
+                        piece.content
                     );
                 }
             }
@@ -6497,7 +12060,7 @@ mod tests {
                     if clip.height > end
                         || raw == PROGRESS_SCALE
                         || (key == MotionRuleKey::ResidentEmpty
-                            && piece.content == TileContent::Group(1))
+                            && piece.content == TileContent::Empty(0))
                     {
                         for mate in drawing
                             .pieces
@@ -6627,7 +12190,6 @@ mod tests {
                 match key {
                     MotionRuleKey::ResidentEmpty if raw >= PROGRESS_SCALE / 2 => {
                         cells.entries = 3;
-                        cells.departed_commands = 2;
                     },
                     MotionRuleKey::CommandOpening if raw >= PROGRESS_SCALE / 10 => {
                         cells.entries = 3;
@@ -6638,16 +12200,18 @@ mod tests {
                     cells.commands = 3;
                     let widths = grid.content_widths(COLUMN_FOOT_TEST_AREA, grid.growth);
                     let mut demands = cells.demands(&widths);
-                    demands.summary += usize::from(TILE_ROWS_READOUT_HEIGHT);
+                    demands.summary = summary_demand(
+                        demands.summary.required() + usize::from(TILE_ROWS_READOUT_HEIGHT),
+                    );
                     for group in &mut demands.groups {
                         group.rows += usize::from(TILE_ROWS_READOUT_HEIGHT);
                     }
-                    grid.sync(&demands, grid.growth);
+                    grid.sync_test_cells(&demands, grid.growth);
                     grid.apply(TileAction::Add, grid.growth);
                 }
                 let (drawing, buffer) = motion_rule_frame(&mut grid, &cells, raw);
                 assert_eq!(clock, grid.motion_timing_for_test(), "{key:?} {raw}");
-                let endpoint = grid.drawing_at(COLUMN_FOOT_TEST_AREA, grid.growth, PROGRESS_SCALE);
+                let endpoint = grid.layout_at(COLUMN_FOOT_TEST_AREA, grid.growth, PROGRESS_SCALE);
                 let frame = MotionRuleFrame {
                     key,
                     checks,
@@ -6683,7 +12247,6 @@ mod tests {
                     "{key:?}: resident {content:?} reverses {heights:?}"
                 );
             }
-            grid.finish_motion_for_test();
             let (settled, buffer) = motion_rule_frame(&mut grid, &cells, PROGRESS_SCALE);
             let frame = MotionRuleFrame {
                 key,
@@ -6706,7 +12269,28 @@ mod tests {
                     .map(|p| (p.content.clone(), p.frame.clip()))
                     .collect::<Vec<_>>()
             );
-            assert!(!grid.tick(), "{key:?} has a second motion");
+            assert_motion_destination(key, &mut grid, &cells);
+        }
+
+        fn assert_motion_destination(
+            key: MotionRuleKey,
+            grid: &mut TileGrid<u32>,
+            cells: &MotionRuleCells,
+        ) {
+            // A ready command queued during the key keeps its own destination.
+            // Compare the key's endpoint before advancing that arrival.
+            if key == MotionRuleKey::CommandOpening {
+                grid.settle_for_test();
+                let (arrived, _) = motion_rule_frame(grid, cells, PROGRESS_SCALE);
+                assert!(
+                    arrived
+                        .placements()
+                        .any(|p| p.content == TileContent::Group(3))
+                );
+            } else {
+                grid.finish_motion_for_test();
+                assert!(!grid.tick(), "{key:?} has a second motion");
+            }
         }
 
         #[test]
@@ -6754,35 +12338,785 @@ mod tests {
         let first = (TEST_PID, u64::from(TEST_PID));
         let replacement = (TEST_PID, TEST_REPLACEMENT_LIFETIME);
         let mut demands = TileDemands {
-            summary:       0,
+            summary:       SummaryDemand::default(),
             summary_width: 0,
             groups:        vec![TileDemand {
                 id:   first,
-                rows: 0,
+                rows: 1,
             }],
         };
         let mut grid = seeded_grid();
-        grid.sync(&demands, redistribute(MIN_INITIAL_ROWS));
+        grid.sync_test_cells(&demands, redistribute(MIN_INITIAL_ROWS));
         grid.settle_for_test();
         grid.focus_cell(TABLE_CELL + 1);
         demands.groups.push(TileDemand {
             id:   replacement,
-            rows: 0,
+            rows: 1,
         });
 
-        grid.sync(&demands, redistribute(MIN_INITIAL_ROWS));
+        grid.sync_test_cells(&demands, redistribute(MIN_INITIAL_ROWS));
         grid.settle_for_test();
 
         assert_eq!(
             shown(&grid),
             vec![TileContent::Group(first), TileContent::Group(replacement)]
         );
-        assert_eq!(grid.focus, Focus::Cell(Slot::Group(first)));
+        assert_eq!(grid.focus, declared_focus(first));
         demands.groups.remove(0);
-        grid.sync(&demands, redistribute(MIN_INITIAL_ROWS));
+        grid.sync_test_cells(&demands, redistribute(MIN_INITIAL_ROWS));
         grid.settle_for_test();
         assert_eq!(shown(&grid), vec![TileContent::Group(replacement)]);
         assert_eq!(grid.focus, Focus::Summary);
+    }
+
+    struct ResidentCells(CompleteBodyCells);
+    impl TileCells<u32> for ResidentCells {
+        fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+            test_admission(*id, !matches!(self.departure(id), CellDeparture::Live))
+        }
+        fn summary_title(&self) -> &'static str { "summary" }
+        fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            draw::TileCells::demands(&self.0, widths)
+        }
+
+        fn first_content_rows(&self, content: &TileContent<u32>) -> u16 {
+            draw::TileCells::first_content_rows(&self.0, content)
+        }
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, area: Rect, color: Color) {
+            draw::TileCells::draw(&self.0, buffer, content, area, color);
+        }
+
+        fn departure(&self, _: &u32) -> CellDeparture { CellDeparture::Live }
+
+        fn required_commands(&self) -> Vec<u32> {
+            self.demands(&[])
+                .groups
+                .into_iter()
+                .filter(|demand| matches!(self.departure(&demand.id), CellDeparture::Live))
+                .map(|demand| demand.id)
+                .collect()
+        }
+    }
+    fn resident_cells() -> ResidentCells {
+        ResidentCells(CompleteBodyCells(busy(&[(1, 3), (2, 3), (3, 3)])))
+    }
+
+    /// Pointer content and focus use the same capacity result as painting.
+    #[test]
+    fn capacity_return_hit_testing_uses_the_painted_cell() {
+        let provider = resident_cells();
+        let growth = redistribute(4);
+        let mut grid = seeded_grid();
+        grid.set_min_tile_width(40);
+        grid.set_min_tile_height(6);
+        grid.set_motion_elapsed_for_test(Duration::ZERO);
+        for height in [21, 21, 11] {
+            let area = Rect::new(2, 2, 40, height);
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 84, 48));
+            draw::draw_tile_grid(
+                &mut buffer,
+                &mut grid,
+                area,
+                growth,
+                TileGridContents::Shown,
+                &provider,
+            );
+            grid.settle_for_test();
+            if height == 21 {
+                grid.focus_cell(TABLE_CELL + 3);
+            }
+            if height == 11 {
+                let summary = grid
+                    .painted_placements
+                    .iter()
+                    .find(|p| p.content == TileContent::Summary)
+                    .expect("drawn summary");
+                assert!(
+                    summary.frame.is_focused(),
+                    "summary focus on direct shrink frame"
+                );
+                grid.focus_cell(TABLE_CELL + 3);
+                assert_eq!(
+                    grid.focus,
+                    Focus::Summary,
+                    "hidden focus must move to drawn summary"
+                );
+            }
+        }
+        let piece = grid
+            .painted_placements
+            .iter()
+            .find(|piece| piece.content == TileContent::Group(1))
+            .expect("oldest returns whole");
+        let body = draw::content_area(frame_inner(piece.frame.clip()));
+        let point = Position::new(body.x, body.y);
+        let (index, content, hit_body) = grid
+            .cell_content_at(point)
+            .expect("visible command takes the click");
+        assert_eq!(content, TileContent::Group(1));
+        assert_eq!(hit_body, body);
+        assert_eq!(grid.cell_at(point), Some(index));
+        assert_ne!(index, TABLE_CELL);
+        assert_eq!(
+            grid.focus,
+            Focus::Summary,
+            "capacity reconciles focus before navigation"
+        );
+        grid.focus_step(Direction::Down, growth);
+        assert_eq!(
+            grid.focused_cell(),
+            FocusLocation::Cell(index),
+            "arrow reaches painted command"
+        );
+        assert!(grid.cycle_focus(CycleDirection::Next));
+        assert_eq!(grid.focus, Focus::Summary);
+        assert!(
+            grid.cycle_focus(CycleDirection::Next),
+            "Tab uses painted capacity outcome"
+        );
+        assert_eq!(grid.focused_cell(), FocusLocation::Cell(index));
+        assert!(grid.cycle_focus(CycleDirection::Next));
+        assert_eq!(
+            grid.focus,
+            Focus::Summary,
+            "hidden cells cannot take keyboard focus"
+        );
+    }
+
+    struct ArrivalInputCells {
+        count: u32,
+    }
+
+    impl TileCells<u32> for ArrivalInputCells {
+        fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+            test_admission(*id, !matches!(self.departure(id), CellDeparture::Live))
+        }
+        fn summary_title(&self) -> &'static str { "commands" }
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            TileDemands {
+                summary:       summary_demand(1),
+                summary_width: 0,
+                groups:        (1..=self.count)
+                    .map(|id| TileDemand { id, rows: 3 })
+                    .collect(),
+            }
+        }
+
+        fn first_content_rows(&self, _: &TileContent<u32>) -> u16 { 3 }
+        fn rows_drawn(&self, _: &TileContent<u32>, area: Rect) -> u16 { area.height.min(3) }
+        fn draw(&self, buffer: &mut Buffer, _: &TileContent<u32>, area: Rect, _: Color) {
+            for y in area.top()..area.bottom().min(area.top() + 3) {
+                buffer[(area.x, y)]
+                    .set_symbol("x")
+                    .set_fg(Color::Rgb(255, 255, 255));
+            }
+        }
+
+        fn departure(&self, _: &u32) -> CellDeparture { CellDeparture::Live }
+
+        fn required_commands(&self) -> Vec<u32> {
+            self.demands(&[])
+                .groups
+                .into_iter()
+                .filter(|demand| matches!(self.departure(&demand.id), CellDeparture::Live))
+                .map(|demand| demand.id)
+                .collect()
+        }
+    }
+
+    fn arrival_input_frame(grid: &mut TileGrid<u32>, count: u32) -> Buffer {
+        let area = Rect::new(0, 0, 80, 21);
+        let mut buffer = Buffer::empty(area);
+        draw::draw_tile_grid(
+            &mut buffer,
+            grid,
+            area,
+            redistribute(4),
+            TileGridContents::Shown,
+            &ArrivalInputCells { count },
+        );
+        buffer
+    }
+
+    fn arrival_input_grid() -> TileGrid<u32> {
+        let mut grid = seeded_grid();
+        grid.set_min_tile_width(40);
+        grid.set_min_tile_height(6);
+        grid.set_motion_duration_for_test(Duration::from_millis(96));
+        grid.set_motion_elapsed_for_test(Duration::ZERO);
+        arrival_input_frame(&mut grid, 1);
+        grid.settle_for_test();
+        arrival_input_frame(&mut grid, 1);
+        arrival_input_frame(&mut grid, 2);
+        grid
+    }
+
+    /// Free paint, pointer input and both keyboard routes share the first outcome.
+    #[test]
+    fn a_freely_painted_arrival_takes_input_on_its_first_frame() {
+        let mut grid = arrival_input_grid();
+        arrival_input_frame(&mut grid, 5);
+        let pieces = grid
+            .painted_placements
+            .iter()
+            .map(|piece| TilePlacement {
+                content: piece.content.clone(),
+                frame:   piece.frame,
+            })
+            .collect::<Vec<_>>();
+        for piece in pieces
+            .iter()
+            .filter(|p| matches!(p.content, TileContent::Group(_)))
+        {
+            let body = draw::content_area(frame_inner(piece.frame.clip()));
+            let point = Position::new(body.x, body.y);
+            let (index, content, _) = grid.cell_content_at(point).expect("painted arrival input");
+            assert_eq!(content, piece.content);
+            grid.focus_cell(index);
+            assert_eq!(grid.focused_cell(), FocusLocation::Cell(index));
+        }
+        grid.focus_cell(TABLE_CELL);
+        let mut tab = Vec::new();
+        for _ in 0..pieces.len() {
+            assert!(grid.cycle_focus(CycleDirection::Next));
+            tab.push(grid.focused_cell());
+        }
+        for piece in &pieces {
+            let index = grid
+                .placement_index(&piece.content)
+                .expect("published target");
+            assert!(
+                tab.contains(&FocusLocation::Cell(index)),
+                "Tab missed arrival"
+            );
+        }
+        grid.focus_cell(TABLE_CELL);
+        let mut arrows = vec![grid.focused_cell()];
+        for action in [
+            TileAction::FocusRight,
+            TileAction::FocusDown,
+            TileAction::FocusDown,
+            TileAction::FocusLeft,
+            TileAction::FocusUp,
+            TileAction::FocusUp,
+        ] {
+            grid.apply(action, redistribute(4));
+            arrows.push(grid.focused_cell());
+        }
+        for piece in &pieces {
+            let index = grid
+                .placement_index(&piece.content)
+                .expect("published target");
+            assert!(
+                arrows.contains(&FocusLocation::Cell(index)),
+                "arrows missed {:?}",
+                piece.content
+            );
+        }
+    }
+
+    /// A free allocation starts its entry ink on the frame that paints it.
+    #[test]
+    fn a_freely_painted_arrival_has_one_monotone_entry_clock() {
+        let mut grid = arrival_input_grid();
+        let mut ink = Vec::new();
+        for millis in (0..=128).step_by(8) {
+            let buffer = arrival_input_frame(&mut grid, 5);
+            let piece = grid
+                .painted_placements
+                .iter()
+                .find(|p| p.content == TileContent::Group(5))
+                .expect("free arrival");
+            let body = draw::content_area(frame_inner(piece.frame.clip()));
+            let (r, g, b) = match buffer[(body.x, body.y)].fg {
+                Color::Rgb(r, g, b) => Some((r, g, b)),
+                _ => None,
+            }
+            .expect("painted arrival has RGB ink");
+            ink.push(u16::from(r) + u16::from(g) + u16::from(b));
+            assert!(
+                ink.windows(2).all(|pair| pair[0] <= pair[1]),
+                "entry ink fell at {millis}ms: {ink:?}"
+            );
+            grid.elapse_for_test(Duration::from_millis(FRAME_POLL_MILLIS));
+            grid.tick();
+        }
+        assert!(
+            ink[0] < *ink.last().expect("last ink"),
+            "ink must enter from background"
+        );
+    }
+
+    /// A queued arrival keeps its ink when the geometry's time origin changes.
+    #[test]
+    fn a_painted_entry_survives_settled_motion_time_origins() {
+        let mut grid = arrival_input_grid();
+        arrival_input_frame(&mut grid, 5);
+        let mut previous = 0;
+        for millis in (0..=320).step_by(8) {
+            let buffer = arrival_input_frame(&mut grid, 5);
+            let piece = grid
+                .painted_placements
+                .iter()
+                .find(|p| p.content == TileContent::Group(5))
+                .expect("published arrival");
+            let body = draw::content_area(frame_inner(piece.frame.clip()));
+            let ink = match buffer[(body.x, body.y)].fg {
+                Color::Rgb(r, g, b) => Some(u16::from(r) + u16::from(g) + u16::from(b)),
+                _ => None,
+            }
+            .expect("RGB ink");
+            assert!(
+                ink >= previous,
+                "entry clock reversed at {millis}ms: {previous} -> {ink}"
+            );
+            previous = ink;
+            grid.elapse_for_test(Duration::from_millis(FRAME_POLL_MILLIS));
+            grid.tick();
+        }
+        assert_eq!(previous, 3 * u16::from(u8::MAX));
+    }
+
+    struct OrdinaryCells {
+        ended:   TestCommandState,
+        started: Instant,
+    }
+    impl TileCells<u32> for OrdinaryCells {
+        fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+            test_admission(*id, !matches!(self.departure(id), CellDeparture::Live))
+        }
+        fn summary_title(&self) -> &'static str { "commands" }
+        fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            ArrivalInputCells {
+                count: u32::from(self.ended == TestCommandState::Live),
+            }
+            .demands(widths)
+        }
+
+        fn first_content_rows(&self, _: &TileContent<u32>) -> u16 { 3 }
+        fn rows_drawn(&self, _: &TileContent<u32>, area: Rect) -> u16 { area.height.min(3) }
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, area: Rect, color: Color) {
+            ArrivalInputCells { count: 1 }.draw(buffer, content, area, color);
+        }
+
+        fn departure(&self, _: &u32) -> CellDeparture {
+            match self.ended {
+                TestCommandState::Live => CellDeparture::Live,
+                TestCommandState::Ended => CellDeparture::Fading(EndedCellDeparture::new(
+                    self.started,
+                    CellLifecycleTiming::new(Duration::from_millis(192)),
+                )),
+            }
+        }
+
+        fn required_commands(&self) -> Vec<u32> {
+            self.demands(&[])
+                .groups
+                .into_iter()
+                .filter(|demand| matches!(self.departure(&demand.id), CellDeparture::Live))
+                .map(|demand| demand.id)
+                .collect()
+        }
+    }
+
+    /// Ordinary publication starts ink once; ending cannot brighten or snap it.
+    #[test]
+    fn an_ordinary_cell_keeps_one_entry_and_end_ink_clock() {
+        let area = Rect::new(0, 0, 80, 21);
+        let mut grid = seeded_grid();
+        grid.set_min_tile_width(40);
+        grid.set_min_tile_height(6);
+        let entry_duration = Duration::from_millis(96);
+        grid.set_motion_duration_for_test(entry_duration);
+        grid.set_motion_elapsed_for_test(Duration::ZERO);
+        let mut first = None;
+        let mut previous = 0;
+        let mut saw_departure = false;
+        // The injected ticker supplies elapsed departure time in this fixture.
+        let started = Instant::now() + Duration::from_secs(60);
+        for millis in (0..=256).step_by(8) {
+            let ended = TestCommandState::from(millis >= 64);
+            let mut buffer = Buffer::empty(area);
+            draw::draw_tile_grid(
+                &mut buffer,
+                &mut grid,
+                area,
+                redistribute(4),
+                TileGridContents::Shown,
+                &OrdinaryCells { ended, started },
+            );
+            if let Some(piece) = grid
+                .painted_placements
+                .iter()
+                .find(|piece| piece.content == TileContent::Group(1))
+            {
+                let body = draw::content_area(frame_inner(piece.frame.clip()));
+                let color = buffer[(body.x, body.y)].fg;
+                let ink = match color {
+                    Color::Rgb(r, g, b) => Some(u16::from(r) + u16::from(g) + u16::from(b)),
+                    _ => None,
+                }
+                .expect("RGB ink");
+                if ended == TestCommandState::Ended {
+                    saw_departure = true;
+                    assert!(ink <= previous, "ended ordinary ink rose at {millis}ms");
+                    assert!(
+                        previous - ink <= 64,
+                        "ended ordinary ink snapped at {millis}ms"
+                    );
+                } else {
+                    let start = *first.get_or_insert(millis);
+                    // `CellEntryClock::painted_ink` starts at `FIRST_VISIBLE_STEP`
+                    // and advances with the injected frame clock.
+                    let timeline = draw::CellEntryTimeline::default();
+                    timeline.advance_for_test(Duration::from_millis(start));
+                    let mut entry = timeline.start(
+                        FirstPaint(Instant::now()),
+                        CellLifecycleTiming::new(entry_duration),
+                    );
+                    timeline.advance_for_test(Duration::from_millis(millis - start));
+                    let removed = entry.painted_ink().fade().amount();
+                    assert_eq!(
+                        color,
+                        crate::blend_color(
+                            Color::Rgb(255, 255, 255),
+                            crate::pane_background(piece.frame.is_focused()),
+                            removed
+                        ),
+                        "ordinary entry clock at {millis}ms"
+                    );
+                }
+                previous = ink;
+            }
+            grid.elapse_for_test(Duration::from_millis(FRAME_POLL_MILLIS));
+            grid.tick();
+        }
+        assert!(first.is_some(), "ordinary command received a cell");
+        assert!(saw_departure, "entry ended while painted");
+    }
+
+    /// Provider demands cannot give an already ended, unpainted command a cell.
+    #[test]
+    fn an_end_before_first_paint_cannot_publish_a_cell() {
+        struct EndedWaiter(ArrivalInputCells);
+        impl TileCells<u32> for EndedWaiter {
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+                test_admission(*id, !matches!(self.departure(id), CellDeparture::Live))
+            }
+
+            fn summary_title(&self) -> &'static str { "commands" }
+            fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                self.0.demands(widths)
+            }
+
+            fn first_content_rows(&self, _: &TileContent<u32>) -> u16 { 3 }
+            fn rows_drawn(&self, _: &TileContent<u32>, area: Rect) -> u16 { area.height.min(3) }
+            fn draw(
+                &self,
+                buffer: &mut Buffer,
+                content: &TileContent<u32>,
+                area: Rect,
+                color: Color,
+            ) {
+                self.0.draw(buffer, content, area, color);
+            }
+
+            fn departure(&self, id: &u32) -> CellDeparture {
+                if *id == 5 {
+                    CellDeparture::Fading(EndedCellDeparture::new(
+                        Instant::now(),
+                        CellLifecycleTiming::new(Duration::from_millis(96)),
+                    ))
+                } else {
+                    CellDeparture::Live
+                }
+            }
+
+            fn required_commands(&self) -> Vec<u32> {
+                self.demands(&[])
+                    .groups
+                    .into_iter()
+                    .filter(|demand| matches!(self.departure(&demand.id), CellDeparture::Live))
+                    .map(|demand| demand.id)
+                    .collect()
+            }
+        }
+        let mut grid = arrival_input_grid();
+        let area = Rect::new(0, 0, 80, 21);
+        for millis in (0..=192).step_by(8) {
+            draw::draw_tile_grid(
+                &mut Buffer::empty(area),
+                &mut grid,
+                area,
+                redistribute(4),
+                TileGridContents::Shown,
+                &EndedWaiter(ArrivalInputCells { count: 5 }),
+            );
+            assert!(
+                !grid
+                    .painted_placements
+                    .iter()
+                    .any(|p| p.content == TileContent::Group(5)),
+                "ended waiter published at {millis}ms"
+            );
+            grid.elapse_for_test(Duration::from_millis(FRAME_POLL_MILLIS));
+            grid.tick();
+        }
+    }
+
+    struct EndingArrivalCells {
+        live:    ArrivalInputCells,
+        end:     TestCommandState,
+        vacated: bool,
+        started: Instant,
+    }
+    impl TileCells<u32> for EndingArrivalCells {
+        fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+            test_admission(*id, !matches!(self.departure(id), CellDeparture::Live))
+        }
+        fn summary_title(&self) -> &'static str { "commands" }
+        fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            let mut demands = self.live.demands(widths);
+            for demand in &mut demands.groups {
+                demand.rows = 12;
+            }
+            demands.groups.retain(|group| {
+                !(self.end == TestCommandState::Ended && group.id == 5
+                    || self.vacated && group.id == 3)
+            });
+            demands
+        }
+
+        fn first_content_rows(&self, _: &TileContent<u32>) -> u16 { 3 }
+        fn rows_drawn(&self, _: &TileContent<u32>, area: Rect) -> u16 { area.height.min(12) }
+        fn draw(&self, buffer: &mut Buffer, _: &TileContent<u32>, area: Rect, _: Color) {
+            for y in area.top()..area.bottom().min(area.top() + 12) {
+                buffer[(area.x, y)]
+                    .set_symbol("x")
+                    .set_fg(Color::Rgb(255, 255, 255));
+            }
+        }
+
+        fn departure(&self, id: &u32) -> CellDeparture {
+            match (*id, self.vacated, self.end) {
+                (3, true, _) => CellDeparture::Immediate,
+                (5, _, TestCommandState::Ended) => CellDeparture::Fading(EndedCellDeparture::new(
+                    self.started,
+                    CellLifecycleTiming::new(Duration::from_millis(288)),
+                )),
+                _ => CellDeparture::Live,
+            }
+        }
+
+        fn required_commands(&self) -> Vec<u32> {
+            self.demands(&[])
+                .groups
+                .into_iter()
+                .filter(|demand| matches!(self.departure(&demand.id), CellDeparture::Live))
+                .map(|demand| demand.id)
+                .collect()
+        }
+    }
+
+    /// Ending during entry freezes its ink ceiling even across later moves.
+    #[test]
+    fn an_ended_free_arrival_never_refades_or_snaps_after_a_move() {
+        let area = Rect::new(0, 0, 80, 48);
+        let mut grid = arrival_input_grid();
+        let mut ink = Vec::new();
+        let mut positions = Vec::new();
+        let started = Instant::now() + Duration::from_secs(60);
+        for millis in (0..=304).step_by(8) {
+            let cells = EndingArrivalCells {
+                live: ArrivalInputCells { count: 5 },
+                end: TestCommandState::from(millis >= 2 * FRAME_POLL_MILLIS),
+                vacated: millis >= 32,
+                started,
+            };
+            // A vacated cell may retain the published columns. Move the
+            // viewport explicitly to exercise relocation with frozen end ink.
+            let area = Rect {
+                x: if millis >= 32 { 2 } else { 0 },
+                ..area
+            };
+            let mut buffer = Buffer::empty(area);
+            draw::draw_tile_grid(
+                &mut buffer,
+                &mut grid,
+                area,
+                redistribute(4),
+                TileGridContents::Shown,
+                &cells,
+            );
+            if let Some(piece) = grid
+                .painted_placements
+                .iter()
+                .find(|piece| piece.content == TileContent::Group(5))
+            {
+                let body = draw::content_area(frame_inner(piece.frame.clip()));
+                let (r, g, b) = match buffer[(body.x, body.y)].fg {
+                    Color::Rgb(r, g, b) => Some((r, g, b)),
+                    _ => None,
+                }
+                .expect("painted departure has RGB ink");
+                if millis >= 2 * FRAME_POLL_MILLIS {
+                    ink.push(u16::from(r) + u16::from(g) + u16::from(b));
+                    positions.push((piece.frame.clip().x, piece.frame.clip().y));
+                    assert!(
+                        ink.windows(2).all(|pair| pair[0] >= pair[1]),
+                        "ended ink rises at {millis}ms: {ink:?}"
+                    );
+                }
+            }
+            grid.elapse_for_test(Duration::from_millis(FRAME_POLL_MILLIS));
+            grid.tick();
+        }
+        assert!(
+            positions.windows(2).any(|pair| pair[0] != pair[1]),
+            "exercise a move"
+        );
+    }
+
+    /// Counts alone cannot admit a cell before its provider proves drawable content.
+    #[test]
+    fn unmeasured_demands_wait_for_a_drawable_allocation() {
+        let mut grid = seeded_grid();
+        grid.sync(&quiet(&[7]), redistribute(4));
+        assert_eq!(grid.drawable_groups(), Vec::<DrawableCell<u32>>::new());
+        assert_eq!(shown(&grid), Vec::<TileContent<u32>>::new());
+        assert!(grid.pending.is_empty());
+
+        let demands = quiet(&[7]);
+        let cells = GeometryCells(&demands);
+        let mut buffer = Buffer::empty(test_area());
+        draw::draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            test_area(),
+            redistribute(4),
+            TileGridContents::Shown,
+            &cells,
+        );
+        grid.settle_for_test();
+        draw::draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            test_area(),
+            redistribute(4),
+            TileGridContents::Shown,
+            &cells,
+        );
+        let placement = grid
+            .placements(test_area(), redistribute(4))
+            .into_iter()
+            .find(|placement| placement.content == TileContent::Group(7))
+            .expect("measured content enters");
+        let body = draw::content_area(frame_inner(placement.frame.rect()));
+        assert!(!body.is_empty());
+        assert_eq!(buffer[(body.x, body.y)].symbol(), "x");
+    }
+
+    /// Admission checks the destination that synchronization will actually claim.
+    #[test]
+    fn admission_measures_the_empty_after_the_last_group() {
+        let growth = redistribute(4);
+        let mut grid = seeded_grid();
+        grid.set_layout(Rect::new(0, 0, 80, 14), growth);
+        grid.demands = busy(&[(1, 1), (2, 2)]);
+        let provider = CompleteBodyCells(grid.demands.clone());
+        // The grid demand includes the readout, while the provider counts only
+        // its body. Admission and the destination must use those same inputs.
+        for demand in &mut grid.demands.groups {
+            demand.rows += usize::from(TILE_ROWS_READOUT_HEIGHT);
+        }
+        let inner = frame_inner(grid.area);
+        grid.admission = grid
+            .demands
+            .groups
+            .iter()
+            .filter_map(|demand| {
+                match DrawableCell::prepare(
+                    AdmissibleCell::new(demand.id, std::iter::empty(), TestLiveInvocation),
+                    demand.rows,
+                    inner.width,
+                    inner.height,
+                    &provider,
+                    &[],
+                ) {
+                    CellAdmission::Waiting => None,
+                    CellAdmission::Drawable(cell) => Some(cell),
+                }
+            })
+            .collect();
+        assert_eq!(grid.admission.len(), 2, "both bodies fit individually");
+        let resident = grid.admission[0].clone();
+        let arrival = grid.admission[1].clone();
+        let original = vec![
+            Slot::Empty(1),
+            Slot::Group(resident.clone()),
+            Slot::Empty(2),
+        ];
+        let wrong = vec![Slot::Group(arrival), Slot::Group(resident), Slot::Empty(2)];
+        assert!(grid.fits(4, growth));
+        assert!(
+            grid.allocations_drawable(&wrong, growth) == AllocationFit::Drawable,
+            "the earlier empty gives a misleading allocation"
+        );
+        let admitted = grid.admitted(&original, vec![1, 2], growth);
+        assert_eq!(
+            admitted.iter().map(|cell| cell.id).collect::<Vec<_>>(),
+            vec![1],
+            "the arriving body cannot draw in its actual destination"
+        );
+        grid.slots = original;
+        let demands = grid.demands.clone();
+        grid.sync_demands(&demands, growth, DemandSync::Independent);
+        assert_eq!(
+            grid.target(),
+            grid.slots,
+            "the refused arrival queues no opening"
+        );
+    }
+
+    /// Hidden withdrawal updates summary geometry throughout an existing backlog.
+    #[test]
+    fn hiding_a_group_remeasures_every_queued_summary_depth() {
+        let growth = redistribute(4);
+        let mut grid = seeded_grid();
+        let mut demands = busy(&[(1, 7), (2, 7), (3, 7)]);
+        demands.summary = summary_demand(36);
+        grid.sync_test_cells(&demands, growth);
+        grid.settle_for_test();
+        demands
+            .groups
+            .extend((4..=7).map(|id| TileDemand { id, rows: 7 }));
+        grid.sync_test_cells(&demands, growth);
+        assert!(grid.pending.len() > 1, "fixture holds a backlog");
+        let expected = grid
+            .pending
+            .iter()
+            .map(|step| {
+                let mut slots = step.slots.to_vec();
+                slots.retain(|slot| !matches!(slot, Slot::Group(cell) if cell.id == 1));
+                let depth = summary_depth(
+                    test_area(),
+                    &cell_wants(&demands, &slots, &grid.settings),
+                    growth,
+                    &grid.settings,
+                );
+                (slots, step.depth, depth)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            expected.iter().any(|(_, before, after)| before != after),
+            "withdrawal changes a queued depth"
+        );
+        grid.withdraw_immediately(&[1]);
+        assert_eq!(grid.pending.len(), expected.len());
+        for (step, (slots, _, depth)) in grid.pending.iter().zip(expected) {
+            assert_eq!(step.slots.0, slots);
+            assert_eq!(step.depth, depth);
+        }
     }
 
     /// Width of the rect the placement tests lay their grids out in.
@@ -6824,13 +13158,13 @@ mod tests {
     /// so the arrangement is all that moves.
     fn quiet<Id: Clone>(ids: &[Id]) -> TileDemands<Id> {
         TileDemands {
-            summary:       0,
+            summary:       SummaryDemand::default(),
             summary_width: 0,
             groups:        ids
                 .iter()
                 .map(|id| TileDemand {
                     id:   id.clone(),
-                    rows: 0,
+                    rows: 1,
                 })
                 .collect(),
         }
@@ -6887,7 +13221,11 @@ mod tests {
             ..TileSettings::default()
         };
         for (count, width) in [(25, 196), (16, 157), (9, 118), (4, 79), (1, 40)] {
-            let area = Rect::new(0, 0, width, u16::MAX);
+            let height = shared_run(
+                u16::try_from(ceil_sqrt(count)).unwrap_or(u16::MAX),
+                settings.min_tile_height,
+            );
+            let area = Rect::new(0, 0, width, height);
             assert!(fits(area, count, growth, &settings), "{count} at {width}");
             assert!(
                 !fits(
@@ -6902,7 +13240,14 @@ mod tests {
                 ),
                 "{count} below the column floor"
             );
-            let layout = match column_layout(count, 1, growth, area, &settings) {
+            let layout = match column_layout(
+                count,
+                1,
+                growth,
+                area,
+                &settings,
+                SummaryDepthPolicy::ViewportBounded,
+            ) {
                 ColumnPlan::Columns(layout) => Some(layout),
                 ColumnPlan::NoAdmissibleColumn => None,
             }
@@ -6988,23 +13333,32 @@ mod tests {
             let mut grid = TileGrid::new();
             grid.set_min_tile_height(floor);
             grid.set_layout(area, growth);
+            let ids = from
+                .iter()
+                .chain(&to)
+                .filter_map(|slot| match slot {
+                    Slot::Group(id) => Some(id.id),
+                    Slot::Empty(_) => None,
+                })
+                .collect::<Vec<_>>();
+            grid.demands = quiet(&ids);
             grid.held = even(from.len() + TABLE_CELL);
             grid.slots = from;
             grid.queue(vec![to]);
             grid
         };
         let opening = moving(
-            vec![Slot::Group(1), Slot::Group(2)],
-            vec![Slot::Group(1), Slot::Group(99), Slot::Group(2)],
+            vec![declared_slot(1), declared_slot(2)],
+            vec![declared_slot(1), declared_slot(99), declared_slot(2)],
         );
         let closing = moving(
-            vec![Slot::Group(1), Slot::Group(99), Slot::Group(2)],
-            vec![Slot::Group(1), Slot::Group(2)],
+            vec![declared_slot(1), declared_slot(99), declared_slot(2)],
+            vec![declared_slot(1), declared_slot(2)],
         );
 
         for (label, grid) in [("opening", opening), ("closing", closing)] {
             for raw in motion_steps() {
-                let drawing = grid.drawing_at(area, growth, raw);
+                let drawing = grid.layout_at(area, growth, raw);
                 for resident in [
                     TileContent::Summary,
                     TileContent::Group(1),
@@ -7023,7 +13377,11 @@ mod tests {
                     let rect = pieces[0].placement.frame.clip();
                     assert!(
                         rect.height >= floor,
-                        "{label} at {raw} draws {resident:?} under the floor: {rect:?}"
+                        "{label} at {raw} draws {resident:?} under the floor: {rect:?}; pieces={:?}",
+                        drawing
+                            .placements()
+                            .map(|piece| (&piece.content, piece.frame.clip()))
+                            .collect::<Vec<_>>()
                     );
                 }
             }
@@ -7036,10 +13394,10 @@ mod tests {
         let area = Rect::new(0, 0, 80, 21);
         let growth = widening(3);
         let slots = vec![
-            Slot::Group(1),
-            Slot::Group(2),
-            Slot::Group(3),
-            Slot::Group(4),
+            declared_slot(1),
+            declared_slot(2),
+            declared_slot(3),
+            declared_slot(4),
         ];
         let before = HeldCellLayout {
             rows:          row_demands(&[11, 6, 6, 6, 6]),
@@ -7068,7 +13426,7 @@ mod tests {
         });
 
         for raw in motion_steps().chain([PROGRESS_SCALE / 2]) {
-            let drawing = grid.drawing_at(area, growth, raw);
+            let drawing = grid.layout_at(area, growth, raw);
             for piece in &drawing.pieces {
                 assert!(
                     piece.placement.frame.clip().height >= floor,
@@ -7126,11 +13484,14 @@ mod tests {
     }
 
     impl crate::TileCells<u32> for ViewProbeCells {
+        fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+            test_admission(*id, !matches!(self.departure(id), CellDeparture::Live))
+        }
         fn summary_title(&self) -> &'static str { "summary" }
 
         fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
             TileDemands {
-                summary:       self.summary_demand,
+                summary:       summary_demand(self.summary_demand),
                 summary_width: 0,
                 groups:        vec![TileDemand {
                     id:   1,
@@ -7155,6 +13516,9 @@ mod tests {
     }
 
     impl crate::TileCells<u32> for SameFrameSummaryCells {
+        fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+            test_admission(*id, !matches!(self.departure(id), CellDeparture::Live))
+        }
         fn summary_title(&self) -> &'static str { "summary" }
 
         fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
@@ -7168,9 +13532,9 @@ mod tests {
                 self.alone_rows
             };
             TileDemands {
-                summary,
+                summary:       summary_demand(summary),
                 summary_width: 0,
-                groups: (1..=5).map(|id| TileDemand { id, rows: 1 }).collect(),
+                groups:        (1..=5).map(|id| TileDemand { id, rows: 1 }).collect(),
             }
         }
 
@@ -7190,6 +13554,9 @@ mod tests {
     struct WidthDependentSummaryCells;
 
     impl crate::TileCells<u32> for WidthDependentSummaryCells {
+        fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+            test_admission(*id, !matches!(self.departure(id), CellDeparture::Live))
+        }
         fn summary_title(&self) -> &'static str { "summary" }
 
         fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
@@ -7198,11 +13565,11 @@ mod tests {
                 .find_map(|(content, width)| (*content == TileContent::Summary).then_some(*width))
                 .unwrap_or_default();
             TileDemands {
-                summary:       if summary_width < TEST_TILE_WIDTH {
+                summary:       summary_demand(if summary_width < TEST_TILE_WIDTH {
                     30
                 } else {
                     5
-                },
+                }),
                 summary_width: 0,
                 groups:        (1..=5).map(|id| TileDemand { id, rows: 1 }).collect(),
             }
@@ -7279,7 +13646,7 @@ mod tests {
         let growth = redistribute(4);
         let mut grid = seeded_grid();
         grid.set_min_tile_width(TEST_TILE_WIDTH);
-        grid.sync(&quiet(&[7]), growth);
+        grid.sync_test_cells(&quiet(&[7]), growth);
         grid.settle_for_test();
         grid.focus_cell(TABLE_CELL + 1);
         let held_focus = grid.focus.clone();
@@ -7300,7 +13667,7 @@ mod tests {
         let growth = redistribute(4);
         let mut grid = seeded_grid();
         grid.set_min_tile_width(TEST_TILE_WIDTH);
-        grid.sync(&quiet(&[7]), growth);
+        grid.sync_test_cells(&quiet(&[7]), growth);
         grid.settle_for_test();
         grid.focus_cell(TABLE_CELL + 1);
         let held_focus = grid.focus.clone();
@@ -7312,7 +13679,7 @@ mod tests {
 
         grid.set_layout(Rect::new(0, 0, TEST_WIDTH, TEST_HEIGHT), growth);
         let focused = grid
-            .drawing_at(
+            .layout_at(
                 Rect::new(0, 0, TEST_WIDTH, TEST_HEIGHT),
                 growth,
                 PROGRESS_SCALE,
@@ -7405,7 +13772,7 @@ mod tests {
         for (growth, span) in [(redistribute(3), 1), (widening(3), 2)] {
             let mut grid = TileGrid::new();
             grid.set_layout(test_area(), growth);
-            grid.sync(&wide_summary(&[1, 2, 3], u16::MAX), growth);
+            grid.sync_test_cells(&wide_summary(&[1, 2, 3], u16::MAX), growth);
             grid.settle_for_test();
             assert_eq!(grid.held.summary_span, span, "{growth:?}");
             let width = grid.content_widths(test_area(), growth)[0].1;
@@ -7425,7 +13792,7 @@ mod tests {
         let growth = widening(3);
         let mut grid = TileGrid::new();
         grid.set_layout(test_area(), growth);
-        grid.sync(&wide_summary(&[1, 2, 3], u16::MAX), growth);
+        grid.sync_test_cells(&wide_summary(&[1, 2, 3], u16::MAX), growth);
         grid.settle_for_test();
         grid.focus_cell(TABLE_CELL + 2);
         grid.apply(TileAction::FocusUp, growth);
@@ -7433,10 +13800,10 @@ mod tests {
         grid.apply(TileAction::FocusRight, growth);
         assert_eq!(grid.focus, Focus::Summary, "nothing stands right of it");
         grid.apply(TileAction::FocusDown, growth);
-        assert_eq!(grid.focus, Focus::Cell(Slot::Group(1)));
+        assert_eq!(grid.focus, declared_focus(1));
         grid.focus_cell(TABLE_CELL + 3);
         grid.apply(TileAction::FocusLeft, growth);
-        assert_eq!(grid.focus, Focus::Cell(Slot::Group(1)));
+        assert_eq!(grid.focus, declared_focus(1));
     }
 
     /// Rows per column for every count up to `count`, so a walk through
@@ -7686,7 +14053,7 @@ mod tests {
     /// which cells are busy and which are idle.
     fn busy(groups: &[(u32, usize)]) -> TileDemands<u32> {
         TileDemands {
-            summary:       0,
+            summary:       SummaryDemand::default(),
             summary_width: 0,
             groups:        groups
                 .iter()
@@ -7909,6 +14276,73 @@ mod tests {
     }
 
     #[test]
+    fn a_summarys_saturation_search_keeps_its_required_floor() {
+        for (summary, minimum) in [(4, 3), (12, 5)] {
+            let wants = row_demands(&[summary, 30]);
+            let mut summary_probes = Vec::new();
+            let shares = shares_with_directional_row_usage(
+                &wants,
+                40,
+                ColumnHead::Summary(1),
+                ColumnFocus::Outside,
+                6,
+                &mut |index, rows: u16, _| {
+                    if index == 0 {
+                        summary_probes.push(rows);
+                        rows.saturating_sub(summary.saturating_sub(1))
+                    } else {
+                        0
+                    }
+                },
+            );
+            assert!(
+                summary_probes.iter().all(|rows| *rows >= minimum),
+                "summary {summary} probes below its required floor {minimum}: {summary_probes:?}"
+            );
+            assert_eq!(shares[0], PaneAxisSize::Fixed(summary - 1));
+        }
+    }
+
+    #[test]
+    fn a_saturation_cap_keeps_the_last_cells_readable_floor() {
+        let mut shares = [12, 6];
+        let mut unused = |index, rows: u16, _| rows.saturating_sub(if index == 0 { 5 } else { 1 });
+        let mut readings = ColumnRowUse::new(shares.len(), &mut unused);
+        cap_saturated_allocations(&mut shares, &[5, 6], 30, &mut readings);
+        assert!(
+            shares[1] >= 6,
+            "a saturated last cell keeps its readable allocation: {shares:?}"
+        );
+    }
+
+    #[test]
+    fn a_saturated_cells_surplus_reaches_content_that_can_grow() {
+        let wants = row_demands(&[40, 16]);
+        let mut unused =
+            |index, rows: u16, _| rows.saturating_sub(if index == 0 { rows.min(4) } else { rows });
+        let shares = shares_with_directional_row_usage(
+            &wants,
+            30,
+            ColumnHead::Cell,
+            ColumnFocus::Outside,
+            MIN_TILE_HEIGHT,
+            &mut unused,
+        );
+        let heights = shares
+            .into_iter()
+            .map(|share| match share {
+                PaneAxisSize::Fixed(rows) => rows,
+                PaneAxisSize::Fill(_) => 0,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            heights.iter().sum::<u16>(),
+            30,
+            "available height belongs to the cell that can draw more: {heights:?}"
+        );
+    }
+
+    #[test]
     fn a_donor_whose_row_use_jumps_as_it_shrinks_keeps_its_used_content() {
         let exact = [32, 8, 7, 10];
         let minimum = [5, 5, 5, 6];
@@ -8023,7 +14457,7 @@ mod tests {
     fn an_exact_demand_change_redivides_without_motion() {
         let growth = add_new(3);
         let demands = |small| TileDemands {
-            summary:       small,
+            summary:       summary_demand(small),
             summary_width: 0,
             groups:        vec![
                 TileDemand { id: 1, rows: 100 },
@@ -8032,14 +14466,14 @@ mod tests {
         };
         let mut grid = TileGrid::new();
         grid.set_layout(test_area(), growth);
-        grid.sync(&demands(1), growth);
+        grid.sync_test_cells(&demands(1), growth);
         grid.settle_for_test();
         let before = Grid::new(test_area(), &grid.held, growth, &grid.settings)
             .cell(TABLE_CELL)
             .expect("the summary is placed")
             .height;
 
-        grid.sync(&demands(2), growth);
+        grid.sync_test_cells(&demands(2), growth);
 
         assert!(matches!(grid.motion, GridMotion::Settled));
         let after = Grid::new(test_area(), &grid.held, growth, &grid.settings)
@@ -8053,7 +14487,7 @@ mod tests {
     fn a_shrinking_cell_updates_its_exact_demand_across_a_step_boundary() {
         let growth = add_new(3);
         let demands = |last| TileDemands {
-            summary:       1,
+            summary:       summary_demand(1),
             summary_width: 0,
             groups:        vec![
                 TileDemand { id: 1, rows: 100 },
@@ -8065,7 +14499,7 @@ mod tests {
         };
         let mut grid = TileGrid::new();
         grid.set_layout(test_area(), growth);
-        grid.sync(&demands(4), growth);
+        grid.sync_test_cells(&demands(4), growth);
         grid.settle_for_test();
         let heights = |grid: &TileGrid<u32>| {
             let resolved = Grid::new(test_area(), &grid.held, growth, &grid.settings);
@@ -8080,7 +14514,7 @@ mod tests {
         };
 
         assert_eq!(heights(&grid), vec![3, 33, 6]);
-        grid.sync(&demands(3), growth);
+        grid.sync_test_cells(&demands(3), growth);
         grid.settle_for_test();
 
         assert_eq!(heights(&grid), vec![3, 34, 5]);
@@ -8190,7 +14624,7 @@ mod tests {
     #[test]
     fn a_cell_keeps_what_it_grew_to_while_nothing_encroaches() {
         let mut grid = seeded_grid();
-        grid.sync(&busy(&[(7, usize::from(TEST_HEIGHT))]), redistribute(4));
+        grid.sync_test_cells(&busy(&[(7, usize::from(TEST_HEIGHT))]), redistribute(4));
         grid.settle_for_test();
         let grown: Vec<u16> = grid
             .held
@@ -8199,7 +14633,7 @@ mod tests {
             .map(|demand| demand.stepped_framed())
             .collect();
 
-        grid.sync(&quiet(&[7]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7]), redistribute(4));
         grid.settle_for_test();
 
         assert_eq!(
@@ -8218,14 +14652,14 @@ mod tests {
     #[test]
     fn a_cell_hands_its_room_back_once_another_encroaches() {
         let mut grid = seeded_grid();
-        grid.sync(&busy(&[(7, usize::from(TEST_HEIGHT))]), redistribute(4));
+        grid.sync_test_cells(&busy(&[(7, usize::from(TEST_HEIGHT))]), redistribute(4));
         grid.settle_for_test();
-        grid.sync(&quiet(&[7]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7]), redistribute(4));
         grid.settle_for_test();
         let grown = grid.held.clone();
 
-        grid.sync(
-            &busy(&[(7, 0), (8, usize::from(TEST_HEIGHT))]),
+        grid.sync_test_cells(
+            &busy(&[(7, 1), (8, usize::from(TEST_HEIGHT))]),
             redistribute(4),
         );
         grid.settle_for_test();
@@ -8236,7 +14670,7 @@ mod tests {
         );
         assert_eq!(
             grid.held.rows[1].stepped_framed(),
-            demanded_rows(0),
+            demanded_rows(1),
             "and the cell that had grown is back to what it is showing"
         );
     }
@@ -8247,14 +14681,14 @@ mod tests {
     #[test]
     fn a_column_re_dividing_travels_the_way_a_cell_moving_does() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7]), redistribute(4));
         grid.settle_for_test();
         assert!(
             matches!(grid.motion, GridMotion::Settled),
             "the arrangement has settled"
         );
 
-        grid.sync(&busy(&[(7, usize::from(TEST_HEIGHT))]), redistribute(4));
+        grid.sync_test_cells(&busy(&[(7, usize::from(TEST_HEIGHT))]), redistribute(4));
 
         let transition = match &grid.motion {
             GridMotion::Moving(transition) => Some(transition),
@@ -8358,7 +14792,7 @@ mod tests {
         let mut grid = TileGrid::new();
         grid.set_min_tile_width(TEST_TILE_WIDTH);
         grid.set_layout(wide_area, growth);
-        grid.sync(&quiet(&[1, 2, 3, 4, 5, 6]), growth);
+        grid.sync_test_cells(&quiet(&[1, 2, 3, 4, 5, 6]), growth);
         grid.settle_for_test();
         assert_eq!(grid.drawing(wide_area, growth).column_bands.len(), 3);
         assert_eq!(grid.drawing(narrow_area, growth).column_bands, Vec::new());
@@ -8395,7 +14829,7 @@ mod tests {
         let before = (1..=15).collect::<Vec<_>>();
         let after = (1..=16).collect::<Vec<_>>();
         let grid = synced_motion(&before, &after, growth);
-        let drawing = grid.drawing_at(area, growth, PROGRESS_SCALE / 2);
+        let drawing = grid.layout_at(area, growth, PROGRESS_SCALE / 2);
         let pieces = drawing
             .placements()
             .filter(|placement| placement.content == TileContent::Group(4))
@@ -8431,6 +14865,20 @@ mod tests {
         );
     }
 
+    /// Geometry fixtures measure drawable content before testing piece placement.
+    fn drawable_test_content<Id: Clone + Eq + Debug>(
+        content: TileContent<Id>,
+    ) -> TileContent<DrawableCell<Id>> {
+        match content {
+            TileContent::Summary => TileContent::Summary,
+            TileContent::Empty(number) => TileContent::Empty(number),
+            TileContent::Group(id) => {
+                let demands = quiet(&[id]);
+                TileContent::Group(seeded_grid().measured_test_groups(&demands).remove(0))
+            },
+        }
+    }
+
     /// One cell as the wrapping tests draw it; nothing about the motion
     /// depends on what it holds.
     fn drawn() -> CellAppearance<u32> {
@@ -8455,6 +14903,7 @@ mod tests {
         let mut pieces = Vec::new();
         moving_cell(before, after, transition, progress, drawn, &mut pieces);
         place_band_pieces(before, after, &bands, pieces, &HeightSnap::Off)
+            .expect("band capacity")
             .into_iter()
             .map(|piece| piece.placement)
             .collect()
@@ -8504,7 +14953,8 @@ mod tests {
             drawn(),
             &mut pieces,
         );
-        let placed = place_band_pieces(&before, &after, &bands, pieces, &HeightSnap::Off);
+        let placed = place_band_pieces(&before, &after, &bands, pieces, &HeightSnap::Off)
+            .expect("band capacity");
 
         let column = |placement: &TilePlacement<u32>| {
             let rect = placement.frame.rect();
@@ -8603,6 +15053,7 @@ mod tests {
             &mut pieces,
         );
         let closed = place_band_pieces(&before, &after, &bands, pieces, &HeightSnap::Off)
+            .expect("band capacity")
             .last()
             .map(|piece| piece.placement.frame.clip())
             .unwrap_or_default();
@@ -8625,6 +15076,653 @@ mod tests {
         grid
     }
 
+    /// Every small ordered packing agrees with exhaustive divider placement.
+    #[test]
+    fn required_minima_agree_with_every_small_ordered_packing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        fn exhaustive(heights: &[u16], columns: u16, available: u16, occupied: u16) -> bool {
+            if columns == 0 {
+                return heights.is_empty();
+            }
+            let mut used = occupied;
+            for end in 0..=heights.len() {
+                if used > available {
+                    break;
+                }
+                if exhaustive(&heights[end..], columns - 1, available, 0) {
+                    return true;
+                }
+                if let Some(height) = heights.get(end) {
+                    used += height - 1;
+                }
+            }
+            false
+        }
+        let mut grid = TileGrid::<u32>::new();
+        grid.settings.min_tile_width = 8;
+        grid.settings.min_tile_height = 4;
+        grid.set_layout(test_area(), redistribute(4));
+        let mut cells = grid.measured_test_groups(&quiet(&[0, 1, 2, 3, 4, 5]));
+        for count in 0..=6 {
+            for case in 0..3_usize.pow(u32::try_from(count)?) {
+                let mut digits = case;
+                let heights = cells[..count]
+                    .iter_mut()
+                    .map(|cell| {
+                        let height = grid.settings.min_tile_height + u16::try_from(digits % 3)?;
+                        digits /= 3;
+                        cell.first_height =
+                            NonZeroU16::new(height).ok_or("nonzero fixture height")?;
+                        Ok::<_, Box<dyn std::error::Error>>(height)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let cell_references = cells[..count].iter().collect::<Vec<_>>();
+                for columns in 1..=3 {
+                    for height in grid.settings.min_tile_height..=grid.settings.min_tile_height * 3
+                    {
+                        let area = Rect::new(
+                            0,
+                            0,
+                            columns * grid.settings.min_tile_width.saturating_sub(1) + 1,
+                            height,
+                        );
+                        let fits = RequiredMinima {
+                            grid:    &grid,
+                            cells:   &cell_references,
+                            summary: NonZeroU16::new(grid.settings.min_tile_height)
+                                .ok_or("nonzero summary height")?,
+                        }
+                        .check(area, ColumnLimit::from(columns))
+                        .is_ok();
+                        let exact = exhaustive(
+                            &heights,
+                            columns,
+                            height - 1,
+                            grid.settings.min_tile_height - 1,
+                        );
+                        assert_eq!(fits, exact, "{heights:?}, {columns} columns, {height} rows");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn listed_family_members_reserve_one_row_for_each_painted_invocation() {
+        let mut grid = TileGrid::<u32>::new();
+        grid.set_min_tile_height(3);
+        grid.set_layout(Rect::new(0, 0, 80, 24), redistribute(4));
+        let mut demands = busy(&[(1, 2)]);
+        demands.summary = SummaryDemand::new(1, [1, 1]);
+        let mut admitted = grid.measured_test_groups(&demands);
+        admitted[0].continuity = CellContinuity::Running;
+        grid.admission = admitted;
+        grid.demands = demands.clone();
+        let reserved = grid.admission_room(&[]).summary_minimum.get();
+        assert_eq!(
+            usize::from(reserved),
+            demands.summary.required() + usize::from(TILE_BORDER_ROWS),
+            "both invocations of one Listed family need a painted summary row"
+        );
+    }
+
+    #[test]
+    fn a_capacity_fallback_keeps_a_fading_departures_column_span() {
+        struct Cells {
+            ended: Option<Instant>,
+        }
+        impl TileCells<u32> for Cells {
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+                test_admission(*id, *id == 3 && self.ended.is_some())
+            }
+            fn summary_title(&self) -> &'static str { "commands" }
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                busy(&[(1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1)])
+            }
+
+            fn draw(&self, buffer: &mut Buffer, _: &TileContent<u32>, area: Rect, _: Color) {
+                if !area.is_empty() {
+                    buffer[(area.x, area.y)].set_symbol("x");
+                }
+            }
+
+            fn departure(&self, id: &u32) -> CellDeparture {
+                self.ended
+                    .filter(|_| *id == 3)
+                    .map(|started| {
+                        EndedCellDeparture::new(
+                            started,
+                            CellLifecycleTiming::new(Duration::from_secs(1)),
+                        )
+                    })
+                    .map_or_else(|| CellDeparture::Live, CellDeparture::Fading)
+            }
+
+            fn required_commands(&self) -> Vec<u32> {
+                self.demands(&[])
+                    .groups
+                    .into_iter()
+                    .filter(|demand| matches!(self.departure(&demand.id), CellDeparture::Live))
+                    .map(|demand| demand.id)
+                    .collect()
+            }
+        }
+        let mut grid = seeded_grid();
+        grid.set_min_tile_width(40);
+        grid.set_min_tile_height(6);
+        grid.set_motion_elapsed_for_test(Duration::ZERO);
+        let mut cells = Cells { ended: None };
+        let paint = |grid: &mut TileGrid<u32>, cells: &Cells, height| {
+            let area = Rect::new(0, 0, 120, height);
+            draw::draw_tile_grid(
+                &mut Buffer::empty(area),
+                grid,
+                area,
+                redistribute(4),
+                TileGridContents::Shown,
+                cells,
+            );
+        };
+        paint(&mut grid, &cells, 24);
+        grid.settle_for_test();
+        paint(&mut grid, &cells, 24);
+        let before = grid
+            .painted_placements
+            .iter()
+            .find(|piece| piece.content == TileContent::Group(3))
+            .expect("the live cell reached paint")
+            .frame
+            .clip();
+        cells.ended = Some(Instant::now() + Duration::from_secs(60));
+        paint(&mut grid, &cells, 24);
+        for height in [16, 17, 18] {
+            paint(&mut grid, &cells, height);
+            let after = grid
+                .painted_placements
+                .iter()
+                .find(|piece| piece.content == TileContent::Group(3))
+                .expect("the departure still has room beside the live cells")
+                .frame
+                .clip();
+            assert_eq!(
+                (after.x, after.width),
+                (before.x, before.width),
+                "a fading departure keeps its painted column span during a capacity fallback"
+            );
+            grid.elapse_for_test(Duration::from_millis(FRAME_POLL_MILLIS));
+        }
+    }
+
+    #[test]
+    fn a_capacity_withdrawal_completes_the_departure_receipt() {
+        struct Cells {
+            live:    TestCommandState,
+            started: Instant,
+            receipt: CellDepartureReceipt,
+        }
+        impl TileCells<u32> for Cells {
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+                test_admission(*id, self.live == TestCommandState::Ended)
+            }
+
+            fn summary_title(&self) -> &'static str { "summary" }
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                if self.live == TestCommandState::Live {
+                    busy(&[(1, 1)])
+                } else {
+                    busy(&[])
+                }
+            }
+
+            fn draw(&self, buffer: &mut Buffer, _: &TileContent<u32>, area: Rect, _: Color) {
+                if !area.is_empty() {
+                    buffer[(area.x, area.y)].set_symbol("x");
+                }
+            }
+
+            fn departure(&self, _: &u32) -> CellDeparture {
+                match self.live {
+                    TestCommandState::Live => CellDeparture::Live,
+                    TestCommandState::Ended => CellDeparture::Fading(
+                        EndedCellDeparture::new(
+                            self.started,
+                            CellLifecycleTiming::new(Duration::from_secs(30)),
+                        )
+                        .with_receipt(self.receipt.clone()),
+                    ),
+                }
+            }
+
+            fn required_commands(&self) -> Vec<u32> {
+                self.demands(&[])
+                    .groups
+                    .into_iter()
+                    .filter(|demand| matches!(self.departure(&demand.id), CellDeparture::Live))
+                    .map(|demand| demand.id)
+                    .collect()
+            }
+        }
+        let mut cells = Cells {
+            live:    TestCommandState::Live,
+            started: Instant::now() + Duration::from_secs(60),
+            receipt: draw::CellDepartureReceipt::default(),
+        };
+        let mut grid = seeded_grid();
+        let paint = |grid: &mut TileGrid<u32>, cells: &Cells, height| {
+            let area = Rect::new(0, 0, 40, height);
+            let mut buffer = Buffer::empty(area);
+            draw::draw_tile_grid(
+                &mut buffer,
+                grid,
+                area,
+                redistribute(4),
+                draw::TileGridContents::Shown,
+                cells,
+            );
+        };
+        paint(&mut grid, &cells, 16);
+        grid.settle_for_test();
+        paint(&mut grid, &cells, 16);
+        assert!(
+            grid.drawable_groups()
+                .iter()
+                .any(DrawableCell::has_drawn_body),
+            "the live body reached paint"
+        );
+        cells.live = TestCommandState::Ended;
+        paint(&mut grid, &cells, 16);
+        assert!(
+            grid.drawable_groups()
+                .iter()
+                .any(DrawableCell::owns_visible_departure),
+            "the painted body owns its departure"
+        );
+        assert!(!cells.receipt.is_complete(), "the fade is still active");
+        paint(&mut grid, &cells, 3);
+        assert!(
+            cells.receipt.is_complete(),
+            "capacity withdrawal completes its receipt"
+        );
+    }
+
+    #[test]
+    fn a_new_required_body_can_take_an_optional_ancestry_row() -> Result<(), &'static str> {
+        struct Cells;
+        impl TileCells<u32> for Cells {
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+                test_admission(*id, false)
+            }
+            fn summary_title(&self) -> &'static str { "summary" }
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> { busy(&[(1, 4)]) }
+            fn first_content_rows(&self, _: &TileContent<u32>) -> u16 { 3 }
+            fn first_content_rows_at(&self, _: &TileContent<u32>, _: Rect) -> u16 { 3 }
+            fn content_prefix_rows_at(&self, _: &TileContent<u32>, area: Rect) -> u16 {
+                u16::from(area.height >= 4)
+            }
+            fn rows_drawn(&self, _: &TileContent<u32>, area: Rect) -> u16 { area.height.min(4) }
+            fn draw(&self, buffer: &mut Buffer, _: &TileContent<u32>, area: Rect, _: Color) {
+                for y in area.y..area.bottom() {
+                    buffer[(area.x, y)].set_symbol("x");
+                }
+            }
+        }
+        let area = Rect::new(0, 0, 40, 14);
+        let mut grid = seeded_grid();
+        grid.settings.min_tile_width = 40;
+        grid.settings.min_tile_height = 6;
+        let cells = Cells;
+        for _ in 0..2 {
+            let mut buffer = Buffer::empty(area);
+            draw::draw_tile_grid(
+                &mut buffer,
+                &mut grid,
+                area,
+                redistribute(4),
+                draw::TileGridContents::Shown,
+                &cells,
+            );
+            grid.settle_for_test();
+        }
+        let existing = grid
+            .drawable_groups()
+            .into_iter()
+            .next()
+            .ok_or("painted cell")?;
+        assert_eq!(
+            existing.painted_prefix_rows(),
+            1,
+            "the ancestor reached paint"
+        );
+        grid.current_cell_capacities = vec![CurrentCellCapacity::Drawable(existing)];
+        let next = grid.measured_test_groups(&busy(&[(2, 3)]));
+        grid.candidate_measurements = CandidateMeasurements::LayoutOnly;
+        let required = [grid.current_cell_capacities[0].cell(), &next[0]];
+        assert!(
+            RequiredMinima {
+                grid:    &grid,
+                cells:   &required,
+                summary: NonZeroU16::new(4).ok_or("summary minimum")?,
+            }
+            .check(area, ColumnLimit::from(1))
+            .is_ok(),
+            "both required bodies fit"
+        );
+        let outcome = grid.allocate_waiter(
+            area,
+            &next[0],
+            FreeAllocationRoom {
+                summary: AdmissionRoom {
+                    summary_minimum: NonZeroU16::new(4).ok_or("summary minimum")?,
+                },
+                columns: ColumnLimit::from(1),
+            },
+        );
+        let WaitingAdmissions::Placed(drawing) = outcome else {
+            return Err("both required bodies must receive an allocation");
+        };
+        assert_eq!(
+            grid.current_cell_capacities.len(),
+            2,
+            "both cells stay owned"
+        );
+        for id in [1, 2] {
+            let frame = drawing
+                .pieces
+                .iter()
+                .find(|piece| piece.placement.content == TileContent::Group(id))
+                .ok_or("required cell allocation")?
+                .placement
+                .frame
+                .rect();
+            assert_eq!(frame.height, 6, "only the optional ancestor yields");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shared_rows_keep_the_oldest_painted_prefixes() -> Result<(), &'static str> {
+        struct Cells;
+        impl TileCells<u32> for Cells {
+            fn admission(&self, id: &u32) -> Result<AdmissibleCell<u32>, NotAdmissible<u32>> {
+                test_admission(*id, false)
+            }
+            fn summary_title(&self) -> &'static str { "summary" }
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                busy(&[(1, 4), (2, 4), (3, 4)])
+            }
+            fn first_content_rows(&self, _: &TileContent<u32>) -> u16 { 3 }
+            fn first_content_rows_at(&self, _: &TileContent<u32>, _: Rect) -> u16 { 3 }
+            fn content_prefix_rows_at(&self, _: &TileContent<u32>, area: Rect) -> u16 {
+                u16::from(area.height >= 4)
+            }
+            fn rows_drawn(&self, _: &TileContent<u32>, area: Rect) -> u16 { area.height.min(4) }
+            fn draw(&self, buffer: &mut Buffer, _: &TileContent<u32>, area: Rect, _: Color) {
+                for y in area.y..area.bottom() {
+                    buffer[(area.x, y)].set_symbol("x");
+                }
+            }
+        }
+        let mut grid = seeded_grid();
+        grid.settings.min_tile_width = 40;
+        grid.settings.min_tile_height = 6;
+        let provider = Cells;
+        let painted = Rect::new(0, 0, 40, 28);
+        for _ in 0..2 {
+            let mut buffer = Buffer::empty(painted);
+            draw::draw_tile_grid(
+                &mut buffer,
+                &mut grid,
+                painted,
+                redistribute(4),
+                draw::TileGridContents::Shown,
+                &provider,
+            );
+            grid.settle_for_test();
+        }
+        let cells = grid.drawable_groups();
+        assert_eq!(cells.len(), 3);
+        assert!(cells.iter().all(|cell| cell.painted_prefix_rows() == 1));
+        let cell_references = cells.iter().collect::<Vec<_>>();
+        let area = Rect::new(0, 0, 40, 21);
+        grid.candidate_measurements = CandidateMeasurements::LayoutOnly;
+        let room = AdmissionRoom {
+            summary_minimum: NonZeroU16::new(4).ok_or("summary minimum")?,
+        };
+        let minimum = grid
+            .fit_required_viewport(area, &cell_references, room, ColumnLimit::from(1))
+            .map_err(|_| "required bodies fit")?;
+        let preferred =
+            grid.prefer_optional_rows(minimum, area, &cell_references, room, ColumnLimit::from(1));
+        let required = RequiredCommands {
+            cells:           &cell_references,
+            measurements:    &[],
+            admitted:        &[],
+            summary:         SummaryReservation::Unreserved,
+            summary_minimum: RequiredSummary::Rows(NonZeroU16::new(4).expect("summary minimum")),
+        };
+        let shared = preferred.with_shared_rows(area, &required, &provider, &grid.settings);
+        for (id, height) in [(1, 7), (2, 7), (3, 6)] {
+            let frame = shared
+                .0
+                .pieces
+                .iter()
+                .find(|piece| piece.placement.content == TileContent::Group(id))
+                .ok_or("each body keeps an allocation")?
+                .placement
+                .frame
+                .rect();
+            assert_eq!(frame.height, height, "prefix order for cell {id}");
+        }
+        assert_eq!(
+            shared.free_rows(area, 0).0,
+            0,
+            "all available rows reach a body"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_optional_tall_body_keeps_room_for_a_new_required_body() -> Result<(), &'static str> {
+        let area = Rect::new(0, 0, 40, 16);
+        let mut grid = seeded_grid();
+        grid.set_layout(area, redistribute(4));
+        let demands = busy(&[(1, 30), (2, 1)]);
+        let mut cells = grid.measured_test_groups(&demands);
+        cells[0].preferred_height = NonZeroU16::new(30).expect("optional height");
+        grid.current_cell_capacities = vec![CurrentCellCapacity::Drawable(cells[0].clone())];
+        let outcome = grid.allocate_waiter(
+            area,
+            &cells[1],
+            FreeAllocationRoom {
+                summary: AdmissionRoom {
+                    summary_minimum: NonZeroU16::new(4).expect("summary minimum"),
+                },
+                columns: ColumnLimit::from(1),
+            },
+        );
+        let WaitingAdmissions::Placed(drawing) = outcome else {
+            return Err("optional rows must leave both required bodies room");
+        };
+        assert_eq!(
+            drawing
+                .pieces
+                .iter()
+                .filter(|piece| { matches!(piece.placement.content, TileContent::Group(_)) })
+                .count(),
+            2
+        );
+        assert!(drawing.pieces.iter().all(|piece| {
+            piece.placement.frame.clip().intersection(area) == piece.placement.frame.clip()
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn a_departure_does_not_block_free_rows_for_a_cut_live_body() {
+        let area = Rect::new(0, 0, 80, 48);
+        let demands = TileDemands {
+            summary:       summary_demand(1),
+            summary_width: 0,
+            groups:        vec![TileDemand {
+                id:   1_u32,
+                rows: 12,
+            }],
+        };
+        let provider = GeometryCells(&demands);
+        let grid = seeded_grid();
+        let mut admitted = grid.measured_test_groups(&demands);
+        admitted[0].continuity = CellContinuity::Running;
+        *admitted[0].lifecycle.lock().expect("cell lifecycle") = CellLifecycle::Resident;
+        let live = admitted.iter().collect::<Vec<_>>();
+        let required = RequiredCommands {
+            cells:           &live,
+            measurements:    &[],
+            admitted:        &admitted,
+            summary:         SummaryReservation::Unreserved,
+            summary_minimum: RequiredSummary::Rows(NonZeroU16::new(4).expect("summary minimum")),
+        };
+        let piece = |content, y, height| {
+            TilePiece::for_test(
+                content,
+                PaneFrame::new(Rect::new(0, y, 80, height)),
+                PieceName::Shown,
+            )
+        };
+        let drawing = WholeCellDrawing(TileDrawing {
+            pieces:       vec![
+                piece(TileContent::Summary, 0, 4),
+                piece(TileContent::Group(1), 3, 5),
+                piece(TileContent::Group(2), 7, 3),
+            ],
+            column_bands: vec![],
+        })
+        .with_shared_rows(area, &required, &provider, &grid.settings);
+        let frame = drawing.0.pieces[1].placement.frame.rect();
+        assert!(
+            draw::content_area(frame_inner(frame)).height >= 12,
+            "a live body stays cut while its column has free rows: {frame:?}"
+        );
+        assert!(
+            drawing
+                .0
+                .pieces
+                .iter()
+                .all(|piece| piece.placement.frame.clip().intersection(area)
+                    == piece.placement.frame.clip())
+        );
+    }
+
+    #[test]
+    fn optional_summary_growth_preserves_a_shifted_bodys_viewport() {
+        let area = Rect::new(0, 0, 40, 8);
+        let cells = GeometryCells(&TileDemands {
+            summary:       summary_demand(8),
+            summary_width: 0,
+            groups:        vec![TileDemand {
+                id:   1_u32,
+                rows: 1,
+            }],
+        });
+        let piece = |content, frame| TilePiece::for_test(content, frame, PieceName::Shown);
+        let drawing = WholeCellDrawing(TileDrawing {
+            pieces:       vec![
+                piece(TileContent::Summary, PaneFrame::new(Rect::new(0, 0, 40, 4))),
+                piece(
+                    TileContent::Group(1),
+                    PaneFrame::shifted(Rect::new(0, 3, 40, 4), 1, Rect::new(0, 4, 40, 4)),
+                ),
+            ],
+            column_bands: vec![area],
+        })
+        .with_optional_summary_rows(area, &cells);
+        assert!(
+            drawing
+                .0
+                .pieces
+                .iter()
+                .all(|piece| piece.placement.frame.clip().intersection(area)
+                    == piece.placement.frame.clip())
+        );
+        let mut buffer = Buffer::empty(area);
+        draw::draw_placements(
+            &mut buffer,
+            area,
+            &drawing.0,
+            cells.0,
+            &[(TileContent::Summary, 38), (TileContent::Group(1), 38)],
+            TileGridContents::Shown,
+            &cells,
+        );
+        assert_eq!(buffer[(1, 1)].symbol(), "x", "summary body");
+        assert_eq!(buffer[(1, 5)].symbol(), "x", "shifted command body");
+        assert!(buffer[(0, 7)].symbol() != " ", "whole bottom border");
+    }
+
+    #[test]
+    fn a_command_that_ends_mid_backlog_leaves_the_grid_on_the_next_motion() {
+        let growth = redistribute(4);
+        let demands = |ids: &[u32]| TileDemands {
+            summary:       summary_demand(8),
+            summary_width: 0,
+            groups:        ids.iter().map(|&id| TileDemand { id, rows: 3 }).collect(),
+        };
+        let mut grid = seeded_grid();
+        grid.sync_test_cells(&demands(&[1, 2]), growth);
+        grid.settle_for_test();
+        grid.sync_test_cells(&demands(&[1, 2, 3, 4, 5]), growth);
+        assert!(grid.pending.len() > 1);
+        grid.sync_test_cells(&demands(&[2, 3, 4, 5]), growth);
+        grid.finish_motion_for_test();
+        loop {
+            assert!(!grid.slots.contains(&declared_slot(1)));
+            for raw in [0, PROGRESS_SCALE / 2, PROGRESS_SCALE] {
+                let drawing = grid.layout_at(test_area(), growth, raw);
+                assert!(!drawing.pieces.iter().any(|piece| {
+                    piece.placement.content == TileContent::Group(1)
+                        && draw::has_visible_body_row(piece.placement.frame)
+                }));
+            }
+            if grid.pending.is_empty() {
+                break;
+            }
+            grid.finish_motion_for_test();
+        }
+    }
+
+    #[test]
+    fn a_new_command_joins_the_grid_with_its_first_row() {
+        let mut grid = seeded_grid();
+        let growth = redistribute(4);
+        let mut demands = TileDemands {
+            summary:       summary_demand(3),
+            summary_width: 0,
+            groups:        vec![TileDemand { id: 1, rows: 0 }],
+        };
+        grid.sync_test_cells(&demands, growth);
+        assert_eq!(grid.target(), Vec::new());
+        assert!(grid.pending.is_empty());
+        demands.groups[0].rows = 1;
+        grid.sync_test_cells(&demands, growth);
+        assert_eq!(grid.target(), vec![declared_slot(1)]);
+    }
+
+    #[test]
+    fn a_cell_that_loses_its_last_row_leaves_the_grid() {
+        let mut grid = seeded_grid();
+        let growth = redistribute(4);
+        let mut demands = TileDemands {
+            summary:       summary_demand(3),
+            summary_width: 0,
+            groups:        vec![TileDemand { id: 1, rows: 3 }],
+        };
+        grid.sync_test_cells(&demands, growth);
+        grid.settle_for_test();
+        demands.groups[0].rows = 0;
+        grid.sync_test_cells(&demands, growth);
+        assert_eq!(grid.target(), Vec::new());
+    }
+
     #[test]
     fn every_queued_state_keeps_surviving_cells_in_an_endpoint_column() {
         let growth = redistribute(2);
@@ -8637,26 +15735,26 @@ mod tests {
             (&[1, 99, 2][..], &[1, 2][..], 3, 2),
         ] {
             let demands = |ids: &[u32]| TileDemands {
-                summary:       37,
+                summary:       summary_demand(37),
                 summary_width: 0,
-                groups:        ids.iter().map(|&id| TileDemand { id, rows: 0 }).collect(),
+                groups:        ids.iter().map(|&id| TileDemand { id, rows: 1 }).collect(),
             };
             let mut grid = seeded_grid();
             grid.set_layout(area, growth);
-            grid.sync(&demands(before), growth);
+            grid.sync_test_cells(&demands(before), growth);
             grid.settle_for_test();
             assert_eq!(grid.depth, start_depth);
             let start = grid.slots.clone();
 
-            grid.sync(&demands(after), growth);
+            grid.sync_test_cells(&demands(after), growth);
             let finish = grid.target();
             assert_eq!(grid.target_depth(), final_depth);
             assert_eq!(
                 finish,
-                after.iter().copied().map(Slot::Group).collect::<Vec<_>>()
+                after.iter().copied().map(declared_slot).collect::<Vec<_>>()
             );
             for (slots, depth) in std::iter::once((&grid.slots, grid.depth))
-                .chain(grid.pending.iter().map(|step| (&step.slots, step.depth)))
+                .chain(grid.pending.iter().map(|step| (&step.slots.0, step.depth)))
             {
                 assert!(
                     queued_cells_keep_endpoint_columns(
@@ -8675,6 +15773,7 @@ mod tests {
                         growth,
                         area,
                         &grid.settings,
+                        SummaryDepthPolicy::ViewportBounded
                     ),
                     "{before:?}@{start_depth} -> {after:?}@{final_depth} queued {slots:?}@{depth}"
                 );
@@ -8687,13 +15786,13 @@ mod tests {
         let area = Rect::new(0, 0, 200, 50);
         let growth = TileGrowth::default();
         let demands = TileDemands {
-            summary:       13,
+            summary:       summary_demand(13),
             summary_width: 0,
             groups:        (1..=8).map(|id| TileDemand { id, rows: 13 }).collect(),
         };
         let mut grid = TileGrid::new();
         grid.set_layout(area, growth);
-        grid.sync(&demands, growth);
+        grid.sync_test_cells(&demands, growth);
         grid.settle_for_test();
         assert_eq!(grid.count(), 9);
         assert_eq!(grid.depth, 1);
@@ -8713,12 +15812,12 @@ mod tests {
                 .iter()
                 .filter(|slot| grid.slots.contains(slot))
                 .filter_map(|slot| match slot {
-                    Slot::Group(id) => Some((*id, slot)),
+                    Slot::Group(id) => Some((id.id, slot)),
                     Slot::Empty(_) => None,
                 })
                 .collect::<Vec<_>>();
             for raw in motion_steps() {
-                let drawing = grid.drawing_at(area, growth, raw);
+                let drawing = grid.layout_at(area, growth, raw);
                 for &(id, slot) in &survivors {
                     let Some(before_cell) = cell_of(&transition.from, slot) else {
                         continue;
@@ -8760,7 +15859,7 @@ mod tests {
         let area = test_area();
         let growth = add_new(4);
         let demands = TileDemands {
-            summary:       usize::from(TEST_HEIGHT) * 3 / 4,
+            summary:       summary_demand(usize::from(TEST_HEIGHT) * 3 / 4),
             summary_width: 0,
             groups:        vec![TileDemand {
                 id:   1,
@@ -8770,7 +15869,7 @@ mod tests {
         let mut grid = TileGrid::new();
         grid.set_view(TileView::Cells);
         grid.set_layout(area, growth);
-        grid.sync(&demands, growth);
+        grid.sync_test_cells(&demands, growth);
         grid.settle_for_test();
         assert_eq!(grid.depth, 2);
         (grid, area, growth)
@@ -8801,7 +15900,7 @@ mod tests {
         grid.apply(action, growth);
         while matches!(grid.motion, GridMotion::Moving(_)) {
             for raw in 0..=PROGRESS_SCALE {
-                let drawing = grid.drawing_at(area, growth, raw);
+                let drawing = grid.layout_at(area, growth, raw);
                 for (content, path) in contents.iter().zip(&mut paths) {
                     let mut pieces = drawing
                         .placements()
@@ -8862,7 +15961,7 @@ mod tests {
                 |content, area| crate::TileCells::rows_drawn(cells, content, area),
                 |content, area| crate::TileCells::rows_kept(cells, content, area),
             );
-            let drawing = grid.drawing_at(area, growth, raw);
+            let drawing = grid.layout_at(area, growth, raw);
             for (content, path) in contents.iter().zip(&mut paths) {
                 let height = drawing
                     .placements()
@@ -8891,8 +15990,8 @@ mod tests {
         draw_view_frame(grid, cells, area, growth);
     }
 
-    #[test]
-    fn a_key_whose_new_widths_change_demands_still_moves_once() {
+    /// Begin each width-changing key from the same measured, settled layout.
+    fn width_changing_key_grid() -> (TileGrid<u32>, Rect, TileGrowth) {
         let area = Rect::new(0, 0, TEST_TILE_WIDTH.saturating_mul(3), TEST_HEIGHT);
         let growth = TileGrowth::default();
         let cells = WidthDependentSummaryCells;
@@ -8904,11 +16003,32 @@ mod tests {
         draw_view_frame(&mut grid, &cells, area, growth);
         assert_eq!(grid.count(), 6);
         assert_eq!(grid.depth, 1);
+        (grid, area, growth)
+    }
 
-        assert_width_changing_key_moves_once(&mut grid, &cells, area, growth, TileAction::Add, 2);
+    #[test]
+    fn a_key_whose_new_widths_change_demands_still_moves_once() {
+        let (mut grid, area, growth) = width_changing_key_grid();
         assert_width_changing_key_moves_once(
             &mut grid,
-            &cells,
+            &WidthDependentSummaryCells,
+            area,
+            growth,
+            TileAction::Add,
+            2,
+        );
+    }
+
+    #[test]
+    fn a_removal_whose_new_widths_change_demands_still_moves_once() {
+        let (mut grid, area, growth) = width_changing_key_grid();
+        grid.apply(TileAction::Add, growth);
+        draw_view_frame(&mut grid, &WidthDependentSummaryCells, area, growth);
+        grid.settle_for_test();
+        draw_view_frame(&mut grid, &WidthDependentSummaryCells, area, growth);
+        assert_width_changing_key_moves_once(
+            &mut grid,
+            &WidthDependentSummaryCells,
             area,
             growth,
             TileAction::Remove,
@@ -8920,7 +16040,7 @@ mod tests {
     fn tall_demands(ids: &[u32]) -> TileDemands<u32> {
         let rows = usize::from(TEST_HEIGHT).saturating_mul(2);
         TileDemands {
-            summary:       rows,
+            summary:       summary_demand(rows),
             summary_width: 0,
             groups:        ids.iter().map(|&id| TileDemand { id, rows }).collect(),
         }
@@ -8933,10 +16053,10 @@ mod tests {
         let mut grid = TileGrid::new();
         grid.set_view(TileView::Cells);
         grid.set_layout(area, growth);
-        grid.sync(&tall_demands(&[1]), growth);
+        grid.sync_test_cells(&tall_demands(&[1]), growth);
         grid.settle_for_test();
         grid.collapse_queued_changes_for_test();
-        grid.sync(&tall_demands(&[1, 2]), growth);
+        grid.sync_test_cells(&tall_demands(&[1, 2]), growth);
         (grid, area, growth)
     }
 
@@ -8959,7 +16079,7 @@ mod tests {
         let area = Rect::new(0, 0, TEST_WIDTH, height);
         let growth = redistribute(cells);
         let slots = (1..u32::try_from(cells).unwrap_or(u32::MAX))
-            .map(Slot::Group)
+            .map(declared_slot)
             .collect::<Vec<_>>();
         let mut grid = TileGrid::new();
         grid.set_view(TileView::Cells);
@@ -9058,7 +16178,7 @@ mod tests {
         };
         grid.set_min_tile_height(6);
         grid.demands = TileDemands {
-            summary:       100,
+            summary:       summary_demand(100),
             summary_width: 0,
             groups:        Vec::new(),
         };
@@ -9100,7 +16220,7 @@ mod tests {
             |_, area| area.height,
             |_, area| area.height,
         );
-        grid.drawing_at(area, growth, raw)
+        grid.layout_at(area, growth, raw)
     }
 
     /// Record one settled frame and return its framed height by content.
@@ -9122,7 +16242,7 @@ mod tests {
                 TileContent::Summary | TileContent::Group(_) => area.height,
             },
         );
-        grid.drawing_at(area, growth, PROGRESS_SCALE)
+        grid.layout_at(area, growth, PROGRESS_SCALE)
             .placements()
             .map(|placement| (placement.content.clone(), placement.frame.clip().height))
             .collect()
@@ -9143,10 +16263,10 @@ mod tests {
         let mut grid = TileGrid::new();
         grid.set_view(TileView::Cells);
         grid.set_layout(area, growth);
-        grid.sync(&tall_demands(&[1, 2, 3]), growth);
+        grid.sync_test_cells(&tall_demands(&[1, 2, 3]), growth);
         grid.settle_for_test();
         let recorded = recorded_settled_heights(&mut grid, area, growth);
-        grid.sync(&tall_demands(&[1, 3]), growth);
+        grid.sync_test_cells(&tall_demands(&[1, 3]), growth);
 
         let remaining = [
             TileContent::Summary,
@@ -9168,7 +16288,7 @@ mod tests {
                     TileContent::Summary | TileContent::Group(_) => area.height,
                 },
             );
-            let drawing = grid.drawing_at(area, growth, raw);
+            let drawing = grid.layout_at(area, growth, raw);
             if raw == 0 {
                 for (content, height) in &recorded {
                     assert_eq!(piece_height(&drawing, content), Some(*height));
@@ -9225,8 +16345,8 @@ mod tests {
                 TileContent::Summary | TileContent::Group(_) => area.height,
             },
         );
-        let first = grid.drawing_at(area, growth, raw);
-        let destination = grid.drawing_at(area, growth, PROGRESS_SCALE);
+        let first = grid.layout_at(area, growth, raw);
+        let destination = grid.layout_at(area, growth, PROGRESS_SCALE);
         for (content, start) in recorded {
             let Some(first) = piece_height(&first, &content) else {
                 continue;
@@ -9250,7 +16370,7 @@ mod tests {
         grid.set_min_tile_width(40);
         grid.set_min_tile_height(6);
         grid.set_layout(area, growth);
-        grid.sync(&tall_demands(&[1, 2, 3, 4, 5, 6]), growth);
+        grid.sync_test_cells(&tall_demands(&[1, 2, 3, 4, 5, 6]), growth);
         grid.settle_for_test();
 
         assert_key_motion_starts_one_way(&mut grid, area, growth, TileAction::Add);
@@ -9343,7 +16463,7 @@ mod tests {
                 },
                 |_, area| area.height,
             );
-            let drawing = grid.drawing_at(area, growth, raw);
+            let drawing = grid.layout_at(area, growth, raw);
             for (index, placement) in drawing.placements().enumerate() {
                 let height = placement.frame.clip().height;
                 assert!(
@@ -9473,7 +16593,7 @@ mod tests {
     fn unchanged_mates_stay_between_their_endpoints_during_plus_and_minus_motion() {
         let fewer = [19, 7, 8, 8, 8, 7];
         let more = [15, 9, 10, 6, 6, 6, 6];
-        let groups = (1..=5).map(Slot::Group).collect::<Vec<_>>();
+        let groups = (1..=5).map(declared_slot).collect::<Vec<_>>();
         let mut added = groups.clone();
         added.push(Slot::Empty(0));
         for (before, after, before_slots, after_slots) in [
@@ -9521,7 +16641,7 @@ mod tests {
                 );
                 heights.clear();
                 heights.extend(
-                    grid.drawing_at(area, growth, raw)
+                    grid.layout_at(area, growth, raw)
                         .placements()
                         .map(|placement| placement.frame.clip().height),
                 );
@@ -9589,7 +16709,7 @@ mod tests {
         };
 
         let actual = grid
-            .drawing_at(area, growth, raw)
+            .layout_at(area, growth, raw)
             .placements()
             .map(|placement| placement.frame.clip().height)
             .collect::<Vec<_>>();
@@ -9633,7 +16753,7 @@ mod tests {
             piece_heights: selected,
         };
 
-        let drawing = grid.drawing_at(area, growth, raw);
+        let drawing = grid.layout_at(area, growth, raw);
         let shrinking = &drawing.pieces[3];
         let rect = shrinking.placement.frame.clip();
         let content_area = draw::content_area(frame_inner(rect));
@@ -9668,7 +16788,7 @@ mod tests {
                 },
                 |_, area| area.height,
             );
-            let drawing = grid.drawing_at(area, growth, raw);
+            let drawing = grid.layout_at(area, growth, raw);
             let shrinking = drawing
                 .placements()
                 .find(|placement| placement.content == TileContent::Group(3))
@@ -9696,7 +16816,7 @@ mod tests {
         let old_area = Rect::new(0, 0, 80, 30);
         let new_area = Rect::new(10, 5, 60, 22);
         let growth = redistribute(1);
-        let slots = (1..=3).map(Slot::Group).collect::<Vec<_>>();
+        let slots = (1..=3).map(declared_slot).collect::<Vec<_>>();
         let source_held = HeldCellLayout {
             rows:          row_demands(&[8, 8, 8, 8]),
             focused:       FocusLocation::Departing,
@@ -9758,7 +16878,7 @@ mod tests {
         let resized_area = Rect::new(3, 2, TEST_WIDTH - 6, TEST_HEIGHT - 4);
         let growth = redistribute(4);
         let mut grid = synced_motion(&[7, 8, 9], &[7, 9], growth);
-        let partial = grid.drawing_at(source_area, growth, PROGRESS_SCALE / 2);
+        let partial = grid.layout_at(source_area, growth, PROGRESS_SCALE / 2);
         assert!(
             partial
                 .placements()
@@ -9772,7 +16892,7 @@ mod tests {
 
         grid.set_draw_layout(resized_area, growth);
         for raw in [0, PROGRESS_SCALE / 2, PROGRESS_SCALE] {
-            let drawing = grid.drawing_at(resized_area, growth, raw);
+            let drawing = grid.layout_at(resized_area, growth, raw);
             assert!(
                 drawing
                     .placements()
@@ -9791,7 +16911,7 @@ mod tests {
 
         grid.set_draw_layout(source_area, growth);
         for raw in [0, PROGRESS_SCALE / 2, PROGRESS_SCALE] {
-            let drawing = grid.drawing_at(source_area, growth, raw);
+            let drawing = grid.layout_at(source_area, growth, raw);
             assert!(
                 drawing
                     .placements()
@@ -9838,7 +16958,7 @@ mod tests {
             |_, area| area.height,
         );
         let heights = grid
-            .drawing_at(area, growth, raw)
+            .layout_at(area, growth, raw)
             .placements()
             .map(|placement| placement.frame.clip().height)
             .collect::<Vec<_>>();
@@ -9865,17 +16985,17 @@ mod tests {
             progress: PROGRESS_SCALE / 2,
             drawn:    CellAppearance {
                 identity: match &content {
-                    TileContent::Group(id) => CellIdentity::Slot(Slot::Group(*id)),
+                    TileContent::Group(id) => CellIdentity::Group(*id),
                     _ => CellIdentity::Summary,
                 },
-                content,
-                focused: false,
+                content:  drawable_test_content(content),
+                focused:  false,
             },
         };
 
         assert_eq!(area.height, 2);
         assert_eq!(
-            frame_height_fit(&usage, &piece.drawn.content, area),
+            frame_height_fit(&usage, &piece.drawn.content(), area),
             FrameHeightFit::Filled
         );
         assert!(
@@ -9884,6 +17004,64 @@ mod tests {
                 path:      PieceHeightPath::AdvanceFrom(&[]),
             }
             .accepts(&piece, rect)
+        );
+    }
+
+    /// Individually valid resident spans must report aggregate capacity failure.
+    #[test]
+    fn retargeted_spans_above_u16_report_capacity_failure() {
+        let contents = [TileContent::Group(1_u32), TileContent::Group(2)];
+        let mut panes = [
+            ResolvedPane {
+                pane: TABLE_CELL,
+                area: Rect::new(0, 0, 40, 40_001),
+            },
+            ResolvedPane {
+                pane: TABLE_CELL + 1,
+                area: Rect::new(0, 0, 40, 40_001),
+            },
+        ];
+        let bounds = [MotionSpanBounds {
+            smallest: 40_000,
+            largest:  40_000,
+        }; 2];
+        let constraints = RetargetedHeightConstraints {
+            contents:        &contents,
+            row_demands:     &[],
+            changed_demands: &[true, true],
+            bounds:          &bounds,
+        };
+        let result = release_retargeted_rows(
+            &[0, 1],
+            &mut panes,
+            &constraints,
+            60_000,
+            &mut Vec::new(),
+            &mut |_, area| area.height,
+            &mut |_, area| area.height,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn lifecycle_fit_handles_demand_above_u16_without_overflow() {
+        let occupants = [
+            ColumnOccupant::Live(LiveCellSpan {
+                minimum: NonZeroU16::new(20_000).expect("minimum"),
+                wanted:  40_000,
+            }),
+            ColumnOccupant::Live(LiveCellSpan {
+                minimum: NonZeroU16::new(20_000).expect("minimum"),
+                wanted:  40_000,
+            }),
+        ];
+        assert_eq!(
+            fit_lifecycle_spans(&occupants, 60_000).expect("complete bodies fit"),
+            [20_000, 40_000]
+        );
+        assert!(
+            fit_lifecycle_spans(&occupants, 30_000).is_err(),
+            "required bodies cannot be clipped to fit"
         );
     }
 
@@ -9906,8 +17084,8 @@ mod tests {
                 },
                 progress: 0,
                 drawn:    CellAppearance {
-                    identity: CellIdentity::Slot(Slot::Group(index)),
-                    content:  TileContent::Group(index),
+                    identity: CellIdentity::Group(index),
+                    content:  drawable_test_content(TileContent::Group(index)),
                     focused:  false,
                 },
             })
@@ -9927,7 +17105,7 @@ mod tests {
             min_tile_height: 1,
             height_snap: &HeightSnap::Off,
         };
-        let dividers = band_piece_dividers(&search, band, band);
+        let dividers = band_piece_dividers(&search, band, band).expect("ordered band bounds");
         for (position, piece) in pieces.iter().enumerate() {
             let rect = band_piece_rect(
                 &grid,
@@ -9969,7 +17147,7 @@ mod tests {
             },
             |_, area| area.height,
         );
-        grid.drawing_at(area, growth, raw)
+        grid.layout_at(area, growth, raw)
     }
 
     /// Whether the two-row fixture fills this framed height.
@@ -10000,11 +17178,11 @@ mod tests {
             progress: PROGRESS_SCALE / 2,
             drawn:    CellAppearance {
                 identity: match &content {
-                    TileContent::Group(id) => CellIdentity::Slot(Slot::Group(*id)),
+                    TileContent::Group(id) => CellIdentity::Group(*id),
                     _ => CellIdentity::Summary,
                 },
-                content,
-                focused: false,
+                content:  drawable_test_content(content),
+                focused:  false,
             },
         };
 
@@ -10035,11 +17213,11 @@ mod tests {
             progress: PROGRESS_SCALE / 2,
             drawn:    CellAppearance {
                 identity: match &content {
-                    TileContent::Group(id) => CellIdentity::Slot(Slot::Group(*id)),
+                    TileContent::Group(id) => CellIdentity::Group(*id),
                     _ => CellIdentity::Summary,
                 },
-                content,
-                focused: false,
+                content:  drawable_test_content(content),
+                focused:  false,
             },
         };
 
@@ -10069,11 +17247,11 @@ mod tests {
             progress: PROGRESS_SCALE / 2,
             drawn:    CellAppearance {
                 identity: match &content {
-                    TileContent::Group(id) => CellIdentity::Slot(Slot::Group(*id)),
+                    TileContent::Group(id) => CellIdentity::Group(*id),
                     _ => CellIdentity::Summary,
                 },
-                content,
-                focused: false,
+                content:  drawable_test_content(content),
+                focused:  false,
             },
         };
 
@@ -10182,7 +17360,7 @@ mod tests {
                     TileContent::Empty(_) => 0,
                 },
             );
-            let drawing = grid.drawing_at(area, growth, raw);
+            let drawing = grid.layout_at(area, growth, raw);
             let summary = drawing
                 .pieces
                 .iter()
@@ -10244,7 +17422,7 @@ mod tests {
                 },
                 |_, area| area.height,
             );
-            let drawing = grid.drawing_at(area, growth, raw);
+            let drawing = grid.layout_at(area, growth, raw);
             let heights = drawing
                 .placements()
                 .map(|placement| placement.frame.clip().height)
@@ -10291,12 +17469,12 @@ mod tests {
             };
             assert!(one_way, "{content:?} reverses through {heights:?}");
             let start_endpoint = grid
-                .drawing_at(area, growth, 0)
+                .layout_at(area, growth, 0)
                 .placements()
                 .find(|placement| &placement.content == content)
                 .map(|placement| placement.frame.clip().height);
             let finish_endpoint = grid
-                .drawing_at(area, growth, PROGRESS_SCALE)
+                .layout_at(area, growth, PROGRESS_SCALE)
                 .placements()
                 .find(|placement| &placement.content == content)
                 .map(|placement| placement.frame.clip().height);
@@ -10385,10 +17563,10 @@ mod tests {
         let mut leaving = TileGrid::new();
         leaving.set_view(TileView::Cells);
         leaving.set_layout(area, growth);
-        leaving.sync(&tall_demands(&[1, 2]), growth);
+        leaving.sync_test_cells(&tall_demands(&[1, 2]), growth);
         leaving.settle_for_test();
         leaving.collapse_queued_changes_for_test();
-        leaving.sync(&tall_demands(&[1]), growth);
+        leaving.sync_test_cells(&tall_demands(&[1]), growth);
         let mut departure_below_floor = false;
         for raw in leaving.distinct_motion_steps_for_test(area, growth) {
             let drawing = stepped_height_drawing(&mut leaving, area, growth, raw, &mut calls);
@@ -10412,7 +17590,7 @@ mod tests {
         let after = [1, 2, 3, 4, 6];
         let closing_growth = redistribute(3);
         let mut closing = synced_motion(&before, &after, closing_growth);
-        let start = closing.drawing_at(area, closing_growth, 0);
+        let start = closing.layout_at(area, closing_growth, 0);
         let column = start.column_bands.len().saturating_sub(1);
         let start_band = start.column_bands[column];
         let starting_rows = start
@@ -10483,6 +17661,7 @@ mod tests {
                             area.height.min(1)
                         }
                     },
+                    SummaryDepthPolicy::ViewportBounded,
                 );
                 assert_eq!(grid.resolved.panes.len(), held.rows.len());
                 assert!(
@@ -10498,7 +17677,7 @@ mod tests {
         let area = Rect::new(0, 0, 200, 50);
         let growth = redistribute(12);
         let demands = |ids: RangeInclusive<u32>| TileDemands {
-            summary:       100,
+            summary:       summary_demand(100),
             summary_width: 0,
             groups:        ids.map(|id| TileDemand { id, rows: 100 }).collect(),
         };
@@ -10507,13 +17686,13 @@ mod tests {
         grid.set_min_tile_width(40);
         grid.set_min_tile_height(6);
         grid.set_layout(area, growth);
-        grid.sync(&demands(1..=5), growth);
+        grid.sync_test_cells(&demands(1..=5), growth);
         grid.settle_for_test();
         grid.collapse_queued_changes_for_test();
-        grid.sync(&demands(1..=6), growth);
+        grid.sync_test_cells(&demands(1..=6), growth);
         let endpoint_areas = [0, PROGRESS_SCALE]
             .into_iter()
-            .flat_map(|raw| grid.drawing_at(area, growth, raw).pieces)
+            .flat_map(|raw| grid.layout_at(area, growth, raw).pieces)
             .map(|piece| {
                 let area = draw::content_area(frame_inner(piece.placement.frame.clip()));
                 (piece.placement.content, area.width, area.height)
@@ -10549,10 +17728,10 @@ mod tests {
                 area.height
             },
         );
-        let _ = grid.drawing_at(area, growth, raw);
-        assert_eq!(
-            drawn_calls.saturating_add(kept_calls),
-            SEVEN_CELL_MOVING_ROW_PROBE_COUNT
+        let _ = grid.layout_at(area, growth, raw);
+        assert!(
+            drawn_calls.saturating_add(kept_calls) <= SEVEN_CELL_MOVING_ROW_PROBE_COUNT,
+            "drawn {drawn_calls}, retained {kept_calls}"
         );
     }
 
@@ -10561,7 +17740,7 @@ mod tests {
         let area = Rect::new(0, 0, 200, 50);
         let growth = redistribute(12);
         let demands = TileDemands {
-            summary:       100,
+            summary:       summary_demand(100),
             summary_width: 0,
             groups:        (1..=6).map(|id| TileDemand { id, rows: 100 }).collect(),
         };
@@ -10570,7 +17749,7 @@ mod tests {
         grid.set_min_tile_width(40);
         grid.set_min_tile_height(6);
         grid.set_layout(area, growth);
-        grid.sync(&demands, growth);
+        grid.sync_test_cells(&demands, growth);
         grid.settle_for_test();
 
         let mut drawn = Vec::new();
@@ -10603,7 +17782,7 @@ mod tests {
         assert_eq!(drawn.len(), SEVEN_CELL_SETTLED_DRAWN_PROBE_COUNT);
         assert_eq!(kept.len(), SEVEN_CELL_SETTLED_KEPT_PROBE_COUNT);
 
-        grid.sync(&demands, growth);
+        grid.sync_test_cells(&demands, growth);
         drawn.clear();
         kept.clear();
         grid.measure_row_steps(
@@ -10645,7 +17824,7 @@ mod tests {
         let mut grid = TileGrid::new();
         grid.set_view(TileView::Cells);
         grid.set_layout(area, growth);
-        grid.slots = (1..=4).map(Slot::Group).collect();
+        grid.slots = (1..=4).map(declared_slot).collect();
         grid.held = HeldCellLayout {
             rows:          row_demands(&[17, 11, 15, 15, 12]),
             focused:       FocusLocation::Departing,
@@ -10691,7 +17870,7 @@ mod tests {
     fn opening_column() -> TileGrid<u32> {
         let growth = redistribute(4);
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[1, 2, 3]), growth);
+        grid.sync_test_cells(&quiet(&[1, 2, 3]), growth);
         grid.settle_for_test();
         grid.add(growth);
         grid
@@ -10707,7 +17886,7 @@ mod tests {
 
         for grid in [&opening, &closing] {
             for raw in motion_steps() {
-                let bands = grid.drawing_at(test_area(), growth, raw).column_bands;
+                let bands = grid.layout_at(test_area(), growth, raw).column_bands;
                 assert_eq!(
                     bands.first().map(|band| band.left()),
                     Some(test_area().left())
@@ -10727,7 +17906,7 @@ mod tests {
     /// every divider between them with the piece beside it.
     fn assert_shared_piece_rows(grid: &TileGrid<u32>, growth: TileGrowth) {
         for raw in motion_steps() {
-            let drawing = grid.drawing_at(test_area(), growth, raw);
+            let drawing = grid.layout_at(test_area(), growth, raw);
             for &band in &drawing.column_bands {
                 let pieces: Vec<Rect> = drawing
                     .placements()
@@ -10767,17 +17946,17 @@ mod tests {
         assert_shared_piece_rows(&closing, growth);
 
         let mut growing = seeded_grid();
-        growing.sync(&quiet(&[1]), growth);
+        growing.sync_test_cells(&quiet(&[1]), growth);
         growing.settle_for_test();
-        growing.sync(&busy(&[(1, usize::from(TEST_HEIGHT))]), growth);
+        growing.sync_test_cells(&busy(&[(1, usize::from(TEST_HEIGHT))]), growth);
         assert_shared_piece_rows(&growing, growth);
 
         let mut crossing = seeded_grid();
         let before: Vec<u32> = (1..=15).collect();
         let after: Vec<u32> = (1..=16).collect();
-        crossing.sync(&quiet(&before), growth);
+        crossing.sync_test_cells(&quiet(&before), growth);
         crossing.settle_for_test();
-        crossing.sync(&quiet(&after), growth);
+        crossing.sync_test_cells(&quiet(&after), growth);
         assert_shared_piece_rows(&crossing, growth);
     }
 
@@ -10814,7 +17993,7 @@ mod tests {
         let after_held = grid.drawn_held();
         let after = Grid::new(test_area(), &after_held, growth, &grid.settings);
         let drawings = motion_steps()
-            .map(|raw| grid.drawing_at(test_area(), growth, raw))
+            .map(|raw| grid.layout_at(test_area(), growth, raw))
             .collect::<Vec<_>>();
         assert_eq!(drawings.len(), 24);
         assert_eq!(
@@ -10833,9 +18012,9 @@ mod tests {
     fn synced_motion(before: &[u32], after: &[u32], growth: TileGrowth) -> TileGrid<u32> {
         let mut grid = seeded_grid();
         grid.set_layout(test_area(), growth);
-        grid.sync(&quiet(before), growth);
+        grid.sync_test_cells(&quiet(before), growth);
         grid.settle_for_test();
-        grid.sync(&quiet(after), growth);
+        grid.sync_test_cells(&quiet(after), growth);
         grid
     }
 
@@ -10850,7 +18029,7 @@ mod tests {
         middle_arrival.settle_for_test();
         middle_arrival.add(one_column);
         middle_arrival.settle_for_test();
-        middle_arrival.sync(&quiet(&[7, 8, 9]), one_column);
+        middle_arrival.sync_test_cells(&quiet(&[7, 8, 9]), one_column);
         assert_settled_motion_endpoints("middle arrival", &middle_arrival, one_column);
 
         let end_departure = synced_motion(&[7, 8, 9], &[7, 8], one_column);
@@ -10868,7 +18047,7 @@ mod tests {
         let area = Rect::new(0, 0, TEST_WIDTH, 40);
         let growth = redistribute(4);
         let demands = |groups: &[u32]| TileDemands {
-            summary:       100,
+            summary:       summary_demand(100),
             summary_width: 0,
             groups:        groups
                 .iter()
@@ -10877,9 +18056,9 @@ mod tests {
         };
         let mut grid = TileGrid::new();
         grid.set_layout(area, growth);
-        grid.sync(&demands(&[1, 2, 3]), growth);
+        grid.sync_test_cells(&demands(&[1, 2, 3]), growth);
         grid.settle_for_test();
-        grid.sync(&demands(&[1, 3]), growth);
+        grid.sync_test_cells(&demands(&[1, 3]), growth);
         let GridMotion::Moving(transition) = &grid.motion else {
             assert!(
                 matches!(&grid.motion, GridMotion::Moving(_)),
@@ -10910,7 +18089,7 @@ mod tests {
             .cell(TABLE_CELL)
             .expect("the destination places the summary");
         let summary_at = |raw| {
-            grid.drawing_at(area, growth, raw)
+            grid.layout_at(area, growth, raw)
                 .pieces
                 .into_iter()
                 .find(|piece| piece.placement.content == TileContent::Summary)
@@ -10933,7 +18112,7 @@ mod tests {
         assert!(opening_from.is_some(), "the column opening is in flight");
         let opening_from = opening_from.unwrap_or_default();
 
-        grid.sync(&quiet(&[1, 2, 3, 99]), growth);
+        grid.sync_test_cells(&quiet(&[1, 2, 3, 99]), growth);
         let still_from = match &grid.motion {
             GridMotion::Moving(transition) => Some(transition.from.clone()),
             GridMotion::Settled => None,
@@ -10946,7 +18125,7 @@ mod tests {
         assert_eq!(still_from, opening_from);
         for raw in motion_steps() {
             assert!(
-                grid.drawing_at(test_area(), growth, raw)
+                grid.layout_at(test_area(), growth, raw)
                     .placements()
                     .all(|placement| placement.content != TileContent::Group(99)),
                 "the claim waits for the opening at {raw}"
@@ -10956,7 +18135,7 @@ mod tests {
         grid.advance();
         for raw in motion_steps() {
             let claimed = grid
-                .drawing_at(test_area(), growth, raw)
+                .layout_at(test_area(), growth, raw)
                 .placements()
                 .filter(|placement| placement.content == TileContent::Group(99))
                 .count();
@@ -10976,7 +18155,7 @@ mod tests {
     #[test]
     fn a_command_arriving_opens_its_own_cell() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7]), redistribute(4));
         grid.settle_for_test();
         assert_eq!(shown(&grid), vec![TileContent::Group(7)]);
     }
@@ -10988,7 +18167,7 @@ mod tests {
         let mut grid = seeded_grid();
         grid.add(redistribute(4));
         grid.add(redistribute(4));
-        grid.sync(&quiet(&[7]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7]), redistribute(4));
         grid.settle_for_test();
 
         assert_eq!(shown(&grid).len(), 2, "no third cell opened");
@@ -11004,9 +18183,9 @@ mod tests {
     #[test]
     fn the_cells_stand_in_the_order_they_are_demanded_in() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[8]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[8]), redistribute(4));
         grid.settle_for_test();
-        grid.sync(&quiet(&[7, 8]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8]), redistribute(4));
         grid.settle_for_test();
 
         assert_eq!(
@@ -11021,11 +18200,11 @@ mod tests {
     #[test]
     fn re_ordering_leaves_an_empty_cell_where_it_was_made() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[8]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[8]), redistribute(4));
         grid.settle_for_test();
         grid.add(redistribute(4));
         grid.add(redistribute(4));
-        grid.sync(&quiet(&[7, 8]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8]), redistribute(4));
         grid.settle_for_test();
 
         let shown = shown(&grid);
@@ -11042,9 +18221,9 @@ mod tests {
     #[test]
     fn a_command_leaving_the_middle_moves_the_rest_forward() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7, 8, 9]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8, 9]), redistribute(4));
         grid.settle_for_test();
-        grid.sync(&quiet(&[7, 9]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 9]), redistribute(4));
         grid.settle_for_test();
 
         assert_eq!(
@@ -11061,10 +18240,10 @@ mod tests {
     #[test]
     fn one_departing_piece_is_in_flight_while_the_grid_closes() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7, 8, 9]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8, 9]), redistribute(4));
         grid.settle_for_test();
 
-        grid.sync(&quiet(&[7, 9]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 9]), redistribute(4));
         let placements = grid.placements(test_area(), redistribute(4));
         assert_eq!(
             placements.len(),
@@ -11078,10 +18257,10 @@ mod tests {
     #[test]
     fn a_command_leaving_the_middle_closes_the_grid_in_one_step() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7, 8, 9]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8, 9]), redistribute(4));
         grid.settle_for_test();
 
-        grid.sync(&quiet(&[7, 9]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 9]), redistribute(4));
         assert_eq!(
             shown(&grid),
             vec![TileContent::Group(7), TileContent::Group(9)],
@@ -11103,10 +18282,10 @@ mod tests {
     #[test]
     fn a_cell_the_order_overtakes_closes_and_comes_back_in_behind() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7, 8]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8]), redistribute(4));
         grid.settle_for_test();
 
-        grid.sync(&quiet(&[8, 7]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[8, 7]), redistribute(4));
         assert_eq!(
             shown(&grid),
             vec![TileContent::Group(8)],
@@ -11132,10 +18311,10 @@ mod tests {
     #[test]
     fn the_order_changing_cascades_down_the_rest_of_the_grid() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7, 8, 9]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8, 9]), redistribute(4));
         grid.settle_for_test();
 
-        grid.sync(&quiet(&[8, 7, 9]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[8, 7, 9]), redistribute(4));
         assert_eq!(
             shown(&grid),
             vec![TileContent::Group(8), TileContent::Group(9)],
@@ -11173,10 +18352,10 @@ mod tests {
     #[test]
     fn no_step_of_a_reorder_draws_two_cells_crossing() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7, 8, 9, 10]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8, 9, 10]), redistribute(4));
         grid.settle_for_test();
 
-        grid.sync(&quiet(&[9, 7, 10, 8]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[9, 7, 10, 8]), redistribute(4));
         let mut crossed = Vec::new();
         while let GridMotion::Moving(transition) = &grid.motion {
             let (from, to) = (transition.from.clone(), grid.slots.clone());
@@ -11214,12 +18393,12 @@ mod tests {
     #[test]
     fn a_reorder_leaves_the_cell_count_where_it_found_it() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7, 8]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8]), redistribute(4));
         grid.settle_for_test();
         grid.add(redistribute(4));
         grid.settle_for_test();
 
-        grid.sync(&quiet(&[8, 7]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[8, 7]), redistribute(4));
         grid.settle_for_test();
         let shown = shown(&grid);
         assert_eq!(shown.len(), 3, "the grid is the size it was: {shown:?}");
@@ -11237,16 +18416,16 @@ mod tests {
     #[test]
     fn focus_waits_for_a_cell_that_closed_to_let_the_order_through() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7, 8]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8]), redistribute(4));
         grid.settle_for_test();
         grid.focus_step(Direction::Down, redistribute(4));
         grid.settle_for_test();
-        assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
+        assert_eq!(grid.focus, declared_focus(7));
 
-        grid.sync(&quiet(&[8, 7]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[8, 7]), redistribute(4));
         assert_eq!(
             grid.focus,
-            Focus::Cell(Slot::Group(7)),
+            declared_focus(7),
             "the ring stays with the command while its cell is off the grid"
         );
         assert_eq!(
@@ -11263,33 +18442,29 @@ mod tests {
         );
     }
 
-    /// Two commands ending in the same scan do not go together. The
-    /// grid closes the first cell, plays that travel out, and only then
-    /// closes the next -- taking them in the order they stand in, which
-    /// is the order they arrived in. Two cells closing over each other
-    /// at once is a pile of lines rather than a grid coming together.
+    /// Every command that ended withdraws in the scan's next motion.
     #[test]
-    fn commands_ending_together_close_one_cell_at_a_time() {
+    fn commands_ending_together_leave_in_the_same_motion() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7, 8, 9]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8, 9]), redistribute(4));
         grid.settle_for_test();
 
-        grid.sync(&quiet(&[9]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[9]), redistribute(4));
         assert_eq!(
             shown(&grid),
-            vec![TileContent::Group(8), TileContent::Group(9)],
-            "the oldest of them goes first, on its own"
+            vec![TileContent::Group(9)],
+            "neither ended command remains in the destination"
         );
         assert!(
             matches!(grid.motion, GridMotion::Moving(_)),
-            "and its travel is in flight"
+            "their departure is in flight"
         );
 
         grid.advance();
         assert_eq!(
             shown(&grid),
             vec![TileContent::Group(9)],
-            "the next one follows once that travel is done"
+            "an ended command never returns from the step queue"
         );
     }
 
@@ -11306,15 +18481,15 @@ mod tests {
         let covered_growth = widening(3);
         let mut covered = seeded_grid();
         covered.set_layout(area, covered_growth);
-        covered.sync(&wide_summary(&before, u16::MAX), covered_growth);
+        covered.sync_test_cells(&wide_summary(&before, u16::MAX), covered_growth);
         covered.settle_for_test();
-        covered.sync(&wide_summary(&after, u16::MAX), covered_growth);
+        covered.sync_test_cells(&wide_summary(&after, u16::MAX), covered_growth);
 
         for (label, grid, growth, shortened) in [
             ("full-height", ordinary, ordinary_growth, false),
             ("under the summary", covered, covered_growth, true),
         ] {
-            let start = grid.drawing_at(area, growth, 0);
+            let start = grid.layout_at(area, growth, 0);
             assert_eq!(start.column_bands.len(), 3, "{label} column count");
             let column = start.column_bands.len() - 1;
             let start_band = start.column_bands[column];
@@ -11345,7 +18520,7 @@ mod tests {
             assert!(starting_rows.len() > 1, "{label} has stacked pieces");
 
             for raw in motion_steps() {
-                let drawing = grid.drawing_at(area, growth, raw);
+                let drawing = grid.layout_at(area, growth, raw);
                 let band = drawing.column_bands[column];
                 let rows = drawing
                     .placements()
@@ -11385,7 +18560,7 @@ mod tests {
         let before = (1..=15).collect::<Vec<_>>();
         let after = (1..=16).collect::<Vec<_>>();
         let grid = synced_motion(&before, &after, growth);
-        let drawing = grid.drawing_at(area, growth, PROGRESS_SCALE / 2);
+        let drawing = grid.layout_at(area, growth, PROGRESS_SCALE / 2);
         let leaving = drawing
             .placements()
             .filter(|placement| placement.content == TileContent::Group(4))
@@ -11402,11 +18577,11 @@ mod tests {
     #[test]
     fn a_middle_departure_starts_on_its_before_rows_between_its_neighbours() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7, 8, 9]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8, 9]), redistribute(4));
         grid.settle_for_test();
-        grid.sync(&quiet(&[7, 9]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 9]), redistribute(4));
 
-        let drawing = grid.drawing_at(test_area(), redistribute(4), 0);
+        let drawing = grid.layout_at(test_area(), redistribute(4), 0);
         let placement = |content| {
             drawing
                 .placements()
@@ -11454,7 +18629,7 @@ mod tests {
     #[test]
     fn removing_refuses_to_close_a_cell_holding_a_command() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7]), redistribute(4));
         grid.settle_for_test();
         grid.remove();
         grid.settle_for_test();
@@ -11464,7 +18639,7 @@ mod tests {
     #[test]
     fn removing_closes_the_last_cell_that_plus_opened() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7]), redistribute(4));
         grid.add(redistribute(4));
         grid.remove();
         grid.settle_for_test();
@@ -11479,7 +18654,7 @@ mod tests {
     #[test]
     fn focus_walks_the_grid_and_stops_at_its_edges() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7, 8]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8]), redistribute(4));
         grid.settle_for_test();
 
         grid.focus_step(Direction::Down, redistribute(4));
@@ -11502,7 +18677,7 @@ mod tests {
     #[test]
     fn tab_walks_every_cell_and_comes_back_round() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7, 8]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8]), redistribute(4));
         grid.settle_for_test();
 
         assert!(grid.cycle_focus(CycleDirection::Next));
@@ -11528,16 +18703,16 @@ mod tests {
     #[test]
     fn focus_follows_a_cell_through_a_closing() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7, 8, 9]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8, 9]), redistribute(4));
         grid.settle_for_test();
         grid.focus_step(Direction::Down, redistribute(4));
         grid.focus_step(Direction::Down, redistribute(4));
         grid.focus_step(Direction::Down, redistribute(4));
-        assert_eq!(grid.focus, Focus::Cell(Slot::Group(9)));
+        assert_eq!(grid.focus, declared_focus(9));
 
-        grid.sync(&quiet(&[7, 9]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 9]), redistribute(4));
         grid.settle_for_test();
-        assert_eq!(grid.focus, Focus::Cell(Slot::Group(9)));
+        assert_eq!(grid.focus, declared_focus(9));
         assert_eq!(
             grid.focused_cell(),
             FocusLocation::Cell(3),
@@ -11548,12 +18723,12 @@ mod tests {
     #[test]
     fn focus_falls_back_to_the_summary_when_its_command_ends() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7]), redistribute(4));
         grid.settle_for_test();
         grid.focus_step(Direction::Down, redistribute(4));
-        assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
+        assert_eq!(grid.focus, declared_focus(7));
 
-        grid.sync(&quiet(&[]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[]), redistribute(4));
         grid.settle_for_test();
         assert_eq!(grid.focus, Focus::Summary);
     }
@@ -11566,11 +18741,16 @@ mod tests {
         grid.add(redistribute(4));
         grid.settle_for_test();
         grid.focus_step(Direction::Down, redistribute(4));
-        assert!(matches!(grid.focus, Focus::Cell(Slot::Empty(_))));
+        assert!(matches!(
+            grid.focus,
+            Focus::Cell(DrawnSlot {
+                slot: Slot::Empty(_),
+            })
+        ));
 
-        grid.sync(&quiet(&[7]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7]), redistribute(4));
         grid.settle_for_test();
-        assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
+        assert_eq!(grid.focus, declared_focus(7));
     }
 
     /// A click is the other way onto a cell, and lands on the same ring
@@ -11578,7 +18758,7 @@ mod tests {
     #[test]
     fn a_click_inside_a_cell_takes_the_focus_ring() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7, 8]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7, 8]), redistribute(4));
         grid.settle_for_test();
 
         let second = Grid::new(
@@ -11593,7 +18773,7 @@ mod tests {
         let index = grid.cell_at(inside).expect("the point is inside cell two");
         grid.focus_cell(index);
 
-        assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
+        assert_eq!(grid.focus, declared_focus(7));
     }
 
     #[test]
@@ -11612,7 +18792,12 @@ mod tests {
         grid.settle_for_test();
         let first = grid.slots[0].clone();
         grid.focus_step(Direction::Down, redistribute(4));
-        assert_eq!(grid.focus, Focus::Cell(first.clone()));
+        assert_eq!(
+            grid.focus,
+            Focus::Cell(DrawnSlot {
+                slot: first.clone(),
+            })
+        );
 
         grid.remove();
         grid.settle_for_test();
@@ -11626,11 +18811,11 @@ mod tests {
     #[test]
     fn minus_leaves_a_running_command_alone() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7]), redistribute(4));
         grid.add(redistribute(4));
         grid.settle_for_test();
         grid.focus_step(Direction::Down, redistribute(4));
-        assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
+        assert_eq!(grid.focus, declared_focus(7));
 
         grid.remove();
         grid.settle_for_test();
@@ -11644,7 +18829,7 @@ mod tests {
     #[test]
     fn minus_with_no_empty_cell_changes_nothing() {
         let mut grid = seeded_grid();
-        grid.sync(&quiet(&[7]), redistribute(4));
+        grid.sync_test_cells(&quiet(&[7]), redistribute(4));
         grid.settle_for_test();
 
         grid.remove();
@@ -11674,8 +18859,8 @@ mod tests {
         fn deep_grid() -> TileGrid<u32> {
             let mut grid = seeded_grid();
             let mut demands = busy(&[(7, 7), (8, 7), (9, 7)]);
-            demands.summary = 15;
-            grid.sync(&demands, redistribute(4));
+            demands.summary = summary_demand(15);
+            grid.sync_test_cells(&demands, redistribute(4));
             grid.settle_for_test();
             grid
         }
@@ -11687,14 +18872,14 @@ mod tests {
                 ..test_area()
             };
             let demands = TileDemands {
-                summary,
+                summary:       summary_demand(summary),
                 summary_width: 0,
-                groups: (1..=10).map(|id| TileDemand { id, rows: 10 }).collect(),
+                groups:        (1..=10).map(|id| TileDemand { id, rows: 10 }).collect(),
             };
             let mut grid = TileGrid::new();
             grid.set_min_tile_height(6);
             grid.set_layout(area, growth);
-            grid.sync(&demands, growth);
+            grid.sync_test_cells(&demands, growth);
             grid.settle_for_test();
             grid
         }
@@ -11743,13 +18928,13 @@ mod tests {
                 grid.set_layout(test_area(), growth);
                 for summary in 1..=usize::from(TEST_HEIGHT) {
                     let demands = TileDemands {
-                        summary,
+                        summary:       summary_demand(summary),
                         summary_width: 0,
-                        groups: (1..=command_count)
+                        groups:        (1..=command_count)
                             .map(|id| TileDemand { id, rows: 10 })
                             .collect(),
                     };
-                    grid.sync(&demands, growth);
+                    grid.sync_test_cells(&demands, growth);
                     grid.settle_for_test();
                     assert!(
                         grid.depth >= previous,
@@ -11804,12 +18989,11 @@ mod tests {
                 assert_eq!(
                     summary_share(
                         &wants,
-                        TEST_HEIGHT,
                         depth,
                         redistribute(4),
-                        MIN_TILE_HEIGHT,
                         test_area(),
-                        &TileSettings::default()
+                        &TileSettings::default(),
+                        SummaryDepthPolicy::ViewportBounded
                     ),
                     rows
                 );
@@ -11827,14 +19011,14 @@ mod tests {
         fn the_summary_gives_a_cell_back_once_it_fits_in_fewer() {
             let mut grid = seeded_grid();
             let mut demands = busy(&[(7, 7), (8, 7), (9, 7)]);
-            demands.summary = 36;
-            grid.sync(&demands, redistribute(4));
+            demands.summary = summary_demand(36);
+            grid.sync_test_cells(&demands, redistribute(4));
             grid.settle_for_test();
             assert_eq!(grid.depth, 3);
             assert_eq!(grid.held.summary_depth, 3);
 
-            demands.summary = 6;
-            grid.sync(&demands, redistribute(4));
+            demands.summary = summary_demand(6);
+            grid.sync_test_cells(&demands, redistribute(4));
             grid.settle_for_test();
             assert_eq!(grid.depth, 1);
             assert_eq!(grid.held.summary_depth, 1);
@@ -11932,8 +19116,8 @@ mod tests {
         fn widths_follow_capped_summary_positions_before_the_next_sync() {
             let mut grid = seeded_grid();
             let mut demands = busy(&[(7, 7)]);
-            demands.summary = 200;
-            grid.sync(&demands, redistribute(8));
+            demands.summary = summary_demand(200);
+            grid.sync_test_cells(&demands, redistribute(8));
             grid.settle_for_test();
             assert_eq!(grid.held.summary_depth, 7);
 
@@ -11966,12 +19150,11 @@ mod tests {
             assert!(
                 summary_share(
                     &wants,
-                    area.height,
                     1,
                     growth,
-                    MIN_TILE_HEIGHT,
                     area,
-                    &TileSettings::default()
+                    &TileSettings::default(),
+                    SummaryDepthPolicy::ViewportBounded
                 ) < wants[0].stepped_framed()
             );
         }
@@ -12056,8 +19239,8 @@ mod tests {
         fn adding_under_new_growth_queues_its_summary_depth() {
             let mut grid = seeded_grid();
             let mut demands = busy(&[(7, 7)]);
-            demands.summary = 200;
-            grid.sync(&demands, redistribute(8));
+            demands.summary = summary_demand(200);
+            grid.sync_test_cells(&demands, redistribute(8));
             grid.settle_for_test();
             assert_eq!(grid.depth, 7);
             let starting_depth = grid.depth;
@@ -12079,15 +19262,15 @@ mod tests {
         fn cell_numbers_hold_while_the_summary_deepens() {
             let mut grid = seeded_grid();
             let mut demands = busy(&[(7, 7), (8, 7)]);
-            grid.sync(&demands, redistribute(4));
+            grid.sync_test_cells(&demands, redistribute(4));
             grid.settle_for_test();
             grid.add(redistribute(4));
             grid.settle_for_test();
             assert_eq!(grid.depth, 1);
             let before = shown(&grid);
             assert_eq!(before[2], TileContent::Empty(4));
-            demands.summary = 36;
-            grid.sync(&demands, redistribute(4));
+            demands.summary = summary_demand(36);
+            grid.sync_test_cells(&demands, redistribute(4));
             grid.settle_for_test();
             assert_eq!(grid.depth, 3);
             assert_eq!(shown(&grid), before);
@@ -12099,7 +19282,7 @@ mod tests {
                 vec![1, 2, 3, 4]
             );
             grid.focus_cell(2);
-            assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
+            assert_eq!(grid.focus, declared_focus(7));
         }
 
         #[test]
@@ -12149,13 +19332,14 @@ mod tests {
                     },
                     progress,
                     CellAppearance {
-                        identity: CellIdentity::Slot(Slot::Empty(2)),
+                        identity: CellIdentity::Empty(2),
                         content:  TileContent::Empty(2),
                         focused:  false,
                     },
                     &mut pieces,
                 );
-                let placed = place_band_pieces(&before, &after, &bands, pieces, &HeightSnap::Off);
+                let placed = place_band_pieces(&before, &after, &bands, pieces, &HeightSnap::Off)
+                    .expect("band capacity");
                 let summary = &placed[0].placement;
                 let second = &placed[1].placement;
                 assert_eq!(summary.frame.rect().bottom() - 1, second.frame.rect().top());
@@ -12167,15 +19351,15 @@ mod tests {
             for (growth, span) in [(redistribute(4), 1), (widening(4), 2)] {
                 let mut grid = seeded_grid();
                 let mut demands = busy(&[(7, 7), (8, 7), (9, 7)]);
-                demands.summary = 15;
+                demands.summary = summary_demand(15);
                 demands.summary_width = u16::MAX;
-                grid.sync(&demands, growth);
+                grid.sync_test_cells(&demands, growth);
                 grid.settle_for_test();
                 assert_eq!(grid.depth, 2);
                 assert_eq!(grid.held.summary_span, span);
                 assert!(grid.pending.is_empty());
 
-                grid.sync(&demands, growth);
+                grid.sync_test_cells(&demands, growth);
                 assert!(grid.pending.is_empty(), "{growth:?}");
                 assert!(matches!(grid.motion, GridMotion::Settled));
             }
@@ -12186,9 +19370,9 @@ mod tests {
             let growth = widening(4);
             let mut grid = seeded_grid();
             let mut demands = busy(&[(7, 7), (8, 7), (9, 7)]);
-            demands.summary = 15;
+            demands.summary = summary_demand(15);
             demands.summary_width = u16::MAX;
-            grid.sync(&demands, growth);
+            grid.sync_test_cells(&demands, growth);
             grid.settle_for_test();
 
             let layout = Grid::new(test_area(), &grid.held, growth, &grid.settings);
@@ -12197,8 +19381,8 @@ mod tests {
             assert_eq!(grid.held.summary_span, 2);
             assert_eq!(layout.span, 2);
 
-            demands.summary = 36;
-            grid.sync(&demands, growth);
+            demands.summary = summary_demand(36);
+            grid.sync_test_cells(&demands, growth);
             grid.settle_for_test();
             let layout = Grid::new(test_area(), &grid.held, growth, &grid.settings);
             assert_eq!(grid.depth, 3);
@@ -12208,9 +19392,9 @@ mod tests {
 
             let mut capped = seeded_grid();
             let mut demands = busy(&[(7, 7)]);
-            demands.summary = 200;
+            demands.summary = summary_demand(200);
             demands.summary_width = u16::MAX;
-            capped.sync(&demands, widening(8));
+            capped.sync_test_cells(&demands, widening(8));
             capped.settle_for_test();
             assert_eq!(capped.depth, 7);
             capped.set_layout(test_area(), growth);
@@ -12220,6 +19404,7 @@ mod tests {
                 growth,
                 capped.area,
                 &capped.settings,
+                SummaryDepthPolicy::ViewportBounded,
             ) {
                 ColumnPlan::Columns(layout) => Some(layout),
                 ColumnPlan::NoAdmissibleColumn => None,

@@ -2,22 +2,31 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::fs;
+#[cfg(target_os = "linux")]
+use std::io::ErrorKind;
 use std::ops::Add;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::sync::RwLock;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
+use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::TrySendError;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -33,9 +42,13 @@ use rustix::process::test_kill_process;
 use sysinfo::Pid;
 use sysinfo::Process;
 use sysinfo::ProcessRefreshKind;
+use sysinfo::ProcessStatus;
 use sysinfo::ProcessesToUpdate;
 use sysinfo::System;
 use sysinfo::UpdateKind;
+use tui_pane::CellDepartureReceipt;
+use tui_pane::EndedCellDeparture;
+use tui_pane::PaintedRowSpan;
 use tui_pane::kernel_parent;
 
 use super::command_text;
@@ -53,6 +66,7 @@ use super::direct_capture::SelectedProof;
 use super::invocation_cpu_accounting;
 use super::invocation_cpu_accounting::CensusCadence;
 use super::invocation_cpu_accounting::CompileOwner;
+use super::invocation_cpu_accounting::CompilePathAbsence;
 use super::invocation_cpu_accounting::CompilerCreditRetention;
 use super::invocation_cpu_accounting::CpuAssignment;
 use super::invocation_cpu_accounting::CpuBaseline;
@@ -65,17 +79,29 @@ use super::process_identity;
 use super::process_identity::CaptureMembership;
 use super::process_identity::DispatchedProcess;
 use super::process_identity::InvocationId;
-#[cfg(test)]
+use super::process_identity::LifetimeMatch;
 use super::process_identity::ProcessIdentities;
 use super::process_identity::ProcessIdentity;
 use super::process_identity::RunId;
+use super::process_identity::TerminalIdentities;
 use super::process_identity::VisibleParent;
-#[cfg(any(target_os = "linux", test))]
 use crate::birth_stamp;
+use crate::birth_stamp::KernelObservation;
 use crate::birth_stamp::LifetimeEvidence;
 #[cfg(test)]
+use crate::birth_stamp::Observation;
+#[cfg(test)]
 use crate::birth_stamp::ProcessLifetime;
+use crate::birth_stamp::Verification;
 use crate::constants::ARGUMENT_SEPARATOR;
+#[cfg(target_os = "linux")]
+use crate::constants::BIRTH_PROC_DIRECTORY;
+#[cfg(target_os = "linux")]
+use crate::constants::BIRTH_STAT_COMM_SEPARATOR;
+#[cfg(target_os = "linux")]
+use crate::constants::BIRTH_STAT_FILENAME;
+#[cfg(target_os = "linux")]
+use crate::constants::BIRTH_STAT_ZOMBIE_STATE;
 use crate::constants::CARGO_DISPLAY_NAME;
 use crate::constants::CARGO_JSON_FORMAT_PREFIX;
 use crate::constants::CARGO_MESSAGE_FORMAT_FLAG;
@@ -85,7 +111,15 @@ use crate::constants::CARGO_QUIET_FLAGS;
 use crate::constants::CARGO_SUBCOMMAND_PREFIX;
 #[cfg(test)]
 use crate::constants::CARGO_TARGET_DIR_FLAG;
+use crate::constants::CENSUS_ATTRIBUTION_THREAD_NAME;
+use crate::constants::CENSUS_CAPTURE_THREAD_NAME;
+use crate::constants::CENSUS_DETAIL_READER_COUNT;
+use crate::constants::CENSUS_DETAIL_THREAD_PREFIX;
+use crate::constants::CENSUS_REFRESH_THREAD_NAME;
+use crate::constants::CENSUS_THREAD_NAME;
 use crate::constants::COMPILER_PROCESS_NAMES;
+use crate::constants::DIRECT_CARGO_ARGUMENTS_START;
+use crate::constants::MISSING_SCAN_LIMIT;
 use crate::constants::PARENT_WALK_LIMIT;
 use crate::constants::ROOT_PROCESS_PID;
 use crate::constants::RUSTC_BINARY;
@@ -93,10 +127,15 @@ use crate::constants::RUSTC_OUT_DIR_FLAG;
 use crate::constants::SCCACHE_BINARY;
 use crate::constants::SECONDS_PER_HOUR;
 use crate::constants::SECONDS_PER_MINUTE;
+use crate::constants::SHELL_ESCAPED_SINGLE_QUOTE;
+use crate::constants::SHELL_QUOTED_ARGUMENT_END;
+use crate::constants::SHELL_SINGLE_QUOTE;
 use crate::constants::START_TIME_FORMAT;
 use crate::constants::TRANSPARENT_PROCESS_NAMES;
 use crate::constants::UNRESOLVED_PATH;
 use crate::constants::UNRESOLVED_TIME;
+use crate::constants::WRAPPED_CARGO_ARGUMENTS_START;
+use crate::probe;
 use crate::progress::capture::Capture;
 use crate::progress::capture::CaptureKey;
 use crate::progress::capture::CaptureSelection;
@@ -541,6 +580,34 @@ impl CensusScope {
     }
 }
 
+/// A census worker could not start on the operating system.
+#[derive(Debug)]
+pub(crate) enum CensusStartError {
+    /// The named worker has no thread; the original operating-system error is retained.
+    ThreadUnavailable {
+        name:   String,
+        source: std::io::Error,
+    },
+}
+
+impl Display for CensusStartError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ThreadUnavailable { name, source } => {
+                write!(formatter, "cannot start census thread {name}: {source}")
+            },
+        }
+    }
+}
+
+impl std::error::Error for CensusStartError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ThreadUnavailable { source, .. } => Some(source),
+        }
+    }
+}
+
 /// Start the scanner thread and hand back the channel it publishes on.
 ///
 /// The thread ends when the receiver is dropped.
@@ -553,28 +620,846 @@ impl CensusScope {
 /// ownership. Keep root resolution on the worker even when it stalls. The
 /// resolver and join handle let tests hold resolution and observe repeated
 /// scans and shutdown.
+///
+/// # Errors
+///
+/// Returns `CensusStartError` if a census worker cannot start.
 pub(crate) fn spawn_with_resolver(
     excluded: ExcludedCommands,
     cadence: CensusCadence,
     scope: CensusScope,
     resolve: impl FnOnce() -> CaptureRoots + Send + 'static,
-) -> (Receiver<Scan>, JoinHandle<()>) {
+) -> Result<(Receiver<Scan>, JoinHandle<()>), CensusStartError> {
     spawn_resolved_scan_loop(cadence.poll, resolve, move || {
-        let mut system = System::new();
         let mut smoothing = InvocationCpuAccounting::new(cadence);
+        let mut history = ScanHistory {
+            identities:  ProcessIdentities::default(),
+            invocations: Invocations::default(),
+            details:     DetailDiscovery::new(|pid| process_details(&[pid]))?,
+            refresh:     PublicationStage::new(CENSUS_REFRESH_THREAD_NAME, |()| {
+                ProcessDiscovery::refresh()
+            })?,
+            discovery:   Arc::new(ProcessDiscovery::empty()),
+            previous:    Arc::new(ProcessDiscovery::empty()),
+            capture:     CaptureDiscovery::Unstarted,
+            attribution: PublicationStage::new(
+                CENSUS_ATTRIBUTION_THREAD_NAME,
+                move |request: AttributionRequest| request.attribute(&mut smoothing),
+            )?,
+            attributed:  AttributedInvocations::empty(),
+        };
         let home = dirs::home_dir();
-        move |roots| {
-            scan(
-                &mut system,
-                &mut smoothing,
-                Instant::now(),
-                home.as_deref().into(),
-                &excluded.snapshot(),
-                roots,
-                scope,
-            )
-        }
+        Ok(
+            move |roots: &CaptureRoots, window: &ScanPublicationWindow| {
+                scan(
+                    &mut history,
+                    window,
+                    home.as_deref().into(),
+                    &excluded.snapshot(),
+                    roots,
+                    scope,
+                )
+            },
+        )
     })
+}
+
+/// Discovery and publication share one freshness budget, starting before OS reads.
+pub(crate) struct ScanPublicationWindow {
+    started:        Instant,
+    next_discovery: Instant,
+}
+
+impl ScanPublicationWindow {
+    /// Reserve half the age budget for discovery and half for its publication.
+    pub(crate) fn started(started: Instant, budget: Duration) -> Self {
+        Self {
+            started,
+            next_discovery: started + budget / 2,
+        }
+    }
+
+    /// Completed work consumes the window; an overdue discovery adds no idle time.
+    pub(crate) fn pause_after(&self, completed: Instant) -> Duration {
+        self.next_discovery.saturating_duration_since(completed)
+    }
+}
+
+/// The time an answer has already spent in discovery when it is published.
+#[derive(Clone, Copy)]
+pub(crate) struct PublicationAge {
+    published: Instant,
+    discovery: Duration,
+}
+
+impl PublicationAge {
+    /// Carry time spent before publication through the scanner channel.
+    pub(crate) fn between(observed: Instant, published: Instant) -> Self {
+        Self {
+            published,
+            discovery: published.saturating_duration_since(observed),
+        }
+    }
+
+    /// Observation time stays unchanged while the answer waits for rendering.
+    pub(crate) fn observed_at(self) -> Instant {
+        self.published
+            .checked_sub(self.discovery)
+            .unwrap_or(self.published)
+    }
+}
+
+/// A queued read belongs to the native lifetime observed when it was requested.
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct PendingDetail {
+    pid:      Pid,
+    identity: InvocationId,
+}
+
+/// Publication never waits for a stage: one request owns its worker until completion.
+struct PublicationStage<Request, Answer> {
+    requests:     SyncSender<Request>,
+    replies:      Receiver<Answer>,
+    availability: PublicationWorker,
+}
+
+/// A blocked operation cannot accumulate stale requests behind it.
+enum PublicationWorker {
+    Available,
+    Running,
+}
+
+/// Only a completed answer can replace the last published observation.
+enum StageAnswer<Answer> {
+    Pending,
+    Completed(Answer),
+}
+
+impl<Request: Send + 'static, Answer: Send + 'static> PublicationStage<Request, Answer> {
+    fn new(
+        name: &'static str,
+        mut work: impl FnMut(Request) -> Answer + Send + 'static,
+    ) -> Result<Self, CensusStartError> {
+        let (requests, incoming) = mpsc::sync_channel(1);
+        let (completed, replies) = mpsc::channel();
+        thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || {
+                while let Ok(request) = incoming.recv() {
+                    let started = Instant::now();
+                    let answer = work(request);
+                    probe::scanner_cost(name, started.elapsed());
+                    if completed.send(answer).is_err() {
+                        return;
+                    }
+                }
+            })
+            .map_err(|source| CensusStartError::ThreadUnavailable {
+                name: name.to_owned(),
+                source,
+            })?;
+        Ok(Self {
+            requests,
+            replies,
+            availability: PublicationWorker::Available,
+        })
+    }
+
+    fn receive(&mut self) -> StageAnswer<Answer> {
+        match self.replies.try_recv() {
+            Ok(answer) => {
+                self.availability = PublicationWorker::Available;
+                StageAnswer::Completed(answer)
+            },
+            Err(_) => StageAnswer::Pending,
+        }
+    }
+
+    fn sample(&mut self, request: impl FnOnce() -> Request) -> StageAnswer<Answer> {
+        let answer = self.receive();
+        if matches!(self.availability, PublicationWorker::Available)
+            && self.requests.try_send(request()).is_ok()
+        {
+            self.availability = PublicationWorker::Running;
+        }
+        answer
+    }
+}
+
+/// A completed process discovery covers absent subjects as well as present pids.
+#[derive(Clone)]
+enum ProcessDiscoveryEvidence {
+    Current(HashSet<Pid>),
+    Retained,
+}
+
+impl ProcessDiscoveryEvidence {
+    fn contains(&self, pid: Pid) -> bool {
+        match self {
+            Self::Current(processes) => processes.contains(&pid),
+            Self::Retained => false,
+        }
+    }
+}
+
+/// Registrations retained during a blocked read are evidence of uncertainty, not a new observation.
+#[derive(Clone, Copy)]
+enum CaptureFreshness {
+    Current,
+    Retained,
+}
+
+/// The capture worker keeps account indices and descriptors off the publication path.
+enum CaptureDiscovery {
+    Unstarted,
+    Unavailable(CensusStartError),
+    Reading {
+        stage:  PublicationStage<(), Capture>,
+        latest: Capture,
+    },
+}
+
+impl CaptureDiscovery {
+    fn sample(
+        &mut self,
+        roots: &CaptureRoots,
+    ) -> Result<(&mut Capture, CaptureFreshness), &CensusStartError> {
+        match self {
+            Self::Unstarted => {
+                let worker_roots = roots.clone();
+                *self = match PublicationStage::new(CENSUS_CAPTURE_THREAD_NAME, move |()| {
+                    Capture::take(&worker_roots)
+                }) {
+                    Ok(stage) => Self::Reading {
+                        stage,
+                        latest: Capture::default(),
+                    },
+                    Err(error) => Self::Unavailable(error),
+                };
+                self.sample(roots)
+            },
+            Self::Unavailable(error) => Err(error),
+            Self::Reading { stage, latest } => {
+                let freshness = match stage.sample(|| ()) {
+                    StageAnswer::Completed(capture) => {
+                        *latest = capture;
+                        CaptureFreshness::Current
+                    },
+                    StageAnswer::Pending => CaptureFreshness::Retained,
+                };
+                Ok((latest, freshness))
+            },
+        }
+    }
+}
+
+/// Reusing a completed snapshot cannot revive a row while its worker is still blocked.
+#[derive(Clone)]
+enum PublicationEvidence {
+    Current,
+    Selected {
+        processes: ProcessDiscoveryEvidence,
+        captures:  CaptureFreshness,
+    },
+}
+
+/// Only completed discovery can supply current process absence evidence.
+#[derive(Clone, Copy)]
+enum DiscoveryFreshness {
+    Current,
+    Retained,
+}
+
+impl PublicationEvidence {
+    fn selected(
+        system: &System,
+        freshness: DiscoveryFreshness,
+        captures: CaptureFreshness,
+    ) -> Self {
+        Self::Selected {
+            processes: match freshness {
+                DiscoveryFreshness::Current => {
+                    ProcessDiscoveryEvidence::Current(system.processes().keys().copied().collect())
+                },
+                DiscoveryFreshness::Retained => ProcessDiscoveryEvidence::Retained,
+            },
+            captures,
+        }
+    }
+
+    const fn has_current_capture(&self) -> bool {
+        matches!(
+            self,
+            Self::Current
+                | Self::Selected {
+                    captures: CaptureFreshness::Current,
+                    ..
+                }
+        )
+    }
+
+    fn has_current_process(&self, pid: Pid) -> bool {
+        match self {
+            Self::Current => true,
+            Self::Selected { processes, .. } => processes.contains(pid),
+        }
+    }
+
+    fn permits(&self, row: &CargoProcess) -> bool {
+        match self {
+            Self::Current => true,
+            Self::Selected {
+                processes,
+                captures,
+            } => {
+                processes.contains(Pid::from_u32(row.pid))
+                    || (matches!(captures, CaptureFreshness::Current)
+                        && matches!(row.invocation_id, InvocationId::Captured(_)))
+            },
+        }
+    }
+}
+
+/// Discovery evidence is read on the refresh worker, including native lifetime reads.
+struct ProcessDiscovery {
+    system:      System,
+    baselines:   HashMap<Pid, CpuBaseline>,
+    observed_at: Instant,
+}
+
+impl ProcessDiscovery {
+    fn empty() -> Self {
+        Self {
+            system:      System::new(),
+            baselines:   HashMap::new(),
+            observed_at: Instant::now(),
+        }
+    }
+
+    fn refresh() -> Arc<Self> {
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            process_discovery_refresh_kind(),
+        );
+        let observed_at = Instant::now();
+        let baselines = system
+            .processes()
+            .iter()
+            .map(|(&pid, process)| (pid, CpuBaseline::from(process)))
+            .collect();
+        Arc::new(Self {
+            system,
+            baselines,
+            observed_at,
+        })
+    }
+
+    fn records(&self) -> Vec<(&Process, CpuBaseline)> {
+        self.system
+            .processes()
+            .iter()
+            .filter_map(|(pid, process)| {
+                self.baselines
+                    .get(pid)
+                    .map(|baseline| (process, baseline.clone()))
+            })
+            .collect()
+    }
+}
+
+/// Attribution owns snapshots, so a blocked counter or path read holds no publication borrow.
+struct AttributionRequest {
+    census:    Census,
+    discovery: Arc<ProcessDiscovery>,
+    previous:  Arc<ProcessDiscovery>,
+    details:   CompletedAttributionDetails<System>,
+    at:        Instant,
+}
+
+/// A requester has a proved source join or still awaits the retained tree's join.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ForwardingJoin {
+    Proved,
+    Pending,
+}
+
+/// Forwarding aliases count as one requester before compiler ownership is selected.
+struct CompilerRequester {
+    pid:  Pid,
+    join: ForwardingJoin,
+}
+
+impl CompilerRequester {
+    fn resolve(
+        mut pid: Pid,
+        census: &Census,
+        observations: &ProcessObservations<'_>,
+        children: &HashMap<Pid, Vec<Pid>>,
+    ) -> Self {
+        let mut join = ForwardingJoin::Proved;
+        for _ in 0..PARENT_WALK_LIMIT {
+            let Some([child]) = children.get(&pid).map(Vec::as_slice) else {
+                return Self { pid, join };
+            };
+            if census.forwards_to_single_child(observations, children, pid) {
+                pid = *child;
+            } else if Census::is_shim(observations, children, pid) {
+                join = ForwardingJoin::Pending;
+                pid = *child;
+            } else {
+                return Self { pid, join };
+            }
+        }
+        Self {
+            pid,
+            join: ForwardingJoin::Pending,
+        }
+    }
+}
+
+/// Each compiler has one owner, awaits source evidence, or has no matching owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompilerAttribution {
+    Owner(Pid),
+    PendingMetadata,
+    Unassigned,
+}
+
+impl CompilerAttribution {
+    /// Missing comparison inputs cannot prove either a unique owner or no owner.
+    fn resolve(
+        pid: Pid,
+        census: &Census,
+        observations: &ProcessObservations<'_>,
+        targets: &HashMap<Pid, HashSet<PathBuf>>,
+    ) -> Self {
+        let Some(process) = observations.process(pid) else {
+            return Self::PendingMetadata;
+        };
+        let (ProcessField::Observed(_), ProcessField::Observed(uid)) = (process.argv, process.uid)
+        else {
+            return Self::PendingMetadata;
+        };
+        let directory =
+            match invocation_cpu_accounting::process_argument_path(process, RUSTC_OUT_DIR_FLAG) {
+                Ok(directory) => directory,
+                Err(CompilePathAbsence::Unavailable) => return Self::PendingMetadata,
+                Err(CompilePathAbsence::Unspecified) => return Self::Unassigned,
+            };
+        let mut requesters = HashMap::new();
+        let children = census.cargo_children();
+        for owner in census.live_cargo() {
+            let Some(cargo) = observations.process(owner) else {
+                return Self::PendingMetadata;
+            };
+            let ProcessField::Observed(owner_uid) = cargo.uid else {
+                return Self::PendingMetadata;
+            };
+            // A shared filesystem path never links work from different users.
+            if uid != owner_uid {
+                continue;
+            }
+            let ProcessField::Observed(_) = cargo.argv else {
+                return Self::PendingMetadata;
+            };
+            if matches!(cargo.directory, ProcessField::Unavailable) {
+                return Self::PendingMetadata;
+            }
+            if targets
+                .get(&owner)
+                .is_some_and(|targets| targets.iter().any(|target| directory.starts_with(target)))
+            {
+                let requester = CompilerRequester::resolve(owner, census, observations, &children);
+                requesters
+                    .entry(requester.pid)
+                    .and_modify(|join| {
+                        if requester.join == ForwardingJoin::Pending {
+                            *join = ForwardingJoin::Pending;
+                        }
+                    })
+                    .or_insert(requester.join);
+            }
+        }
+        match invocation_cpu_accounting::compile_owner(requesters.keys().copied()) {
+            CompileOwner::Unique(owner) => match requesters[&owner] {
+                ForwardingJoin::Proved => Self::Owner(owner),
+                ForwardingJoin::Pending => Self::PendingMetadata,
+            },
+            CompileOwner::Unknown | CompileOwner::Ambiguous => Self::Unassigned,
+        }
+    }
+
+    /// Native identity and the original credit owner must authorize each selected owner.
+    fn bind(
+        self,
+        compiler: Pid,
+        census: &Census,
+        accounting: &mut InvocationCpuAccounting,
+    ) -> Self {
+        let Self::Owner(owner) = self else {
+            return self;
+        };
+        let (Ok(compiler), Ok(process)) =
+            (census.cpu_identity(compiler), census.cpu_identity(owner))
+        else {
+            return Self::PendingMetadata;
+        };
+        let Some(identity) = accounting.owners.get(&process) else {
+            return Self::PendingMetadata;
+        };
+        if accounting
+            .cache_owners
+            .entry(compiler)
+            .or_insert_with(|| identity.clone())
+            == identity
+        {
+            Self::Owner(owner)
+        } else {
+            Self::Unassigned
+        }
+    }
+}
+
+/// Only owners with completed current-source metadata enter product attribution.
+struct AttributableInvocations {
+    pids: HashSet<Pid>,
+}
+
+impl AttributableInvocations {
+    fn current(census: &Census, observations: &ProcessObservations<'_>) -> Self {
+        Self {
+            pids: census
+                .live_cargo()
+                .filter(|pid| observations.process(*pid).is_some())
+                .collect(),
+        }
+    }
+
+    /// Counter fixtures supply their own ownership and metadata evidence.
+    #[cfg(test)]
+    fn supplied(census: &Census) -> Self {
+        Self {
+            pids: census.live_cargo().collect(),
+        }
+    }
+}
+
+/// One completed counter pass carries its read time through rate and publication updates.
+struct InvocationCpuSamples {
+    at:       Instant,
+    readings: HashMap<Pid, Measurement<f32>>,
+}
+
+struct AttributedInvocations {
+    identities:   HashMap<Pid, InvocationId>,
+    measurements: InvocationMeasurements,
+}
+
+impl AttributionRequest {
+    fn attribute(self, smoothing: &mut InvocationCpuAccounting) -> AttributedInvocations {
+        let discovery = self.discovery.records();
+        let mut records = ProcessObservations::from_discovery(&discovery, &self.previous.baselines);
+        for batch in &self.details.0 {
+            records.overlay_details(batch);
+        }
+        let measurements = self.census.attribute(&records, smoothing, self.at);
+        AttributedInvocations {
+            identities: self.census.identities,
+            measurements,
+        }
+    }
+}
+
+impl AttributedInvocations {
+    fn empty() -> Self {
+        Self {
+            identities:   HashMap::new(),
+            measurements: InvocationMeasurements {
+                #[cfg(test)]
+                cpu_scan_publication:              CpuScanPublication::Unobserved,
+                compilers:                         HashMap::new(),
+                cpu:                               HashMap::new(),
+                memory:                            HashMap::new(),
+            },
+        }
+    }
+
+    /// A result for a replaced PID cannot be charged to its new invocation.
+    fn for_census(&self, census: &Census) -> InvocationMeasurements {
+        let same = |pid: &Pid| {
+            self.identities
+                .get(pid)
+                .is_some_and(|identity| census.identities.get(pid) == Some(identity))
+        };
+        InvocationMeasurements {
+            #[cfg(test)]
+            cpu_scan_publication:              self.measurements.cpu_scan_publication,
+            compilers:                         self
+                .measurements
+                .compilers
+                .iter()
+                .filter(|(pid, _)| same(pid))
+                .map(|(pid, value)| (*pid, value.clone()))
+                .collect(),
+            cpu:                               self
+                .measurements
+                .cpu
+                .iter()
+                .filter(|(pid, _)| same(pid))
+                .map(|(pid, value)| (*pid, *value))
+                .collect(),
+            memory:                            self
+                .measurements
+                .memory
+                .iter()
+                .filter(|(pid, _)| same(pid))
+                .map(|(pid, value)| (*pid, *value))
+                .collect(),
+        }
+    }
+}
+
+/// A lifetime has one metadata read in flight, retaining its last completed answer.
+enum DetailRead<T> {
+    Queued,
+    Reading,
+    Ready(Arc<T>),
+    Refreshing(Arc<T>),
+    /// Discovery observed another executable name after the read was scheduled.
+    ReadingChanged,
+    RefreshingChanged(Arc<T>),
+    SourceChanged(Arc<T>),
+    ReplacingSource(Arc<T>),
+}
+
+impl<T> DetailRead<T> {
+    fn answer(&self) -> Option<Arc<T>> {
+        match self {
+            Self::Queued | Self::Reading | Self::ReadingChanged => None,
+            Self::Ready(answer)
+            | Self::Refreshing(answer)
+            | Self::RefreshingChanged(answer)
+            | Self::SourceChanged(answer)
+            | Self::ReplacingSource(answer) => Some(Arc::clone(answer)),
+        }
+    }
+}
+
+/// Attribution consumes each completed metadata answer for its current source.
+struct CompletedAttributionDetails<T>(Vec<Arc<T>>);
+
+impl<T> CompletedAttributionDetails<T> {
+    fn from_reads<'a>(reads: impl Iterator<Item = &'a DetailRead<T>>) -> StageAnswer<Self>
+    where
+        T: 'a,
+    {
+        let answers = reads
+            .filter_map(|read| match read {
+                DetailRead::Ready(answer) | DetailRead::Refreshing(answer) => {
+                    Some(Arc::clone(answer))
+                },
+                DetailRead::Queued
+                | DetailRead::Reading
+                | DetailRead::ReadingChanged
+                | DetailRead::RefreshingChanged(_)
+                | DetailRead::SourceChanged(_)
+                | DetailRead::ReplacingSource(_) => None,
+            })
+            .collect::<Vec<_>>();
+        if answers.is_empty() {
+            StageAnswer::Pending
+        } else {
+            StageAnswer::Completed(Self(answers))
+        }
+    }
+}
+
+/// Discovery's latest source and the metadata read for one retained native lifetime.
+struct LifetimeDetails<T> {
+    source: ProcessField<OsString>,
+    read:   DetailRead<T>,
+}
+
+/// `CENSUS_DETAIL_READER_COUNT` readers share a bounded queue; publishing never waits.
+struct DetailDiscovery<T> {
+    reads:     HashMap<PendingDetail, LifetimeDetails<T>>,
+    pending:   VecDeque<PendingDetail>,
+    changes:   VecDeque<PendingDetail>,
+    refreshes: VecDeque<PendingDetail>,
+    requests:  SyncSender<PendingDetail>,
+    replies:   Receiver<(PendingDetail, T)>,
+}
+
+impl<T: Send + 'static> DetailDiscovery<T> {
+    fn new(read: impl Fn(Pid) -> T + Send + Sync + 'static) -> Result<Self, CensusStartError> {
+        let (requests, incoming) = mpsc::sync_channel::<PendingDetail>(CENSUS_DETAIL_READER_COUNT);
+        let incoming = Arc::new(std::sync::Mutex::new(incoming));
+        let read = Arc::new(read);
+        let (completed, replies) = mpsc::channel();
+        for reader in 0..CENSUS_DETAIL_READER_COUNT {
+            let incoming = Arc::clone(&incoming);
+            let read = Arc::clone(&read);
+            let completed = completed.clone();
+            let name = format!("{CENSUS_DETAIL_THREAD_PREFIX}-{reader}");
+            thread::Builder::new()
+                .name(name.clone())
+                .spawn(move || {
+                    loop {
+                        let request = incoming
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .recv();
+                        let Ok(request) = request else {
+                            return;
+                        };
+                        let answer = read(request.pid);
+                        if completed.send((request, answer)).is_err() {
+                            return;
+                        }
+                    }
+                })
+                .map_err(|source| CensusStartError::ThreadUnavailable { name, source })?;
+        }
+        Ok(Self {
+            reads: HashMap::new(),
+            pending: VecDeque::new(),
+            changes: VecDeque::new(),
+            refreshes: VecDeque::new(),
+            requests,
+            replies,
+        })
+    }
+
+    fn read(
+        &mut self,
+        pids: &[Pid],
+        identities: &HashMap<Pid, InvocationId>,
+        source: impl Fn(Pid) -> ProcessField<OsString>,
+    ) -> Vec<Arc<T>> {
+        self.reads.retain(|request, _| {
+            pids.contains(&request.pid) && identities.get(&request.pid) == Some(&request.identity)
+        });
+        self.receive();
+        self.pending
+            .retain(|request| self.reads.contains_key(request));
+        self.changes
+            .retain(|request| self.reads.contains_key(request));
+        self.refreshes
+            .retain(|request| self.reads.contains_key(request));
+        let mut arrivals = VecDeque::new();
+        for pid in pids {
+            let Some(identity) = identities.get(pid) else {
+                continue;
+            };
+            let request = PendingDetail {
+                pid:      *pid,
+                identity: identity.clone(),
+            };
+            let source = source(*pid);
+            match self.reads.entry(request.clone()) {
+                Entry::Vacant(entry) => {
+                    entry.insert(LifetimeDetails {
+                        source,
+                        read: DetailRead::Queued,
+                    });
+                    arrivals.push_back(request);
+                },
+                Entry::Occupied(mut entry) => {
+                    let details = entry.get_mut();
+                    if details.source != source {
+                        details.source = source;
+                        if matches!(details.read, DetailRead::Ready(_)) {
+                            self.changes.push_back(request);
+                        }
+                        details.read = match &details.read {
+                            DetailRead::Queued => DetailRead::Queued,
+                            DetailRead::Reading | DetailRead::ReadingChanged => {
+                                DetailRead::ReadingChanged
+                            },
+                            DetailRead::Ready(answer) | DetailRead::SourceChanged(answer) => {
+                                DetailRead::SourceChanged(Arc::clone(answer))
+                            },
+                            DetailRead::Refreshing(answer)
+                            | DetailRead::RefreshingChanged(answer)
+                            | DetailRead::ReplacingSource(answer) => {
+                                DetailRead::RefreshingChanged(Arc::clone(answer))
+                            },
+                        };
+                    }
+                },
+            }
+        }
+        arrivals.append(&mut self.pending);
+        self.pending = arrivals;
+        self.dispatch();
+        self.reads
+            .values()
+            .filter_map(|details| details.read.answer())
+            .collect()
+    }
+
+    /// A source change during a running read requires another read after its reply.
+    fn receive(&mut self) {
+        while let Ok((request, answer)) = self.replies.try_recv() {
+            if let Some(details) = self.reads.get_mut(&request) {
+                details.read = match details.read {
+                    DetailRead::ReadingChanged | DetailRead::RefreshingChanged(_) => {
+                        self.changes.push_back(request);
+                        DetailRead::SourceChanged(Arc::new(answer))
+                    },
+                    _ => {
+                        self.refreshes.push_back(request);
+                        DetailRead::Ready(Arc::new(answer))
+                    },
+                };
+            }
+        }
+    }
+
+    /// First reads precede changed sources; unchanged refreshes retain completion order.
+    fn dispatch(&mut self) {
+        while let Some(request) = self.pending.pop_front() {
+            match self.requests.try_send(request.clone()) {
+                Ok(()) => {
+                    if let Some(details) = self.reads.get_mut(&request) {
+                        details.read = DetailRead::Reading;
+                    }
+                },
+                Err(TrySendError::Full(request)) => {
+                    self.pending.push_front(request);
+                    return;
+                },
+                Err(TrySendError::Disconnected(_)) => return,
+            }
+        }
+        for queue in [&mut self.changes, &mut self.refreshes] {
+            while let Some(request) = queue.pop_front() {
+                let Some(details) = self.reads.get_mut(&request) else {
+                    continue;
+                };
+                let (DetailRead::Ready(answer) | DetailRead::SourceChanged(answer)) = &details.read
+                else {
+                    continue;
+                };
+                match self.requests.try_send(request.clone()) {
+                    Ok(()) => {
+                        details.read = if matches!(details.read, DetailRead::SourceChanged(_)) {
+                            DetailRead::ReplacingSource(Arc::clone(answer))
+                        } else {
+                            DetailRead::Refreshing(Arc::clone(answer))
+                        };
+                    },
+                    Err(TrySendError::Full(request)) => {
+                        queue.push_front(request);
+                        return;
+                    },
+                    Err(TrySendError::Disconnected(_)) => return,
+                }
+            }
+        }
+    }
 }
 
 /// Resolve capture roots once, then publish every scan produced from them.
@@ -582,84 +1467,84 @@ fn spawn_resolved_scan_loop<Published, Prepare, TakeScan>(
     poll: Duration,
     resolve: impl FnOnce() -> CaptureRoots + Send + 'static,
     prepare: Prepare,
-) -> (Receiver<Published>, JoinHandle<()>)
+) -> Result<(Receiver<Published>, JoinHandle<()>), CensusStartError>
 where
     Published: Send + 'static,
-    Prepare: FnOnce() -> TakeScan + Send + 'static,
-    TakeScan: FnMut(&CaptureRoots) -> Published + Send + 'static,
+    Prepare: FnOnce() -> Result<TakeScan, CensusStartError>,
+    TakeScan: FnMut(&CaptureRoots, &ScanPublicationWindow) -> Published + Send + 'static,
 {
+    let mut take_scan = prepare()?;
     let (sender, receiver) = mpsc::channel();
-    let worker = thread::spawn(move || {
-        let roots = resolve();
-        let mut take_scan = prepare();
-        loop {
-            if sender.send(take_scan(&roots)).is_err() {
-                return;
+    let worker = thread::Builder::new()
+        .name(CENSUS_THREAD_NAME.to_owned())
+        .spawn(move || {
+            let roots = resolve();
+            loop {
+                let window = ScanPublicationWindow::started(Instant::now(), poll);
+                if sender.send(take_scan(&roots, &window)).is_err() {
+                    return;
+                }
+                thread::sleep(window.pause_after(Instant::now()));
             }
-            thread::sleep(poll);
-        }
-    });
-    (receiver, worker)
+        })
+        .map_err(|source| CensusStartError::ThreadUnavailable {
+            name: CENSUS_THREAD_NAME.to_owned(),
+            source,
+        })?;
+    Ok((receiver, worker))
 }
 
 /// One two-phase scan, newest group first.
 ///
-/// `smoothing` outlives the scan because a CPU share is settled across
-/// scans rather than read out of one, and `now` is what tells it when
-/// the table is due a fresh reading.
+/// `history` retains completed observations and attribution between publications.
+/// `window` sets the publication start and the worker polling budget.
 fn scan(
-    system: &mut System,
-    smoothing: &mut InvocationCpuAccounting,
-    now: Instant,
+    history: &mut ScanHistory,
+    window: &ScanPublicationWindow,
     home: ScannerHome<'_>,
     excluded: &[String],
     roots: &CaptureRoots,
     scope: CensusScope,
 ) -> Scan {
-    let previous = system
-        .processes()
-        .iter()
-        .map(|(&pid, process)| {
-            (
-                pid,
-                CpuBaseline {
-                    lifetime:    smoothing
-                        .observed
-                        .get(&pid)
-                        .cloned()
-                        .unwrap_or(LifetimeEvidence::Unavailable),
-                    accumulated: process.accumulated_cpu_time(),
-                },
-            )
-        })
-        .collect();
-    // Phase one: pid, name, parent and start time for everything. None of
-    // the fields this asks for require a per-process read of the argument
-    // area, which is what makes it cheap enough to poll continuously.
-    // Read CPU counters on the full-system pass so short-lived descendants
-    // can contribute without requiring detailed command metadata. The invocation's
-    // own counter must be readable before accumulated work is published.
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        process_discovery_refresh_kind(),
-    );
-
-    let discovery: Vec<_> = system
-        .processes()
-        .values()
-        .map(|process| (process, CpuBaseline::from(process)))
-        .collect();
-    let mut observations = ProcessObservations::from_discovery(&discovery, &previous);
+    let ScanHistory {
+        identities,
+        invocations,
+        details,
+        refresh,
+        discovery: current,
+        previous,
+        capture,
+        attribution,
+        attributed,
+    } = history;
+    let fresh_discovery = match refresh.sample(|| ()) {
+        StageAnswer::Completed(discovery) => {
+            *previous = Arc::clone(current);
+            *current = discovery;
+            DiscoveryFreshness::Current
+        },
+        StageAnswer::Pending => DiscoveryFreshness::Retained,
+    };
+    let discovery = current.records();
+    let mut observations = ProcessObservations::from_discovery(&discovery, &previous.baselines);
     let mut census = Census::take(observations.records.values());
     census.restrict_to(scope);
-    census.identities = smoothing.identities.observe(&census.lifetimes);
+    if matches!(fresh_discovery, DiscoveryFreshness::Current) {
+        identities.retire_missing(&census.lifetimes, process_identity::ProvenProcessEnd::probe);
+    }
+    invocations.retain_identity_evidence(identities.retained());
+    census.identities = identities.observe(&census.lifetimes);
+    let mut unavailable_capture = Capture::default();
+    let (capture, capture_freshness) = capture
+        .sample(roots)
+        .unwrap_or((&mut unavailable_capture, CaptureFreshness::Retained));
+    census.publication_evidence =
+        PublicationEvidence::selected(&current.system, fresh_discovery, capture_freshness);
 
     // Phase two reads cargo, its ancestors, and compiler drivers. Ancestors name
     // the launcher; compiler arguments associate cache-server work with its requester.
     // Verification precedes row filtering, and registration pids must receive fresh
     // argv even when the cheap snapshot retains a pre-exec process name.
-    let mut capture = Capture::take(roots);
     let mut detailed = census.detailed();
     for pid in capture.registered_pids().into_iter().map(Pid::from_u32) {
         for candidate in
@@ -670,19 +1555,51 @@ fn scan(
             }
         }
     }
-    let details = process_details(&detailed);
-    observations.overlay_details(&details);
-    census.prepare(&observations, &capture, excluded);
-    let attributed = census.attribute(&observations, smoothing, now);
-    let groups = census.groups(&observations, &attributed, home, &capture);
-    census.associate_status(&mut capture, &groups);
+    let detail_batches = details.read(&detailed, &census.identities, |pid| {
+        current
+            .system
+            .process(pid)
+            .map(|process| process.name().to_os_string())
+            .into()
+    });
+    for batch in &detail_batches {
+        observations.overlay_details(batch);
+    }
+    let mut tree = invocations.identify(&mut census, &observations, capture);
+    census.prepare(&observations, capture, excluded);
+    let attribution_details = CompletedAttributionDetails::from_reads(
+        details.reads.values().map(|details| &details.read),
+    );
+    let attribution_answer = match (fresh_discovery, attribution_details) {
+        (DiscoveryFreshness::Current, StageAnswer::Completed(details)) => {
+            attribution.sample(|| AttributionRequest {
+                census: census.clone(),
+                discovery: Arc::clone(current),
+                previous: Arc::clone(previous),
+                details,
+                at: current.observed_at,
+            })
+        },
+        _ => attribution.receive(),
+    };
+    if let StageAnswer::Completed(answer) = attribution_answer {
+        *attributed = answer;
+    }
+    let measurements = attributed.for_census(&census);
+    let mut groups = census.groups(&observations, &measurements, home, capture);
+    tree.retain_ancestry(&census, &mut groups);
+    census.associate_status(capture, &groups);
+    let invocations = invocations.publish(&census, &tree, groups, capture, Instant::now(), |row| {
+        InvocationProbe::kernel(ProcessLifetimeSubject::observe(row))
+    });
     Scan {
         #[cfg(test)]
-        cpu_scan_publication: attributed.cpu_scan_publication,
+        cpu_scan_publication: measurements.cpu_scan_publication,
+        invocations,
+        age: PublicationAge::between(window.started, Instant::now()),
         sccache: census.sccache(),
-        groups,
-        root_status: capture.root_status,
-        shared_directory: capture.shared_directory,
+        root_status: capture.root_status.clone(),
+        shared_directory: capture.shared_directory.clone(),
     }
 }
 
@@ -751,6 +1668,7 @@ pub(crate) struct ProcessObservation<'scan> {
     pub(crate) uid:         ProcessField<u32>,
     pub(super) environment: &'scan [OsString],
     pub(super) lifetime:    Cow<'scan, LifetimeEvidence>,
+    status:                 NativeProcessStatus,
     pub(super) cpu:         Measurement<f32>,
     pub(super) memory:      u64,
     pub(super) accumulated: u64,
@@ -759,6 +1677,24 @@ pub(crate) struct ProcessObservation<'scan> {
     pub(super) started:     u64,
     pub(super) elapsed:     u64,
     details:                DetailPresence,
+}
+
+/// A native birth proves continued execution only while its process is live.
+#[derive(Clone, Copy, Debug)]
+enum NativeProcessStatus {
+    Live,
+    Zombie,
+    Unavailable,
+}
+
+impl From<ProcessStatus> for NativeProcessStatus {
+    fn from(status: ProcessStatus) -> Self {
+        match status {
+            ProcessStatus::Zombie => Self::Zombie,
+            ProcessStatus::Unknown(_) => Self::Unavailable,
+            _ => Self::Live,
+        }
+    }
 }
 
 impl<'scan> ProcessObservation<'scan> {
@@ -791,6 +1727,7 @@ impl<'scan> ProcessObservation<'scan> {
             cpu,
             memory: process.memory(),
             lifetime: Cow::Borrowed(lifetime),
+            status: process.status().into(),
             accumulated: process.accumulated_cpu_time(),
             native_cpu: Cell::new(Measurement::Unavailable(MeasurementAbsence::ReadFailed)),
             started: process.start_time(),
@@ -824,6 +1761,27 @@ impl<'scan> ProcessObservation<'scan> {
     const fn run_time(&self) -> u64 { self.elapsed }
 
     #[cfg(test)]
+    pub(crate) fn with_lifetime(mut self, lifetime: LifetimeEvidence) -> Self {
+        self.lifetime = Cow::Owned(lifetime);
+        self
+    }
+
+    /// Discovery knows a PID and its parent while its metadata request is pending.
+    #[cfg(test)]
+    pub(crate) const fn without_details(mut self) -> Self {
+        self.argv = ProcessField::Unavailable;
+        self.details = DetailPresence::Absent;
+        self
+    }
+
+    /// Supply a CPU reading without a kernel refresh.
+    #[cfg(test)]
+    pub(crate) const fn with_cpu_for_test(mut self, cpu: Measurement<f32>) -> Self {
+        self.cpu = cpu;
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn cargo(pid: u32, argv: &'scan [OsString]) -> Self {
         Self {
             pid:         Pid::from_u32(pid),
@@ -837,6 +1795,7 @@ impl<'scan> ProcessObservation<'scan> {
             lifetime:    Cow::Owned(LifetimeEvidence::Available(ProcessLifetime::for_test(
                 u64::from(pid),
             ))),
+            status:      NativeProcessStatus::Live,
             cpu:         Measurement::Unavailable(MeasurementAbsence::Unproven),
             memory:      0,
             accumulated: 0,
@@ -924,9 +1883,2062 @@ enum CargoAncestry {
     WalkLimitReached,
 }
 
-/// What phase one learned: the parent links, the cargo processes, and the
-/// compiler processes waiting to be attributed to one of them.
+/// The scanner owns both process-tree continuity and cumulative measurements.
+struct ScanHistory {
+    identities:  ProcessIdentities,
+    invocations: Invocations,
+    details:     DetailDiscovery<System>,
+    refresh:     PublicationStage<(), Arc<ProcessDiscovery>>,
+    discovery:   Arc<ProcessDiscovery>,
+    previous:    Arc<ProcessDiscovery>,
+    capture:     CaptureDiscovery,
+    attribution: PublicationStage<AttributionRequest, AttributedInvocations>,
+    attributed:  AttributedInvocations,
+}
+
+/// Publication position used to retain an unpainted end for one publication.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+struct ScanNumber(u64);
+
+/// Each invocation belongs to exactly one family, including across missing scans.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Membership {
+    Lead,
+    Member { lead: InvocationId },
+}
+
+/// The census has selected one execution for this identity.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct ResolvedInvocationId(InvocationId);
+
+impl ResolvedInvocationId {
+    pub(crate) const fn id(&self) -> &InvocationId { &self.0 }
+}
+
+/// No retained execution resolves this identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct UnresolvedInvocation;
+
+/// The actual allocation that supplied an invocation's paint receipt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum InvocationPaintSite {
+    Summary,
+    Cell(InvocationId),
+}
+
+/// The retained receipt decides whether an ended invocation still has a paint site.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum EndedPresentation {
+    Unpresented,
+    Presented(InvocationPaintSite),
+    Withdrawn,
+    Departed,
+}
+
+/// The receipt state belongs to the invocation that owned the painted rows.
+#[derive(Clone, Default, Debug)]
+enum Presentation {
+    #[default]
+    NotPresented,
+    Presented {
+        site:      InvocationPaintSite,
+        spans:     HashMap<u32, PaintedRowSpan<InvocationId>>,
+        departure: CellDepartureReceipt,
+    },
+    Withdrawn,
+    Departed,
+}
+
+/// Receipt shared by census retention and each actual row presentation.
+#[derive(Clone, Debug)]
+pub(crate) struct InvocationPresentation(Arc<Mutex<Presentation>>, ResolvedInvocationId);
+
+impl InvocationPresentation {
+    fn new(id: ResolvedInvocationId) -> Self {
+        Self(Arc::new(Mutex::new(Presentation::NotPresented)), id)
+    }
+    #[cfg(test)]
+    pub(crate) fn for_test(id: InvocationId) -> Self { Self::new(ResolvedInvocationId(id)) }
+    pub(crate) const fn resolved(&self) -> &ResolvedInvocationId { &self.1 }
+    pub(crate) fn painted_process(
+        &self,
+        pid: u32,
+        site: InvocationPaintSite,
+        span: PaintedRowSpan<InvocationId>,
+    ) {
+        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match &mut *state {
+            Presentation::Presented {
+                site: painted_site,
+                spans,
+                ..
+            } => {
+                *painted_site = site;
+                spans.insert(pid, span);
+            },
+            Presentation::NotPresented | Presentation::Withdrawn => {
+                *state = Presentation::Presented {
+                    site,
+                    spans: HashMap::from([(pid, span)]),
+                    departure: CellDepartureReceipt::default(),
+                };
+            },
+            Presentation::Departed => {},
+        }
+    }
+    fn departed(&self) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Presentation::Departed;
+    }
+    pub(crate) fn withdraw(&self) {
+        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match &*state {
+            Presentation::Presented { departure, .. } => departure.withdraw(),
+            Presentation::NotPresented | Presentation::Withdrawn => {},
+            Presentation::Departed => return,
+        }
+        *state = Presentation::Withdrawn;
+    }
+    fn state(&self) -> Presentation {
+        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if matches!(&*state, Presentation::Presented { departure, .. } if departure.is_complete()) {
+            *state = Presentation::Departed;
+        }
+        state.clone()
+    }
+}
+
+/// End evidence freezes this invocation's rows. Only census transitions construct it.
+#[derive(Clone, Debug)]
+pub(crate) struct EndedInvocation {
+    id:           InvocationId,
+    rows:         Arc<[CargoProcess]>,
+    at:           Instant,
+    presentation: InvocationPresentation,
+    published:    ScanNumber,
+}
+
+impl EndedInvocation {
+    pub(crate) fn presentation(&self) -> EndedPresentation {
+        match self.presentation.state() {
+            Presentation::NotPresented => EndedPresentation::Unpresented,
+            Presentation::Presented { site, .. } => EndedPresentation::Presented(site),
+            Presentation::Withdrawn => EndedPresentation::Withdrawn,
+            Presentation::Departed => EndedPresentation::Departed,
+        }
+    }
+    pub(crate) const fn at(&self) -> Instant { self.at }
+    pub(crate) fn withdraw(&self) { self.presentation.withdraw(); }
+    /// An ended row can update its paint, but cannot renew a withdrawal.
+    pub(crate) fn painted_process(&self, pid: u32, span: PaintedRowSpan<InvocationId>) {
+        let mut state = self
+            .presentation
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Presentation::Presented { spans, .. } = &mut *state {
+            spans.insert(pid, span);
+        }
+    }
+    pub(crate) const fn resolved(&self) -> &ResolvedInvocationId { self.presentation.resolved() }
+    fn rows(&self) -> &[CargoProcess] { &self.rows }
+    pub(crate) fn departed(&self) { self.presentation.departed(); }
+    pub(crate) fn departure(&self, fade: Duration) -> EndedCellDeparture {
+        let state = self.presentation.state();
+        let departure =
+            tui_pane::EndedCellDeparture::new(self.at, tui_pane::CellLifecycleTiming::new(fade));
+        match state {
+            Presentation::Presented {
+                departure: receipt, ..
+            } => departure.with_receipt(receipt),
+            Presentation::NotPresented | Presentation::Withdrawn | Presentation::Departed => {
+                departure
+            },
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture(row: CargoProcess, at: Instant) -> Self {
+        Self {
+            id: row.invocation_id.clone(),
+            rows: vec![row.clone()].into(),
+            at,
+            presentation: InvocationPresentation::for_test(row.invocation_id),
+            published: ScanNumber(0),
+        }
+    }
+}
+
+impl PartialEq for EndedInvocation {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.rows == other.rows && self.at == other.at
+    }
+}
+
+/// A live row carries lifetime evidence for its own process, independent of its owner.
+#[derive(Clone)]
+struct InvocationProcessRow {
+    process:  CargoProcess,
+    lifetime: LifetimeEvidence,
+}
+
+impl InvocationProcessRow {
+    fn observed(process: CargoProcess, census: &Census) -> Self {
+        let lifetime = census
+            .lifetimes
+            .get(&Pid::from_u32(process.pid))
+            .cloned()
+            .unwrap_or(LifetimeEvidence::Unavailable);
+        Self { process, lifetime }
+    }
+
+    fn refreshed(&self, process: CargoProcess, census: &Census) -> Self {
+        let mut next = Self::observed(process, census);
+        if next.process.pid == self.process.pid
+            && matches!(next.lifetime, LifetimeEvidence::Unavailable)
+        {
+            next.lifetime = self.lifetime.clone();
+        }
+        next
+    }
+}
+
+/// Only completed discovery observations advance the uncertain-absence bound.
+#[derive(Clone, Copy, Default)]
+struct MissingObservations(u64);
+
+impl MissingObservations {
+    const fn observe(
+        self,
+        evidence: &PublicationEvidence,
+        cargo_readiness: CargoReadiness,
+    ) -> Self {
+        match (evidence, cargo_readiness) {
+            (PublicationEvidence::Current, _)
+            | (
+                PublicationEvidence::Selected {
+                    captures: CaptureFreshness::Current,
+                    ..
+                },
+                CargoReadiness::AwaitingProcess,
+            )
+            | (
+                PublicationEvidence::Selected {
+                    processes: ProcessDiscoveryEvidence::Current(_),
+                    ..
+                },
+                CargoReadiness::ObservedProcess,
+            ) => Self(self.0.saturating_add(1)),
+            (
+                PublicationEvidence::Selected {
+                    captures: CaptureFreshness::Retained,
+                    ..
+                },
+                CargoReadiness::AwaitingProcess,
+            )
+            | (
+                PublicationEvidence::Selected {
+                    processes: ProcessDiscoveryEvidence::Retained,
+                    ..
+                },
+                CargoReadiness::ObservedProcess,
+            ) => self,
+        }
+    }
+}
+
+/// The only state machine that owns invocation presence, frozen rows and completion.
+enum InvocationState {
+    Live {
+        row: InvocationProcessRow,
+    },
+    Missing {
+        row:     InvocationProcessRow,
+        absence: MissingObservations,
+    },
+    Ended(EndedInvocation),
+}
+
+impl InvocationState {
+    fn rows(&self) -> &[CargoProcess] {
+        match self {
+            Self::Live { row } | Self::Missing { row, .. } => std::slice::from_ref(&row.process),
+            Self::Ended(end) => end.rows(),
+        }
+    }
+}
+
+/// Native continuity is evidence owned by the invocation, never another lifecycle.
+struct InvocationRecord {
+    owner:           InvocationOwner,
+    membership:      Membership,
+    state:           InvocationState,
+    processes:       Vec<(Pid, KnownCommandProcess)>,
+    ancestry:        KnownAncestry,
+    presentation:    InvocationPresentation,
+    cargo_readiness: CargoReadiness,
+}
+
+/// One resolved process has one row and one family in a publication.
+#[derive(Eq, Hash, PartialEq)]
+struct InvocationProcessRowKey {
+    invocation: ResolvedInvocationId,
+    pid:        Pid,
+}
+
+/// Resource values can advance without changing a retained row's lifetime evidence.
+struct InvocationProcessResources {
+    own:     InvocationResourceUse,
+    subtree: InvocationResourceUse,
+}
+
+struct FamilyProcessRow<'a> {
+    root:    &'a InvocationId,
+    process: &'a CargoProcess,
+}
+
+/// Key rows before family projection, including rows kept by an ended root.
+struct InvocationFamilyRows<'a> {
+    entries: HashMap<InvocationProcessRowKey, FamilyProcessRow<'a>>,
+}
+
+impl<'a> InvocationFamilyRows<'a> {
+    fn of(records: &'a HashMap<InvocationId, InvocationRecord>) -> Self {
+        let mut entries = HashMap::new();
+        for record in records.values() {
+            for row in record.state.rows() {
+                // A retained family can hold an older copy of a member's row.
+                // The member's own record supplies its receipt, values and root.
+                let owner = records.get(&row.invocation_id).unwrap_or(record);
+                let process = owner
+                    .state
+                    .rows()
+                    .iter()
+                    .find(|current| current.pid == row.pid)
+                    .unwrap_or(row);
+                let invocation = owner.presentation.resolved();
+                let mut root = invocation.id();
+                for _ in 0..PARENT_WALK_LIMIT {
+                    let Some(parent) = records.get(root) else {
+                        break;
+                    };
+                    let Membership::Member { lead } = &parent.membership else {
+                        break;
+                    };
+                    if lead == invocation.id() || !records.contains_key(lead) {
+                        break;
+                    }
+                    root = lead;
+                }
+                entries.insert(
+                    InvocationProcessRowKey {
+                        invocation: invocation.clone(),
+                        pid:        Pid::from_u32(row.pid),
+                    },
+                    FamilyProcessRow { root, process },
+                );
+            }
+        }
+        Self { entries }
+    }
+
+    fn into_families(self) -> HashMap<InvocationId, Vec<CargoProcess>> {
+        let mut families: HashMap<_, Vec<_>> = HashMap::new();
+        for row in self.entries.into_values() {
+            families
+                .entry(row.root.clone())
+                .or_default()
+                .push(row.process.clone());
+        }
+        families
+    }
+}
+
+#[derive(Debug)]
+struct UnownedProcessRow;
+
+#[derive(Debug)]
+struct ExecutionEndUnproven;
+
+impl InvocationRecord {
+    /// Existing ownership permits resource replacement while metadata is pending.
+    fn resource_key(
+        &self,
+        process: &CargoProcess,
+    ) -> Result<InvocationProcessRowKey, UnownedProcessRow> {
+        let row = match &self.state {
+            InvocationState::Live { row } | InvocationState::Missing { row, .. } => row,
+            InvocationState::Ended(_) => return Err(UnownedProcessRow),
+        };
+        if row.process.pid != process.pid {
+            return Err(UnownedProcessRow);
+        }
+        Ok(InvocationProcessRowKey {
+            invocation: self.presentation.resolved().clone(),
+            pid:        Pid::from_u32(process.pid),
+        })
+    }
+
+    /// Replace completed resources without supplying new lifetime evidence.
+    fn refresh_resources(
+        &mut self,
+        resources: &mut HashMap<InvocationProcessRowKey, InvocationProcessResources>,
+    ) {
+        match &mut self.state {
+            InvocationState::Live { row } | InvocationState::Missing { row, .. } => {
+                let key = InvocationProcessRowKey {
+                    invocation: self.presentation.resolved().clone(),
+                    pid:        Pid::from_u32(row.process.pid),
+                };
+                if let Some(resources) = resources.remove(&key) {
+                    row.process.resource_use = resources.own;
+                    row.process.subtree_resource_use = resources.subtree;
+                }
+            },
+            InvocationState::Ended(_) => {},
+        }
+    }
+
+    fn end_proof(
+        &self,
+        evidence: &PublicationEvidence,
+        capture: &Capture,
+        presence: InvocationProbe,
+        scans_missing: u64,
+    ) -> Result<ExecutionEndProof, ExecutionEndUnproven> {
+        match presence {
+            InvocationProbe::Ended(subject) => Ok(ExecutionEndProof::Native(subject)),
+            InvocationProbe::Alive => Err(ExecutionEndUnproven),
+            InvocationProbe::Uncertain => {
+                match (&self.cargo_readiness, &self.owner.identity, evidence) {
+                    (
+                        CargoReadiness::AwaitingProcess,
+                        InvocationId::Captured(run),
+                        PublicationEvidence::Current
+                        | PublicationEvidence::Selected {
+                            captures: CaptureFreshness::Current,
+                            ..
+                        },
+                    ) if !capture.registered_pids().contains(&run.shim_pid) => {
+                        Ok(ExecutionEndProof::Registration(run.clone()))
+                    },
+                    _ if scans_missing >= MISSING_SCAN_LIMIT => Ok(ExecutionEndProof::NotSeen),
+                    _ => Err(ExecutionEndUnproven),
+                }
+            },
+        }
+    }
+}
+
+/// Registration proves an invocation before it identifies the process doing its work.
+#[derive(Clone, Copy)]
+enum CargoReadiness {
+    AwaitingProcess,
+    ObservedProcess,
+}
+
+impl CargoReadiness {
+    fn of(row: &CargoProcess, census: &Census, capture: &Capture) -> Self {
+        match capture.row_source(row.pid) {
+            DirectAssociation::Direct(_)
+                if !census.registered_cargo.contains(&Pid::from_u32(row.pid)) =>
+            {
+                Self::AwaitingProcess
+            },
+            DirectAssociation::Direct(_) | DirectAssociation::None => Self::ObservedProcess,
+        }
+    }
+}
+
+/// Exactly one persistent owning map; process-tree projections are scan-local.
+#[derive(Default)]
+struct Invocations {
+    records:  HashMap<InvocationId, InvocationRecord>,
+    scan:     ScanNumber,
+    joined:   HashMap<InvocationId, InvocationId>,
+    terminal: TerminalIdentities,
+    bindings: InvocationProcessBindings,
+}
+
+/// Each native lifetime keeps the evidence that selected its execution.
+#[derive(Clone)]
+struct ProcessBindingEvidence {
+    origin: InvocationOwner,
+}
+
+/// A proven role separates an execution from each process that forwards to it.
+#[derive(Clone)]
+enum InvocationProcessBinding {
+    Executor {
+        owner:    InvocationOwner,
+        evidence: ProcessBindingEvidence,
+    },
+    Forwarder {
+        owner:    InvocationOwner,
+        evidence: ProcessBindingEvidence,
+        executor: ProcessIdentity,
+    },
+    IndependentExecution {
+        owner:    InvocationOwner,
+        evidence: ProcessBindingEvidence,
+        branch:   ProcessIdentity,
+    },
+}
+
+impl InvocationProcessBinding {
+    const fn owner(&self) -> &InvocationOwner {
+        match self {
+            Self::Executor { owner, .. }
+            | Self::Forwarder { owner, .. }
+            | Self::IndependentExecution { owner, .. } => owner,
+        }
+    }
+    const fn evidence(&self) -> &ProcessBindingEvidence {
+        match self {
+            Self::Executor { evidence, .. }
+            | Self::Forwarder { evidence, .. }
+            | Self::IndependentExecution { evidence, .. } => evidence,
+        }
+    }
+}
+
+/// A proven end cannot become an active binding for the same native subject.
+enum ProcessBindingState {
+    Active(InvocationProcessBinding),
+    Ended(ResolvedInvocationId),
+}
+
+/// Only the invocation map owns native lifetime bindings and their terminal facts.
+#[derive(Default)]
+struct InvocationProcessBindings {
+    subjects:      HashMap<ProcessIdentity, ProcessBindingState>,
+    registrations: HashMap<RunId, ProcessIdentity>,
+}
+
+impl InvocationProcessBindings {
+    fn subject(&mut self, native: &InvocationId) -> ProcessIdentity {
+        match native {
+            InvocationId::Process(identity) => identity.clone(),
+            InvocationId::Captured(run) => self
+                .registrations
+                .entry(run.clone())
+                .or_insert_with(|| {
+                    ProcessIdentity::observed(run.shim_pid, LifetimeEvidence::Unavailable)
+                })
+                .clone(),
+        }
+    }
+
+    fn retain(&mut self, tree: &mut ProcessTreeContinuity) {
+        let retained: HashSet<_> = tree
+            .nodes
+            .values()
+            .filter_map(|node| match &node.native {
+                InvocationId::Process(subject) => Some(subject.clone()),
+                InvocationId::Captured(run) => self.registrations.get(run).cloned(),
+            })
+            .collect();
+        self.subjects
+            .retain(|subject, _| retained.contains(subject));
+        self.registrations.retain(|run, _| {
+            tree.nodes
+                .values()
+                .any(|node| node.native == InvocationId::Captured(run.clone()))
+        });
+        for (pid, mut node) in std::mem::take(&mut tree.nodes) {
+            let subject = self.subject(&node.native);
+            let previous = match &node.invocation.identity {
+                InvocationId::Captured(run) => self
+                    .registrations
+                    .get(run)
+                    .and_then(|key| self.subjects.get(key)),
+                InvocationId::Process(_) => None,
+            };
+            let initial = match previous {
+                Some(ProcessBindingState::Active(binding)) => binding.clone(),
+                Some(ProcessBindingState::Ended(id)) => {
+                    self.subjects
+                        .insert(subject, ProcessBindingState::Ended(id.clone()));
+                    continue;
+                },
+                None => InvocationProcessBinding::Executor {
+                    owner:    node.invocation.clone(),
+                    evidence: ProcessBindingEvidence {
+                        origin: node.invocation.clone(),
+                    },
+                },
+            };
+            if let ProcessBindingState::Active(binding) = self
+                .subjects
+                .entry(subject)
+                .or_insert(ProcessBindingState::Active(initial))
+            {
+                node.invocation.clone_from(binding.owner());
+                tree.nodes.insert(pid, node);
+            }
+        }
+    }
+
+    fn split(&mut self, tree: &mut ProcessTreeContinuity, parent: Pid) {
+        let Some(parent_node) = tree.nodes.get(&parent) else {
+            return;
+        };
+        let owner = parent_node.invocation.identity.clone();
+        let branch = self.subject(&parent_node.native);
+        for node in tree
+            .nodes
+            .values_mut()
+            .filter(|node| node.invocation.identity == owner)
+        {
+            let subject = self.subject(&node.native);
+            if let Some(ProcessBindingState::Active(binding)) = self.subjects.get_mut(&subject) {
+                let evidence = binding.evidence().clone();
+                node.invocation.clone_from(&evidence.origin);
+                *binding = InvocationProcessBinding::IndependentExecution {
+                    owner: evidence.origin.clone(),
+                    evidence,
+                    branch: branch.clone(),
+                };
+            }
+        }
+    }
+
+    fn commit(&mut self, tree: &ProcessTreeContinuity) {
+        let parents: HashSet<_> = tree
+            .nodes
+            .iter()
+            .filter_map(|(&child, candidate)| {
+                let parent = tree.parent_of(child)?;
+                (tree.nodes[&parent].invocation.identity == candidate.invocation.identity)
+                    .then_some(parent)
+            })
+            .collect();
+        let mut executors = HashMap::new();
+        for (&pid, node) in &tree.nodes {
+            if !parents.contains(&pid) {
+                executors.insert(node.invocation.identity.clone(), self.subject(&node.native));
+            }
+        }
+        let retained: HashSet<_> = tree
+            .nodes
+            .values()
+            .filter_map(|node| match &node.native {
+                InvocationId::Process(identity) => Some(identity.clone()),
+                InvocationId::Captured(_) => None,
+            })
+            .collect();
+        for state in self.subjects.values() {
+            if let ProcessBindingState::Active(InvocationProcessBinding::Forwarder {
+                owner,
+                executor,
+                ..
+            }) = state
+                && retained.contains(executor)
+            {
+                executors
+                    .entry(owner.identity.clone())
+                    .or_insert_with(|| executor.clone());
+            }
+        }
+        for node in tree.nodes.values() {
+            let subject = self.subject(&node.native);
+            let Some(ProcessBindingState::Active(previous)) = self.subjects.get(&subject) else {
+                continue;
+            };
+            let evidence = previous.evidence().clone();
+            let binding = match executors.get(&node.invocation.identity) {
+                Some(executor) if executor != &subject => InvocationProcessBinding::Forwarder {
+                    owner: node.invocation.clone(),
+                    evidence,
+                    executor: executor.clone(),
+                },
+                _ => match previous {
+                    InvocationProcessBinding::IndependentExecution { branch, .. } => {
+                        InvocationProcessBinding::IndependentExecution {
+                            owner: node.invocation.clone(),
+                            evidence,
+                            branch: branch.clone(),
+                        }
+                    },
+                    _ => InvocationProcessBinding::Executor {
+                        owner: node.invocation.clone(),
+                        evidence,
+                    },
+                },
+            };
+            self.subjects
+                .insert(subject, ProcessBindingState::Active(binding));
+        }
+    }
+
+    fn resolve(
+        &mut self,
+        node: &KnownCommandProcess,
+    ) -> Result<ResolvedInvocationId, UnresolvedInvocation> {
+        let subject = self.subject(&node.native);
+        match self.subjects.get(&subject) {
+            Some(ProcessBindingState::Active(
+                InvocationProcessBinding::Executor { owner, .. }
+                | InvocationProcessBinding::IndependentExecution { owner, .. },
+            )) => Ok(ResolvedInvocationId(owner.identity.clone())),
+            Some(
+                ProcessBindingState::Active(InvocationProcessBinding::Forwarder { .. })
+                | ProcessBindingState::Ended(_),
+            )
+            | None => Err(UnresolvedInvocation),
+        }
+    }
+
+    fn end_not_seen(
+        &mut self,
+        resolved: &ResolvedInvocationId,
+        executor: Pid,
+        terminal: &mut TerminalIdentities,
+    ) {
+        for (subject, state) in &self.subjects {
+            if let ProcessBindingState::Active(
+                InvocationProcessBinding::Executor { owner, .. }
+                | InvocationProcessBinding::IndependentExecution { owner, .. },
+            ) = state
+                && &owner.identity == resolved.id()
+            {
+                let pid = match subject {
+                    ProcessIdentity::Known { pid, .. }
+                    | ProcessIdentity::Unavailable { pid, .. } => Pid::from_u32(*pid),
+                };
+                if pid == executor {
+                    terminal.end(pid, &InvocationId::Process(subject.clone()));
+                }
+            }
+        }
+        terminal.end(executor, resolved.id());
+        self.end(resolved);
+    }
+
+    fn end_subject(
+        &mut self,
+        resolved: &ResolvedInvocationId,
+        subject: ProcessLifetimeSubject,
+        terminal: &mut TerminalIdentities,
+    ) {
+        self.end_not_seen(resolved, subject.pid, terminal);
+        if let LifetimeEvidence::Available(lifetime) = subject.lifetime {
+            self.subjects.insert(
+                ProcessIdentity::Known {
+                    pid: subject.pid.as_u32(),
+                    lifetime,
+                },
+                ProcessBindingState::Ended(resolved.clone()),
+            );
+        }
+        self.end(resolved);
+    }
+
+    fn end_registration(&mut self, resolved: &ResolvedInvocationId, registration: RunId) {
+        let identity = self.subject(&InvocationId::Captured(registration));
+        self.subjects
+            .insert(identity, ProcessBindingState::Ended(resolved.clone()));
+        self.end(resolved);
+    }
+
+    fn end(&mut self, resolved: &ResolvedInvocationId) {
+        for state in self.subjects.values_mut() {
+            if matches!(state, ProcessBindingState::Active(binding) if &binding.owner().identity == resolved.id())
+            {
+                *state = ProcessBindingState::Ended(resolved.clone());
+            }
+        }
+    }
+}
+
+/// Publication carries state values; omission never authorizes a departure.
+#[derive(Clone, Debug)]
+pub(crate) enum PublishedInvocation {
+    Live(InvocationPresentation),
+    AwaitingCargo(InvocationPresentation),
+    Missing(InvocationPresentation),
+    Ended(EndedInvocation),
+    Joined { into: InvocationId },
+}
+
+impl PartialEq for PublishedInvocation {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Live(_), Self::Live(_))
+            | (Self::AwaitingCargo(_), Self::AwaitingCargo(_))
+            | (Self::Missing(_), Self::Missing(_)) => true,
+            (Self::Ended(a), Self::Ended(b)) => a == b,
+            (Self::Joined { into: a }, Self::Joined { into: b }) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// Admission evidence is borrowed only from an observed live publication.
+#[derive(Clone, Debug)]
+pub(crate) struct AdmissibleInvocation {
+    presentation: InvocationPresentation,
+}
+
+impl AdmissibleInvocation {
+    pub(crate) fn painted_process(
+        &self,
+        pid: u32,
+        site: InvocationPaintSite,
+        span: PaintedRowSpan<InvocationId>,
+    ) {
+        self.presentation.painted_process(pid, site, span);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct InvocationNotAdmissible;
+
+impl PublishedInvocation {
+    pub(crate) fn admissible(&self) -> Result<AdmissibleInvocation, InvocationNotAdmissible> {
+        match self {
+            Self::Live(presentation) => Ok(AdmissibleInvocation {
+                presentation: presentation.clone(),
+            }),
+            Self::AwaitingCargo(_) | Self::Missing(_) | Self::Ended(_) | Self::Joined { .. } => {
+                Err(InvocationNotAdmissible)
+            },
+        }
+    }
+}
+
+/// Borrowed live row evidence; ended and missing rows cannot refresh display rows.
+#[derive(Clone, Copy)]
+pub(crate) struct LiveInvocation<'a> {
+    pub(crate) row: &'a CargoProcess,
+    publication:    LivePublication<'a>,
+}
+
+/// Refreshable rows retain whether the cargo process has been identified.
+#[derive(Clone, Copy)]
+enum LivePublication<'a> {
+    Cargo(&'a InvocationPresentation),
+    AwaitingCargo(&'a InvocationPresentation),
+}
+
+impl LiveInvocation<'_> {
+    pub(crate) fn published(&self) -> PublishedInvocation {
+        match self.publication {
+            LivePublication::Cargo(presentation) => PublishedInvocation::Live(presentation.clone()),
+            LivePublication::AwaitingCargo(presentation) => {
+                PublishedInvocation::AwaitingCargo(presentation.clone())
+            },
+        }
+    }
+}
+
+/// A Missing publication can replace resources without supplying live-row evidence.
+#[derive(Clone, Copy)]
+pub(crate) struct RetainedInvocationResources<'a> {
+    pub(crate) own:     &'a InvocationResourceUse,
+    pub(crate) subtree: &'a InvocationResourceUse,
+}
+
+/// Every retained invocation is published once, alongside membership-derived groups.
+#[derive(Clone, Default, Debug, PartialEq)]
+pub(crate) struct PublishedInvocations {
+    groups: Vec<CargoGroup>,
+    states: HashMap<InvocationId, PublishedInvocation>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RetainedResourcesUnavailable;
+
+#[derive(Debug)]
+pub(crate) struct LivePublicationUnavailable;
+
+impl PublishedInvocations {
+    pub(crate) fn groups(&self) -> &[CargoGroup] { &self.groups }
+    pub(crate) fn state(&self, id: &InvocationId) -> Option<&PublishedInvocation> {
+        self.states.get(id)
+    }
+
+    pub(crate) fn retained_resources<'a>(
+        &self,
+        row: &'a CargoProcess,
+    ) -> Result<RetainedInvocationResources<'a>, RetainedResourcesUnavailable> {
+        match self.states.get(&row.invocation_id) {
+            Some(PublishedInvocation::Missing(_)) => Ok(RetainedInvocationResources {
+                own:     &row.resource_use,
+                subtree: &row.subtree_resource_use,
+            }),
+            Some(
+                PublishedInvocation::Live(_)
+                | PublishedInvocation::AwaitingCargo(_)
+                | PublishedInvocation::Ended(_)
+                | PublishedInvocation::Joined { .. },
+            )
+            | None => Err(RetainedResourcesUnavailable),
+        }
+    }
+
+    pub(crate) fn live<'a>(
+        &'a self,
+        row: &'a CargoProcess,
+    ) -> Result<LiveInvocation<'a>, LivePublicationUnavailable> {
+        match self.states.get(&row.invocation_id) {
+            Some(PublishedInvocation::Live(presentation)) => Ok(LiveInvocation {
+                row,
+                publication: LivePublication::Cargo(presentation),
+            }),
+            Some(PublishedInvocation::AwaitingCargo(presentation)) => Ok(LiveInvocation {
+                row,
+                publication: LivePublication::AwaitingCargo(presentation),
+            }),
+            Some(
+                PublishedInvocation::Missing(_)
+                | PublishedInvocation::Ended(_)
+                | PublishedInvocation::Joined { .. },
+            )
+            | None => Err(LivePublicationUnavailable),
+        }
+    }
+
+    /// Synthetic publications share the same row receipts as their previous publication.
+    #[cfg(test)]
+    pub(crate) fn with_fixture_receipts(mut self, previous: &Self) -> Self {
+        for (id, state) in &mut self.states {
+            let Some(prior) = previous.states.get(id) else {
+                continue;
+            };
+            let presentation = match prior {
+                PublishedInvocation::Live(presentation)
+                | PublishedInvocation::AwaitingCargo(presentation)
+                | PublishedInvocation::Missing(presentation) => presentation,
+                PublishedInvocation::Ended(end) => &end.presentation,
+                PublishedInvocation::Joined { .. } => continue,
+            };
+            match state {
+                PublishedInvocation::Live(current)
+                | PublishedInvocation::AwaitingCargo(current)
+                | PublishedInvocation::Missing(current) => *current = presentation.clone(),
+                PublishedInvocation::Ended(current) => {
+                    if let PublishedInvocation::Ended(prior_end) = prior {
+                        *current = prior_end.clone();
+                    } else {
+                        current.presentation = presentation.clone();
+                    }
+                },
+                PublishedInvocation::Joined { .. } => {},
+            }
+        }
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(
+        groups: Vec<CargoGroup>,
+        missing: &[InvocationId],
+        previous: &[CargoGroup],
+        at: Instant,
+    ) -> Self {
+        let mut states = HashMap::new();
+        for row in groups
+            .iter()
+            .flat_map(|group| std::iter::once(&group.lead).chain(&group.rest))
+        {
+            states.insert(
+                row.invocation_id.clone(),
+                PublishedInvocation::Live(InvocationPresentation::for_test(
+                    row.invocation_id.clone(),
+                )),
+            );
+        }
+        let mut retained = groups;
+        for group in previous {
+            for row in std::iter::once(&group.lead).chain(&group.rest) {
+                states.entry(row.invocation_id.clone()).or_insert_with(|| {
+                    if missing.contains(&row.invocation_id) {
+                        PublishedInvocation::Missing(InvocationPresentation::for_test(
+                            row.invocation_id.clone(),
+                        ))
+                    } else {
+                        PublishedInvocation::Ended(EndedInvocation {
+                            id: row.invocation_id.clone(),
+                            rows: vec![row.clone()].into(),
+                            at,
+                            presentation: InvocationPresentation::for_test(
+                                row.invocation_id.clone(),
+                            ),
+                            published: ScanNumber(0),
+                        })
+                    }
+                });
+            }
+            let elsewhere: HashSet<_> = retained
+                .iter()
+                .flat_map(|group| std::iter::once(&group.lead).chain(&group.rest))
+                .map(|row| row.invocation_id.clone())
+                .collect();
+            if let Some(current) = retained
+                .iter_mut()
+                .find(|candidate| candidate.id() == group.id())
+            {
+                current.rest.extend(
+                    group
+                        .rest
+                        .iter()
+                        .filter(|row| !elsewhere.contains(&row.invocation_id))
+                        .cloned(),
+                );
+            } else if !elsewhere.contains(&group.id()) {
+                let mut held = group.clone();
+                held.rest
+                    .retain(|row| !elsewhere.contains(&row.invocation_id));
+                retained.push(held);
+            }
+        }
+        Self {
+            groups: retained,
+            states,
+        }
+    }
+}
+
+/// A process lifetime can be checked only against the kernel read for its own pid.
+struct ProcessLifetimeSubject {
+    pid:                Pid,
+    lifetime:           LifetimeEvidence,
+    kernel_observation: KernelObservation,
+}
+
+impl ProcessLifetimeSubject {
+    fn observe(row: &InvocationProcessRow) -> Self {
+        let pid = Pid::from_u32(row.process.pid);
+        Self {
+            pid,
+            lifetime: row.lifetime.clone(),
+            kernel_observation: birth_stamp::observe(pid.as_u32()),
+        }
+    }
+    fn compare(self, current: &LifetimeEvidence) -> InvocationProbe {
+        match NativeLifetimeComparison::between(&self.lifetime, current) {
+            NativeLifetimeComparison::Different => InvocationProbe::Ended(self),
+            native => {
+                let verification = match &self.lifetime {
+                    LifetimeEvidence::Available(lifetime) => {
+                        lifetime.verify_process(self.pid.as_u32(), &self.kernel_observation)
+                    },
+                    LifetimeEvidence::Unavailable => Verification::Unknown,
+                };
+                match verification {
+                    Verification::Ended => InvocationProbe::Ended(self),
+                    Verification::Confirmed if matches!(native, NativeLifetimeComparison::Same) => {
+                        InvocationProbe::Alive
+                    },
+                    Verification::Confirmed | Verification::Unknown => InvocationProbe::Uncertain,
+                }
+            },
+        }
+    }
+}
+
+/// An end proof belongs to the resolved execution and names its own subject.
+enum ExecutionEndProof {
+    Native(ProcessLifetimeSubject),
+    Registration(RunId),
+    NotSeen,
+}
+
+struct ResolvedExecutionEnd {
+    execution: ResolvedInvocationId,
+    proof:     ExecutionEndProof,
+}
+
+/// Kernel end proof includes zombies; inconclusive probes have a bounded Missing state.
+enum InvocationProbe {
+    Alive,
+    Ended(ProcessLifetimeSubject),
+    Uncertain,
+}
+
+/// Native comparison does not authorize an end without its process subject.
+enum NativeLifetimeComparison {
+    Same,
+    Different,
+    Unknown,
+}
+
+impl NativeLifetimeComparison {
+    fn between(previous: &LifetimeEvidence, current: &LifetimeEvidence) -> Self {
+        match (previous, current) {
+            (LifetimeEvidence::Available(previous), LifetimeEvidence::Available(current)) => {
+                if previous == current {
+                    Self::Same
+                } else {
+                    Self::Different
+                }
+            },
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl InvocationProbe {
+    fn kernel(subject: ProcessLifetimeSubject) -> Self {
+        let pid = subject.pid;
+        if process_identity::ProvenProcessEnd::probe(pid).is_ok() {
+            return Self::Ended(subject);
+        }
+        #[cfg(target_os = "linux")]
+        match fs::read_to_string(
+            Path::new(BIRTH_PROC_DIRECTORY)
+                .join(pid.to_string())
+                .join(BIRTH_STAT_FILENAME),
+        ) {
+            Ok(stat)
+                if stat
+                    .rsplit_once(BIRTH_STAT_COMM_SEPARATOR)
+                    .is_some_and(|(_, tail)| tail.starts_with(BIRTH_STAT_ZOMBIE_STATE)) =>
+            {
+                return Self::Ended(subject);
+            },
+            Err(error) if error.kind() == ErrorKind::NotFound => return Self::Ended(subject),
+            Ok(_) | Err(_) => {},
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let mut snapshot = System::new();
+            snapshot.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[pid]),
+                true,
+                ProcessRefreshKind::nothing().without_tasks(),
+            );
+            if snapshot
+                .process(pid)
+                .is_some_and(|process| process.status() == ProcessStatus::Zombie)
+            {
+                return Self::Ended(subject);
+            }
+        }
+        subject.compare(&birth_stamp::lifetime(pid.as_u32()))
+    }
+}
+
+impl Invocations {
+    /// Retain terminal facts by their native subjects and bound aliases, not displayed pids.
+    fn retain_identity_evidence(&mut self, observations: impl Iterator<Item = InvocationId>) {
+        let mut evidence: HashSet<_> = observations.collect();
+        for (subject, binding) in &self.bindings.subjects {
+            evidence.insert(InvocationId::Process(subject.clone()));
+            match binding {
+                ProcessBindingState::Active(binding) => {
+                    evidence.insert(binding.owner().identity.clone());
+                    evidence.insert(binding.evidence().origin.identity.clone());
+                },
+                ProcessBindingState::Ended(owner) => {
+                    evidence.insert(owner.id().clone());
+                },
+            }
+        }
+        for (run, subject) in &self.bindings.registrations {
+            evidence.insert(InvocationId::Captured(run.clone()));
+            evidence.insert(InvocationId::Process(subject.clone()));
+        }
+        for (id, record) in &self.records {
+            evidence.insert(id.clone());
+            for (_, process) in &record.processes {
+                evidence.insert(process.native.clone());
+            }
+        }
+        self.terminal.retain(&evidence);
+        self.joined.retain(|alias, _| evidence.contains(alias));
+    }
+
+    fn identify(
+        &mut self,
+        census: &mut Census,
+        observations: &ProcessObservations<'_>,
+        capture: &Capture,
+    ) -> ProcessTreeContinuity {
+        self.scan.0 = self.scan.0.saturating_add(1);
+        self.records.retain(|_, record| match &record.state {
+            InvocationState::Ended(end) => match end.presentation.state() {
+                Presentation::Presented { .. } => true,
+                Presentation::NotPresented => end.published >= self.scan,
+                Presentation::Withdrawn | Presentation::Departed => false,
+            },
+            InvocationState::Live { .. } | InvocationState::Missing { .. } => true,
+        });
+        let mut tree = ProcessTreeContinuity {
+            scan: self.scan.0.saturating_sub(1),
+            ..ProcessTreeContinuity::default()
+        };
+        for (pid, identity) in &mut census.identities {
+            *identity = self.terminal.subsequent(*pid, identity);
+        }
+        for (id, record) in &self.records {
+            if matches!(record.state, InvocationState::Ended(_)) {
+                continue;
+            }
+            tree.ancestry.insert(id.clone(), record.ancestry.clone());
+            for (pid, process) in &record.processes {
+                tree.nodes.insert(*pid, process.clone());
+            }
+        }
+        tree.identify(census, observations, capture, &mut self.bindings);
+        for (pid, node) in &mut tree.nodes {
+            let identity = self.terminal.subsequent(*pid, &node.invocation.identity);
+            if identity != node.invocation.identity {
+                let owner = InvocationOwner {
+                    identity:   identity.clone(),
+                    first_scan: tree.scan,
+                };
+                node.invocation = owner;
+            }
+            census.identities.insert(*pid, identity);
+        }
+        self.records.retain(|id, _| !tree.joined.contains_key(id));
+        self.joined.extend(tree.joined.clone());
+        self.joined.retain(|id, _| !self.records.contains_key(id));
+        tree
+    }
+
+    /// A newly observed row can restore Missing, but never change a terminal end.
+    fn observe_live_row(
+        &mut self,
+        resolved: ResolvedInvocationId,
+        mut row: CargoProcess,
+        census: &Census,
+        tree: &ProcessTreeContinuity,
+        capture: &Capture,
+    ) {
+        row.invocation_id.clone_from(resolved.id());
+        let id = resolved.id().clone();
+        let membership = match &row.parent {
+            VisibleParent::Invocation { id, .. } => Membership::Member { lead: id.clone() },
+            VisibleParent::Ancestor(_) | VisibleParent::None => Membership::Lead,
+        };
+        if let Some(record) = self.records.get_mut(&id) {
+            if let InvocationState::Live { row: previous }
+            | InvocationState::Missing { row: previous, .. } = &record.state
+            {
+                record.cargo_readiness = CargoReadiness::of(&row, census, capture);
+                record.state = InvocationState::Live {
+                    row: previous.refreshed(row, census),
+                };
+            }
+        } else if let Some(node) = tree
+            .nodes
+            .values()
+            .find(|node| node.invocation.identity == id)
+        {
+            self.records.insert(
+                id,
+                InvocationRecord {
+                    owner: node.invocation.clone(),
+                    membership,
+                    state: InvocationState::Live {
+                        row: InvocationProcessRow::observed(row.clone(), census),
+                    },
+                    processes: Vec::new(),
+                    ancestry: KnownAncestry {
+                        links:     Vec::new(),
+                        lifetimes: Vec::new(),
+                        walk:      AncestryWalk::Ended(Vec::new()),
+                    },
+                    presentation: InvocationPresentation::new(resolved),
+                    cargo_readiness: CargoReadiness::of(&row, census, capture),
+                },
+            );
+        }
+    }
+
+    fn publish(
+        &mut self,
+        census: &Census,
+        tree: &ProcessTreeContinuity,
+        groups: Vec<CargoGroup>,
+        capture: &Capture,
+        now: Instant,
+        mut probe: impl FnMut(&InvocationProcessRow) -> InvocationProbe,
+    ) -> PublishedInvocations {
+        let mut observed = HashSet::new();
+        let mut ancestry = HashMap::new();
+        let mut resources = HashMap::new();
+        for group in groups {
+            ancestry.insert(group.id(), group.ancestry.clone());
+            for row in std::iter::once(group.lead).chain(group.rest) {
+                if let Some(record) = self.records.get(&row.invocation_id)
+                    && let Ok(key) = record.resource_key(&row)
+                {
+                    resources.insert(
+                        key,
+                        InvocationProcessResources {
+                            own:     row.resource_use.clone(),
+                            subtree: row.subtree_resource_use.clone(),
+                        },
+                    );
+                }
+                let Some(node) = tree.nodes.get(&Pid::from_u32(row.pid)) else {
+                    continue;
+                };
+                let Ok(resolved) = self.bindings.resolve(node) else {
+                    continue;
+                };
+                if census.publication_evidence.permits(&row) {
+                    observed.insert(resolved.id().clone());
+                    self.observe_live_row(resolved, row, census, tree, capture);
+                }
+            }
+        }
+        let mut process_evidence: HashMap<InvocationId, Vec<(Pid, KnownCommandProcess)>> =
+            HashMap::new();
+        for (pid, node) in &tree.nodes {
+            process_evidence
+                .entry(node.invocation.identity.clone())
+                .or_default()
+                .push((*pid, node.clone()));
+        }
+        for (id, record) in &mut self.records {
+            if matches!(record.state, InvocationState::Ended(_)) {
+                continue;
+            }
+            record.refresh_resources(&mut resources);
+            if let Some(known) = tree.ancestry.get(id) {
+                record.ancestry = known.clone();
+            } else if let Some(walk) = ancestry.remove(id) {
+                record.ancestry.walk = walk;
+            }
+            record.processes = process_evidence.remove(id).unwrap_or_default();
+            if observed.contains(id) {
+                continue;
+            }
+            let (row, absence) = match &record.state {
+                InvocationState::Live { row } => (row.clone(), MissingObservations::default()),
+                InvocationState::Missing { row, absence } => (row.clone(), *absence),
+                InvocationState::Ended(_) => continue,
+            };
+            let pid = Pid::from_u32(row.process.pid);
+            let absence = absence.observe(&census.publication_evidence, record.cargo_readiness);
+            let presence = census.process_presence(&row, &mut probe);
+            let proof =
+                record.end_proof(&census.publication_evidence, capture, presence, absence.0);
+            if let Ok(proof) = proof {
+                let ended = ResolvedExecutionEnd {
+                    execution: record.presentation.resolved().clone(),
+                    proof,
+                };
+                probe::invocation_ended(id, now);
+                match ended.proof {
+                    ExecutionEndProof::NotSeen => {
+                        self.bindings
+                            .end_not_seen(&ended.execution, pid, &mut self.terminal);
+                    },
+                    ExecutionEndProof::Native(subject) => {
+                        self.bindings
+                            .end_subject(&ended.execution, subject, &mut self.terminal);
+                    },
+                    ExecutionEndProof::Registration(registration) => {
+                        self.bindings
+                            .end_registration(&ended.execution, registration);
+                    },
+                }
+                record.state = InvocationState::Ended(EndedInvocation {
+                    id:           record.owner.identity.clone(),
+                    rows:         vec![row.process].into(),
+                    at:           now,
+                    presentation: record.presentation.clone(),
+                    published:    self.scan,
+                });
+            } else {
+                record.state = InvocationState::Missing { row, absence };
+            }
+        }
+        self.reconcile_memberships(tree);
+        self.publication()
+    }
+
+    fn reconcile_memberships(&mut self, tree: &ProcessTreeContinuity) {
+        let owners: HashMap<_, _> = self
+            .records
+            .iter()
+            .flat_map(|(id, record)| {
+                record
+                    .state
+                    .rows()
+                    .iter()
+                    .map(move |row| (Pid::from_u32(row.pid), id.clone()))
+            })
+            .collect();
+        let active: HashSet<_> = self
+            .records
+            .iter()
+            .filter(|(_, record)| !matches!(record.state, InvocationState::Ended(_)))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for (id, record) in &mut self.records {
+            if matches!(record.state, InvocationState::Ended(_)) {
+                continue;
+            }
+            if matches!(&record.membership, Membership::Member { lead } if active.contains(lead)) {
+                continue;
+            }
+            let mut membership = Membership::Lead;
+            if let Some(row) = record.state.rows().first() {
+                let mut walking = Pid::from_u32(row.pid);
+                for _ in 0..PARENT_WALK_LIMIT {
+                    let Some(parent) = tree.parent_of(walking) else {
+                        break;
+                    };
+                    if let Some(lead) = owners.get(&parent)
+                        && lead != id
+                        && active.contains(lead)
+                    {
+                        membership = Membership::Member { lead: lead.clone() };
+                        break;
+                    }
+                    walking = parent;
+                }
+            }
+            record.membership = membership;
+        }
+    }
+
+    fn publication(&self) -> PublishedInvocations {
+        let mut states: HashMap<_, _> = self
+            .joined
+            .iter()
+            .map(|(id, into)| {
+                (
+                    id.clone(),
+                    PublishedInvocation::Joined { into: into.clone() },
+                )
+            })
+            .collect();
+        for (id, record) in &self.records {
+            states.insert(
+                id.clone(),
+                match &record.state {
+                    InvocationState::Live { .. } => match record.cargo_readiness {
+                        CargoReadiness::AwaitingProcess => {
+                            PublishedInvocation::AwaitingCargo(record.presentation.clone())
+                        },
+                        CargoReadiness::ObservedProcess => {
+                            PublishedInvocation::Live(record.presentation.clone())
+                        },
+                    },
+                    InvocationState::Missing { .. } => {
+                        PublishedInvocation::Missing(record.presentation.clone())
+                    },
+                    InvocationState::Ended(end) => PublishedInvocation::Ended(end.clone()),
+                },
+            );
+        }
+        let mut groups = Vec::new();
+        for (id, mut rows) in InvocationFamilyRows::of(&self.records).into_families() {
+            let Some(index) = rows.iter().position(|row| row.invocation_id == id) else {
+                continue;
+            };
+            let lead = rows.remove(index);
+            rows.sort_by(newest_first);
+            groups.push(CargoGroup {
+                lead,
+                rest: rows,
+                ancestry: self.records[&id].ancestry.walk.clone(),
+            });
+        }
+        groups.sort_by(|a, b| newest_first(&a.lead, &b.lead));
+        PublishedInvocations { groups, states }
+    }
+}
+
+/// The last proven process tree owns invocation continuity across scanner refreshes.
+#[derive(Default)]
+struct ProcessTreeContinuity {
+    nodes:    HashMap<Pid, KnownCommandProcess>,
+    ancestry: HashMap<InvocationId, KnownAncestry>,
+    joined:   HashMap<InvocationId, InvocationId>,
+    scan:     u64,
+}
+
+#[derive(Clone)]
+struct KnownCommandProcess {
+    native:     InvocationId,
+    invocation: InvocationOwner,
+    forwarding: ForwardingHistory,
+    argv:       Vec<OsString>,
+    directory:  ProcessField<PathBuf>,
+    parent:     ParentProcessLink,
+}
+
+impl KnownCommandProcess {
+    fn adopt_native(&mut self, proof: LifetimeMatch) { self.native = proof.into_native(); }
+}
+
+/// Identity and discovery age move as one value across every forwarding edge.
+#[derive(Clone)]
+struct InvocationOwner {
+    identity:   InvocationId,
+    first_scan: u64,
+}
+
+/// Branching is evidence about this native parent's entire lifetime.
+#[derive(Clone, Copy, Default)]
+enum ForwardingHistory {
+    #[default]
+    Unproven,
+    Branching,
+}
+
+/// A retained edge names the native parent lifetime, never just a reusable PID.
+#[derive(Clone)]
+enum ParentProcessLink {
+    Unreadable,
+    Known { pid: Pid, native: InvocationId },
+}
+
+#[derive(Clone, Copy)]
+struct ForwardingProcess<'a> {
+    pid:       Pid,
+    argv:      &'a [OsString],
+    directory: WorkingDirectoryObservation<'a>,
+}
+
+enum Forwarding {
+    Independent,
+    SingleChild(ForwardingEdge),
+}
+
+/// One compatible child and its observed parent establish a forwarding join.
+struct ForwardingEdge {
+    parent: Pid,
+    child:  Pid,
+}
+
+/// Both pruning and persistent ownership require exactly one compatible cargo child.
+fn classify_forwarding<'a>(
+    parent: ForwardingProcess<'a>,
+    mut children: impl Iterator<Item = ForwardingProcess<'a>>,
+) -> Forwarding {
+    let Some(child) = children.next() else {
+        return Forwarding::Independent;
+    };
+    if children.next().is_some() {
+        return Forwarding::Independent;
+    }
+    if matches!(
+        process_identity::dispatched_process(parent.argv, child.argv, child.pid),
+        DispatchedProcess::Matched { .. }
+    ) {
+        return Forwarding::SingleChild(ForwardingEdge {
+            parent: parent.pid,
+            child:  child.pid,
+        });
+    }
+    if child
+        .argv
+        .first()
+        .and_then(|program| Path::new(program).file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.starts_with(CARGO_SUBCOMMAND_PREFIX) && !CARGO_PROCESS_NAMES.contains(&name)
+        })
+    {
+        return Forwarding::Independent;
+    }
+    if observed_shim_match(parent.argv, parent.directory, child.argv, child.directory) {
+        Forwarding::SingleChild(ForwardingEdge {
+            parent: parent.pid,
+            child:  child.pid,
+        })
+    } else {
+        Forwarding::Independent
+    }
+}
+
+/// Missing metadata cannot contradict the last observed parent links.
+#[derive(Clone)]
+struct KnownAncestry {
+    links:     Vec<(Pid, Pid)>,
+    lifetimes: Vec<(Pid, InvocationId)>,
+    walk:      AncestryWalk<Ancestor>,
+}
+
+/// Current native processes and a matching shim birth prove one captured execution.
+struct LiveCaptureBinding {
+    owner:     InvocationOwner,
+    forwarder: InvocationId,
+    executor:  InvocationId,
+}
+
+struct UnprovenCaptureBinding;
+
+impl LiveCaptureBinding {
+    fn prove(
+        tree: &ProcessTreeContinuity,
+        census: &Census,
+        records: &ProcessObservations<'_>,
+        capture: &Capture,
+        edge: &ForwardingEdge,
+    ) -> Result<Self, UnprovenCaptureBinding> {
+        if !census.publication_evidence.has_current_capture()
+            || [edge.parent, edge.child].into_iter().any(|pid| {
+                !census.publication_evidence.has_current_process(pid)
+                    || !records
+                        .process(pid)
+                        .is_some_and(|process| matches!(process.status, NativeProcessStatus::Live))
+            })
+        {
+            return Err(UnprovenCaptureBinding);
+        }
+        let confirmed = capture
+            .confirmed()
+            .iter()
+            .find(|confirmed| confirmed.key.pid == edge.parent.as_u32())
+            .ok_or(UnprovenCaptureBinding)?;
+        let run = RunId::verified(&confirmed.key, &confirmed.registration);
+        let birth = census
+            .lifetimes
+            .get(&edge.parent)
+            .ok_or(UnprovenCaptureBinding)?;
+        LifetimeMatch::prove(&run, birth).map_err(|_| UnprovenCaptureBinding)?;
+        let outer = &tree.nodes[&edge.parent];
+        let inner = &tree.nodes[&edge.child];
+        if !matches!(inner.invocation.identity, InvocationId::Process(_)) {
+            return Err(UnprovenCaptureBinding);
+        }
+        let identity = match &outer.invocation.identity {
+            InvocationId::Captured(_) => outer.invocation.identity.clone(),
+            InvocationId::Process(_) => InvocationId::Captured(run),
+        };
+        Ok(Self {
+            owner:     InvocationOwner {
+                identity,
+                first_scan: outer.invocation.first_scan.min(inner.invocation.first_scan),
+            },
+            forwarder: outer.invocation.identity.clone(),
+            executor:  inner.invocation.identity.clone(),
+        })
+    }
+
+    fn handovers(self) -> [InvocationHandover; 2] {
+        [
+            InvocationHandover {
+                keep:   self.owner.clone(),
+                retire: self.forwarder,
+            },
+            InvocationHandover {
+                keep:   self.owner,
+                retire: self.executor,
+            },
+        ]
+    }
+}
+
+/// Only a proven forwarding edge or live capture binding can merge invocation owners.
+struct InvocationHandover {
+    keep:   InvocationOwner,
+    retire: InvocationId,
+}
+
+impl InvocationHandover {
+    fn observed(tree: &ProcessTreeContinuity, edge: &ForwardingEdge) -> Self {
+        let outer = &tree.nodes[&edge.parent];
+        let inner = &tree.nodes[&edge.child];
+        let (keep, retire) = match outer
+            .invocation
+            .first_scan
+            .cmp(&inner.invocation.first_scan)
+        {
+            Ordering::Less => (outer, inner),
+            Ordering::Greater => (inner, outer),
+            Ordering::Equal => match (&outer.invocation.identity, &inner.invocation.identity) {
+                (InvocationId::Captured(_), _)
+                | (InvocationId::Process(_), InvocationId::Process(_)) => (outer, inner),
+                (_, InvocationId::Captured(_)) => (inner, outer),
+            },
+        };
+        Self {
+            keep:   keep.invocation.clone(),
+            retire: retire.invocation.identity.clone(),
+        }
+    }
+}
+
+impl ProcessTreeContinuity {
+    fn identify(
+        &mut self,
+        census: &mut Census,
+        records: &ProcessObservations<'_>,
+        capture: &Capture,
+        bindings: &mut InvocationProcessBindings,
+    ) {
+        self.scan = self.scan.saturating_add(1);
+        census.include_registered_processes(records, capture);
+        census.include_dispatched_processes(records);
+        self.retain_observed_processes(census, records);
+        self.refresh_published_owners(census, capture);
+        bindings.retain(self);
+        // Row selection must follow the same lifetime-checked edges as ownership.
+        // An unavailable parent read cannot make its forwarding shim the lead again.
+        for (&pid, record) in records.processes() {
+            if matches!(record.parent, ProcessField::Unavailable)
+                && let Some(parent) = self.parent_of(pid)
+            {
+                census.parents.insert(pid, parent);
+            }
+        }
+        let mut children: HashMap<Pid, HashSet<Pid>> = HashMap::new();
+        for &child in &census.cargo {
+            let mut forwarding_child = child;
+            let mut walking = child;
+            let mut seen = HashSet::from([child]);
+            for _ in 0..PARENT_WALK_LIMIT {
+                let Some(parent) = self.parent_of(walking) else {
+                    break;
+                };
+                if !seen.insert(parent) {
+                    break;
+                }
+                let node = &self.nodes[&parent];
+                if census.cargo.contains(&parent)
+                    || command_text::cargo_split(&node.argv)
+                        .is_ok_and(|arguments| arguments.follows_cargo_executable())
+                {
+                    // Detail reads can reveal pipeline shells that discovery did
+                    // not classify as cargo. Keep every edge to the outer shim.
+                    children.entry(parent).or_default().insert(forwarding_child);
+                    forwarding_child = parent;
+                } else {
+                    break;
+                }
+                walking = parent;
+            }
+        }
+        for (&parent, children) in &children {
+            if children.len() > 1 {
+                bindings.split(self, parent);
+                if let Some(node) = self.nodes.get_mut(&parent) {
+                    node.forwarding = ForwardingHistory::Branching;
+                }
+            }
+        }
+        let mut ordered = census.cargo.clone();
+        ordered.sort_by_key(|pid| census.ancestor_pids(*pid).as_slice().len());
+        for parent in ordered.into_iter().chain(
+            children
+                .keys()
+                .copied()
+                .filter(|pid| !census.cargo.contains(pid)),
+        ) {
+            let Some(node) = self.nodes.get(&parent) else {
+                continue;
+            };
+            if matches!(node.forwarding, ForwardingHistory::Branching) {
+                continue;
+            }
+            let Some(outer) = self.forwarding_process(parent) else {
+                continue;
+            };
+            let children = children
+                .get(&parent)
+                .into_iter()
+                .flatten()
+                .filter_map(|&child| self.forwarding_process(child));
+            if let Forwarding::SingleChild(edge) = classify_forwarding(outer, children) {
+                if let Ok(binding) =
+                    LiveCaptureBinding::prove(self, census, records, capture, &edge)
+                {
+                    for handover in binding.handovers() {
+                        self.unify(&handover);
+                    }
+                } else {
+                    let handover = InvocationHandover::observed(self, &edge);
+                    self.unify(&handover);
+                }
+            }
+        }
+        for (&pid, identity) in &mut census.identities {
+            if let Some(node) = self.nodes.get(&pid) {
+                identity.clone_from(&node.invocation.identity);
+            }
+        }
+        bindings.commit(self);
+        census.identity_source = InvocationIdentitySource::RetainedTree;
+    }
+
+    /// Apply publication metadata without replacing an owner seen in an earlier scan.
+    fn refresh_published_owners(&mut self, census: &mut Census, capture: &Capture) {
+        // The first observation chooses an owner. A later publication supplies
+        // metadata for that owner; it cannot replace an already visible native
+        // invocation with a newly captured identity.
+        for confirmed in capture.confirmed() {
+            let pid = Pid::from_u32(confirmed.key.pid);
+            let run = RunId::verified(&confirmed.key, &confirmed.registration);
+            let captured = InvocationId::Captured(run.clone());
+            if !self.nodes.contains_key(&pid) {
+                let owner = InvocationOwner {
+                    identity:   captured.clone(),
+                    first_scan: self.scan,
+                };
+                self.nodes.insert(
+                    pid,
+                    KnownCommandProcess {
+                        native:     census
+                            .identities
+                            .get(&pid)
+                            .cloned()
+                            .unwrap_or_else(|| captured.clone()),
+                        invocation: owner.clone(),
+                        forwarding: ForwardingHistory::Unproven,
+                        argv:       registration_argv(confirmed.registration.record()),
+                        directory:  ProcessField::Observed(
+                            confirmed.registration.record().directory().to_owned(),
+                        ),
+                        parent:     ParentProcessLink::Unreadable,
+                    },
+                );
+                census.identities.insert(pid, captured);
+                continue;
+            }
+            if let Some(node) = self.nodes.get_mut(&pid)
+                && census
+                    .lifetimes
+                    .get(&pid)
+                    .is_some_and(|evidence| LifetimeMatch::prove(&run, evidence).is_ok())
+                && (node.argv.is_empty()
+                    || forwards_capture_command(&node.argv, confirmed.registration.record()))
+            {
+                // Verified registration evidence fills missing native metadata for
+                // this same lifetime, so deadline-limited reads cannot split its
+                // forwarding edge into a second invocation.
+                if node.argv.is_empty() {
+                    node.argv = registration_argv(confirmed.registration.record());
+                }
+                if matches!(node.directory, ProcessField::Unavailable) {
+                    node.directory = ProcessField::Observed(
+                        confirmed.registration.record().directory().to_owned(),
+                    );
+                }
+                if node.invocation.first_scan == self.scan {
+                    let owner = InvocationOwner {
+                        identity:   captured,
+                        first_scan: self.scan,
+                    };
+                    node.invocation = owner;
+                }
+            }
+        }
+    }
+
+    /// Refresh readable node evidence while retaining unreadable parent metadata.
+    fn retain_observed_processes(&mut self, census: &Census, records: &ProcessObservations<'_>) {
+        for (&pid, record) in records.processes() {
+            let Some(native) = census.identities.get(&pid) else {
+                continue;
+            };
+            let observed_parent = match record.parent {
+                ProcessField::Unavailable => ParentProcessLink::Unreadable,
+                ProcessField::Observed(parent) => census
+                    .identities
+                    .get(&parent)
+                    .or_else(|| self.nodes.get(&parent).map(|node| &node.native))
+                    .map_or(ParentProcessLink::Unreadable, |native| {
+                        ParentProcessLink::Known {
+                            pid:    parent,
+                            native: native.clone(),
+                        }
+                    }),
+            };
+            let node = self.nodes.entry(pid).or_insert_with(|| {
+                let owner = InvocationOwner {
+                    identity:   native.clone(),
+                    first_scan: self.scan,
+                };
+                KnownCommandProcess {
+                    native:     native.clone(),
+                    invocation: owner,
+                    forwarding: ForwardingHistory::Unproven,
+                    argv:       Vec::new(),
+                    directory:  ProcessField::Unavailable,
+                    parent:     ParentProcessLink::Unreadable,
+                }
+            });
+            if let InvocationId::Captured(run) = &node.native
+                && run.shim_pid == pid.as_u32()
+                && let Some(evidence) = census.lifetimes.get(&pid)
+                && let Ok(proof) = LifetimeMatch::prove(run, evidence)
+            {
+                node.adopt_native(proof);
+            }
+            if &node.native != native {
+                let owner = InvocationOwner {
+                    identity:   native.clone(),
+                    first_scan: self.scan,
+                };
+                *node = KnownCommandProcess {
+                    native:     native.clone(),
+                    invocation: owner.clone(),
+                    forwarding: ForwardingHistory::Unproven,
+                    argv:       Vec::new(),
+                    directory:  ProcessField::Unavailable,
+                    parent:     ParentProcessLink::Unreadable,
+                };
+            }
+            if !record.cmd().is_empty() {
+                node.argv = record.cmd().to_vec();
+            }
+            if let ProcessField::Observed(directory) = record.directory {
+                node.directory = ProcessField::Observed(directory.to_owned());
+            }
+            if matches!(record.parent, ProcessField::Observed(_)) {
+                node.parent = observed_parent;
+            }
+        }
+        // A captured parent can acquire native metadata after its child's
+        // link was retained. Rebind that link only with the same lifetime
+        // proof that permits the parent itself to adopt the native identity.
+        let natives: HashMap<_, _> = self
+            .nodes
+            .iter()
+            .map(|(&pid, node)| (pid, node.native.clone()))
+            .collect();
+        for node in self.nodes.values_mut() {
+            if let ParentProcessLink::Known {
+                pid,
+                native: InvocationId::Captured(run),
+            } = &node.parent
+                && let Some(evidence) = census.lifetimes.get(pid)
+                && let Ok(proof) = LifetimeMatch::prove(run, evidence)
+            {
+                let native = proof.into_native();
+                if natives.get(pid) == Some(&native) {
+                    node.parent = ParentProcessLink::Known { pid: *pid, native };
+                }
+            }
+        }
+    }
+
+    fn parent_of(&self, child: Pid) -> Option<Pid> {
+        let ParentProcessLink::Known { pid, native } = &self.nodes.get(&child)?.parent else {
+            return None;
+        };
+        self.nodes
+            .get(pid)
+            .filter(|parent| &parent.native == native)
+            .map(|_| *pid)
+    }
+
+    fn forwarding_process(&self, pid: Pid) -> Option<ForwardingProcess<'_>> {
+        let node = self.nodes.get(&pid)?;
+        Some(ForwardingProcess {
+            pid,
+            argv: &node.argv,
+            directory: match &node.directory {
+                ProcessField::Observed(directory) => {
+                    WorkingDirectoryObservation::Observed(directory)
+                },
+                ProcessField::Unavailable => WorkingDirectoryObservation::Unavailable,
+            },
+        })
+    }
+
+    fn unify(&mut self, handover: &InvocationHandover) {
+        if handover.retire != handover.keep.identity {
+            self.joined
+                .insert(handover.retire.clone(), handover.keep.identity.clone());
+        }
+        for node in self.nodes.values_mut() {
+            if node.invocation.identity == handover.retire
+                || node.invocation.identity == handover.keep.identity
+            {
+                node.invocation.clone_from(&handover.keep);
+            }
+        }
+    }
+
+    fn retain_ancestry(&mut self, census: &Census, groups: &mut [CargoGroup]) {
+        for group in groups.iter_mut() {
+            let id = group.id();
+            if let Some(known) = self.ancestry.get(&id)
+                && known.links.iter().all(|(child, parent)| {
+                    census
+                        .parents
+                        .get(child)
+                        .is_none_or(|current| current == parent)
+                })
+                && known.lifetimes.iter().all(|(pid, native)| {
+                    self.nodes
+                        .get(pid)
+                        .is_none_or(|node| &node.native == native)
+                })
+            {
+                let mut levels = group.ancestry.as_slice().to_vec();
+                for old in known.walk.as_slice().iter().rev() {
+                    if let Some(current) = levels.iter_mut().find(|row| row.pid == old.pid) {
+                        if current.command.program_name().is_empty() {
+                            *current = old.clone();
+                        }
+                    } else {
+                        levels.insert(0, old.clone());
+                    }
+                }
+                group.ancestry = match group.ancestry {
+                    AncestryWalk::Ended(_) => AncestryWalk::Ended(levels),
+                    AncestryWalk::LimitCut(_) => AncestryWalk::LimitCut(levels),
+                };
+            }
+            let mut links = Vec::new();
+            let mut walking = Pid::from_u32(group.lead.pid);
+            for _ in 0..PARENT_WALK_LIMIT {
+                let Some(parent) = self.parent_of(walking) else {
+                    break;
+                };
+                if links.contains(&(walking, parent)) {
+                    break;
+                }
+                links.push((walking, parent));
+                walking = parent;
+            }
+            self.ancestry.insert(
+                id,
+                KnownAncestry {
+                    lifetimes: links
+                        .iter()
+                        .filter_map(|(_, pid)| {
+                            self.nodes.get(pid).map(|node| (*pid, node.native.clone()))
+                        })
+                        .collect(),
+                    links,
+                    walk: group.ancestry.clone(),
+                },
+            );
+        }
+        self.ancestry
+            .retain(|id, _| groups.iter().any(|group| &group.id() == id));
+    }
+}
+
+/// A proven forwarding edge transfers one invocation to its working process.
+struct ForwardedInvocation {
+    source:         Pid,
+    representative: Pid,
+    identity:       InvocationId,
+}
+
+impl ForwardedInvocation {
+    fn carry(self, identities: &mut HashMap<Pid, InvocationId>) {
+        identities.insert(self.representative, self.identity);
+    }
+}
+
+/// A native snapshot has not yet established persistent invocation ownership.
+#[derive(Clone)]
+enum InvocationIdentitySource {
+    NativeSnapshot,
+    RetainedTree,
+}
+
+/// What phase one learned: parent links and processes awaiting attribution.
+#[derive(Clone)]
 pub(super) struct Census {
+    /// Only retained owners can supersede a verified registration's run identity.
+    identity_source:          InvocationIdentitySource,
+    publication_evidence:     PublicationEvidence,
     /// Registration eligibility is resolved even when no process row can be built.
     registration_eligibility: HashMap<RunId, Result<(), RowAbsence>>,
     /// Invocation identities are established before attribution and row construction.
@@ -935,10 +3947,14 @@ pub(super) struct Census {
     capture_boundaries:       HashSet<Pid>,
     /// Only observed forwarding of the registered command permits walking through a wrapper.
     capture_wrappers:         HashSet<Pid>,
+    /// Current argv proves cargo itself has replaced the registered process.
+    registered_cargo:         HashSet<Pid>,
     /// Observed argv naming a different command forbids direct registration fields.
     capture_mismatches:       HashSet<Pid>,
     /// Native lifetime evidence belongs to this refresh, including unavailable reads.
     lifetimes:                HashMap<Pid, LifetimeEvidence>,
+    /// Native status comes from the same refresh as the process lifetime.
+    process_statuses:         HashMap<Pid, NativeProcessStatus>,
     /// Deliberate exclusion remains distinct from unavailable command metadata.
     eligibility:              HashMap<Pid, Result<(), RowAbsence>>,
     /// Every process's parent, for walking a compiler up to its cargo.
@@ -965,6 +3981,36 @@ pub(super) struct Census {
 }
 
 impl Census {
+    /// A current live native process supplies its own lifetime proof.
+    fn process_presence(
+        &self,
+        row: &InvocationProcessRow,
+        probe: &mut impl FnMut(&InvocationProcessRow) -> InvocationProbe,
+    ) -> InvocationProbe {
+        let pid = Pid::from_u32(row.process.pid);
+        match self
+            .lifetimes
+            .get(&pid)
+            .map(|current| NativeLifetimeComparison::between(&row.lifetime, current))
+        {
+            Some(NativeLifetimeComparison::Different) => {
+                InvocationProbe::Ended(ProcessLifetimeSubject::observe(row))
+            },
+            Some(NativeLifetimeComparison::Same)
+                if self.publication_evidence.has_current_process(pid)
+                    && matches!(
+                        self.process_statuses.get(&pid),
+                        Some(NativeProcessStatus::Live)
+                    ) =>
+            {
+                InvocationProbe::Alive
+            },
+            Some(NativeLifetimeComparison::Same | NativeLifetimeComparison::Unknown) | None => {
+                probe(row)
+            },
+        }
+    }
+
     /// Both kernel and synthetic observations use the same discovery-to-row selection.
     fn prepare(
         &mut self,
@@ -972,8 +4018,26 @@ impl Census {
         capture: &Capture,
         excluded: &[String],
     ) {
-        self.include_registered_processes(records, capture);
-        self.include_dispatched_processes(records);
+        if matches!(
+            self.identity_source,
+            InvocationIdentitySource::NativeSnapshot
+        ) {
+            self.include_registered_processes(records, capture);
+            self.include_dispatched_processes(records);
+        }
+        self.registered_cargo = capture
+            .registered_pids()
+            .into_iter()
+            .map(Pid::from_u32)
+            .filter(|pid| {
+                records.process(*pid).is_some_and(|process| {
+                    command_text::cargo_split(process.cmd()).is_ok_and(|arguments| {
+                        arguments.start == DIRECT_CARGO_ARGUMENTS_START
+                            && arguments.follows_cargo_executable()
+                    })
+                })
+            })
+            .collect();
         self.identify_capture_wrappers(records, capture);
         self.collapse_shims(records);
         self.identify_captures(capture);
@@ -1040,11 +4104,15 @@ impl Census {
     /// Classify every process the last refresh saw.
     fn take<'scan>(records: impl IntoIterator<Item = &'scan ProcessObservation<'scan>>) -> Self {
         let mut census = Self {
+            identity_source:                InvocationIdentitySource::NativeSnapshot,
+            publication_evidence:           PublicationEvidence::Current,
             identities:                     HashMap::new(),
             capture_boundaries:             HashSet::new(),
             capture_wrappers:               HashSet::new(),
+            registered_cargo:               HashSet::new(),
             capture_mismatches:             HashSet::new(),
             lifetimes:                      HashMap::new(),
+            process_statuses:               HashMap::new(),
             eligibility:                    HashMap::new(),
             registration_eligibility:       HashMap::new(),
             parents:                        HashMap::new(),
@@ -1067,6 +4135,7 @@ impl Census {
             census
                 .lifetimes
                 .insert(pid, process.lifetime.as_ref().clone());
+            census.process_statuses.insert(pid, process.status);
             census
                 .accumulated
                 .insert(pid, Duration::from_millis(process.accumulated));
@@ -1076,7 +4145,8 @@ impl Census {
             if command_text::is_cargo_name(name)
                 || (is_transparent(name)
                     && command_text::cargo_split(process.cmd()).is_ok_and(|arguments| {
-                        arguments.start == 2 && arguments.follows_cargo_executable()
+                        arguments.start == WRAPPED_CARGO_ARGUMENTS_START
+                            && arguments.follows_cargo_executable()
                     }))
             {
                 census.cargo.push(pid);
@@ -1185,36 +4255,84 @@ impl Census {
             .collect()
     }
 
-    /// Everything the census has to say about each cargo invocation.
-    ///
-    /// The two walks are one call because they run over the same parent
-    /// chains and are both spent by the same pass over the groups.
+    /// Kernel counter reads and supplied samples use the same clocked accounting path.
     fn attribute(
         &self,
-        system: &ProcessObservations<'_>,
+        observations: &ProcessObservations<'_>,
         smoothing: &mut InvocationCpuAccounting,
         now: Instant,
     ) -> InvocationMeasurements {
-        self.attribute_with(system, smoothing, now, |pid| {
-            let measurement = self.process_cpu_time(pid);
-            system.records.get(&pid).map_or(measurement, |record| {
-                record.native_cpu.set(measurement);
-                record.native_cpu.get()
-            })
-        })
+        self.attribute_with_clock(
+            observations,
+            smoothing,
+            |pid| {
+                let measurement = self.process_cpu_time(pid);
+                observations
+                    .records
+                    .get(&pid)
+                    .map_or(measurement, |record| {
+                        record.native_cpu.set(measurement);
+                        record.native_cpu.get()
+                    })
+            },
+            || {
+                if cfg!(target_os = "linux") {
+                    Instant::now()
+                } else {
+                    now
+                }
+            },
+        )
     }
 
-    /// Kernel and fixture counters share invocation smoothing and published PID readings.
+    /// Supplied counters carry the supplied read time through the product accounting path.
+    #[cfg(test)]
     fn attribute_with(
         &self,
-        system: &ProcessObservations<'_>,
+        observations: &ProcessObservations<'_>,
         smoothing: &mut InvocationCpuAccounting,
         now: Instant,
         read: impl FnMut(Pid) -> Measurement<Duration>,
     ) -> InvocationMeasurements {
+        self.attribute_selected_with_clock(
+            observations,
+            smoothing,
+            &AttributableInvocations::supplied(self),
+            read,
+            || now,
+        )
+    }
+
+    /// Kernel and fixture counters share invocation smoothing and published PID readings.
+    fn attribute_with_clock(
+        &self,
+        observations: &ProcessObservations<'_>,
+        smoothing: &mut InvocationCpuAccounting,
+        read: impl FnMut(Pid) -> Measurement<Duration>,
+        clock: impl FnOnce() -> Instant,
+    ) -> InvocationMeasurements {
+        self.attribute_selected_with_clock(
+            observations,
+            smoothing,
+            &AttributableInvocations::current(self, observations),
+            read,
+            clock,
+        )
+    }
+
+    fn attribute_selected_with_clock(
+        &self,
+        observations: &ProcessObservations<'_>,
+        smoothing: &mut InvocationCpuAccounting,
+        attributable: &AttributableInvocations,
+        read: impl FnMut(Pid) -> Measurement<Duration>,
+        clock: impl FnOnce() -> Instant,
+    ) -> InvocationMeasurements {
         smoothing.observed.clone_from(&self.lifetimes);
-        let sampled: HashMap<_, _> = self
-            .attribute_cpu_with(system, smoothing, now, read)
+        let samples = self.sample_cpu_with(observations, smoothing, attributable, read, clock);
+        let now = samples.at;
+        let cpu_by_identity: HashMap<_, _> = samples
+            .readings
             .into_iter()
             .filter_map(|(pid, cpu)| {
                 self.identities
@@ -1222,8 +4340,13 @@ impl Census {
                     .map(|identity| (identity.clone(), cpu))
             })
             .collect();
-        let identities: Vec<_> = self
+        let owners: Vec<_> = self
             .cargo
+            .iter()
+            .copied()
+            .filter(|pid| attributable.pids.contains(pid))
+            .collect();
+        let identities: Vec<_> = owners
             .iter()
             .filter_map(|pid| self.identities.get(pid).cloned())
             .collect();
@@ -1237,18 +4360,21 @@ impl Census {
             })
             .collect();
         let memory_report = smoothing.memory_report(now);
-        let reported = smoothing.settle(&sampled, &identities, now);
+        let reported = smoothing.settle(&cpu_by_identity, &identities, now);
         let reported_memory = smoothing.report_memory(&memory_sampled, &identities, memory_report);
         InvocationMeasurements {
             #[cfg(test)]
             cpu_scan_publication:              smoothing.observe_cpu(
-                &sampled,
+                &cpu_by_identity,
                 &self.identities,
                 now,
             ),
-            compilers:                         self.attribute_compilers(),
-            cpu:                               self
-                .cargo
+            compilers:                         self
+                .attribute_compilers()
+                .into_iter()
+                .filter(|(pid, _)| owners.contains(pid))
+                .collect(),
+            cpu:                               owners
                 .iter()
                 .filter_map(|pid| {
                     self.identities
@@ -1257,8 +4383,7 @@ impl Census {
                         .map(|cpu| (*pid, *cpu))
                 })
                 .collect(),
-            memory:                            self
-                .cargo
+            memory:                            owners
                 .iter()
                 .filter_map(|pid| {
                     self.identities
@@ -1273,13 +4398,32 @@ impl Census {
     /// Measure accumulated invocation work between scans, validating only its own counter.
     /// Direct descendants take precedence over output-based cache attribution.
     /// Counter reads share the same ordered accounting pass for kernel and fixture samples.
+    #[cfg(test)]
     fn attribute_cpu_with(
         &self,
-        system: &ProcessObservations<'_>,
+        observations: &ProcessObservations<'_>,
         smoothing: &mut InvocationCpuAccounting,
         now: Instant,
         read: impl FnMut(Pid) -> Measurement<Duration>,
     ) -> HashMap<Pid, Measurement<f32>> {
+        self.sample_cpu_with(
+            observations,
+            smoothing,
+            &AttributableInvocations::supplied(self),
+            read,
+            || now,
+        )
+        .readings
+    }
+
+    fn sample_cpu_with(
+        &self,
+        observations: &ProcessObservations<'_>,
+        smoothing: &mut InvocationCpuAccounting,
+        attributable: &AttributableInvocations,
+        read: impl FnMut(Pid) -> Measurement<Duration>,
+        clock: impl FnOnce() -> Instant,
+    ) -> InvocationCpuSamples {
         smoothing.identify_owners(self);
         let identities: HashSet<_> = smoothing.owners.values().cloned().collect();
         smoothing
@@ -1288,38 +4432,43 @@ impl Census {
         smoothing
             .targets
             .retain(|identity, _| identities.contains(identity));
-        let targets = self.observe_targets(system, &smoothing.owners, &mut smoothing.targets);
+        let targets = self.observe_targets(observations, &smoothing.owners, &mut smoothing.targets);
         smoothing.cache_owners.retain(|identity, _| {
             self.compiler_credit_retention(identity) == CompilerCreditRetention::Keep
         });
-        smoothing.detached = self
-            .detached_compilers(system, &targets)
+        let compiler_attributions: HashMap<_, _> = self
+            .detached_compilers(observations, &targets)
             .into_iter()
-            .filter(|&(compiler, owner)| {
-                let (Ok(compiler), Ok(process)) =
-                    (self.cpu_identity(compiler), self.cpu_identity(owner))
-                else {
-                    return false;
-                };
-                let Some(owner) = smoothing.owners.get(&process) else {
-                    return false;
-                };
-                smoothing
-                    .cache_owners
-                    .entry(compiler)
-                    .or_insert_with(|| owner.clone())
-                    == owner
+            .map(|(compiler, attribution)| (compiler, attribution.bind(compiler, self, smoothing)))
+            .collect();
+        smoothing.detached = compiler_attributions
+            .iter()
+            .filter_map(|(&compiler, attribution)| match attribution {
+                CompilerAttribution::Owner(owner) => Some((compiler, *owner)),
+                CompilerAttribution::PendingMetadata | CompilerAttribution::Unassigned => None,
             })
-            .collect::<HashMap<_, _>>();
+            .collect();
+        #[cfg(test)]
+        for pid in self.detailed() {
+            if (observations.process(pid).is_none()
+                || compiler_attributions.get(&pid) == Some(&CompilerAttribution::PendingMetadata))
+                && let Ok(identity) = self.cpu_identity(pid)
+            {
+                cpu_observation::pending_metadata(&identity, self.accumulated[&pid]);
+            }
+        }
         let mut work: HashMap<Pid, InvocationCpuContributions> = self
             .live_cargo()
+            .filter(|pid| attributable.pids.contains(pid))
             .map(|pid| (pid, InvocationCpuContributions::default()))
             .collect();
         let mut evidence = self.cpu.clone();
         self.collect_cpu_work(&smoothing.detached, &mut work, &mut evidence, read);
+        let now = clock();
         #[cfg(target_os = "linux")]
         self.exclude_nested_cpu(&mut work, smoothing);
-        work.into_iter()
+        let readings = work
+            .into_iter()
             .filter_map(|(pid, work)| {
                 let process = self.cpu_identity(pid).ok()?;
                 let identity = smoothing.owners.get(&process)?;
@@ -1336,7 +4485,8 @@ impl Census {
                     .measure(work, evidence, now);
                 Some((pid, sample))
             })
-            .collect()
+            .collect();
+        InvocationCpuSamples { at: now, readings }
     }
 
     /// Resident bytes per row-holding cargo: its own process and every process assigned to it.
@@ -1588,7 +4738,7 @@ impl Census {
     /// Only proven process lifetimes retain destinations across scans.
     fn observe_targets(
         &self,
-        system: &ProcessObservations<'_>,
+        observations: &ProcessObservations<'_>,
         owners: &HashMap<ProcessIdentity, InvocationId>,
         retained: &mut HashMap<InvocationId, HashSet<PathBuf>>,
     ) -> HashMap<Pid, HashSet<PathBuf>> {
@@ -1606,7 +4756,7 @@ impl Census {
             })
             .collect();
         for pid in self.live_cargo() {
-            if let Some(process) = system.process(pid)
+            if let Some(process) = observations.process(pid)
                 && let Ok(directory) = invocation_cpu_accounting::cargo_target_directory(process)
             {
                 targets.entry(pid).or_default().insert(directory);
@@ -1614,7 +4764,7 @@ impl Census {
         }
         for &(pid, _) in &self.compilers {
             if let Some(owner) = self.cpu_owners(pid).next()
-                && let Some(process) = system.process(pid)
+                && let Some(process) = observations.process(pid)
                 && let Ok(directory) =
                     invocation_cpu_accounting::process_argument_path(process, RUSTC_OUT_DIR_FLAG)
             {
@@ -1634,41 +4784,24 @@ impl Census {
     /// Only a detached rustc beneath sccache may use output-directory ownership.
     fn detached_compilers(
         &self,
-        system: &ProcessObservations<'_>,
+        observations: &ProcessObservations<'_>,
         targets: &HashMap<Pid, HashSet<PathBuf>>,
-    ) -> HashMap<Pid, Pid> {
+    ) -> HashMap<Pid, CompilerAttribution> {
         self.compilers
             .iter()
-            .filter_map(|&(pid, driver)| {
-                if driver != RUSTC_BINARY
-                    || self.cpu_owners(pid).next().is_some()
+            .filter(|(_, driver)| *driver == RUSTC_BINARY)
+            .map(|&(pid, _)| {
+                let attribution = if self.cpu_owners(pid).next().is_some()
                     || !self
                         .cpu_ancestry(pid)
                         .iter()
                         .any(|ancestor| self.compilers.contains(&(*ancestor, SCCACHE_BINARY)))
                 {
-                    return None;
-                }
-                let process = system.process(pid)?;
-                let directory =
-                    invocation_cpu_accounting::process_argument_path(process, RUSTC_OUT_DIR_FLAG)
-                        .ok()?;
-                let owners = self.live_cargo().filter(|owner| {
-                    let Some(cargo) = system.process(*owner) else {
-                        return false;
-                    };
-                    // A shared filesystem path alone never links work from different users.
-                    if process.uid == ProcessField::Unavailable || process.uid != cargo.uid {
-                        return false;
-                    }
-                    targets.get(owner).is_some_and(|targets| {
-                        targets.iter().any(|target| directory.starts_with(target))
-                    })
-                });
-                match invocation_cpu_accounting::compile_owner(owners) {
-                    CompileOwner::Unique(owner) => Some((pid, owner)),
-                    CompileOwner::Unknown | CompileOwner::Ambiguous => None,
-                }
+                    CompilerAttribution::Unassigned
+                } else {
+                    CompilerAttribution::resolve(pid, self, observations, targets)
+                };
+                (pid, attribution)
             })
             .collect()
     }
@@ -1686,7 +4819,7 @@ impl Census {
     ///
     /// Looping rather than one pass because a shim can stand in front of
     /// a shim, and dropping the outer one is what reveals the next.
-    fn collapse_shims(&mut self, system: &ProcessObservations<'_>) {
+    fn collapse_shims(&mut self, observations: &ProcessObservations<'_>) {
         // Runs are counted only after cargo-named forwarding aliases have gone.
         // Interpreted drivers admitted for dispatch naming keep their reading;
         // the aliases themselves must never become runs in that reading.
@@ -1697,16 +4830,16 @@ impl Census {
                 .iter()
                 .copied()
                 .filter(|pid| {
-                    let Some(outer) = system.process(*pid) else {
+                    let Some(outer) = observations.process(*pid) else {
                         return false;
                     };
                     if !command_text::is_cargo_name(outer.name())
-                        || !Self::is_shim(system, &children, *pid)
+                        || !self.forwards_to_single_child(observations, &children, *pid)
                     {
                         return false;
                     }
                     let child = children[pid][0];
-                    let Some(inner) = system.process(child) else {
+                    let Some(inner) = observations.process(child) else {
                         return false;
                     };
                     observed_shim_match(outer.cmd(), outer.cwd(), inner.cmd(), inner.cwd())
@@ -1715,6 +4848,7 @@ impl Census {
             if aliases.is_empty() {
                 break;
             }
+            self.carry_forwarded_invocations(&aliases, &children);
             self.cargo.retain(|pid| !aliases.contains(pid));
         }
         loop {
@@ -1723,21 +4857,22 @@ impl Census {
                 .cargo
                 .iter()
                 .copied()
-                .filter(|&pid| Self::is_shim(system, &children, pid))
+                .filter(|&pid| self.forwards_to_single_child(observations, &children, pid))
                 .collect();
             if shims.is_empty() {
                 return;
             }
+            self.carry_forwarded_invocations(&shims, &children);
             for &shim in &shims {
                 let child = children[&shim][0];
-                let Some(outer) = system.process(shim) else {
+                let Some(outer) = observations.process(shim) else {
                     continue;
                 };
                 let mut representative = child;
                 while shims.contains(&representative) {
                     representative = children[&representative][0];
                 }
-                let Some(inner) = system.process(representative) else {
+                let Some(inner) = observations.process(representative) else {
                     continue;
                 };
                 // Preserve the runs of an external dispatch chain. A shim in front of
@@ -1761,39 +4896,77 @@ impl Census {
         }
     }
 
-    /// Whether `pid` is a shim in front of the one cargo beneath it.
-    fn is_shim(
-        system: &ProcessObservations<'_>,
+    /// Outer forwarding lifetimes remain the command identity through nested shims.
+    fn carry_forwarded_invocations(&mut self, sources: &[Pid], children: &HashMap<Pid, Vec<Pid>>) {
+        let mut forwarded = sources
+            .iter()
+            .filter_map(|shim| {
+                Some(ForwardedInvocation {
+                    source:         *shim,
+                    representative: children[shim][0],
+                    identity:       self.identities.get(shim)?.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        forwarded.sort_by_key(|handover| self.ancestor_pids(handover.source).as_slice().len());
+        for mut invocation in forwarded {
+            if let Some(identity) = self.identities.get(&invocation.source) {
+                invocation.identity.clone_from(identity);
+            }
+            invocation.carry(&mut self.identities);
+        }
+    }
+
+    /// The retained tree owns forwarding; census pruning consumes that same proof.
+    fn forwards_to_single_child(
+        &self,
+        observations: &ProcessObservations<'_>,
         children: &HashMap<Pid, Vec<Pid>>,
         pid: Pid,
     ) -> bool {
-        let Some(kids) = children.get(&pid) else {
-            return false;
-        };
-        let [child] = kids[..] else {
-            return false;
-        };
-        let (Some(outer), Some(inner)) = (system.process(pid), system.process(child)) else {
-            return false;
-        };
-        if matches!(
-            Self::dispatch(outer, inner),
-            DispatchedProcess::Matched { .. }
-        ) {
-            return true;
+        match self.identity_source {
+            InvocationIdentitySource::RetainedTree => {
+                let Some([child]) = children.get(&pid).map(Vec::as_slice) else {
+                    return false;
+                };
+                matches!((self.identities.get(&pid), self.identities.get(child)),
+                    (Some(parent), Some(child)) if parent == child)
+            },
+            InvocationIdentitySource::NativeSnapshot => Self::is_shim(observations, children, pid),
         }
-        if inner
-            .cmd()
-            .first()
-            .and_then(|program| Path::new(program).file_name())
-            .and_then(|program| program.to_str())
-            .is_some_and(|name| {
-                name.starts_with(CARGO_SUBCOMMAND_PREFIX) && !CARGO_PROCESS_NAMES.contains(&name)
+    }
+
+    /// Whether `pid` is a shim in front of the one cargo beneath it.
+    fn is_shim(
+        observations: &ProcessObservations<'_>,
+        children: &HashMap<Pid, Vec<Pid>>,
+        pid: Pid,
+    ) -> bool {
+        let Some(outer) = observations.process(pid) else {
+            return false;
+        };
+        let process = |pid| {
+            observations.process(pid).map(|record| ForwardingProcess {
+                pid,
+                argv: record.cmd(),
+                directory: record.cwd(),
             })
-        {
-            return false;
-        }
-        observed_shim_match(outer.cmd(), outer.cwd(), inner.cmd(), inner.cwd())
+        };
+        matches!(
+            classify_forwarding(
+                ForwardingProcess {
+                    pid,
+                    argv: outer.cmd(),
+                    directory: outer.cwd()
+                },
+                children
+                    .get(&pid)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|&pid| process(pid)),
+            ),
+            Forwarding::SingleChild(_)
+        )
     }
 
     /// Each cargo's direct cargo children -- the tree the groups are cut
@@ -1957,13 +5130,13 @@ impl Census {
     /// cargo above it.
     fn ancestry(
         &self,
-        system: &ProcessObservations<'_>,
+        observations: &ProcessObservations<'_>,
         home: ScannerHome<'_>,
         pid: Pid,
     ) -> AncestryWalk<Ancestor> {
         self.ancestor_pids(pid).filter_map(|pid| {
-            let process = system.process(pid)?;
-            if command_text::names_cargo(self.invocation_arguments(system, process)) {
+            let process = observations.process(pid)?;
+            if command_text::names_cargo(self.invocation_arguments(observations, process)) {
                 return None;
             }
             Some(Ancestor {
@@ -2072,11 +5245,11 @@ impl Census {
     /// A registration can become process-readable after exec without a new lifetime.
     fn include_registered_processes(
         &mut self,
-        system: &ProcessObservations<'_>,
+        observations: &ProcessObservations<'_>,
         capture: &Capture,
     ) {
         for pid in capture.registered_pids().into_iter().map(Pid::from_u32) {
-            if system
+            if observations
                 .process(pid)
                 .is_some_and(|process| command_text::names_cargo(process.cmd()))
                 && !self.cargo.contains(&pid)
@@ -2088,8 +5261,12 @@ impl Census {
 
     /// Record wrappers forwarding the registered command, including the shim's JSON rewrite.
     /// An exec-replaced application no longer carries that command and is a boundary.
-    fn identify_capture_wrappers(&mut self, system: &ProcessObservations<'_>, capture: &Capture) {
-        self.capture_mismatches = system
+    fn identify_capture_wrappers(
+        &mut self,
+        observations: &ProcessObservations<'_>,
+        capture: &Capture,
+    ) {
+        self.capture_mismatches = observations
             .processes()
             .iter()
             .filter(|(_, process)| {
@@ -2105,14 +5282,14 @@ impl Census {
                     .find(|confirmed| confirmed.key == key)
                     .filter(|confirmed| {
                         !forwards_capture_command(
-                            self.invocation_arguments(system, process),
+                            self.invocation_arguments(observations, process),
                             confirmed.registration.record(),
                         )
                     })
                     .map(|_| pid)
             })
             .collect();
-        self.capture_wrappers = system
+        self.capture_wrappers = observations
             .processes()
             .iter()
             .filter(|(_, process)| {
@@ -2128,7 +5305,7 @@ impl Census {
                     .find(|confirmed| confirmed.key == key)
                     .filter(|confirmed| {
                         forwards_capture_command(
-                            self.invocation_arguments(system, process),
+                            self.invocation_arguments(observations, process),
                             confirmed.registration.record(),
                         )
                     })
@@ -2174,12 +5351,26 @@ impl Census {
         DirectAssociation::None
     }
 
+    /// Publication enriches the tree's owner; it never rekeys an observed command.
+    /// A registration-only command has no native owner and keeps its verified run ID.
+    fn registered_identity(&self, direct: &DirectCapture) -> InvocationId {
+        let shim = Pid::from_u32(direct.run_id.shim_pid);
+        if matches!(self.identity_source, InvocationIdentitySource::RetainedTree)
+            && !self.capture_mismatches.contains(&shim)
+            && let Some(identity) = self.identities.get(&shim)
+        {
+            return identity.clone();
+        }
+        direct.invocation_id()
+    }
+
     /// Prefer the process doing the work when both the shim and cargo describe one run.
     fn identify_captures(&mut self, capture: &Capture) {
         self.capture_boundaries.extend(self.cargo.iter().copied());
         for &pid in &self.cargo {
             if let DirectAssociation::Direct(direct) = self.direct_capture(capture, pid) {
-                self.identities.insert(pid, direct.invocation_id());
+                self.identities
+                    .insert(pid, self.registered_identity(&direct));
             }
         }
         let represented: HashSet<_> = self
@@ -2203,7 +5394,7 @@ impl Census {
     /// Exclusions prune only row ownership; parents and verified capture liveness remain intact.
     fn select_rows(
         &mut self,
-        system: &ProcessObservations<'_>,
+        observations: &ProcessObservations<'_>,
         capture: &Capture,
         excluded: &[String],
     ) {
@@ -2221,12 +5412,16 @@ impl Census {
             })
             .collect();
         for &pid in &self.cargo {
-            let process = system
-                .process(pid)
-                .map_or(Err(RowAbsence::ArgvUnavailable), |process| {
-                    command_text::select_cargo(self.invocation_arguments(system, process), excluded)
+            let process =
+                observations
+                    .process(pid)
+                    .map_or(Err(RowAbsence::ArgvUnavailable), |process| {
+                        command_text::select_cargo(
+                            self.invocation_arguments(observations, process),
+                            excluded,
+                        )
                         .map(|_| ())
-                });
+                    });
             let eligibility = match self.direct_capture(capture, pid) {
                 DirectAssociation::Direct(direct) => {
                     match self.registration_eligibility.get(&direct.run_id) {
@@ -2247,9 +5442,11 @@ impl Census {
             .copied()
             .filter(|pid| !matches!(self.eligibility.get(pid), Some(Ok(()))))
             .filter(|pid| {
-                system.process(*pid).is_none_or(|process| {
+                observations.process(*pid).is_none_or(|process| {
                     process.cmd().is_empty()
-                        || command_text::names_cargo(self.invocation_arguments(system, process))
+                        || command_text::names_cargo(
+                            self.invocation_arguments(observations, process),
+                        )
                 })
             })
             .collect();
@@ -2278,7 +5475,7 @@ impl Census {
         row.state = capture.read(&key);
         match self.direct_capture(capture, pid) {
             DirectAssociation::Direct(direct) => {
-                row.invocation_id = direct.invocation_id();
+                row.invocation_id = self.registered_identity(&direct);
                 row.provenance = RowProvenance::direct(capture, &key, owner);
                 let record = direct.registration().record();
                 if let WorkingDirectoryIdentity::Absolute(path) = &row.directory_identity
@@ -2325,7 +5522,7 @@ impl Census {
     /// order, so within one second the higher pid is the later start.
     fn groups(
         &self,
-        system: &ProcessObservations<'_>,
+        observations: &ProcessObservations<'_>,
         attributed: &InvocationMeasurements,
         home: ScannerHome<'_>,
         capture: &Capture,
@@ -2336,7 +5533,8 @@ impl Census {
         let mut rows: Vec<CargoProcess> = Vec::new();
         for pid in candidates {
             if !rows.iter().any(|row| row.pid == pid.as_u32())
-                && let Ok(group) = self.group(system, attributed, home, &children, capture, pid)
+                && let Ok(group) =
+                    self.group(observations, attributed, home, &children, capture, pid)
             {
                 rows.push(group.lead);
                 rows.extend(group.rest);
@@ -2346,7 +5544,7 @@ impl Census {
         self.add_registration_rows(&mut rows, capture, home, SystemTime::now());
         #[cfg(test)]
         rows.extend_from_slice(&self.registration_rows);
-        let mut groups = self.assemble_groups(system, home, rows);
+        let mut groups = self.assemble_groups(observations, home, rows);
         for group in &mut groups {
             for row in std::iter::once(&mut group.lead).chain(&mut group.rest) {
                 if let Some(&runs) = self.dispatched_runs.get(&Pid::from_u32(row.pid)) {
@@ -2393,10 +5591,10 @@ impl Census {
             }
             // Root selection has already rejected unconfirmed and competing proofs.
             // Only direct representation of this invocation suppresses its source row.
-            let represented = rows
-                .iter()
-                .any(|row| row.invocation_id == direct.invocation_id());
-            if !represented && let Ok(row) = registration_row(&direct, capture, home, now) {
+            let identity = self.registered_identity(&direct);
+            let represented = rows.iter().any(|row| row.invocation_id == identity);
+            if !represented && let Ok(mut row) = registration_row(&direct, capture, home, now) {
+                row.invocation_id = identity;
                 rows.push(row);
             }
         }
@@ -2405,7 +5603,7 @@ impl Census {
     /// Build one ancestry tree after both sources have supplied eligible invocations.
     fn assemble_groups(
         &self,
-        system: &ProcessObservations<'_>,
+        observations: &ProcessObservations<'_>,
         home: ScannerHome<'_>,
         mut rows: Vec<CargoProcess>,
     ) -> Vec<CargoGroup> {
@@ -2468,7 +5666,7 @@ impl Census {
                 continue;
             };
             let mut lead = rows.remove(index);
-            let ancestry = self.ancestry(system, home, Pid::from_u32(lead.pid));
+            let ancestry = self.ancestry(observations, home, Pid::from_u32(lead.pid));
             lead.parent = ancestry
                 .as_slice()
                 .last()
@@ -2516,7 +5714,7 @@ impl Census {
     /// Build the group led by `root`.
     fn group(
         &self,
-        system: &ProcessObservations<'_>,
+        observations: &ProcessObservations<'_>,
         attributed: &InvocationMeasurements,
         home: ScannerHome<'_>,
         children: &HashMap<Pid, Vec<Pid>>,
@@ -2530,10 +5728,10 @@ impl Census {
             return Err(GroupAbsence::Excluded);
         }
         let managed = Self::descendants(children, root);
-        let process = system.process(root).ok_or(GroupAbsence::NoProcess)?;
+        let process = observations.process(root).ok_or(GroupAbsence::NoProcess)?;
         let mut lead = row(
             process,
-            self.invocation_arguments(system, process),
+            self.invocation_arguments(observations, process),
             self.identities
                 .get(&root)
                 .ok_or(GroupAbsence::NoIdentity)?
@@ -2544,17 +5742,17 @@ impl Census {
             &self.direct_capture(capture, root),
         )?;
         self.annotate_capture(&mut lead, capture, home);
-        let ancestry = self.ancestry(system, home, root);
+        let ancestry = self.ancestry(observations, home, root);
         lead.parent = self.drawn_parent(root, ancestry.as_slice());
 
         let mut dated: Vec<(u64, CargoProcess)> = managed
             .into_iter()
             .filter_map(|pid| {
-                let process = system.process(pid)?;
+                let process = observations.process(pid)?;
                 let under = Self::descendants(children, pid).len();
                 let mut managed_row = row(
                     process,
-                    self.invocation_arguments(system, process),
+                    self.invocation_arguments(observations, process),
                     self.identities.get(&pid)?.clone(),
                     Measurement::Reading(under),
                     home,
@@ -2588,12 +5786,12 @@ impl Census {
 }
 
 /// Unknown timestamps remain last; invocation identity breaks ties without hash order.
-fn newest_first(left: &CargoProcess, right: &CargoProcess) -> std::cmp::Ordering {
+fn newest_first(left: &CargoProcess, right: &CargoProcess) -> Ordering {
     match (left.started, right.started) {
         (RunStart::Known(left), RunStart::Known(right)) => right.cmp(&left),
-        (RunStart::Known(_), RunStart::Unavailable) => std::cmp::Ordering::Less,
-        (RunStart::Unavailable, RunStart::Known(_)) => std::cmp::Ordering::Greater,
-        (RunStart::Unavailable, RunStart::Unavailable) => std::cmp::Ordering::Equal,
+        (RunStart::Known(_), RunStart::Unavailable) => Ordering::Less,
+        (RunStart::Unavailable, RunStart::Known(_)) => Ordering::Greater,
+        (RunStart::Unavailable, RunStart::Unavailable) => Ordering::Equal,
     }
     .then_with(|| right.invocation_id.cmp(&left.invocation_id))
 }
@@ -2609,22 +5807,22 @@ fn forwards_capture_command(argv: &[OsString], record: &RegistrationCandidate) -
     }
     let mut expected_arguments = Vec::new();
     for argument in record.arguments() {
-        expected_arguments.push(b'\'');
+        expected_arguments.push(SHELL_SINGLE_QUOTE);
         for byte in argument.as_bytes() {
-            if *byte == b'\'' {
-                expected_arguments.extend_from_slice(b"'\\''");
+            if *byte == SHELL_SINGLE_QUOTE {
+                expected_arguments.extend_from_slice(SHELL_ESCAPED_SINGLE_QUOTE);
             } else {
                 expected_arguments.push(*byte);
             }
         }
-        expected_arguments.extend_from_slice(b"' ");
+        expected_arguments.extend_from_slice(SHELL_QUOTED_ARGUMENT_END);
     }
     argv.iter().any(|argument| {
         argument
             .as_bytes()
             .strip_suffix(expected_arguments.as_slice())
-            .and_then(|binary| binary.strip_prefix(b"'"))
-            .and_then(|binary| binary.strip_suffix(b"' "))
+            .and_then(|binary| binary.strip_prefix(&[SHELL_SINGLE_QUOTE]))
+            .and_then(|binary| binary.strip_suffix(SHELL_QUOTED_ARGUMENT_END))
             .is_some_and(quoted_cargo_binary)
     })
 }
@@ -2663,8 +5861,11 @@ fn forwards_json_capture_arguments(argv: &[OsString], registered: &[OsString]) -
 /// Inside one quoted executable word, an apostrophe must use the shim's escape sequence.
 fn quoted_cargo_binary(binary: &[u8]) -> bool {
     let mut remaining = binary;
-    while let Some(index) = remaining.iter().position(|byte| *byte == b'\'') {
-        let Some(rest) = remaining[index..].strip_prefix(b"'\\''") else {
+    while let Some(index) = remaining
+        .iter()
+        .position(|byte| *byte == SHELL_SINGLE_QUOTE)
+    {
+        let Some(rest) = remaining[index..].strip_prefix(SHELL_ESCAPED_SINGLE_QUOTE) else {
             return false;
         };
         remaining = rest;
@@ -3056,17 +6257,147 @@ impl From<RowAbsence> for GroupAbsence {
     }
 }
 
+/// Select fresh rows or retain the prior publication in a fixture.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) enum FixturePublication {
+    Current,
+    Retained,
+}
+
 /// Successive snapshots retain invocation identity and cumulative CPU history.
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct CensusSequence {
+    invocations:                  Invocations,
     smoothing:                    InvocationCpuAccounting,
+    fixture_identities:           ProcessIdentities,
     previous:                     HashMap<Pid, CpuBaseline>,
     pub(super) registration_rows: Vec<CargoProcess>,
+    published:                    PublishedInvocations,
 }
 
 #[cfg(test)]
 impl CensusSequence {
+    /// Retained invocation count for departure retirement regressions.
+    pub(crate) fn retained_invocations_for_test(&self) -> usize { self.invocations.records.len() }
+
+    /// Explicit publication for fixtures exercising scanner continuity.
+    pub(crate) fn publication(&self) -> &PublishedInvocations { &self.published }
+
+    /// Compatibility for older synthetic omission fixtures.
+    pub(crate) fn missing_invocations(&self) -> Vec<InvocationId> {
+        self.published
+            .states
+            .iter()
+            .filter_map(|(id, state)| {
+                matches!(state, PublishedInvocation::Missing(_)).then_some(id.clone())
+            })
+            .collect()
+    }
+
+    /// Exercise explicit publication with inconclusive kernel reads for synthetic pids.
+    pub(crate) fn sample_published(
+        &mut self,
+        records: &ProcessObservations<'_>,
+        capture: &Capture,
+        now: Instant,
+    ) {
+        self.publish_fixture(records, capture, now, |_| InvocationProbe::Uncertain);
+    }
+
+    /// Use selected publications and native reads for each process subject.
+    pub(crate) fn sample_with_native_evidence(
+        &mut self,
+        records: &ProcessObservations<'_>,
+        capture: &Capture,
+        now: Instant,
+        publication: FixturePublication,
+        mut read: impl FnMut(u32) -> Observation,
+    ) {
+        let evidence = match publication {
+            FixturePublication::Current => PublicationEvidence::Current,
+            FixturePublication::Retained => PublicationEvidence::Selected {
+                processes: ProcessDiscoveryEvidence::Retained,
+                captures:  CaptureFreshness::Retained,
+            },
+        };
+        self.publish_fixture_with_evidence(records, capture, now, evidence, |row| {
+            let observation = read(row.process.pid);
+            let current = match &observation {
+                Observation::Present(stamp) => LifetimeEvidence::Available(
+                    ProcessLifetime::matching_registration_for_test(stamp),
+                ),
+                Observation::Ended | Observation::Unknown => LifetimeEvidence::Unavailable,
+            };
+            let subject = ProcessLifetimeSubject {
+                pid:                Pid::from_u32(row.process.pid),
+                lifetime:           row.lifetime.clone(),
+                kernel_observation: KernelObservation::for_test(
+                    row.process.pid,
+                    observation.clone(),
+                ),
+            };
+            match observation {
+                Observation::Ended => InvocationProbe::Ended(subject),
+                Observation::Present(_) | Observation::Unknown => subject.compare(&current),
+            }
+        });
+    }
+
+    /// Exercise the production absence probe with a real process or confirmed exit.
+    pub(crate) fn sample_kernel(&mut self, records: &ProcessObservations<'_>, now: Instant) {
+        self.publish_fixture(records, &Capture::default(), now, |row| {
+            InvocationProbe::kernel(ProcessLifetimeSubject::observe(row))
+        });
+    }
+
+    fn publish_fixture(
+        &mut self,
+        records: &ProcessObservations<'_>,
+        capture: &Capture,
+        now: Instant,
+        probe: impl FnMut(&InvocationProcessRow) -> InvocationProbe,
+    ) {
+        self.publish_fixture_with_evidence(
+            records,
+            capture,
+            now,
+            PublicationEvidence::Current,
+            probe,
+        );
+    }
+
+    fn publish_fixture_with_evidence(
+        &mut self,
+        records: &ProcessObservations<'_>,
+        capture: &Capture,
+        now: Instant,
+        evidence: PublicationEvidence,
+        probe: impl FnMut(&InvocationProcessRow) -> InvocationProbe,
+    ) {
+        let mut census = Census::take(records.records.values());
+        census.publication_evidence = evidence;
+        census.identities = self.fixture_identities.observe(&census.lifetimes);
+        let mut tree = self.invocations.identify(&mut census, records, capture);
+        census.prepare(records, capture, &[]);
+        let attributed = InvocationMeasurements {
+            cpu_scan_publication: CpuScanPublication::Unobserved,
+            cpu:                  records
+                .records
+                .iter()
+                .map(|(&pid, record)| (pid, record.cpu))
+                .collect(),
+            memory:               census.attribute_memory(&HashMap::new()),
+            compilers:            census.attribute_compilers(),
+        };
+        let mut groups = census.groups(records, &attributed, ScannerHome::Unavailable, capture);
+        tree.retain_ancestry(&census, &mut groups);
+        self.published = self
+            .invocations
+            .publish(&census, &tree, groups, capture, now, probe);
+    }
+
     /// Supplied rates exercise selection and assembly without invoking OS accounting.
     pub(crate) fn sample(&mut self, records: &ProcessObservations<'_>) -> Vec<CargoGroup> {
         self.sample_with_capture(records, &Capture::default(), &[], ScannerHome::Unavailable)
@@ -3136,8 +6467,9 @@ impl CensusSequence {
         cpu: HashMap<Pid, Measurement<f32>>,
     ) -> Vec<CargoGroup> {
         let mut census = Census::take(records.records.values());
-        census.identities = self.smoothing.identities.observe(&census.lifetimes);
+        census.identities = self.fixture_identities.observe(&census.lifetimes);
         census.registration_rows.clone_from(&self.registration_rows);
+        let mut tree = self.invocations.identify(&mut census, records, capture);
         census.prepare(records, capture, excluded);
         let attributed = InvocationMeasurements {
             cpu_scan_publication: CpuScanPublication::Unobserved,
@@ -3145,7 +6477,17 @@ impl CensusSequence {
             cpu,
             memory: census.attribute_memory(&HashMap::new()),
         };
-        census.groups(records, &attributed, home, capture)
+        let mut groups = census.groups(records, &attributed, home, capture);
+        tree.retain_ancestry(&census, &mut groups);
+        self.published = self.invocations.publish(
+            &census,
+            &tree,
+            groups.clone(),
+            capture,
+            Instant::now(),
+            |_| InvocationProbe::Uncertain,
+        );
+        groups
     }
 
     /// Each fresh snapshot goes through own-counter validation and invocation accounting.
@@ -3176,8 +6518,9 @@ impl CensusSequence {
         self.previous
             .retain(|pid, _| records.records.contains_key(pid));
         let mut census = Census::take(records.records.values());
-        census.identities = self.smoothing.identities.observe(&census.lifetimes);
+        census.identities = self.fixture_identities.observe(&census.lifetimes);
         census.registration_rows.clone_from(&self.registration_rows);
+        let mut tree = self.invocations.identify(&mut census, records, capture);
         census.prepare(records, capture, excluded);
         let attributed = census.attribute_with(records, &mut self.smoothing, now, |pid| {
             records.process(pid).map_or(
@@ -3185,7 +6528,17 @@ impl CensusSequence {
                 |record| record.native_cpu.get(),
             )
         });
-        census.groups(records, &attributed, ScannerHome::Unavailable, capture)
+        let mut groups = census.groups(records, &attributed, ScannerHome::Unavailable, capture);
+        tree.retain_ancestry(&census, &mut groups);
+        self.published = self.invocations.publish(
+            &census,
+            &tree,
+            groups.clone(),
+            capture,
+            Instant::now(),
+            |_| InvocationProbe::Uncertain,
+        );
+        groups
     }
 
     /// Capture tests can retain deliberately partial ancestry while sharing row assembly.
@@ -3199,12 +6552,13 @@ impl CensusSequence {
         census.groups(
             records,
             &InvocationMeasurements {
-                cpu_scan_publication: CpuScanPublication::Unobserved,
-                cpu:                  HashMap::new(),
-                memory:               HashMap::new(),
-                compilers:            HashMap::new(),
+                #[cfg(test)]
+                cpu_scan_publication:              CpuScanPublication::Unobserved,
+                cpu:                               HashMap::new(),
+                memory:                            HashMap::new(),
+                compilers:                         HashMap::new(),
             },
-            ScannerHome::Known(Path::new("/writer")),
+            ScannerHome::Known(Path::new(tests::FIXTURE_WRITER_HOME)),
             capture,
         )
     }
@@ -3240,8 +6594,10 @@ mod tests {
     use tui_pane::TABLE_CELL;
     use tui_pane::TileGrowth;
 
+    use super::process_identity::ProcessEndUnproven;
     use super::*;
     use crate::app::App;
+    use crate::birth_stamp::BirthStamp;
     use crate::birth_stamp::IdentityEvidence;
     use crate::birth_stamp::KernelObservation;
     use crate::birth_stamp::Observation;
@@ -3267,7 +6623,1024 @@ mod tests {
     use crate::root_scan::RootOwner;
     use crate::roster::FamilyHead;
     use crate::tiles::TileContent;
-    use crate::tiles::TileDemands;
+
+    pub(super) const FIXTURE_WRITER_HOME: &str = "/writer";
+
+    #[test]
+    fn two_absence_cycles_never_revive_either_ended_identity() {
+        let arguments = ["cargo", "check"].map(OsString::from);
+        let epoch = Instant::now() + Duration::from_secs(60);
+        let mut sequence = CensusSequence::default();
+        let mut ended = Vec::new();
+        for cycle in 0..=2 {
+            let now = epoch + Duration::from_secs(cycle * 2);
+            sequence.sample_published(
+                &ProcessObservations::new([ProcessObservation::cargo(4100, &arguments)]),
+                &Capture::default(),
+                now,
+            );
+            let identity = sequence.publication().groups()[0].id();
+            assert!(
+                !ended.contains(&identity),
+                "cycle {cycle} revived an ended identity: {identity:?}"
+            );
+            ended.push(identity);
+            for scan in 1..=4 {
+                sequence.sample_published(
+                    &ProcessObservations::default(),
+                    &Capture::default(),
+                    now + Duration::from_millis(scan * crate::constants::PROCESS_POLL_MILLIS),
+                );
+            }
+            assert_eq!(sequence.retained_invocations_for_test(), 0);
+        }
+    }
+
+    #[test]
+    fn native_identity_retirement_requires_its_own_absence_proof() {
+        let pid = Pid::from_u32(4100);
+        let lifetimes = HashMap::from([(pid, LifetimeEvidence::Unavailable)]);
+        let mut identities = ProcessIdentities::default();
+        let first = identities.observe(&lifetimes);
+        identities.retire_missing(&HashMap::new(), |_| Err(ProcessEndUnproven::Alive));
+        assert_eq!(identities.observe(&lifetimes), first);
+        identities.retire_missing(&HashMap::new(), |subject| {
+            Ok(process_identity::ProvenProcessEnd::for_test(subject))
+        });
+        assert_ne!(identities.observe(&lifetimes), first);
+    }
+
+    #[test]
+    fn terminal_aliases_expire_only_after_their_retained_evidence() {
+        let pid = Pid::from_u32(4100);
+        let alias = InvocationId::for_test(4100);
+        let mut invocations = Invocations::default();
+        invocations.terminal.end(pid, &alias);
+        let replacement = invocations.terminal.subsequent(pid, &alias);
+        assert_ne!(replacement, alias);
+        invocations.retain_identity_evidence(std::iter::once(alias.clone()));
+        assert_eq!(invocations.terminal.subsequent(pid, &alias), replacement);
+        invocations.retain_identity_evidence(std::iter::empty());
+        assert_eq!(invocations.terminal.subsequent(pid, &alias), alias);
+    }
+
+    #[test]
+    fn a_reused_pid_does_not_retain_its_old_process_binding() {
+        let argv = ["cargo", "check"].map(OsString::from);
+        let mut sequence = CensusSequence::default();
+        let now = Instant::now();
+        for lifetime in 1..=4 {
+            let cargo = ProcessObservation::cargo(4100, &argv).with_lifetime(
+                LifetimeEvidence::Available(ProcessLifetime::for_test(lifetime)),
+            );
+            sequence.sample_published(
+                &ProcessObservations::new([cargo]),
+                &Capture::default(),
+                now + Duration::from_millis(lifetime),
+            );
+            assert!(
+                sequence.invocations.bindings.subjects.len() <= 2,
+                "only the current lifetime and its just-ended predecessor remain"
+            );
+            assert_eq!(
+                sequence
+                    .invocations
+                    .bindings
+                    .subjects
+                    .values()
+                    .filter(|state| { matches!(state, ProcessBindingState::Active(_)) })
+                    .count(),
+                1,
+                "only the current lifetime remains active"
+            );
+        }
+    }
+
+    #[test]
+    fn delayed_attribution_uses_counter_read_times() {
+        let argv = ["cargo", "check"].map(OsString::from);
+        let pid = Pid::from_u32(4100);
+        let observations = ProcessObservations::new([ProcessObservation::cargo(4100, &argv)]);
+        let mut census = Census::take(observations.records.values());
+        census.identities.insert(pid, InvocationId::for_test(4100));
+        census.cpu.insert(pid, Measurement::Reading(0.0));
+        let mut smoothing = InvocationCpuAccounting::new(CensusCadence {
+            poll:      Duration::from_millis(50),
+            report:    Duration::ZERO,
+            smoothing: Duration::ZERO,
+        });
+        let origin = Instant::now();
+        let actual_read_time = Cell::new(origin);
+        // Discovery is 100 ms apart; the counter reads are 400 ms apart.
+        let samples = [(0, 100, 100), (100, 500, 500)];
+        let mut result = AttributedInvocations::empty().measurements;
+        for (discovery_ms, read_ms, counter_ms) in samples {
+            actual_read_time.set(origin + Duration::from_millis(discovery_ms));
+            result = census.attribute_with_clock(
+                &observations,
+                &mut smoothing,
+                |_| {
+                    actual_read_time.set(origin + Duration::from_millis(read_ms));
+                    Measurement::Reading(Duration::from_millis(counter_ms))
+                },
+                || actual_read_time.get(),
+            );
+        }
+        // This oracle uses the supplied read events, never the accounting timestamp.
+        let elapsed = Duration::from_millis(samples[1].1 - samples[0].1);
+        let work = Duration::from_millis(samples[1].2 - samples[0].2);
+        let expected = 100.0 * work.as_secs_f32() / elapsed.as_secs_f32();
+        assert_eq!(
+            result.cpu[&pid],
+            Measurement::Reading(expected),
+            "CPU uses the interval between counter reads"
+        );
+    }
+
+    #[test]
+    fn a_blocked_detail_read_keeps_other_processes_attributed() {
+        let argv = ["cargo", "check"].map(OsString::from);
+        let first = DetailRead::Ready(Arc::new(4100));
+        let blocked = DetailRead::Reading;
+        let third = DetailRead::Refreshing(Arc::new(4300));
+        let StageAnswer::Completed(details) =
+            CompletedAttributionDetails::from_reads([&first, &blocked, &third].into_iter())
+        else {
+            panic!("two completed process reads remain available for attribution");
+        };
+        let mut observations = ProcessObservations::new([4100, 4200, 4300].map(|pid| {
+            let mut process = ProcessObservation::cargo(pid, &argv);
+            process.details = DetailPresence::Absent;
+            process
+        }));
+        for pid in &details.0 {
+            let process = ProcessObservation::cargo(**pid, &argv);
+            observations.records.insert(process.pid, process);
+        }
+        let mut census = Census::take(observations.records.values());
+        for pid in [4100, 4200, 4300].map(Pid::from_u32) {
+            census
+                .identities
+                .insert(pid, InvocationId::for_test(pid.as_u32()));
+            census.cpu.insert(pid, Measurement::Reading(0.0));
+        }
+        let mut smoothing = InvocationCpuAccounting::new(CensusCadence {
+            poll:      Duration::from_millis(50),
+            report:    Duration::ZERO,
+            smoothing: Duration::ZERO,
+        });
+        let now = Instant::now();
+        census.attribute_with_clock(
+            &observations,
+            &mut smoothing,
+            |_| Measurement::Reading(Duration::from_millis(100)),
+            || now,
+        );
+        let readings = census.attribute_with_clock(
+            &observations,
+            &mut smoothing,
+            |_| Measurement::Reading(Duration::from_millis(150)),
+            || now + Duration::from_millis(100),
+        );
+        assert_eq!(readings.cpu.len(), 2, "two completed processes receive CPU");
+        for pid in [4100, 4300].map(Pid::from_u32) {
+            assert_eq!(readings.cpu[&pid], Measurement::Reading(50.0));
+        }
+        assert!(
+            !readings.cpu.contains_key(&Pid::from_u32(4200)),
+            "the blocked process has no completed attribution"
+        );
+    }
+
+    #[test]
+    fn a_non_cargo_ancestor_keeps_forwarding_executions_separate() {
+        let argv = ["cargo", "check"].map(OsString::from);
+        let make_argv = ["make", "check"].map(OsString::from);
+        let outer = ProcessObservation::cargo(4100, &argv);
+        let mut make = ProcessObservation::cargo(4101, &make_argv);
+        make.name = ProcessField::Observed(OsStr::new("make"));
+        make.parent = ProcessField::Observed(Pid::from_u32(4100));
+        let mut inner = ProcessObservation::cargo(4102, &argv);
+        inner.parent = ProcessField::Observed(Pid::from_u32(4101));
+        let mut sequence = CensusSequence::default();
+        sequence.sample_published(
+            &ProcessObservations::new([outer, make, inner]),
+            &Capture::default(),
+            Instant::now(),
+        );
+        let rows: HashMap<_, _> = sequence
+            .publication()
+            .groups()
+            .iter()
+            .flat_map(|group| std::iter::once(&group.lead).chain(&group.rest))
+            .map(|row| (row.pid, row.invocation_id.clone()))
+            .collect();
+        assert_ne!(
+            rows[&4100], rows[&4102],
+            "make separates the two cargo execution owners"
+        );
+    }
+
+    #[test]
+    fn attribution_requires_completed_details_for_each_current_source() {
+        let ready = DetailRead::Ready(Arc::new(1));
+        let refreshing = DetailRead::Refreshing(Arc::new(2));
+        let StageAnswer::Completed(answers) =
+            CompletedAttributionDetails::from_reads([&ready, &refreshing].into_iter())
+        else {
+            panic!("completed current detail answers must allow attribution");
+        };
+        assert_eq!(
+            answers.0.iter().map(|answer| **answer).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        for pending in [
+            DetailRead::Queued,
+            DetailRead::Reading,
+            DetailRead::ReadingChanged,
+            DetailRead::SourceChanged(Arc::new(3)),
+            DetailRead::RefreshingChanged(Arc::new(4)),
+            DetailRead::ReplacingSource(Arc::new(5)),
+        ] {
+            let StageAnswer::Completed(answers) =
+                CompletedAttributionDetails::from_reads([&ready, &pending].into_iter())
+            else {
+                panic!("the completed current source supplies attribution");
+            };
+            assert_eq!(
+                answers.0.iter().map(|answer| **answer).collect::<Vec<_>>(),
+                [1],
+                "only the completed current source supplies attribution"
+            );
+            assert!(
+                matches!(
+                    CompletedAttributionDetails::from_reads([&pending].into_iter()),
+                    StageAnswer::Pending
+                ),
+                "a pending source waits for its completed metadata"
+            );
+        }
+    }
+
+    #[test]
+    fn retained_discovery_publishes_completed_cpu_without_freshening_lifetime() {
+        let argv = ["cargo", "check"].map(OsString::from);
+        let mut first = ProcessObservation::cargo(4100, &argv);
+        first.cpu = Measurement::Reading(41.0);
+        let mut sequence = CensusSequence::default();
+        let now = Instant::now();
+        sequence.sample_published(&ProcessObservations::new([first]), &Capture::default(), now);
+        let owner = sequence.publication().groups()[0].id();
+        let mut replacement = ProcessObservation::cargo(4100, &argv);
+        replacement.cpu = Measurement::Reading(36.610_973);
+        sequence.sample_with_native_evidence(
+            &ProcessObservations::new([replacement]),
+            &Capture::default(),
+            now + Duration::from_millis(50),
+            FixturePublication::Retained,
+            |_| Observation::Unknown,
+        );
+        let publication = sequence.publication();
+        assert!(
+            matches!(
+                publication.state(&owner),
+                Some(PublishedInvocation::Missing(_))
+            ),
+            "new CPU does not turn retained discovery into current lifetime evidence"
+        );
+        assert_eq!(
+            publication.groups()[0].lead.resource_use.cpu,
+            Measurement::Reading(36.610_973)
+        );
+        assert_eq!(
+            publication.groups()[0].lead.subtree_resource_use.cpu,
+            Measurement::Reading(36.610_973)
+        );
+        let row = &publication.groups()[0].lead;
+        let resources = publication
+            .retained_resources(row)
+            .expect("Missing resource publication");
+        assert_eq!(resources.own.cpu, Measurement::Reading(36.610_973));
+        assert_eq!(resources.subtree.cpu, Measurement::Reading(36.610_973));
+        assert!(
+            publication.live(row).is_err(),
+            "retained resources supply no live-row evidence"
+        );
+        assert!(
+            publication
+                .state(&owner)
+                .expect("Missing state")
+                .admissible()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn retained_cpu_reaches_its_owned_row_when_metadata_resolution_is_pending() {
+        let argv = ["cargo", "check"].map(OsString::from);
+        let records = ProcessObservations::new([ProcessObservation::cargo(4100, &argv)]);
+        let mut sequence = CensusSequence::default();
+        let capture = Capture::default();
+        let now = Instant::now();
+        sequence.sample_published(&records, &capture, now);
+        let mut group = sequence.publication().groups()[0].clone();
+        let owner = group.id();
+        let pid = Pid::from_u32(4100);
+        group.lead.resource_use.cpu = Measurement::Reading(36.610_973);
+        group.lead.subtree_resource_use.cpu = Measurement::Reading(36.610_973);
+        let mut census = Census::take(records.records.values());
+        census.publication_evidence = PublicationEvidence::Selected {
+            processes: ProcessDiscoveryEvidence::Retained,
+            captures:  CaptureFreshness::Retained,
+        };
+        census.identities = sequence.fixture_identities.observe(&census.lifetimes);
+        let tree = sequence
+            .invocations
+            .identify(&mut census, &records, &capture);
+        let node = tree.nodes.get(&pid).expect("retained process");
+        let subject = sequence.invocations.bindings.subject(&node.native);
+        sequence.invocations.bindings.subjects.insert(
+            subject,
+            ProcessBindingState::Active(InvocationProcessBinding::Forwarder {
+                owner:    node.invocation.clone(),
+                evidence: ProcessBindingEvidence {
+                    origin: node.invocation.clone(),
+                },
+                executor: ProcessIdentity::observed(4200, LifetimeEvidence::Unavailable),
+            }),
+        );
+        assert!(
+            sequence.invocations.bindings.resolve(node).is_err(),
+            "pending executor metadata cannot grant admission"
+        );
+        let publication = sequence.invocations.publish(
+            &census,
+            &tree,
+            vec![group],
+            &capture,
+            now + Duration::from_millis(50),
+            |_| InvocationProbe::Uncertain,
+        );
+        assert!(matches!(
+            publication.state(&owner),
+            Some(PublishedInvocation::Missing(_))
+        ));
+        let row = &publication.groups()[0].lead;
+        assert_eq!(row.resource_use.cpu, Measurement::Reading(36.610_973));
+        assert_eq!(
+            row.subtree_resource_use.cpu,
+            Measurement::Reading(36.610_973)
+        );
+        assert!(
+            publication
+                .state(&owner)
+                .expect("retained state")
+                .admissible()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_reused_attribution_keeps_its_measurement_stamp() {
+        let argv = [OsString::from("cargo"), OsString::from("check")];
+        let records = ProcessObservations::new([ProcessObservation::cargo(4100, &argv)]);
+        let mut census = Census::take(records.records.values());
+        let pid = Pid::from_u32(4100);
+        let identity = InvocationId::for_test(4100);
+        census.identities.insert(pid, identity.clone());
+        let mut first = AttributedInvocations::empty();
+        first.identities.insert(pid, identity);
+        first
+            .measurements
+            .cpu
+            .insert(pid, Measurement::Reading(27.0));
+        first.measurements.cpu_scan_publication = CpuScanPublication::Observed(12);
+
+        // A later discovery reuses the completed attribution, including its scan.
+        let reused = first.for_census(&census);
+        assert_eq!(reused.cpu.get(&pid), Some(&Measurement::Reading(27.0)));
+        assert!(matches!(
+            reused.cpu_scan_publication,
+            CpuScanPublication::Observed(12)
+        ));
+        let empty = AttributedInvocations::empty().for_census(&census);
+        assert!(empty.cpu.is_empty());
+        assert!(matches!(
+            empty.cpu_scan_publication,
+            CpuScanPublication::Unobserved
+        ));
+
+        let mut replacement = AttributedInvocations::empty();
+        replacement.identities = first.identities.clone();
+        replacement
+            .measurements
+            .cpu
+            .insert(pid, Measurement::Reading(43.0));
+        replacement.measurements.cpu_scan_publication = CpuScanPublication::Observed(33);
+        let current = replacement.for_census(&census);
+        assert_eq!(current.cpu.get(&pid), Some(&Measurement::Reading(43.0)));
+        assert!(matches!(
+            current.cpu_scan_publication,
+            CpuScanPublication::Observed(33)
+        ));
+
+        census.identities.insert(pid, InvocationId::for_test(5100));
+        let replaced = first.for_census(&census);
+        assert!(
+            replaced.cpu.is_empty(),
+            "a replaced lifetime cannot inherit CPU"
+        );
+        assert!(matches!(
+            replaced.cpu_scan_publication,
+            CpuScanPublication::Observed(12)
+        ));
+    }
+
+    #[test]
+    fn a_resolved_process_row_has_one_family_after_roots_overlap() {
+        let argv = [OsString::from("cargo"), OsString::from("check")];
+        let mut sequence = CensusSequence::default();
+        let now = Instant::now();
+        sequence.sample_published(
+            &ProcessObservations::new(
+                [4100, 5100, 6100].map(|pid| ProcessObservation::cargo(pid, &argv)),
+            ),
+            &Capture::default(),
+            now,
+        );
+        let rows: HashMap<_, _> = sequence
+            .publication()
+            .groups()
+            .iter()
+            .map(|group| (group.lead.pid, group.lead.clone()))
+            .collect();
+        let first = rows[&4100].invocation_id.clone();
+        let second = rows[&5100].invocation_id.clone();
+        let member = rows[&6100].invocation_id.clone();
+        sequence
+            .invocations
+            .records
+            .get_mut(&member)
+            .expect("member record")
+            .membership = Membership::Member {
+            lead: second.clone(),
+        };
+        // Two retained roots contain the member's last row. Its own record now
+        // assigns the process to the second family.
+        for root in [&first, &second] {
+            let record = sequence
+                .invocations
+                .records
+                .get_mut(root)
+                .expect("root record");
+            let mut frozen = record.state.rows().to_vec();
+            frozen.push(rows[&6100].clone());
+            record.state = InvocationState::Ended(EndedInvocation {
+                id:           root.clone(),
+                rows:         frozen.into(),
+                at:           now,
+                presentation: record.presentation.clone(),
+                published:    sequence.invocations.scan,
+            });
+        }
+        let published = sequence.invocations.publication();
+        for pid in [4100, 5100, 6100] {
+            let owners: Vec<_> = published
+                .groups()
+                .iter()
+                .filter(|group| {
+                    std::iter::once(&group.lead)
+                        .chain(&group.rest)
+                        .any(|row| row.pid == pid)
+                })
+                .map(CargoGroup::id)
+                .collect();
+            assert_eq!(owners.len(), 1, "pid {pid} has more than one family");
+            if pid == 6100 {
+                assert_eq!(
+                    owners.as_slice(),
+                    std::slice::from_ref(&second),
+                    "the canonical record selects the family"
+                );
+                assert_eq!(
+                    published
+                        .groups()
+                        .iter()
+                        .flat_map(|group| { std::iter::once(&group.lead).chain(&group.rest) })
+                        .filter(|row| row.pid == pid)
+                        .count(),
+                    1,
+                    "one row per resolved process"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_registered_pipeline_resolves_each_forwarder_before_admission() {
+        let root = tempdir().expect("capture root");
+        write_versioned_capture(
+            root.path(),
+            4100,
+            "execution",
+            "/work",
+            "/writer",
+            "check",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let IdentityEvidence::Available(birth) = BirthStamp::from_fields("boot", "100") else {
+            panic!("fixture birth");
+        };
+        let argv = ["cargo", "check"].map(OsString::from);
+        let shell = ["/bin/sh", "/capture/cargo", "check"].map(OsString::from);
+        let mut shim = ProcessObservation::cargo(4100, &shell).with_lifetime(
+            LifetimeEvidence::Available(ProcessLifetime::matching_registration_for_test(&birth)),
+        );
+        shim.name = ProcessField::Observed(OsStr::new("sh"));
+        let mut pipeline = ProcessObservation::cargo(4101, &shell);
+        pipeline.name = ProcessField::Observed(OsStr::new("sh"));
+        pipeline.parent = ProcessField::Observed(Pid::from_u32(4100));
+        let mut cargo = ProcessObservation::cargo(4102, &argv);
+        cargo.parent = ProcessField::Observed(Pid::from_u32(4101));
+        let mut sequence = CensusSequence::default();
+        let now = Instant::now();
+        sequence.sample_published(&ProcessObservations::new([shim.clone()]), &capture, now);
+        let owner = sequence.publication().groups()[0].id();
+        let discovery = ProcessObservations::new([
+            shim.clone().without_details(),
+            pipeline.clone().without_details(),
+            cargo.clone().without_details(),
+        ]);
+        let details = ProcessObservations::new([shim, pipeline, cargo]);
+        // Production classifies discovery before the asynchronous detail overlay.
+        let mut census = Census::take(discovery.records.values());
+        census.identities = sequence.fixture_identities.observe(&census.lifetimes);
+        let mut tree = sequence
+            .invocations
+            .identify(&mut census, &details, &capture);
+        census.prepare(&details, &capture, &[]);
+        let measurements = InvocationMeasurements {
+            cpu_scan_publication: CpuScanPublication::Unobserved,
+            cpu:                  HashMap::new(),
+            memory:               HashMap::new(),
+            compilers:            HashMap::new(),
+        };
+        let mut groups = census.groups(&details, &measurements, ScannerHome::Unavailable, &capture);
+        tree.retain_ancestry(&census, &mut groups);
+        let published = sequence.invocations.publish(
+            &census,
+            &tree,
+            groups,
+            &capture,
+            now + Duration::from_millis(50),
+            |_| InvocationProbe::Uncertain,
+        );
+        assert_eq!(published.groups().len(), 1, "one pipeline is one execution");
+        let group = &published.groups()[0];
+        assert_eq!(
+            group.id(),
+            owner,
+            "the registered execution keeps its owner"
+        );
+        assert_eq!(group.lead.pid, 4102, "cargo supplies the row");
+        assert!(group.rest.is_empty(), "pipeline shells do not request rows");
+        assert!(
+            matches!(published.state(&owner), Some(PublishedInvocation::Live(_))),
+            "completed native details grant admission"
+        );
+    }
+
+    #[test]
+    fn a_late_registered_forwarder_keeps_its_live_parent_in_one_execution() {
+        let root = tempdir().expect("capture root");
+        write_versioned_capture(root.path(), 10, "outer", "/work", "/writer", "check", "");
+        let capture = verified_capture(root.path());
+        let IdentityEvidence::Available(stamp) = BirthStamp::from_fields("boot", "100") else {
+            panic!("fixture birth");
+        };
+        let argv = ["cargo", "check"].map(OsString::from);
+        let shell = ["/bin/sh", "/capture/cargo", "check"].map(OsString::from);
+        let make = |pid| {
+            ProcessObservation::cargo(pid, &argv).with_lifetime(LifetimeEvidence::Available(
+                ProcessLifetime::matching_registration_for_test(&stamp),
+            ))
+        };
+        let parent = make(10);
+        let mut sequence = CensusSequence::default();
+        let now = Instant::now();
+        sequence.sample_published(&ProcessObservations::new([parent.clone()]), &capture, now);
+        let owner = sequence.publication().groups()[0].id();
+        write_versioned_capture(root.path(), 20, "inner", "/work", "/writer", "check", "");
+        let capture = verified_capture(root.path());
+        let mut forwarder = make(20);
+        forwarder.argv = ProcessField::Observed(&shell);
+        forwarder.name = ProcessField::Observed(OsStr::new("sh"));
+        forwarder.parent = ProcessField::Observed(Pid::from_u32(10));
+        let mut executor = make(30);
+        executor.parent = ProcessField::Observed(Pid::from_u32(20));
+        let records = ProcessObservations::new([parent, forwarder, executor]);
+        for millis in [2840, 3500, 5000, 6000] {
+            sequence.sample_published(&records, &capture, now + Duration::from_millis(millis));
+            let groups = sequence.publication().groups();
+            let rows: Vec<_> = groups
+                .iter()
+                .flat_map(|group| std::iter::once(&group.lead).chain(&group.rest))
+                .map(|row| row.pid)
+                .collect();
+            assert_eq!(
+                rows,
+                [30],
+                "a live forwarding parent returned after registration at {millis}ms"
+            );
+            assert_eq!(groups[0].id(), owner, "the first owner stays assigned");
+        }
+    }
+
+    #[test]
+    fn a_live_capture_binding_retires_its_unavailable_process_alias_before_the_end() {
+        let root = tempdir().expect("capture root");
+        write_versioned_capture(
+            root.path(),
+            4100,
+            "execution",
+            "/work",
+            "/writer",
+            "check",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let IdentityEvidence::Available(birth) = BirthStamp::from_fields("boot", "100") else {
+            panic!("fixture birth");
+        };
+        let argv = ["cargo", "check"].map(OsString::from);
+        let mut cargo =
+            ProcessObservation::cargo(4102, &argv).with_lifetime(LifetimeEvidence::Unavailable);
+        let mut sequence = CensusSequence::default();
+        let now = Instant::now();
+        sequence.sample_published(
+            &ProcessObservations::new([cargo.clone()]),
+            &Capture::default(),
+            now,
+        );
+        let process = sequence.publication().groups()[0].id();
+        let shim = ProcessObservation::cargo(4100, &argv).with_lifetime(
+            LifetimeEvidence::Available(ProcessLifetime::matching_registration_for_test(&birth)),
+        );
+        cargo.parent = ProcessField::Observed(Pid::from_u32(4100));
+        let records = ProcessObservations::new([shim, cargo]);
+        for millis in [2840, 3500, 5000] {
+            sequence.sample_published(&records, &capture, now + Duration::from_millis(millis));
+            let published = sequence.publication();
+            assert_eq!(
+                published.groups().len(),
+                1,
+                "one live execution at {millis}ms"
+            );
+            assert!(
+                matches!(published.groups()[0].id(), InvocationId::Captured(_)),
+                "the capture owns its current cargo process at {millis}ms"
+            );
+            assert_eq!(published.groups()[0].lead.pid, 4102);
+            assert_eq!(published.groups()[0].rest, [] as [CargoProcess; 0]);
+            assert!(
+                matches!(
+                    published.state(&process),
+                    Some(PublishedInvocation::Joined { .. })
+                ),
+                "the process alias joins before its end at {millis}ms"
+            );
+        }
+        let captured = sequence.publication().groups()[0].id();
+        let ended_capture = Capture::take_from(root.path(), |pid| {
+            KernelObservation::for_test(pid, Observation::Ended)
+        });
+        sequence.sample_with_native_evidence(
+            &ProcessObservations::default(),
+            &ended_capture,
+            now + Duration::from_millis(6000),
+            FixturePublication::Current,
+            |_| Observation::Ended,
+        );
+        assert!(matches!(
+            sequence.publication().state(&captured),
+            Some(PublishedInvocation::Ended(_))
+        ));
+        assert!(matches!(
+            sequence.publication().state(&process),
+            Some(PublishedInvocation::Joined { .. })
+        ));
+        assert_eq!(
+            sequence
+                .publication()
+                .states
+                .values()
+                .filter(|state| matches!(state, PublishedInvocation::Ended(_)))
+                .count(),
+            1,
+            "the resolved execution emits one end"
+        );
+    }
+
+    #[test]
+    fn retained_discovery_does_not_advance_the_missing_observation_limit() {
+        let argv = ["cargo", "check"].map(OsString::from);
+        let records = ProcessObservations::new([ProcessObservation::cargo(4100, &argv)]);
+        let mut sequence = CensusSequence::default();
+        let now = Instant::now();
+        sequence.sample_published(&records, &Capture::default(), now);
+        let owner = sequence.publication().groups()[0].id();
+        for publication in 1..=MISSING_SCAN_LIMIT + 2 {
+            sequence.sample_with_native_evidence(
+                &ProcessObservations::default(),
+                &Capture::default(),
+                now + Duration::from_millis(publication),
+                FixturePublication::Retained,
+                |_| Observation::Unknown,
+            );
+            assert!(
+                matches!(
+                    sequence.publication().state(&owner),
+                    Some(PublishedInvocation::Missing(_))
+                ),
+                "retained publication {publication} is not fresh absence evidence"
+            );
+        }
+        for observation in 1..=MISSING_SCAN_LIMIT {
+            sequence.sample_with_native_evidence(
+                &ProcessObservations::default(),
+                &Capture::default(),
+                now + Duration::from_millis(10 + observation),
+                FixturePublication::Current,
+                |_| Observation::Unknown,
+            );
+            let state = sequence.publication().state(&owner);
+            if observation == MISSING_SCAN_LIMIT {
+                assert!(matches!(state, Some(PublishedInvocation::Ended(_))));
+            } else {
+                assert!(matches!(state, Some(PublishedInvocation::Missing(_))));
+            }
+        }
+    }
+
+    #[test]
+    fn a_current_native_lifetime_does_not_repeat_an_end_probe() {
+        let argv = ["cargo", "check"].map(OsString::from);
+        let records = ProcessObservations::new([ProcessObservation::cargo(10, &argv)]);
+        let mut sequence = CensusSequence::default();
+        let now = Instant::now();
+        let capture = Capture::default();
+        sequence.sample_published(&records, &capture, now);
+        let owner = sequence.publication().groups()[0].id();
+        let mut census = Census::take(records.records.values());
+        census.identities = sequence.fixture_identities.observe(&census.lifetimes);
+        let tree = sequence
+            .invocations
+            .identify(&mut census, &records, &capture);
+        let mut reads = 0;
+        // Row selection can omit a process whose native discovery is current.
+        sequence
+            .invocations
+            .publish(&census, &tree, Vec::new(), &capture, now, |_| {
+                reads += 1;
+                InvocationProbe::Alive
+            });
+        assert_eq!(
+            reads, 0,
+            "a current matching birth already proves the same native process"
+        );
+        census.publication_evidence = PublicationEvidence::Selected {
+            processes: ProcessDiscoveryEvidence::Retained,
+            captures:  CaptureFreshness::Retained,
+        };
+        let published =
+            sequence
+                .invocations
+                .publish(&census, &tree, Vec::new(), &capture, now, |_| {
+                    reads += 1;
+                    InvocationProbe::Alive
+                });
+        assert_eq!(
+            reads, 1,
+            "a retained snapshot still needs a current native probe"
+        );
+        assert!(matches!(
+            published.state(&owner),
+            Some(PublishedInvocation::Missing(_))
+        ));
+        census.publication_evidence = PublicationEvidence::Current;
+        census
+            .process_statuses
+            .insert(Pid::from_u32(10), NativeProcessStatus::Zombie);
+        let published =
+            sequence
+                .invocations
+                .publish(&census, &tree, Vec::new(), &capture, now, |row| {
+                    reads += 1;
+                    InvocationProbe::Ended(ProcessLifetimeSubject::observe(row))
+                });
+        assert_eq!(
+            reads, 2,
+            "a zombie's matching birth cannot prove continued execution"
+        );
+        assert!(matches!(
+            published.state(&owner),
+            Some(PublishedInvocation::Ended(_))
+        ));
+    }
+
+    #[test]
+    fn a_process_binding_leaves_with_its_process_tree_node() {
+        let root = tempdir().expect("capture root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "execution",
+            "/work",
+            "/writer",
+            "check",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let argv = [OsString::from("cargo"), OsString::from("check")];
+        let mut sequence = CensusSequence::default();
+        sequence.sample_published(
+            &ProcessObservations::new([ProcessObservation::cargo(20, &argv)]),
+            &capture,
+            Instant::now(),
+        );
+        assert!(
+            !sequence.invocations.bindings.registrations.is_empty(),
+            "capture binding exists"
+        );
+        let mut tree = ProcessTreeContinuity::default();
+        for record in sequence.invocations.records.values() {
+            tree.nodes.extend(record.processes.iter().cloned());
+        }
+        assert!(
+            tree.nodes.remove(&Pid::from_u32(10)).is_some(),
+            "registered node exists"
+        );
+        sequence.invocations.bindings.retain(&mut tree);
+        assert!(
+            sequence.invocations.bindings.registrations.is_empty(),
+            "departed registrations release their binding"
+        );
+        assert_eq!(
+            sequence.invocations.bindings.subjects.len(),
+            1,
+            "only the other execution keeps its subject binding"
+        );
+        assert!(
+            tree.nodes.contains_key(&Pid::from_u32(20)),
+            "the other execution stays bound"
+        );
+    }
+
+    #[test]
+    fn a_forwarded_process_is_not_ended_by_its_owners_birth() {
+        let pid = Pid::from_u32(std::process::id());
+        let lifetime = birth_stamp::lifetime(pid.as_u32());
+        assert!(matches!(lifetime, LifetimeEvidence::Available(_)));
+        let owner = InvocationId::Process(ProcessIdentity::Known {
+            pid:      pid.as_u32().saturating_add(1),
+            lifetime: ProcessLifetime::for_test(1),
+        });
+        let argv = [OsString::from("cargo"), OsString::from("build")];
+        let observation = ProcessObservation::cargo(pid.as_u32(), &argv).with_lifetime(lifetime);
+        let census = Census::take([&observation]);
+        let mut process = directory_row();
+        process.pid = pid.as_u32();
+        process.invocation_id = owner;
+        let row = InvocationProcessRow::observed(process, &census);
+        assert!(matches!(
+            InvocationProbe::kernel(ProcessLifetimeSubject::observe(&row)),
+            InvocationProbe::Alive
+        ));
+    }
+
+    #[test]
+    fn an_unread_executor_does_not_turn_its_forwarder_into_a_second_execution() {
+        let argv = [OsString::from("cargo"), OsString::from("check")];
+        let parent = ProcessObservation::cargo(4100, &argv);
+        let mut child = ProcessObservation::cargo(4102, &argv);
+        child.parent = ProcessField::Observed(Pid::from_u32(4100));
+        let now = Instant::now();
+        let mut sequence = CensusSequence::default();
+        sequence.sample_published(
+            &ProcessObservations::new([parent.clone(), child.clone()]),
+            &Capture::default(),
+            now,
+        );
+        let owner = sequence.publication().groups()[0].id();
+        assert_eq!(sequence.publication().groups()[0].lead.pid, 4102);
+        sequence.sample_published(
+            &ProcessObservations::new([parent.clone()]),
+            &Capture::default(),
+            now,
+        );
+        assert_eq!(sequence.publication().groups().len(), 1);
+        assert_eq!(
+            sequence.publication().groups()[0].lead.pid,
+            4102,
+            "an unread executor keeps its own row"
+        );
+        sequence.sample_published(
+            &ProcessObservations::new([parent, child]),
+            &Capture::default(),
+            now,
+        );
+        assert_eq!(sequence.publication().groups()[0].id(), owner);
+        assert_eq!(sequence.publication().groups().len(), 1);
+    }
+
+    #[test]
+    fn a_missing_registration_cannot_end_its_verified_cargo_executor() {
+        let root = tempdir().expect("capture root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "execution",
+            "/work",
+            "/writer",
+            "check",
+            "",
+        );
+        let capture = verified_capture(root.path());
+        let stamp = match BirthStamp::from_fields("boot", "100") {
+            IdentityEvidence::Available(stamp) => stamp,
+            IdentityEvidence::Unavailable => panic!("test fields must identify a lifetime"),
+        };
+        let argv = [OsString::from("cargo"), OsString::from("check")];
+        let records = ProcessObservations::new([ProcessObservation::cargo(10, &argv)
+            .with_lifetime(LifetimeEvidence::Available(
+                ProcessLifetime::matching_registration_for_test(&stamp),
+            ))]);
+        let mut sequence = CensusSequence::default();
+        let now = Instant::now();
+        sequence.sample_published(&records, &capture, now);
+        let owner = sequence.publication().groups()[0].id();
+        for _ in 0..4 {
+            sequence.sample_with_native_evidence(
+                &records,
+                &Capture::default(),
+                now,
+                FixturePublication::Retained,
+                |_| Observation::Present(stamp.clone()),
+            );
+            assert!(
+                matches!(
+                    sequence.publication().state(&owner),
+                    Some(PublishedInvocation::Live(_) | PublishedInvocation::Missing(_))
+                ),
+                "a living cargo executor remains the same execution without its registration"
+            );
+        }
+    }
+
+    #[test]
+    fn a_proven_execution_end_retires_every_forwarding_subject() {
+        let argv = [OsString::from("cargo"), OsString::from("check")];
+        let parent = ProcessObservation::cargo(4100, &argv);
+        let mut child = ProcessObservation::cargo(4102, &argv);
+        child.parent = ProcessField::Observed(Pid::from_u32(4100));
+        let now = Instant::now();
+        let mut sequence = CensusSequence::default();
+        sequence.sample_published(
+            &ProcessObservations::new([parent.clone(), child]),
+            &Capture::default(),
+            now,
+        );
+        let owner = sequence.publication().groups()[0].id();
+        sequence.publish_fixture(
+            &ProcessObservations::new([]),
+            &Capture::default(),
+            now,
+            |row| {
+                InvocationProbe::Ended(ProcessLifetimeSubject {
+                    pid:                Pid::from_u32(row.process.pid),
+                    lifetime:           row.lifetime.clone(),
+                    kernel_observation: KernelObservation::for_test(
+                        row.process.pid,
+                        Observation::Ended,
+                    ),
+                })
+            },
+        );
+        assert!(matches!(
+            sequence.publication().state(&owner),
+            Some(PublishedInvocation::Ended(_))
+        ));
+        sequence.sample_published(
+            &ProcessObservations::new([parent]),
+            &Capture::default(),
+            now,
+        );
+        assert!(
+            sequence.publication().groups().is_empty(),
+            "an ended forwarder cannot acquire another owner"
+        );
+    }
 
     /// Reap the metadata fixture even if an assertion fails before its exec transition.
     struct MetadataProcess {
@@ -3313,6 +7686,42 @@ mod tests {
             cpu:                  HashMap::new(),
             memory:               HashMap::new(),
         }
+    }
+
+    /// A blocked OS stage has one request and never owns the publication thread.
+    #[test]
+    fn blocked_refresh_capture_and_attribution_leave_publication_available()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for name in [
+            CENSUS_REFRESH_THREAD_NAME,
+            CENSUS_CAPTURE_THREAD_NAME,
+            CENSUS_ATTRIBUTION_THREAD_NAME,
+        ] {
+            let (entered, started) = mpsc::channel();
+            let (release, gate) = mpsc::channel();
+            let mut stage = PublicationStage::new(name, move |request: u8| {
+                entered.send(()).expect("worker starts");
+                gate.recv().expect("worker released");
+                request
+            })?;
+            assert!(matches!(stage.sample(|| 1), StageAnswer::Pending));
+            started
+                .recv_timeout(Duration::from_millis(100))
+                .expect("worker entered blocking read");
+            let before = Instant::now();
+            for _ in 0..8 {
+                assert!(matches!(
+                    stage.sample(|| panic!("blocked worker acquired a second request")),
+                    StageAnswer::Pending
+                ));
+            }
+            assert!(
+                before.elapsed() < Duration::from_millis(50),
+                "publication waited for {name}"
+            );
+            release.send(()).expect("finish blocked read");
+        }
+        Ok(())
     }
 
     #[test]
@@ -3530,6 +7939,16 @@ mod tests {
                 record
             }),
         );
+        let mut records = records;
+        let confirmed = capture.confirmed();
+        let run = RunId::verified(&confirmed[0].key, &confirmed[0].registration);
+        records
+            .records
+            .get_mut(&Pid::from_u32(100))
+            .expect("observed shim")
+            .lifetime = Cow::Owned(LifetimeEvidence::Available(
+            ProcessLifetime::matching_registration_for_test(&run.birth),
+        ));
         let groups = CensusSequence::default().sample_capture(&records, &capture);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].lead.pid, 200);
@@ -4181,9 +8600,11 @@ mod tests {
         assert_eq!(second[0].lead.pid, pid.as_u32());
         let mut roster = crate::roster::Roster::new();
         let now = Instant::now();
-        roster.observe(first, now);
+        roster.observe_invocations(&roster.fixture_with_ended_absences(first, now));
         let ids = roster.tiled_ids(&[]);
-        roster.observe(second, now + invocation_cpu_accounting::poll());
+        roster.observe_invocations(
+            &roster.fixture_with_ended_absences(second, now + invocation_cpu_accounting::poll()),
+        );
         assert_eq!(roster.tiled_ids(&[]), ids);
         assert_eq!(roster.groups().len(), 1);
         for mut census in [census_of(&[]), census_of(&[(pid.as_u32(), 10)])] {
@@ -4652,7 +9073,9 @@ mod tests {
 
     fn render_group_lines(group: &CargoGroup) -> Vec<String> {
         let mut roster = crate::roster::Roster::new();
-        roster.observe(vec![group.clone()], Instant::now());
+        roster.observe_invocations(
+            &roster.fixture_with_ended_absences(vec![group.clone()], Instant::now()),
+        );
         assert_eq!(roster.groups().len(), 1);
         assert_eq!(roster.groups()[0].rows().count(), 1 + group.rest.len());
         assert_eq!(roster.tiled_ids(&[]), [group.id()]);
@@ -4783,7 +9206,9 @@ mod tests {
                     CompilerObservation::Unknown
                 );
             }
-            roster.observe(scan.clone(), Instant::now());
+            roster.observe_invocations(
+                &roster.fixture_with_ended_absences(scan.clone(), Instant::now()),
+            );
             assert_eq!(roster.groups().len(), 1);
             assert_eq!(roster.groups()[0].rows().count(), 1);
             let area = ratatui::layout::Rect::new(0, 0, 160, 12);
@@ -4825,7 +9250,9 @@ mod tests {
         grid.set_layout(ratatui::layout::Rect::new(0, 0, 120, 40), growth);
         let mut expected_family = FamilyHead::NoChildren;
         for (index, scan) in scans.iter().enumerate() {
-            roster.observe(scan.clone(), Instant::now());
+            roster.observe_invocations(
+                &roster.fixture_with_ended_absences(scan.clone(), Instant::now()),
+            );
             let visible = roster.visible(&[]);
             assert_eq!(visible.groups().len(), 1);
             let tracked = &visible.groups()[0];
@@ -4839,15 +9266,10 @@ mod tests {
                 expected_family,
                 crate::roster::FamilyHead::Heads(_)
             ));
-            let demands = TileDemands {
-                summary:       3,
-                summary_width: 0,
-                groups:        vec![crate::tiles::TileDemand {
-                    id:   tracked.id.clone(),
-                    rows: 3,
-                }],
-            };
-            grid.sync(&demands, growth);
+            let area = ratatui::layout::Rect::new(0, 0, 120, 40);
+            crate::render::draw_grid_for_test(&mut grid, &roster, area, growth);
+            grid.settle_for_test();
+            crate::render::draw_grid_for_test(&mut grid, &roster, area, growth);
             if index == 0 {
                 grid.focus_cell(TABLE_CELL + 1);
             }
@@ -5626,6 +10048,7 @@ mod tests {
             InvocationId::Process(ProcessIdentity::Unavailable { .. })
         ));
         assert!(identities.observe(&HashMap::new()).is_empty());
+        identities.finish(&process_identity::ProvenProcessEnd::for_test(pid));
         assert_ne!(first, identities.observe(&lifetimes));
         let previous = HashMap::from([(
             Pid::from_u32(10),
@@ -6292,11 +10715,286 @@ mod tests {
         assert!(root.path().join("run-live-10.log").exists());
     }
 
+    /// A new command's first native metadata read cannot wait behind refresh traffic.
+    #[test]
+    fn new_command_metadata_precedes_the_existing_read_backlog() {
+        let (requests, incoming) = mpsc::sync_channel(4);
+        let (_, replies) = mpsc::channel();
+        let mut details = DetailDiscovery::<Pid> {
+            reads: HashMap::new(),
+            pending: VecDeque::new(),
+            changes: VecDeque::new(),
+            refreshes: VecDeque::new(),
+            requests,
+            replies,
+        };
+        let mut pids: Vec<_> = (4100..4112).map(Pid::from_u32).collect();
+        let mut identities: HashMap<_, _> = pids
+            .iter()
+            .map(|pid| (*pid, InvocationId::for_test(pid.as_u32())))
+            .collect();
+        details.read(&pids, &identities, |_| ProcessField::Unavailable);
+        let occupied: Vec<_> = incoming.try_iter().collect();
+        assert_eq!(occupied.len(), 4);
+        let arrivals: Vec<_> = (4200..4203).map(Pid::from_u32).collect();
+        pids.extend(&arrivals);
+        identities.extend(
+            arrivals
+                .iter()
+                .map(|pid| (*pid, InvocationId::for_test(pid.as_u32()))),
+        );
+        details.read(&pids, &identities, |_| ProcessField::Unavailable);
+        let scheduled: Vec<_> = incoming.try_iter().map(|request| request.pid).collect();
+        assert_eq!(&scheduled[..arrivals.len()], arrivals.as_slice());
+        assert!(
+            scheduled
+                .iter()
+                .all(|pid| occupied.iter().all(|request| request.pid != *pid)),
+            "in-flight reads were queued twice"
+        );
+    }
+
+    /// A fast completed read cannot monopolize refreshes while another lifetime waits.
+    #[test]
+    fn metadata_refreshes_visit_every_completed_lifetime() {
+        let (requests, incoming) = mpsc::sync_channel(4);
+        let (completed, replies) = mpsc::channel();
+        let mut details = DetailDiscovery::<Pid> {
+            reads: HashMap::new(),
+            pending: VecDeque::new(),
+            changes: VecDeque::new(),
+            refreshes: VecDeque::new(),
+            requests,
+            replies,
+        };
+        let pids: Vec<_> = (4100..4108).map(Pid::from_u32).collect();
+        let identities = pids
+            .iter()
+            .map(|pid| (*pid, InvocationId::for_test(pid.as_u32())))
+            .collect();
+        for _ in 0..2 {
+            details.read(&pids, &identities, |_| ProcessField::Unavailable);
+            for request in incoming.try_iter() {
+                let pid = request.pid;
+                assert!(completed.send((request, pid)).is_ok());
+            }
+        }
+        let mut refreshed = HashSet::new();
+        for _ in 0..2 {
+            details.read(&pids, &identities, |_| ProcessField::Unavailable);
+            for request in incoming.try_iter() {
+                refreshed.insert(request.pid);
+                let pid = request.pid;
+                assert!(completed.send((request, pid)).is_ok());
+            }
+        }
+        assert_eq!(
+            refreshed.len(),
+            pids.len(),
+            "refresh traffic starves a lifetime"
+        );
+    }
+
+    /// Changed native sources precede unchanged refreshes, after new-job first reads.
+    #[test]
+    fn a_changed_source_rereads_before_unchanged_lifetimes() {
+        let (requests, incoming) = mpsc::sync_channel(4);
+        let (completed, replies) = mpsc::channel();
+        let mut details = DetailDiscovery::<Pid> {
+            reads: HashMap::new(),
+            pending: VecDeque::new(),
+            changes: VecDeque::new(),
+            refreshes: VecDeque::new(),
+            requests,
+            replies,
+        };
+        let mut pids: Vec<_> = (4100..4108).map(Pid::from_u32).collect();
+        let mut identities: HashMap<_, _> = pids
+            .iter()
+            .map(|pid| (*pid, InvocationId::for_test(pid.as_u32())))
+            .collect();
+        for _ in 0..2 {
+            details.read(&pids, &identities, |_| {
+                ProcessField::Observed(OsString::from("cargo"))
+            });
+            for request in incoming.try_iter() {
+                let pid = request.pid;
+                completed
+                    .send((request, pid))
+                    .expect("completed first read");
+            }
+        }
+        let changed = pids[7];
+        let arrival = Pid::from_u32(4200);
+        pids.push(arrival);
+        identities.insert(arrival, InvocationId::for_test(arrival.as_u32()));
+        details.read(&pids, &identities, |pid| {
+            ProcessField::Observed(OsString::from(if pid == changed { "sh" } else { "cargo" }))
+        });
+        let scheduled: Vec<_> = incoming.try_iter().map(|request| request.pid).collect();
+        assert_eq!(scheduled[0], arrival, "new jobs keep first-read priority");
+        assert_eq!(
+            scheduled[1], changed,
+            "a source change waits behind unchanged refreshes"
+        );
+
+        // Another source change while its read runs must retain one in-flight read.
+        let answers = details.read(&pids, &identities, |_| {
+            ProcessField::Observed(OsString::from("cargo"))
+        });
+        assert!(answers.iter().any(|answer| **answer == changed));
+        assert!(incoming.try_iter().all(|request| request.pid != changed));
+        completed
+            .send((
+                PendingDetail {
+                    pid:      changed,
+                    identity: identities[&changed].clone(),
+                },
+                changed,
+            ))
+            .expect("completed old source read");
+        details.read(&pids, &identities, |_| {
+            ProcessField::Observed(OsString::from("cargo"))
+        });
+        assert_eq!(
+            incoming.try_recv().expect("changed source reread").pid,
+            changed
+        );
+    }
+
+    /// Blocked readers occupy their workers without holding later reads or publication.
+    #[test]
+    fn a_blocked_metadata_read_does_not_hold_the_next_read()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let reading = Arc::clone(&gate);
+        let (answers, worker) = spawn_resolved_scan_loop(
+            Duration::from_millis(40),
+            || resolved_test_roots(&[]),
+            move || {
+                let mut details = DetailDiscovery::new(move |pid| {
+                    if pid != Pid::from_u32(4101) {
+                        let (lock, changed) = &*reading;
+                        let mut released = lock.lock().expect("gate");
+                        while !*released {
+                            released = changed.wait(released).expect("release");
+                        }
+                        drop(released);
+                    }
+                    pid
+                })?;
+                Ok(move |_: &CaptureRoots, _: &ScanPublicationWindow| {
+                    let pids: Vec<_> = (4100..4106).map(Pid::from_u32).collect();
+                    let identities = pids
+                        .iter()
+                        .map(|pid| (*pid, InvocationId::for_test(pid.as_u32())))
+                        .collect();
+                    details
+                        .read(&pids, &identities, |_| ProcessField::Unavailable)
+                        .iter()
+                        .map(|pid| **pid)
+                        .collect::<Vec<_>>()
+                })
+            },
+        )?;
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let mut saw_fast = false;
+        let mut published = 0;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            let Ok(answer) = answers.recv_timeout(left) else {
+                break;
+            };
+            published += 1;
+            saw_fast |= answer.contains(&Pid::from_u32(4101));
+            if saw_fast && published >= 3 {
+                break;
+            }
+        }
+        *gate.0.lock().expect("gate") = true;
+        gate.1.notify_all();
+        drop(answers);
+        worker.join().expect("scanner shutdown");
+        assert!(saw_fast, "one blocked read cannot serialize the fast read");
+        assert!(
+            published >= 3,
+            "all four occupied workers cannot hold publication"
+        );
+        Ok(())
+    }
+
     /// Bound failed worker handshakes without imposing a startup speed threshold.
     const WORKER_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
+    /// A blocked metadata read cannot hold completed discoveries past publication.
     #[test]
-    fn spawn_returns_while_root_resolution_waits_and_resolves_once_across_scans() {
+    fn slow_discovery_publishes_its_age_and_resumes_pending_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (release, released) = mpsc::channel();
+        let (answers, worker) = spawn_resolved_scan_loop(
+            Duration::from_millis(80),
+            || resolved_test_roots(&[]),
+            move || {
+                let blocked = std::sync::atomic::AtomicBool::new(false);
+                let released = std::sync::Mutex::new(released);
+                let mut details = DetailDiscovery::new(move |pid| {
+                    if pid == Pid::from_u32(4101) && !blocked.swap(true, Ordering::Relaxed) {
+                        released
+                            .lock()
+                            .expect("release receiver")
+                            .recv()
+                            .expect("release blocked metadata");
+                    }
+                    pid
+                })?;
+                Ok(move |_: &CaptureRoots, window: &ScanPublicationWindow| {
+                    let pids: Vec<_> = (4100..4106).map(Pid::from_u32).collect();
+                    let identities = pids
+                        .iter()
+                        .map(|pid| (*pid, InvocationId::for_test(pid.as_u32())))
+                        .collect();
+                    let completed = details
+                        .read(&pids, &identities, |_| ProcessField::Unavailable)
+                        .iter()
+                        .map(|pid| **pid)
+                        .collect::<Vec<_>>();
+                    (
+                        completed,
+                        PublicationAge::between(window.started, Instant::now()),
+                    )
+                })
+            },
+        )?;
+        let first = answers.recv_timeout(Duration::from_millis(250));
+        release.send(()).expect("resume unfinished discovery");
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let mut second = answers.recv_timeout(Duration::from_millis(250));
+        while second
+            .as_ref()
+            .is_ok_and(|answer| !answer.0.contains(&Pid::from_u32(4101)))
+        {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            second = answers.recv_timeout(left);
+        }
+        drop(answers);
+        worker.join().expect("scanner shutdown");
+        let first = first.expect("publish before blocked metadata returns");
+        let second = second.expect("resumed discovery");
+        assert!(!first.0.contains(&Pid::from_u32(4101)));
+        assert!(first.1.discovery < Duration::from_millis(250));
+        assert!(second.1.discovery < Duration::from_millis(250));
+        assert!(first.1.published >= first.1.observed_at());
+        assert!(
+            second.0.contains(&Pid::from_u32(4101)),
+            "pending discovery resumes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn spawn_returns_while_root_resolution_waits_and_resolves_once_across_scans()
+    -> Result<(), Box<dyn std::error::Error>> {
         let parent = tempdir().expect("isolated capture parent");
         let capture = parent.path().join("capture");
         fs::create_dir(&capture).expect("capture directory");
@@ -6319,7 +11017,7 @@ mod tests {
             },
             move || {
                 let mut generation = ["first", "second"].into_iter();
-                move |roots| {
+                Ok(move |roots: &CaptureRoots, _: &ScanPublicationWindow| {
                     let generation = generation.next().unwrap_or("later");
                     write_versioned_capture(
                         &capture,
@@ -6340,9 +11038,9 @@ mod tests {
                             .exists()
                     );
                     generation
-                }
+                })
             },
-        );
+        )?;
 
         resolution_started
             .recv_timeout(WORKER_REPLY_TIMEOUT)
@@ -6366,6 +11064,7 @@ mod tests {
             .join()
             .expect("scanner must exit after receiver drop");
         assert_eq!(resolutions.load(Ordering::SeqCst), 1);
+        Ok(())
     }
 
     /// A capture directory holding one live run's log per entry.
@@ -6390,6 +11089,8 @@ mod tests {
     /// which is all the capture walk reads.
     fn census_of(parents: &[(u32, u32)]) -> Census {
         Census {
+            identity_source:          InvocationIdentitySource::NativeSnapshot,
+            publication_evidence:     PublicationEvidence::Current,
             identities:               parents
                 .iter()
                 .flat_map(|&pair| <[u32; 2]>::from(pair))
@@ -6397,8 +11098,10 @@ mod tests {
                 .collect(),
             capture_boundaries:       HashSet::new(),
             capture_wrappers:         HashSet::new(),
+            registered_cargo:         HashSet::new(),
             capture_mismatches:       HashSet::new(),
             lifetimes:                HashMap::new(),
+            process_statuses:         HashMap::new(),
             eligibility:              HashMap::new(),
             registration_eligibility: HashMap::new(),
             parents:                  parents
@@ -7462,7 +12165,7 @@ mod tests {
         let targets = census.observe_targets(&system, &HashMap::new(), &mut HashMap::new());
         assert_eq!(
             census.detached_compilers(&system, &targets),
-            HashMap::from([(compiler, requester)])
+            HashMap::from([(compiler, CompilerAttribution::Owner(requester))])
         );
 
         census.cpu.insert(requester, Measurement::Reading(0.0));
@@ -7497,7 +12200,10 @@ mod tests {
                 .expect("compiler observation")
                 .uid = uid;
             assert!(
-                census.detached_compilers(&system, &targets).is_empty(),
+                !matches!(
+                    census.detached_compilers(&system, &targets)[&compiler],
+                    CompilerAttribution::Owner(_)
+                ),
                 "unobserved or different users cannot share target ownership"
             );
         }

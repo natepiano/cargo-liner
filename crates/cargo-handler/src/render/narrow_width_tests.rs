@@ -596,7 +596,7 @@ fn narrow_growth_reports_fixture_counts() {
         (6, 80, 6, 28),
         (6, 50, 6, 22),
         (6, 40, 6, 22),
-        (20, 34, 20, 43),
+        (20, 34, 2, 43),
     ] {
         let mut app = fixture(count);
         paint(&mut app, width, 50);
@@ -614,7 +614,7 @@ fn narrow_growth_reports_fixture_counts() {
         assert_eq!(
             (groups, summary.frame.inner().height),
             (expected_groups, expected_summary_rows),
-            "fixture count={count} width={width}: tile count and summary allocation stay unchanged"
+            "fixture count={count} width={width}: painted groups and summary allocation match the contract"
         );
     }
 }

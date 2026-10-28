@@ -7,7 +7,12 @@
 
 use std::fs;
 use std::fs::File;
+use std::io::BufRead;
+use std::io::BufReader;
 use std::io::Read;
+use std::os::unix::process::CommandExt;
+use std::path::Path;
+use std::process::Child;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -18,6 +23,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Position;
 use sysinfo::Pid;
+use tempfile::TempDir;
 use tui_pane::GlobalAction;
 use tui_pane::NavAction;
 use tui_pane::Navigation;
@@ -33,6 +39,7 @@ use crate::census::CensusScope;
 use crate::census::cpu_observation;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::READER_TIMESTAMPS_ENV;
+use crate::hook;
 use crate::render;
 use crate::settings;
 use crate::terminal::GridMotion;
@@ -97,6 +104,40 @@ fn reader_snapshots_publish_only_completed_terminal_frames() {
     run_reader_script("--terminal-frame-self-check");
 }
 
+/// A supplied viewport draws into `TestBackend` without writing into the reader's PTY.
+#[test]
+fn reader_draws_a_supplied_frame_without_terminal_diagnostics() {
+    if std::env::var("CARGO_TILE_TEST_READER").is_ok_and(|scenario| scenario == "supplied-frame") {
+        let mut app = App::new_for_test().expect("build supplied reader app");
+        let keymap = Rc::clone(&app.keymap);
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 12)).expect("create supplied reader terminal");
+        terminal
+            .draw(|frame| render::draw(frame, &mut app, &keymap))
+            .expect("draw supplied reader frame");
+        return;
+    }
+    let output = Command::new(std::env::current_exe().expect("reader test executable"))
+        .args([
+            "--exact",
+            "shim_registration::reader_scenarios::reader_draws_a_supplied_frame_without_terminal_diagnostics",
+            "--nocapture",
+        ])
+        .env("CARGO_TILE_TEST_READER", "supplied-frame")
+        .output()
+        .expect("run supplied reader frame");
+    assert!(
+        output.status.success(),
+        "{}",
+        reader_diagnostics(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "reader draw writes outside its backend: {}",
+        reader_diagnostics(&output.stderr)
+    );
+}
+
 /// A compiler outside cargo's ancestry charges only its requesting target directory.
 #[test]
 fn reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation() {
@@ -121,10 +162,28 @@ fn reader_cpu_oracle_rejects_a_compiler_counter_charged_twice() {
     run_reader_script("--cpu-duplicate-self-check");
 }
 
+/// Pending metadata keeps a native counter owed to its requesting invocation.
+#[test]
+fn reader_cpu_oracle_requires_pending_compiler_cpu_on_its_first_completed_scan() {
+    run_reader_script("--cpu-pending-self-check");
+}
+
+/// A native lifetime keeps its CPU baseline through capture recovery, but not reuse.
+#[test]
+fn reader_cpu_oracle_keeps_the_native_baseline_through_a_capture_join() {
+    run_reader_script("--cpu-owner-join-self-check");
+}
+
 /// An independent kernel counter rejects different units and another process.
 #[test]
 fn reader_cpu_oracle_checks_the_compiler_counter_against_the_kernel() {
     run_reader_script("--cpu-kernel-self-check");
+}
+
+/// Attribution replies cannot prove that their discovery counters followed SIGSTOP.
+#[test]
+fn reader_cpu_kernel_check_waits_for_the_stopped_discovery_counter() {
+    run_reader_script("--cpu-stopped-snapshot-self-check");
 }
 
 /// Exact report deadlines remain exact at 0, 50, 100, and 150 milliseconds.
@@ -145,7 +204,7 @@ fn reader_waits_for_blocked_state_on_the_matching_invocation_row() {
     run_reader_script("--blocked-invocation-self-check");
 }
 
-/// Drive the production terminal loop through a PTY; Python owns every child and terminal fd.
+/// Drive the production terminal loop through a PTY under the Rust cleanup owner.
 /// The reader receives the shim's actual records, with no copied Rust implementation.
 fn reader_regression(scenario: &str) { run_reader_script(scenario); }
 
@@ -153,6 +212,44 @@ fn reader_regression(scenario: &str) { run_reader_script(scenario); }
 enum ScenarioDeadline {
     Default,
     After(Duration),
+}
+
+/// Own the scenario root for the entire driver lifetime.
+struct ScenarioProcesses {
+    directory: TempDir,
+    cleanup:   Child,
+}
+
+impl ScenarioProcesses {
+    fn new() -> Self {
+        let directory = tempfile::tempdir().expect("isolate writer and reader processes");
+        let mut cleanup = Command::new("python3")
+            .arg("-S")
+            .arg(READER_SCENARIO_SCRIPT)
+            .arg("--watch-scenario")
+            .arg(directory.path())
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("start scenario cleanup owner");
+        let mut ready = String::new();
+        BufReader::new(cleanup.stdout.take().expect("cleanup readiness pipe"))
+            .read_line(&mut ready)
+            .expect("wait for scenario cleanup owner");
+        assert_eq!(ready, "ready\n");
+        Self { directory, cleanup }
+    }
+
+    fn path(&self) -> &Path { self.directory.path() }
+}
+
+impl Drop for ScenarioProcesses {
+    fn drop(&mut self) {
+        // EOF also reaches the owner if a timeout kills this Rust test outright.
+        drop(self.cleanup.stdin.take());
+        let _ = self.cleanup.wait();
+    }
 }
 
 struct ReaderScenarioResult {
@@ -173,7 +270,7 @@ fn run_reader_script(scenario: &str) {
 }
 
 fn reader_script_result(scenario: &str, deadline: ScenarioDeadline) -> ReaderScenarioResult {
-    let directory = tempfile::tempdir().expect("isolate writer and reader processes");
+    let directory = ScenarioProcesses::new();
     let executable = std::env::current_exe().expect("integration reader executable");
     // Foundation reads the executable directory when it first reads system
     // appearance. Keep that read inside the fixture, away from build artifacts.
@@ -185,20 +282,20 @@ fn reader_script_result(scenario: &str, deadline: ScenarioDeadline) -> ReaderSce
         fs::copy(&executable, &staged).expect("stage isolated reader executable");
         staged
     };
+    let shim_path = directory.path().join("capture-shim.sh");
+    fs::write(&shim_path, hook::shim_source()).expect("write rendered reader scenario shim");
     let stdout_path = directory.path().join("scenario.stdout");
     let stderr_path = directory.path().join("scenario.stderr");
     // The script times its CPU observation against the reader's own windows.
     let cadence = CensusCadence::for_test();
     let mut command = Command::new("python3");
     command
+        .process_group(0)
         .arg("-S")
         .arg(READER_SCENARIO_SCRIPT)
         .arg(directory.path())
         .arg(executable)
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/cargo-capture-shim.sh"
-        ))
+        .arg(&shim_path)
         .arg(scenario)
         .arg(cpu_observation_window(cadence).as_secs_f64().to_string())
         .arg(cadence.smoothing.as_secs_f64().to_string())
@@ -365,3 +462,54 @@ fn reader_excludes_a_live_command_without_sweeping_its_capture() { reader_regres
 /// Production parsing and kernel verification accept the actual writer's bytes.
 #[test]
 fn reader_accepts_live_writer_under_different_locale_and_timezone() { reader_regression("locale"); }
+
+/// SIGKILL skips Python finally blocks; the Rust owner must still retire the shim group.
+#[test]
+fn a_killed_reader_driver_leaves_no_shim_group_or_fixture_root() {
+    let directory = ScenarioProcesses::new();
+    let root = directory.path().to_owned();
+    let shim = root.join("capture-shim.sh");
+    fs::write(&shim, hook::shim_source()).expect("write shim for killed driver");
+    let cadence = CensusCadence::for_test();
+    let mut driver = Command::new("python3")
+        .process_group(0)
+        .arg("-S")
+        .arg(READER_SCENARIO_SCRIPT)
+        .arg(&root)
+        .arg(std::env::current_exe().expect("reader executable"))
+        .arg(shim)
+        .arg("--driver-death-self-check")
+        .arg(cpu_observation_window(cadence).as_secs_f64().to_string())
+        .arg(cadence.smoothing.as_secs_f64().to_string())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("start driver with actual capture shim");
+    let mut group = String::new();
+    BufReader::new(driver.stdout.take().expect("driver readiness pipe"))
+        .read_line(&mut group)
+        .expect("shim group readiness");
+    let group: u32 = group.trim().parse().expect("shim publishes its group id");
+    driver.kill().expect("kill driver before Python cleanup");
+    let status = driver.wait().expect("reap killed driver");
+    assert!(!status.success());
+    drop(directory);
+    let output = Command::new("ps")
+        .args(["-axo", "pgid=,stat="])
+        .output()
+        .expect("read remaining shim group members");
+    assert!(output.status.success());
+    let live = String::from_utf8(output.stdout)
+        .expect("process group listing")
+        .lines()
+        .any(|line| {
+            let mut fields = line.split_whitespace();
+            fields.next().and_then(|value| value.parse::<u32>().ok()) == Some(group)
+                && fields.next().is_some_and(|state| !state.starts_with('Z'))
+        });
+    // Retire only this test's group even on the red run, before the assertion.
+    let group_id = rustix::process::Pid::from_raw(i32::try_from(group).expect("owned group id"))
+        .expect("nonzero owned group id");
+    let _ = rustix::process::kill_process_group(group_id, rustix::process::Signal::KILL);
+    assert!(!live, "killed Python driver left live shim group {group}");
+    assert!(!root.exists(), "killed driver left its fixture root");
+}

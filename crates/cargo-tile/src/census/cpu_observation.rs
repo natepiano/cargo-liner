@@ -9,6 +9,7 @@ use std::io;
 use std::io::Write;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::time::Duration;
 use std::time::Instant;
 
 use sysinfo::Pid;
@@ -16,6 +17,7 @@ use sysinfo::Pid;
 use super::invocation_cpu_accounting::InvocationCpuContributions;
 use super::invocation_cpu_accounting::Measurement;
 use super::process_identity::InvocationId;
+use super::process_identity::ProcessIdentity;
 use crate::constants::READER_CPU_OBSERVATION_FILE;
 
 /// The accounting scan used by one published set of invocation rows.
@@ -116,6 +118,43 @@ pub(super) fn work(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .inputs
             .push_str(&inputs);
+    }
+}
+
+/// Keep missing metadata explicit in the same test-only scan record as CPU work.
+pub(super) fn pending_metadata(identity: &ProcessIdentity, counter: Duration) {
+    if let Some(reader) = READER.get() {
+        let result = {
+            let mut reader = reader
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            writeln!(
+                reader.inputs,
+                "pending-metadata\t{identity:?}\t{}",
+                counter.as_secs_f64()
+            )
+        };
+        assert!(result.is_ok());
+    }
+}
+
+/// Record the same native process changing from a process id to a captured invocation.
+pub(super) fn owner_join(
+    native: &ProcessIdentity,
+    previous: &InvocationId,
+    captured: &InvocationId,
+) {
+    if let Some(reader) = READER.get() {
+        let result = {
+            let mut reader = reader
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            writeln!(
+                reader.inputs,
+                "owner-join\t{native:?}\t{previous:?}\t{captured:?}"
+            )
+        };
+        assert!(result.is_ok());
     }
 }
 

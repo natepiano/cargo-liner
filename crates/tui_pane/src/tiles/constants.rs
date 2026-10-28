@@ -64,7 +64,11 @@ pub(super) const TILE_ROWS_RIGHT_INSET: u16 = 1;
 /// terms, and is worth the room it takes.
 pub(super) const TILE_ROWS_WIDTH_LABEL: &str = " @ ";
 
-// Motion and fixtures: `PROGRESS_SCALE` through `LARGE_CONTENT_TEST_MEASUREMENT_BOUND`.
+// Motion and fixtures: `CELL_FADE_ALPHA_STEP` through `LARGE_CONTENT_TEST_MEASUREMENT_BOUND`.
+/// Fade inks advance in two alpha units to avoid subpixel colour flicker.
+pub(super) const CELL_FADE_ALPHA_STEP: u8 = 2;
+/// Minimum entry contrast on the first actual painted frame.
+pub(super) const FIRST_VISIBLE_STEP: u8 = 8;
 /// Fixed-point scale a transition's progress is measured on, so the
 /// animation needs no floating point.
 pub(super) const PROGRESS_SCALE: u32 = 1000;
@@ -88,30 +92,30 @@ pub(super) const COLUMN_FOOT_TEST_BODY_STEP: u16 = 3;
 /// Grid area below the status line in a 200 by 50 terminal.
 #[cfg(test)]
 pub(super) const COLUMN_FOOT_TEST_AREA: Rect = Rect::new(0, 0, 200, 49);
+/// Command below the whole piece whose content is still being cut.
+#[cfg(test)]
+pub(super) const LENDING_TEST_CUT_GROUP: u32 = 5;
 /// Content demands in the one-column spare-row motion regression.
 #[cfg(test)]
 pub(super) const LENDING_TEST_DEMANDS: [u16; 7] = [7, 1, 10, 1, 1, 9, 1];
 /// Painted content rows in the one-column spare-row motion regression.
 #[cfg(test)]
-pub(super) const LENDING_TEST_DRAWN: [u16; 7] = [7, 1, 3, 1, 1, 9, 1];
-/// Command whose incomplete body step is skipped by the height search.
+pub(super) const LENDING_TEST_DRAWN: [u16; 7] = [7, 1, 6, 1, 1, 9, 1];
+/// The whole command's framed heights at the removal's two endpoints.
 #[cfg(test)]
-pub(super) const LENDING_TEST_WHOLE_GROUP: u32 = 2;
-/// Command below the whole piece whose content is still being cut.
-#[cfg(test)]
-pub(super) const LENDING_TEST_CUT_GROUP: u32 = 5;
+pub(super) const LENDING_TEST_ENDPOINT_HEIGHTS: [u16; 2] = [8, 9];
 /// Content allocation that ends inside an incomplete command step.
 #[cfg(test)]
 pub(super) const LENDING_TEST_GAP_HEIGHT: u16 = 4;
 /// Keep the spare-row regression in one column through depth changes.
 #[cfg(test)]
 pub(super) const LENDING_TEST_INITIAL_ROWS: usize = 12;
-/// The whole command's framed heights at the removal's two endpoints.
-#[cfg(test)]
-pub(super) const LENDING_TEST_ENDPOINT_HEIGHTS: [u16; 2] = [8, 9];
 /// Title used by the spare-row motion fixture.
 #[cfg(test)]
 pub(super) const LENDING_TEST_SUMMARY_TITLE: &str = "summary";
+/// Command whose incomplete body step is skipped by the height search.
+#[cfg(test)]
+pub(super) const LENDING_TEST_WHOLE_GROUP: u32 = 2;
 /// Intervals sampled across one key in the visible-column-motion regression.
 #[cfg(test)]
 pub(super) const SLIDING_TEST_INTERVALS: u32 = 61;
@@ -255,3 +259,7 @@ pub(super) const LARGE_CONTENT_TEST_INITIAL_ROWS: usize = 5;
 #[cfg(test)]
 pub(super) const LARGE_CONTENT_TEST_MEASUREMENT_BOUND: usize =
     (LARGE_CONTENT_TEST_HEIGHT as usize + 2) * 2;
+
+/// Motion steps in one animation for injected-clock fixtures.
+#[cfg(any(test, feature = "test-clock"))]
+pub(super) const TEST_MOTION_STEP_DIVISOR: u64 = 12;

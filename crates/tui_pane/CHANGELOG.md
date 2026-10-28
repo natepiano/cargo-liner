@@ -15,11 +15,22 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 - Settings: a row change ends an open edit, so Enter cannot save the text into another row. Navigation before the first draw reaches every row.
+
+- Frame allocation measures the final row policy, reserves summary rows for each candidate set of cells, and gives free rows to live cells beside a departure. Placement publication keeps command row measurements.
+- Command cells enter with drawable rows, leave on the same clock as their text, and release saturated height; queued layouts discard ended commands and viewport pressure keeps whole cells.
 - Config rewrites preserve unknown keys and comments.
 - A cell holding hundreds of rows no longer stalls the grid; each cell's content is measured at most once per height in a frame.
 - Moving panes clip their contents to the destination buffer as well as their column, preventing a startup panic when a tile overhangs the terminal's bottom edge.
 
 ### Added
+- `PresentedRowSpan` and `TileCells::presented_rows` retain the source process row through viewport translation and clipping.
+- `TileCells::summary_demand_for` and `summary_rows_for` measure candidate summary membership; `freeze_painted_frame` fixes the row policy before final allocation.
+- `TileCells::placement_trial` separates trial measurement from committed placement. `prepare_painted_frame` receives the checked paint allocations and returns `FrameLayoutPreparation` to request a new capacity measurement when the layout changes.
+- `EndedCellDeparture::with_row_values` and `started` let a provider retain row values and use the current frame layout during departure.
+- `AdmissibleCell` and `AdmissionEvidence` carry the proof needed to admit a command; `NotAdmissible` reports that the proof is unavailable.
+- `CellDeparture`, `CellDepartureReceipt`, `CellLifecycleTiming` and `EndedCellDeparture` describe cell withdrawal and the owned departure clock. `PaintedRowSpan` and `EmptyPaintedSpan` identify presented content.
+- `FramePlacement`, `ListedCommands` and `SummaryDemand` describe which live commands have cells and the summary rows required for the others.
+- The `test-clock` feature exposes deterministic grid and lifecycle clock controls to integration fixtures.
 - `SemanticTheme::on_error` and `on_error_color()` supply the foreground for error backgrounds; existing theme files default it to white.
 - The provided `TileCells::prepare_frame` requests current allocations lazily and sets shared content widths before demand and allocation measurements; `TileGrid::painted_summary_frames` returns the summary clips painted by the shared `draw_tile_grid` pipeline.
 - `Toasts::area_avoiding_frames` keeps cards and their cleared gaps outside frame feet, while allowing room below short frames and in other columns.
@@ -34,6 +45,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ### Changed
 - Narrow grids choose fewer tile columns at the application’s core width and keep the fitted summary width before sharing rows.
 - `SettingsPane::viewport_mut` is removed, so callers cannot change the selected row past edit cancellation. Use `set_content_area`, `set_scroll_offset` and `set_hovered` for layout and hover; use `select_row` to change the selection. `SettingsHost` gains the required `settings_row_count`.
+- `TileDemands.summary` is now `SummaryDemand`, carrying the required summary minimum and its listed-command count instead of an unrestricted row count.
+- `TileCells` requires `admission`, which returns an `AdmissibleCell` backed by the provider's live invocation evidence.
 - Config writes remove the app’s declared retired keys while preserving unknown keys, comments and unchanged files.
 - Removed the `auto` tile view because it drew the same as `cells`; a saved `auto` view loads as `cells`.
 - `TileCells::group_title` returns a styled `Line`; `GridLines::add_titled` accepts any `Into<Line>`, including existing spans and strings. Title segments retain their styles through focus, clipping and motion.

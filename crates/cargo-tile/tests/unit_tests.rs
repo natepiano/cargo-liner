@@ -35,7 +35,7 @@ mod probe;
 mod progress;
 #[path = "../src/registration.rs"]
 mod registration;
-#[path = "../src/render.rs"]
+#[path = "../src/render/mod.rs"]
 mod render;
 #[path = "../src/root_scan/mod.rs"]
 mod root_scan;
