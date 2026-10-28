@@ -57,15 +57,15 @@ pub(crate) struct GitHubRateLimit {
 /// header is missing or names a resource we don't track (`search`,
 /// `integration_manifest`, etc.).
 pub(super) fn parse_rate_limit_headers(
-    headers: &HeaderMap,
+    header_map: &HeaderMap,
 ) -> Option<(RateLimitBucket, RateLimitQuota)> {
-    let resource = headers.get(RATE_LIMIT_RESOURCE_HEADER)?.to_str().ok()?;
+    let resource = header_map.get(RATE_LIMIT_RESOURCE_HEADER)?.to_str().ok()?;
     let bucket = match resource {
         GITHUB_CORE_BUCKET => RateLimitBucket::Core,
         GITHUB_GRAPHQL_BUCKET => RateLimitBucket::GraphQl,
         _ => return None,
     };
-    let parse = |name: &str| -> Option<u64> { headers.get(name)?.to_str().ok()?.parse().ok() };
+    let parse = |name: &str| -> Option<u64> { header_map.get(name)?.to_str().ok()?.parse().ok() };
     let limit = parse(RATE_LIMIT_LIMIT_HEADER)?;
     let used = parse(RATE_LIMIT_USED_HEADER)?;
     let remaining = parse(RATE_LIMIT_REMAINING_HEADER)?;
@@ -106,12 +106,12 @@ pub(super) fn parse_rate_limit_response(value: &Value) -> GitHubRateLimit {
 /// `429 Too Many Requests`, or `403 Forbidden` with
 /// `X-RateLimit-Remaining: 0` (the secondary-rate-limit / abuse-detection
 /// form). A bare 403 is auth-related and not rate-limit.
-pub(super) fn github_is_rate_limited(status: StatusCode, headers: &HeaderMap) -> bool {
+pub(super) fn github_is_rate_limited(status: StatusCode, header_map: &HeaderMap) -> bool {
     if status == StatusCode::TOO_MANY_REQUESTS {
         return true;
     }
     if status == StatusCode::FORBIDDEN {
-        return headers
+        return header_map
             .get(RATE_LIMIT_REMAINING_HEADER)
             .and_then(|value| value.to_str().ok())
             .and_then(|text| text.parse::<u64>().ok())
@@ -135,9 +135,12 @@ pub(super) fn graphql_body_is_rate_limited(body: &Value) -> bool {
         })
 }
 
-pub(super) fn classify_network_error(service: ServiceKind, error: &Error) -> Option<ServiceSignal> {
+pub(super) fn classify_network_error(
+    service_kind: ServiceKind,
+    error: &Error,
+) -> Option<ServiceSignal> {
     if error.is_connect() || error.is_timeout() {
-        Some(ServiceSignal::Unreachable(service))
+        Some(ServiceSignal::Unreachable(service_kind))
     } else {
         None
     }

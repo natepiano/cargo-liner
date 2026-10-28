@@ -4,12 +4,13 @@
 
 ## Production Context
 
+- **Formerly:** `remove-running-section`
 - **Source plans:** one plan, which the showrunner wrote on 2026-10-06 from the user's request, with no producer split. It shipped, and the as-built doc `docs/cargo-port/as-built/targets-pane.md` replaced it. The cargo-tile unit ran a plan it wrote in its worktree. All three phases shipped, and the as-built doc `docs/cargo-tile/as-built/summary-depth.md` replaced it.
 - **Repository:** `/home/natepiano/rust/cargo-liner`
 - **Merge branch:** `main`. The unit merges here, and only the showrunner pushes it.
 - **Showrunner checkout:** `/home/natepiano/rust/cargo-liner`
 - **Showrunner session:** cargo-liner
-- **Log:** `docs/cargo-port/remove-running-section-log.md`. It is git-excluded and holds one line per event.
+- **Log:** `docs/cargo-port/cargo-liner-log.md`. It is git-excluded and holds one line per event.
 - **Change review:** `~/rust/hanadocs/change-review/change-review - cargo-liner.md`
 - **Proposals:** `~/rust/hanadocs/issues`
 - **Review pool:** code
@@ -33,6 +34,7 @@
 | berth-unit | docs/cargo-port/remove-running-section-berth-next.md | /home/natepiano/rust/cargo-liner-berth | remove-running-section-berth | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
 | review-unit | (retired 2026-10-19, worktree removed) docs/cargo-port/remove-running-section-review.md | /home/natepiano/rust/cargo-liner-review | remove-running-section-review | — | — |
 | experiments-unit | `docs/experiments/as-built/framework-design.md` (as-built; plan done) | /home/natepiano/rust/cargo-liner-experiments | remove-running-section-experiments | — | docs/experiments/ |
+| port-unit | docs/cargo-port/cargo-liner-port.md | /home/natepiano/rust/cargo-liner-port | cargo-liner-port | — | crates/cargo-port/, docs/cargo-port/ (port plans) |
 
 ## Hub files
 
