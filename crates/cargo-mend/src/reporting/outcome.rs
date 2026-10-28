@@ -184,9 +184,8 @@ pub(crate) enum MendFailure {
 #[derive(Debug)]
 pub(crate) enum CompilerFailureCause {
     CargoCheck,
-    /// No stored report reached `load_report`, so nothing was analyzed. Reported
-    /// as a failure because an empty findings list would otherwise print as a
-    /// clean crate.
+    /// Automatic recovery could not supply compatible analysis for the selected
+    /// units. An empty or partial report must never print as a clean crate.
     NoAnalysisProduced,
     DriverSetup(Error),
     Unexpected(Error),
@@ -242,7 +241,7 @@ impl Display for AnalysisFailure {
             CompilerFailureCause::NoAnalysisProduced => {
                 write!(
                     f,
-                    "no analysis was produced for this crate\n\nmend: cargo had nothing to rebuild and no compatible cached findings were available, so no code was examined; force a rebuild (touch a source file, or `cargo clean -p <package>`) and run again"
+                    "no analysis was produced for this crate\n\nmend: automatic cache recovery could not produce compatible findings for every selected unit; force a rebuild (touch a source file, or `cargo clean -p <package>`) and run again"
                 )
             },
             CompilerFailureCause::DriverSetup(error) | CompilerFailureCause::Unexpected(error) => {

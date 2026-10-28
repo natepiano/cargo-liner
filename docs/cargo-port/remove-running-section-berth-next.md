@@ -882,3 +882,12 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Verification:** a cold full Mac run on the phase checkpoint with default threads: every test under 1.000 s, all pass. natedev stays all under 1 s. Product-cost tests count work, never wall-clock time. No skipped tests, no thread-count change, no raised timeout, no wall-clock assertion. At most 3 repair rounds; then land if the branch has fewer slow Mac tests than main.
 
+### Phase 39 — The first cargo-mend run after an install examines the code  · status: done
+
+#### As-built
+
+- Why: (showrunner, 2026-10-27) the first `cargo mend --all-targets --workspace --fail-on-warn` after a new cargo-mend install failed with "no analysis was produced for this crate"; a rerun passed.
+- Measured cause: the per-build wrapper alias was a symlink to the installed binary. When the binary was replaced while a run was in progress, the old build's alias followed the new binary. The new build wrote its reports beside the old build's unit ids, and the old run rejected them. The log of the original run has no per-unit capture, so this race matches the symptom but is not proved to be that run's cause. A report from another build beside a fresh cargo unit gave the same failure.
+- The alias is now a hard link (a copy across filesystems) that keeps its own build. A legacy symlink is replaced atomically. On Unix a reused alias must be a regular file with the same device and inode as the executable.
+- `ReportCacheState::{Compatible, AnotherMendBuild, InputsChanged, Missing, Unreadable}` replaces the compatibility bool. `AnalysisCache::{Compatible, RebuildRequired(Vec<PathBuf>), Unrepairable}`: for units whose report is not compatible, mend removes only their `.rmeta` and runs the same cargo check once more. A second incompatible result fails. The "touch a source file" advice remains only for `Unrepairable` (cargo gave no analyzable selected unit).
+- Proof: `fresh_units_with_another_builds_reports_are_examined_on_the_first_run` failed before (`NoAnalysisProduced`). Also `fresh_units_without_reports_are_examined_on_the_first_run`, `cache_repair_invalidates_only_unusable_selected_units`, `report_cache_states_distinguish_missing_build_and_input_changes`, `wrapper_alias_retains_its_build_when_the_installed_binary_is_replaced`, `wrapper_alias_replaces_a_legacy_symlink_with_the_retained_build`. 827/827.
