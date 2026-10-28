@@ -54,7 +54,7 @@ pub(crate) fn execute(
 3. Otherwise calls `decide` again.
 4. With no conflicts, or a configured `default_answer`, runs the locked `acquire_first_touch`; otherwise answers `blocked_check`. Reconcile alerts are attached to either answer.
 
-### Fast-path selection (`verb/claim/mod.rs`)
+### Fast-path selection (`verb/claim/acquisition.rs`)
 
 ```rust
 pub(super) fn selected_reservation_check_acquisition(
@@ -133,7 +133,7 @@ The hook's contention presentation leads with "cargo-berth rejected this edit be
 ### Files
 
 - `crates/cargo-berth/src/verb/check.rs`: `execute`, `decide`, `CheckDecision`, `MergeObservationRequirement`, `reconcile_and_retry`, the fast return.
-- `crates/cargo-berth/src/verb/claim/mod.rs`: `CheckReservationSelection`, `CheckAcquisitionDecision`, `selected_reservation_check_acquisition`, and the shared `partition_first_touch_protected_scopes`, `already_held_acquisition` and `first_touch_acquisition`.
+- `crates/cargo-berth/src/verb/claim/acquisition.rs`: `CheckReservationSelection`, `CheckAcquisitionDecision`, `selected_reservation_check_acquisition`, and the shared `partition_first_touch_protected_scopes`, `already_held_acquisition` and `first_touch_acquisition`.
 - `crates/cargo-berth/src/ledger/handle.rs`: `read_for_edit_check`, `EditCheckLedgerSnapshot::into_parts`.
 - `crates/cargo-berth/src/reconcile.rs`: `derive_merge_extents[_with_observer]`, `observe_holder_merge_extents`, `MergeExtentGitCost`, `ReconcileError::into_output`.
 - `crates/cargo-berth/src/output.rs`: `clear_check`, `contention`.
