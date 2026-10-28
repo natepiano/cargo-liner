@@ -1,9 +1,12 @@
 use ratatui::Frame;
+use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::Action;
+use tui_pane::NavAction;
 use tui_pane::PaneFocusState;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
@@ -29,6 +32,9 @@ use super::stats;
 use super::stats::ParsedStatLine;
 use super::stats::ValueAlignment;
 use crate::tui::app::App;
+use crate::tui::integration::AppGlobalAction;
+use crate::tui::integration::AppPaneId;
+use crate::tui::keymap::SccacheAction;
 use crate::tui::overlays::PopupFrame;
 
 struct SccacheLines {
@@ -41,9 +47,11 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
         lines,
         selectable_lines,
     } = build_lines(&app.overlays.sccache_pane);
-    let width =
-        content_width(&lines).min(frame.area().width.saturating_sub(POPUP_HORIZONTAL_MARGIN));
-    let height = popup_height(lines.len(), frame.area().height);
+    let hints = shortcut_hints(app);
+    let width = content_width(&lines)
+        .max(content_width(std::slice::from_ref(&hints)).saturating_add(1))
+        .min(frame.area().width.saturating_sub(POPUP_HORIZONTAL_MARGIN));
+    let height = popup_height(lines.len() + 1, frame.area().height);
     let popup = PopupFrame {
         title: Some(" Sccache Stats ".to_string()),
         border_color: title_color(),
@@ -51,7 +59,21 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
         height,
     }
     .render_with_areas(frame);
-    let inner = popup.inner;
+    let inner = Rect {
+        height: popup.inner.height.saturating_sub(1),
+        ..popup.inner
+    };
+    if popup.inner.height > 0 {
+        frame.render_widget(
+            Paragraph::new(hints),
+            Rect::new(
+                popup.inner.x.saturating_add(1),
+                inner.bottom(),
+                popup.inner.width.saturating_sub(1),
+                1,
+            ),
+        );
+    }
 
     let line_count = lines.len();
     app.overlays
@@ -75,6 +97,53 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
         ViewportOverflow::new(line_count, scroll_offset, visible_height, scroll_offset),
         Style::default().fg(label_color()),
     );
+}
+
+fn shortcut_hints(app: &App) -> Line<'static> {
+    let keymap = &app.framework_keymap;
+    let mut hints = Vec::new();
+    if let Some(keys) =
+        keymap.key_for_toml_key(AppPaneId::Sccache, SccacheAction::Cancel.toml_key())
+    {
+        hints.push(format!(
+            "{} {}",
+            keys.display_short(),
+            SccacheAction::Cancel.bar_label()
+        ));
+    }
+    if let Some(scope) = keymap.globals::<AppGlobalAction>()
+        && let Some(keys) = scope.key_for(AppGlobalAction::Copy)
+    {
+        hints.push(format!(
+            "{} {}",
+            keys.display_short(),
+            AppGlobalAction::Copy.bar_label()
+        ));
+    }
+    if let Some(scope) = keymap.navigation() {
+        for (backward, forward, label) in [
+            (NavAction::Up, NavAction::Down, "nav"),
+            (NavAction::Home, NavAction::End, "ends"),
+            (NavAction::PageUp, NavAction::PageDown, "page"),
+            (NavAction::HalfPageUp, NavAction::HalfPageDown, "half page"),
+        ] {
+            match (scope.key_for(backward), scope.key_for(forward)) {
+                (Some(first), Some(second)) => hints.push(format!(
+                    "{}/{} {label}",
+                    first.display_short(),
+                    second.display_short()
+                )),
+                (Some(keys), None) => {
+                    hints.push(format!("{} {}", keys.display_short(), backward.bar_label()));
+                },
+                (None, Some(keys)) => {
+                    hints.push(format!("{} {}", keys.display_short(), forward.bar_label()));
+                },
+                (None, None) => {},
+            }
+        }
+    }
+    Line::from(hints.join(" · "))
 }
 
 fn build_lines(pane: &SccachePane) -> SccacheLines {
@@ -211,12 +280,18 @@ fn popup_height(row_count: usize, area_height: u16) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use crossterm::event::KeyCode;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
+    use tui_pane::Keymap;
+    use tui_pane::NavAction;
+    use tui_pane::VimMode;
 
     use super::*;
     use crate::sccache::StatsResult;
+    use crate::tui::integration;
+    use crate::tui::test_support;
 
     #[test]
     fn clicking_a_scrolled_stat_line_copies_its_own_value_across_headings() {
@@ -258,7 +333,7 @@ mod tests {
                 value: "3".to_string(),
             })
         );
-        pane.handle_navigation_key(KeyCode::Up);
+        pane.navigate(NavAction::Up);
         assert_eq!(
             pane.selected_copy_value(),
             Some(&SccacheTarget {
@@ -284,5 +359,76 @@ mod tests {
         assert_eq!(pane.selected_line(), None);
         assert_eq!(pane.selected_copy_value(), None);
         assert_eq!(pane.row_at(Position::new(0, 1)), None);
+    }
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "tests should panic on unexpected values"
+    )]
+    fn sccache_render_evidence_has_registered_hints_and_no_copy_targets_in_the_footer() {
+        let mut app = test_support::make_app(&[]);
+        app.framework_keymap = std::rc::Rc::new(
+            integration::build_framework_keymap(
+                Keymap::builder().vim_mode(VimMode::Disabled),
+                &mut app.framework,
+            )
+            .expect("default keymap"),
+        );
+        let before = build_lines(&app.overlays.sccache_pane)
+            .lines
+            .iter()
+            .map(|line| line.to_string().trim().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(before, "Status:\nLoading sccache stats");
+        let hints = shortcut_hints(&app).to_string();
+        assert_eq!(
+            hints,
+            "Esc close · y copy · ↑/↓ nav · home/end ends · pageup/pagedown page"
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).expect("terminal");
+        terminal
+            .draw(|frame| render_sccache_popup(frame, &mut app))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let rendered = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains(&format!("│ {hints}")));
+        assert!(rendered.contains("Loading sccache stats"));
+        assert_eq!(app.overlays.sccache_pane.viewport.len(), 0);
+        println!("Before Sccache body (unchanged build_lines):\n{before}");
+        println!("After Sccache popup (100x12):\n{rendered}");
+
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let path = directory.path().join("keymap.toml");
+        std::fs::write(&path, "[sccache]\ncancel = [\"ctrl-w\", \"z z\"]\n[global]\ncopy = \"\"\n[navigation]\nup = \"ctrl-k\"\ndown = \"\"").expect("rebound hints");
+        let builder = Keymap::builder()
+            .vim_mode(VimMode::Disabled)
+            .load_toml(path.clone())
+            .expect("load rebound keys");
+        app.framework_keymap = std::rc::Rc::new(
+            integration::build_framework_keymap(builder, &mut app.framework)
+                .expect("build rebound keymap"),
+        );
+        assert_eq!(
+            shortcut_hints(&app).to_string(),
+            "⌃w close · ⌃k/↓ nav · home/end ends · pageup/pagedown page"
+        );
+        std::fs::write(&path, "[sccache]\ncancel = \"\"").expect("unbind close");
+        let builder = Keymap::builder()
+            .vim_mode(VimMode::Disabled)
+            .load_toml(path)
+            .expect("load unbound close");
+        app.framework_keymap = std::rc::Rc::new(
+            integration::build_framework_keymap(builder, &mut app.framework)
+                .expect("build unbound keymap"),
+        );
+        assert!(!shortcut_hints(&app).to_string().contains("close"));
     }
 }
