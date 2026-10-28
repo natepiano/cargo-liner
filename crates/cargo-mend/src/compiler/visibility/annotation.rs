@@ -198,12 +198,12 @@ impl From<ScopeReach<DefId>> for VisibilityReach {
 
 impl VisibilityReach {
     pub(in crate::compiler) fn compare(self, other: Self, tcx: TyCtxt<'_>) -> Option<Ordering> {
-        let mut is_at_least = |lhs, rhs| Self::from(lhs).is_at_least(Self::from(rhs), tcx);
-        self.reach().compare(other.reach(), &mut is_at_least)
+        let mut dominance = |lhs, rhs| Self::from(lhs).dominance(Self::from(rhs), tcx);
+        self.reach().compare(other.reach(), &mut dominance)
     }
 
     pub(in crate::compiler) fn join(self, other: Self, tcx: TyCtxt<'_>) -> Self {
-        let mut is_at_least = |lhs, rhs| Self::from(lhs).is_at_least(Self::from(rhs), tcx);
+        let mut dominance = |lhs, rhs| Self::from(lhs).dominance(Self::from(rhs), tcx);
         let mut parent_module = |module: DefId| {
             module.as_local().map_or(module, |local_module| {
                 tcx.parent_module_from_def_id(local_module).to_def_id()
@@ -211,26 +211,31 @@ impl VisibilityReach {
         };
         Self::from(
             self.reach()
-                .join(other.reach(), &mut is_at_least, &mut parent_module),
+                .join(other.reach(), &mut dominance, &mut parent_module),
         )
     }
 
-    /// Ported from rustc's `Visibility::is_at_least`, removed in 1.97. Returns
-    /// `true` when `self` is at least as visible as `other`. Body is a verbatim
-    /// copy of the removed method, expressed in terms of the still-present
-    /// `is_public` / `is_accessible_from`.
-    pub(super) fn is_at_least(self, other: Self, tcx: TyCtxt<'_>) -> bool {
-        match other.0 {
+    /// Ported from rustc's `Visibility::is_at_least`, removed in 1.97.
+    /// Public reaches require public visibility; restricted reaches require accessibility
+    /// from their boundary. Keep rustc's `is_public` / `is_accessible_from` semantics.
+    pub(super) fn dominance(self, other: Self, tcx: TyCtxt<'_>) -> ReachDominance {
+        let accessible = match other.0 {
             Visibility::Public => self.0.is_public(),
             Visibility::Restricted(boundary) => self.0.is_accessible_from(boundary, tcx),
+        };
+        if accessible {
+            ReachDominance::Dominates
+        } else {
+            ReachDominance::DoesNotDominate
         }
     }
 
-    pub(super) fn is_strictly_wider(self, other: Self, tcx: TyCtxt<'_>) -> bool {
-        self.is_at_least(other, tcx) && !other.is_at_least(self, tcx)
+    pub(super) fn widening(self, other: Self, tcx: TyCtxt<'_>) -> ReachWidening {
+        let mut dominance = |lhs, rhs| Self::from(lhs).dominance(Self::from(rhs), tcx);
+        self.reach().widening(other.reach(), &mut dominance)
     }
 
-    pub(super) fn is_public(self) -> bool { self.0.is_public() }
+    pub(super) const fn audience(self) -> VisibilityAudience { self.reach().audience() }
 
     pub(super) fn boundary(self) -> ReachBoundary { ReachBoundary::from(self) }
 
@@ -258,8 +263,8 @@ pub(in crate::compiler) fn anchored(
     tcx: TyCtxt<'_>,
 ) -> VisibilityReach {
     let target_module = tcx.parent_module_from_def_id(target).to_def_id();
-    let mut is_at_least =
-        |lhs, rhs| VisibilityReach::from(lhs).is_at_least(VisibilityReach::from(rhs), tcx);
+    let mut dominance =
+        |lhs, rhs| VisibilityReach::from(lhs).dominance(VisibilityReach::from(rhs), tcx);
     let mut parent_module = |module: DefId| {
         module.as_local().map_or(module, |local_module| {
             tcx.parent_module_from_def_id(local_module).to_def_id()
@@ -267,7 +272,7 @@ pub(in crate::compiler) fn anchored(
     };
     reach
         .reach()
-        .anchored(target_module, &mut is_at_least, &mut parent_module)
+        .anchored(target_module, &mut dominance, &mut parent_module)
         .into()
 }
 
@@ -289,6 +294,29 @@ pub(in crate::compiler) fn capped_by_enclosing_modules(
     Some(reach)
 }
 
+/// Directional accessibility used to compare reaches and find a shared ancestor.
+/// Preserves rustc's removed `Visibility::is_at_least`: public reaches require public
+/// visibility, while restricted reaches require accessibility from their boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReachDominance {
+    Dominates,
+    DoesNotDominate,
+}
+
+/// Strict widening requires forward dominance and excludes equal or incomparable reaches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReachWidening {
+    StrictlyWider,
+    NotWider,
+}
+
+/// Only public visibility reaches callers outside the crate; restricted scopes stay inside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum VisibilityAudience {
+    Public,
+    Restricted,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ScopeReach<Scope> {
     Public,
@@ -296,26 +324,47 @@ enum ScopeReach<Scope> {
 }
 
 impl<Scope: Copy + Eq> ScopeReach<Scope> {
+    const fn audience(self) -> VisibilityAudience {
+        match self {
+            Self::Public => VisibilityAudience::Public,
+            Self::Restricted(_) => VisibilityAudience::Restricted,
+        }
+    }
+
+    fn widening(
+        self,
+        other: Self,
+        dominance: &mut impl FnMut(Self, Self) -> ReachDominance,
+    ) -> ReachWidening {
+        match dominance(self, other) {
+            ReachDominance::DoesNotDominate => ReachWidening::NotWider,
+            ReachDominance::Dominates => match dominance(other, self) {
+                ReachDominance::Dominates => ReachWidening::NotWider,
+                ReachDominance::DoesNotDominate => ReachWidening::StrictlyWider,
+            },
+        }
+    }
+
     fn compare(
         self,
         other: Self,
-        is_at_least: &mut impl FnMut(Self, Self) -> bool,
+        dominance: &mut impl FnMut(Self, Self) -> ReachDominance,
     ) -> Option<Ordering> {
-        match (is_at_least(self, other), is_at_least(other, self)) {
-            (true, true) => Some(Ordering::Equal),
-            (true, false) => Some(Ordering::Greater),
-            (false, true) => Some(Ordering::Less),
-            (false, false) => None,
+        match (dominance(self, other), dominance(other, self)) {
+            (ReachDominance::Dominates, ReachDominance::Dominates) => Some(Ordering::Equal),
+            (ReachDominance::Dominates, ReachDominance::DoesNotDominate) => Some(Ordering::Greater),
+            (ReachDominance::DoesNotDominate, ReachDominance::Dominates) => Some(Ordering::Less),
+            (ReachDominance::DoesNotDominate, ReachDominance::DoesNotDominate) => None,
         }
     }
 
     fn join(
         self,
         other: Self,
-        is_at_least: &mut impl FnMut(Self, Self) -> bool,
+        dominance: &mut impl FnMut(Self, Self) -> ReachDominance,
         parent_module: &mut impl FnMut(Scope) -> Scope,
     ) -> Self {
-        match self.compare(other, is_at_least) {
+        match self.compare(other, dominance) {
             Some(Ordering::Equal | Ordering::Greater) => self,
             Some(Ordering::Less) => other,
             None => match (self, other) {
@@ -323,7 +372,8 @@ impl<Scope: Copy + Eq> ScopeReach<Scope> {
                     let mut common_ancestor = lhs;
                     loop {
                         let candidate = Self::Restricted(common_ancestor);
-                        if is_at_least(candidate, Self::Restricted(rhs)) {
+                        if dominance(candidate, Self::Restricted(rhs)) == ReachDominance::Dominates
+                        {
                             return candidate;
                         }
                         let parent = parent_module(common_ancestor);
@@ -333,7 +383,8 @@ impl<Scope: Copy + Eq> ScopeReach<Scope> {
                         common_ancestor = parent;
                     }
                 },
-                (Self::Public, _) | (_, Self::Public) => Self::Public,
+                (Self::Public, Self::Public | Self::Restricted(_))
+                | (Self::Restricted(_), Self::Public) => Self::Public,
             },
         }
     }
@@ -341,10 +392,10 @@ impl<Scope: Copy + Eq> ScopeReach<Scope> {
     fn anchored(
         self,
         target_module: Scope,
-        is_at_least: &mut impl FnMut(Self, Self) -> bool,
+        dominance: &mut impl FnMut(Self, Self) -> ReachDominance,
         parent_module: &mut impl FnMut(Scope) -> Scope,
     ) -> Self {
-        self.join(Self::Restricted(target_module), is_at_least, parent_module)
+        self.join(Self::Restricted(target_module), dominance, parent_module)
     }
 }
 
@@ -352,6 +403,8 @@ impl<Scope: Copy + Eq> ScopeReach<Scope> {
 mod tests {
     use std::cmp::Ordering;
 
+    use ReachDominance::DoesNotDominate;
+    use ReachDominance::Dominates;
     use rustc_middle::ty::Visibility;
     use rustc_span::def_id::CRATE_DEF_ID;
     use rustc_span::def_id::DefId;
@@ -360,8 +413,11 @@ mod tests {
 
     use super::PathSpelling;
     use super::ReachBoundary;
+    use super::ReachDominance;
+    use super::ReachWidening;
     use super::ScopeReach;
     use super::VisibilityAnnotation;
+    use super::VisibilityAudience;
     use super::VisibilityReach;
     use super::VisibilitySyntax;
 
@@ -374,6 +430,12 @@ mod tests {
         Isolated,
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ModuleAncestry {
+        Descendant,
+        Outside,
+    }
+
     impl TestModule {
         const fn parent(self) -> Self {
             match self {
@@ -383,18 +445,18 @@ mod tests {
             }
         }
 
-        fn is_descendant_of(self, ancestor: Self) -> bool {
+        fn ancestry(self, ancestor: Self) -> ModuleAncestry {
             let mut current = self;
             loop {
                 if current == ancestor {
-                    return true;
+                    return ModuleAncestry::Descendant;
                 }
                 if current == Self::Crate {
-                    return false;
+                    return ModuleAncestry::Outside;
                 }
                 let parent = current.parent();
                 if parent == current {
-                    return false;
+                    return ModuleAncestry::Outside;
                 }
                 current = parent;
             }
@@ -402,6 +464,126 @@ mod tests {
     }
 
     type TestReach = ScopeReach<TestModule>;
+
+    #[test]
+    fn directional_dominance_preserves_each_partial_order_outcome() {
+        for (forward, reverse, expected) in [
+            (
+                ReachDominance::Dominates,
+                ReachDominance::Dominates,
+                Some(Ordering::Equal),
+            ),
+            (
+                ReachDominance::Dominates,
+                ReachDominance::DoesNotDominate,
+                Some(Ordering::Greater),
+            ),
+            (
+                ReachDominance::DoesNotDominate,
+                ReachDominance::Dominates,
+                Some(Ordering::Less),
+            ),
+            (
+                ReachDominance::DoesNotDominate,
+                ReachDominance::DoesNotDominate,
+                None,
+            ),
+        ] {
+            let mut calls = Vec::new();
+            let mut dominance = |lhs, rhs| {
+                calls.push((lhs, rhs));
+                if calls.len() == 1 { forward } else { reverse }
+            };
+            let left = TestReach::Restricted(TestModule::Left);
+            let right = TestReach::Restricted(TestModule::Right);
+            assert_eq!(left.compare(right, &mut dominance), expected);
+            assert_eq!(calls, [(left, right), (right, left)]);
+        }
+    }
+
+    #[test]
+    fn strict_widening_preserves_short_circuit_and_comparison_direction() {
+        for (forward, reverse, expected, count) in [
+            (Dominates, Dominates, ReachWidening::NotWider, 2),
+            (Dominates, DoesNotDominate, ReachWidening::StrictlyWider, 2),
+            (DoesNotDominate, Dominates, ReachWidening::NotWider, 1),
+            (DoesNotDominate, DoesNotDominate, ReachWidening::NotWider, 1),
+        ] {
+            let left = TestReach::Restricted(TestModule::Left);
+            let right = TestReach::Restricted(TestModule::Right);
+            let mut calls = Vec::new();
+            let mut dominance = |lhs, rhs| {
+                calls.push((lhs, rhs));
+                if calls.len() == 1 { forward } else { reverse }
+            };
+            assert_eq!(left.widening(right, &mut dominance), expected);
+            assert_eq!(calls.len(), count);
+            assert_eq!(calls[0], (left, right));
+            if count == 2 {
+                assert_eq!(calls[1], (right, left));
+            }
+        }
+    }
+
+    #[test]
+    fn audience_keeps_crate_and_module_restrictions_inside_the_crate() {
+        for (visibility, expected) in [
+            (Visibility::Public, VisibilityAudience::Public),
+            (
+                Visibility::Restricted(CRATE_DEF_ID.to_def_id()),
+                VisibilityAudience::Restricted,
+            ),
+            (
+                Visibility::Restricted(DefId {
+                    krate: LOCAL_CRATE,
+                    index: DefIndex::from_u32(1),
+                }),
+                VisibilityAudience::Restricted,
+            ),
+        ] {
+            assert_eq!(VisibilityReach::from(visibility).audience(), expected);
+        }
+    }
+
+    #[test]
+    fn module_ancestry_preserves_self_root_siblings_and_fixed_points() {
+        for (module, ancestor, expected) in [
+            (
+                TestModule::Left,
+                TestModule::Left,
+                ModuleAncestry::Descendant,
+            ),
+            (
+                TestModule::Left,
+                TestModule::Ancestor,
+                ModuleAncestry::Descendant,
+            ),
+            (
+                TestModule::Left,
+                TestModule::Crate,
+                ModuleAncestry::Descendant,
+            ),
+            (
+                TestModule::Crate,
+                TestModule::Crate,
+                ModuleAncestry::Descendant,
+            ),
+            (TestModule::Crate, TestModule::Left, ModuleAncestry::Outside),
+            (TestModule::Left, TestModule::Right, ModuleAncestry::Outside),
+            (
+                TestModule::Isolated,
+                TestModule::Left,
+                ModuleAncestry::Outside,
+            ),
+            (
+                TestModule::Isolated,
+                TestModule::Isolated,
+                ModuleAncestry::Descendant,
+            ),
+        ] {
+            assert_eq!(module.ancestry(ancestor), expected);
+        }
+    }
 
     #[test]
     fn resolved_boundaries_preserve_module_identity_and_policy_kind() {
@@ -559,28 +741,33 @@ mod tests {
     }
 
     fn compare(lhs: TestReach, rhs: TestReach) -> Option<Ordering> {
-        let mut is_at_least = test_is_at_least;
-        lhs.compare(rhs, &mut is_at_least)
+        let mut dominance = test_dominance;
+        lhs.compare(rhs, &mut dominance)
     }
 
     fn join(lhs: TestReach, rhs: TestReach) -> TestReach {
-        let mut is_at_least = test_is_at_least;
+        let mut dominance = test_dominance;
         let mut parent_module = TestModule::parent;
-        lhs.join(rhs, &mut is_at_least, &mut parent_module)
+        lhs.join(rhs, &mut dominance, &mut parent_module)
     }
 
     fn anchored_to_module(reach: TestReach, target_module: TestModule) -> TestReach {
-        let mut is_at_least = test_is_at_least;
+        let mut dominance = test_dominance;
         let mut parent_module = TestModule::parent;
-        reach.anchored(target_module, &mut is_at_least, &mut parent_module)
+        reach.anchored(target_module, &mut dominance, &mut parent_module)
     }
 
-    fn test_is_at_least(lhs: TestReach, rhs: TestReach) -> bool {
+    fn test_dominance(lhs: TestReach, rhs: TestReach) -> ReachDominance {
         match (lhs, rhs) {
-            (TestReach::Public, _) => true,
-            (TestReach::Restricted(_), TestReach::Public) => false,
+            (TestReach::Public, TestReach::Public | TestReach::Restricted(_)) => {
+                ReachDominance::Dominates
+            },
+            (TestReach::Restricted(_), TestReach::Public) => ReachDominance::DoesNotDominate,
             (TestReach::Restricted(reach), TestReach::Restricted(boundary)) => {
-                boundary.is_descendant_of(reach)
+                match boundary.ancestry(reach) {
+                    ModuleAncestry::Descendant => ReachDominance::Dominates,
+                    ModuleAncestry::Outside => ReachDominance::DoesNotDominate,
+                }
             },
         }
     }

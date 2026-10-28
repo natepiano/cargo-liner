@@ -33,6 +33,8 @@ use rustc_middle::ty::TyKind;
 use rustc_middle::ty::print::PrintTraitRefExt;
 use rustc_middle::ty::print::with_forced_trimmed_paths;
 
+use super::ReachDominance;
+use super::ReachWidening;
 use super::annotation::VisibilityReach;
 use super::policy;
 
@@ -80,7 +82,8 @@ pub(super) fn collect_interface_ceilings(
         };
         match ceilings.entry(local_self_adt) {
             Entry::Occupied(mut occupied) => {
-                if occupied.get().reach.is_strictly_wider(ceiling.reach, tcx) {
+                if occupied.get().reach.widening(ceiling.reach, tcx) == ReachWidening::StrictlyWider
+                {
                     occupied.insert(ceiling);
                 }
             },
@@ -117,12 +120,18 @@ fn impl_ceiling<'tcx>(
         })
         .filter(|component| component.is_local() && *component != self_adt)
         .map(|component| (component, VisibilityReach::from(tcx.visibility(component))))
-        .filter(|(_, component_reach)| !component_reach.is_at_least(trait_reach, tcx))
+        .filter(|(_, component_reach)| {
+            component_reach.dominance(trait_reach, tcx) == ReachDominance::DoesNotDominate
+        })
         .fold(
             None,
-            |narrowest: Option<(DefId, VisibilityReach)>, candidate| match narrowest {
-                Some(current) if !current.1.is_strictly_wider(candidate.1, tcx) => Some(current),
-                _ => Some(candidate),
+            |narrowest: Option<(DefId, VisibilityReach)>, candidate| {
+                narrowest.map_or(Some(candidate), |current| {
+                    match current.1.widening(candidate.1, tcx) {
+                        ReachWidening::NotWider => Some(current),
+                        ReachWidening::StrictlyWider => Some(candidate),
+                    }
+                })
             },
         )?;
     Some(InterfaceCeiling {
