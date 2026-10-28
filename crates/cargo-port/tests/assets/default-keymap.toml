@@ -71,6 +71,9 @@ select_all = "ctrl-a"
 activate = "enter"
 cancel   = "escape"
 
+[sccache]
+cancel = "escape"
+
 [overlay]
 cancel     = "escape"
 start_edit = "enter"
