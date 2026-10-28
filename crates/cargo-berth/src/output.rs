@@ -32,6 +32,8 @@ use crate::constants::RETENTION_MAINTENANCE_DEFERRED_SUMMARY;
 use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::drift::DriftEffect;
+use crate::drift::DriftNotCheckedReason;
+use crate::drift::DriftOutcome;
 use crate::drift::DriftPathAttributionOutcome;
 use crate::drift::DriftReport;
 use crate::drift::DriftScopeAcquisition;
@@ -689,6 +691,8 @@ declare_output_contract_metadata! {
         DriftAttributionRequired => ("drift_attribution_required", BlockedByOverlap);
         /// A completed drift run may take no scopes: another run occupies this worktree.
         ScopeAcquisitionRefused => ("scope_acquisition_refused", UsageError);
+        /// Git holds this worktree's index lock, so drift did not compare it.
+        GitOperationInProgress => ("git_operation_in_progress", Clear);
         /// Several active reservations are eligible, and no session mapping selects one.
         AmbiguousActiveRunReservations => ("ambiguous_active_run_reservations", BlockedByOverlap);
         /// Repository policy permits no additional live reservations.
@@ -817,7 +821,7 @@ enum OutputFacts {
     /// Facts returned by `claim`.
     Claim(ClaimPayload),
     /// Facts returned by `drift`.
-    Drift(DriftReport),
+    Drift(DriftOutcome),
     /// Facts returned by `release`.
     Release(ReleasePayload),
     /// Facts returned by `sequence`.
@@ -2489,7 +2493,13 @@ impl OutputEnvelope {
     }
 
     /// Build a complete drift result with status and process outcome in agreement.
-    pub(crate) fn drift(report: DriftReport) -> Self {
+    pub(crate) fn drift(outcome: DriftOutcome) -> Self {
+        let report = match outcome {
+            DriftOutcome::Checked(report) => report,
+            DriftOutcome::NotChecked { not_checked } => {
+                return Self::drift_not_checked(not_checked);
+            },
+        };
         let has_incursion = report.results.iter().any(|result| {
             result_has_effect(result, |effect| {
                 matches!(effect, DriftEffect::Incursion { .. })
@@ -2571,10 +2581,35 @@ impl OutputEnvelope {
             blocked_by,
             message,
             presentation: EnvelopePresentation::NotProvided,
-            payload: OutputPayload::from_facts(OutputFacts::Drift(report)),
+            payload: OutputPayload::from_facts(OutputFacts::Drift(DriftOutcome::Checked(report))),
         };
         output_envelope.refresh_post_tool_use_presentation();
         output_envelope
+    }
+
+    /// A deferred comparison is visible to the command caller and silent to `PostToolUse`.
+    fn drift_not_checked(reason: DriftNotCheckedReason) -> Self {
+        let (status, message) = match reason {
+            DriftNotCheckedReason::GitOperationInProgress => (
+                OutputStatus::GitOperationInProgress,
+                "A git operation in progress holds this worktree's index.lock; drift not checked. If no git operation is running, inspect the lock left by the interrupted operation before retrying.",
+            ),
+        };
+        Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            maintenance_notice: MaintenanceNotice::None,
+            automatic_release_notices: Vec::new(),
+            verb: CommandVerb::Drift,
+            status,
+            exit_code: BerthExit::Clear,
+            reservations: Vec::new(),
+            blocked_by: Vec::new(),
+            message: message.to_owned(),
+            presentation: EnvelopePresentation::NotProvided,
+            payload: OutputPayload::from_facts(OutputFacts::Drift(DriftOutcome::NotChecked {
+                not_checked: reason,
+            })),
+        }
     }
 
     /// Build a typed rejection when no additional live reservation is permitted.
@@ -3082,9 +3117,10 @@ impl OutputEnvelope {
             OutputStatus::ScopeAcquisitionRefused => PostCommitRendering::Warning(format!(
                 "cargo-berth completed the post-commit drift check and refused this run's scope acquisition. {message} This commit remains in place."
             )),
-            OutputStatus::Widened | OutputStatus::Incursion | OutputStatus::DriftCollision => {
-                PostCommitRendering::Warning(message)
-            },
+            OutputStatus::Widened
+            | OutputStatus::Incursion
+            | OutputStatus::DriftCollision
+            | OutputStatus::GitOperationInProgress => PostCommitRendering::Warning(message),
             OutputStatus::LedgerUnreadable => PostCommitRendering::Warning(format!(
                 "cargo-berth could not check this commit's drift because the ledger was unreadable. {message} Run `cargo-berth drift --full` by hand; this commit remains in place."
             )),
@@ -3436,10 +3472,11 @@ impl OutputEnvelope {
             },
             PostToolUseRendering::FeedbackDecidedByLiveIncursionState => {
                 self.presentation = match &self.payload.facts {
-                    OutputFacts::Drift(report) => {
+                    OutputFacts::Drift(DriftOutcome::Checked(report)) => {
                         drift_non_incursion_presentation(report, &self.payload.alerts)
                     },
-                    OutputFacts::NoFacts
+                    OutputFacts::Drift(DriftOutcome::NotChecked { .. })
+                    | OutputFacts::NoFacts
                     | OutputFacts::Init(_)
                     | OutputFacts::ProjectionRepair(_)
                     | OutputFacts::JournalCompaction(_)
@@ -3517,7 +3554,8 @@ impl OutputEnvelope {
 
     fn primary_post_tool_use_rendering(&self) -> PostToolUseRendering {
         match &self.payload.facts {
-            OutputFacts::Drift(report) => self.post_tool_use_drift_rendering(report),
+            OutputFacts::Drift(DriftOutcome::Checked(report)) => self.post_tool_use_drift_rendering(report),
+            OutputFacts::Drift(DriftOutcome::NotChecked { .. }) => PostToolUseRendering::NoFeedback,
             OutputFacts::ReplayFailure(failure) => {
                 let summary = match self.verb {
                     CommandVerb::Check => LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE,
@@ -3659,7 +3697,7 @@ impl OutputEnvelope {
         &self,
         live_board: &Self,
     ) -> PostToolUseRendering {
-        let (OutputFacts::Drift(report), OutputFacts::Board(board)) =
+        let (OutputFacts::Drift(DriftOutcome::Checked(report)), OutputFacts::Board(board)) =
             (&self.payload.facts, &live_board.payload.facts)
         else {
             return unverifiable_live_incursion_rendering();

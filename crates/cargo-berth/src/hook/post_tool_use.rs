@@ -27,8 +27,6 @@ use crate::drift::DriftRequest;
 use crate::drift::DriftReservationSelection;
 use crate::drift::PostCommitWideningSelection;
 use crate::exit::BerthExit;
-use crate::git::WorktreeSettlement;
-use crate::ledger::WorktreeContext;
 use crate::output::EngineAnswerOccasion;
 use crate::output::OutputEnvelope;
 use crate::output::PostToolUseRendering;
@@ -179,18 +177,9 @@ impl ObservedBashCall {
         Ok(self.reader)
     }
 
-    /// A completed foreground call can request drift only after Git has settled.
+    /// A completed foreground call delegates observation and Git settlement to drift.
     fn answer(self) -> Result<PostToolUseAnswer, PostToolUseObservationError> {
         let reader = self.enter_current_process()?;
-        let directory = std::env::current_dir()
-            .map_err(|_| PostToolUseObservationError::WorkingDirectoryUnavailable)?;
-        if let Ok(context) = WorktreeContext::discover(&directory) {
-            match WorktreeSettlement::observe(context.administrative_directory()) {
-                WorktreeSettlement::GitOperationInProgress => return Ok(PostToolUseAnswer::Silent),
-                WorktreeSettlement::Settled => {},
-            }
-        }
-        // Discovery errors still receive drift's existing unavailable-repository answer.
         let request = DriftRequest {
             comparison:  DriftComparisonChoice::CheapDelta,
             reservation: DriftReservationSelection::EveryActiveForPostCommit {

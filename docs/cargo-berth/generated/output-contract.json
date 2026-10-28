@@ -3623,6 +3623,32 @@
           "minItems": 1,
           "type": "array"
         },
+        "DriftNotCheckedReason": {
+          "description": "Why drift could not compare the worktree this invocation.",
+          "enum": [
+            "git_operation_in_progress"
+          ],
+          "type": "string"
+        },
+        "DriftOutcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DriftReport"
+            },
+            {
+              "properties": {
+                "not_checked": {
+                  "$ref": "#/$defs/DriftNotCheckedReason"
+                }
+              },
+              "required": [
+                "not_checked"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "A completed comparison and a deferred check carry different facts.\n\nCompleted reports retain their existing wire shape. A not-checked result cannot carry\nunchanged reservations, scope authorization, or an algorithm that never ran."
+        },
         "DriftPathAttributionOutcome": {
           "description": "The outcome of attributing changed paths outside the acting run's reservations.",
           "oneOf": [
@@ -8933,7 +8959,7 @@
               "description": "Facts returned by `drift`.",
               "properties": {
                 "data": {
-                  "$ref": "#/$defs/DriftReport"
+                  "$ref": "#/$defs/DriftOutcome"
                 },
                 "kind": {
                   "const": "drift",
@@ -9181,6 +9207,11 @@
             {
               "const": "scope_acquisition_refused",
               "description": "A completed drift run may take no scopes: another run occupies this worktree.",
+              "type": "string"
+            },
+            {
+              "const": "git_operation_in_progress",
+              "description": "Git holds this worktree's index lock, so drift did not compare it.",
               "type": "string"
             },
             {
@@ -11973,6 +12004,32 @@
           },
           "minItems": 1,
           "type": "array"
+        },
+        "DriftNotCheckedReason": {
+          "description": "Why drift could not compare the worktree this invocation.",
+          "enum": [
+            "git_operation_in_progress"
+          ],
+          "type": "string"
+        },
+        "DriftOutcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DriftReport"
+            },
+            {
+              "properties": {
+                "not_checked": {
+                  "$ref": "#/$defs/DriftNotCheckedReason"
+                }
+              },
+              "required": [
+                "not_checked"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "A completed comparison and a deferred check carry different facts.\n\nCompleted reports retain their existing wire shape. A not-checked result cannot carry\nunchanged reservations, scope authorization, or an algorithm that never ran."
         },
         "DriftPathAttributionOutcome": {
           "description": "The outcome of attributing changed paths outside the acting run's reservations.",
@@ -18000,7 +18057,7 @@
           "description": "Facts returned by `drift`.",
           "properties": {
             "data": {
-              "$ref": "#/$defs/DriftReport"
+              "$ref": "#/$defs/DriftOutcome"
             },
             "kind": {
               "const": "drift",
