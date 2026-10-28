@@ -35,38 +35,16 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Depends on:** none
 
-#### Work Order
+#### As-built
 
-**Goal:** one as-built overview of cargo-port that a writer reads before any cargo-port phase. It names where each part of the app lives, how data moves from scan and watcher to the drawn rows, and how to test and check the app live. Later phases cite it instead of a new survey.
-
-**Source:** user, 2026-10-28: this unit "should be the one to build up context about cargo-port". The crate has 293 source files (about 100,000 lines) and only two as-built docs (`targets-pane.md`, `lint-file-lock-spinner.md`), each for one feature.
-
-**Spec:**
-1. Write `docs/cargo-port/as-built/overview.md`. It describes the code as it is now, and it has no plan or phase text. Keep it short: it is a map for the next agent, not a full description (showrunner, 2026-10-28). Each entry names where to look, in one or two lines.
-2. **Module map.** One entry for each top-level module under `crates/cargo-port/src/` (`cache_paths`, `channel`, `ci`, `config`, `constants`, `enrichment`, `http`, `lint`, `process_observation`, `project`, `scan`, `sccache`, `support`, `test_support`, `themes`, `tui`, `watcher`) and for each submodule of `tui/` (`app`, `panes`, `state`, `input`, `keymap`, `integration`, `terminal` and the others): its job, its main types, and its entry functions.
-3. **Data flows,** each as a short numbered chain of named functions and types:
-   - startup: config load, theme load, `App` construction (`tui/app/construct.rs`), first scan;
-   - scan to project list: discovery, `RootItem` and list order, members and worktrees;
-   - watcher: the events it reads (`watcher/events.rs`, `roots.rs`, `runtime.rs`, `refresh.rs`), and how each one reaches project state, disk usage and `Visibility` (`Deleted` included), and dismiss (`tui/app/dismiss.rs`). State the rule: a deleted project is struck through (`Visibility::Deleted`), the user dismisses it with `x` or the close box, and the row never leaves the list by itself;
-   - async tasks: the handlers in `tui/app/async_tasks/` and the messages they handle;
-   - GitHub and CI enrichment: `http/`, rate limits, `ci`;
-   - lint runtime and sccache status;
-   - the render loop and pane drawing (`tui/terminal/event_loop.rs`, `tui/render.rs`), and the line between cargo-port and `tui_pane`.
-4. **State ownership.** Which struct owns each piece of state (`App`, each pane, the net state, the lint runtime), and which code changes it.
-5. **Configuration and themes.** The config file, its sections and `normalize_config`; the theme files under `crates/cargo-port/themes/`; the keymap files.
-6. **Tests.** The test layout (inline `mod tests` and separate `*_tests.rs`); the shared helpers (`make_app`, `make_app_with_config`, `count_allocations`, the seeded git repository in `test_support/git_seed`); the rule that no test takes a second; the commands `verify.sh lint cargo-port` and `verify.sh test cargo-port`.
-7. **Live check method.** How to run the built cargo-port against a scratch root with an absolute scratch `XDG_CONFIG_HOME`, so the user's own config is not read or changed. Run it once in this phase: make a scratch project under the scratch root, start cargo-port, and see the project listed. Record the commands in the doc and the result in the phase report.
-7a. Scratch repros: projects under `~/rust/repro` are change-review repros made by `scratch.py --visible`. Name this in the doc, next to the live check method.
-8. Link the two feature as-built docs from the overview, and add one line to `crates/cargo-port/README.md` only if it already has a section for developer docs.
-9. Every path, type and function the doc names exists at the phase's base commit. A check script in the phase report lists each backticked path in the doc and confirms it exists.
+`docs/cargo-port/as-built/overview.md` is the map of cargo-port that every cargo-port phase reads first. It has a module map for each top-level module and each `tui/` submodule; data flows for startup, scan to project list, the watcher (deletion, `Visibility::Deleted` and dismiss), async tasks, GitHub and CI enrichment, lint and sccache, and the render loop; state ownership; configuration, themes and keymaps; the test layout and helpers; and the live check method (a scratch root with an absolute scratch `XDG_CONFIG_HOME`), with the `~/rust/repro` scratch repros next to it. It links `targets-pane.md` and `lint-file-lock-spinner.md`. Each backticked path in it exists.
 
 **Files:**
-- `docs/cargo-port/as-built/overview.md` — new; the map
-- `crates/cargo-port/README.md` — only per spec 8; no source file changes
+- `docs/cargo-port/as-built/overview.md` — the cargo-port map
 
-**Workers:** 1 writer (`impl`), read-only on `crates/cargo-port/src/`.
+**Binds later work:** later cargo-port Work Orders cite the overview's live check method instead of a new survey.
 
-**Acceptance gate:** the path check of spec 9 passes with no missing path; the live check of spec 7 shows the scratch project listed; a reviewer reads three flows of spec 3 against the code and finds no step that the code does not do. No build or test change, so no `verify.sh` run is needed beyond `verify.sh lint cargo-port` if the README changes.
+**Gotchas:** `App::rescan` (`tui/app/async_tasks/tree.rs`) clears every root, so a Deleted row leaves the list on a full rescan; the overview names this as the one exception to "the row never leaves the list by itself", and the phase "A Deleted row stays on the list and shows its mark" removes it.
 
 ### Phase 2 — The watcher skips target/ and .git/objects  · status: todo
 
