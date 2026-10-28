@@ -20,6 +20,16 @@ pub enum SummaryRowAllocation {
     BeforeTiles,
 }
 
+/// Whether a terminal narrower than the core width can show a single column.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TileWidthFloor {
+    /// Every column must meet the configured minimum width.
+    #[default]
+    Required,
+    /// Keep one column and let its content use its below-core presentation.
+    CompressSingleColumn,
+}
+
 /// The framed rows a cell uses now and the stepped demand that controls
 /// layout motion.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -67,6 +77,8 @@ pub(super) struct TileSettings {
     pub(super) min_tile_height:        u16,
     /// Columns one cell standing alone needs; see [`MIN_TILE_WIDTH`].
     pub(super) min_tile_width:         u16,
+    /// Whether one column can use the content's below-core presentation.
+    pub(super) tile_width_floor:       TileWidthFloor,
     /// Rows a cell spends on its own border; see [`TILE_BORDER_ROWS`].
     pub(super) border_rows:            u16,
     /// Rows of content one step of demand is worth; see
@@ -92,6 +104,7 @@ impl Default for TileSettings {
             summary_row_allocation: SummaryRowAllocation::Shared,
             min_tile_height:        MIN_TILE_HEIGHT,
             min_tile_width:         MIN_TILE_WIDTH,
+            tile_width_floor:       TileWidthFloor::Required,
             border_rows:            TILE_BORDER_ROWS,
             demand_step:            TILE_DEMAND_STEP,
             animation_millis:       TILE_ANIMATION_MILLIS,

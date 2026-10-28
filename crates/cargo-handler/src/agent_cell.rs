@@ -13,17 +13,11 @@ use std::num::NonZeroU64;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Alignment;
-use ratatui::layout::Constraint;
-use ratatui::layout::Flex;
-use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Cell;
 use ratatui::widgets::Paragraph;
-use ratatui::widgets::Row;
-use ratatui::widgets::Table;
 use ratatui::widgets::Widget;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::Viewport;
@@ -83,6 +77,7 @@ use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterTint;
 use crate::interaction::RowIdentity as SelectedRow;
 use crate::interaction::RowOwner;
+use crate::interaction::SurfaceSelection;
 use crate::sort;
 use crate::sort::HeaderSpan;
 use crate::sort::SortColumn;
@@ -473,16 +468,26 @@ enum ColumnDrop {
     Directory,
     Branch,
     Type,
+    Age,
+    Account,
 }
 
 impl ColumnDrop {
-    const ORDER: [Self; 3] = [Self::Directory, Self::Branch, Self::Type];
+    const ORDER: [Self; 5] = [
+        Self::Directory,
+        Self::Branch,
+        Self::Type,
+        Self::Age,
+        Self::Account,
+    ];
 
     const fn column(self) -> TreeColumn {
         match self {
             Self::Directory => TreeColumn::Directory,
             Self::Branch => TreeColumn::Branch,
             Self::Type => TreeColumn::Type,
+            Self::Age => TreeColumn::Age,
+            Self::Account => TreeColumn::Account,
         }
     }
 }
@@ -497,12 +502,13 @@ enum TreePresentation {
 /// Shared positions for tiles with the same fitted columns in one screen column.
 #[derive(Clone, Debug)]
 pub(crate) struct TreeMetrics {
-    widths:               [u16; TreeColumn::COUNT],
-    heading_width:        u16,
-    session_header_width: u16,
-    ages:                 AgeLayout,
-    columns:              PermittedTreeColumns,
-    presentation:         TreePresentation,
+    widths:              [u16; TreeColumn::COUNT],
+    heading_width:       u16,
+    session_label_width: u16,
+    session_header_lead: SessionHeaderLead,
+    ages:                AgeLayout,
+    columns:             PermittedTreeColumns,
+    presentation:        TreePresentation,
 }
 
 /// Direct draws measure their source; a prepared grid supplies its screen-column layout.
@@ -513,9 +519,17 @@ enum TreeSizing {
 }
 
 impl TreeMetrics {
+    fn session_header_width(&self) -> u16 {
+        self.session_label_width
+            .saturating_add(self.session_header_lead.width())
+    }
+
     fn merge(&mut self, other: &Self) {
         self.heading_width = self.heading_width.max(other.heading_width);
-        self.session_header_width = self.session_header_width.max(other.session_header_width);
+        self.session_label_width = self.session_label_width.max(other.session_label_width);
+        if matches!(other.session_header_lead, SessionHeaderLead::OverBranch) {
+            self.session_header_lead = SessionHeaderLead::OverBranch;
+        }
         for (width, &other) in self.widths.iter_mut().zip(&other.widths) {
             *width = (*width).max(other);
         }
@@ -530,12 +544,11 @@ impl TreeMetrics {
             .iter()
             .map(|column| self.widths[*column as usize])
             .collect();
-        let full_fits =
-            table_width(&widths) <= usize::from(width) && header_width(self.heading_width) <= width;
-        if !full_fits {
+        let full_fits = table_width(&widths) <= usize::from(width);
+        if !full_fits || header_width(self.heading_width) > width {
             self.presentation = TreePresentation::Compressed;
         }
-        let minimum = usize::from(self.session_header_width)
+        let minimum = usize::from(self.session_label_width)
             + widths
                 .iter()
                 .skip(1)
@@ -543,11 +556,10 @@ impl TreeMetrics {
                 .sum::<usize>()
             + columns.len().saturating_sub(1) * usize::from(TABLE_COLUMN_SPACING);
         let drop = match step {
-            ColumnDrop::Directory => {
-                !full_fits || matches!(self.presentation, TreePresentation::Compressed)
+            ColumnDrop::Directory | ColumnDrop::Branch => !full_fits,
+            ColumnDrop::Type | ColumnDrop::Age | ColumnDrop::Account => {
+                minimum > usize::from(width)
             },
-            ColumnDrop::Branch => !full_fits,
-            ColumnDrop::Type => minimum > usize::from(width),
         };
         if drop {
             self.columns.remove(step);
@@ -580,12 +592,18 @@ struct TreeHeadingSpace {
 }
 
 /// Complete ages and the two visible row budgets are measured once per tile.
+#[derive(Clone)]
 pub(crate) struct TreeMeasurement {
     area:          Rect,
     metrics:       TreeMetrics,
     ages:          Vec<u64>,
     role_widths:   PresentationValues<u16>,
     status_widths: PresentationValues<u16>,
+    role_rows:     Vec<u16>,
+    status_rows:   Vec<u16>,
+    heading:       TreeHeadingSpace,
+    role_header:   u16,
+    status_header: u16,
 }
 
 impl TreeMeasurement {
@@ -685,9 +703,8 @@ impl TreeMeasurement {
             metrics: TreeMetrics {
                 widths,
                 heading_width: heading.width,
-                session_header_width: summary::cell_width(
-                    &TreeColumn::Session.sorted_header_text(sort, lead),
-                ),
+                session_label_width: summary::cell_width(&TreeColumn::Session.sorted_header(sort)),
+                session_header_lead: lead,
                 ages: AgeLayout::from_ages(ages.iter().copied()),
                 columns: PermittedTreeColumns::for_lines(lines, now, account_column),
                 presentation: TreePresentation::Full,
@@ -695,7 +712,88 @@ impl TreeMeasurement {
             ages,
             role_widths,
             status_widths,
+            role_rows: lines
+                .iter()
+                .map(|line| summary::cell_width(line.role_text()))
+                .collect(),
+            status_rows: lines
+                .iter()
+                .map(|line| summary::cell_width(&line.status(now).text))
+                .collect(),
+            role_header: summary::cell_width(&TreeColumn::Role.sorted_header(sort)),
+            status_header: summary::cell_width(&TreeColumn::Status.sorted_header(sort)),
+            heading,
         }
+    }
+
+    /// Reuse source readings at the allocation; no second tree measurement is needed.
+    pub(crate) fn allocated(&self, area: Rect, selection: &SurfaceSelection) -> Self {
+        let mut allocated = self.clone();
+        allocated.area = area;
+        // Project navigation with the same operation that installs the painted
+        // area after shared fitting. Either height change can move the offset.
+        let offset_for = |above: usize| {
+            let used = u16::try_from(above)
+                .unwrap_or(u16::MAX)
+                .saturating_add(TABLE_HEADER_HEIGHT)
+                .min(area.height);
+            let mut projected = selection.clone();
+            projected.set_area(Rect {
+                y: area.y.saturating_add(used),
+                height: area.height.saturating_sub(used),
+                ..area
+            });
+            projected.viewport().scroll_offset()
+        };
+        let offsets = PresentationValues {
+            full:       offset_for(self.heading.rows.full),
+            compressed: offset_for(self.heading.rows.compressed),
+        };
+        let visible_width = |rows: &[u16], above: usize, offset: usize, header: u16| {
+            rows.iter()
+                .skip(offset)
+                .take(
+                    usize::from(area.height)
+                        .saturating_sub(above + usize::from(TABLE_HEADER_HEIGHT)),
+                )
+                .copied()
+                .max()
+                .unwrap_or(0)
+                .max(header)
+        };
+        let widths = |rows: &[u16], header| PresentationValues {
+            full:       visible_width(rows, self.heading.rows.full, offsets.full, header),
+            compressed: visible_width(
+                rows,
+                self.heading.rows.compressed,
+                offsets.compressed,
+                header,
+            ),
+        };
+        allocated.role_widths = widths(&self.role_rows, self.role_header);
+        allocated.status_widths = widths(&self.status_rows, self.status_header);
+        allocated.metrics.widths[TreeColumn::Role as usize] = allocated.role_widths.full;
+        allocated.metrics.widths[TreeColumn::Status as usize] = allocated.status_widths.full;
+        allocated.metrics.presentation =
+            if self.heading.rows.full + usize::from(TABLE_HEADER_HEIGHT) + self.role_rows.len()
+                > usize::from(area.height)
+            {
+                TreePresentation::Compressed
+            } else {
+                TreePresentation::Full
+            };
+        allocated
+    }
+
+    /// Session lead, role, status, gaps, content indent and frame use the same readings as fitting.
+    pub(crate) fn minimum_tile_width(&self) -> u16 {
+        self.metrics
+            .session_header_width()
+            .saturating_add(self.role_widths.full.max(self.role_widths.compressed))
+            .saturating_add(self.status_widths.full.max(self.status_widths.compressed))
+            .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(2))
+            .saturating_add(summary::cell_width(SECTION_HEADER_INDENT).saturating_mul(2))
+            .saturating_add(u16::try_from(tui_pane::BLOCK_BORDER_WIDTH).unwrap_or(u16::MAX))
     }
 }
 
@@ -807,10 +905,12 @@ enum GroupFitStep {
 }
 
 impl GroupFitStep {
-    const ORDER: [Self; 4] = [
+    const ORDER: [Self; 6] = [
         Self::Drop(ColumnDrop::Directory),
         Self::Drop(ColumnDrop::Branch),
         Self::Drop(ColumnDrop::Type),
+        Self::Drop(ColumnDrop::Age),
+        Self::Drop(ColumnDrop::Account),
         Self::FinalMerge,
     ];
 }
@@ -1900,7 +2000,7 @@ const FULL_ACCOUNTS: &[TreeColumn] = &[
 /// A fitted full tree, or the compressed column set.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CellView {
-    Full(FlatColumns),
+    Full(FittedTreeColumns),
     Compressed,
 }
 
@@ -1925,7 +2025,7 @@ impl CellView {
         if !lines.is_empty() && table_width(&widths) > usize::from(width) {
             Self::Compressed
         } else {
-            Self::Full(FlatColumns { columns, widths })
+            Self::Full(FittedTreeColumns { columns, widths })
         }
     }
 
@@ -1936,7 +2036,10 @@ impl CellView {
         now: u64,
         account_column: AccountColumn,
     ) -> Self {
-        FlatColumns::fitted(entry, width, now, account_column).map_or(Self::Compressed, Self::Full)
+        match FittedTreeColumns::fitted(entry, width, now, account_column) {
+            TreeColumnFit::Fitted(columns) => Self::Full(columns),
+            TreeColumnFit::TooNarrow => Self::Compressed,
+        }
     }
     /// Compress when the tile has fewer rows than the full view needs.
     fn fitted(entry: &AgentEntry<'_>, area: Rect, now: u64, account_column: AccountColumn) -> Self {
@@ -1951,19 +2054,25 @@ impl CellView {
 
 /// Widths that hold every active full column's header and values whole.
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct FlatColumns {
+struct FittedTreeColumns {
     columns: Vec<TreeColumn>,
     widths:  Vec<u16>,
 }
 
-impl FlatColumns {
+/// A full column fit, or a request for the compressed presentation.
+enum TreeColumnFit {
+    Fitted(FittedTreeColumns),
+    TooNarrow,
+}
+
+impl FittedTreeColumns {
     /// Fit the full view without truncating any name.
     fn fitted(
         entry: &AgentEntry<'_>,
         width: u16,
         now: u64,
         account_column: AccountColumn,
-    ) -> Option<Self> {
+    ) -> TreeColumnFit {
         let heading_fits = match &*entry.sizing.borrow() {
             TreeSizing::Shared(metrics) => {
                 matches!(metrics.presentation, TreePresentation::Full)
@@ -1977,7 +2086,7 @@ impl FlatColumns {
             .all(|line| line.width() <= usize::from(width)),
         };
         if !heading_fits {
-            return None;
+            return TreeColumnFit::TooNarrow;
         }
         match CellView::tree_at_width(
             &entry.lines,
@@ -1988,8 +2097,8 @@ impl FlatColumns {
             SessionHeaderLead::OverBranch,
             &entry.sizing.borrow(),
         ) {
-            CellView::Full(fitted) => Some(fitted),
-            CellView::Compressed => None,
+            CellView::Full(fitted) => TreeColumnFit::Fitted(fitted),
+            CellView::Compressed => TreeColumnFit::TooNarrow,
         }
     }
 }
@@ -2298,7 +2407,16 @@ fn local_tree_metrics(
     if matches!(view, CellView::Compressed) {
         measurement.metrics.presentation = TreePresentation::Compressed;
     }
+    measurement.metrics.widths[TreeColumn::Age as usize] = measurement.metrics.widths
+        [TreeColumn::Age as usize]
+        .max(u16::try_from(measurement.metrics.ages.width()).unwrap_or(u16::MAX));
     for step in ColumnDrop::ORDER {
+        measurement.metrics.widths[TreeColumn::Role as usize] = measurement
+            .role_widths
+            .get(measurement.metrics.presentation);
+        measurement.metrics.widths[TreeColumn::Status as usize] = measurement
+            .status_widths
+            .get(measurement.metrics.presentation);
         measurement.metrics.drop_step(step, tree.width);
     }
     measurement.metrics.widths[TreeColumn::Role as usize] =
@@ -2332,27 +2450,39 @@ fn tree_header(
         .map(|column| metrics.widths[*column as usize])
         .collect();
     let gaps = u16::try_from(columns.len().saturating_sub(1)).unwrap_or(u16::MAX);
-    let minimum = widths
-        .iter()
-        .skip(1)
-        .map(|width| usize::from(*width))
-        .sum::<usize>()
-        + usize::from(metrics.session_header_width);
-    let spacing = TABLE_COLUMN_SPACING.min(
-        tree.width
-            .saturating_sub(u16::try_from(minimum).unwrap_or(u16::MAX))
-            / gaps.max(1),
-    );
+    let spacing = TABLE_COLUMN_SPACING;
     let fixed = widths
         .iter()
         .skip(1)
         .map(|width| usize::from(*width))
         .sum::<usize>()
         + usize::from(spacing) * usize::from(gaps);
-    widths[0] = widths[0].min(
-        tree.width
-            .saturating_sub(u16::try_from(fixed).unwrap_or(u16::MAX)),
-    );
+    let session_budget = tree
+        .width
+        .saturating_sub(u16::try_from(fixed).unwrap_or(u16::MAX));
+    widths[0] = widths[0].min(session_budget);
+    // Below the aligned core, the header can use the branch's cells before
+    // either word is cut. The row name gives up its rail in that same budget.
+    let lead = if session_budget < metrics.session_header_width() {
+        SessionHeaderLead::Flush
+    } else {
+        lead
+    };
+    if let Some(role) = columns
+        .iter()
+        .position(|column| *column == TreeColumn::Role)
+    {
+        // Session text gives way first. Then the role pays the remaining
+        // deficit, including the cells needed for the session's ellipsis.
+        widths[0] = widths[0].max(2);
+        let occupied = widths
+            .iter()
+            .map(|&width| usize::from(width))
+            .sum::<usize>()
+            + usize::from(spacing) * usize::from(gaps);
+        let deficit = occupied.saturating_sub(usize::from(tree.width));
+        widths[role] = widths[role].saturating_sub(u16::try_from(deficit).unwrap_or(u16::MAX));
+    }
     // Resolve the group's age slots before giving any remaining width to its
     // directory, or to its session column when the directory is absent.
     let ages = match sizing {
@@ -2370,22 +2500,19 @@ fn tree_header(
             .max(metrics.widths[TreeColumn::Age as usize]);
     }
     fill_tree_width(&columns, &mut widths, tree.width, spacing);
-    let rects = Layout::horizontal(widths.iter().copied().map(Constraint::Length))
-        .spacing(spacing)
-        .flex(Flex::Start)
-        .split(tree);
+    let mut x = tree.x;
+    let rects: Vec<_> = widths
+        .iter()
+        .map(|&width| {
+            let rect = Rect::new(x, tree.y, width, tree.height).intersection(tree);
+            x = x.saturating_add(width).saturating_add(spacing);
+            rect
+        })
+        .collect();
     let spans = if lines.is_empty() || tree.is_empty() {
         Vec::new()
     } else {
-        columns
-            .iter()
-            .zip(rects.iter())
-            .map(|(&column, rect)| HeaderSpan {
-                column,
-                columns: rect.x..rect.right(),
-                row: tree.y,
-            })
-            .collect()
+        sort::column_spans(&columns, &rects, tree.y)
     };
     TreeHeader {
         ages,
@@ -2442,6 +2569,67 @@ struct TreeDraw<'a> {
     footer_colors: &'a FooterColors,
 }
 
+/// One fitted tree field, preserving styles and never truncating a number or status.
+fn tree_cell_line(
+    line: &TreeLine<'_>,
+    column: TreeColumn,
+    width: u16,
+    ages: &AgeLayout,
+    frame: &TreeDraw<'_>,
+) -> Line<'static> {
+    let now = frame.now;
+    let footer_colors = frame.footer_colors;
+    let text = SessionRowInk::Text.style();
+    if column == TreeColumn::Session {
+        let lead = line.lead();
+        let lead = if width >= summary::cell_width(&lead).saturating_add(2) {
+            lead
+        } else {
+            String::new()
+        };
+        let remaining = width.saturating_sub(summary::cell_width(&lead));
+        Line::from(vec![
+            Span::styled(lead, text),
+            Span::styled(
+                summary::truncated(&line.name(), usize::from(remaining)),
+                line.name_style(),
+            ),
+        ])
+    } else if column == TreeColumn::Account {
+        match line.account() {
+            Account::Unrecorded => Line::from(Span::styled(MISSING_VALUE, text)),
+            Account::Home(home) => {
+                let value = line.cell_text(column, now, ages);
+                let (account, tier) = value.split_at(home.label().len());
+                Line::from(vec![
+                    Span::styled(
+                        account.to_owned(),
+                        footer_colors.account(home.label()).style(text),
+                    ),
+                    Span::styled(tier.to_owned(), Role::Codex.style()),
+                ])
+            },
+        }
+    } else {
+        let status = line.status(now);
+        let value = match column {
+            TreeColumn::Status => status.text,
+            TreeColumn::Role | TreeColumn::Branch | TreeColumn::Directory => {
+                summary::truncated(&line.cell_text(column, now, ages), usize::from(width))
+            },
+            _ => line.cell_text(column, now, ages),
+        };
+        Line::styled(
+            value,
+            match column {
+                TreeColumn::Status => status.role.style(),
+                TreeColumn::Role => line.footer_role(footer_colors).style(text),
+                _ => text,
+            },
+        )
+    }
+}
+
 fn draw_tree(
     buffer: &mut Buffer,
     area: Rect,
@@ -2450,11 +2638,7 @@ fn draw_tree(
     header: TreeHeader,
     frame: &TreeDraw<'_>,
 ) {
-    let TreeDraw {
-        now,
-        footer_colors,
-        offset,
-    } = *frame;
+    let offset = frame.offset;
     if area.is_empty() {
         return;
     }
@@ -2467,67 +2651,46 @@ fn draw_tree(
         spans,
     } = header;
     debug_assert!(spans.iter().all(|span| span.row == area.y));
-    let text = SessionRowInk::Text.style();
-    let rows = lines.iter().skip(offset).map(|line| {
-        let status = line.status(now);
-        Row::new(columns.iter().enumerate().map(|(index, &column)| {
-            if column == TreeColumn::Session {
-                let lead = line.lead();
-                let remaining = widths[index].saturating_sub(summary::cell_width(&lead));
-                let name = summary::truncated(&line.name(), usize::from(remaining));
-                let style = line.name_style();
-                Cell::from(Line::from(vec![
-                    Span::styled(lead, text),
-                    Span::styled(name, style),
-                ]))
-            } else if column == TreeColumn::Account {
-                match line.account() {
-                    Account::Unrecorded => Cell::from(Span::styled(MISSING_VALUE, text)),
-                    Account::Home(home) => {
-                        let value = line.cell_text(column, now, &ages);
-                        let (account, tier) = value.split_at(home.label().len());
-                        Cell::from(Line::from(vec![
-                            Span::styled(
-                                account.to_owned(),
-                                footer_colors.account(home.label()).style(text),
-                            ),
-                            Span::styled(tier.to_owned(), Role::Codex.style()),
-                        ]))
-                    },
-                }
-            } else {
-                Cell::from(
-                    Line::from(Span::styled(
-                        match column {
-                            TreeColumn::Status => status.text.clone(),
-                            _ => line.cell_text(column, now, &ages),
-                        },
-                        match column {
-                            TreeColumn::Status => status.role.style(),
-                            TreeColumn::Role => line.footer_role(footer_colors).style(text),
-                            _ => text,
-                        },
-                    ))
-                    .alignment(column.alignment()),
-                )
-            }
-        }))
-    });
-    Table::new(rows, widths.iter().copied().map(Constraint::Length))
-        .header(
-            Row::new(columns.iter().map(|&column| {
-                Cell::from(
-                    Line::from(Span::styled(
-                        column.sorted_header_text(sort, lead),
-                        Style::default().fg(label_color()),
-                    ))
-                    .alignment(column.alignment()),
-                )
-            }))
-            .height(TABLE_HEADER_HEIGHT),
+    let mut x = area.x;
+    for (index, &column) in columns.iter().enumerate() {
+        let width = widths[index];
+        let column_area = Rect::new(x, area.y, width, area.height).intersection(area);
+        x = x.saturating_add(width).saturating_add(spacing);
+        if column_area.is_empty() {
+            continue;
+        }
+        let heading =
+            summary::truncated(&column.sorted_header_text(sort, lead), usize::from(width));
+        Paragraph::new(
+            Line::styled(heading, Style::default().fg(label_color())).alignment(column.alignment()),
         )
-        .column_spacing(spacing)
-        .render(area, buffer);
+        .render(
+            Rect {
+                height: TABLE_HEADER_HEIGHT.min(column_area.height),
+                ..column_area
+            },
+            buffer,
+        );
+        for (row, line) in lines
+            .iter()
+            .skip(offset)
+            .take(usize::from(area.height.saturating_sub(TABLE_HEADER_HEIGHT)))
+            .enumerate()
+        {
+            let value = tree_cell_line(line, column, width, &ages, frame);
+            Paragraph::new(value.alignment(column.alignment())).render(
+                Rect::new(
+                    column_area.x,
+                    area.y
+                        .saturating_add(TABLE_HEADER_HEIGHT)
+                        .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+                    column_area.width,
+                    1,
+                ),
+                buffer,
+            );
+        }
+    }
 }
 /// The decoration rows shared by slice measurement and painting.
 enum TreeHeadingRow {
@@ -2742,18 +2905,7 @@ fn header_indented(area: Rect) -> Rect {
 /// cuts a name: whole while they fit, else ending in its mark, each
 /// character kept in the style of the span it came from.
 fn cut_line(spans: Vec<Span<'static>>, width: u16) -> Line<'static> {
-    let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
-    let cut = summary::truncated(&text, usize::from(width));
-    let mut kept = cut.chars();
-    Line::from(
-        spans
-            .into_iter()
-            .filter_map(|span| {
-                let content: String = kept.by_ref().take(span.content.chars().count()).collect();
-                (!content.is_empty()).then(|| Span::styled(content, span.style))
-            })
-            .collect::<Vec<_>>(),
-    )
+    summary::truncated_line(Line::from(spans), usize::from(width))
 }
 
 /// `left` seconds on a timer, as `m:ss` under an hour and `h:mm:ss`
@@ -3716,8 +3868,8 @@ mod tests {
 
     /// A narrow cell, where its header's line would be cut, draws its
     /// compressed view even given every row its full view takes at a
-    /// wide width. It keeps the role, status and age columns and omits
-    /// the branch and directory columns.
+    /// wide width. It keeps whole role and status words, drops age when its
+    /// shared unit slots do not fit, and restores age as soon as they fit.
     #[test]
     fn a_narrow_cell_compresses_however_many_rows_it_has() {
         let state = boss_group();
@@ -3732,7 +3884,23 @@ mod tests {
         let rendered = lines(&buffer);
         assert!(find(&buffer, "directory").is_none());
         assert!(!rendered[0].contains("pid"));
-        assert!(rendered[0].contains("age"));
+        // The 36-cell table needs 38 cells for session (7), role (7),
+        // thinking (8), shared age slots (10) and three two-cell gaps.
+        assert!(!rendered[0].contains("age"), "{rendered:?}");
+        assert!(rendered[0].contains("session"), "{rendered:?}");
+        assert!(rendered[0].contains("role"), "{rendered:?}");
+        assert!(rendered[0].contains("status"), "{rendered:?}");
+        assert!(
+            rendered.iter().any(|line| line.contains("thinking")),
+            "{rendered:?}"
+        );
+        let restored = lines(&drawn_into(
+            boss,
+            &cells,
+            NARROW + 2,
+            usize::from(buffer.area.height),
+        ));
+        assert!(restored[0].contains("age"), "{restored:?}");
         let count = 1 + boss.lines.len();
         assert!(rendered[count..].iter().all(String::is_empty));
         assert!(rendered[..count].iter().all(|line| !line.is_empty()));
