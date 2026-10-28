@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::ops::Range;
 
 use super::identifier_character;
@@ -19,25 +20,30 @@ struct LexicalRegion {
 }
 
 /// The state of a forward lex of one source file.
+///
+/// Only an active comment or literal has a starting offset; code has no placeholder start.
+/// A block comment has at least one open delimiter until its final level closes.
 #[derive(Clone, Copy)]
 enum RustLexicalState {
     Code,
-    NormalString,
-    RawString { hashes: usize },
-    CharLiteral,
-    LineComment,
-    BlockComment { depth: usize },
+    NormalString { start: usize },
+    RawString { start: usize, hashes: usize },
+    CharLiteral { start: usize },
+    LineComment { start: usize },
+    BlockComment { start: usize, depth: NonZeroUsize },
 }
 
 impl RustLexicalState {
-    /// The region kind this state accumulates, or `None` while lexing code.
-    const fn region_kind(self) -> Option<LexicalRegionKind> {
+    /// The active region's start and kind; code has no region to record.
+    const fn region(self) -> Option<(usize, LexicalRegionKind)> {
         match self {
             Self::Code => None,
-            Self::LineComment | Self::BlockComment { .. } => Some(LexicalRegionKind::Comment),
-            Self::NormalString | Self::RawString { .. } | Self::CharLiteral => {
-                Some(LexicalRegionKind::Literal)
+            Self::LineComment { start } | Self::BlockComment { start, .. } => {
+                Some((start, LexicalRegionKind::Comment))
             },
+            Self::NormalString { start }
+            | Self::RawString { start, .. }
+            | Self::CharLiteral { start } => Some((start, LexicalRegionKind::Literal)),
         }
     }
 }
@@ -92,29 +98,33 @@ impl RustCodeOpening {
 
 impl RustCodeOpening {
     const fn advance(self, offset: &mut usize) -> RustLexicalState {
+        let start = *offset;
         match self {
             Self::LineComment => {
                 *offset += 2;
-                RustLexicalState::LineComment
+                RustLexicalState::LineComment { start }
             },
             Self::BlockComment => {
                 *offset += 2;
-                RustLexicalState::BlockComment { depth: 1 }
+                RustLexicalState::BlockComment {
+                    start,
+                    depth: NonZeroUsize::MIN,
+                }
             },
             Self::RawString {
                 hashes,
                 content_start,
             } => {
                 *offset = content_start;
-                RustLexicalState::RawString { hashes }
+                RustLexicalState::RawString { start, hashes }
             },
             Self::NormalString => {
                 *offset += 1;
-                RustLexicalState::NormalString
+                RustLexicalState::NormalString { start }
             },
             Self::CharLiteral => {
                 *offset += 1;
-                RustLexicalState::CharLiteral
+                RustLexicalState::CharLiteral { start }
             },
             Self::CodeCharacter { utf8_width } => {
                 *offset += utf8_width;
@@ -166,35 +176,35 @@ enum ApostropheRole {
 /// Rust cannot be lexed backward: a `//` inside a string literal is spelled the
 /// same as a comment opener, so whether a byte is trivia is only decidable by a
 /// scan that starts at byte zero. Scanning once per file and keeping the
-/// non-code spans lets [`Self::trivia_start_before`] answer from a binary
+/// non-code spans lets [`SourceEndpoint::trivia_start_before`] answer from a binary
 /// search plus a walk over the trivia run itself, instead of re-lexing the file
 /// from the front for every offset a caller asks about.
+/// The original source is owned with the index, so callers cannot supply different text.
 pub(crate) struct LexicalRegions {
+    source:  String,
     /// Sorted by start offset, disjoint, and never adjacent — two comments with
     /// nothing but whitespace between them stay two regions, but a region never
     /// touches the next one, so at most one can contain a given offset.
     regions: Vec<LexicalRegion>,
 }
 
-impl From<&str> for LexicalRegions {
-    fn from(source: &str) -> Self {
+impl From<String> for LexicalRegions {
+    fn from(source: String) -> Self {
         let bytes = source.as_bytes();
         let end = source.len();
         let mut regions = Vec::new();
         let mut state = RustLexicalState::Code;
         let mut offset = 0;
-        let mut region_start = 0;
         while offset < end {
             let previous = state;
             state = match previous {
                 RustLexicalState::Code => {
-                    region_start = offset;
-                    RustCodeOpening::at(source, offset, end).advance(&mut offset)
+                    RustCodeOpening::at(&source, offset, end).advance(&mut offset)
                 },
-                RustLexicalState::NormalString => match bytes.get(offset) {
+                RustLexicalState::NormalString { start } => match bytes.get(offset) {
                     Some(b'\\') => {
                         offset = (offset + 2).min(end);
-                        RustLexicalState::NormalString
+                        RustLexicalState::NormalString { start }
                     },
                     Some(b'"') => {
                         offset += 1;
@@ -202,23 +212,23 @@ impl From<&str> for LexicalRegions {
                     },
                     Some(_) => {
                         offset += 1;
-                        RustLexicalState::NormalString
+                        RustLexicalState::NormalString { start }
                     },
-                    None => RustLexicalState::NormalString,
+                    None => RustLexicalState::NormalString { start },
                 },
-                RustLexicalState::RawString { hashes } => {
+                RustLexicalState::RawString { start, hashes } => {
                     if raw_string_closes(bytes, offset, end, hashes) {
                         offset += hashes + 1;
                         RustLexicalState::Code
                     } else {
                         offset += 1;
-                        RustLexicalState::RawString { hashes }
+                        RustLexicalState::RawString { start, hashes }
                     }
                 },
-                RustLexicalState::CharLiteral => match bytes.get(offset) {
+                RustLexicalState::CharLiteral { start } => match bytes.get(offset) {
                     Some(b'\\') => {
                         offset = (offset + 2).min(end);
-                        RustLexicalState::CharLiteral
+                        RustLexicalState::CharLiteral { start }
                     },
                     Some(b'\'') => {
                         offset += 1;
@@ -226,92 +236,129 @@ impl From<&str> for LexicalRegions {
                     },
                     Some(_) => {
                         offset += 1;
-                        RustLexicalState::CharLiteral
+                        RustLexicalState::CharLiteral { start }
                     },
-                    None => RustLexicalState::CharLiteral,
+                    None => RustLexicalState::CharLiteral { start },
                 },
-                RustLexicalState::LineComment => {
+                RustLexicalState::LineComment { start } => {
                     if bytes.get(offset) == Some(&b'\n') {
                         offset += 1;
                         RustLexicalState::Code
                     } else {
                         offset += 1;
-                        RustLexicalState::LineComment
+                        RustLexicalState::LineComment { start }
                     }
                 },
-                RustLexicalState::BlockComment { depth } => {
+                RustLexicalState::BlockComment { start, depth } => {
                     match BlockCommentToken::from(&bytes[offset..]) {
                         BlockCommentToken::Open => {
                             offset += 2;
-                            RustLexicalState::BlockComment { depth: depth + 1 }
+                            RustLexicalState::BlockComment {
+                                start,
+                                depth: depth.saturating_add(1),
+                            }
                         },
                         BlockCommentToken::Close => {
                             offset += 2;
-                            if depth == 1 {
-                                RustLexicalState::Code
-                            } else {
-                                RustLexicalState::BlockComment { depth: depth - 1 }
-                            }
+                            NonZeroUsize::new(depth.get() - 1)
+                                .map_or(RustLexicalState::Code, |depth| {
+                                    RustLexicalState::BlockComment { start, depth }
+                                })
                         },
                         BlockCommentToken::Content => {
                             offset += 1;
-                            RustLexicalState::BlockComment { depth }
+                            RustLexicalState::BlockComment { start, depth }
                         },
                     }
                 },
             };
-            if let Some(kind) = previous.region_kind()
+            if let Some((start, kind)) = previous.region()
                 && matches!(state, RustLexicalState::Code)
             {
                 regions.push(LexicalRegion {
-                    bytes: region_start..offset,
+                    bytes: start..offset,
                     kind,
                 });
             }
         }
         // `regions.push` records an unterminated comment or literal through the end of the file.
-        if let Some(kind) = state.region_kind() {
+        if let Some((start, kind)) = state.region() {
             regions.push(LexicalRegion {
-                bytes: region_start..end,
+                bytes: start..end,
                 kind,
             });
         }
-        Self { regions }
+        Self { source, regions }
     }
 }
 
-impl LexicalRegions {
-    /// Where the run of whitespace and comments immediately before `end`
-    /// begins, or `end` when the byte before `end` is not trivia.
-    ///
-    /// `source` must be the text these regions were scanned from. `end` falling
-    /// inside a string or character literal answers `end`, because a literal's
-    /// bytes are content rather than trivia however they are spelled.
-    pub(crate) fn trivia_start_before(&self, source: &str, end: usize) -> usize {
-        let mut offset = end;
+/// A UTF-8 boundary in the exact source whose comments and literals were indexed.
+///
+/// Raw endpoints may exceed the source or split a character. Pairing an index with
+/// different text can also misclassify trivia. Only the owning index can construct
+/// an endpoint; backward operations retain that owner and preserve valid boundaries.
+#[derive(Clone, Copy)]
+pub(crate) struct SourceEndpoint<'source> {
+    owner:  &'source LexicalRegions,
+    offset: usize,
+}
+
+impl<'source> SourceEndpoint<'source> {
+    pub(crate) const fn offset(self) -> usize { self.offset }
+
+    pub(crate) fn prefix(self) -> &'source str { &self.owner.source[..self.offset] }
+
+    pub(crate) fn strip_suffix(self, suffix: &str) -> Option<Self> {
+        self.prefix().strip_suffix(suffix).map(|prefix| Self {
+            offset: prefix.len(),
+            ..self
+        })
+    }
+
+    pub(crate) fn trim_end_matches(self, predicate: impl FnMut(char) -> bool) -> Self {
+        Self {
+            offset: self.prefix().trim_end_matches(predicate).len(),
+            ..self
+        }
+    }
+
+    /// Where whitespace and comments immediately before this endpoint begin.
+    /// An endpoint inside a literal stays put: those bytes are content, not trivia.
+    pub(crate) fn trivia_start_before(self) -> Self {
+        let mut offset = self.offset;
         loop {
-            if let Some(region) = self.region_ending_at_or_covering(offset) {
+            if let Some(region) = self.owner.region_ending_at_or_covering(offset) {
                 match region.kind {
-                    // `LexicalRegionKind::Comment` is entirely trivia, so keep walking from
-                    // `region.bytes.start` — whitespace may precede its opener in the same run.
+                    // Comments are entirely trivia; whitespace may precede the opener.
                     LexicalRegionKind::Comment => {
                         offset = region.bytes.start;
                         continue;
                     },
-                    LexicalRegionKind::Literal => return offset,
+                    LexicalRegionKind::Literal => return Self { offset, ..self },
                 }
             }
-            let Some(character) = source
-                .get(..offset)
-                .and_then(|before| before.chars().next_back())
-            else {
-                return offset;
+            let Some(character) = self.owner.source[..offset].chars().next_back() else {
+                return Self { offset, ..self };
             };
             if !character.is_whitespace() {
-                return offset;
+                return Self { offset, ..self };
             }
             offset -= character.len_utf8();
         }
+    }
+}
+
+impl LexicalRegions {
+    pub(crate) fn source(&self) -> &str { &self.source }
+
+    /// Reject out-of-source offsets and bytes inside a UTF-8 character once, at entry.
+    pub(crate) fn endpoint(&self, offset: usize) -> Option<SourceEndpoint<'_>> {
+        self.source
+            .is_char_boundary(offset)
+            .then_some(SourceEndpoint {
+                owner: self,
+                offset,
+            })
     }
 
     /// The region containing `offset`, or the one whose last byte ends there.
@@ -396,7 +443,109 @@ mod tests {
     use super::LexicalRegions;
 
     fn trivia_start(source: &str, end: usize) -> usize {
-        LexicalRegions::from(source).trivia_start_before(source, end)
+        LexicalRegions::from(source.to_owned())
+            .endpoint(end)
+            .unwrap()
+            .trivia_start_before()
+            .offset()
+    }
+
+    #[test]
+    fn endpoints_reject_out_of_source_and_split_character_offsets() {
+        let regions = LexicalRegions::from("é /* comment */  ".to_owned());
+        assert!(regions.endpoint(1).is_none());
+        assert!(regions.endpoint(regions.source().len() + 1).is_none());
+        assert!(regions.endpoint(usize::MAX).is_none());
+        assert_eq!(
+            regions.endpoint(0).unwrap().trivia_start_before().offset(),
+            0
+        );
+        assert_eq!(
+            regions
+                .endpoint(regions.source().len())
+                .unwrap()
+                .trivia_start_before()
+                .prefix(),
+            "é",
+        );
+        let empty = LexicalRegions::from(String::new());
+        assert_eq!(empty.endpoint(0).unwrap().trivia_start_before().offset(), 0);
+        assert!(empty.endpoint(1).is_none());
+    }
+
+    #[test]
+    fn endpoints_keep_their_owner_and_the_original_source_allocation() {
+        let source = "é /*tail*/".to_owned();
+        let allocation = source.as_ptr();
+        let comments = LexicalRegions::from(source);
+        let literal = LexicalRegions::from("é \"tail  \"".to_owned());
+        assert_eq!(comments.source().as_ptr(), allocation);
+        assert_eq!(comments.source().len(), literal.source().len());
+        let comment_end = comments.endpoint(comments.source().len()).unwrap();
+        let literal_end = literal.endpoint(literal.source().len()).unwrap();
+        assert_eq!(comment_end.trivia_start_before().prefix(), "é");
+        assert_eq!(literal_end.trivia_start_before().prefix(), literal.source());
+        assert!(std::ptr::eq(
+            comment_end.trivia_start_before().owner,
+            &raw const comments
+        ));
+        assert!(std::ptr::eq(
+            literal_end.trivia_start_before().owner,
+            &raw const literal
+        ));
+    }
+
+    #[test]
+    fn each_region_keeps_its_own_start_across_code_and_unterminated_content() {
+        let source = concat!(
+            "head \"one\" tail /* outer /* inner */ end */ next // line\n",
+            " end r#\"open",
+        );
+        let regions = LexicalRegions::from(source.to_owned());
+        let expected = [
+            "\"one\"",
+            "/* outer /* inner */ end */",
+            "// line\n",
+            "r#\"open",
+        ]
+        .map(|text| {
+            let start = source.find(text).unwrap();
+            start..start + text.len()
+        });
+        assert_eq!(
+            regions
+                .regions
+                .iter()
+                .map(|region| region.bytes.clone())
+                .collect::<Vec<_>>(),
+            expected,
+        );
+        for (region, expected) in regions.regions.iter().zip(expected) {
+            assert_eq!(&source[region.bytes.clone()], &source[expected]);
+        }
+    }
+
+    #[test]
+    fn closing_nested_comments_keeps_the_outer_region_live_until_its_last_level() {
+        for comment in [
+            "/* closed */",
+            "/* outer /* inner */ end */",
+            "/* outer /* inner */ unfinished",
+            "/* outer /* middle /* inner */ end */ final */",
+        ] {
+            let source = format!("é {comment}");
+            let regions = LexicalRegions::from(source.clone());
+            assert_eq!(regions.regions.len(), 1, "{comment}");
+            assert_eq!(regions.regions[0].bytes, "é ".len()..source.len());
+            assert_eq!(
+                regions
+                    .endpoint(source.len())
+                    .unwrap()
+                    .trivia_start_before()
+                    .offset(),
+                "é".len()
+            );
+        }
     }
 
     #[test]
@@ -477,7 +626,7 @@ mod tests {
             ("//tail", Some((0, "comment"))),
             ("/*tail", Some((0, "comment"))),
         ] {
-            let regions = LexicalRegions::from(source)
+            let regions = LexicalRegions::from(source.to_owned())
                 .regions
                 .into_iter()
                 .map(|region| {

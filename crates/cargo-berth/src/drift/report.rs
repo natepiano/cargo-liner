@@ -23,6 +23,24 @@ use crate::ledger::ReservationScopeSet;
 use crate::reservation::ReservationConflict;
 use crate::verb::claim::ReservationAcquisition;
 
+/// A completed comparison and a deferred check carry different facts.
+///
+/// Completed reports retain their existing wire shape. A not-checked result cannot carry
+/// unchanged reservations, scope authorization, or an algorithm that never ran.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(untagged)]
+pub(crate) enum DriftOutcome {
+    Checked(Box<DriftReport>),
+    NotChecked { not_checked: DriftNotCheckedReason },
+}
+
+/// Why drift could not compare the worktree this invocation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DriftNotCheckedReason {
+    GitOperationInProgress,
+}
+
 /// The comparison algorithm that actually produced one report.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -465,8 +483,10 @@ mod tests {
                 refused_report(&ambiguous_attribution(), &unreadable_phase_start()),
             ),
         ] {
-            let envelope = serde_json::to_value(OutputEnvelope::drift(report))
-                .expect("a drift envelope should serialize");
+            let envelope = serde_json::to_value(OutputEnvelope::drift(
+                crate::drift::DriftOutcome::Checked(Box::new(report)),
+            ))
+            .expect("a drift envelope should serialize");
             assert_eq!(
                 envelope["status"], "scope_acquisition_refused",
                 "the refusal must outrank {condition}: {envelope}"
@@ -482,8 +502,10 @@ mod tests {
     #[test]
     fn the_outranked_conditions_still_decide_a_permitted_run() {
         let attribution_only = permitted_report(&ambiguous_attribution(), &json!([]));
-        let envelope = serde_json::to_value(OutputEnvelope::drift(attribution_only))
-            .expect("a drift envelope should serialize");
+        let envelope = serde_json::to_value(OutputEnvelope::drift(
+            crate::drift::DriftOutcome::Checked(Box::new(attribution_only)),
+        ))
+        .expect("a drift envelope should serialize");
         assert_eq!(
             envelope["status"], "drift_attribution_required",
             "{envelope}"
@@ -491,8 +513,10 @@ mod tests {
 
         let phase_start_only =
             permitted_report(&json!({"status": "not_needed"}), &unreadable_phase_start());
-        let envelope = serde_json::to_value(OutputEnvelope::drift(phase_start_only))
-            .expect("a drift envelope should serialize");
+        let envelope = serde_json::to_value(OutputEnvelope::drift(
+            crate::drift::DriftOutcome::Checked(Box::new(phase_start_only)),
+        ))
+        .expect("a drift envelope should serialize");
         assert_eq!(envelope["status"], "object_unknown", "{envelope}");
     }
 

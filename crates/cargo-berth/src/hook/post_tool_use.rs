@@ -1,6 +1,7 @@
 //! Raw `PostToolUse` payload parsing and post-Bash drift reporting.
 //!
-//! A Bash call has already completed by the time this event fires, so every
+//! A foreground Bash call has already completed by the time this event fires;
+//! a background launch has no completed write to observe. Every
 //! answer is notification or stop feedback rather than a permission gate. The
 //! engine performs the drift comparison, reads the live incursion board when the
 //! drift answer depends on it, and publishes one response object; the harness is
@@ -52,10 +53,18 @@ const UNAVAILABLE_WORKING_DIRECTORY_DETAIL: &str =
 /// as a raw value and an unusable one leaves the main agent as the reader.
 #[derive(Deserialize)]
 struct PostToolUsePayloadBoundary {
-    tool_name:  Option<String>,
-    cwd:        Option<String>,
-    session_id: Option<String>,
-    agent_id:   Option<Value>,
+    tool_name:     Option<String>,
+    cwd:           Option<String>,
+    session_id:    Option<String>,
+    agent_id:      Option<Value>,
+    tool_input:    Option<Value>,
+    tool_response: Option<Value>,
+}
+
+/// Only a foreground completion supplies a Bash call whose writes may be observed.
+enum BashLaunch {
+    Foreground(ObservedBashCall),
+    Background,
 }
 
 /// Whether the completed tool call this payload reports is one drift can observe.
@@ -110,7 +119,7 @@ enum LiveIncursionState {
     Unverifiable,
 }
 
-impl ObservedBashCall {
+impl BashLaunch {
     fn from_value(value: &Value) -> Result<Self, PostToolUseObservationError> {
         let boundary = serde_json::from_value::<PostToolUsePayloadBoundary>(value.clone())
             .map_err(|_| PostToolUseObservationError::InvalidPayload)?;
@@ -124,15 +133,34 @@ impl ObservedBashCall {
         else {
             return Err(PostToolUseObservationError::InvalidPayload);
         };
-        Ok(Self {
+        // Claude Code documents `run_in_background` in the Bash input. Its structured
+        // Bash output also carries `backgroundTaskId`, including automatic backgrounding.
+        if boundary
+            .tool_input
+            .as_ref()
+            .and_then(|input| input.get("run_in_background"))
+            .and_then(Value::as_bool)
+            == Some(true)
+            || boundary
+                .tool_response
+                .as_ref()
+                .and_then(|response| response.get("backgroundTaskId"))
+                .and_then(Value::as_str)
+                .is_some_and(|task_id| !task_id.is_empty())
+        {
+            return Ok(Self::Background);
+        }
+        Ok(Self::Foreground(ObservedBashCall {
             reader:                      HookReader::for_payload(
                 harness_session_id,
                 boundary.agent_id.as_ref().and_then(Value::as_str),
             ),
             working_directory_selection: HookWorkingDirectorySelection::from_boundary(boundary.cwd),
-        })
+        }))
     }
+}
 
+impl ObservedBashCall {
     /// Bind this process to the repository, harness session and occasion of the Bash call.
     ///
     /// This verb is the only route that reaches a completed Bash call, and it binds all
@@ -147,6 +175,18 @@ impl ObservedBashCall {
             .select_for_current_process();
         EngineAnswerOccasion::CompletedBashCall.own_this_process();
         Ok(self.reader)
+    }
+
+    /// A completed foreground call delegates observation and Git settlement to drift.
+    fn answer(self) -> Result<PostToolUseAnswer, PostToolUseObservationError> {
+        let reader = self.enter_current_process()?;
+        let request = DriftRequest {
+            comparison:  DriftComparisonChoice::CheapDelta,
+            reservation: DriftReservationSelection::EveryActiveForPostCommit {
+                widening: PostCommitWideningSelection::SoleRunCandidate,
+            },
+        };
+        Ok(answer_for(&drift::execute(request, &drift_recovery())).told_once_to(&reader))
     }
 }
 
@@ -227,26 +267,25 @@ impl PostToolUseAnswer {
 /// response object alone. A drift answer states each line once to each reader; a payload this
 /// verb cannot read has no reader to record against, so its refusal is always stated.
 pub(crate) fn execute() -> ExitCode {
-    let answer = match read_observed_bash_call().and_then(ObservedBashCall::enter_current_process) {
-        Ok(reader) => answer_for(&drift::execute(
-            post_tool_use_drift_request(),
-            &drift_recovery(),
-        ))
-        .told_once_to(&reader),
+    let answer = match read_observed_bash_call().and_then(|launch| match launch {
+        BashLaunch::Foreground(call) => call.answer(),
+        BashLaunch::Background => Ok(PostToolUseAnswer::Silent),
+    }) {
+        Ok(answer) => answer,
         Err(error) => error.answer(),
     };
     answer.publish();
     ExitCode::SUCCESS
 }
 
-fn read_observed_bash_call() -> Result<ObservedBashCall, PostToolUseObservationError> {
+fn read_observed_bash_call() -> Result<BashLaunch, PostToolUseObservationError> {
     let mut input = String::new();
     std::io::stdin()
         .read_to_string(&mut input)
         .map_err(|_| PostToolUseObservationError::InvalidPayload)?;
     let value = serde_json::from_str::<Value>(&input)
         .map_err(|_| PostToolUseObservationError::InvalidPayload)?;
-    ObservedBashCall::from_value(&value)
+    BashLaunch::from_value(&value)
 }
 
 /// Decide what the response carries, reading the live board only when drift needs it.
@@ -282,16 +321,6 @@ fn live_incursion_state() -> LiveIncursionState {
     }
 }
 
-/// The drift comparison this event performs for every reservation the worktree holds.
-const fn post_tool_use_drift_request() -> DriftRequest {
-    DriftRequest {
-        comparison:  DriftComparisonChoice::CheapDelta,
-        reservation: DriftReservationSelection::EveryActiveForPostCommit {
-            widening: PostCommitWideningSelection::SoleRunCandidate,
-        },
-    }
-}
-
 /// The command a coordination-identity rejection tells the user to rerun.
 ///
 /// This process reads its payload from standard input, so its own argv is not a command
@@ -307,6 +336,7 @@ fn drift_recovery() -> RecoveryCommandLine {
 
 #[cfg(test)]
 mod tests {
+    use super::BashLaunch;
     use super::ObservedBashCall;
     use super::PostToolUseObservationError;
     use crate::hook::process_binding::HookWorkingDirectorySelection;
@@ -323,11 +353,11 @@ mod tests {
 
         assert!(matches!(
             (
-                ObservedBashCall::from_value(&accepted_payload),
+                BashLaunch::from_value(&accepted_payload),
                 expected_harness_session_id,
             ),
             (
-                Ok(ObservedBashCall { reader, .. }),
+                Ok(BashLaunch::Foreground(ObservedBashCall { reader, .. })),
                 Ok(expected_harness_session_id),
             ) if *reader.harness_session_id() == expected_harness_session_id
         ));
@@ -339,7 +369,7 @@ mod tests {
         });
 
         assert!(matches!(
-            ObservedBashCall::from_value(&rejected_payload),
+            BashLaunch::from_value(&rejected_payload),
             Err(PostToolUseObservationError::InvalidPayload)
         ));
     }
@@ -352,7 +382,7 @@ mod tests {
         });
 
         assert!(matches!(
-            ObservedBashCall::from_value(&payload),
+            BashLaunch::from_value(&payload),
             Err(PostToolUseObservationError::InvalidPayload)
         ));
     }
@@ -365,7 +395,7 @@ mod tests {
         });
 
         assert!(matches!(
-            ObservedBashCall::from_value(&payload),
+            BashLaunch::from_value(&payload),
             Err(PostToolUseObservationError::InvalidPayload)
         ));
     }
@@ -378,7 +408,7 @@ mod tests {
         });
 
         assert!(matches!(
-            ObservedBashCall::from_value(&payload),
+            BashLaunch::from_value(&payload),
             Err(PostToolUseObservationError::InvalidPayload)
         ));
     }
@@ -392,11 +422,11 @@ mod tests {
         });
 
         assert!(matches!(
-            ObservedBashCall::from_value(&payload),
-            Ok(ObservedBashCall {
+            BashLaunch::from_value(&payload),
+            Ok(BashLaunch::Foreground(ObservedBashCall {
                 working_directory_selection: HookWorkingDirectorySelection::CurrentProcess,
                 ..
-            })
+            }))
         ));
     }
 
@@ -409,7 +439,7 @@ mod tests {
         });
 
         assert!(matches!(
-            ObservedBashCall::from_value(&payload),
+            BashLaunch::from_value(&payload),
             Err(PostToolUseObservationError::InvalidPayload)
         ));
     }

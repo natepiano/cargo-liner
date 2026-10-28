@@ -192,6 +192,8 @@ pub(super) const GIT_FIRST_PARENT_ANCESTOR_INFIX: &str = "~";
 pub(super) const GIT_HEAD_REVISION: &str = "HEAD";
 /// Git's configured hook directory selector.
 pub(super) const GIT_HOOKS_PATH: &str = "hooks";
+/// Git's per-worktree lock while the index and checked-out paths are being replaced.
+pub(super) const GIT_INDEX_LOCK_PATH: &str = "index.lock";
 /// The prefix for local branch refs.
 pub(super) const GIT_LOCAL_BRANCH_REF_PREFIX: &str = "refs/heads/";
 /// Git's per-worktree marker for a merge awaiting completion.

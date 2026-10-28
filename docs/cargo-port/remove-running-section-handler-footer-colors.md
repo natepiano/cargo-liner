@@ -277,13 +277,13 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 24 motion: tui_pane `TileCells::prepare_moving_frame(destination, motion_bounds)` (`tiles/draw.rs`; the default calls `prepare_frame`) and `TileGrid::motion_preparation_allocations` (`tiles/grid.rs`) give destination positions and widths with the taller of the source and destination heights; cargo-handler `Cells::prepare_moving_frame` (`crates/cargo-handler/src/render/mod.rs` ≈461) passes those motion bounds to `prepare_frame` to measure role widths, and cargo-tile keeps the default. Keep these preparation bounds for measurement; record hit regions and header spans from the pieces actually painted, not from preparation allocations. Test: a shrinking tile clicked during motion selects the header drawn under the pointer, and the existing moving-role tests (`render/moving_role_tests.rs`) stay green.
 - Phase 4's narrow headings fit through `HeadingLocation::{Shown,Cut,Omitted}` (`agent_cell.rs`); test clicks against the fitted heading actually drawn, not the full one.
 - After phase 5 the summary's demand changes with each accounts reading.
-- Phase 2's cell-local click hook (`cell_content_at`, `tiles/host.rs`) resolves content from current slots and the destination layout through a crate-private settled-geometry helper in `tiles/grid.rs`. This phase moves it to the last-drawn record too, so the header hit-test matches what is on screen.
+- Phase 28 (a35577ad) supplies the painted record: `PaintedCells::{Undrawn, Drawn}`, a stable `CellIdentity` per painted piece, `CellHit::{Missed, Retired, Current}` (`tiles/grid.rs` ≈3062 `record_painted_cells`, ≈3076 `cell_hit`, reverse paint order) and `content_click` (`tiles/host.rs` ≈176), which maps a painted frame back to source coordinates for presses and wheel steps. `handle_tile_click` absorbs `TilePick::RetiredCell` before focus or row selection. `cell_content_at` is gone. Extend this record; do not create another painted-geometry record.
 - Phase 2's header click in cargo-handler (`render::cell_clicked`) rebuilds header spans from the current census and clock, so a changed name, activity, age width or Full/Compressed choice can move columns after the frame was drawn. The drawn header mapping must be kept with the frame.
 - Phase 2's attract-screen exclusion (clicks ignored while the attract screen replaces the grid) and its regression stay as they are.
 - Phase 3's tile identity is `tiles::TileKey::{Agent(AgentCell), Unassigned { machine }}` (sorts in `App::tree_sorts: HashMap<TileKey, TreeSort>`, pruned by `agent_cell::tile_keys`), and header layout carries `agent_cell::SessionHeaderLead::{OverBranch, Flush}` (the pool's session header sits over flush names). Drawn header spans are kept per `TileKey`, with the lead they were drawn with (`render/mod.rs` ≈443 `Cells::tile`, ≈448 `Cells::header_spans`; `agent_cell.rs` ≈2401 `header_spans`, ≈2164 `unassigned_header_spans`).
 - Accounts-header click: phase 32 already keeps the painted summary. `App` holds `PaintedSummary::{NotDrawn, Drawn}`, and `render::cell_clicked` reads the accounts header spans from it (`render/mod.rs` ≈260), then calls `AccountsSort::select` (`sort.rs`). This phase extends that record with the painted clipping, the scrolled and pinned line mapping and the drawn identities; it does not rebuild headers from the current reading. Keep the census-change and the several-inputs-before-redraw tests.
 - Phases 16 and 20 add row and word clicks that can also hit changed content between draw and click: the frame record covers drawn row identities, clipped scrolled rows, wheel targets and word cells, tile titles and retired tiles included. Phase 20 resolves one press once, into both the row action and the painted word, and forwards tile title presses from tui_pane; keep both.
-- `TileGrid::cell_at` (`tiles/grid.rs` ≈2917) and `TileGrid::cell_content_at` (≈3182) still answer from settled geometry (`resolved_grid` over `drawn_held`). Phase 16 did not change this, so motion clicks are still wrong.
+- Public `TileGrid::cell_at` still answers from settled geometry, and `cell_hit` calls it on the before-first-paint path.
 - cargo-handler `Cells::prepare_moving_frame` (`render/mod.rs` ≈461) supplies the motion measurement bounds to `Cells::prepare_frame` (≈469). `prepare_frame` resolves the selections, runs `agent_cell::shared_tree_metrics`, and only then installs each selection area (`SurfaceSelection::set_area`). Keep that order. Those areas come from preparation allocations, so they are not the final clipped paint record.
 - `draw_panes_at` (`render/mod.rs` ≈138) follows a moved selection: after the draw it finds the destination placement, takes the centre of its rect and calls `app.tiles.cell_at` (≈189) to get the index for `focus_cell`. When `cell_at` answers from painted geometry, that centre can name another moving piece.
 - The pointer payload `tui_pane::CellClick<Id>` (`tiles/host.rs` ≈35, exported in `tiles/mod.rs` ≈45 and `lib.rs`) carries presses (`TileGridHost::cell_clicked`) and wheel steps (`TileGridHost::cell_scrolled`, `handle_tile_scroll`). Its users: `crates/cargo-handler/src/app.rs`, `render/mod.rs`, `render/accounts_grid_tests.rs`, `render/role_title_tests.rs`, `summary/accounts_header_sort_tests.rs`, `summary/unassigned_summary_tests.rs`, and `crates/tui_pane/src/tiles/host_tests.rs`.
@@ -294,10 +294,10 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 17: drawing prepares `TreeMetrics` across all tiles in one screen column and saves them in `App.tree_layouts` (`render/mod.rs` ≈177); since phase 23 each drawn group shares one age layout (`summary/age.rs` `AgeLayout`). A click must map through the metrics that were drawn, not ones rebuilt from current rows and time. Add a regression: another tile in the same screen column changes the shared widths between draw and click, and the click still selects the header drawn under the pointer, with the drawn group's shared age layout kept.
 
 **Spec:**
-1. `draw_tile_grid` (`tiles/draw.rs`) records, for each drawn piece, the cell's stable content identity, its drawn rect, and its visible (clipped) hit region, in the grid's own state, replacing the previous frame's record. Where pieces overlap, the one drawn on top wins. Model the record's state as a type that tells "never drawn" apart from "a frame drew no interactive content" (e.g. `enum DrawnHits { NotDrawn, Drawn(Vec<DrawnPiece>) }`), never a bare `Option`.
-2. `TileGrid::cell_at(&self, Position) -> Option<usize>` keeps its public signature, as the compatibility boundary, and answers from that record. Before the first draw it answers from the layout as today.
-3. Phase 2's content lookup in `tiles/host.rs` uses the same record, and resolves the content by the identity recorded at draw time, not by the slot's current occupant.
-4. cargo-handler keeps the header spans it drew with each tile and the summary, and `render::cell_clicked` maps a header click through those drawn spans, not freshly rebuilt ones. A click on a drawn tile that a later scan removed (its sort already pruned) records no preference, so it cannot bring a pruned pool sort back. `tiles/host.rs` ≈142 calls `focus_cell(index)` on a current slot: resolve the drawn identity to its current slot at the public `Option<usize>` boundary, with a retired-content outcome inside, so a click on a vanished drawn tile never focuses its replacement. If `Cells::tile` (`render/mod.rs` ≈443) stays, it returns a semantic lookup result rather than an `Option`, converting to `Option` only at the framework boundary.
+1. Make public `TileGrid::cell_at(&self, Position) -> Option<usize>` convert phase 28's `cell_hit` result (keep the signature as the compatibility boundary). Keep the before-first-paint layout fallback in a separate helper, because `cell_hit` calls `cell_at` on that path today.
+2. Done by phase 28: the painted record with stable identity, top-most piece wins, and retired-content absorption in `tiles/host.rs`. Keep its tests green.
+3. Done by phase 28: content lookup through `content_click` resolves by the painted identity.
+4. cargo-handler keeps the header spans it drew with each tile and the summary, and `render::cell_clicked` maps a header click through those drawn spans, not freshly rebuilt ones. A click on a drawn tile that a later scan removed (its sort already pruned) records no preference, so it cannot bring a pruned pool sort back. Phase 28 already keeps a click on a vanished drawn tile from focusing its replacement; keep that regression (`render/pinned_accounts_tests.rs`). If `Cells::tile` (`render/mod.rs` ≈443) stays, it returns a semantic lookup result rather than an `Option`, converting to `Option` only at the framework boundary.
 5. Tests: during motion (a test-only motion policy may hold an animation mid-way), a press on a drawn piece returns that piece's cell; a press on the destination rect of a still-moving cell returns what is drawn there; a press on a piece's clipped-away part misses it; a press after a frame that drew nothing interactive returns no cell. In cargo-handler, a census change between the draw and the click that would otherwise shift a header column still selects the column that was drawn under the pointer, for a tree tile and the unassigned tile, in Full and Compressed views; a click on a drawn tile that has since disappeared records no sort and focuses no replacement; an accounts reading that changes the summary's demand between draw and click still selects the drawn agents column; an accounts-header click during motion, or after an accounts reading changed the table between draw and click, sorts by the accounts column that was drawn under the pointer. cargo-tile's suites pass.
 6. Acceptance tests also cover row, wheel and word targets, including clipped scrolled rows and retired tiles.
 7. Phase 23 drops a column that is empty in every row of a tile, and `render::cell_clicked` today rebuilds header spans from current rows and restores only saved widths. Test, red first: a tile draws a `type` or `role` column, then its rows change so that column is empty, and a click on the drawn header still selects the column drawn in that frame.
@@ -313,8 +313,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/cargo-handler/src/render/moving_role_tests.rs`, `crates/cargo-handler/src/render/selection_tests.rs`, `crates/cargo-handler/src/render/accounts_grid_tests.rs`, `crates/cargo-handler/src/render/role_title_tests.rs`, `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`, `crates/cargo-handler/src/summary/unassigned_summary_tests.rs`
 
 **Workers:** 2 writers.
-- `grid` — the shared painted records, the pointer payload (and its rename), the identity lookup (`cell_at`, `cell_content_at`) and the framework tests (`drawn_hits_tests.rs`, `host_tests.rs`) in tui_pane, and the tui_pane CHANGELOG; hub: `crates/tui_pane/src/lib.rs` and `crates/tui_pane/src/tiles/mod.rs` (shared exports).
-- `app` — the pinned mapping, the named selection results, the header, row and word records, the payload rename in handler files, the handler tests, and the cargo-handler CHANGELOG; hub: `crates/cargo-handler/src/render/mod.rs` (test registration).
+- `grid` — extend the existing painted-cell lookup for public `cell_at`, keep the undrawn fallback, do the shared pointer-payload rename, and own all tui_pane files and framework regressions; hubs: `tiles/grid.rs`, `tiles/host.rs`, `tiles/mod.rs` and `lib.rs`.
+- `app` — keep the header and row records actually painted, integrate phase 20's word record, follow focus by stable identity, migrate handler payload users, and own all handler files and regressions; hub: `render/mod.rs`; keep phase 28's pinning and named selection results.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-tile`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint tui_pane` clean. `render/selection_tests.rs` passes unchanged. A live click during motion lands on the drawn cell in cargo-handler and in cargo-tile. The checkpoint carries `Change-Review: clicks land on the tile drawn under the pointer, even while tiles move | add or remove a tile and click a moving one at once, in cargo-handler and cargo-tile`.
 
@@ -757,43 +757,27 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 28 — Accounts headers stay in view  · status: done
 
-**Depends on:** Phase 26, Phase 32, and tile-fixes phase 24 merged (it holds `render/mod.rs` and the `tui_pane` tile grid files).
+#### As-built
 
-#### Work Order
-
-**Goal:** the accounts headers stay in view while account rows show, and selection results name their empty cases.
-
-**Source:** phase 26 specs 5, 6 and their tests, moved here 2026-10-23 because tile phase 24 holds `render/mod.rs`. Spec 6 moved here from phase 32 on 2026-10-24 (showrunner ruling): at 34×50 with 7 accounts and 5 busy tiles the summary needs 26 lines in TwoLine and the grid gives it 17, so the later accounts and the error line are hidden; the fix needs the `tui_pane` tile grid files that tile-fixes holds.
-
-**Constraints from prior phases:**
-- `AccountsLayout` (`summary/accounts.rs` ≈402) draws one column-header line in Full, two in TwoLine and none in Stacked, below the section heading. The summary scrolls one complete buffer with one offset (`render/mod.rs` ≈608); `SurfaceSelection::click` (`interaction.rs` ≈326) and `RowSpan::visible_lines` (≈200) use that one linear offset.
-- Selection API results that are a bare `Option` today: `SurfaceSelection::selected_span` (`interaction.rs` ≈250), `Selections::containing` (≈389), `follow_focused` (≈398), `surface` and `surface_mut` (≈404, ≈407), and `Cells.focused: RefCell<Option<SelectionSurface>>` (`render/mod.rs` ≈319).
-- Keep phase 19's reset outcomes and tests: a known past reset draws weekday and time or a date (`summary/accounts_tests.rs` ≈1161), an unavailable reset draws blank and unavailable quota draws `—` (≈1135).
-- `summary::selection_rows` (`summary/mod.rs` ≈278) lists the machine and session rows before the accounts section, so one viewport can hold agent rows and account rows together.
-- Two more domain-owned optional selection boundaries: `selection_surface(content: &TileContent) -> Option<SelectionSurface>` (`render/mod.rs` ≈283; `TileContent::Empty(_)` gives `None`) and `Cells::with_selections(self, selections, focused: Option<SelectionSurface>)` (≈405).
-- Phase 26 is done: its palette changes are in; the pinned headers and named results moved here.
-- Phase 32: the accounts fit drops in use, enabled, read and credits, then cuts roles with "…" to a 6-cell floor, then chooses TwoLine, then Stacked. `AccountsLayout::for_width` is gone: one `AccountsFit {columns, layout}` is built per frame and feeds the owned `AccountLines`; `SummaryLayout` is built per frame, and `App` keeps the painted one as `PaintedSummary::{NotDrawn, Drawn}`, which the header click reads (`render/mod.rs` ≈260). Cut titles go through `truncated_line`. Pinning takes the fitted layout and its header lines from that record; do not add another layout chooser. `SummaryLayout` and `PaintedSummary` are internal states and need no user message; keep their click mapping covered by the header tests. The grid shares rows through `solve_column_shares` (`crates/tui_pane/src/tiles/grid.rs`), which lends the summary only limited rows; cargo-handler has no way to ask for its rows first. The red 34×50 test from phase 32 is saved outside the repository by the unit director and is given to the tester.
-
-**Spec:**
-1. Pinned headers: while any account row is in the viewport, the accounts section heading and that layout's column-header lines (Full one line, TwoLine two, Stacked none; Stacked gets no new header) stay pinned at the top. Nothing pins when the viewport cannot hold the pinned lines plus one body line. One pinned-and-scrolling mapping serves drawing, the selection bands (`RowSpan::visible_lines`) and clicks (`SurfaceSelection::click`). The body's navigation and page height is reduced by the pinned lines.
-   Pinning starts and stops at the section boundary. While the accounts heading line is in the viewport at its own place, it draws there, and nothing pins. Pinning starts when the heading line scrolls above the top of the viewport while an account row is in the viewport. Pinning stops when a scroll up brings the heading line back to its own place, or when no account row is in the viewport. At each change, every drawn line shows once: no header draws twice, and no agent or account row is hidden under the pinned lines. A pinned line never takes the selection band; a click on a pinned column header sorts, and a click on the pinned heading selects no row.
-2. Named results replace the bare `Option` results listed in the constraints (for example a selected span that names "no rows", a row location that names "gone", a surface lookup that names "retired", and a focused surface that names "not selectable"). Also replace `selection_surface`'s `Option<SelectionSurface>` and the `focused: Option<SelectionSurface>` argument of `Cells::with_selections` with named states that tell an empty cell, a selectable surface and a retired lookup apart. These states need no new user message. Convert to `Option` only where a framework signature requires it.
-3. Tests, red first: pinned headers in every layout, a header sort after End, a click on a continuation line, and an account taller than the viewport. Update `clipped_stacked_account_selection_bands_cover_facts_without_the_heading` (`render/accounts_grid_tests.rs` ≈547), which expects every visible line at End to be an account fact.
-4. Boundary tests, red first: scroll down and scroll up across the boundary between the session rows and the accounts section, with no header drawn twice, no lost agent row and no selection band on a pinned line; viewport heights one line below and at "pinned lines plus one body line"; PageUp and PageDown across the boundary; width changes between Full, TwoLine and Stacked while pinned.
-5. Named-state tests: a click that misses keeps the current selection; retired content cannot select a row and cannot focus a replacement tile.
-6. Summary rows first (showrunner, 2026-10-25): whenever the summary does not get the rows its lines need, in every accounts layout (Full, TwoLine and Stacked), it gets them before the agent tiles get theirs, so no account and no error line is hidden. Add this to the tile grid as a named allocation choice (for example an enum on the pane, shared or before tiles), not a flag. Tests, red first: the phase 32 34×50 fixture (7 accounts, 5 busy tiles, the error line "claude1: scratch reading failed") draws every account and the error line; at 40 and 50 columns, with a grid minimum tile width set (phase 27's saved `phase27_core_width_test.rs`), every account and the error line still draw.
+- `SurfaceSelection` owns the body offset and `SectionPin`. One painted `ViewportMapping` serves drawing, selection bands and row clicks, so the accounts heading and its column-header lines (Full one, TwoLine two, Stacked none) stay at the top while the body scrolls. Navigation and page height use the body height below the pinned lines. A pinned line never takes the band. A pinned header click sorts; a pinned heading click selects no row.
+- Named results replace the bare `Option` results: `SelectableSurface {EmptyCell, Surface}`, `RowLocation {Gone, Found}`, `SurfaceLookup {Retired, Current}`, `SelectedSpan {NoRows, Row}`.
+- `tui_pane` tiles settings have `SummaryRowAllocation {Shared, BeforeTiles}` (default `Shared`; set with `TileGrid::set_summary_row_allocation`). `BeforeTiles` runs the shared split first. Then it reserves the summary's need before the tiles only when the summary's share is short.
+- Clicks resolve against the last painted frame: `PaintedCells {Undrawn, Drawn}`, one stable `CellIdentity` per painted piece, and `cell_hit` gives `CellHit {Missed, Retired, Current}`. `TilePick::RetiredCell` is absorbed before focus or row selection, so a click on a departing tile never focuses its replacement. `content_click` maps a painted frame to source coordinates for presses and wheel steps. Before the first paint, the layout path stays.
+- `render::cell_clicked` checks header hits before the surface lookup. `Cells::paint_selection` clips each band row to the tile and buffer, so a moving tile cannot index outside the buffer.
 
 **Files:**
-- `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/interaction.rs`, `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/render/accounts_grid_tests.rs`, `crates/cargo-handler/src/render/selection_tests.rs`
-- `crates/cargo-handler/src/render/pinned_accounts_tests.rs` — new pinned-header tests, registered in `render/mod.rs`
-- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/tiles/settings.rs`, `crates/tui_pane/src/lib.rs`, `crates/tui_pane/CHANGELOG.md` — summary rows first (spec 6)
+- `crates/cargo-handler/src/interaction.rs` — named selection results, pinned mapping
+- `crates/cargo-handler/src/render/mod.rs` — header hits, selection paint, `BeforeTiles` request
+- `crates/cargo-handler/src/summary/mod.rs` — `SummaryLayout::section_pin`
+- `crates/tui_pane/src/tiles/{grid.rs, draw.rs, host.rs, settings.rs, mod.rs}`, `crates/tui_pane/src/lib.rs` — summary allocation and painted hits
+- `crates/cargo-handler/src/render/pinned_accounts_tests.rs` (new), `crates/cargo-handler/src/render/accounts_grid_tests.rs`, `crates/tui_pane/src/tiles/summary_allocation_tests.rs` (new)
+- `crates/cargo-handler/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md`
 
-**Workers:** 1 writer + 1 tester.
-- `viewport` — the summary, accounts, render and interaction production code (`summary/mod.rs`, `summary/accounts.rs`, `render/mod.rs`, `interaction.rs`), the `tui_pane` grid allocation of spec 6, the registrations and the CHANGELOGs; hub: `crates/cargo-handler/src/render/mod.rs` (test registration).
-- `test` — `render/pinned_accounts_tests.rs`, the account viewport regressions (`render/accounts_grid_tests.rs`) and the selection regressions.
+**Binds later work:** `handle_tile_click`, click and scroll answer from the painted frame after the first paint; `cell_at` still answers from settled geometry, and focus following by identity is open for "Accurate clicks during motion". Title-press forwarding builds on `content_click` and `TilePick::RetiredCell`. cargo-handler sets `SummaryRowAllocation::BeforeTiles` once at grid construction. At 34x50 cells view with about 20 tiles, the summary gets an 8-cell column, only 3 of 6 accounts draw, and session rows with no drawable column leave blank rows; "Narrow tiles keep their core columns" owns this gap.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh lint tui_pane` and `bash ~/.claude/scripts/direct/verify.sh test tui_pane` clean. No test takes a second. `render/selection_tests.rs` passes unchanged. The boundary tests of spec 4 and the named-state tests of spec 5 pass: a miss keeps the selection, and retired content cannot select or focus a replacement. Live: an 80x16 shot after End with the accounts headers in view, in each layout, and a 34x50 summary shot with every account and the error line drawn.
+**Gotchas:** A test-only adapter may not call `panic!` (`clippy::panic` denies it). Use `Option::expect` under the crate's `expect_used` expectation.
+
+**Ruled out:** a lint exception for `clippy::panic` (the `expect` form is allowed).
 
 ### Phase 32 — Accounts table keeps main's height  · status: done
 
@@ -841,7 +825,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** per-call-site `select_row` fixes without removing `viewport_mut` (the type removal closes the whole class).
 
-### Phase 27 — Narrow tiles keep their core columns  · status: todo
+### Phase 27 — Narrow tiles keep their core columns  · status: done
 
 **Depends on:** Phase 26, Phase 28, Phase 29, Phase 32, Phase 33
 
@@ -858,7 +842,11 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - The tile grid already takes a minimum tile width: `tui_pane::TileGrid::set_min_tile_width` (`crates/tui_pane/src/tiles/grid.rs` ≈1279, frame included), read by `fits` (≈4271). cargo-handler does not call it, so the grid uses `MIN_TILE_WIDTH` (8). Phase 32 tried it (2026-10-25 shots, full tile measure once per tile per frame) and moved it here: at 50 and 40 columns the grid stacked to one column, only 3 of 5 tiles stayed in view, and the summary fell to 12 rows with one account drawn (main 19 rows, every account). So spec 2 needs the summary rows first (phase 28 spec 6), and its gate counts tiles in view and summary rows. The 40-column test is saved as `phase27_core_width_test.rs` in the phase 32 session folder.
 - Phase 26: each agent tile title keeps its summary row's ink; session rows draw through `SessionRowInk::style()`; account, tier, role and session spans carry their own style.
 - Keep phase 32's accounts fit: one `AccountsFit {columns, layout}` per frame (it replaced `AccountsLayout::for_width`) feeds the owned `AccountLines`, the per-frame `SummaryLayout`, and the painted `PaintedSummary::{NotDrawn, Drawn}` in `App`. Extend the `truncated_line` path for cut text; do not add a second chooser. Keep `account_name_indent()` and the reset outcomes through width changes. The baseline is the accounts tests of checkpoint `1e6e3916` (`summary/accounts_tests.rs`, `render/accounts_grid_tests.rs`), not the older phase 19 expectations. The resize tests of this phase check the observable `AccountsFit` outcomes: which columns drop, when roles cut, and when TwoLine and Stacked apply.
-- Phase 28 owns pinned navigation; when it is done first, this phase keeps it through width changes. Phase 16's selected rows stay as they are.
+- Phase 28 (a35577ad) pins the accounts heading and column headers through `SurfaceSelection`'s `SectionPin` and one painted `ViewportMapping`; keep it through width changes. Phase 16's selected rows stay as they are.
+- Phase 28 added `tui_pane::SummaryRowAllocation::{Shared, BeforeTiles}` (`tiles/settings.rs` ≈15), set by `TileGrid::set_summary_row_allocation` (`grid.rs` ≈1361); cargo-handler asks for `BeforeTiles`. The shared split runs first, and `summary_before_tiles` (≈3965) reserves the summary's need only when its shared share is short. `set_min_tile_width` is at `grid.rs` ≈1336 and `fits` at ≈4478. Clicks resolve against the last painted frame (`CellHit::{Missed, Retired, Current}`, `TilePick::RetiredCell` in `tiles/host.rs`).
+- Phase 28 live shots (cells view, 34x50, about 20 live tiles, 6 accounts): the grid gives the summary its own column 8 cells wide inside its frame, at full height; it draws 3 of 6 accounts (main draws 0), and session rows with no drawable column at that width take rows 3-24 as blank lines.
+- `set_min_tile_width` is a fit constraint, not a column-count planner: `column_layout` chooses the topology without that width, and `fits` (`grid.rs` ≈4478) uses the minimum only to decide whether the arrangement fits, which can select the summary-only display instead of fewer tile columns. This phase owns the width-aware choice of tiles per row and keeps the cells view active whenever the terminal can hold a core-width tile. Summary width and height are solved together, because `BeforeTiles` can reserve the full first-column height and `reach` then refuses widening when neighbouring tiles cannot fit below it. Keep phase 28's summary-first policy; do not build it again.
+- `summary::machine_height` counts root rows without regard to width, and `selection_rows` assigns their selectable lines on its own.
 
 **Spec:**
 1. State model first. Before any code, the impl worker writes the state model into this Work Order: each width-dependent state (tile core width, tiles in a row, presentation Full/Compressed, the dropped column set, cut fields, the summary row count, the accounts layout), the one record that owns each, and every path that constructs or changes it. Two records never hold the same fact; measure and draw read the same record. The showrunner reviews the model before code starts.
@@ -870,21 +858,162 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 7. Tests, red first, on a multi-tile live-like fixture (several machines, subagent and shell rows, a timer status, long session names, long account names) at 200, 80, 50 and 40 columns: every tile is at least the core width while the terminal allows it; every drawn header is whole; pids and numbers are whole; adjacent cells keep a gap; cut text ends with "…"; status words are whole; no column drops while its tile has free cells; the summary has no more rows than phase 32 left at the same width; the tiles in view and the total tiles are counted, and no fewer tiles show than on main; every account and the error line draw. Unicode tests: a wide glyph, a combining mark and an emoji presentation sequence cut by cells. Every test under one second.
 8. Before the first gate, shots against main at 200, 80, 50 and 40 columns and against ec1504bd go to the showrunner with the counts: cut or crushed headers, cut pids and numbers, gaps, cut status words, cut text with no "…", tiles without role or status, tiles in view of the total, summary rows, accounts and the error line drawn, and whether type drops at 200.
 9. CHANGELOG: one line that narrow terminals show fewer agent tiles in a row so that each keeps its session, role and status whole, and that cut text ends with "…".
+10. Narrow summary column (showrunner, 2026-10-27): at narrow widths, give the summary enough width for its fitted account lines. Record whether each session row has drawable columns in the same per-frame summary layout that demand, drawing, header spans, selectable row spans and accounts section pinning read; an omitted session row takes no line in any of them, and intentional section spacing stays. Tests, red first: the cells view at 34x50 with about 20 live-like tiles and 6 accounts draws all 6 accounts with no rows given to omitted sessions; navigation, pinned bands and clicks after a resize still address the rows actually drawn.
+
+**State model (spec 1; approved by the showrunner, 2026-10-27):**
+
+##### Phase 27 state model for approval
+
+Baseline: HEAD a35577ad, remove-running-section-handler. This is a design record. No production or test source has changed for this dispatch. The plan document is not edited.
+
+##### Existing causes
+
+- `tiles/grid.rs::column_layout` chooses column populations from count, depth and growth, without the available width. `fits` checks the minimum width afterward. Raising `min_tile_width` alone can reject cells view instead of choosing fewer columns.
+- `Grid::with_row_readings` gives the summary a first-column height before `reach` decides its width. A tall, narrow summary can then prevent its own widening. The width used to measure accounts must be settled before the existing summary-first row allocation runs.
+- `agent_cell.rs::TreeMetrics::drop_step` mixes full-heading fit, presentation and optional-column drops. A compressed presentation can discard directory regardless of the actual space for the table. `tree_header` can then reduce spacing or session width without a complete fitted-column decision.
+- `summary/mod.rs::SummaryLayout` owns accounts, but its `machine_rows` comes from width-independent `machine_height`. Drawing, headers and selection reconstruct machine tables separately. A session without drawable columns still contributes a blank line and shifts the accounts section.
+- `summary::truncated`, `cell_width` and the tile `cut_line` count characters. They can cut a grapheme or measure a wide glyph incorrectly.
+
+##### Ownership rules
+
+Source measurements, fitted decisions and painted history have different lifetimes. A raw measured width is not a second fitted width decision. A last-painted record is input history, not another chooser. No reader independently chooses columns, presentation, row omission or account layout after fitting.
+
+##### 1. Tree source measurement and core width
+
+`TreeMeasurement` owns the per-tile source measurements for a frame: canonical column widths, the session-header lead and sorted-header width, full/compressed visible-row role and status widths, ages, and heading space. Its core-width method derives the session header with lead, the complete role header/value width, complete status header/widest drawn word, fixed inter-column gaps, content indents and the frame. No literal 28 is used. Frame cells use the shared frame constant when available, otherwise a named local constant.
+
+Before grid layout, `Cells` prepares the tree measurements from the same tile rows and current selection viewport that fitting reads. At this stage, the visible-row envelope covers both Full and Compressed presentations, so it does not depend on which one paints. The grid receives the maximum framed core width through its existing `set_min_tile_width` boundary. This scalar is a layout constraint; it is not a second account of column widths.
+
+Allocated measurements retain the existing phase 16/24 rule: actual role/status widths come from the rows the presentation can paint at that allocation. The fit consumes those readings and keeps shared ages per fitted group. A viewport, height, sort, timer or census change constructs a new frame measurement. No global memo survives a frame. If the pre-layout envelope needs an extra source scan, report that cost; do not hide a second fit or an unbounded full measure in a core-width getter.
+
+##### 2. Tree fit, presentation, columns and cuts
+
+`TreeMetrics` becomes the owner of the final group fit: `TreePresentation::{Full, Compressed}`, the permitted/kept typed column set, shared `AgeLayout`, column widths and the text budgets. Group fitting starts with populated allowed columns. Equal groups merge before each bounded drop step, as today.
+
+The ordered decision is Directory, Branch, Type, then Age, Account. A step removes its complete column only while the remaining table cannot fit. Heading compression alone does not remove a table column. Gaps are reserved before text budgets. Complete status words and numeric fields have no text-cut budget.
+
+`FittedTreeColumns` replaces `FlatColumns`. It holds the typed kept columns and their final widths. Its constructor returns `TreeColumnFit::{Fitted(FittedTreeColumns), TooNarrow}`. The latter means the requested complete-column presentation cannot fit; it does not mean an absent tree or a retired tile.
+
+A narrow core fit has a named state, distinct from an ordinary fit: the terminal cannot contain one core-width tile. It keeps Session, Role and Status. The session text budget reduces toward its first drawable cell plus the ellipsis; then the role budget reduces. Status remains whole. The final buffer clips at the pane edge when the terminal cannot contain even those fields. It does not take space from a neighbouring pane or erase the pane ground. Header labels stay whole while a core-width tile fits; the below-core case follows the explicit fallback rule instead of inventing abbreviations.
+
+The fitted group record supplies `TreeHeader`, row drawing, row areas and header spans. `TreeHeader` derives rectangles from that record and does not drop another column or shrink gaps. Direct draws run the same constructor locally. They do not maintain a second fitting algorithm.
+
+##### 3. Grid topology and summary width
+
+`ColumnLayout` is the one topology result: column populations, summary depth and the summary span/width decision. Its constructor receives the area and existing tile settings in addition to count, growth and held layout state. All topology readers use this constructor: content-width requests, preparation allocations, resolved geometry, fit checks and motion destinations. There is no handler-side tile-count planner.
+
+The planner preserves the existing growth/fill arrangement when its columns meet the width constraint. Otherwise it reduces the number of columns to those that can hold the framed core width and redistributes the same logical cells in their existing order. A one-column plan uses the full available width. If a core-width tile can fit, width alone cannot switch cells view to summary-only. Below core width, the one-column plan enables the named narrow fit described above. Height still limits the tiles that can be on screen; fixture counts must expose that limit rather than hiding it.
+
+The same plan resolves summary width before dividing rows. With one column, summary width is the full column. With more columns, it uses the requested summary content width and available columns to choose its span first. A requested span that needs room below it may require a different column population; choose from a finite set of width-valid column counts, not a feedback loop with no bound. The resolved candidate owns both the span and populations. Its width is passed to `Cells::demands`, so accounts and session demand use that exact width. Only then does the existing `SummaryRowAllocation::BeforeTiles` rule assign rows. The shared-share floor from phase 28 remains unchanged.
+
+The existing summary-width demand is a preferred width, not a second account-layout chooser. It comes from the fitted summary record for the candidate. The one-column candidate ensures a narrow terminal cannot strand the summary in an 8-cell column beside unusable tile columns. Tests must verify all accounts and the error, cells view, and visible tile counts at each fixture width. The exact candidate ordering is subject to those tests and the main comparison; a failing count is evidence to report, not permission to weaken a floor.
+
+The grid's held and painted geometry remain the owners of motion and input history. This phase does not change the phase 28 stable cell identity or retired-hit model.
+
+##### 4. Summary session fit, row count and accounts
+
+`SummaryLayout` owns all width-dependent summary content for one frame allocation, not just accounts. Extend it with an owned machine/session layout: ordered row identities, fitted typed summary columns and widths, machine heading/header/notice positions, session presentation, and section spacing. Use a named session-table result such as `SummarySessionTable::{Drawable(...), OmittedForWidth}` instead of an `Option` or a placeholder width.
+
+The summary fit keeps populated complete columns while they fit; it drops optional text columns before numeric columns, and drops a numeric column whole rather than cutting a value. Text uses the shared cut path. When no valid session-table column set can draw, the table header and its session rows are omitted together. Machine headings, notices and intentional gaps retain their own explicit row entries. Omission does not allocate blank session rows.
+
+The row count is derived from these owned entries. Remove the production use of width-independent `machine_height` for demand. Drawing, summary header spans, selectable spans and the accounts start all read the same stored entries. They must not enumerate all census roots again to recreate line positions. Source identity lookup for the values is allowed; a new position or fit decision is not.
+
+`SummaryLayout` continues to own the existing `AccountLines`, including its single `AccountsFit` result, roles cut width, lines, header spans and account row spans. The accounts algorithm and its drop order do not change. The accounts start follows the measured machine/session entries and the intentional section gap. `height`, `preferred_width`, `accounts_area`, selections and `section_pin` derive from that record. There is no separate stored accounts-section height or copied row count that can disagree with its entries.
+
+`Cells::summary_layout(width)` retains an owned per-frame record for each allocation used in the bounded grid preparation. `PaintedSummary::Drawn(Rc<SummaryLayout>)` retains the exact record painted. Header input reads that painted record until another frame replaces it. A width change creates a new fit and new row spans together; it does not mutate the old painted record underneath a pending click.
+
+##### 5. Text measurement and cuts
+
+One shared truncation path in `summary/mod.rs` owns the text-cut decision. `unicode-width` measures terminal cells; grapheme segmentation determines legal prefix boundaries. Add `unicode-width` to handler from the existing workspace dependency and add a workspace grapheme-segmentation dependency if no current public helper supplies it. A cut result distinguishes Whole, Cut and EmptyBudget and records a source prefix boundary plus ellipsis. It does not store a second copy of the original text.
+
+`truncated` and `truncated_line` both use that result. Styled lines concatenate text for grapheme boundaries, then preserve original span styles up to the selected byte boundary. A grapheme spanning style boundaries remains complete. The ellipsis uses the last retained text style, or the line style when no prefix fits. A whole line keeps its existing style and alignment. The tile `cut_line` delegates to this path. Number and status renderers never call it.
+
+##### Construction and event paths
+
+| Path | Records constructed or changed | Readers |
+| --- | --- | --- |
+| First frame / census update | TreeMeasurement; grid ColumnLayout; allocated group TreeMetrics/FittedTreeColumns; SummaryLayout | Demand, draw, titles, header spans and selection preparation |
+| Terminal resize / grid settings | New ColumnLayout, allocated tree fits and SummaryLayout for the new content widths | Same frame readers; old painted records remain input history until paint |
+| Up/Down / Page / Home/End / wheel | Existing SurfaceSelection changes selected identity and offset; next frame refreshes visible-row measurements | Phase 28 mapping supplies body height after pinned lines; no independent row recount |
+| Sort header click | Hit the last painted header span; change the appropriate sort; build new ordered frame entries | Tree and summary drawing and selection share the new order |
+| Body click | Painted stable cell hit and painted ViewportMapping resolve the source line into the stored row span | Existing selection API; omitted rows have no clickable span |
+| Account refresh / clock / tint / theme | New SummaryLayout/AccountLines with current values and styled spans | No cross-frame account cache |
+| Removal / motion | Existing held geometry and last-painted cell identities | Retired clicks remain absorbed before focus; source clipping and selection mapping remain phase 28's |
+
+`prepare_frame` keeps the required order: source selection viewports first, shared metrics next, final row areas after those metrics. Summary row identity resolution and SectionPin installation use its final layout. No selection area is installed against unfitted columns.
+
+##### Approval and verification boundary
+
+This model needs the board line `state model approved` before any source edit, including test-module registration. The tester may write and run red fixtures meanwhile. After approval, registration and mechanical type/dependency work can proceed; covered behavior waits for the corresponding executable red results.
+
+The tester owns final lint and full suites after source done. Impl runs changed-tree checks and one focused line per finished source change. Before the first final gate, live comparisons must report all spec 8 counts against main and ec1504bd in dark and light. No shot or tile-count result is claimed in this model. If the available terminal height makes the whole-tile/count requirement conflict with full summary visibility, report the concrete case rather than silently relaxing either requirement.
 
 **Files:**
 - `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/Cargo.toml`, `Cargo.toml`, `Cargo.lock`, `crates/cargo-handler/CHANGELOG.md`
 - `crates/cargo-handler/src/render/narrow_width_tests.rs` — new multi-tile width tests, registered in `render/mod.rs`
 - `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs`, `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/render/selection_tests.rs`
+- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/settings.rs`, `crates/tui_pane/CHANGELOG.md` — the column planner and the summary column width (specs 2 and 10)
+- `crates/tui_pane/src/tiles/host.rs` — its summary-alone and focus tests under the new planner
+- `crates/tui_pane/src/tiles/draw.rs` — three no-room test fixture widths only (showrunner, 2026-10-27; claimed before the tile unit)
+- `crates/tui_pane/src/tiles/summary_allocation_tests.rs` — summary width and height regressions
 
 **Workers:** 1 writer + 1 tester.
-- `impl` — the state model, the grid minimum width, the fitting and truncation code, `FittedTreeColumns` and its fit result, the dependency declarations and the CHANGELOG; hub: `crates/cargo-handler/src/render/mod.rs` (registration) and `crates/cargo-handler/Cargo.toml` (dependency).
-- `test` — the multi-tile fixture and width tests, the column-visibility regressions, the Unicode tests.
+- `impl` — the state model, the grid minimum width, the shared column planner, the summary column width and its session rows (spec 10), the fitting and truncation code, `FittedTreeColumns` and its fit result, the dependency declarations and the CHANGELOG; hub: `crates/cargo-handler/src/render/mod.rs` (registration) and `crates/cargo-handler/Cargo.toml` (dependency).
+- `test` — the multi-tile fixture and width tests, the 34x50 narrow summary test (spec 10), the summary width and height regressions in `summary_allocation_tests.rs`, the column-visibility regressions, the Unicode tests.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. `render/selection_tests.rs` and phase 19's accounts tests pass unchanged. Phase 26's `root_session_colours_ignore_subtree_sizes_and_match_titles_after_both_sorts` (`render/role_title_tests.rs` ≈1066) passes unchanged. Live: agent tiles and summary shots at 200, 80, 50 and 40 columns in Default Dark and Default Light, against main and against ec1504bd, with every count of spec 8 equal to or better than main at every width.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh lint tui_pane` and `bash ~/.claude/scripts/direct/verify.sh test tui_pane` clean. No test takes a second. `render/selection_tests.rs` passes unchanged. Keep the accounts-fit, reset-outcome and pinned-header regressions present at checkpoint `a35577ad`; only expectations for session rows that spec 10 omits may change, with rendered evidence. Phase 26's `root_session_colours_ignore_subtree_sizes_and_match_titles_after_both_sorts` (`render/role_title_tests.rs` ≈1066) passes unchanged. At each fixture width that permits a core-width tile, the cells view stays active; count the drawn tiles and accounts. Live: agent tiles and summary shots at 200, 80, 50 and 40 columns in Default Dark and Default Light, against main and against ec1504bd, with every count of spec 8 equal to or better than main at every width.
+
+### Phase 35 — Subagent role words and an even reset ramp  · status: todo
+
+**Depends on:** Phase 27
+
+#### Work Order
+
+**Goal:** a Claude subagent row shows only its role word ("writer", "reviewer"), from a closed set, never the agent's own name with its number or phase prefix. In the Accounts table, each reset time's colour is clearly different from its neighbours.
+
+**Source:** change review C67 (showrunner, 2026-10-27). User: "under the berth unit - i see p36-reviewer - it should just say reviewer" and "these two subagents should just say writer not writer77 and writer78". Showrunner rule: the role comes from a closed set at the type level, never by trimming name strings. Change review C71 (showrunner, 2026-10-27): "it works but the gradient on reset colors is not sufficiently distributed"; the reset colours spread evenly over the whole ramp by rank; C113 (no red at the end) and C115 (no reset colour looks like a session colour) still hold.
+
+**Constraints from prior phases:**
+- A named teammate's meta file has `agentType` equal to its `name` (for example `{"agentType":"writer77","name":"writer77","spawnedAgentType":"general-purpose","taskKind":"in_process_teammate"}`); for a plain Agent call, `agentType` is the subagent type ("general-purpose", "Plan", "Explore"). Names are free-form: writerN, reviewN, shotsN, uxN, implN, fixN, p36-reviewer, judge.
+- `census/transcript.rs`: `SubagentMeta` (≈591) reads only `description`, `agent_type` and `parent_agent_id`. `SubagentRole` (≈500) is `{Capture, Review, Lint, Test, Survey, Specialist(SpecialistRole), Unrecorded}`; `SpecialistRole(String)` (≈514) stores the name, which is the defect. `from_record` (≈534) and `word` (≈546) parse it; `text` (≈557) returns the stored string.
+- `census/tree.rs` `subagent_node` (≈657) puts the role in `ChildKind::Subagent(SubagentRole)` (`census/mod.rs` ≈388) and the description in the session column.
+- `census/probe.rs` `ProbeChildWork.subagent_role` (≈96) serializes the enum across machines; `{"Specialist":"showrunner"}` and `"Review"` are on the wire today.
+- `agent_cell.rs`: `role_text` (≈1192) draws `role.text()`; the role ink comes from `colors.named_role(role.text())` (≈1349, `footer_colors/mod.rs` ≈839).
+- Reset ramp (measured on the C71 shot, Default Dark, 6 accounts): neighbours step dE 2.3–2.7, about the threshold of a just-noticeable difference. The position is already rank/(n-1) (`ResetRank::color`, `theme/mod.rs` ≈128; rank from `reset_colors`, `summary/accounts.rs` ≈145), but the ramp ends are only about dE 12 apart in every theme (dark (125,191,110) → (69,196,153), same lightness, only hue moves; light ends as in phase 29), and the blend is plain sRGB (`tui_pane::blend_color`). `readable_status_style` does not change these inks. `accounts_gradient_tests.rs` holds the C113 floors (≈389: dE >= 20 from error red, warning and alarm; hue gap >= 30° from account inks; contrast >= 4.5), the ends floor (≈501, dE >= 12), chroma and plain-text floors (≈532), and the sRGB formula (≈185, ≈232, ≈266). C115 is `SessionResetFloor` (`render/role_title_tests.rs` ≈715): dark is `DarkNotMeasured`. A rough search found the widest dark ramp under these rules near dE 21 end to end (about 4 per step at 6 accounts), before the account hue rule.
+- Session-row plan reviewers show "review" through `RoleLabel::ReviewFallback` (`census/placement.rs` ≈86), and Codex seats through `WorkerRole::text` (`census/worker_dispatch/mod.rs` ≈100); `WorkerRole::text` also feeds role matching, so the parsed words stay.
+
+**Spec:**
+1. `SubagentRole` becomes a closed enum with no string payload: Writer, Reviewer, Impl, Test, Fix, Capture, Lint, Survey, Plan, Explore, Showrunner, and `Agent` for any name that matches no word. `text()` is a `const fn` returning a `&'static str`; the drawn word is always the variant's word, never part of a name. Reviewer draws "reviewer".
+1a. One word for one role (showrunner, 2026-10-27): session-row plan reviewers (`RoleLabel::ReviewFallback`) and Codex review seats (`WorkerRole::Review`) also draw "reviewer". Only the drawn word changes; the words read from seat names, leases and hierarchy files ("review") still parse.
+2. The role is decided once, at the meta file boundary (`running_subagents`). `SubagentMeta` reads `name` and `spawnedAgentType` too. Source order: the name, then `agentType`, then `spawnedAgentType`, then the description words. A name splits on non-letters into whole tokens, and a token matches a role word exactly (case-insensitive, with the listed synonyms: "review" → Reviewer, "impl" → Impl). "p36-reviewer" is Reviewer, "writer77" is Writer, "judge" is Agent. A general type ("general-purpose") gives no role.
+3. The role ink comes from a typed method on `SubagentRole`, not from looking up the drawn text.
+4. Wire: a probe from an older build that sends `{"Specialist":"<word>"}` reads as the closed role for that word, else Agent. No string role is stored after deserialization.
+5a. Even reset ramp (C71): the position stays rank/(n-1). The blend runs in OKLab, not sRGB. Widen the ramp ends in all four themes (`theme/mod.rs` and the theme TOML files) to the widest pair that keeps C113, C115 (dark measured too), the 30° account hue gap, contrast >= 4.5, chroma >= 0.10 and dE >= 15 from plain text; use lightness as well as hue. Measure before production code, and send the showrunner the measured neighbour steps for 6 accounts in each theme, with Accounts shots in a dark and a light theme, before the palette lands. If no pair beats today's steps, report the values and stop.
+5. Tests, red first: rendered subagent rows for writer77, writer78, p36-reviewer, review3, judge and a plain "Plan" subagent show "writer", "writer", "reviewer", "reviewer", "agent" and "plan"; a plan-mode reviewer session row and a Codex review seat row show "reviewer"; the wire round trip and the old `Specialist` form; callers that built a role from a free string build a variant. Reset ramp: the drawn neighbour dE (after `readable_status_style`, pane tint on and off, the selected row included) for 2 to 8 distinct reset times in every theme is at least the measured floor; the ends floor rises to match; dark `SessionResetFloor` becomes a measured floor; the sRGB formula tests follow the OKLab blend. Every test under one second.
+6. CHANGELOG: one line that subagent rows show their role word, not the agent's name, and one that reset colours step clearly by rank.
+
+**Files:**
+- `crates/cargo-handler/src/census/transcript.rs` — closed `SubagentRole`, meta fields, role source order
+- `crates/cargo-handler/src/census/probe.rs` — old wire form
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/footer_colors/mod.rs` — role word and typed role ink
+- `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/scan.rs` — variant construction
+- `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — "reviewer" for session-row and seat reviewers
+- `crates/cargo-handler/src/census/reviewer_tests.rs`, `crates/cargo-handler/src/census/claude_seat_tests.rs` — the drawn reviewer word
+- `crates/cargo-handler/src/census/subagent_activity_tests.rs`, `crates/cargo-handler/src/census/probe_role_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/subagent_row_tests.rs` — spec 5 tests
+- `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/repair_tests.rs`, `crates/cargo-handler/src/render/moving_role_tests.rs`, `crates/cargo-handler/src/render/selected_ink_tests.rs`, `crates/cargo-handler/src/render/selection_tests.rs`, `crates/cargo-handler/src/render/narrow_width_tests.rs` — callers build variants
+- `crates/cargo-handler/src/theme/mod.rs`, `crates/cargo-handler/themes/` — OKLab blend and wider reset ramp ends
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs`, `crates/cargo-handler/src/render/role_title_tests.rs` — reset ramp floors
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — spec 1, 1a, 2–4, 5a and 6; hub: `crates/cargo-handler/src/census/transcript.rs`.
+- `test` — spec 5.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. Live: a shot of a tile with named writer and reviewer subagents shows "writer" and "reviewer" in the role column; Accounts shots with 6 reset times in a dark and a light theme, each colour read from the shot. The checkpoint adds a Change-Review line.
 
 ### Phase 31 — Session colours stay apart  · status: todo
 
-**Depends on:** Phase 18, Phase 27, Phase 30
+**Depends on:** Phase 18, Phase 27, Phase 30, Phase 35
 
 #### Work Order
 
@@ -894,6 +1023,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Constraints from prior phases:**
 - Phase 26 (dark): the valid hue domain is about 92.5°, and at most 2–3 inks can be CIEDE2000 >= 20 apart; steps of 45°, OKLCH C >= 0.10, and both together also fail.
+- Subagent role words and an even reset ramp (phase 35) widens the reset ramp ends and blends in OKLab; read the drawn ends from `theme/mod.rs` at start. The values below are from before it.
 - Phase 29 (light): light reset ends Default Light (115,0,235) → (73,0,158) and High Contrast Light (115,0,235) → (82,55,154) hold session-vs-reset dE 14.7 and 15.3 (`render/role_title_tests.rs`, `SessionResetFloor::HeldLight`). The drawn reset shades fall in one violet band (OKLCH h 291–294°).
 - Phase 30 (light): no five-ink light session set exists under the current row floors, even with any one floor relaxed; the light defects are near-black session inks in two hue groups, the `showrunners` role ink #7732FF dE 5.3 from the nearest reset end, and reset steps of dE 2.7–3.4. `summary/accounts_gradient_tests.rs` holds the reset time order.
 - Session rows draw only through `SessionRowInk::style()` (`theme/mod.rs` ≈58). `SessionRowInk::fixed_fields()` and `FooterColors::session_row_inks()` list every ink a row can draw. Root i takes entry i (mod 5) of `session_hues`, and each tile title keeps its summary row's ink.
@@ -932,20 +1062,21 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Constraints from prior phases:**
 - Phase 18: `crates/cargo-handler/src/terminal/theme_note_tests.rs` builds the app through `terminal::startup_theme_notes` (`terminal.rs` ≈79) and `App::new_for_test_with_startup` (`app.rs` ≈246). Its `theme_directory()` keeps the theme folder in a `static DIRECTORY: OnceLock<TempDir>`, which is never dropped, so the folder stays after the run. The fixture function that gives the folder path takes no `self`.
-- The census test is in `crates/cargo-handler/src/census/schedule.rs` (≈1278): its script records its pid in a file, and the test reads that file after a time-based wait.
+- The census test is in `crates/cargo-handler/src/census/schedule.rs` (≈1278). It already waits for a completion signal before it reads the pid file. The race is elsewhere: `ShortDeadlineRunner` allows 120 ms, and `census/hierarchy.rs` (≈476) starts that deadline before it spawns the child, so the child can be killed before it writes its pid. The failure is expiry before child readiness, not a fixed sleep before the read.
 
 **Spec:**
 1. Each theme-note test owns its own `TempDir`, which is removed when the test ends, also when it fails (the owner drops on unwind). No `keep()`, no `into_path()`, and no folder outside a `TempDir`. Pass the folder path through the fixture or the config the test builds, not through a static.
 2. A test fails when a theme-note run leaves a folder behind: it runs a fixture to the end, also through a forced failure, and checks that the folder path no longer exists.
-3. The census timeout test waits for the pid file by a signal the test controls (for example the script writes the pid, then signals a pipe or file the test blocks on with a deadline), never by a fixed sleep. It keeps proving that a timed-out child is reaped and publishes no edges.
+3. The census timeout test uses a test-controlled expiry trigger around the existing termination and reaping path: it observes a child-ready signal, then triggers expiry, with bounded waits only for fixture failure. Production command deadlines stay unchanged. The test proves that a timeout publishes no edges and kills and reaps the ready child.
 4. Each test runs under a second, alone and in the full suite.
 
 **Files:**
 - `crates/cargo-handler/src/terminal/theme_note_tests.rs`
 - `crates/cargo-handler/src/census/schedule.rs` — the timeout test only
+- `crates/cargo-handler/src/census/hierarchy.rs` — the bounded test-controlled expiry trigger only
 
 **Workers:** 1 tester.
-- `test` — both test repairs and the no-leftover-folder test.
+- `test` — both test repairs, the no-leftover-folder test and the test-controlled expiry trigger; keep the production startup-theme handoff when the static `TempDir` fixture is replaced.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. After a full cargo-handler run, no new /tmp/.tmp* folder that holds a theme file is left (count before and after).
 
@@ -989,8 +1120,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 **Source:** the user (via the showrunner), 2026-10-20: "if i click on a word i want every instance of that word highlighted - i guess with a background color that is subtle but definitely visible". Showrunner rulings: a phase after Phase 16, because both are mouse work in the same place; order 15, 17, 18, 19, 16, 20, 9; the five points of the unit's proposal as written; a click on the highlighted word at another place also clears the highlight; one Change-Review line.
 
 **Constraints from prior phases:**
-- Phase 16 makes a click on a row select it: `render::cell_clicked` (`render/mod.rs` ≈199) returns at once on `RowClick::Selected` (≈215). One pointer resolution must supply both the row action and the painted word, with explicit outcomes for a selected row, a header, empty content and retired content.
-- `cell_content_at` (`tiles/grid.rs` ≈3182) excludes tile frames, titles and readouts. Word clicks also work on tile titles, so tui_pane `tiles/host.rs` forwards a title press to the host; the word logic stays in cargo-handler. The status bar, the readouts and the overlays are out of scope (showrunner, 2026-10-23).
+- Phase 28 routes presses and wheel steps through `cell_hit` and `content_click` (`tiles/host.rs` ≈176), absorbs `RetiredCell` before focus changes, and tests headers before row selection in `render::cell_clicked`. Extend this path so one press supplies both the row action and the painted word, with named outcomes for content, title, empty content, chrome and retired content rather than another domain-owned `Option`; keep the painted source-coordinate translation and the summary's `ViewportMapping`; keep `Option` only at framework-required boundaries.
+- `content_click` excludes tile frames, titles and readouts. Word clicks also work on tile titles, so tui_pane `tiles/host.rs` forwards a title press to the host; the word logic stays in cargo-handler. The status bar, the readouts and the overlays are out of scope (showrunner, 2026-10-23).
 - An open modal overlay takes a click first. Esc clears the highlight only when no overlay is open.
 - Theme roles live in `theme/mod.rs` (`Role` ≈91) and the built-in theme files in `crates/cargo-handler/themes/`; text colors stay as they are drawn.
 - Phase 15 CIEDE2000 12 measures distinction from header ink, not readability. `ReadableInk` measures against `theme.text.bg_focus`. Use the luminance contrast oracle (4.5:1) against the real match background in all four themes, for subdued role and account ink and for selection overlap; foreground colors do not change.
@@ -1006,7 +1137,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 6. Tests, each red before its fix: the token rules (punctuation removed at the ends, whole-word match, exact case); matches marked in two tiles and in the accounts table; a new row with the word is marked on the next frame; clear on empty space, on Esc, on a second click on the same word and on a click on the word at another place; a click on another word moves the highlight; a render test that reads the background colors back from the frame.
 7. A contrast test reads the drawn match background and each ink on it in all four themes and asserts at least 4.5:1 with glyph coverage, on the base, focused and unfocused grounds, selection overlap included.
 8. Word lookup reads the last painted cells, not a rebuild from census text. Scope: tile content and tile titles; the empty-space clear works there too.
-9. Tests also cover: a word on an account continuation line; a missed row click that clears the highlight and keeps the row selection; a word in a tile title; a click on the status bar or a readout that leaves the highlight; a click while a modal overlay is open that goes to the overlay; Esc with an overlay open that closes the overlay and keeps the highlight.
+9. Tests also cover: a word on an account continuation line; a missed row click that clears the highlight and keeps the row selection; a word in a tile title; a click on the status bar or a readout that leaves the highlight; a click while a modal overlay is open that goes to the overlay; Esc with an overlay open that closes the overlay and keeps the highlight. A retired painted tile leaves focus, row selection and word highlight unchanged; a word on a pinned heading or column header is read from the painted cells without breaking header sorting.
 
 **Files:**
 - `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/globals.rs`, `crates/cargo-handler/src/keymap.rs`, `crates/cargo-handler/src/interaction.rs`, `crates/cargo-handler/src/theme/mod.rs`, `crates/cargo-handler/src/word_highlight.rs`, `crates/cargo-handler/src/main.rs`, `crates/cargo-handler/themes/default_dark.toml`, `crates/cargo-handler/themes/default_light.toml`, `crates/cargo-handler/themes/high_contrast.toml`, `crates/cargo-handler/themes/starter.toml`, `crates/cargo-handler/CHANGELOG.md`

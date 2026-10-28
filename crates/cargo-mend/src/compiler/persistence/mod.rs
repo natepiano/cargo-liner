@@ -1,3 +1,4 @@
+mod cache;
 mod caller_aware;
 mod intersection;
 mod load;
@@ -7,6 +8,7 @@ mod sink;
 mod visibility_constraint;
 mod visibility_priority;
 
+pub(super) use cache::ReportCacheState;
 pub(super) use load::AnalysisEvidence;
 pub(super) use load::load_report;
 pub(super) use report_path::report_path_for_metadata;

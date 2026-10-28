@@ -39,6 +39,52 @@ use crate::theme;
 const NOW: u64 = 1_792_166_400;
 const RESET: &str = "2026-10-19T06:00:00Z";
 
+#[test]
+fn narrow_unicode_cuts_use_terminal_cells_and_keep_whole_graphemes() {
+    for (input, width, expected) in [
+        ("界界界", 4, "界…"),
+        ("e\u{301}e\u{301}e\u{301}", 2, "e\u{301}…"),
+        ("☀\u{fe0f}☀\u{fe0f}", 3, "☀\u{fe0f}…"),
+        ("👩\u{200d}💻project", 3, "👩\u{200d}💻…"),
+    ] {
+        assert_eq!(
+            truncated(input, width),
+            expected,
+            "input={input:?}, cells={width}"
+        );
+        assert_eq!(
+            usize::from(cell_width(expected)),
+            Line::raw(expected).width(),
+            "the summary measures the same terminal cells as the renderer"
+        );
+    }
+}
+
+#[test]
+fn narrow_unicode_cut_lines_keep_each_visible_spans_ink() {
+    let first = Style::default().fg(Color::Red);
+    let second = Style::default().fg(Color::Blue);
+    let cut = truncated_line(
+        Line::from(vec![
+            Span::styled("界", first),
+            Span::styled("e\u{301}tail", second),
+        ]),
+        4,
+    );
+    let visible: String = cut.spans.iter().map(|span| span.content.as_ref()).collect();
+    assert_eq!(visible, "界e\u{301}…");
+    assert_eq!(
+        cut.width(),
+        4,
+        "wide glyph and combining mark count by cells"
+    );
+    assert_eq!(cut.spans[0].style, first);
+    assert!(
+        cut.spans.iter().skip(1).all(|span| span.style == second),
+        "visible second grapheme and its ellipsis retain their ink: {cut:?}"
+    );
+}
+
 /// Restore the caller's appearance even when a redraw assertion fails.
 struct SummaryAppearanceGuard {
     theme:       Arc<Theme>,
@@ -1777,4 +1823,42 @@ fn compact_accounts_wrap_error_words_without_leading_separators() {
             "{lines:#?}"
         );
     }
+}
+
+#[test]
+fn narrow_review_machine_heading_never_cuts_the_count() {
+    let template = agents().remove(0);
+    let rows = (0..12)
+        .map(|index| AgentRow {
+            pid: 100 + index,
+            ..template.clone()
+        })
+        .collect();
+    let state = MachineState::Answered(rows, HierarchyEdges::default().into());
+    let machines = [Machine {
+        name:  "abcdef",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines);
+    let frame = SummaryFrame {
+        machines:       &machines,
+        placement:      &placement,
+        cells:          &[],
+        now:            NOW,
+        account_column: AccountColumn::Hidden,
+        footer_colors:  &FooterColors::default(),
+        sort:           SummarySort::default(),
+        accounts:       &AccountsTable::NotConfigured,
+        accounts_sort:  AccountsSort::SourceOrder,
+    };
+    let machine = SummaryMachines::new(&frame, 12);
+    let text: String = machine.lines[0]
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert!(
+        !text.contains("1…"),
+        "a count must show whole or drop whole: {text:?}"
+    );
 }

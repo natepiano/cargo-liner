@@ -247,7 +247,7 @@ pub(in crate::compiler) fn parent_facade_export_status(
             tcx,
             module_sources,
             &parent_boundary,
-            &exported_names,
+            &exported_names.explicit,
         )
     })?;
     let usage = usage_by_name

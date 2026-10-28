@@ -522,6 +522,7 @@ pub use tiles::TileGridPane;
 pub use tiles::TileGrowth;
 pub use tiles::TilePick;
 pub use tiles::TilePlacement;
+pub use tiles::TileWidthFloor;
 pub use tiles::draw_tile_cell;
 pub use tiles::draw_tile_grid;
 pub use tiles::handle_tile_click;

@@ -653,3 +653,108 @@ fn converging_column_groups_share_every_drawn_header_and_age_unit_slot() {
         "hours share a slot across formerly separate groups"
     );
 }
+
+fn narrow_core_owner() -> AgentRow {
+    let mut owner = agent(1_107_206, "session-name-that-needs-an-ellipsis", HOUR, None);
+    owner.children = vec![ChildRow {
+        activity: AgentActivity::Active(Activity::Waiting),
+        ..child(
+            0,
+            ChildKind::Subagent(SubagentRole::from_record("review", "")),
+            None,
+            "review-name-that-needs-an-ellipsis",
+            MINUTE,
+        )
+    }];
+    owner
+}
+
+#[test]
+fn narrow_column_visibility_keeps_whole_core_headers_status_and_gaps() {
+    let owner = narrow_core_owner();
+    let cell = entry(&owner, None);
+    for width in [28, 32, 40, 50] {
+        let buffer = drawn_into(&cell, &[], width, 10);
+        let text = lines(&buffer);
+        let header = text
+            .iter()
+            .find(|line| line.contains("session") && line.contains("status"))
+            .expect("whole session and status headers at core width");
+        assert!(
+            header.contains("role"),
+            "role cannot drop: width={width}: {text:?}"
+        );
+        let role = header.find("role").expect("role header");
+        let status = header.find("status").expect("status header");
+        assert!(
+            status >= role + 5,
+            "one gap between role and status: {header}"
+        );
+        assert!(
+            text.iter().any(|line| line.contains("waiting")),
+            "status stays whole: width={width}: {text:?}"
+        );
+        assert!(
+            text.iter().any(|line| line.contains('…')),
+            "cut names need an ellipsis: width={width}: {text:?}"
+        );
+    }
+}
+
+#[test]
+fn narrow_below_core_cuts_names_before_role_and_never_cuts_status() {
+    let owner = narrow_core_owner();
+    let cell = entry(&owner, None);
+    let buffer = drawn_into(&cell, &[], 22, 10);
+    let text = lines(&buffer);
+    assert!(
+        text.iter().any(|line| line.contains("waiting")),
+        "whole status below core: {text:?}"
+    );
+    assert!(
+        text.iter().any(|line| line.contains("review")),
+        "six-cell role still fits after cutting session: {text:?}"
+    );
+    assert!(
+        text.iter().any(|line| line.contains('…')),
+        "shortened name is explicit: {text:?}"
+    );
+}
+
+#[test]
+fn narrow_wide_tile_keeps_every_populated_optional_column() {
+    let owner = narrow_core_owner();
+    let mut member = agent(1_107_207, "member", MINUTE, Some(owner.pid));
+    member.branch = Some("topic".into());
+    let buffer = allocated_tiles(
+        vec![owner, member],
+        &[(1_107_206, Rect::new(0, 0, 200, 10))],
+    );
+    let text = lines(&buffer);
+    let header = text
+        .iter()
+        .find(|line| line.contains("session") && line.contains("status"))
+        .expect("full headers");
+    for word in ["type", "role", "status", "branch", "directory", "age"] {
+        assert!(
+            header.contains(word),
+            "no unnecessary drop at 200: missing {word}: {text:?}"
+        );
+    }
+}
+
+#[test]
+fn narrow_review_sixteen_cell_tree_spends_role_before_status() {
+    let owner = narrow_core_owner();
+    let cell = entry(&owner, None);
+    let buffer = drawn_into(&cell, &[], 18, 10);
+    let text = lines(&buffer);
+    assert!(
+        text.iter().any(|line| line.contains("waiting")),
+        "status must remain whole in a sixteen-cell tree: {text:?}"
+    );
+    assert!(
+        text.iter().any(|line| line.contains('…')),
+        "cut text needs an ellipsis: {text:?}"
+    );
+}
