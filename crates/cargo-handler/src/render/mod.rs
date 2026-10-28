@@ -32,6 +32,7 @@ use tui_pane::SummaryRowAllocation;
 use tui_pane::TileCells;
 use tui_pane::TileDemand;
 use tui_pane::TileGridContents;
+use tui_pane::TileWidthFloor;
 use tui_pane::Updates;
 use tui_pane::draw_attract_layers;
 use tui_pane::label_color;
@@ -42,6 +43,7 @@ use crate::agent_cell;
 use crate::agent_cell::AgentEntry;
 use crate::agent_cell::AgentTile;
 use crate::agent_cell::TreeColumn;
+use crate::agent_cell::TreeMeasurement;
 use crate::agent_cell::TreeMetrics;
 use crate::app::App;
 use crate::census;
@@ -166,7 +168,12 @@ fn draw_panes_at(
         app.summary_sort,
     )
     .with_accounts(&app.accounts.table)
-    .with_accounts_sort(app.accounts_sort);
+    .with_accounts_sort(app.accounts_sort)
+    .with_selections(app.selections.clone(), SelectableSurface::EmptyCell);
+    let minimum = cells.measure_trees(area);
+    app.tiles.set_min_tile_width(minimum);
+    app.tiles
+        .set_tile_width_floor(TileWidthFloor::CompressSingleColumn);
     let focused = app
         .tiles
         .placements(area, growth)
@@ -182,7 +189,7 @@ fn draw_panes_at(
             super::interaction::SurfaceSelection::selection,
         ),
     };
-    let cells = cells.with_selections(app.selections.clone(), focused.clone());
+    *cells.focused.borrow_mut() = focused.clone();
     app.tiles.set_view(app.loaded_config.config.tiles.view);
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
@@ -246,7 +253,7 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
         }
     }
     match content {
-        TileContent::Summary => match summary_header_hit(app, header_area, point, &cells) {
+        TileContent::Summary => match summary_header_hit(app, header_area, point) {
             SummaryHeaderHit::Missed => {},
             SummaryHeaderHit::AgentColumn(column) => {
                 app.summary_sort.select(column);
@@ -290,12 +297,7 @@ enum SummaryHeaderHit {
 }
 
 /// Header-only summary draws retain their layout without a selectable row surface.
-fn summary_header_hit(
-    app: &App,
-    area: Rect,
-    point: CellPoint,
-    cells: &Cells<'_>,
-) -> SummaryHeaderHit {
+fn summary_header_hit(app: &App, area: Rect, point: CellPoint) -> SummaryHeaderHit {
     let painted = app.painted_summary.borrow();
     let PaintedSummary::Drawn(layout) = &*painted else {
         return SummaryHeaderHit::Missed;
@@ -322,9 +324,7 @@ fn summary_header_hit(
         height: u16::try_from(layout.height()).unwrap_or(u16::MAX),
         ..area
     };
-    if let HeaderHit::Column(column) =
-        sort::header_hit(&summary::header_spans(area, &cells.summary_frame()), point)
-    {
+    if let HeaderHit::Column(column) = sort::header_hit(&layout.header_spans(area), point) {
         SummaryHeaderHit::AgentColumn(column)
     } else if let HeaderHit::Column(column) =
         sort::header_hit(&layout.accounts_header_spans(area), point)
@@ -398,6 +398,7 @@ struct Cells<'a> {
     selections:        RefCell<Selections>,
     focused:           RefCell<SelectableSurface>,
     layouts:           RefCell<HashMap<TileKey, TreeMetrics>>,
+    measurements:      RefCell<HashMap<TileKey, TreeMeasurement>>,
     /// This machine, then each configured remote.
     machines:          Vec<Machine<'a>>,
     /// Individual sessions in default hue order, independent of tile grouping.
@@ -453,6 +454,34 @@ pub(crate) fn draw_allocated_tiles_for_test(
 }
 
 impl<'a> Cells<'a> {
+    /// Source widths are retained for allocation fitting in this frame.
+    fn measure_trees(&self, area: Rect) -> u16 {
+        let mut measurements = self.measurements.borrow_mut();
+        for tile in &self.tiles {
+            measurements
+                .entry(tile.key())
+                .or_insert_with(|| tile.measure(area, self.now, self.account_column));
+        }
+        // Any tile can receive the full grid height less its frame. Project the
+        // saved cursor into that envelope through the allocation path itself.
+        // This can reserve width for rows a shorter allocation does not paint.
+        let tallest = tui_pane::frame_inner(area);
+        let selections = self.selections.borrow();
+        let unselected = crate::interaction::SurfaceSelection::default();
+        measurements
+            .iter()
+            .map(|(key, measurement)| {
+                let selection = selections
+                    .surface(&SelectionSurface::Tile(key.clone()))
+                    .map_or(&unselected, |state| state);
+                measurement
+                    .allocated(tallest, selection)
+                    .minimum_tile_width()
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Paint the selected rows after their tile content.
     fn paint_selection(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect) {
         if let SelectableSurface::Surface(surface) = selection_surface(content) {
@@ -516,6 +545,7 @@ impl<'a> Cells<'a> {
             selections: RefCell::new(Selections::default()),
             focused: RefCell::new(SelectableSurface::EmptyCell),
             layouts: RefCell::new(HashMap::new()),
+            measurements: RefCell::new(HashMap::new()),
             machines,
             agents,
             account_column,
@@ -532,7 +562,20 @@ impl<'a> Cells<'a> {
     fn with_selections(mut self, selections: Selections, focused: SelectableSurface) -> Self {
         self.selections = RefCell::new(selections);
         self.focused = RefCell::new(focused);
+        self.restore_tree_viewports();
         self
+    }
+
+    /// Restore navigation before source measurement or allocation fitting reads it.
+    fn restore_tree_viewports(&self) {
+        let selections = self.selections.borrow();
+        for tile in &self.tiles {
+            if let SurfaceLookup::Current(state) =
+                selections.surface(&SelectionSurface::Tile(tile.key()))
+            {
+                tile.set_viewport(state.viewport());
+            }
+        }
     }
 
     /// Attach the UI's current account reading to this frame's cells.
@@ -678,20 +721,20 @@ impl TileCells<TileKey> for Cells<'_> {
                 _ => None,
             })
             .collect();
-        for (tile, _) in &tiles {
-            if let SurfaceLookup::Current(state) = self
-                .selections
-                .borrow()
-                .surface(&SelectionSurface::Tile(tile.key()))
-            {
-                tile.set_viewport(state.viewport());
-            }
-        }
-        let measurements = agent_cell::shared_tree_metrics(
-            tiles
-                .iter()
-                .map(|(tile, area)| tile.measure(*area, self.now, self.account_column)),
-        );
+        self.restore_tree_viewports();
+        self.measure_trees(Rect::new(0, 0, u16::MAX, u16::MAX));
+        let source = self.measurements.borrow();
+        let measurements =
+            agent_cell::shared_tree_metrics(tiles.iter().filter_map(|(tile, area)| {
+                let selections = self.selections.borrow();
+                selections
+                    .surface(&SelectionSurface::Tile(tile.key()))
+                    .map_or(None, |state| {
+                        source
+                            .get(&tile.key())
+                            .map(|source| source.allocated(*area, state))
+                    })
+            }));
         let mut layouts = self.layouts.borrow_mut();
         layouts.clear();
         for ((tile, _), metrics) in tiles.into_iter().zip(measurements) {
@@ -2036,3 +2079,6 @@ mod status_bar_contrast_tests;
 
 #[cfg(test)]
 mod pinned_accounts_tests;
+
+#[cfg(test)]
+mod narrow_width_tests;
