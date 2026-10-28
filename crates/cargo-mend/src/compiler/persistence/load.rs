@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use serde_json::from_str;
 
+use super::ReportCacheState;
 use super::StoredAncestorReexport;
 use super::StoredFinding;
 use super::StoredPubUseFixFact;
@@ -15,8 +16,6 @@ use super::caller_aware;
 use super::intersection;
 use super::visibility_constraint;
 use super::visibility_priority;
-use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
-use crate::compiler::settings;
 use crate::config::DiagnosticCode;
 use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::AncestorReexport;
@@ -37,11 +36,10 @@ use crate::selection::Selection;
 /// Whether any stored report reached this run.
 ///
 /// An empty `Report::findings` means the code is clean only when at least one
-/// `StoredReport` matched the selection and passed `stored_report_is_compatible`.
-/// With none, the compiler examined no code at all — cargo found nothing to
-/// rebuild, so the driver never ran, and no report beside the units cargo listed
-/// survived the compatibility check — and the empty findings list is
-/// indistinguishable from a clean crate without this.
+/// `StoredReport` matched the selection and had a compatible `ReportCacheState`.
+/// Without this evidence, an empty findings list is indistinguishable from a
+/// clean crate. Cargo may have reused units without compatible reports, or a
+/// different mend build may have produced reports this parent cannot read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::compiler) enum AnalysisEvidence {
     Present,
@@ -166,7 +164,8 @@ pub(in crate::compiler) fn load_report(
         ) {
             continue;
         }
-        if !stored_report_is_compatible(&stored, config_fingerprint) {
+        if ReportCacheState::for_report(&stored, config_fingerprint) != ReportCacheState::Compatible
+        {
             all_features_coverage = AllFeaturesCoverage::NotGuaranteed;
             continue;
         }
@@ -394,24 +393,6 @@ fn retain_mount_facts_of_fixable_crates(
     module_mount_facts.dedup();
 }
 
-fn stored_report_is_compatible(stored: &StoredReport, config_fingerprint: &str) -> bool {
-    stored.version == FINDINGS_SCHEMA_VERSION
-        && stored.analysis_fingerprint == settings::current_analysis_fingerprint()
-        && stored.config_fingerprint == config_fingerprint
-        && stored_crate_root_exists(stored)
-}
-
-fn stored_crate_root_exists(stored: &StoredReport) -> bool {
-    stored.crate_root_file.is_empty() || {
-        let crate_root = Path::new(&stored.crate_root_file);
-        if crate_root.is_absolute() {
-            crate_root.exists()
-        } else {
-            Path::new(&stored.package_root).join(crate_root).exists()
-        }
-    }
-}
-
 fn stored_matches_selected_root(
     stored: &StoredReport,
     selected_roots: &[PathBuf],
@@ -553,6 +534,7 @@ mod tests {
     use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
     use crate::compiler::constants::REPORT_FILE_EXTENSION;
     use crate::compiler::constants::SOURCE_DIR_SRC;
+    use crate::compiler::persistence::ReportCacheState;
     use crate::compiler::persistence::StoredAncestorReexport;
     use crate::compiler::persistence::StoredFinding;
     use crate::compiler::persistence::StoredModuleMountFact;
@@ -720,6 +702,40 @@ mod tests {
                 use_sites: Vec::new(),
             }
         }
+    }
+
+    #[test]
+    fn report_cache_states_distinguish_missing_build_and_input_changes() {
+        let fixture = PersistenceFixture::new();
+        let mut report = fixture.report_with_findings(Vec::new());
+        let path = fixture.reports_dir.join("cache.mend.json");
+        assert_eq!(
+            ReportCacheState::read(&path, CONFIG_FINGERPRINT),
+            ReportCacheState::Missing
+        );
+        let path = fixture.write_report("cache.mend.json", &report);
+        assert_eq!(
+            ReportCacheState::read(&path, CONFIG_FINGERPRINT),
+            ReportCacheState::Compatible
+        );
+        report.analysis_fingerprint = "previous-build".into();
+        fixture.write_report("cache.mend.json", &report);
+        assert_eq!(
+            ReportCacheState::read(&path, CONFIG_FINGERPRINT),
+            ReportCacheState::AnotherMendBuild
+        );
+        report.analysis_fingerprint = settings::current_analysis_fingerprint();
+        report.config_fingerprint = "previous-config".into();
+        fixture.write_report("cache.mend.json", &report);
+        assert_eq!(
+            ReportCacheState::read(&path, CONFIG_FINGERPRINT),
+            ReportCacheState::InputsChanged
+        );
+        fs::write(&path, b"not a report").expect("write unreadable report");
+        assert_eq!(
+            ReportCacheState::read(&path, CONFIG_FINGERPRINT),
+            ReportCacheState::Unreadable
+        );
     }
 
     #[test]
