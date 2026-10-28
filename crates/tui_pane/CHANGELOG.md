@@ -14,6 +14,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Shared `Viewport::navigate`, `Viewport::scroll_if_contains` and `table_row_at` support list navigation and table clicks. `TerminalApp::scroll` and `TileGridHost::cell_scrolled` forward wheel input to the tile under the pointer without moving focus.
 
 ### Fixed
+- Narrow grids admit only columns whose residents fit their row budget, preventing a divider panic during tile motion.
 - Settings: a row change ends an open edit, so Enter cannot save the text into another row. Navigation before the first draw reaches every row.
 - Config rewrites preserve unknown keys and comments.
 - A cell holding hundreds of rows no longer stalls the grid; each cell's content is measured at most once per height in a frame.
