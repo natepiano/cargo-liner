@@ -118,6 +118,33 @@ enum CycleCutReach {
     AtDepth(StackDepth),
 }
 
+/// A completed exposure is reusable only when its cycle cuts stayed within its own walk.
+#[derive(Debug, PartialEq, Eq)]
+enum SignatureReuse {
+    Reusable,
+    StackDependent,
+}
+
+/// Direct paths and workspace uses both expose a parent export outside its subtree.
+#[derive(Debug, PartialEq, Eq)]
+enum ParentExportUsage {
+    UsedOutsideSubtree,
+    UnusedOutsideSubtree,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DeclarationKindCompatibility {
+    Compatible,
+    Incompatible,
+}
+
+/// Named fields require both name and position; tuple fields also admit rustc's type spans.
+#[derive(Debug, PartialEq, Eq)]
+enum FieldIdentityMatch {
+    Matched,
+    Different,
+}
+
 impl CycleCutReach {
     /// The shallower of two reaches. [`Self::None`] constrains nothing, so it
     /// yields to any depth.
@@ -130,10 +157,16 @@ impl CycleCutReach {
 
     /// Whether every cut stayed at or below `depth`, which makes a call
     /// completing at that depth hold a result good for any stack.
-    const fn resolved_within(self, depth: StackDepth) -> bool {
+    const fn signature_reuse(self, depth: StackDepth) -> SignatureReuse {
         match self {
-            Self::None => true,
-            Self::AtDepth(cut_depth) => cut_depth >= depth,
+            Self::None => SignatureReuse::Reusable,
+            Self::AtDepth(cut_depth) => {
+                if cut_depth >= depth {
+                    SignatureReuse::Reusable
+                } else {
+                    SignatureReuse::StackDependent
+                }
+            },
         }
     }
 }
@@ -369,13 +402,14 @@ impl ImplSignatureCarrierReachSource<'_> {
                 )),
             Self::ParentBoundary { module_path } => {
                 let mut outward_reach = recursive_outward_reach;
-                if parent_boundary_item_is_used_outside_parent(ctx, module_path, &self_type.name)? {
-                    accumulate_exposure_reach(
+                match parent_export_usage(ctx, module_path, &self_type.name)? {
+                    ParentExportUsage::UsedOutsideSubtree => accumulate_exposure_reach(
                         ctx,
                         self_type.item_def_id,
                         &mut outward_reach,
                         effective_path_reach(ctx, self_type.item_def_id),
-                    );
+                    ),
+                    ParentExportUsage::UnusedOutsideSubtree => {},
                 }
                 Ok(outward_reach)
             },
@@ -925,13 +959,14 @@ fn parent_boundary_exposer_reach(
         visited,
         facade_exposes,
     )?;
-    if parent_boundary_item_is_used_outside_parent(ctx, parent_module_path, &exposer.name)? {
-        accumulate_exposure_reach(
+    match parent_export_usage(ctx, parent_module_path, &exposer.name)? {
+        ParentExportUsage::UsedOutsideSubtree => accumulate_exposure_reach(
             ctx,
             exposer.item_def_id,
             &mut outward_reach,
             effective_path_reach(ctx, exposer.item_def_id),
-        );
+        ),
+        ParentExportUsage::UnusedOutsideSubtree => {},
     }
     let Some(outward_reach) = outward_reach else {
         return Ok(None);
@@ -1028,11 +1063,11 @@ fn type_is_exposed_outside_parent(
         .signature_exposure_cache
         .end_cut_measurement(enclosing_cut_reach);
     if let Ok(exterior_reach) = result.as_ref() {
-        if cut_reach.resolved_within(depth) {
-            ctx.signature_exposure_cache
-                .store_exterior_reach(item_def_id, *exterior_reach);
-        } else {
-            sweep_counters::record_signature_refused();
+        match cut_reach.signature_reuse(depth) {
+            SignatureReuse::Reusable => ctx
+                .signature_exposure_cache
+                .store_exterior_reach(item_def_id, *exterior_reach),
+            SignatureReuse::StackDependent => sweep_counters::record_signature_refused(),
         }
     }
     result
@@ -1199,11 +1234,11 @@ fn effective_path_reach(
     Some(effective_reach)
 }
 
-fn parent_boundary_item_is_used_outside_parent(
+fn parent_export_usage(
     ctx: &ExposureContext<'_, '_>,
     parent_module_path: &[String],
     exposing_item_name: &str,
-) -> Result<bool> {
+) -> Result<ParentExportUsage> {
     let exposing_names = [exposing_item_name.to_string()];
     if facade::path_exists_outside_module(
         ctx.source_cache,
@@ -1213,19 +1248,25 @@ fn parent_boundary_item_is_used_outside_parent(
         parent_module_path,
         &exposing_names,
     ) {
-        return Ok(true);
+        return Ok(ParentExportUsage::UsedOutsideSubtree);
     }
 
-    Ok(facade::workspace_source_parent_export_literal_usage(
+    let usages = facade::workspace_source_parent_export_literal_usage(
         ctx.source_cache,
         ctx.settings,
         ctx.tcx,
         ctx.module_sources,
         parent_module_path,
         &exposing_names,
-    )?
-    .values()
-    .any(|usage| matches!(usage, ParentFacadeUsage::UsedOutsideSubtree)))
+    )?;
+    if usages
+        .values()
+        .any(|usage| matches!(usage, ParentFacadeUsage::UsedOutsideSubtree))
+    {
+        Ok(ParentExportUsage::UsedOutsideSubtree)
+    } else {
+        Ok(ParentExportUsage::UnusedOutsideSubtree)
+    }
 }
 
 fn resolve_active_declaration(
@@ -1249,10 +1290,10 @@ fn resolve_active_declaration(
         };
         if declaration_module != module
             || declaration_name.as_str() != source_declaration.name
-            || !declaration_kind_is_compatible(
+            || declaration_kind_compatibility(
                 source_declaration.kind,
                 ctx.tcx.def_kind(local_def_id.to_def_id()),
-            )
+            ) == DeclarationKindCompatibility::Incompatible
         {
             continue;
         }
@@ -1272,11 +1313,11 @@ fn resolve_active_declaration(
     None
 }
 
-const fn declaration_kind_is_compatible(
+const fn declaration_kind_compatibility(
     source_kind: OutwardDeclarationKind,
     def_kind: DefKind,
-) -> bool {
-    matches!(
+) -> DeclarationKindCompatibility {
+    if matches!(
         (source_kind, def_kind),
         (
             visitor::OutwardDeclarationKind::Const,
@@ -1291,7 +1332,11 @@ const fn declaration_kind_is_compatible(
             | (visitor::OutwardDeclarationKind::Trait, DefKind::Trait)
             | (visitor::OutwardDeclarationKind::TypeAlias, DefKind::TyAlias)
             | (visitor::OutwardDeclarationKind::Union, DefKind::Union)
-    )
+    ) {
+        DeclarationKindCompatibility::Compatible
+    } else {
+        DeclarationKindCompatibility::Incompatible
+    }
 }
 
 fn resolve_impl_signature_carrier(
@@ -1435,7 +1480,7 @@ fn resolve_field_signature_carrier(
         if !ctx
             .module_sources
             .span_is_in_file(ctx.tcx, field.span, canonical_source_file.as_ref())
-            || !source_identity.matches_hir_field(ctx.tcx, field)
+            || source_identity.hir_field_match(ctx.tcx, field) == FieldIdentityMatch::Different
         {
             continue;
         }
@@ -1472,14 +1517,19 @@ fn source_field_identity(
 }
 
 impl SourceFieldIdentity {
-    fn matches_hir_field(&self, tcx: TyCtxt<'_>, field: &FieldDef<'_>) -> bool {
+    fn hir_field_match(&self, tcx: TyCtxt<'_>, field: &FieldDef<'_>) -> FieldIdentityMatch {
         match self {
             Self::Named {
                 name,
                 byte_position,
             } => {
-                field.ident.name.as_str() == name
+                if field.ident.name.as_str() == name
                     && rustc_source_byte_position(tcx, field.ident.span) == *byte_position
+                {
+                    FieldIdentityMatch::Matched
+                } else {
+                    FieldIdentityMatch::Different
+                }
             },
             Self::Unnamed {
                 field_index,
@@ -1489,7 +1539,7 @@ impl SourceFieldIdentity {
                 let hir_field_position = rustc_source_byte_position(tcx, field.span);
                 let hir_definition_position =
                     rustc_source_byte_position(tcx, tcx.def_span(field.def_id));
-                field
+                if field
                     .ident
                     .name
                     .as_str()
@@ -1499,6 +1549,11 @@ impl SourceFieldIdentity {
                     || hir_field_position == *type_byte_position
                     || hir_definition_position == *field_byte_position
                     || hir_definition_position == *type_byte_position
+                {
+                    FieldIdentityMatch::Matched
+                } else {
+                    FieldIdentityMatch::Different
+                }
             },
         }
     }
@@ -1581,4 +1636,71 @@ fn module_def_id(tcx: TyCtxt<'_>, module: LocalDefId, module_name: &str) -> Opti
             _ => None,
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use rustc_hir::def::DefKind;
+
+    use super::CycleCutReach;
+    use super::DeclarationKindCompatibility;
+    use super::OutwardDeclarationKind;
+    use super::SignatureExposureCache;
+    use super::SignatureReuse;
+    use super::declaration_kind_compatibility;
+
+    #[test]
+    fn cycle_cuts_are_reusable_only_at_or_above_their_target() {
+        assert_eq!(
+            CycleCutReach::None.signature_reuse(4),
+            SignatureReuse::Reusable
+        );
+        for (depth, expected) in [
+            (1, SignatureReuse::Reusable),
+            (2, SignatureReuse::Reusable),
+            (3, SignatureReuse::StackDependent),
+        ] {
+            assert_eq!(CycleCutReach::AtDepth(2).signature_reuse(depth), expected);
+        }
+        let cache = SignatureExposureCache::default();
+        let outer = cache.begin_cut_measurement();
+        cache.record_cycle_cut(3);
+        let inner = cache.begin_cut_measurement();
+        cache.record_cycle_cut(1);
+        let inner_reach = cache.end_cut_measurement(inner);
+        assert_eq!(
+            inner_reach.signature_reuse(2),
+            SignatureReuse::StackDependent
+        );
+        assert_eq!(
+            cache.end_cut_measurement(outer).signature_reuse(1),
+            SignatureReuse::Reusable,
+        );
+    }
+
+    #[test]
+    fn source_declaration_kinds_admit_only_the_corresponding_active_kind() {
+        let cases = [
+            (OutwardDeclarationKind::Enum, DefKind::Enum),
+            (OutwardDeclarationKind::Function, DefKind::Fn),
+            (OutwardDeclarationKind::Struct, DefKind::Struct),
+            (OutwardDeclarationKind::Trait, DefKind::Trait),
+            (OutwardDeclarationKind::TypeAlias, DefKind::TyAlias),
+            (OutwardDeclarationKind::Union, DefKind::Union),
+        ];
+        for (source, active) in cases {
+            assert_eq!(
+                declaration_kind_compatibility(source, active),
+                DeclarationKindCompatibility::Compatible,
+            );
+            assert_eq!(
+                declaration_kind_compatibility(source, DefKind::Mod),
+                DeclarationKindCompatibility::Incompatible,
+            );
+        }
+        assert_eq!(
+            declaration_kind_compatibility(OutwardDeclarationKind::Struct, DefKind::Enum),
+            DeclarationKindCompatibility::Incompatible,
+        );
+    }
 }
