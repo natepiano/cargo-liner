@@ -5177,7 +5177,8 @@ mod tests {
         );
         grid.settle_for_test();
 
-        let area = Rect::new(0, 0, 100, TITLE_AREA.height);
+        // No core-width tile fits below the configured tile floor.
+        let area = Rect::new(0, 0, TEST_TILE_WIDTH - 1, TITLE_AREA.height);
         let mut buffer = Buffer::empty(area);
         draw_tile_grid(
             &mut buffer,
@@ -5428,7 +5429,8 @@ mod tests {
         );
         grid.settle_for_test();
         grid.collapse_queued_changes_for_test();
-        let area = Rect::new(0, 0, 79, TITLE_AREA.height);
+        // No core-width tile fits below the configured tile floor.
+        let area = Rect::new(0, 0, TEST_TILE_WIDTH - 1, TITLE_AREA.height);
         buffer = Buffer::empty(area);
         draw_tile_grid(
             &mut buffer,
@@ -5466,7 +5468,8 @@ mod tests {
         );
         grid.settle_for_test();
         grid.collapse_queued_changes_for_test();
-        let area = Rect::new(0, 0, 79, TITLE_AREA.height);
+        // No core-width tile fits below the configured tile floor.
+        let area = Rect::new(0, 0, TEST_TILE_WIDTH - 1, TITLE_AREA.height);
         grid.set_layout(area, growth);
         grid.sync(
             &TileDemands {

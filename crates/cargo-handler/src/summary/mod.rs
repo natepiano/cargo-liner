@@ -20,17 +20,12 @@ use accounts::AccountLines;
 use age::AgeLayout;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Alignment;
-use ratatui::layout::Constraint;
-use ratatui::layout::Flex;
-use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-use ratatui::widgets::Row;
-use ratatui::widgets::Table;
 use ratatui::widgets::Widget;
 use tui_pane::ColumnSpec;
 use tui_pane::ColumnWidths;
@@ -38,6 +33,8 @@ use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::label_color;
 use tui_pane::text_default;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use self::age::age_label;
 use crate::agent_cell;
@@ -77,6 +74,7 @@ use crate::theme::Role;
 
 /// Rows the summary draws for `machines`: each machine's heading and
 /// table, and a gap between one machine and the next.
+#[cfg(test)]
 fn machine_height(machines: &[Machine<'_>], placement: &AgentPlacement<'_>) -> usize {
     let groups: usize = machines
         .iter()
@@ -113,6 +111,7 @@ pub(crate) fn width(
     ))
 }
 
+#[cfg(test)]
 fn machine_width(
     machines: &[Machine<'_>],
     placement: &AgentPlacement<'_>,
@@ -187,6 +186,7 @@ fn height_at_width(
 
 /// Rows a machine's table takes for `rows` agents: none when it lists
 /// none, else its label row and the agents.
+#[cfg(test)]
 fn table_height(rows: usize) -> usize {
     if rows == 0 {
         0
@@ -209,16 +209,6 @@ fn root_rows<'a>(
     })
 }
 
-/// Shared column widths, account visibility and the footer palette.
-struct SummaryColumns<'a> {
-    visible:        Vec<SummaryColumn>,
-    ages:           AgeLayout,
-    footer_colors:  &'a FooterColors,
-    constraints:    Vec<Constraint>,
-    account_column: AccountColumn,
-    sort:           SummarySort,
-}
-
 /// The census, palette and ordering shared throughout one summary draw.
 pub(crate) struct SummaryFrame<'a, 'data> {
     pub(crate) accounts:       &'a AccountsTable,
@@ -232,11 +222,216 @@ pub(crate) struct SummaryFrame<'a, 'data> {
     pub(crate) sort:           SummarySort,
 }
 
+/// A width-fit table either draws every kept header or consumes no rows.
+enum SummarySessionTable {
+    Drawable {
+        columns: Vec<SummaryColumn>,
+        widths:  Vec<u16>,
+    },
+    OmittedForWidth,
+}
+
+impl SummarySessionTable {
+    fn fit(frame: &SummaryFrame<'_, '_>, width: u16) -> Self {
+        let available = width.saturating_sub(cell_width(SECTION_ITEM_INDENT));
+        let measured = column_widths(
+            frame.machines,
+            frame.placement,
+            frame.now,
+            frame.account_column,
+            frame.sort,
+        );
+        let mut columns = populated_columns(frame.machines, frame.placement, frame.account_column);
+        let total = |columns: &[SummaryColumn]| {
+            columns
+                .iter()
+                .map(|c| usize::from(measured.get(c.index())))
+                .sum::<usize>()
+                + columns.len().saturating_sub(1) * usize::from(TABLE_COLUMN_SPACING)
+        };
+        for drop in [
+            SummaryColumn::Directory,
+            SummaryColumn::Desktop,
+            SummaryColumn::Age,
+            SummaryColumn::Agent,
+            SummaryColumn::Pid,
+        ] {
+            if total(&columns) <= usize::from(available) {
+                break;
+            }
+            columns.retain(|c| *c != drop);
+        }
+        let mut widths: Vec<_> = columns.iter().map(|c| measured.get(c.index())).collect();
+        let fixed = columns
+            .iter()
+            .zip(&widths)
+            .filter(|(c, _)| **c != SummaryColumn::Name)
+            .map(|(_, w)| usize::from(*w))
+            .sum::<usize>()
+            + columns.len().saturating_sub(1) * usize::from(TABLE_COLUMN_SPACING);
+        if let Some(index) = columns.iter().position(|c| *c == SummaryColumn::Name) {
+            widths[index] = widths[index]
+                .min(available.saturating_sub(u16::try_from(fixed).unwrap_or(u16::MAX)));
+            if widths[index] < cell_width(&frame.sort.header(SummaryColumn::Name)) {
+                return Self::OmittedForWidth;
+            }
+        }
+        if columns.is_empty()
+            || widths.iter().map(|w| usize::from(*w)).sum::<usize>()
+                + columns.len().saturating_sub(1) * usize::from(TABLE_COLUMN_SPACING)
+                > usize::from(available)
+        {
+            Self::OmittedForWidth
+        } else {
+            Self::Drawable { columns, widths }
+        }
+    }
+}
+
+/// Owned painted lines and positions; omission never leaves a phantom row.
+struct SummaryMachines {
+    lines:      Vec<Line<'static>>,
+    selections: Vec<(crate::interaction::RowIdentity, RowSpan)>,
+    headers:    Vec<HeaderSpan<SummaryColumn>>,
+}
+
+impl SummaryMachines {
+    fn new(frame: &SummaryFrame<'_, '_>, width: u16) -> Self {
+        use crate::interaction::RowIdentity;
+        let table = SummarySessionTable::fit(frame, width);
+        let ages = age_layout(frame.machines, frame.placement, frame.now);
+        let mut result = Self {
+            lines:      Vec::new(),
+            selections: Vec::new(),
+            headers:    Vec::new(),
+        };
+        for machine in frame.machines {
+            if !result.lines.is_empty() {
+                result.lines.extend(std::iter::repeat_n(
+                    Line::default(),
+                    usize::from(GROUP_GAP_HEIGHT),
+                ));
+            }
+            let mut rows: Vec<_> = root_rows(*machine, frame.placement).collect();
+            rows.sort_by(|left, right| compare_rows(left, right, frame.sort, frame.account_column));
+            result.selections.push((
+                RowIdentity::SummaryGroup {
+                    machine: machine.name.to_owned(),
+                },
+                RowSpan::single(result.lines.len()),
+            ));
+            result.lines.extend(std::iter::repeat_n(
+                fitted_heading(machine, rows.len(), width),
+                usize::from(GROUP_HEADER_HEIGHT),
+            ));
+            if let SummarySessionTable::Drawable { columns, widths } = &table
+                && !rows.is_empty()
+            {
+                let y = u16::try_from(result.lines.len()).unwrap_or(u16::MAX);
+                let mut x = cell_width(SECTION_ITEM_INDENT);
+                for (&column, &width) in columns.iter().zip(widths) {
+                    result.headers.push(HeaderSpan {
+                        column,
+                        columns: x..x.saturating_add(width),
+                        row: y,
+                    });
+                    x = x.saturating_add(width).saturating_add(TABLE_COLUMN_SPACING);
+                }
+                result.lines.extend(std::iter::repeat_n(
+                    summary_table_line(
+                        columns
+                            .iter()
+                            .map(|c| {
+                                Line::styled(
+                                    frame.sort.header(*c),
+                                    Style::default().fg(label_color()),
+                                )
+                            })
+                            .collect(),
+                        columns,
+                        widths,
+                    ),
+                    usize::from(TABLE_HEADER_HEIGHT),
+                ));
+                for row in rows {
+                    result.selections.push((
+                        RowIdentity::session(machine.name, row),
+                        RowSpan::single(result.lines.len()),
+                    ));
+                    let fields = agent_fields(
+                        row,
+                        agent_cell::name_style(frame.cells, machine.name, row.pid),
+                        frame.now,
+                        frame.account_column,
+                        frame.footer_colors,
+                        &ages,
+                        columns,
+                    );
+                    result
+                        .lines
+                        .push(summary_table_line(fields, columns, widths));
+                }
+            }
+            if machine.state.hierarchy_notice().is_visible() {
+                result.lines.push(truncated_line(
+                    Line::styled(
+                        format!(
+                            "{}{}",
+                            SECTION_ITEM_INDENT,
+                            machine.state.hierarchy_notice().text()
+                        ),
+                        Style::default()
+                            .fg(text_default())
+                            .add_modifier(Modifier::DIM),
+                    ),
+                    usize::from(width),
+                ));
+            }
+        }
+        result
+    }
+}
+
+fn summary_table_line(
+    fields: Vec<Line<'static>>,
+    columns: &[SummaryColumn],
+    widths: &[u16],
+) -> Line<'static> {
+    let mut spans = vec![Span::raw(SECTION_ITEM_INDENT)];
+    for (index, ((line, column), &width)) in fields.into_iter().zip(columns).zip(widths).enumerate()
+    {
+        if index > 0 {
+            spans.push(Span::raw(" ".repeat(usize::from(TABLE_COLUMN_SPACING))));
+        }
+        let line = match column {
+            SummaryColumn::Name
+            | SummaryColumn::Agent
+            | SummaryColumn::Desktop
+            | SummaryColumn::Directory => truncated_line(line, usize::from(width)),
+            SummaryColumn::Pid | SummaryColumn::Age | SummaryColumn::Status => line,
+        };
+        let padding = usize::from(width).saturating_sub(line.width());
+        if column.alignment() == Alignment::Right {
+            spans.push(Span::raw(" ".repeat(padding)));
+        }
+        let style = line.style;
+        spans.extend(
+            line.spans
+                .into_iter()
+                .map(|span| Span::styled(span.content, style.patch(span.style))),
+        );
+        if column.alignment() != Alignment::Right {
+            spans.push(Span::raw(" ".repeat(padding)));
+        }
+    }
+    Line::from(spans)
+}
+
 /// The summary allocation owns the account lines used by all frame readers.
 pub(crate) struct SummaryLayout {
-    width:        u16,
-    accounts:     AccountLines,
-    machine_rows: usize,
+    width:    u16,
+    accounts: AccountLines,
+    machines: SummaryMachines,
 }
 
 impl SummaryLayout {
@@ -250,16 +445,16 @@ impl SummaryLayout {
                 frame.accounts_sort,
                 width,
             ),
-            machine_rows: machine_height(frame.machines, frame.placement),
+            machines: SummaryMachines::new(frame, width),
         }
     }
 
     pub(crate) const fn allocation_width(&self) -> u16 { self.width }
 
     pub(crate) fn height(&self) -> usize {
-        self.machine_rows
+        self.machines.lines.len()
             + self.accounts.lines.len()
-            + if self.machine_rows > 0 && !self.accounts.lines.is_empty() {
+            + if !self.machines.lines.is_empty() && !self.accounts.lines.is_empty() {
                 usize::from(GROUP_GAP_HEIGHT)
             } else {
                 0
@@ -274,14 +469,28 @@ impl SummaryLayout {
             .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
             .max()
             .unwrap_or_default();
-        machine_width(
-            frame.machines,
-            frame.placement,
-            frame.now,
-            frame.account_column,
-            frame.sort,
-        )
-        .max(accounts)
+        let _ = frame;
+        self.machines
+            .lines
+            .iter()
+            .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
+            .max()
+            .unwrap_or(0)
+            .max(accounts)
+    }
+
+    pub(crate) fn header_spans(&self, area: Rect) -> Vec<HeaderSpan<SummaryColumn>> {
+        self.machines
+            .headers
+            .iter()
+            .filter(|header| header.row < area.height)
+            .map(|header| HeaderSpan {
+                column:  header.column,
+                columns: area.x.saturating_add(header.columns.start)
+                    ..area.x.saturating_add(header.columns.end).min(area.right()),
+                row:     area.y.saturating_add(header.row),
+            })
+            .collect()
     }
 
     /// Header and body source lines come from the same fitted accounts record.
@@ -292,11 +501,11 @@ impl SummaryLayout {
         let Some((_, last)) = self.accounts.selections.last() else {
             return SectionPin::NoAccounts;
         };
-        let start = self.machine_rows
-            + if self.machine_rows > 0 {
-                usize::from(GROUP_GAP_HEIGHT)
-            } else {
+        let start = self.machines.lines.len()
+            + if self.machines.lines.is_empty() {
                 0
+            } else {
+                usize::from(GROUP_GAP_HEIGHT)
             };
         SectionPin::Accounts {
             headers: start..start + first.start(),
@@ -305,11 +514,11 @@ impl SummaryLayout {
     }
 
     fn accounts_area(&self, area: Rect) -> Rect {
-        let offset = self.machine_rows
-            + if self.machine_rows > 0 {
-                usize::from(GROUP_GAP_HEIGHT)
-            } else {
+        let offset = self.machines.lines.len()
+            + if self.machines.lines.is_empty() {
                 0
+            } else {
+                usize::from(GROUP_GAP_HEIGHT)
             };
         let offset = u16::try_from(offset).unwrap_or(u16::MAX).min(area.height);
         Rect {
@@ -356,23 +565,8 @@ pub(crate) fn draw_measured(
     frame: &SummaryFrame<'_, '_>,
     layout: &SummaryLayout,
 ) {
-    let SummaryHeader {
-        visible,
-        constraints,
-        machines,
-        ..
-    } = summary_header(area, frame);
-    let columns = SummaryColumns {
-        visible,
-        ages: age_layout(frame.machines, frame.placement, frame.now),
-        footer_colors: frame.footer_colors,
-        constraints,
-        account_column: frame.account_column,
-        sort: frame.sort,
-    };
-    for machine in machines {
-        draw_machine(buffer, machine, frame.cells, &columns, frame.now);
-    }
+    let _ = frame;
+    Paragraph::new(layout.machines.lines.clone()).render(area, buffer);
     Paragraph::new(layout.accounts.lines.clone()).render(layout.accounts_area(area), buffer);
 }
 
@@ -388,24 +582,8 @@ pub(crate) fn selection_rows(
         layout.width,
         u16::try_from(layout.height()).unwrap_or(u16::MAX),
     );
-    let mut result = Vec::new();
-    for mut machine in machine_tables(area, frame) {
-        result.push((
-            RowIdentity::SummaryGroup {
-                machine: machine.machine.name.to_owned(),
-            },
-            RowSpan::single(usize::from(machine.heading.y)),
-        ));
-        machine
-            .rows
-            .sort_by(|a, b| compare_rows(a, b, frame.sort, frame.account_column));
-        for (index, row) in machine.rows.into_iter().enumerate() {
-            result.push((
-                RowIdentity::session(machine.machine.name, row),
-                RowSpan::single(usize::from(machine.table.y) + 1 + index),
-            ));
-        }
-    }
+    let _ = frame;
+    let mut result = layout.machines.selections.clone();
     let accounts_y = usize::from(layout.accounts_area(area).y);
     result.extend(
         layout
@@ -421,115 +599,6 @@ pub(crate) fn selection_rows(
             }),
     );
     result
-}
-
-/// A visible machine group with its heading, table and rows resolved together.
-struct MachineTable<'a> {
-    /// Machine identity and scan state used by its heading.
-    machine: Machine<'a>,
-    /// The visible part of the machine heading.
-    heading: Rect,
-    /// The visible table, whose top row is its column header.
-    table:   Rect,
-    /// A diagnostic follows the agents table without becoming a sortable row.
-    notice:  Rect,
-    /// Root rows before applying the summary ordering.
-    rows:    Vec<&'a AgentRow>,
-}
-
-/// Resolve vertical machine placement once for drawing and header clicks.
-fn machine_tables<'a>(area: Rect, frame: &SummaryFrame<'_, 'a>) -> Vec<MachineTable<'a>> {
-    let mut remaining = area;
-    let mut tables = Vec::new();
-    for &machine in frame.machines {
-        if remaining.is_empty() {
-            break;
-        }
-        let rows: Vec<_> = root_rows(machine, frame.placement).collect();
-        let heading = Rect {
-            height: GROUP_HEADER_HEIGHT.min(remaining.height),
-            ..remaining
-        };
-        let drawn = remaining
-            .height
-            .saturating_sub(GROUP_HEADER_HEIGHT)
-            .min(u16::try_from(table_height(rows.len())).unwrap_or(u16::MAX));
-        let table = Rect {
-            y: remaining.y.saturating_add(GROUP_HEADER_HEIGHT),
-            height: drawn,
-            ..indented(remaining)
-        };
-        let used = GROUP_HEADER_HEIGHT
-            .saturating_add(drawn)
-            .saturating_add(u16::from(machine.state.hierarchy_notice().is_visible()))
-            .saturating_add(GROUP_GAP_HEIGHT);
-        let notice = Rect {
-            y: table.y.saturating_add(drawn),
-            height: u16::from(machine.state.hierarchy_notice().is_visible()).min(
-                remaining
-                    .height
-                    .saturating_sub(GROUP_HEADER_HEIGHT)
-                    .saturating_sub(drawn),
-            ),
-            ..indented(remaining)
-        };
-        tables.push(MachineTable {
-            machine,
-            heading,
-            table,
-            notice,
-            rows,
-        });
-        remaining.y = remaining.y.saturating_add(used);
-        remaining.height = remaining.height.saturating_sub(used);
-    }
-    tables
-}
-
-/// Draw one machine using the same resolved rectangles as header hit testing.
-fn draw_machine(
-    buffer: &mut Buffer,
-    machine: MachineTable<'_>,
-    cells: &[AgentEntry<'_>],
-    columns: &SummaryColumns<'_>,
-    now: u64,
-) {
-    let mut rows = machine.rows;
-    rows.sort_by(|left, right| compare_rows(left, right, columns.sort, columns.account_column));
-    let label = Style::default().fg(label_color());
-    Paragraph::new(truncated_line(
-        heading(&machine.machine, rows.len()),
-        usize::from(machine.heading.width),
-    ))
-    .render(machine.heading, buffer);
-    Table::new(
-        rows.iter().map(|row| {
-            agent_row(
-                row,
-                agent_cell::name_style(cells, machine.machine.name, row.pid),
-                now,
-                columns.account_column,
-                columns.footer_colors,
-                &columns.ages,
-                &columns.visible,
-            )
-        }),
-        columns.constraints.iter().copied(),
-    )
-    .header(Row::new(columns.visible.iter().map(|&column| {
-        Line::from(Span::styled(columns.sort.header(column), label)).alignment(column.alignment())
-    })))
-    .column_spacing(TABLE_COLUMN_SPACING)
-    .render(machine.table, buffer);
-    if machine.machine.state.hierarchy_notice().is_visible() {
-        Paragraph::new(Span::styled(
-            machine.machine.state.hierarchy_notice().text(),
-            Style::default()
-                .fg(text_default())
-                .add_modifier(Modifier::DIM),
-        ))
-        .render(machine.notice, buffer);
-    }
 }
 
 /// Compare values within one machine; ties keep the census's original order.
@@ -553,54 +622,13 @@ fn compare_rows(
         .then_with(|| (left.started, left.pid).cmp(&(right.started, right.pid)))
 }
 
-/// Shared horizontal columns and vertical machine placement for the summary.
-struct SummaryHeader<'a> {
-    visible:     Vec<SummaryColumn>,
-    /// Column widths used by every machine table.
-    constraints: Vec<Constraint>,
-    /// The visible machine tables and their heading rectangles.
-    machines:    Vec<MachineTable<'a>>,
-    /// Header cells used to resolve clicks.
-    spans:       Vec<HeaderSpan<SummaryColumn>>,
-}
-
-/// One column layout supplies both drawing and header hit testing.
-fn summary_header<'a>(area: Rect, frame: &SummaryFrame<'_, 'a>) -> SummaryHeader<'a> {
-    let visible = populated_columns(frame.machines, frame.placement, frame.account_column);
-    let constraints = fitted_constraints(
-        &visible,
-        frame.machines,
-        frame.placement,
-        frame.now,
-        frame.account_column,
-        frame.sort,
-    );
-    let machines = machine_tables(area, frame);
-    let mut spans = Vec::new();
-    for machine in &machines {
-        if machine.rows.is_empty() || machine.table.is_empty() {
-            continue;
-        }
-        let rects = Layout::horizontal(constraints.iter().copied())
-            .spacing(TABLE_COLUMN_SPACING)
-            .flex(Flex::Start)
-            .split(machine.table);
-        spans.extend(sort::column_spans(&visible, &rects, machine.table.y));
-    }
-    SummaryHeader {
-        visible,
-        constraints,
-        machines,
-        spans,
-    }
-}
-
-/// Header spans for every visible machine table in summary-content coordinates.
+/// Direct callers construct the same owned layout as production drawing.
+#[cfg(test)]
 pub(crate) fn header_spans(
     area: Rect,
     frame: &SummaryFrame<'_, '_>,
 ) -> Vec<HeaderSpan<SummaryColumn>> {
-    summary_header(area, frame).spans
+    SummaryLayout::new(frame, area.width).header_spans(area)
 }
 
 /// `machine`'s heading: its name in bold, then how many agents it
@@ -631,6 +659,39 @@ fn heading<'a>(machine: &Machine<'a>, roots: usize) -> Line<'a> {
     Line::from(heading)
 }
 
+/// Keep the count note whole; only the machine name has a text budget.
+fn fitted_heading(machine: &Machine<'_>, roots: usize, width: u16) -> Line<'static> {
+    if !matches!(machine.state, MachineState::Answered(_, _)) {
+        return truncated_line(heading(machine, roots), usize::from(width));
+    }
+    let note = count_note(roots);
+    let reserved = cell_width(SECTION_HEADER_INDENT)
+        .saturating_add(cell_width(HEADING_SEPARATOR))
+        .saturating_add(cell_width(&note));
+    let name_style = Style::default()
+        .fg(text_default())
+        .add_modifier(Modifier::BOLD);
+    let mut spans = vec![Span::raw(SECTION_HEADER_INDENT)];
+    if reserved < width {
+        spans.push(Span::styled(
+            truncated(machine.name, usize::from(width - reserved)),
+            name_style,
+        ));
+        spans.push(separator());
+        spans.push(Span::styled(note, Style::default().fg(text_default())));
+    } else {
+        // The ellipsis marks the omitted note without cutting any of its digits.
+        spans.push(Span::styled(
+            truncated(
+                &format!("{}{TRUNCATION_MARK}", machine.name),
+                usize::from(width.saturating_sub(cell_width(SECTION_HEADER_INDENT))),
+            ),
+            name_style,
+        ));
+    }
+    Line::from(spans)
+}
+
 /// The ` · ` between facts on one line, in plain text: only a label
 /// takes the label color.
 pub(crate) fn separator() -> Span<'static> {
@@ -659,7 +720,7 @@ impl SummaryColumn {
 }
 
 /// One agent's table row, its name drawn in `name_style`.
-fn agent_row(
+fn agent_fields(
     row: &AgentRow,
     name_style: Style,
     now: u64,
@@ -667,32 +728,31 @@ fn agent_row(
     footer_colors: &FooterColors,
     ages: &AgeLayout,
     visible: &[SummaryColumn],
-) -> Row<'static> {
+) -> Vec<Line<'static>> {
     let text = Style::default().fg(text_default());
-    Row::new(
-        [
-            Line::from(Span::styled(row.pid.to_string(), text)),
-            agent_label(row, account_column, footer_colors),
-            Line::from(Span::styled(
-                truncated(&row.name, usize::from(NAME_COLUMN_MAX)),
-                name_style,
-            )),
-            Line::from(Span::styled(
-                status_text(row).to_string(),
-                status_role(row).style(),
-            )),
-            Line::from(Span::styled(
-                ages.format(now.saturating_sub(row.started)),
-                text,
-            )),
-            Line::from(Span::styled(desktop_text(row).to_string(), text)),
-            Line::from(Span::styled(row.directory.clone(), text)),
-        ]
-        .into_iter()
-        .zip(SummaryColumn::ALL)
-        .filter(|(_, column)| visible.contains(column))
-        .map(|(line, column)| line.alignment(column.alignment())),
-    )
+    [
+        Line::from(Span::styled(row.pid.to_string(), text)),
+        agent_label(row, account_column, footer_colors),
+        Line::from(Span::styled(
+            truncated(&row.name, usize::from(NAME_COLUMN_MAX)),
+            name_style,
+        )),
+        Line::from(Span::styled(
+            status_text(row).to_string(),
+            status_role(row).style(),
+        )),
+        Line::from(Span::styled(
+            ages.format(now.saturating_sub(row.started)),
+            text,
+        )),
+        Line::from(Span::styled(desktop_text(row).to_string(), text)),
+        Line::from(Span::styled(row.directory.clone(), text)),
+    ]
+    .into_iter()
+    .zip(SummaryColumn::ALL)
+    .filter(|(_, column)| visible.contains(column))
+    .map(|(line, column)| line.alignment(column.alignment()))
+    .collect()
 }
 
 /// An account label with its tier kept in the existing program style.
@@ -740,16 +800,46 @@ pub(crate) fn desktop_text(row: &AgentRow) -> &str {
 /// `name` cut to `max` cells, ending in [`TRUNCATION_MARK`] when it was
 /// longer.
 pub(crate) fn truncated(name: &str, max: usize) -> String {
-    if name.chars().count() <= max {
-        return name.to_string();
+    match TextCut::for_width(name, max) {
+        TextCut::Whole => name.to_owned(),
+        TextCut::NoCells => String::new(),
+        TextCut::Ellipsis { prefix_bytes } => {
+            let mut cut = name[..prefix_bytes].to_owned();
+            cut.push(TRUNCATION_MARK);
+            cut
+        },
     }
-    if max == 0 {
-        return String::new();
+}
+
+/// One grapheme boundary and cell budget serve plain and styled text.
+enum TextCut {
+    Whole,
+    NoCells,
+    Ellipsis { prefix_bytes: usize },
+}
+
+impl TextCut {
+    fn for_width(text: &str, width: usize) -> Self {
+        if UnicodeWidthStr::width(text) <= width {
+            return Self::Whole;
+        }
+        if width == 0 {
+            return Self::NoCells;
+        }
+        let mut used = 0;
+        let mut end = 0;
+        for (index, grapheme) in text.grapheme_indices(true) {
+            let cells = UnicodeWidthStr::width(grapheme);
+            if used + cells > width - 1 {
+                break;
+            }
+            used += cells;
+            end = index + grapheme.len();
+        }
+        Self::Ellipsis {
+            prefix_bytes: text[..end].trim_end().len(),
+        }
     }
-    let prefix: String = name.chars().take(max - 1).collect();
-    let mut cut = prefix.trim_end().to_owned();
-    cut.push(TRUNCATION_MARK);
-    cut
 }
 
 /// Use the shared cut result while retaining every visible span's style.
@@ -759,58 +849,30 @@ pub(super) fn truncated_line(line: Line<'_>, max: usize) -> Line<'static> {
         .iter()
         .map(|span| span.content.as_ref())
         .collect();
-    let cut = truncated(&text, max);
-    if cut == text {
-        return Line::from(
-            line.spans
-                .into_iter()
-                .map(|span| Span::styled(span.content.into_owned(), span.style))
-                .collect::<Vec<_>>(),
-        )
-        .style(line.style);
-    }
-    let mut remaining = cut.chars().count().saturating_sub(1);
+    let cut = TextCut::for_width(&text, max);
+    let mut remaining = match cut {
+        TextCut::Whole => text.len(),
+        TextCut::NoCells => 0,
+        TextCut::Ellipsis { prefix_bytes } => prefix_bytes,
+    };
     let mut spans = Vec::new();
     let mut last_style = line.style;
     for span in line.spans {
         if remaining == 0 {
             break;
         }
-        let content: String = span.content.chars().take(remaining).collect();
-        remaining = remaining.saturating_sub(content.chars().count());
+        let bytes = remaining.min(span.content.len());
+        let content = span.content[..bytes].to_owned();
+        remaining -= bytes;
         last_style = span.style;
         spans.push(Span::styled(content, span.style));
     }
-    if !cut.is_empty() {
+    if matches!(cut, TextCut::Ellipsis { .. }) {
         spans.push(Span::styled(TRUNCATION_MARK.to_string(), last_style));
     }
-    Line::from(spans).style(line.style)
-}
-
-/// Column widths fitted to the widest cell across every machine's rows.
-/// `name` stops at [`NAME_COLUMN_MAX`], and `directory` takes whatever
-/// the fitted columns leave.
-fn fitted_constraints(
-    visible: &[SummaryColumn],
-    machines: &[Machine<'_>],
-    placement: &AgentPlacement<'_>,
-    now: u64,
-    account_column: AccountColumn,
-    sort: SummarySort,
-) -> Vec<Constraint> {
-    let constraints =
-        column_widths(machines, placement, now, account_column, sort).to_constraints();
-    visible
-        .iter()
-        .map(|column| {
-            let constraint = constraints[column.index()];
-            if *column == SummaryColumn::Directory {
-                Constraint::Min(cell_width(&sort.header(SummaryColumn::Directory)))
-            } else {
-                constraint
-            }
-        })
-        .collect()
+    let mut result = Line::from(spans).style(line.style);
+    result.alignment = line.alignment;
+    result
 }
 
 /// A summary column exists only when a listed row supplies a value.
@@ -885,26 +947,29 @@ fn column_widths(
     {
         widths.observe_cell_usize(
             SummaryColumn::Pid.index(),
-            row.pid.to_string().chars().count(),
+            usize::from(cell_width(&row.pid.to_string())),
         );
         widths.observe_cell_usize(
             SummaryColumn::Agent.index(),
-            row.agent_label(account_column).chars().count(),
+            usize::from(cell_width(&row.agent_label(account_column))),
         );
-        widths.observe_cell_usize(SummaryColumn::Name.index(), row.name.chars().count());
+        widths.observe_cell_usize(
+            SummaryColumn::Name.index(),
+            usize::from(cell_width(&row.name)),
+        );
         widths.observe_cell_usize(
             SummaryColumn::Status.index(),
-            status_text(row).chars().count(),
+            usize::from(cell_width(status_text(row))),
         );
         let age = age_label(now.saturating_sub(row.started));
-        widths.observe_cell_usize(SummaryColumn::Age.index(), age.chars().count());
+        widths.observe_cell_usize(SummaryColumn::Age.index(), usize::from(cell_width(&age)));
         widths.observe_cell_usize(
             SummaryColumn::Desktop.index(),
-            desktop_text(row).chars().count(),
+            usize::from(cell_width(desktop_text(row))),
         );
         widths.observe_cell_usize(
             SummaryColumn::Directory.index(),
-            row.directory.chars().count(),
+            usize::from(cell_width(&row.directory)),
         );
     }
     widths
@@ -912,18 +977,9 @@ fn column_widths(
 
 /// `area` indented one level, where every machine's label row and rows
 /// sit, under headings at the outer level.
-fn indented(area: Rect) -> Rect {
-    let indent = cell_width(SECTION_ITEM_INDENT);
-    Rect {
-        x: area.x.saturating_add(indent),
-        width: area.width.saturating_sub(indent),
-        ..area
-    }
-}
-
 /// A string's width in cells, clamped into the column-width type.
 pub(crate) fn cell_width(text: &str) -> u16 {
-    u16::try_from(text.chars().count()).unwrap_or(u16::MAX)
+    u16::try_from(UnicodeWidthStr::width(text)).unwrap_or(u16::MAX)
 }
 
 #[cfg(test)]
@@ -1623,7 +1679,7 @@ mod tests {
         let mut rows = natedev.rows().to_vec();
         let longest_before = rows
             .iter()
-            .map(|row| row.directory.chars().count())
+            .map(|row| usize::from(cell_width(&row.directory)))
             .max()
             .unwrap_or(0);
         rows.push(row(
