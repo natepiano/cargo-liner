@@ -679,7 +679,8 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - A cold quiet natedev run (load 12.7–14.3) passed 1269 of 1269 tests, each under 1 s; the slowest took 667 ms. Checkpoint `fde451aa`.
 - Spec 8 (240 of 240 samples, on `bf27c025`): every after p95 is under 100 ms (repair 7.5, reconcile 33.5, claim 27.5, post-tool-use 29.4, release 49.2, gate 35.0 ms), against before medians of 2.9–8.7 s. The full table is in `docs/cargo-berth/as-built/check-under-load.md`.
 
-**Open (showrunner, 2026-10-23: the checkpoint does not wait for a Mac window):** the cold Mac timing on `bf27c025` compared with 88.730 s and 114.970 s, and the cold Mac run on `fde451aa` with every test under 1 s. The first attempt found a phase 22 drift test hung for four days (the cause phase 24 fixed; phase 27 bounds the wait). The `mac` seat runs both when the Mac is free and records them in `check-under-load.md`. A slowdown found there becomes a new phase.
+- Cold Mac runs (2026-10-27, exact archives, cold fixture cache, default threads): `bf27c025` passed 1258/1258 in 109.454 s (setup 9.123 s, load 4.2–14.6), against 88.730 s and 114.970 s; the loads differ, so this is not an equal-load regression proof. `fde451aa` passed 1268/1268 in 104.301 s (load 5.7–11.7), but **402 tests took 1 s or more** (slowest 6.845 s, `tests/board.rs` `cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations`). The Mac goal of this phase failed; phase 38 owns it. Full record and the ten slowest tests: `docs/cargo-berth/as-built/check-under-load.md`.
+- The four-day hung phase 22 drift test was the probe-pipe inheritance this phase fixed (stack and pipe capture); phase 27 bounds every child wait.
 
 **Files:**
 - `crates/cargo-berth-test-support/src/integration_repository.rs`, `crates/cargo-berth/tests/support/` — shared seeds and recorded histories
@@ -869,3 +870,15 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - The PostToolUse hook prints nothing for `NotChecked`; explicit `cargo-berth drift` shows it, so a stale lock is visible. Post-commit warns. Berth does not delete or age the lock.
 - No journal, disposition, ledger schema or replay change.
 - Proof: `drift_reports_an_index_lock_without_comparing_or_writing` (`tests/drift.rs`) failed before (status `clear`). It snapshots the berth state and the linked git dir, so any write fails it. The phase 36 hook tests and the phase 34 fast-forward guards stay green. 1304/1304; 5/5 support.
+
+### Phase 38 — Every cargo-berth test runs under a second on the Mac  · status: todo
+
+**Why:** the cold Mac run on `fde451aa` (phase 24) passed 1268/1268, but 402 tests took 1 s or more (slowest 6.845 s; nextest 104 s). On natedev every test is under 1 s (slowest 0.667 s). The user rule: a test that takes seconds is a defect. The Mac run starts about 38,700 processes; a process start costs much more on macOS. The parallel run does not show how much of each test's time is its own work and how much is contention.
+
+**Work Order:**
+1. Measure first, on the Mac at load below 10, on the current branch. Run the 20 slowest tests from the phase 24 record one at a time (one test per run, cold fixture cache) and record each test's time and process starts by origin (`CARGO_BERTH_PROCESS_COUNT_REPORT`). Then run the full suite once with default threads. Result: for each slow test, its alone time and its start count, and whether the cost is its own work or contention.
+2. Cut the measured cost where it lives: fewer process starts per test (shared recorded templates through `prepare_fixture_build`, in-process `gix` reads in place of Git children where the product already has them), and product work a test repeats with no new assertion. Each cut is measured on the Mac against the tree before it.
+3. Update the process-start pin from a complete Mac capture.
+
+**Verification:** a cold full Mac run on the phase checkpoint with default threads: every test under 1.000 s, all pass. natedev stays all under 1 s. Product-cost tests count work, never wall-clock time. No skipped tests, no thread-count change, no raised timeout, no wall-clock assertion. At most 3 repair rounds; then land if the branch has fewer slow Mac tests than main.
+
