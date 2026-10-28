@@ -232,11 +232,21 @@ mod tests {
     use crate::reporting::Severity;
 
     const CONFIG_FINGERPRINT: &str = "config-fingerprint";
+    const CRATE_ROOT_FILE: &str = "/package/src/lib.rs";
+    const FINDING_LINE: usize = 1;
+    const ITEM_DEF_PATH: &str = "crate::module::item";
+    const ITEM_NAME: &str = "item";
+    const ITEM_SOURCE_LINE: &str = "pub fn item() {}";
+    const NARROWER_SCOPE_DEF_PATH: &str = "crate::module";
+    const NARROWER_VISIBILITY_SUGGESTION: &str = "use narrower visibility";
+    const OUTSIDE_CALLER_MODULE_DEF_PATH: &str = "crate::other";
+    const PACKAGE_ROOT: &str = "/package";
+    const SCOPE_FINGERPRINT: &str = "scope";
 
     #[test]
     fn caller_aware_suppression_drops_narrowing_outside_scope() {
-        let item_path = "crate::module::item";
-        let narrower_scope = "crate::module";
+        let item_path = ITEM_DEF_PATH;
+        let narrower_scope = NARROWER_SCOPE_DEF_PATH;
         let mut reports = vec![StoredReport {
             findings: vec![narrowing_finding(
                 DiagnosticCode::SuspiciousPub,
@@ -245,7 +255,7 @@ mod tests {
             )],
             use_sites: vec![UseSite {
                 target_def_path:        item_path.to_string(),
-                caller_module_def_path: "crate::other".to_string(),
+                caller_module_def_path: OUTSIDE_CALLER_MODULE_DEF_PATH.to_string(),
                 reference:              UseSiteReference::Named,
             }],
             ..report_for_test()
@@ -258,14 +268,18 @@ mod tests {
 
     #[test]
     fn private_import_keeps_the_warning_but_blocks_its_rewrite() {
-        let item_path = "crate::module::item";
-        let mut finding = narrowing_finding(DiagnosticCode::UnusedPub, item_path, "crate::module");
+        let item_path = ITEM_DEF_PATH;
+        let mut finding = narrowing_finding(
+            DiagnosticCode::UnusedPub,
+            item_path,
+            NARROWER_SCOPE_DEF_PATH,
+        );
         finding.fix_support = FixSupport::UnusedPub;
         let mut reports = vec![StoredReport {
             findings: vec![finding],
             use_sites: vec![UseSite {
                 target_def_path:        item_path.to_string(),
-                caller_module_def_path: "crate::other".to_string(),
+                caller_module_def_path: OUTSIDE_CALLER_MODULE_DEF_PATH.to_string(),
                 reference:              UseSiteReference::PrivateImport,
             }],
             ..report_for_test()
@@ -282,10 +296,17 @@ mod tests {
 
     #[test]
     fn restricted_import_suppresses_a_direct_narrowing_but_keeps_facade_cleanup() {
-        let item_path = "crate::module::item";
-        let direct = narrowing_finding(DiagnosticCode::UnusedPub, item_path, "crate::module");
-        let mut cleanup =
-            narrowing_finding(DiagnosticCode::SuspiciousPub, item_path, "crate::module");
+        let item_path = ITEM_DEF_PATH;
+        let direct = narrowing_finding(
+            DiagnosticCode::UnusedPub,
+            item_path,
+            NARROWER_SCOPE_DEF_PATH,
+        );
+        let mut cleanup = narrowing_finding(
+            DiagnosticCode::SuspiciousPub,
+            item_path,
+            NARROWER_SCOPE_DEF_PATH,
+        );
         cleanup.fix_support = FixSupport::PubUse;
         let mut reports = vec![StoredReport {
             findings: vec![direct, cleanup],
@@ -311,7 +332,12 @@ mod tests {
         StoredFinding {
             item_def_path: Some(item_path.to_string()),
             narrower_scope_def_path: Some(narrower_scope.to_string()),
-            ..stored_finding(diagnostic_code, Path::new("/package/src/lib.rs"), "item", 1)
+            ..stored_finding(
+                diagnostic_code,
+                Path::new(CRATE_ROOT_FILE),
+                ITEM_NAME,
+                FINDING_LINE,
+            )
         }
     }
 
@@ -328,10 +354,10 @@ mod tests {
             line,
             column: 1,
             highlight_len: 3,
-            source_line: "pub fn item() {}".to_string(),
+            source_line: ITEM_SOURCE_LINE.to_string(),
             item: Some(item.to_string()),
             message: format!("{item} should change visibility"),
-            suggestion: Some("use narrower visibility".to_string()),
+            suggestion: Some(NARROWER_VISIBILITY_SUGGESTION.to_string()),
             fix_support: FixSupport::None,
             related: None,
             visibility_annotation: None,
@@ -345,9 +371,9 @@ mod tests {
         StoredReport {
             version:                    FINDINGS_SCHEMA_VERSION,
             analysis_fingerprint:       settings::current_analysis_fingerprint(),
-            scope_fingerprint:          "scope".to_string(),
-            package_root:               "/package".to_string(),
-            crate_root_file:            "/package/src/lib.rs".to_string(),
+            scope_fingerprint:          SCOPE_FINGERPRINT.to_string(),
+            package_root:               PACKAGE_ROOT.to_string(),
+            crate_root_file:            CRATE_ROOT_FILE.to_string(),
             config_fingerprint:         CONFIG_FINGERPRINT.to_string(),
             source_files:               Vec::new(),
             findings:                   Vec::new(),
