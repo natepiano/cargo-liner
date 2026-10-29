@@ -13,12 +13,15 @@ use crate::tui::app::App;
 pub fn vim_mode_conflicts(app: &App) -> Vec<String> {
     KeymapPane::ordered_help_rows(app, &app.framework_keymap)
         .into_iter()
-        .filter(|row| row.row_kind != KeymapHelpRowKind::Header)
-        .filter_map(|row| {
-            let bind = row.bind?.single_key()?;
-            (bind.mods == KeyModifiers::NONE
-                && matches!(bind.code, KeyCode::Char('h' | 'j' | 'k' | 'l')))
-            .then(|| format!("{}.{}", row.scope, row.action))
+        .filter(|keymap_help_row| keymap_help_row.row_kind != KeymapHelpRowKind::Header)
+        .filter_map(|keymap_help_row| {
+            let framework_key_bind = keymap_help_row.bind?.single_key()?;
+            (framework_key_bind.mods == KeyModifiers::NONE
+                && matches!(
+                    framework_key_bind.code,
+                    KeyCode::Char('h' | 'j' | 'k' | 'l')
+                ))
+            .then(|| format!("{}.{}", keymap_help_row.scope, keymap_help_row.action))
         })
         .collect()
 }
@@ -27,19 +30,19 @@ pub fn vim_mode_conflicts(app: &App) -> Vec<String> {
 /// the user configured. Generated aliases exist only while vim mode is
 /// on, so the keymap writer strips them rather than freezing them into
 /// the TOML.
-pub fn is_generated_vim_extra(scope: &str, action_key: &str, bind: &KeySequence) -> bool {
+pub fn is_generated_vim_extra(scope: &str, action_key: &str, key_sequence: &KeySequence) -> bool {
     if scope == "navigation" {
-        return is_navigation_generated_vim_extra(action_key, bind);
+        return is_navigation_generated_vim_extra(action_key, key_sequence);
     }
     if scope != "project_list" {
         return false;
     }
-    let Some(key) = bind.single_key() else {
+    let Some(framework_key_bind) = key_sequence.single_key() else {
         return false;
     };
-    key.mods == KeyModifiers::NONE
+    framework_key_bind.mods == KeyModifiers::NONE
         && matches!(
-            (action_key, key.code),
+            (action_key, framework_key_bind.code),
             ("expand_row", KeyCode::Char('l')) | ("collapse_row", KeyCode::Char('h'))
         )
 }
@@ -49,13 +52,13 @@ pub fn is_generated_vim_extra(scope: &str, action_key: &str, bind: &KeySequence)
 /// half-page motions (Ctrl-b/f/u/d). None of these are keymappable;
 /// they exist only while vim mode is on (see
 /// `vim_letter_extras`).
-fn is_navigation_generated_vim_extra(action_key: &str, bind: &KeySequence) -> bool {
-    let Some(key) = bind.single_key() else {
+fn is_navigation_generated_vim_extra(action_key: &str, key_sequence: &KeySequence) -> bool {
+    let Some(framework_key_bind) = key_sequence.single_key() else {
         return action_key == "home"
-            && bind.keys() == [FrameworkKeyBind::from('g'), FrameworkKeyBind::from('g')];
+            && key_sequence.keys() == [FrameworkKeyBind::from('g'), FrameworkKeyBind::from('g')];
     };
     matches!(
-        (action_key, key.code, key.mods),
+        (action_key, framework_key_bind.code, framework_key_bind.mods),
         ("left", KeyCode::Char('h'), KeyModifiers::NONE)
             | ("down", KeyCode::Char('j'), KeyModifiers::NONE)
             | ("up", KeyCode::Char('k'), KeyModifiers::NONE)

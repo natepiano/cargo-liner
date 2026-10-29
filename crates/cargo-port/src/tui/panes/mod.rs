@@ -166,8 +166,8 @@ pub(super) fn package_rows_from_data(data: &PackageData) -> Vec<PackageRow> {
     pane_data::package_rows_from_data(data)
 }
 
-pub(super) const fn package_row_is_selectable(row: &PackageRow) -> bool {
-    pane_data::package_row_is_selectable(row)
+pub(super) const fn package_row_is_selectable(package_row: &PackageRow) -> bool {
+    pane_data::package_row_is_selectable(package_row)
 }
 
 pub(super) fn package_first_selectable_row(rows: &[PackageRow]) -> Option<usize> {
@@ -193,16 +193,16 @@ pub(super) fn package_nearest_selectable_row(rows: &[PackageRow], pos: usize) ->
     pane_data::package_nearest_selectable_row(rows, pos)
 }
 
-pub(super) fn dispatch_package_action(action: PackageAction, app: &mut App) {
-    actions::dispatch_package_action(action, app);
+pub(super) fn dispatch_package_action(package_action: PackageAction, app: &mut App) {
+    actions::dispatch_package_action(package_action, app);
 }
 
-pub(super) fn dispatch_git_action(action: GitAction, app: &mut App) {
-    actions::dispatch_git_action(action, app);
+pub(super) fn dispatch_git_action(git_action: GitAction, app: &mut App) {
+    actions::dispatch_git_action(git_action, app);
 }
 
-pub(super) fn dispatch_targets_action(action: TargetsAction, app: &mut App) {
-    actions::dispatch_targets_action(action, app);
+pub(super) fn dispatch_targets_action(targets_action: TargetsAction, app: &mut App) {
+    actions::dispatch_targets_action(targets_action, app);
 }
 
 pub(super) fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
@@ -210,38 +210,38 @@ pub(super) fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<us
 }
 
 #[cfg(test)]
-pub(super) fn formatted_disk_for_item(item: &RootItem) -> String {
-    project_list::formatted_disk_for_item(item)
+pub(super) fn formatted_disk_for_item(root_item: &RootItem) -> String {
+    project_list::formatted_disk_for_item(root_item)
 }
 
 #[cfg(test)]
 pub(super) fn render_tree_items(
-    ctx: &PaneRenderCtx<'_>,
-    pane: &ProjectListPane,
+    pane_render_ctx: &PaneRenderCtx<'_>,
+    project_list_pane: &ProjectListPane,
     viewport: &Viewport,
     widths: &ProjectListWidths,
 ) -> Vec<ListItem<'static>> {
-    project_list::render_tree_items(ctx, pane, viewport, widths)
+    project_list::render_tree_items(pane_render_ctx, project_list_pane, viewport, widths)
 }
 
-pub(super) fn dispatch_lints_action(action: LintsAction, app: &mut App) {
-    actions::dispatch_lints_action(action, app);
+pub(super) fn dispatch_lints_action(lints_action: LintsAction, app: &mut App) {
+    actions::dispatch_lints_action(lints_action, app);
 }
 
-pub(super) fn dispatch_ci_runs_action(action: CiRunsAction, app: &mut App) {
-    actions::dispatch_ci_runs_action(action, app);
+pub(super) fn dispatch_ci_runs_action(ci_runs_action: CiRunsAction, app: &mut App) {
+    actions::dispatch_ci_runs_action(ci_runs_action, app);
 }
 
 pub(super) fn dispatch_navigation_action(
-    action: NavAction,
-    focused: FocusedPane<AppPaneId>,
+    nav_action: NavAction,
+    focused_pane: FocusedPane<AppPaneId>,
     app: &mut App,
 ) {
-    actions::dispatch_navigation_action(action, focused, app);
+    actions::dispatch_navigation_action(nav_action, focused_pane, app);
 }
 
-pub(super) fn navigate_package_detail(app: &mut App, action: NavAction) {
-    actions::navigate_package_detail(app, action);
+pub(super) fn navigate_package_detail(app: &mut App, nav_action: NavAction) {
+    actions::navigate_package_detail(app, nav_action);
 }
 
 pub(super) fn request_clean(app: &mut App) { actions::request_clean(app); }
