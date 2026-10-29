@@ -5,6 +5,7 @@ use std::time::Instant;
 use super::constants::PROJECT_STORAGE_REFRESH_SECS;
 use crate::project::AbsolutePath;
 use crate::project::Visibility::Deleted;
+use crate::project::Visibility::Dismissed;
 use crate::project::Visibility::Visible;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -68,6 +69,11 @@ impl App {
         let mut lint_runtime_changed = false;
         if let Some(project) = self.project_list.at_path_mut(path) {
             project.disk_usage_bytes = Some(bytes);
+            // Periodic probes also include dismissed roots. Their result must
+            // not undo the user's explicit dismissal of a deleted project.
+            if project.visibility == Dismissed {
+                return;
+            }
             if bytes == 0 && !path.exists() && project.visibility != Deleted {
                 project.visibility = Deleted;
                 lint_runtime_changed = true;
@@ -129,6 +135,52 @@ mod tests {
 
     use super::PROJECT_STORAGE_REFRESH_SECS;
     use super::project_storage_refresh_due;
+    use crate::project::AbsolutePath;
+    use crate::project::Package;
+    use crate::project::RootItem;
+    use crate::project::RustProject;
+    use crate::project::Visibility;
+    use crate::tui::test_support;
+
+    #[test]
+    #[allow(clippy::expect_used, reason = "fixture paths must be present")]
+    fn disk_poll_preserves_deleted_rows_and_explicit_dismissal() {
+        let scratch = tempfile::tempdir().expect("scratch project");
+        let path = AbsolutePath::from(scratch.path().join("removed-project"));
+        let item = RootItem::Rust(RustProject::Package(Package {
+            path: path.clone(),
+            ..Package::default()
+        }));
+        let mut app = test_support::make_app(&[item]);
+        app.apply_disk_usage(&path, 0);
+        assert_eq!(
+            app.project_list
+                .at_path(&path)
+                .expect("deleted row remains")
+                .visibility,
+            Visibility::Deleted
+        );
+        app.project_list
+            .at_path_mut(&path)
+            .expect("row to dismiss")
+            .visibility = Visibility::Dismissed;
+        app.apply_disk_usage(&path, 0);
+        assert_eq!(
+            app.project_list
+                .at_path(&path)
+                .expect("dismissed row remains stored")
+                .visibility,
+            Visibility::Dismissed
+        );
+        app.apply_disk_usage(&path, 42);
+        assert_eq!(
+            app.project_list
+                .at_path(&path)
+                .expect("late result retains dismissal")
+                .visibility,
+            Visibility::Dismissed
+        );
+    }
 
     #[test]
     fn project_storage_refresh_is_due_after_two_seconds() {

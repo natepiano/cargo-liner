@@ -1,23 +1,17 @@
-//! Watches the scan root recursively for filesystem changes and maps
-//! events to discovered projects for disk-usage and git-sync updates.
-//!
-//! Recursive `notify` subscriptions cover the configured scan roots, plus
-//! discovered project roots that are not already covered by a scan root. Events
-//! are matched to projects by prefix, debounced, and result in both
-//! `BackgroundMsg::DiskUsage` and `BackgroundMsg::CheckoutInfo` / `BackgroundMsg::RepoInfo`
-//! updates. New project directories are detected automatically; removed directories trigger a
-//! zero-byte update so the app can mark them as deleted.
-//!
-//! On macOS (`FSEvents`) this stays a small set of kernel subscriptions: scan
-//! roots cover normal discovery, and late per-project roots are added only
-//! when no recursive root already covers the path. Linux / Windows may want a
-//! different approach in the future to avoid inotify watch limits.
+//! Watches source folders individually, excluding build trees and Git objects.
+//! New folders receive non-recursive watches. Disk polling covers changes in
+//! unwatched build trees; filesystem events still drive Git and source updates.
 
 mod events;
 mod probe;
 mod refresh;
+#[cfg(test)]
+mod repair_test_support;
 mod roots;
 mod runtime;
+mod skip;
+#[cfg(test)]
+mod skip_tests;
 
 use runtime::ProjectEntry;
 use runtime::WatchDrainResult;
