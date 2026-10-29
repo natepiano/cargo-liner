@@ -948,7 +948,7 @@ Not landed (showrunner ruling 2026-10-26, after 3 repair rounds). The round 3 tr
 - An OSC record in normal product output — the recorder is test-only by construction.
 - `ps` as the independent CPU source — its rounding gave false failures.
 
-### Phase 28 — Phase 25's one-place work returns on main  · status: redo (does not land; showrunner 2026-10-29 13:20)
+### Phase 28 — Phase 25's one-place work returns on main  · status: dropped (showrunner, 2026-10-29: the user did not ask for it; four tries broke live fill)
 
 > **2026-10-29 ruling.** Phase 28 is past its 3 repair rounds and is worse than main on live fill (live gate at 393 x 89 on both machines: columns end above the foot in 73-88% of frames, main about 1%). It does not land. This branch is set back to main 655c7948 by a revert commit; phases 30, 32, 35 and 36 are ported onto main and checkpointed one by one. The phase 28 tree with phases 29-36 is kept at `refs/tile-unit/p28-snapshot-1322`. The redo works in a scratch tree made from that snapshot: live bisect, a red test from the worst live frame, then a fix of the cause; no install until the live gate matches main.
 >
@@ -1355,7 +1355,7 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 - The review of items 1 and 2 finds no change apart from module paths and imports.
 - Change-review line: none (no visible change).
 
-### Phase 32m — CPU fix 1 on main  · status: todo
+### Phase 32m — CPU fix 1 on main  · status: done
 
 Port of the session's CPU fix 1 (one retained System refreshed in place, Active/Idle pace, 2 s idle discovery, exec name refresh) onto main 655c7948 after the phase 28 ruling. Work order: the session's phases/32m/implementation_prompt.md.
 
@@ -1370,6 +1370,10 @@ Port of the summary-arguments rule and the nextest header ANSI handling onto mai
 ### Phase 36m — Directory header rule on main  · status: todo
 
 Port of the directory header rule (whole path; GUID middle cut; middle cut; last folder whole) onto main's render.rs. Work order: phases/36m/implementation_prompt.md.
+
+### Phase 38 — A new cell's text starts near its final color  · status: todo
+
+User report (2026-10-29, via the showrunner): a new cell's text fades in from black and then goes away so fast that it cannot be read. The first frame of a new cell's text is drawn near its final color, not near the ground. Exact-color test red on main first. Work order: phases/38/implementation_prompt.md.
 
 ### Phase 30 — The capture shim costs one process per cargo call  · status: todo
 
