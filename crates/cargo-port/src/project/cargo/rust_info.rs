@@ -171,13 +171,15 @@ impl From<&PackageRecord> for Cargo {
             .collect();
         // `examples.sort_by` puts the empty `ExampleGroup::category` first, then
         // sorts categories alphabetically, preserving the pre-retirement ordering.
-        examples.sort_by(|left_example_group, b| {
-            let a_root = left_example_group.category.is_empty();
-            let b_root = b.category.is_empty();
-            match (a_root, b_root) {
+        examples.sort_by(|left_example_group, right_example_group| {
+            let left_is_root = left_example_group.category.is_empty();
+            let right_is_root = right_example_group.category.is_empty();
+            match (left_is_root, right_is_root) {
                 (true, false) => Ordering::Less,
                 (false, true) => Ordering::Greater,
-                _ => left_example_group.category.cmp(&b.category),
+                _ => left_example_group
+                    .category
+                    .cmp(&right_example_group.category),
             }
         });
         benches.sort();

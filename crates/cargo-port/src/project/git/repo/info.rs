@@ -102,8 +102,8 @@ impl RepoInfo {
             std::thread::scope(|scope| {
                 let current = scope.spawn(|| {
                     let head = checkout::resolve_head_state(&repo_root);
-                    let upstream = branches::get_upstream_branch(&repo_root, &head);
-                    (head, upstream)
+                    let tracked_ref = branches::get_upstream_branch(&repo_root, &head);
+                    (head, tracked_ref)
                 });
                 let default = scope.spawn(|| branches::get_default_branch(&repo_root));
                 let main =
@@ -123,7 +123,7 @@ impl RepoInfo {
             let remote_names = remote_names?;
             let upstream_remote = UpstreamRemote::from(remote_names.as_slice());
             let pushurls = pushurls?;
-            let context = RemoteResolveContext {
+            let remote_resolve_context = RemoteResolveContext {
                 repo_root: &repo_root,
                 upstream_remote,
                 current_upstream: &current_upstream,
@@ -135,7 +135,7 @@ impl RepoInfo {
                 .iter()
                 .map(|name| {
                     remote::build_remote_info(
-                        &context,
+                        &remote_resolve_context,
                         name,
                         pushurls.get(name.as_str()).map(String::as_str),
                     )
