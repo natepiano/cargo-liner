@@ -516,6 +516,7 @@ dependencies = [
  "rayon",
  "regex",
  "rustc-hash",
+ "rustix",
  "serde",
  "serde_json",
  "syn 3.0.6",

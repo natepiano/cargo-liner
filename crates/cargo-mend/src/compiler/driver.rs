@@ -22,6 +22,8 @@ use super::constants::PASSTHROUGH_RUSTC_WRAPPER_ENV;
 use super::constants::RUSTC_BIN;
 use super::settings::DriverSettings;
 use super::sweep_counters;
+use super::toolchain_probes;
+use super::toolchain_probes::ProbeInvocation;
 use super::visibility;
 use crate::reporting::EXIT_CODE_ERROR;
 
@@ -121,6 +123,11 @@ fn driver_main_impl() -> Result<ExitCode> {
     let wrapper_args: Vec<OsString> = env::args_os().collect();
     if wrapper_args.len() < 2 {
         bail!("compiler driver expected rustc wrapper arguments");
+    }
+    if passthrough_rustc_wrapper().is_none()
+        && let ProbeInvocation::Query(code) = toolchain_probes::run_query(&wrapper_args)?
+    {
+        return Ok(code);
     }
     let Ok(driver_settings) = DriverSettings::from_env() else {
         return passthrough_to_rustc(&wrapper_args);

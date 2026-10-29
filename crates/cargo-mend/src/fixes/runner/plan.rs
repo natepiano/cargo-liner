@@ -1,6 +1,7 @@
 use super::CheckedSelection;
 use super::MendRunner;
 use super::RunPlan;
+use super::mend_runner::NextAnalysis;
 use crate::compiler::BuildOutputMode;
 use crate::config::DiagnosticCode;
 use crate::config::DiagnosticStatus;
@@ -58,11 +59,18 @@ impl From<PassOutputPolicy> for BuildOutputMode {
 }
 
 impl MendRunner<'_> {
-    pub(super) fn plan(&self, operation_mode: OperationMode) -> Result<RunPlan, MendFailure> {
+    pub(super) fn plan(&mut self, operation_mode: OperationMode) -> Result<RunPlan, MendFailure> {
         let pub_use = PubUseActivation::from(operation_mode.fixes.contains(FixKind::PubUse));
         let output_mode =
             BuildOutputMode::from(PassOutputPolicy::for_pass(self.output_format, pub_use));
-        let checked = self.build_selection(output_mode)?;
+        let checked = match std::mem::replace(&mut self.next_analysis, NextAnalysis::Required) {
+            NextAnalysis::Required => self.build_selection(output_mode)?,
+            NextAnalysis::Validated(mut checked) => {
+                // The previous pass already charged this validation.
+                checked.result.check_duration = std::time::Duration::ZERO;
+                *checked
+            },
+        };
         self.scan_fixes(operation_mode, checked, pub_use)
     }
 

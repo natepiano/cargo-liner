@@ -48,10 +48,11 @@ fn rust_sources(root: &Path) -> BTreeMap<PathBuf, String> {
 
 /// Runs `--fix` on the fixture, asserts it succeeded, and returns its stderr.
 fn run_fix(root: &Path) -> String {
-    let output = mend_command_for(&root.join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    run_fix_command(mend_command_for(&root.join("Cargo.toml")).arg("--fix"))
+}
+
+fn run_fix_command(command: &mut std::process::Command) -> String {
+    let output = command.output().expect("run cargo-mend --fix");
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
         output.status.success(),
@@ -78,11 +79,19 @@ fn assert_fixed_without_warnings(root: &Path, expected: &[(&str, &str)]) {
 /// The assertions of [`assert_fixed`]; returns the stderr of the passing
 /// `cargo check --all-targets`.
 fn fixed_check_stderr(root: &Path, expected: &[(&str, &str)]) -> String {
+    fixed_check_stderr_after(root, expected, || run_fix(root))
+}
+
+fn fixed_check_stderr_after(
+    root: &Path,
+    expected: &[(&str, &str)],
+    fix: impl FnOnce() -> String,
+) -> String {
     let mut sources = rust_sources(root);
     for (relative, contents) in expected {
         sources.insert(PathBuf::from(relative), (*contents).to_string());
     }
-    run_fix(root);
+    fix();
     assert_eq!(rust_sources(root), sources, "fixed sources");
 
     let report = run_mend_json(&root.join("Cargo.toml"));
@@ -752,7 +761,7 @@ fn reexport_chain_collapses_in_one_run() {
         "pub use crate::input::Gain;\n",
     );
 
-    assert_fixed(
+    fixed_check_stderr_after(
         root,
         &[
             (
@@ -764,7 +773,49 @@ fn reexport_chain_collapses_in_one_run() {
             ("src/orbit_cam/controls/bindings/mod.rs", "mod preset;\n"),
             ("src/orbit_cam/controls/bindings/preset.rs", ""),
         ],
+        || fix_chain_with_check_budget(root),
     );
+}
+
+/// Count the real Cargo checks for the four-link convergence sequence.
+/// Each edited tree needs validation; starting a new pass on the tree just
+/// validated must not start another check.
+fn fix_chain_with_check_budget(root: &Path) -> String {
+    let mut command = mend_command_for(&root.join("Cargo.toml"));
+    command.arg("--fix");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tools = tempdir().expect("create check counter directory");
+        let cargo = tools.path().join("cargo");
+        let count = tools.path().join("checks");
+        fs::write(&cargo, "#!/bin/sh\nif [ \"$1\" = check ]; then printf x >> \"$MEND_TEST_CHECK_STARTS\"; fi\nexec \"$MEND_TEST_REAL_CARGO\" \"$@\"\n")
+            .expect("write counting cargo entry");
+        fs::set_permissions(&cargo, fs::Permissions::from_mode(0o700))
+            .expect("make counting cargo entry executable");
+        let inherited_path = std::env::var_os("PATH").expect("test PATH");
+        let path = std::env::join_paths(
+            std::iter::once(tools.path().to_path_buf())
+                .chain(std::env::split_paths(&inherited_path)),
+        )
+        .expect("prepend counting cargo entry");
+        command
+            .env("PATH", path)
+            .env("MEND_TEST_REAL_CARGO", env!("CARGO"))
+            .env("MEND_TEST_CHECK_STARTS", &count);
+        let stderr = run_fix_command(&mut command);
+        let starts = fs::read(&count)
+            .expect("read real cargo check starts")
+            .len();
+        assert!(
+            starts <= 5,
+            "four edited trees need at most five checks, observed {starts}"
+        );
+        stderr
+    }
+    #[cfg(not(unix))]
+    run_fix_command(&mut command)
 }
 
 /// A caller in another file reaching the owner module through a `use ... as`

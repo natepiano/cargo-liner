@@ -146,12 +146,14 @@ fn run() -> Result<ExitCode, MendFailure> {
     let color_mode = color_mode();
     let output_format = cli.output_format;
     let start = Instant::now();
+    let toolchain_probes = compiler::ToolchainProbes::new().map_err(MendFailure::Unexpected)?;
     let mut runner = MendRunner::new(
         &selection,
         &cargo_plan,
         &loaded_config,
         color_mode,
         output_format,
+        &toolchain_probes,
     );
     let mut outcome = runner.run(operation_mode.clone())?;
     let mut accumulated_notice = outcome.notice.take();
@@ -177,12 +179,8 @@ fn run() -> Result<ExitCode, MendFailure> {
 
             let runs_compiler_fix = user_asked_for_compiler_fix || pub_use_self_heal;
             if runs_compiler_fix {
-                total_compiler_fix_duration += compiler::run_cargo_fix(
-                    &selection,
-                    &cargo_plan,
-                    color_mode,
-                    outcome.report.facts.all_features_coverage,
-                )?;
+                total_compiler_fix_duration +=
+                    runner.fix_compiler(outcome.report.facts.all_features_coverage)?;
             }
 
             if passes >= FIX_CONVERGENCE_MAX_PASSES {
