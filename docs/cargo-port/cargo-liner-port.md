@@ -70,9 +70,29 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Gotchas:** the disk column updates up to 30 s after a build. Run `verify.sh build` from the worktree; from another folder it fails with a JSON decode error.
 
-### Phase 2b — cargo-port watches only project folders and the folders that lead to them  · status: todo
+### Phase 2m — On macOS cargo-port watches each root recursively again  · status: done
 
 **Depends on:** Phase 2
+
+#### As-built
+
+- One typed backend choice, `WatchRegistration { RecursiveRoot, PerFolder }` (`watcher/roots.rs`), picked once where the watcher is made (`watcher/runtime.rs`, beside `RecommendedWatcher::new`): `RecursiveRoot` on macOS (FSEvents), `PerFolder` elsewhere (inotify). `RegisteredRoots` holds it.
+- `registration_plan(root, skips, registration)` yields the paths and modes to watch: one recursive root for `RecursiveRoot`, the phase 2 lazy folder walk for `PerFolder`. `register_watch_roots_with_skips` takes the backend.
+- Under `RecursiveRoot`, create, remove and rename events add or drop no watches (`update_directory_watches` returns early), `replace_skip_set` only swaps the skip set, and the Cargo-home watch is skipped when a root already covers it. Events in `target/` and `.git/objects` are still dropped by `filter_event_paths`.
+- `PerFolder` is phase 2's behaviour, unchanged. Mac suite 1109/1109.
+
+**Files:**
+- `crates/cargo-port/src/watcher/roots.rs` — `WatchRegistration`, `registration_plan`, `filter_event_paths`
+- `crates/cargo-port/src/watcher/runtime.rs` — the backend choice
+- `crates/cargo-port/src/watcher/watch_registration_tests.rs` — registration tests for both backends
+
+**Binds later work:** Phase 2b's folder roles apply only to `PerFolder`. Phase 2c removes a second recursive watch on a root that another root covers (review finding F001).
+
+**Gotchas:** overlapping configured roots (`/r` and `/r/project`) still get two recursive watches on macOS until Phase 2c.
+
+### Phase 2b — cargo-port watches only project folders and the folders that lead to them  · status: todo
+
+**Depends on:** Phase 2m. The folder roles apply only to the `PerFolder` backend (Linux inotify); the `RecursiveRoot` backend (macOS) keeps one recursive watch per root.
 
 #### Work Order
 
@@ -119,6 +139,36 @@ you need to create a new unit to handle all cargo port enhancements it should be
 - `test` — spec 8, in a new test module `crates/cargo-port/src/watcher/watch_role_tests.rs`, registered by `impl` in `watcher/mod.rs`.
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; the live count of spec 9 is far under 90,266 and near the folder count of the user's projects plus their discovery folders. The checkpoint adds a Change-Review line.
+
+### Phase 2c — On macOS overlapping roots get one recursive watch  · status: todo
+
+**Depends on:** Phase 2b
+
+#### Work Order
+
+**Goal:** with the `RecursiveRoot` backend (macOS), a configured root that another configured root covers gets no second recursive watch.
+
+**Source:** phase 2m contract review, finding F001 (minor). The showrunner moved it out of 2m on 2026-10-29: overlapping roots are a rare setup, and two recursive watches still cost far less than per-folder watches.
+
+**Constraints:**
+- The invariant at `watcher/runtime.rs` ≈887 holds by construction: one notify watch per path; no `watch()` call lands on a path a recursive root covers.
+- Under `RecursiveRoot`, register a recursive watch only for each root that no other configured root covers, in any root order (`/r` then `/r/project`, and `/r/project` then `/r`, both give one watch on `/r`). Each configured root stays its own discovery root (`RegisteredRoots.dirs` unchanged); only the watch set changes.
+- `PerFolder` behaviour is unchanged.
+
+**Spec:**
+1. Covered-root removal in the `RecursiveRoot` registration plan (`roots.rs`, `registration_plan` / `register_watch_roots_with_skips`).
+2. **Tests, red first, each under one second:** both root orders give one registered path; the invariant test at `runtime.rs` ≈887 also runs with `RecursiveRoot`.
+3. CHANGELOG: one line.
+
+**Files:**
+- `crates/cargo-port/src/watcher/roots.rs`
+- `crates/cargo-port/src/watcher/runtime.rs` — the invariant test only
+- `crates/cargo-port/src/watcher/watch_registration_tests.rs`
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer (`impl`), who also writes the tests.
+
+**Acceptance gate:** `verify.sh test cargo-port` (Mac) and `verify.sh lint cargo-port` clean; no test takes a second.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 

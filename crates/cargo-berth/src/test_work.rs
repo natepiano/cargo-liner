@@ -9,6 +9,7 @@ pub(crate) enum Work {
     ScopeComparison,
     IncursionReservation,
     AncestryParents,
+    HistoryRead,
     MutationLockAttempt,
     MutationLockWait,
 }
@@ -20,6 +21,7 @@ pub(crate) struct WorkCounts {
     pub(crate) scope_comparisons:      usize,
     pub(crate) incursion_reservations: usize,
     pub(crate) ancestry_parents:       usize,
+    pub(crate) history_reads:          usize,
     pub(crate) mutation_lock_attempts: usize,
     pub(crate) mutation_lock_waits:    usize,
 }
@@ -30,6 +32,7 @@ thread_local! {
         scope_comparisons: 0,
         incursion_reservations: 0,
         ancestry_parents: 0,
+        history_reads: 0,
         mutation_lock_attempts: 0,
         mutation_lock_waits: 0,
     }) };
@@ -59,6 +62,7 @@ pub(crate) fn record(work: Work) {
             Work::ScopeComparison => counts.scope_comparisons += 1,
             Work::IncursionReservation => counts.incursion_reservations += 1,
             Work::AncestryParents => counts.ancestry_parents += 1,
+            Work::HistoryRead => counts.history_reads += 1,
             Work::MutationLockAttempt => counts.mutation_lock_attempts += 1,
             Work::MutationLockWait => counts.mutation_lock_waits += 1,
         }

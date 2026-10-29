@@ -511,8 +511,35 @@ pub(super) fn observe_unmerged_branch_paths(
             git_queries: 0,
         });
     }
-    if let RepositoryRead::InProcess(history) = history::read(repository_root, &trunk.to_string())?
-        && history.parents.contains_key(head)
+    let ancestry = ResolvedTrunkAncestry::read(repository_root, trunk)?;
+    observe_unmerged_branch_paths_with_ancestry(repository_root, trunk, head, &ancestry)
+}
+
+/// Supported ancestry for one resolved trunk; unsupported history keeps Git's merge semantics.
+pub(super) enum ResolvedTrunkAncestry {
+    Reachable(HashSet<GitObjectId>),
+    RequiresGit,
+}
+
+impl ResolvedTrunkAncestry {
+    pub(super) fn read(root: &Path, trunk: &GitObjectId) -> Result<Self, GitError> {
+        match history::read(root, &trunk.to_string())? {
+            RepositoryRead::InProcess(history) => {
+                Ok(Self::Reachable(history.parents.into_keys().collect()))
+            },
+            RepositoryRead::GitRequired(_) => Ok(Self::RequiresGit),
+        }
+    }
+}
+
+pub(super) fn observe_unmerged_branch_paths_with_ancestry(
+    repository_root: &Path,
+    trunk: &GitObjectId,
+    head: &GitObjectId,
+    ancestry: &ResolvedTrunkAncestry,
+) -> Result<UnmergedBranchPaths, GitError> {
+    if trunk == head
+        || matches!(ancestry, ResolvedTrunkAncestry::Reachable(ancestors) if ancestors.contains(head))
     {
         return Ok(UnmergedBranchPaths {
             paths:       Vec::new(),

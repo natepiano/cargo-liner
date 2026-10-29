@@ -934,6 +934,28 @@ fn normalized_claim_scopes(
     }
 }
 
+/// Whether first touch starts an operation or continues check's immutable object evidence.
+enum FirstTouchRepositoryObservation<'check> {
+    NewOperation,
+    WithinCheck(&'check RepositorySnapshot),
+}
+
+impl FirstTouchRepositoryObservation<'_> {
+    fn read_facts(
+        &self,
+        worktree_context: &WorktreeContext,
+        run_validation: ClaimRunValidation,
+    ) -> Result<ClaimRepositoryFacts, ClaimError> {
+        match self {
+            Self::NewOperation => ClaimRepositoryFacts::read(worktree_context, run_validation),
+            Self::WithinCheck(repository) => ClaimRepositoryFacts::read_from_repository(
+                repository.fresh_observation(),
+                run_validation,
+            ),
+        }
+    }
+}
+
 /// Acquire, widen, or reuse the acting run's one first-touch reservation.
 pub(crate) fn acquire_first_touch(
     request: FirstTouchClaimRequest,
@@ -943,6 +965,7 @@ pub(crate) fn acquire_first_touch(
     acquire_first_touch_with_reservation_selection(
         request,
         CheckReservationSelection::SessionMappingOrSingleActive,
+        &FirstTouchRepositoryObservation::NewOperation,
         recovery_command_line,
         capacity_recovery,
     )
@@ -952,12 +975,14 @@ pub(crate) fn acquire_first_touch(
 pub(in crate::verb) fn acquire_first_touch_for_check(
     request: FirstTouchClaimRequest,
     reservation_selection: CheckReservationSelection,
+    repository: &RepositorySnapshot,
     recovery_command_line: &RecoveryCommandLine,
     capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
     acquire_first_touch_with_reservation_selection(
         request,
         reservation_selection,
+        &FirstTouchRepositoryObservation::WithinCheck(repository),
         recovery_command_line,
         capacity_recovery,
     )
@@ -966,6 +991,7 @@ pub(in crate::verb) fn acquire_first_touch_for_check(
 fn acquire_first_touch_with_reservation_selection(
     request: FirstTouchClaimRequest,
     reservation_selection: CheckReservationSelection,
+    repository_observation: &FirstTouchRepositoryObservation<'_>,
     recovery_command_line: &RecoveryCommandLine,
     capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
@@ -985,7 +1011,7 @@ fn acquire_first_touch_with_reservation_selection(
     let edit_scopes = declared_scopes.clone().into_minimal_antichain(path_case);
     let scopes = declared_scopes.into_exact_file_antichain(path_case);
     let source = ClaimSource::FirstTouch;
-    let repository_facts = ClaimRepositoryFacts::read(&worktree_context, run_validation)?;
+    let repository_facts = repository_observation.read_facts(&worktree_context, run_validation)?;
     let phase_start_head = ProtectedPhaseStartHead::from(repository_facts.current_head.clone());
     let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
