@@ -2,7 +2,7 @@
 
 ## What it is
 
-`cargo-berth check` is the pre-edit question both agent harnesses ask: may this session write these paths? When the caller's selected reservation already covers every requested path and the lock-free snapshot shows no conflict, the check answers `clear` / `already_held` at once. It takes no mutation lock, runs no reconcile and writes nothing. When a reconcile is needed, it observes each holder worktree on its own thread instead of one after another; observation still happens under the lock. A reconcile failure inside `check` answers with its own envelope: at the lock deadline that is `contention`, exit 6.
+`cargo-berth check` is the pre-edit question both agent harnesses ask: may this session write these paths? When the caller's selected reservation already covers every requested path and the lock-free snapshot shows no conflict, the check answers `clear` / `already_held` at once. It takes no mutation lock, runs no reconcile and makes no coordination change; a read-only replay can still rewrite its replay checkpoint (`ledger/replay_checkpoint.rs`). When a reconcile is needed, it observes each holder worktree on its own thread instead of one after another. That observation is prepared outside the mutation lock and validated against the journal and session-mapping versions when it publishes; after `MUTATION_PREPARATION_ATTEMPTS` (8) invalidations it prepares under the lock (`ledger/preparation.rs`). A reconcile failure inside `check` answers with its own envelope: at the lock deadline that is `contention`, exit 6.
 
 The problem was measured on natedev in `hana_catalyst-inspectors` (17 worktrees, load average 63–127). Every check reconciled whenever any foreign reservation was unreleased, which was always true there. One traced run waited 2.6 s for `mutation.lock`, held it for about 10 s, and ended at 14.3 s. Of the time under the lock, 5.5 s was 11 sequential `git status --porcelain -z` calls (0.15–1.32 s each); `update-ref --stdin` took 1.2 s and the rev-lists about 1.5 s. Other runs ended at 5.8 s, at 23 s, or at the 10 s lock deadline. Checks queued behind each other's reconciles, so edit hooks reached their 25 s limit and blocked clean edits.
 
@@ -87,7 +87,7 @@ The message is "No foreign reservation overlaps the requested paths; the acting 
 
 ### Concurrent holder observation (`reconcile.rs`)
 
-The reconcile transaction's validate closure (`transact_reconciliation`, under the lock) calls `complete_reconciliation_plan`, which calls `derive_merge_extents`. That delegates to:
+The reconcile transaction's preparation (`transact_reconciliation`, outside the lock unless preparation fell back under it) calls `complete_reconciliation_plan`, which calls `derive_merge_extents`. That delegates to:
 
 ```rust
 fn derive_merge_extents_with_observer(
@@ -141,11 +141,11 @@ The hook's contention presentation leads with "cargo-berth rejected this edit be
 
 ## Invariants
 
-- The fast path takes no lock and writes nothing: no journal append, no session mapping, no marker.
+- The fast path takes no lock and makes no coordination change: no journal append, no session mapping, no marker. A read-only replay may still rewrite the replay checkpoint.
 - The fast path's envelope (message, scopes, acquisition, publication fields, exit code) is identical to the locked path's answer for the same state. Both are built from the same helpers; do not fork them.
 - The fast path answers only with no conflict, a reservation selected through an existing mapping or a matching explicit id, and the run's active reservations in this worktree covering every exact-file scope. Every other case takes the locked path.
 - Any selection that would create or move a session mapping goes through the lock; remapping is a durable write.
-- Identity resolves once per invocation through `ledger::resolve_identity`. A session mapping outranks `CARGO_BERTH_RUN` and the marker. Identity validation runs before the fast path.
+- Identity resolves through `ledger::resolve_identity`: `decide` resolves it on each pass, and reconciliation and acquisition resolve it again. A session mapping outranks `CARGO_BERTH_RUN` and the marker. Identity validation runs before the fast path.
 - The fast-path outcome is a type (`CheckAcquisitionDecision`), not a flag.
 - Concurrency does not change reconcile output: the same journal operations in the same order with the same JSON, and git cost counts equal to the serial sum. Holder dedup stays keyed on `(worktree, recorded target)` in first-seen order.
 - Every observer starts before any is joined. A lazy spawn/join iterator runs them one at a time.
@@ -160,8 +160,8 @@ The hook's contention presentation leads with "cargo-berth rejected this edit be
 - **Process-start measurement.** A completed cold Mac capture of all 1,268 tests and setup measured 38,741 starts: 18,815 `product_git`, 6,149 `fixture_git`, 9,171 `other`, 3,262 `berth`, 1,316 `hook_berth`, 9 `hook_git`, 1 `berth_worker`, and 18 `lock_diagnostic`. Every product and `other` start has a measured caller. The process pin uses those counts and the measured counts of its expensive tests. This lowers the total ceiling from 46,393; the `berth` count remains above the original 3,174 ceiling and below the accepted phase 22 count of 3,281. The capture ran at boundary loads 7.78 and 21.20, so its instrumented durations do not establish the quiet timing requirement.
 - **Lock diagnostics.** The 18 `/usr/sbin/lsof` scans belong to 15 tests and have their own `lock_diagnostic` origin and ceiling. Spawn-to-reap durations were 133–277 ms in that instrumented capture. Per-test acceptance requires a separate uninstrumented cold timing run; these scan measurements alone do not establish that each owning test finishes under a second.
 - **Timings and limits.**
-  - The lock deadline is `MUTATING_VERB_CONTENTION_TOLERANCE` = 10 s; retries start at 50 ms and double up to 1 s.
-  - The edit hook's limit is 25 s.
+  - The lock deadline is `MUTATING_VERB_CONTENTION_TOLERANCE` = 60 s, and the wait blocks in the kernel instead of polling.
+  - The edit hook's limit and the seat launcher's check limit (`CHECK_TIMEOUT_SECONDS` in `phase_reservation.py`) are 25 s, so a request now reaches the caller's limit before the lock deadline.
   - At a load average near 30 each holder's `git status` costs about 10 ms, so the concurrency gain shows only under heavier load.
   - Concurrency launches up to one `git status` per live holder key at once, about 20 processes in hana.
 - **Remaining costs.** One checkpoint decode measured 135 ms (hana: 356 MB journal, 25 MB `replay-checkpoint.json`). The fast path still pays one decode, plus `PathCase::read` and head-containment reads, which touch git only when a foreign holder keeps keyed committed protection.
@@ -200,7 +200,7 @@ The hook's contention presentation leads with "cargo-berth rejected this edit be
 - **No lock-free remap.** A remap needs a durable mapping write, which belongs under the lock.
 - **No "already current" mapping-publication variant.** `published` is already accurate when the mapping exists.
 - **Observe holders together.** The `git status` calls are independent per holder key and were the largest share of the time under the lock. Running them concurrently shortens the lock hold without changing what is recorded.
-- **Observation stays under the lock.** Moving it out would shorten the hold further but needs a preflight-and-validate design; whether that follows depends on a new trace of the remaining cost.
+- **Observe outside the lock, validate at publish.** Preparing observation outside the lock shortens the hold; publication checks the journal and session-mapping versions, and repeated invalidation falls back to preparing under the lock. This shortens lock holds, not the caller's wait: request latency still includes the observation itself.
 - **Busy answers as busy.** Reporting a reconcile failure as `blocked_by_overlap` with no holder sent the caller to resolve an overlap that did not exist. `contention`, exit 6, tells it to retry.
 - **One fix point.** Both harnesses reach `check::execute`, so a change there covers Claude Code and Codex.
 

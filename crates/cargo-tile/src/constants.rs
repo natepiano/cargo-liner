@@ -388,6 +388,9 @@ pub(crate) const PARENT_WALK_LIMIT: usize = 32;
 pub(crate) const PARTIAL_TOTAL_MARK: &str = "+";
 /// Index of the `pid` column in [`TABLE_HEADERS`].
 pub(crate) const PID_COLUMN: usize = 0;
+/// Maximum idle discovery interval; one publication pass is reserved inside it.
+/// Registrations select the active deadline instead of waiting for idle discovery.
+pub(crate) const PROCESS_IDLE_POLL_MILLIS: u64 = 2_000;
 /// Delay between process scans. Each scan reads the costly per-process
 /// fields for cargo processes only, so a quarter second stays cheap while
 /// keeping a freshly started build visible almost immediately.
