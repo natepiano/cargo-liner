@@ -126,7 +126,7 @@ pub(crate) enum InsufficientProcessIdentity {
     LifetimeAnchorUnavailable {
         pid: u32,
     },
-    #[cfg(any(test, not(target_os = "macos")))]
+    #[cfg(not(target_os = "macos"))]
     PlatformCreationTokenUnavailable {
         pid: u32,
     },
