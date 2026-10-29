@@ -887,30 +887,21 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 40 — cargo-handler idles under 1 % of one core  · status: done (landed at 9.7 % against 13.2 % installed; the under-1 % target moved to Phase 47)
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
-
-**Goal:** an idle cargo-handler uses under 1 % of one core (today about 7 % per instance, two instances on natedev).
-
-**Source:** showrunner, 2026-10-28, from the CPU measurement report (`/tmp/claude-1000/-home-natepiano-rust-cargo-liner/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/scratchpad/cpu_investigation.md`, section "cargo-handler"). The user said on 2026-10-28 that CPU optimization comes first in all work.
-
-**Constraints:** every 2 s (`LOCAL_SCAN_INTERVAL`, `constants.rs:458`) `activity::read_runs` (`census/activity.rs:634-642`) reads and parses every `*.json` in each Codex worker's `mesh_runs` directory (1,000–2,800 files, 15.6 MB/s of reads); only records whose pid is live matter (`activity.rs:615-618`). Each scan makes a new sysinfo `System` and refreshes all processes (`census/scan.rs:1135-1141`); `hierarchy.rs:292` does the same each 30 s. `production_tree.py` runs each 30 s (`HIERARCHY_REFRESH_INTERVAL`) and `accounts.py` each 60 s (`ACCOUNTS_REFRESH_INTERVAL`). Census behaviour and every displayed row stay the same.
-
-**Spec:**
-1. Parse each run record once: keep the parsed records keyed by path and mtime, and read only new or changed files. A removed file leaves the cache.
-2. Keep one sysinfo `System` for the scan and one for the hierarchy, and refresh each in place.
-3. Run `production_tree.py` and `accounts.py` only when their input changes (find the files each one reads); keep a slow fallback only if an input cannot be watched, and name it.
-4. Red-first tests: a second scan over unchanged records parses none of them (counted, not timed); a changed or new record is parsed again; a removed record leaves the cache; the scripts do not run again while their inputs are unchanged and run once after a change. Each test under 1 s.
-5. Live measurement: CPU-s over 60 s with the installed binary and with the branch binary, both idle on natedev against the real `/tmp/claude` tree (check the build hold first). Target under 1 % of one core.
+- One sysinfo `System` serves each census scan and one serves the hierarchy. Each refreshes in place. A same-pid exec shows through `CurrentProcessNames`.
+- Parsed Codex run records stay in a cache keyed by file revision (path and mtime). A scan reads only new or changed files. A removed file leaves the cache.
+- `accounts.py` and `production_tree.py` run only when their inputs change (`CommandInputs`). Output rows are unchanged.
+- Idle release CPU is 5.81 CPU-s/min (9.7 % of one core) against 7.91 (13.2 %) installed. The under-1 % target is not met.
 
 **Files:**
-- `crates/cargo-handler/src/census/{activity.rs,scan.rs,hierarchy.rs,accounts.rs,schedule.rs,command_inputs.rs,activity_regression_tests.rs}` — the retained records, process tables, input-driven commands and their regression tests
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/{activity,scan,hierarchy,accounts,schedule}.rs` — run record cache, per-scan `System`, input-driven commands
+- `crates/cargo-handler/src/census/command_inputs.rs` — `CommandInputs`; a `#[path]` child of `hierarchy.rs`
+- `crates/cargo-handler/src/census/activity_regression_tests.rs` — parse-count and preservation tests
 
-**Workers:** 1 writer (`test` seat; the `impl` seat is on Phase 39).
+**Binds later work:** the under-1 % idle target is open. The ancestry `System` refresh costs 1.14 CPU-s/min (budget 0.60). Run directory listing costs 1.20. On macOS, `CurrentProcessNames::read` runs `/bin/ps -axo pid=,ucomm=` on every scan. Model and effort display must read through the revision-keyed run records, with no per-scan read.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean, in either order; no test takes a second; the live measurement meets the target. The checkpoint adds a Change-Review line.
+**Gotchas:** three existing tests run over 1 s: gradient (1.46), busy ink (1.27), codex tier (1.04).
 
 ### Phase 39 — A project whose parent is deleted shows as deleted  · status: done (not reproduced, no code change)
 
