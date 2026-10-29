@@ -1205,7 +1205,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Astra rows keep their stable thread identity and the selected band through busy/idle updates and manager placement. The session palette checks in `render/role_title_tests.rs` measure both Astra inks, the Astra word-match tests in `render/word_contrast_tests.rs` pass, and the Astra-vs-reset test in `summary/accounts_gradient_tests.rs` passes (with the floor or channel phase 31 chose). Live: framed shots, in a dark and a light theme, of an Astra designer under a unit director and an Astra reviewer under a showrunner, with the real config. The checkpoint carries `Change-Review: cargo-handler shows Astra designer and Astra reviewer sessions under the unit director or showrunner that runs them, with their own role words and colors | open cargo-handler while an Astra review runs and find its row under its parent`.
 
-### Phase 41 — Renamed Codex sessions show in cargo-handler  · status: todo
+### Phase 41 — Renamed Codex sessions show in cargo-handler  · status: done
 
 **Depends on:** none
 
@@ -1376,6 +1376,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/cargo-handler/src/app.rs` — draw only on change
 - `crates/cargo-handler/CHANGELOG.md`
 - `crates/cargo-handler/src/terminal.rs` — the redraw decision, the display-time state and their inline tests
+- `crates/cargo-handler/src/render/mod.rs` — the status draw, reachable in the crate so a clock-only frame redraws only the status line
+- `crates/cargo-handler/Cargo.toml`, `Cargo.lock` — the workspace `notify` dependency for the watched run records
 
 **Workers:** 1 writer (`test` seat, which wrote Phase 40).
 

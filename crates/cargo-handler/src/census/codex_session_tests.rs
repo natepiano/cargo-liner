@@ -250,6 +250,44 @@ fn codex_session_without_a_name_record_draws_its_pid() {
 }
 
 #[test]
+fn codex_interactive_roster_thread_uses_renamed_session_in_summary_and_tile() {
+    let mut fixture = SessionFixture::new();
+    store_threads(&fixture);
+    let codex_home = fixture.index().parent().expect("Codex home").to_path_buf();
+    let connection =
+        rusqlite::Connection::open(codex_home.join("state_6.sqlite")).expect("fixture database");
+    connection
+        .execute_batch(
+            "ALTER TABLE threads ADD COLUMN originator TEXT;
+        ALTER TABLE threads ADD COLUMN source TEXT;
+        ALTER TABLE threads ADD COLUMN thread_source TEXT;
+        UPDATE threads SET originator = 'roster', source = 'vscode', thread_source = 'user',
+        created_at_ms = created_at_ms + 6000;",
+        )
+        .expect("interactive roster thread");
+    fs::write(
+        fixture.index(),
+        format!("{{\"id\":\"{ID}\",\"thread_name\":\"test-codex\"}}\n"),
+    )
+    .expect("renamed session index");
+    fixture.threads = codex::read_threads(&codex_home, &(START * 1000..=(START + 60) * 1000));
+    let rows = fixture.scan();
+    assert_eq!(rows[0].name, "test-codex");
+    let (summary, _, _) = drawn(rows.clone(), RootWork::Present);
+    let (_, _, pool) = drawn(rows, RootWork::Absent);
+    for surface in [summary, pool] {
+        assert!(
+            surface.iter().any(|line| line.contains("test-codex")),
+            "{surface:?}"
+        );
+        assert!(
+            !surface.iter().any(|line| line.contains("pid 10")),
+            "{surface:?}"
+        );
+    }
+}
+
+#[test]
 fn codex_session_fast_tier_draws_on_summary_tree_and_unassigned_accounts() {
     let mut fixture = SessionFixture::new();
     let rows = fixture.scan();

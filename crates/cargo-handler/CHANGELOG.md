@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agent tiles draw one tree under a header row with `session`, `role`, `status`, `account` and `age` columns, plus `branch` and `directory` in the full view. Shell commands and subagents are tree lines; the list below the tree is gone. When two accounts of one program are running, the account column appears, and the header line and summary's `agent` column show account labels. Configure home-to-label pairs in the optional `[accounts]` table.
 
 ### Fixed
+- Show renamed interactive Codex sessions from newer thread sources in tiles and the summary.
 - The Default Dark bar accent and Default Light gray bar keep text readable; glyph contrast keeps fractional coverage, and rejected theme files stay visible in settings after appearance changes.
 - Settings: a key pressed before the first settings draw moves the selection, and a row change ends an open edit.
 - Hierarchy refresh commands run on their own workers. Remote probes and settled local rows continue while a follow-up answer is pending; linked rows wait together, and checked session ids stay checked across catch-up answers.
