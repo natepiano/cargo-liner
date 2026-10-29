@@ -289,11 +289,12 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 38: `update_layout_rules` (`tiles/grid.rs` ≈2106) is the only writer of area, growth, minimum width and height, width floor and summary allocation. A real change calls `replan_layout_endpoints` (≈2120): it installs the final arrangement at once, clears the queued steps and settles the motion. The painted record stays as the last frame drew it until the next paint. `complete_arrangement` (≈2779) is the one step that installs slots, and it settles focus, held focus and held rows against the slots it replaces; do not install slots in another place. A test that holds a motion mid-way must not change the area or these rules during the hold, because that settles the motion.
 - cargo-handler `Cells::prepare_moving_frame` (`render/mod.rs` ≈697) supplies the motion measurement bounds to `Cells::prepare_frame` (≈705). `measure_trees` (≈458) and `restore_tree_viewports` (≈570) are in the same file. `prepare_frame` resolves the selections, runs `agent_cell::shared_tree_metrics`, and only then installs each selection area (`SurfaceSelection::set_area`). Keep that order. Those areas come from preparation allocations, so they are not the final clipped paint record.
 - `draw_panes_at` (`render/mod.rs` ≈151) follows a moved selection: after the draw it finds the destination placement, takes the centre of its rect and calls `app.tiles.cell_at` (≈218) to get the index for `focus_cell`. When `cell_at` answers from painted geometry, that centre can name another moving piece.
-- The pointer payload `tui_pane::CellClick<Id>` (`tiles/host.rs` ≈35, exported in `tiles/mod.rs` ≈45 and `lib.rs`) carries presses (`TileGridHost::cell_clicked`) and wheel steps (`TileGridHost::cell_scrolled`, `handle_tile_scroll`). Its users: `crates/cargo-handler/src/app.rs`, `render/mod.rs`, `render/accounts_grid_tests.rs`, `render/role_title_tests.rs`, `summary/accounts_header_sort_tests.rs`, `summary/unassigned_summary_tests.rs`, and `crates/tui_pane/src/tiles/host_tests.rs`.
+- The pointer payload `tui_pane::CellClick<Id>` (`tiles/host.rs` ≈35, exported in `tiles/mod.rs` ≈48 and `lib.rs`) carries presses (`TileGridHost::cell_clicked`) and wheel steps (`TileGridHost::cell_scrolled`, `handle_tile_scroll`). Its users: `crates/cargo-handler/src/app.rs`, `render/mod.rs`, `render/accounts_grid_tests.rs`, `render/role_title_tests.rs`, `summary/accounts_header_sort_tests.rs`, `summary/unassigned_summary_tests.rs`, and `crates/tui_pane/src/tiles/host_tests.rs`.
 - Phase 28 replaces the bare `Option` results of the selection API (`selected_span`, `containing`, `follow_focused`, `surface`, `surface_mut`, `Cells.focused`, `selection_surface`, `Cells::with_selections`) with named results. Use those names; do not add a new bare `Option`.
 - Phase 28 pins the accounts heading and column headers. Pinned header lines and scrolling body rows have different screen-to-content mappings: a pinned line maps to a fixed content line, and a body row maps through the scroll offset below the pinned lines. Keep that whole mapping (pinned lines, body offset and pinned count) with the painted frame, not only the scroll offset.
 - Phase 16's selected-row behavior (keys, clicks and the wheel; `render/selection_tests.rs`) stays as it is.
-- Tests in tui_pane tiles live in the inline `mod tests` of `tiles/grid.rs` (≈6429, motion tests), `tiles/draw.rs` (≈814, motion content tests) and `tiles/host.rs` (≈205), and in `tiles/host_tests.rs` (registered at `host.rs` ≈446). There is no `tiles/tests/` directory.
+- Phase 36: the foot readout reads the selection after the cell paints (`draw_cell_with_rows_readout` calls `TileCells::rows_readout`, `tiles/draw.rs`), and cargo-handler `Cells::rows_readout` (`render/mod.rs` ≈764) answers from `app.selections`. Keep that order when the frame record changes, so `content rows: N of M` follows the selection during motion; `selected_rows_readout_follows_moves_and_keeps_unselected_counts` (`render/mod.rs`) stays green.
+- Tests in tui_pane tiles live in the inline `mod tests` of `tiles/grid.rs` (≈6429, motion tests), `tiles/draw.rs` (≈961, motion content tests) and `tiles/host.rs` (≈205), and in `tiles/host_tests.rs` (registered at `host.rs` ≈446). There is no `tiles/tests/` directory.
 - Phase 17: drawing prepares `TreeMetrics` across all tiles in one screen column and saves them in `App.tree_layouts` (`render/mod.rs` ≈177); since phase 23 each drawn group shares one age layout (`summary/age.rs` `AgeLayout`). A click must map through the metrics that were drawn, not ones rebuilt from current rows and time. Add a regression: another tile in the same screen column changes the shared widths between draw and click, and the click still selects the header drawn under the pointer, with the drawn group's shared age layout kept.
 
 **Spec:**
@@ -904,8 +905,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 5. Live measurement: CPU-s over 60 s with the installed binary and with the branch binary, both idle on natedev against the real `/tmp/claude` tree (check the build hold first). Target under 1 % of one core.
 
 **Files:**
-- `crates/cargo-handler/src/census/{activity.rs, scan.rs, hierarchy.rs, accounts.rs, schedule.rs, command_inputs.rs}` and their test files — the retained records, process tables and input-driven commands
-- `crates/cargo-handler/src/{constants.rs, app.rs}` — intervals and wiring
+- `crates/cargo-handler/src/census/{mod.rs,activity.rs,scan.rs,hierarchy.rs,accounts.rs,schedule.rs,command_inputs.rs,activity_regression_tests.rs}` — the retained records, process tables, input-driven commands and their regression tests
+- `crates/cargo-handler/src/{constants.rs,app.rs}` — intervals and wiring
 - `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer (`test` seat; the `impl` seat is on Phase 39).
@@ -920,33 +921,28 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Depends on:** Phase 27
 
-#### Work Order
+#### As-built
 
-**Goal:** in a cargo-handler tile whose rows are selectable and scrollable, the foot readout names the selected row: `content rows: 3 of 12`. The `r/c: H/W` part stays. A tile with no selection shows `content rows: 12` as today. cargo-tile stays byte-identical.
-
-**Source:** the user, via the showrunner, 2026-10-28: "we need a handler enhancements to change content rows that are selectable and scrollable as in cargo handler to indicate the current row selected as in content rows: {row} of {rows}". Showrunner design ruling, 2026-10-28 (it replaces the earlier hidden-readout design; there is no Hidden path and no reclaimed row).
-
-**Constraints from prior phases:**
-- `draw_tile_grid` (`tui_pane/src/tiles/draw.rs`) owns the readout. The text is built at ≈675–712 from `TILE_ROWS_CONTENT_LABEL` (`tiles/constants.rs` ≈54) and the measured rows; `TileCells::readout_rows` (≈182) gives the count. The readout row, its demand (`add_readout_rows` ≈571) and the content area do not change in this phase.
-- cargo-handler's `impl TileCells<TileKey> for Cells` is in `render/mod.rs` (≈696). Selection state is `app.selections` (`render/mod.rs` ≈161–220; `interaction.rs` `SurfaceSelection`). Handler fixtures that show the readout are in `render/mod.rs` (≈1057–1251).
-- `tiles/draw.rs` and `tui_pane/src/lib.rs` are held by the tile unit (reservation 01a17e32-a770-7b20-8fd3-78b9c527961b). Claim them `--before` it.
-- Start fresh from HEAD; the parked hidden-readout patch is obsolete.
-
-**Spec:**
-1. Add `RowsReadout::{Count(usize), Selected { row: NonZeroUsize, rows: usize }}` in tui_pane. `Selected` is built only by a checked constructor that refuses `row > rows`. Add a `TileCells` method that gives it for a cell, with the default `Count` of today's rows. Export only what cargo-handler needs.
-2. `Count(n)` draws `content rows: n` exactly as today. `Selected` draws `content rows: {row} of {rows}`, with the same label and value inks. With the default, every path is byte-identical to today.
-3. cargo-handler returns `Selected` for a selectable surface with a current selection (1-based row of the selected row among the surface's rows) and `Count` otherwise. The readout follows every selection move and scroll, also during motion.
-4. Tests, red first: a cargo-handler tile with selection on row 1 then row 3 shows `content rows: 1 of N`, then `content rows: 3 of N`; a tile with no selection shows today's text; the checked constructor refuses `row > rows`; existing tui_pane and cargo-tile readout tests pass unchanged. Update the handler fixtures whose text changes. Every test under one second.
-5. CHANGELOG: one line in each crate.
+- tui_pane `RowsReadout::{Count(usize), Selected(SelectedRow)}` (`tiles/draw.rs`). `SelectedRow` keeps `row: NonZeroUsize` and `rows: usize` private, with `row()` and `rows()`; only `RowsReadout::selected(row, rows) -> Result<Self, RowExceedsTotal>` builds it, and it refuses `row > rows`. `RowsReadout`, `SelectedRow` and `RowExceedsTotal` are exported from `tiles/mod.rs` and `lib.rs`.
+- `TileCells::rows_readout(&self, content, area, measured_rows) -> RowsReadout` defaults to `Count(self.readout_rows(..))`, so cargo-tile and every unselected path draw today's `content rows: 12`. `Selected` draws `content rows: {row} of {rows}`: label ink on `content rows: ` and ` of `, reading ink on both numbers; `r/c: H/W` stays. The readout row, its demand and the content area are unchanged.
+- `draw_cell_with_rows_readout` reads the readout after the cell paints. A private `CellRowsReadout { text, content_rows }` keeps the measured content rows for the fit ink; the selected total is text only.
+- cargo-handler `Cells::rows_readout` (`render/mod.rs`) returns `SurfaceSelection::rows_readout(measured_rows)` (`interaction.rs`) for a selectable surface (tiles and the summary), else `Count`. The total is the surface's selectable rows; a position past them falls back to `Count`. The readout follows every arrow-key move and scroll.
+- Tests: `selected_rows_readout_follows_moves_and_keeps_unselected_counts` (`render/mod.rs`, real Down-arrow dispatch), `selected_rows_readout_checks_bounds_and_preserves_count_text` and `selected_rows_readout_uses_measured_content_for_fit_ink` (`tiles/draw.rs`).
 
 **Files:**
-- `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/tiles/constants.rs`, `crates/tui_pane/src/lib.rs` — the type, the hook and the text
-- `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/interaction.rs` — the selected row, and the fixtures
+- `crates/tui_pane/src/tiles/draw.rs` — readout types, hook, text and fit ink; tests
+- `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs` — exports
+- `crates/cargo-handler/src/render/mod.rs` — `Cells::rows_readout`, readout fixtures, move test
+- `crates/cargo-handler/src/interaction.rs` — `SurfaceSelection::rows_readout`
 - `crates/tui_pane/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md`
 
-**Workers:** 1 writer (`impl`).
+**Binds later work:** the readout reads the selection after the cell paints, so a changed frame record keeps that order ("Accurate clicks during motion"); the foot readout is chrome and not a word target ("Click a word to highlight every instance").
 
-**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-handler`, `verify.sh test cargo-tile --filter readout` and one `verify.sh lint` clean, tests and lint in either order; no test takes a second. Live: a cargo-handler shot before and after two arrow-key moves shows the number follow the selection. The checkpoint adds `Change-Review: "content rows: 3 of 12" in the selected tile's foot | run cargo-handler, move the selection with the arrow keys | the number follows the selection`.
+**Gotchas:**
+- The fit ink compares measured content rows, never the selectable total: a wrapped account can clip while its selectable count fits.
+- The selected total counts selectable rows, so a tile with headings reads `content rows: 12` unselected and `1 of 10` selected.
+
+**Ruled out:** the hidden-readout design (no readout, a reclaimed last content row); public fields on `Selected` (safe code could break `row <= rows`); `From<usize> for RowsReadout` (no consumer).
 
 ### Phase 35 — Subagent role words and an even reset ramp  · status: todo
 
@@ -1112,8 +1108,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `content_click` excludes tile frames, titles and readouts. Word clicks also work on tile titles, so tui_pane `tiles/host.rs` forwards a title press to the host; the word logic stays in cargo-handler. The status bar, the readouts and the overlays are out of scope (showrunner, 2026-10-23).
 - An open modal overlay takes a click first. Esc clears the highlight only when no overlay is open.
 - Phase 27: `summary::truncated_line` (`summary/mod.rs` ≈846) cuts styled text by terminal cells and grapheme clusters, and `SummarySessionTable::OmittedForWidth` (≈226) removes session lines fully. The omitted state is already visible to the user and its 34x50 regression is green.
-- Phase 36: cargo-handler tiles draw no readout, and the resolved content rectangle stays with the painted-cell record, so presses and wheel steps reach the reclaimed last content row.
-- The content, title and chrome outcomes cross the public host boundary. The pointer payload is exported in `tiles/mod.rs` (≈45) and `lib.rs` (≈502).
+- Phase 36: cargo-handler tiles keep their foot readout row, and the content area does not change; no content row is reclaimed. The readout text comes from `TileCells::rows_readout` (`tui_pane/src/tiles/draw.rs`): `RowsReadout::Selected` draws `content rows: 3 of 12` for a surface with a selected row, `RowsReadout::Count` draws `content rows: 12`. The readout is chrome, so a press on it is not a word target.
+- The content, title and chrome outcomes cross the public host boundary. The pointer payload is exported in `tiles/mod.rs` (≈48) and `lib.rs` (≈502).
 - Theme roles live in `theme/mod.rs` (`Role` ≈91) and the built-in theme files in `crates/cargo-handler/themes/`; text colors stay as they are drawn.
 - Phase 15 CIEDE2000 12 measures distinction from header ink, not readability. `ReadableInk` measures against `theme.text.bg_focus`. Use the luminance contrast oracle (4.5:1) against the real match background in all four themes, for subdued role and account ink and for selection overlap; foreground colors do not change.
 - Phase 17: `footer_colors/mod.rs` `InkGrounds` covers the base, focused and unfocused grounds, and account, management and session inks use glyph coverage (`InkCoverage::Antialiased`). Measure every ink on the drawn match and selection backgrounds with that same coverage calculation (phase 18: the lower of the unrounded and the byte-rounded 208/255 blend). The Astra role inks do not exist yet: phase 21 runs after this phase and adds their word-match tests to `render/word_contrast_tests.rs`. If no match background keeps every unchanged foreground at 4.5:1, send the conflict to the showrunner before accepting a palette.
@@ -1128,7 +1124,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 6. Tests, each red before its fix: the token rules (punctuation removed at the ends, whole-word match, exact case); matches marked in two tiles and in the accounts table; a new row with the word is marked on the next frame; clear on empty space, on Esc, on a second click on the same word and on a click on the word at another place; a click on another word moves the highlight; a render test that reads the background colors back from the frame.
 7. A contrast test reads the drawn match background and each ink on it in all four themes and asserts at least 4.5:1 with glyph coverage, on the base, focused and unfocused grounds, selection overlap included.
 8. Word lookup reads the last painted cells, not a rebuild from census text. Scope: tile content and tile titles; the empty-space clear works there too.
-9. Tests also cover: a word on an account continuation line; a missed row click that clears the highlight and keeps the row selection; a word in a tile title; a click on the status bar or a readout that leaves the highlight; a click while a modal overlay is open that goes to the overlay; Esc with an overlay open that closes the overlay and keeps the highlight. A retired painted tile leaves focus, row selection and word highlight unchanged; a word on a pinned heading or column header is read from the painted cells without breaking header sorting. Words resolve from the visible painted token when it holds wide glyphs, combining marks, emoji presentation sequences or a truncation ellipsis; a click on any cell that a wide glyph occupies resolves the same token; omitted session text gives no word target. Shared tui_pane regressions in `tiles/host_tests.rs` cover title forwarding, chrome exclusion, retired content and the Phase 36 reclaimed content row.
+9. Tests also cover: a word on an account continuation line; a missed row click that clears the highlight and keeps the row selection; a word in a tile title; a click on the status bar or a readout that leaves the highlight; a click while a modal overlay is open that goes to the overlay; Esc with an overlay open that closes the overlay and keeps the highlight. A retired painted tile leaves focus, row selection and word highlight unchanged; a word on a pinned heading or column header is read from the painted cells without breaking header sorting. Words resolve from the visible painted token when it holds wide glyphs, combining marks, emoji presentation sequences or a truncation ellipsis; a click on any cell that a wide glyph occupies resolves the same token; omitted session text gives no word target. Shared tui_pane regressions in `tiles/host_tests.rs` cover title forwarding, chrome exclusion (the foot readout row included) and retired content.
 
 **Files:**
 - `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/globals.rs`, `crates/cargo-handler/src/keymap.rs`, `crates/cargo-handler/src/interaction.rs`, `crates/cargo-handler/src/theme/mod.rs`, `crates/cargo-handler/src/word_highlight.rs`, `crates/cargo-handler/src/main.rs`, `crates/cargo-handler/themes/default_dark.toml`, `crates/cargo-handler/themes/default_light.toml`, `crates/cargo-handler/themes/high_contrast.toml`, `crates/cargo-handler/themes/starter.toml`, `crates/cargo-handler/CHANGELOG.md`
@@ -1205,3 +1201,140 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `test` — the Astra tests (`astra_role_tests.rs`), the probe compatibility tests (`probe_role_tests.rs`), the footer-color tests (`footer_colors/tests.rs`), the fixture (`statusline_astra.conf`), `render/role_title_tests.rs`, the rendered selection tests, the Astra word-match tests in `render/word_contrast_tests.rs`, the Astra-vs-reset test in `summary/accounts_gradient_tests.rs`, and the width checks in `render/narrow_width_tests.rs`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Astra rows keep their stable thread identity and the selected band through busy/idle updates and manager placement. The session palette checks in `render/role_title_tests.rs` measure both Astra inks, the Astra word-match tests in `render/word_contrast_tests.rs` pass, and the Astra-vs-reset test in `summary/accounts_gradient_tests.rs` passes (with the floor or channel phase 31 chose). Live: framed shots, in a dark and a light theme, of an Astra designer under a unit director and an Astra reviewer under a showrunner, with the real config. The checkpoint carries `Change-Review: cargo-handler shows Astra designer and Astra reviewer sessions under the unit director or showrunner that runs them, with their own role words and colors | open cargo-handler while an Astra review runs and find its row under its parent`.
+
+### Phase 41 — Renamed Codex sessions show in cargo-handler  · status: todo
+
+**Depends on:** none
+
+#### Work Order
+
+**Goal:** an interactive Codex session that the user renamed shows its name in its tile and the summary, not `pid N`, when Codex stores the thread with an originator other than `codex-tui`.
+
+**Source:** change review C85 back (showrunner, 2026-10-28). Live case on natedev: process 607499 (codex 0.163.0, `CODEX_HOME=~/.codex1`, cwd `~/rust/cargo-liner`) named "test-codex" shows as "pid 607499". Diagnosis: unit session `phases/41/diagnosis.md`.
+
+**Constraints from prior phases:**
+- The name is stored in `~/.codex1/session_index.jsonl` (`thread_name`) and in `~/.codex1/state_5.sqlite` `threads` with `name='test-codex'`, `originator='roster'`, `source='vscode'`, `thread_source='user'`, `cli_version='0.165.0'`, created 6 s after the process start. Worker threads have `thread_source` NULL; `codex exec` threads have `source='exec'`. The last `codex-tui` thread is from 2026-10-16 (`.codex1`) and 2026-10-20 (`.codex2`), so no new interactive session has had its name since then.
+- Cause: `CODEX_THREADS_QUERY` (`constants.rs` ≈391) selects `WHERE originator = ?1` with `CODEX_TUI_ORIGINATOR = "codex-tui"` (≈398), bound in `query_threads` (`census/codex.rs` ≈248). The thread is dropped, so `classify::codex_startup_threads` finds none, and the name pass in `census/scan.rs` (≈474) leaves `row.name = "pid {pid}"` and goes on before `SessionNames` (`census/codex_names.rs`) is read.
+- `CODEX_THREAD_BY_ID_QUERY` (≈411) and `CODEX_LAST_THREAD_QUERY` already accept any originator; do not change them. The match by cwd and start window (`CODEX_THREAD_START_WINDOW`, 60 s) stays.
+- `constants.rs` is also in Phase 40's **Files** (intervals only; its working-tree diff does not touch the Codex constants). Claim it after Phase 40's reservation or `--before` it; change only the Codex thread query lines.
+- The `codex.rs` test fixture table (`THREADS_TABLE`, `mod tests` ≈271) has no `source` or `thread_source` column today.
+
+**Spec:**
+1. Select interactive threads by what they are, not by one originator: `thread_source = 'user' AND (source IS NULL OR source <> 'exec')`, or `originator = 'codex-tui'` for older rows that have no `thread_source`. Keep the creation window bounds. Rename `CODEX_TUI_ORIGINATOR` or its doc comment so the name states its role as the older-row alternative.
+2. A database without the `thread_source` or `source` column (an older Codex) still reads through the `codex-tui` alternative; the query must not fail on it. If one query cannot cover both layouts, check the columns once per database open and pick the query by a typed layout (`enum ThreadsLayout { WithThreadSource, OriginatorOnly }`), never a string switch at the call site.
+3. Tests, red first: in `census/codex.rs` tests, a thread with `originator='roster'`, `source='vscode'`, `thread_source='user'` inside the window is returned by `read_threads`; a worker thread (`thread_source` NULL, originator not `codex-tui`) and an exec thread (`source='exec'`) are not; an `OriginatorOnly` fixture table still returns its `codex-tui` thread. In `census/codex_session_tests.rs`, the same `roster` row plus a `session_index.jsonl` record with `thread_name` "test-codex" names the row "test-codex", not "pid N". Each test under one second.
+4. CHANGELOG: one line under Fixed.
+
+**Files:**
+- `crates/cargo-handler/src/constants.rs` — the threads query and the originator constant only
+- `crates/cargo-handler/src/census/codex.rs` — the query parameters, the layout check if needed, and the fixture table tests
+- `crates/cargo-handler/src/census/codex_session_tests.rs` — the named-row test
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer (`impl`); the census has no `tests/` lane and the change is small.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: on natedev, start an interactive `codex` under `~/.codex1`, rename it, and a shot of cargo-handler shows its name in the tile and the summary. The checkpoint adds a Change-Review line.
+
+### Phase 42 — A dispatch shell folds into its Codex worker row  · status: todo
+
+**Depends on:** Phase 40
+
+#### Work Order
+
+**Goal:** a dispatch shell (`implement.sh`, `codex_mesh.py follow` or `start`) never draws as its own row when its Codex worker row draws; only the worker row shows, with the dispatch job. The same holds for a Claude seat dispatch.
+
+**Source:** change reviews C86 and C87 back (showrunner, 2026-10-28 ≈20:00 EDT). User: "there is no point to seeing the thing that dispatched the codex work for me - there is always one". One new Change-Review line covers both. Unit session `phases/42/source.md`.
+
+**Constraints from prior phases:**
+- Live case on natedev (cables unit, claude2): the director's Bash call zsh 3399214 → `implement.sh` 3399229 → `codex_mesh.py follow` 3576715 draws a shell row "Dispatch the drag seat to run the Phase 54b tes…" beside its worker row "drag · Phase 33" (codex1). The follow process has no app-server child: that worker's app-server has systemd as its parent, because an earlier dispatch that has ended started it. A case that folds: zsh 2700456 → `implement.sh` 2700461 → `codex_mesh.py follow` 2949144 → `codex app-server` 1570363.
+- Scan time: `worker_dispatches` (`census/scan.rs` ≈840) parses each launcher (`ParsedDispatch`, `census/worker_dispatch/mod.rs` ≈874), takes the seat from a `codex_mesh.py` process below it (`MESH_SEAT_FLAGS`, `process_is_below`), and resolves it through `mesh_roster.json` (`ParsedDispatch::resolve` ≈1117: `--to` seat, else the entry whose `launcher_pid` is the dispatch's pid) into `WorkerDispatch::Worker(ResolvedWorkerDispatch)` with `identity: WorkerIdentity::CodexThread(thread id)`.
+- Draw time: `AgentPlacement::resolve_dispatches` (`census/placement.rs` ≈265) collects the children of each final tile; a `CodexThreadHost` row's child joins only when the hierarchy moved it (`moved`), else it is skipped. `tree::join_dispatches` (`census/tree.rs` ≈344) folds a shell only into a `ChildKind::Thread` row in the same tile whose `CodexThreadId::Recorded` equals the dispatch identity. `folds_dispatch` (≈307) hides the shell; `dispatch_label` (≈328) gives the worker row the job. Claude seats fold through `ClaudeDispatchFold` and `fold_claude_dispatches` (`scan.rs` ≈929).
+- `census/scan.rs` is in Phase 40's **Files** and its working tree; this phase starts after Phase 40's checkpoint.
+- Keep `pending_dispatch_to_a_different_seat_keeps_its_wrapper_visible` and `unresolved_and_cross_tile_dispatches_keep_their_shell_rows` (`worker_dispatch/tests.rs`) unless the fixture capture shows the cables case is one of them; then name the changed rule in the summary.
+
+**Spec:**
+1. Capture first: from the live process table, `mesh_roster.json` and `production_tree.py --json` of a follow dispatch whose worker's app-server it did not start, build a fixture, and name in the summary the step that drops the fold (seat resolution, the thread row's tile, or the join).
+2. Pair by the dispatch's own identity (its `--to` seat or roster entry in its `--session-dir`, and the thread that seat records), not by process descent. The pairing is a type, for example `DispatchPairing { shell, worker, dispatch }` built once at placement, that the draw reads; no name filter in the draw. A shell whose worker row draws in its final tile folds into it wherever that worker's app-server sits in the process tree.
+3. Claude seats (C87) use the same pairing: a seat dispatch folds into the seat's session row by the seat identity.
+4. Tests, red first, in `census/worker_dispatch/tests.rs`: the captured cables fixture (follow with no app-server child, app-server under pid 1, thread placed under the director by its hierarchy edge) draws one row, the worker row with the dispatch job, and no shell row; the existing fold, pending and cross-tile tests stay green; a Claude seat case with the same shape folds. Each test under one second.
+5. CHANGELOG: one line under Fixed.
+
+**Files:**
+- `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/tree.rs` — the typed pairing and the join
+- `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — seat identity at scan time, Claude seat fold
+- `crates/cargo-handler/src/census/worker_dispatch/tests.rs`, `crates/cargo-handler/src/census/fixtures/` — the captured fixture and tests
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — the capture, the pairing type, scan and placement changes and the CHANGELOG; hub: `crates/cargo-handler/src/census/placement.rs`.
+- `test` — opens as impl: the census has no `tests/` lane; it writes the fixture and the tests in `worker_dispatch/tests.rs` from the capture.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of a director tile during a `follow` dispatch to a worker whose app-server an earlier dispatch started shows only the worker row with its job. The checkpoint adds one Change-Review line for C86 and C87.
+
+### Phase 43 — Ages drop the seconds field  · status: todo
+
+**Depends on:** none
+
+#### Work Order
+
+**Goal:** the `age` column in the summary and in every tile shows days, hours and minutes only; units stay aligned in their slots.
+
+**Source:** change review C88 follow-up (user via the showrunner, 2026-10-28): "yes ages line up - but have handler remove the seconds column - it's not useful". Comes back as a Change-Review line. Unit session `phases/43/source.md`.
+
+**Constraints from prior phases:**
+- `AGE_UNITS` (`constants.rs` ≈172) is `[(86_400, "d"), (3_600, "h"), (60, "m"), (1, "s")]`; `AGE_DETAIL_BELOW` (≈175) is 10. `summary/age.rs` builds `AgeParts` (one slot per unit), `age_label` and `AgeLayout::{from_ages, width, format}`; each drawn group shares one `AgeLayout` (phase 23). Users: `agent_cell.rs` (≈708, ≈959, ≈1299, ≈2314, ≈2490, ≈2847) and `summary/mod.rs` (≈913, ≈964).
+- The accounts table `read` column (`read_age`, `summary/accounts.rs` ≈346) is a reading age, not an `age` column; it keeps its seconds (unit director's scope call).
+- `constants.rs` is also in Phase 40's and Phase 41's **Files**; change only `AGE_UNITS` and its doc comment, and claim the file after their reservations or `--before` them.
+
+**Spec:**
+1. Minutes are the smallest age unit. An age under one minute draws `0m` (unit director's call: it keeps the minute slot and the column width; a one-line revert if the showrunner wants another word). `5m 3s` becomes `5m`; `2h 29m` and `3d 4h` stay.
+2. `AgeLayout` measures and aligns only the d, h and m slots; no blank seconds slot keeps width.
+3. Tests, red first: `ages_read_in_their_largest_unit` (`summary/age.rs`) has the new cases (0 and 45 s → `0m`, 5 min 3 s → `5m`); `summary/age_layout_tests.rs` aligns d/h/m with no seconds slot in the summary and a tile; fixtures that show seconds (`agent_cell.rs` ≈3259, `agent_cell/tests/column_visibility_tests.rs` ≈643, `agent_cell/tests/repair_tests.rs` ≈202, and any other the suite names) change to the new text. Each test under one second.
+4. CHANGELOG: one line under Changed.
+
+**Files:**
+- `crates/cargo-handler/src/constants.rs` — `AGE_UNITS` only
+- `crates/cargo-handler/src/summary/age.rs` — slots, label and tests
+- `crates/cargo-handler/src/summary/age_layout_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/repair_tests.rs` — expected text
+- `crates/cargo-handler/src/agent_cell.rs` — fixture text only
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer (`impl`); one small rule change with fixture updates.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of the summary and one tile shows ages with no seconds and aligned d/h/m slots. The checkpoint adds a Change-Review line.
+
+### Phase 44 — The accounts summary shows a session count per account  · status: todo
+
+**Depends on:** Phase 43
+
+#### Work Order
+
+**Goal:** the accounts table in the summary has a `sessions` column that shows, for each account, how many live sessions run on it.
+
+**Source:** the user, direct to the handler unit, 2026-10-28 ≈23:40 EDT: "need to add an enhancement to show the count of sessions for each account in the accounts summary table". Unit session `phases/44/source.md`.
+
+**Constraints from prior phases:**
+- Columns: `AccountsColumn` (`sort.rs` ≈172) with `ALL`, `index` and `header` (`"account", "role", "left", "resets", "credits", "enabled", "in use", "read"`). `summary/accounts.rs`: `compare_accounts` (≈99) sorts by each column, `values` (≈371) builds the cell text, `AccountsFit::for_width` (≈431) fits widths, the always-kept columns are Account, Roles and WeeklyLeft (≈468), and `AccountsColumnDrop::ORDER` (≈487) is InUse, Enabled, Read, Credits. Phase 28 pins the heading and column headers; phase 32 keeps main's table height.
+- `AccountUsage` (`census/accounts.rs` ≈86) comes from `accounts.py`; Rust does not infer its roles or filter its rows. The count comes from the census, not from `accounts.py`.
+- `SummaryFrame` (`summary/mod.rs` ≈213) holds `machines`, `placement` and `accounts`; `SummaryLayout::new` (≈438) calls `accounts::build_lines`. A row's account is `AgentRow.account` / `ChildRow.account` (`census/mod.rs` ≈323, ≈459), an `Account` whose label (`AccountHome::label`) is the label the tiles show; shells and subagents are `Account::Unrecorded`.
+- Phase 43 changes age text in summary fixtures; this phase runs after it so the summary fixture text changes once each.
+
+**Spec:**
+1. A session is a drawn agent row or child row whose `Account` is a home with that label, on any shown machine: Claude sessions and Codex sessions and threads; shells and subagents carry no account and do not count (unit director's call; a one-line revert if the showrunner counts only top-level agents). Count once per drawn row from the `AgentPlacement`, so a folded or hidden row does not count.
+2. `AccountsColumn::Sessions`, header `sessions`, drawn after `role`; the value is the count, `0` for an account with none. Header click sorts by it like the other number columns. It drops for width after Credits (`AccountsColumnDrop` gains `Sessions` as the last entry).
+3. The count is computed once per frame into a typed map (for example `AccountSessionCounts`) passed to `build_lines`; no census walk inside a cell draw.
+4. Tests, red first, in `summary/accounts_tests.rs`: two accounts with 3 and 0 drawn sessions show `3` and `0`; a shell or subagent child adds nothing; a folded dispatch shell adds nothing; in `summary/accounts_header_sort_tests.rs` a click on `sessions` sorts by count; a narrow width drops `sessions` after `credits`. Update accounts fixtures whose text changes (`render/accounts_grid_tests.rs`, `render/pinned_accounts_tests.rs` and any other the suite names). Each test under one second.
+5. CHANGELOG: one line under Added.
+
+**Files:**
+- `crates/cargo-handler/src/sort.rs` — `AccountsColumn::Sessions`
+- `crates/cargo-handler/src/summary/accounts.rs` — values, sort, fit and drop order
+- `crates/cargo-handler/src/summary/mod.rs` — the per-frame counts
+- `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`, `crates/cargo-handler/src/render/accounts_grid_tests.rs`, `crates/cargo-handler/src/render/pinned_accounts_tests.rs` — tests and fixture text
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — `sort.rs`, `summary/accounts.rs`, `summary/mod.rs`, fixture updates in `render/` and the CHANGELOG; hub: `crates/cargo-handler/src/summary/accounts.rs`.
+- `test` — opens as impl: no `tests/` lane; it writes the tests in `summary/accounts_tests.rs` and `summary/accounts_header_sort_tests.rs` from this Spec.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of the accounts table on natedev shows each account's session count, and the count matches the drawn rows for one account. The checkpoint adds a Change-Review line.
