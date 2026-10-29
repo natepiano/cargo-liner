@@ -204,39 +204,37 @@ edition = "2024"
 
 #[test]
 fn pub_crate_at_depth_3_names_exact_boundary_for_supported_facade_spellings() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
     for (package_name, facade_visibility) in [
         ("depth_3_pub_super_fixture", "pub(super)"),
         ("depth_3_pub_in_super_fixture", "pub(in super)"),
     ] {
-        let temp = tempdir().expect("create temp fixture dir");
-
+        let root = batch.add_member(package_name, &[]);
         fs::write(
-            temp.path().join("Cargo.toml"),
-            format!(
-                "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
-            ),
-        )
-        .expect("write manifest");
-        fs::write(
-            temp.path().join("mend.toml"),
+            root.join("mend.toml"),
             "[visibility]\npub_in_path = \"permitted\"\n",
         )
         .expect("write visibility config");
-        fs::create_dir_all(temp.path().join("src/foo/bar")).expect("create src/foo/bar");
-        fs::write(temp.path().join("src/lib.rs"), "mod foo;\n").expect("write lib");
-        fs::write(temp.path().join("src/foo/mod.rs"), "mod bar;\n").expect("write foo/mod.rs");
+        fs::create_dir_all(root.join("src/foo/bar")).expect("create src/foo/bar");
+        fs::write(root.join("src/lib.rs"), "mod foo;\n").expect("write lib");
+        fs::write(root.join("src/foo/mod.rs"), "mod bar;\n").expect("write foo/mod.rs");
         fs::write(
-            temp.path().join("src/foo/bar/mod.rs"),
+            root.join("src/foo/bar/mod.rs"),
             format!("mod baz;\n{facade_visibility} use baz::helper;\n"),
         )
         .expect("write foo/bar/mod.rs");
         fs::write(
-            temp.path().join("src/foo/bar/baz.rs"),
+            root.join("src/foo/bar/baz.rs"),
             "pub(crate) fn helper() {}\n",
         )
         .expect("write foo/bar/baz.rs");
-
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    }
+    let reports = batch.member_reports();
+    for (package_name, facade_visibility) in [
+        ("depth_3_pub_super_fixture", "pub(super)"),
+        ("depth_3_pub_in_super_fixture", "pub(in super)"),
+    ] {
+        let report = &reports[package_name];
         let finding = report
             .findings
             .iter()
@@ -1362,7 +1360,7 @@ reexport_upstream_fixture = { path = "../upstream" }
         .arg("--json")
         .output()
         .expect("run cargo-mend --json");
-    let report = parse_mend_json_output(&output.stdout);
+    let report = report_from_mend_output(&output);
 
     let narrowed_the_module = report.findings.iter().any(|finding| {
         finding.code == DiagnosticCode::OverbroadPubCrate
