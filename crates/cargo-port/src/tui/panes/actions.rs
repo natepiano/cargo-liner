@@ -294,6 +294,7 @@ pub(super) fn dispatch_navigation_action(
         FocusedPane::App(AppPaneId::CiRuns) => navigate_ci_runs(app, action),
         FocusedPane::App(AppPaneId::Output) => navigate_output(app, action),
         FocusedPane::App(AppPaneId::Finder) => {},
+        FocusedPane::App(AppPaneId::Sccache) => app.overlays.sccache_pane.navigate(action),
         FocusedPane::Framework(FrameworkFocusId::Toasts) => navigate_toasts(app, action),
     }
 
@@ -360,7 +361,7 @@ fn list_cursor(focused: FocusedPane<AppPaneId>, app: &App) -> Option<usize> {
             .toasts
             .has_active()
             .then_some(app.framework.toasts.viewport.pos()),
-        FocusedPane::App(AppPaneId::Output | AppPaneId::Finder) => None,
+        FocusedPane::App(AppPaneId::Output | AppPaneId::Finder | AppPaneId::Sccache) => None,
     }
 }
 

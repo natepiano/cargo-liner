@@ -34,6 +34,7 @@
 | berth-unit | docs/cargo-port/remove-running-section-berth-next.md | /home/natepiano/rust/cargo-liner-berth | remove-running-section-berth | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
 | review-unit | (retired 2026-10-19, worktree removed) docs/cargo-port/remove-running-section-review.md | /home/natepiano/rust/cargo-liner-review | remove-running-section-review | — | — |
 | experiments-unit | `docs/experiments/as-built/framework-design.md` (as-built; plan done) | /home/natepiano/rust/cargo-liner-experiments | remove-running-section-experiments | — | docs/experiments/ |
+| port-unit | docs/cargo-port/cargo-liner-port.md | /home/natepiano/rust/cargo-liner-port | cargo-liner-port | — | crates/cargo-port/, docs/cargo-port/ (port plans) |
 
 ## Hub files
 

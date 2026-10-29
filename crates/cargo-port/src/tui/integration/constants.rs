@@ -101,6 +101,7 @@ pub(super) const KEYMAP_OVERLAY_PANE_ORDER: &[AppPaneId] = &[
     AppPaneId::CiRuns,
     AppPaneId::Output,
     AppPaneId::Finder,
+    AppPaneId::Sccache,
 ];
 pub(super) const LANG_TAB_ORDER: i16 = 3;
 pub(super) const LINTS_TAB_ORDER: i16 = 6;

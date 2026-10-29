@@ -12,6 +12,7 @@ use rustc_span::Symbol;
 use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
 
+use super::AnnotationHandling;
 use super::ExposureConsumers;
 use super::FindingParams;
 use super::ItemCategory;
@@ -107,7 +108,7 @@ pub(super) fn record_visibility_findings(
         ExposureConsumers::AllVisibilityFindings,
     )?;
 
-    if record_forbidden_visibility_annotation(
+    match record_forbidden_visibility_annotation(
         ctx,
         item,
         &annotation,
@@ -116,7 +117,8 @@ pub(super) fn record_visibility_findings(
         signature_exposure,
         sink,
     )? {
-        return Ok(());
+        AnnotationHandling::Handled => return Ok(()),
+        AnnotationHandling::Continue => {},
     }
     record_review_pub_mod(ctx, item, &annotation, &finding_context, sink)?;
     maybe_record_unused_pub(
@@ -280,7 +282,7 @@ pub(super) fn record_forbidden_visibility_annotation(
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     signature_exposure: SignatureExposure,
     sink: &mut FindingsSink,
-) -> Result<bool> {
+) -> Result<AnnotationHandling> {
     if matches!(annotation.syntax(), VisibilitySyntax::Crate)
         && facade_is_possible(ctx, item.def_id)
         && joined_required_reach(
@@ -302,30 +304,20 @@ pub(super) fn record_forbidden_visibility_annotation(
             },
             sink,
         );
-        return Ok(false);
+        return Ok(AnnotationHandling::Continue);
+    }
+    if matches!(
+        annotation.syntax(),
+        VisibilitySyntax::Crate
+            | VisibilitySyntax::InCrate
+            | VisibilitySyntax::InParent
+            | VisibilitySyntax::InCurrent
+            | VisibilitySyntax::InPath(_)
+    ) && cfg_excluded_source_names_item(ctx, item)
+    {
+        return Ok(AnnotationHandling::Handled);
     }
     match annotation.syntax() {
-        // `true` means `annotation` is handled, not that a finding was recorded.
-        // `record_overbroad_pub_crate` and `record_forbidden_pub_in_crate`
-        // return `true` on every path reaching a decision, and both callers
-        // stop there. Returning `false` would pass a `pub(crate) mod` to
-        // `record_review_pub_mod`, which reports every module it receives:
-        // suppressing one diagnostic would produce another on the same line.
-        //
-        // Both narrowing diagnostics need `cfg_excluded_source_names_item`:
-        // `DiagnosticCode::OverbroadPubCrate` suggests a narrower spelling,
-        // and `DiagnosticCode::ForbiddenPubInCrate` suggests removing the
-        // annotation outright.
-        // Either repair would prevent the excluded configuration compiling.
-        VisibilitySyntax::Crate
-        | VisibilitySyntax::InCrate
-        | VisibilitySyntax::InParent
-        | VisibilitySyntax::InCurrent
-        | VisibilitySyntax::InPath(_)
-            if cfg_excluded_source_names_item(ctx, item) =>
-        {
-            Ok(true)
-        },
         VisibilitySyntax::Crate | VisibilitySyntax::InCrate => record_overbroad_pub_crate(
             ctx,
             item,
@@ -349,7 +341,7 @@ pub(super) fn record_forbidden_visibility_annotation(
         VisibilitySyntax::Private
         | VisibilitySyntax::Public
         | VisibilitySyntax::Parent
-        | VisibilitySyntax::Current => Ok(false),
+        | VisibilitySyntax::Current => Ok(AnnotationHandling::Continue),
     }
 }
 
@@ -591,10 +583,10 @@ fn record_overbroad_pub_crate(
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     signature_exposure: SignatureExposure,
     sink: &mut FindingsSink,
-) -> Result<bool> {
+) -> Result<AnnotationHandling> {
     if item.category == ItemCategory::Use && matches!(annotation.syntax(), VisibilitySyntax::Crate)
     {
-        return Ok(false);
+        return Ok(AnnotationHandling::Continue);
     }
     let reach_requirements = ReachRequirements::for_analysis(
         ctx,
@@ -650,7 +642,7 @@ fn record_overbroad_pub_crate(
         },
         sink,
     );
-    Ok(true)
+    Ok(AnnotationHandling::Handled)
 }
 
 struct OverbroadPubCrateAdvice {
@@ -931,7 +923,7 @@ fn record_forbidden_pub_in_crate(
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     signature_exposure: SignatureExposure,
     sink: &mut FindingsSink,
-) -> Result<bool> {
+) -> Result<AnnotationHandling> {
     let reach_requirements = ReachRequirements::for_analysis(
         ctx,
         resolved_facade_reach(parent_facade_analysis),
@@ -950,14 +942,14 @@ fn record_forbidden_pub_in_crate(
             },
             sink,
         );
-        return Ok(false);
+        return Ok(AnnotationHandling::Continue);
     }
 
     if !matches!(
         annotation.syntax(),
         VisibilitySyntax::InParent | VisibilitySyntax::InCurrent | VisibilitySyntax::InPath(_)
     ) {
-        return Ok(false);
+        return Ok(AnnotationHandling::Continue);
     }
     let ForbiddenPubInText {
         message,
@@ -1004,7 +996,7 @@ fn record_forbidden_pub_in_crate(
         },
         sink,
     );
-    Ok(true)
+    Ok(AnnotationHandling::Handled)
 }
 
 fn public_signature_pub_in_advice(annotation: &VisibilityAnnotation<'_>) -> ForbiddenPubInAdvice {

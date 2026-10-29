@@ -23,6 +23,7 @@ use super::ReachWidening;
 use super::annotation::VisibilityAnnotation;
 use super::annotation::VisibilityReach;
 use super::scan;
+use super::scan::AnnotationHandling;
 use super::scan::FindingParams;
 use super::scan::ItemCategory;
 use super::scan::ItemInfo;
@@ -121,8 +122,9 @@ fn check_field(
         category: ItemCategory::Declaration,
         facade_subject: field_def_id,
     };
-    if scan::record_forbidden_visibility_annotation(ctx, &field_info, &annotation, None, sink)? {
-        return Ok(());
+    match scan::record_forbidden_visibility_annotation(ctx, &field_info, &annotation, None, sink)? {
+        AnnotationHandling::Handled => return Ok(()),
+        AnnotationHandling::Continue => {},
     }
 
     let Some(type_visibility_annotation_text) = type_visibility_text(ctx, type_def_id)? else {

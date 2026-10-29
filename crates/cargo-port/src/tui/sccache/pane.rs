@@ -1,6 +1,7 @@
-use crossterm::event::KeyCode;
 use ratatui::layout::Position;
 use tui_pane::Hittable;
+use tui_pane::KeyBind;
+use tui_pane::NavAction;
 use tui_pane::Viewport;
 
 use crate::sccache::StatsResult;
@@ -28,10 +29,11 @@ pub(super) enum SccacheStatus {
 }
 
 pub(in crate::tui) struct SccachePane {
-    status:           SccacheStatus,
-    request_id:       u64,
-    selectable_lines: Vec<SccacheSelectableLine>,
-    pub viewport:     Viewport,
+    status:                   SccacheStatus,
+    request_id:               u64,
+    selectable_lines:         Vec<SccacheSelectableLine>,
+    pub viewport:             Viewport,
+    pub(super) pending_chord: Vec<KeyBind>,
 }
 
 impl SccachePane {
@@ -41,6 +43,7 @@ impl SccachePane {
             request_id:       0,
             selectable_lines: Vec::new(),
             viewport:         Viewport::new(),
+            pending_chord:    Vec::new(),
         }
     }
 
@@ -73,6 +76,7 @@ impl SccachePane {
     }
 
     pub(in crate::tui) fn start_loading(&mut self) -> u64 {
+        self.pending_chord.clear();
         self.request_id = self.request_id.saturating_add(1);
         self.status = SccacheStatus::Loading;
         self.viewport.home();
@@ -90,18 +94,20 @@ impl SccachePane {
         self.viewport.home();
     }
 
-    pub(in crate::tui) fn handle_navigation_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Up => self.viewport.up(),
-            KeyCode::Down => self.viewport.down(),
-            KeyCode::Home => self.viewport.home(),
-            KeyCode::End => {
+    pub(in crate::tui) fn navigate(&mut self, action: NavAction) {
+        match action {
+            NavAction::Up => self.viewport.up(),
+            NavAction::Down => self.viewport.down(),
+            NavAction::Home => self.viewport.home(),
+            NavAction::End => {
                 let last = self.viewport.len().saturating_sub(1);
                 self.viewport.set_pos(last);
             },
-            KeyCode::PageUp => self.viewport.page_up(),
-            KeyCode::PageDown => self.viewport.page_down(),
-            _ => {},
+            NavAction::PageUp => self.viewport.page_up(),
+            NavAction::PageDown => self.viewport.page_down(),
+            NavAction::HalfPageUp => self.viewport.half_page_up(),
+            NavAction::HalfPageDown => self.viewport.half_page_down(),
+            NavAction::Left | NavAction::Right => {},
         }
     }
 }
