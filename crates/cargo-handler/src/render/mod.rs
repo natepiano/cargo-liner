@@ -23,6 +23,7 @@ use tui_pane::FocusLocation;
 use tui_pane::Keymap;
 use tui_pane::NavAction;
 use tui_pane::PaneFocusState;
+use tui_pane::RowsReadout;
 use tui_pane::ScanIndicator;
 use tui_pane::ScrollDirection;
 use tui_pane::StatusLine;
@@ -760,6 +761,23 @@ impl TileCells<TileKey> for Cells<'_> {
         }
     }
 
+    fn rows_readout(
+        &self,
+        content: &TileContent,
+        _area: Rect,
+        measured_rows: usize,
+    ) -> RowsReadout {
+        let SelectableSurface::Surface(surface) = selection_surface(content) else {
+            return RowsReadout::Count(measured_rows);
+        };
+        self.selections
+            .borrow()
+            .surface(&surface)
+            .map_or(RowsReadout::Count(measured_rows), |state| {
+                state.rows_readout(measured_rows)
+            })
+    }
+
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
 
     /// Measure each tile at its allocated content width. Account rows choose
@@ -1054,7 +1072,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 1  r/c: 21/78 │",
+        "│                                             content rows: 1 of 1  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -1067,7 +1085,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                   content rows: 1  r/c: 7/78 │",
+        "│                                              content rows: 1 of 1  r/c: 7/78 │",
         "├──────────────────────────────────────────────────────────────────────────────┤",
         "│ 2                                                                            │",
         "│                                                                              │",
@@ -1097,7 +1115,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 1  r/c: 10/78 │",
+        "│                                             content rows: 1 of 1  r/c: 10/78 │",
         "├──────────────────────────────────────────────────────────────────────────────┤",
         "│ 2                                                                            │",
         "│                                                                              │",
@@ -1163,7 +1181,7 @@ fraying = "leading"
         "│        │   Randomize the attract screen                  r         │         │",
         "│        │   Remove an empty tile                          -         │         │",
         "│        └─────────────────────────1 of 6 ▼──────────────────────────┘         │",
-        "│                                                  content rows: 1  r/c: 21/78 │",
+        "│                                             content rows: 1 of 1  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -1217,7 +1235,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 1  r/c: 21/78 │",
+        "│                                             content rows: 1 of 1  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -1237,7 +1255,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 1  r/c: 10/78 │",
+        "│                                             content rows: 1 of 1  r/c: 10/78 │",
         "├ unassigned · natedev─────────────────────────────────────────────────────────┤",
         "│ session ▲       status  directory                                        age │",
         "│ boss of bosses  idle    ~/rust/hana_catalyst/docs/hana                   21h │",
@@ -1248,7 +1266,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 2  r/c: 10/78 │",
+        "│                                             content rows: 1 of 1  r/c: 10/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -1313,6 +1331,51 @@ fraying = "leading"
             .map(str::to_string)
             .chain([status_row(status_left, None)])
             .collect()
+    }
+
+    #[test]
+    fn selected_rows_readout_follows_moves_and_keeps_unselected_counts() {
+        let mut app = laid_out_app();
+        dispatch_key(&mut app, key('+'));
+        app.tiles.settle_for_test();
+        assert!(
+            drawn_rows(&mut app, 1)
+                .join("\n")
+                .contains("content rows: 0  r/c:")
+        );
+        app.census.apply(CensusUpdate::Local {
+            rows:      (1..=3)
+                .map(|pid| AgentRow {
+                    pid,
+                    children: Vec::new(),
+                    ..boss(60)
+                })
+                .collect(),
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        });
+        drawn_rows(&mut app, 1);
+        app.tiles.settle_for_test();
+        let rows = drawn_rows(&mut app, 1);
+        assert!(rows.join("\n").contains("content rows: 1 of 3"), "{rows:?}");
+        app.tiles.focus_cell(tui_pane::TABLE_CELL + 1);
+        dispatch_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let rows = drawn_rows(&mut app, 1);
+        assert!(rows.join("\n").contains("content rows: 2 of 3"), "{rows:?}");
+        dispatch_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let rows = drawn_rows(&mut app, 1);
+        assert!(rows.join("\n").contains("content rows: 3 of 3"), "{rows:?}");
+        if let SurfaceLookup::Current(state) =
+            app.selections
+                .surface_mut(&SelectionSurface::Tile(TileKey::Unassigned {
+                    machine: "natedev".to_string(),
+                }))
+        {
+            state.scroll(ScrollDirection::Up);
+        }
+        dispatch_key(&mut app, key('+'));
+        let rows = drawn_rows(&mut app, 1);
+        assert!(rows.join("\n").contains("content rows: 2 of 3"), "{rows:?}");
     }
 
     #[test]
