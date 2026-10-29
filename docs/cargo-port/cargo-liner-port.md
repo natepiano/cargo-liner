@@ -46,7 +46,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Gotchas:** `App::rescan` (`tui/app/async_tasks/tree.rs`) clears every root, so a Deleted row leaves the list on a full rescan; the overview names this as the one exception to "the row never leaves the list by itself", and the phase "A Deleted row stays on the list and shows its mark" removes it.
 
-### Phase 2 — The watcher skips target/ and .git/objects  · status: todo
+### Phase 2 — The watcher skips target/ and .git/objects  · status: done
 
 **Depends on:** none
 
@@ -80,3 +80,86 @@ you need to create a new unit to handle all cargo port enhancements it should be
 - `test` — spec 4, in a separate test module under `crates/cargo-port/src/watcher/` registered by `impl`.
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; the live watch counts of spec 5. The checkpoint adds a Change-Review line.
+
+### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
+
+**Depends on:** none
+
+#### Work Order
+
+**Goal:** an idle cargo-port uses under 1% of one core and draws no frame when nothing visible changed. During builds it stays under 3% of one core and under 2 frames each second.
+
+**Source:** showrunner, 2026-10-28; the user ranks CPU work above all other work. Measured on natedev at 11:12–11:25: the cargo-port main thread used 14% of one core; perf put 90% of it in `Path == Path` compares from `RootItem::at_path` (`crates/cargo-port/src/project/root_item.rs`), about 4 frames each second at about 30 ms each. Notes: `/tmp/claude-1000/-home-natepiano-rust-cargo-liner/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/scratchpad/cpu_investigation.md`, section "cargo-port: a full frame".
+
+**Constraints:**
+- The event loop (`tui/terminal/event_loop.rs`, the `loop` in its run function) calls `ensure_visible_rows_cached`, `ensure_disk_cache`, `ensure_fit_widths_cached`, `ensure_detail_cached` and `draw_frame` on every wakeup. It wakes on input, on each background message, on each CPU pane sample, at least each second (`IDLE_HEARTBEAT`, `tui/app/mod.rs` ≈437), and each 80 ms while a lint, clean or run is live (`ANIMATION_TICK`).
+- `ensure_detail_cached` (`tui/app/navigation/cache.rs`) already skips work with a `DetailCacheKey` of the selected row and `scan.generation()`. Use the same pattern: a typed key of the inputs, not a bool flag set by hand at call sites.
+- `ProjectList::at_path` and its siblings (`tui/project_list/list.rs` ≈325 onward) search all roots and their members in a line. `compute_disk_cache` (`tui/panes/project_list/disk.rs` ≈172) calls `visible_row_disk_usage` for each visible row, which calls `at_path`, and clones the sorted vector once for each child node. The render calls `at_path` per row (`tui/panes/project_list/tree_rows.rs` ≈393).
+- A visible clock, spinner or animation still moves at its own rate; a frame for it is a change.
+- The Deleted mark, dismiss and all row content stay the same; this phase changes when work runs, not what is drawn.
+
+**Spec:**
+1. **Draw on change.** The loop draws a frame only when input, a background message, a timer or an animation changed visible state since the last frame. The 1 s idle heartbeat draws nothing when nothing changed.
+2. **Path index.** `ProjectList` keeps an index from project path to its place in the roots, rebuilt when the roots change, so `at_path` and its siblings, `visible_row_disk_usage` and the render's per-row lookup do no linear search.
+3. **Disk and width caches.** `ensure_disk_cache` and `ensure_fit_widths_cached` recompute only when their inputs change (scan generation, visible rows, the settings they read), keyed like `ensure_detail_cached`. `compute_disk_cache` clones no vector per child node.
+4. **Tests, red first, each under one second:** an idle loop iteration with no change draws no frame; a background message that changes a row draws one; a lookup by path returns the same project as the linear search for roots, members, worktrees and vendored packages; the disk cache does not recompute when nothing changed and does when a disk size changes.
+5. **Live CPU measure:** CPU seconds over 60 s, idle (no input, no cargo running in the scratch roots), for the installed binary and the branch binary, with the method in `docs/cargo-port/as-built/overview.md`, after checking that no natedev build hold is in force. Record both numbers and the frames drawn per second (`CARGO_PORT` perf log, if the loop logs frames).
+6. CHANGELOG: one line in `crates/cargo-port/CHANGELOG.md`.
+
+**Files:**
+- `crates/cargo-port/src/tui/terminal/event_loop.rs` — draw on change
+- `crates/cargo-port/src/tui/app/mod.rs` — idle heartbeat
+- `crates/cargo-port/src/tui/app/navigation/cache.rs` — cache keys
+- `crates/cargo-port/src/tui/project_list/list.rs` — path index
+- `crates/cargo-port/src/tui/panes/project_list/disk.rs` — disk cache without per-node clones
+- `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs` — per-row lookup through the index
+- `crates/cargo-port/src/project/root_item.rs` — only if the index needs a change there
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — specs 1–3 and 6; hub: `crates/cargo-port/src/tui/project_list/list.rs`.
+- `test` — spec 4, in new test modules beside the changed files, registered by `impl`.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; the idle CPU of spec 5 under 1% of one core on the branch binary. The checkpoint adds a Change-Review line.
+
+### Phase 4 — A Deleted row stays on the list and shows its mark  · status: todo
+
+**Depends on:** none
+
+#### Work Order
+
+**Goal:** a project marked Deleted stays in the list, struck through, through a full rescan and under `NO_COLOR=1`, until the user dismisses it. Two other display defects that the same live check sees are fixed with it: the sccache popup's right padding and a Git pane value that loses a letter from its middle.
+
+**Source:** showrunner, 2026-10-28, from three reports:
+- `App::rescan` (`tui/app/async_tasks/tree.rs` ≈52–58) clears every root, so a Deleted row leaves the list on a full rescan. This breaks the user rule "the row never leaves the list by itself" (found in the context map phase).
+- Under `NO_COLOR=1`, cargo-port writes SGR 9 (strike-through) and then `ESC[;m` (crossterm `SetColors` with no colours), which resets the strike-through, so a Deleted row looks normal. Evidence: `/tmp/claude/unit/be6481c9-047e-4add-83c1-870d55a33343/phases/39/live/terminal_env_clean/`.
+- Style's live shots (`/tmp/claude/unit/b063796c-82d6-4693-bea2-342456902a3a/phases/67/shots/after2`): at 160 columns the sccache popup's widest body row ("Cache location … ~/.cache/sccache") has one column of padding on the left and none on the right; at 80 columns the Git pane shows "fleet" as "flet". Both were in the code before style's change.
+
+**Constraints:**
+- Build the rescan fix with a type, not a guard: the rescan keeps each Deleted entry in its root as its own state until `x` (or the close box) dismisses it. A fresh scan that does not find the project does not drop that state.
+- Under `NO_COLOR`, write text attributes (strike-through, bold, dim) without colour codes; never send a colour reset that also resets attributes.
+- The sccache popup width is the widest row plus the left and right padding (`tui/sccache/render.rs`), so both sides get the same padding.
+- For "fleet" → "flet", find why one letter goes from the middle of the word first. Where a value must be shortened, shorten it at its end with an ellipsis.
+
+**Spec:**
+1. **Rescan keeps Deleted rows.** After a full rescan, a project marked Deleted is still in its root, still struck through, and still dismissable; dismiss removes it as before.
+2. **Strike-through under NO_COLOR.** With `NO_COLOR=1`, a Deleted row's bytes carry SGR 9 and no later reset clears it on that row.
+3. **sccache popup padding.** The popup's widest row has the same padding on the left and the right at 160 columns.
+4. **Git pane values.** At 80 columns, "fleet" shows whole, or shortened at its end with an ellipsis when the column cannot hold it; no letter goes from the middle of a value.
+5. **Tests, red first, each under one second:** mark a row Deleted, run a full rescan, and the row is still there with the mark; a Deleted row rendered under `NO_COLOR` keeps the strike-through attribute in the output bytes; the sccache popup at 160 columns has equal left and right padding on its widest row; the Git pane at 80 columns shows the "fleet" value whole or end-shortened.
+6. **Live check and shots** (unit director, after checking that no natedev build hold is in force): one live check with a scratch project deleted while cargo-port runs, then a full rescan, then `NO_COLOR=1`; shots from a real window at normal size on this unit's port: the Deleted row after a rescan, the Deleted row under `NO_COLOR=1`, the sccache popup at 160 columns, the Git pane at 80 columns.
+7. CHANGELOG: one line for each of the four fixes in `crates/cargo-port/CHANGELOG.md`.
+
+**Files:**
+- `crates/cargo-port/src/tui/app/async_tasks/tree.rs` — rescan keeps Deleted entries
+- `crates/cargo-port/src/tui/project_list/` — the Deleted entry state, if the root type holds it
+- `crates/cargo-port/src/tui/terminal/` — NO_COLOR attribute output
+- `crates/cargo-port/src/tui/sccache/render.rs` — popup width
+- `crates/cargo-port/src/tui/panes/` — the Git pane value fit, once the cause is found
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — specs 1–4 and 7; hub: `crates/cargo-port/src/tui/app/async_tasks/tree.rs`.
+- `test` — spec 5, in new test modules beside the changed files, registered by `impl`.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; the live check and the four shots of spec 6, with a design check pass. The checkpoint adds a Change-Review line for each visible fix.
