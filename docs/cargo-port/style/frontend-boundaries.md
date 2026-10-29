@@ -2,6 +2,7 @@
 tier: D
 family: modules
 mechanism: llm
+approval: always
 ---
 # Frontend Boundaries
 

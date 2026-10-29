@@ -8,12 +8,15 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- `RowsReadout` and `TileCells::rows_readout` let a tile foot name the selected row, `content rows: 3 of 12`; a checked constructor refuses a row past the total, and the default keeps `content rows: 12`.
 - Tile grids can reserve the summary’s measured rows before sharing the remaining rows among tiles.
 - `ThemeRegistry::from_dir_with_parser` lets applications validate their own theme families while sharing deterministic directory loading, failed-file reporting and built-in role inheritance.
 - `ThemeSource` names built-in-only and directory theme sources at the parser boundary.
 - Shared `Viewport::navigate`, `Viewport::scroll_if_contains` and `table_row_at` support list navigation and table clicks. `TerminalApp::scroll` and `TileGridHost::cell_scrolled` forward wheel input to the tile under the pointer without moving focus.
 
 ### Fixed
+- Tile growth, floor and area changes rebuild cached motion endpoints before reusing their bands and row measurements; unchanged frames reuse endpoint admission.
+- Resizing during queued tile removals returns focus from a removed command to the summary, keeping Tab and arrow navigation active.
 - Narrow grids admit only columns whose residents fit their row budget, preventing a divider panic during tile motion.
 - Settings: a row change ends an open edit, so Enter cannot save the text into another row. Navigation before the first draw reaches every row.
 - Config rewrites preserve unknown keys and comments.

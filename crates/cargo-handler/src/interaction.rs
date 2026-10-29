@@ -8,6 +8,7 @@
 //! [`TilePick`] that comes back.
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::ops::Range;
 
 use ratatui::layout::Position;
@@ -18,6 +19,7 @@ use tui_pane::Hittable;
 use tui_pane::InputContext;
 use tui_pane::ModalHit;
 use tui_pane::NavAction;
+use tui_pane::RowsReadout;
 use tui_pane::ScrollDirection;
 use tui_pane::TilePick;
 use tui_pane::Viewport;
@@ -353,6 +355,14 @@ impl SurfaceSelection {
             .get(self.viewport.pos())
             .map(|(identity, _)| identity.clone())
             .map_or(TileSelection::NoRows, TileSelection::Row)
+    }
+
+    /// Name the selected item among this surface's selectable rows.
+    pub(crate) fn rows_readout(&self, measured_rows: usize) -> RowsReadout {
+        let Some(row) = NonZeroUsize::new(self.viewport.pos().saturating_add(1)) else {
+            return RowsReadout::Count(measured_rows);
+        };
+        RowsReadout::selected(row, self.rows.len()).unwrap_or(RowsReadout::Count(measured_rows))
     }
 
     pub(crate) const fn viewport(&self) -> &Viewport { &self.viewport }

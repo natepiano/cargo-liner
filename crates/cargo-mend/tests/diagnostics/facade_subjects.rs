@@ -764,100 +764,91 @@ fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
 
 #[test]
 fn inactive_and_macro_generated_globs_follow_active_hir() {
-    let inactive = tempdir().expect("create inactive glob fixture dir");
-    pin_pub_in_path(inactive.path(), PubInPath::Permitted);
-    fs::create_dir_all(inactive.path().join("src/a/b")).expect("create fixture modules");
-    write_manifest(&inactive, "inactive_glob_facade_fixture", true);
+    let fixture = tempdir().expect("create combined glob fixture dir");
+    pin_pub_in_path(fixture.path(), PubInPath::Permitted);
+    fs::create_dir_all(fixture.path().join("src/inactive/a/b")).expect("create fixture modules");
+    write_manifest(&fixture, "inactive_glob_facade_fixture", true);
+    fs::write(fixture.path().join("src/inactive.rs"), "mod a;\n").expect("write fixture main");
+    fs::write(fixture.path().join("src/inactive/a.rs"), "mod b;\n").expect("write outer module");
     fs::write(
-        inactive.path().join("src/main.rs"),
-        "mod a;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(inactive.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
-    fs::write(
-        inactive.path().join("src/a/b.rs"),
+        fixture.path().join("src/inactive/a/b.rs"),
         "mod c;\n#[cfg(feature = \"promote\")]\npub(crate) use c::*;\npub(crate) use c::Named;\n",
     )
     .expect("write inactive glob facade");
     fs::write(
-        inactive.path().join("src/a/b/c.rs"),
+        fixture.path().join("src/inactive/a/b/c.rs"),
         "pub(crate) struct Globbed;\npub(crate) struct Named;\n",
     )
     .expect("write glob subjects");
 
-    let inactive_report = run_mend_json(&inactive.path().join("Cargo.toml"));
+    fs::create_dir_all(fixture.path().join("src/generated/a")).expect("create fixture module");
+
+    fs::write(fixture.path().join("src/generated.rs"), "mod a;\n").expect("write fixture main");
+    fs::write(
+        fixture.path().join("src/generated/a.rs"),
+        "mod b;\nmacro_rules! expose { () => { pub use b::*; }; }\nexpose!();\n",
+    )
+    .expect("write macro glob facade");
+    fs::write(
+        fixture.path().join("src/generated/a/b.rs"),
+        "pub struct Globbed;\n",
+    )
+    .expect("write glob subject");
+
+    fs::create_dir_all(fixture.path().join("src/precedence/a/b")).expect("create fixture modules");
+
+    fs::write(fixture.path().join("src/precedence.rs"), "mod a;\n").expect("write fixture main");
+    fs::write(fixture.path().join("src/precedence/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(
+        fixture.path().join("src/precedence/a/b.rs"),
+        "mod c;\npub(crate) use c::Named;\npub(super) use c::*;\n",
+    )
+    .expect("write active named and glob facades");
+    fs::write(
+        fixture.path().join("src/precedence/a/b/c.rs"),
+        "pub(crate) struct Named;\npub(crate) struct Globbed;\n",
+    )
+    .expect("write precedence subjects");
+
+    fs::write(
+        fixture.path().join("src/main.rs"),
+        "mod inactive;\nmod generated;\nmod precedence;\nfn main() {}\n",
+    )
+    .expect("write combined fixture main");
+    let inactive_report = run_mend_json(&fixture.path().join("Cargo.toml"));
     assert_eq!(
         inactive_report
             .findings
             .iter()
             .filter(|finding| {
-                finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c.rs"
+                finding.code == DiagnosticCode::OverbroadPubCrate
+                    && finding.path == "src/inactive/a/b/c.rs"
             })
             .count(),
         1,
         "the inactive glob must not protect Globbed while the active named facade permits Named: {inactive_report:#?}"
     );
 
-    let generated = tempdir().expect("create generated glob fixture dir");
-
-    pin_pub_in_path(generated.path(), PubInPath::Permitted);
-    fs::create_dir_all(generated.path().join("src/a")).expect("create fixture module");
-    write_manifest(&generated, "macro_glob_facade_fixture", false);
-    fs::write(
-        generated.path().join("src/main.rs"),
-        "mod a;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        generated.path().join("src/a.rs"),
-        "mod b;\nmacro_rules! expose { () => { pub use b::*; }; }\nexpose!();\n",
-    )
-    .expect("write macro glob facade");
-    fs::write(generated.path().join("src/a/b.rs"), "pub struct Globbed;\n")
-        .expect("write glob subject");
-
-    let generated_report = run_mend_json(&generated.path().join("Cargo.toml"));
+    let generated_report = &inactive_report;
     assert!(
-        !has_unused_pub(&generated_report, "src/a/b.rs"),
+        !has_unused_pub(generated_report, "src/generated/a/b.rs"),
         "macro glob facade must suppress unused_pub: {generated_report:#?}"
     );
 
-    let precedence = tempdir().expect("create named and glob fixture dir");
-
-    pin_pub_in_path(precedence.path(), PubInPath::Permitted);
-    fs::create_dir_all(precedence.path().join("src/a/b")).expect("create fixture modules");
-    write_manifest(&precedence, "named_before_glob_fixture", false);
-    fs::write(
-        precedence.path().join("src/main.rs"),
-        "mod a;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(precedence.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
-    fs::write(
-        precedence.path().join("src/a/b.rs"),
-        "mod c;\npub(crate) use c::Named;\npub(super) use c::*;\n",
-    )
-    .expect("write active named and glob facades");
-    fs::write(
-        precedence.path().join("src/a/b/c.rs"),
-        "pub(crate) struct Named;\npub(crate) struct Globbed;\n",
-    )
-    .expect("write precedence subjects");
-
-    let precedence_report = run_mend_json(&precedence.path().join("Cargo.toml"));
+    let precedence_report = &inactive_report;
     assert_eq!(
         precedence_report
             .findings
             .iter()
             .filter(|finding| {
-                finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c.rs"
+                finding.code == DiagnosticCode::OverbroadPubCrate
+                    && finding.path == "src/precedence/a/b/c.rs"
             })
             .count(),
         0,
         "the named facade permits Named while unresolved glob reach leaves exact pub(crate) on Globbed unchanged: {precedence_report:#?}"
     );
 }
-
 #[test]
 fn private_import_defers_narrowing_until_the_import_is_removed() {
     let temp = tempdir().expect("create private import fixture dir");
@@ -917,36 +908,37 @@ fn crate_root_pub_crate_facade_keeps_deep_subject_allowed() {
 
 #[test]
 fn restricted_parent_facades_require_manual_cleanup() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
     for (package_name, facade_visibility) in [
         ("pub_crate_parent_facade_fixture", "pub(crate)"),
         ("pub_in_parent_facade_fixture", "pub(in crate::a)"),
     ] {
-        let temp = tempdir().expect("create restricted facade fixture dir");
-        pin_pub_in_path(temp.path(), PubInPath::Permitted);
-        fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create deep fixture modules");
-        write_manifest(&temp, package_name, false);
-        fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
-            .expect("write fixture main");
-        fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
-        fs::write(temp.path().join("src/a/b.rs"), "mod c;\n").expect("write middle module");
+        let root = batch.add_member(package_name, &[]);
+        pin_pub_in_path(&root, PubInPath::Permitted);
+        fs::create_dir_all(root.join("src/a/b/c")).expect("create deep fixture modules");
+        fs::write(root.join("src/main.rs"), "mod a;\nfn main() {}\n").expect("write fixture main");
+        fs::write(root.join("src/a.rs"), "mod b;\n").expect("write outer module");
+        fs::write(root.join("src/a/b.rs"), "mod c;\n").expect("write middle module");
         fs::write(
-            temp.path().join("src/a/b/c.rs"),
+            root.join("src/a/b/c.rs"),
             format!("mod child;\n{facade_visibility} use child::Thing;\n"),
         )
         .expect("write restricted facade");
-        fs::write(
-            temp.path().join("src/a/b/c/child.rs"),
-            "pub struct Thing;\n",
-        )
-        .expect("write facade subject");
-
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        fs::write(root.join("src/a/b/c/child.rs"), "pub struct Thing;\n")
+            .expect("write facade subject");
+    }
+    let reports = batch.member_reports();
+    for package_name in [
+        "pub_crate_parent_facade_fixture",
+        "pub_in_parent_facade_fixture",
+    ] {
+        let report = &reports[package_name];
         let finding = report
             .findings
             .iter()
             .find(|finding| {
                 finding.code == DiagnosticCode::SuspiciousPub
-                    && finding.path == "src/a/b/c/child.rs"
+                    && finding.path == format!("{package_name}/src/a/b/c/child.rs")
             })
             .expect("find stale restricted facade result");
         assert_ne!(
@@ -1372,6 +1364,7 @@ fn inline_module_references_use_their_lexical_module_identity() {
 
 #[test]
 fn equal_reach_usage_stays_attached_to_its_own_spelling() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
     for (package_name, facades) in [
         (
             "equal_reach_super_first_fixture",
@@ -1382,34 +1375,31 @@ fn equal_reach_usage_stays_attached_to_its_own_spelling() {
             "mod b;\npub(crate) use b::c::Thing as InternalThing;\npub(super) use b::c::Thing;\n",
         ),
     ] {
-        let temp = tempdir().expect("create equal-reach facade fixture dir");
-        pin_pub_in_path(temp.path(), PubInPath::Permitted);
-        fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
-        write_manifest(&temp, package_name, false);
+        let root = batch.add_member(package_name, &[]);
+        pin_pub_in_path(&root, PubInPath::Permitted);
+        fs::create_dir_all(root.join("src/a/b")).expect("create fixture modules");
+        fs::write(root.join("src/lib.rs"), "mod a;\npub fn entry() {}\n")
+            .expect("write fixture library");
+        fs::write(root.join("src/a.rs"), facades).expect("write conflicting facades");
+        fs::write(root.join("src/a/b.rs"), "pub(super) mod c;\nmod user;\n")
+            .expect("write middle module");
+        fs::write(root.join("src/a/b/c.rs"), "pub struct Thing;\n").expect("write facade subject");
         fs::write(
-            temp.path().join("src/lib.rs"),
-            "mod a;\npub fn entry() {}\n",
-        )
-        .expect("write fixture library");
-        fs::write(temp.path().join("src/a.rs"), facades).expect("write conflicting facades");
-        fs::write(
-            temp.path().join("src/a/b.rs"),
-            "pub(super) mod c;\nmod user;\n",
-        )
-        .expect("write middle module");
-        fs::write(temp.path().join("src/a/b/c.rs"), "pub struct Thing;\n")
-            .expect("write facade subject");
-        fs::write(
-            temp.path().join("src/a/b/user.rs"),
+            root.join("src/a/b/user.rs"),
             "fn use_alias(_: super::super::InternalThing) {}\n",
         )
         .expect("write used crate-spelled alias");
-
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    }
+    let reports = batch.member_reports();
+    for package_name in [
+        "equal_reach_super_first_fixture",
+        "equal_reach_crate_first_fixture",
+    ] {
+        let report = &reports[package_name];
         assert!(
             report.findings.iter().any(|finding| {
                 finding.code == DiagnosticCode::InternalParentPubUseFacade
-                    && finding.path == "src/a.rs"
+                    && finding.path == format!("{package_name}/src/a.rs")
             }),
             "usage from the crate-spelled alias must be assessed without the unused super-spelled alias: {report:#?}"
         );
@@ -1418,6 +1408,7 @@ fn equal_reach_usage_stays_attached_to_its_own_spelling() {
 
 #[test]
 fn equal_reach_crate_and_other_spellings_do_not_recommend_narrowing() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
     for (package_name, facades) in [
         (
             "equal_reach_crate_then_other_fixture",
@@ -1428,22 +1419,24 @@ fn equal_reach_crate_and_other_spellings_do_not_recommend_narrowing() {
             "mod b;\npub(in crate) use b::c::Thing as RestrictedThing;\npub(crate) use b::c::Thing;\n",
         ),
     ] {
-        let temp = tempdir().expect("create crate and other spelling fixture dir");
-        pin_pub_in_path(temp.path(), PubInPath::Permitted);
-        fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
-        write_manifest(&temp, package_name, false);
-        fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
-            .expect("write fixture main");
-        fs::write(temp.path().join("src/a.rs"), facades).expect("write conflicting facades");
-        fs::write(temp.path().join("src/a/b.rs"), "pub(super) mod c;\n")
-            .expect("write middle module");
-        fs::write(temp.path().join("src/a/b/c.rs"), "pub struct Thing;\n")
-            .expect("write facade subject");
-
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+        let root = batch.add_member(package_name, &[]);
+        pin_pub_in_path(&root, PubInPath::Permitted);
+        fs::create_dir_all(root.join("src/a/b")).expect("create fixture modules");
+        fs::write(root.join("src/main.rs"), "mod a;\nfn main() {}\n").expect("write fixture main");
+        fs::write(root.join("src/a.rs"), facades).expect("write conflicting facades");
+        fs::write(root.join("src/a/b.rs"), "pub(super) mod c;\n").expect("write middle module");
+        fs::write(root.join("src/a/b/c.rs"), "pub struct Thing;\n").expect("write facade subject");
+    }
+    let reports = batch.member_reports();
+    for package_name in [
+        "equal_reach_crate_then_other_fixture",
+        "equal_reach_other_then_crate_fixture",
+    ] {
+        let report = &reports[package_name];
         assert!(
             !report.findings.iter().any(|finding| {
-                finding.code == DiagnosticCode::NarrowToPubCrate && finding.path == "src/a/b/c.rs"
+                finding.code == DiagnosticCode::NarrowToPubCrate
+                    && finding.path == format!("{package_name}/src/a/b/c.rs")
             }),
             "conflicting equal-reach crate spellings must suppress narrowing: {report:#?}"
         );

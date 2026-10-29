@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use super::CheckedSelection;
 use super::session_snapshot::SessionSnapshot;
+use crate::compiler;
+use crate::compiler::ToolchainProbes;
 use crate::config::LoadedConfig;
 use crate::config::OperationMode;
 use crate::fixes::field_visibility::FieldVisibilityFixScan;
@@ -15,6 +18,7 @@ use crate::fixes::pub_use_fixes::PubUseFixScan;
 use crate::fixes::restricted_annotation::RestrictedAnnotationScan;
 use crate::fixes::subtree_reexport::SubtreeReexportScan;
 use crate::fixes::unused_pub::UnusedPubScan;
+use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::ColorMode;
 use crate::reporting::ExecutionOutcome;
 use crate::reporting::MendFailure;
@@ -23,7 +27,15 @@ use crate::reporting::Report;
 use crate::selection::CargoCheckPlan;
 use crate::selection::Selection;
 
+/// A validation already describes the tree the next pass would check.
+pub(super) enum NextAnalysis {
+    Required,
+    Validated(Box<CheckedSelection>),
+}
+
 pub(crate) struct MendRunner<'a> {
+    pub(super) next_analysis:    NextAnalysis,
+    pub(super) toolchain_probes: &'a ToolchainProbes,
     pub(super) selection:        &'a Selection,
     pub(super) cargo_plan:       &'a CargoCheckPlan,
     pub(super) loaded_config:    &'a LoadedConfig,
@@ -42,8 +54,11 @@ impl<'a> MendRunner<'a> {
         loaded_config: &'a LoadedConfig,
         color_mode: ColorMode,
         output_format: OutputFormat,
+        toolchain_probes: &'a ToolchainProbes,
     ) -> Self {
         Self {
+            next_analysis: NextAnalysis::Required,
+            toolchain_probes,
             selection,
             cargo_plan,
             loaded_config,
@@ -51,6 +66,17 @@ impl<'a> MendRunner<'a> {
             output_format,
             session_snapshot: SessionSnapshot::new(),
         }
+    }
+
+    /// Cargo fix can edit sources outside mend's validated edit plan.
+    pub(crate) fn fix_compiler(
+        &mut self,
+        coverage: AllFeaturesCoverage,
+    ) -> Result<Duration, MendFailure> {
+        let duration =
+            compiler::run_cargo_fix(self.selection, self.cargo_plan, self.color_mode, coverage)?;
+        self.next_analysis = NextAnalysis::Required;
+        Ok(duration)
     }
 
     pub(crate) fn run(

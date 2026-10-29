@@ -55,10 +55,10 @@ fn write_latest_bytes_under(
         std::fs::create_dir_all(parent)?;
     }
     let tmp_path = path.with_extension("json.tmp");
-    let old_size = cache_size_index::file_size_or_zero(&path);
+    let old_size = tui_pane::file_size_or_zero(&path);
     std::fs::write(&tmp_path, bytes)?;
     std::fs::rename(tmp_path, &path)?;
-    let new_size = cache_size_index::file_size_or_zero(&path);
+    let new_size = tui_pane::file_size_or_zero(&path);
     cache_size_index::apply_write_delta(cache_root, old_size, new_size);
     Ok(())
 }
@@ -68,7 +68,7 @@ pub fn clear_latest_under(cache_root: &Path, project_root: &Path) -> io::Result<
     paths::assert_not_default_user_cache_root(cache_root);
 
     let path = paths::latest_path_under(cache_root, project_root);
-    let old_size = cache_size_index::file_size_or_zero(&path);
+    let old_size = tui_pane::file_size_or_zero(&path);
     match std::fs::remove_file(&path) {
         Ok(()) => {
             cache_size_index::apply_write_delta(cache_root, old_size, 0);

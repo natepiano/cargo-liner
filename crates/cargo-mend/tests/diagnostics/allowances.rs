@@ -1829,135 +1829,149 @@ impl App {
     );
 }
 
-fn assert_path_sibling_signature_exposure_uses_logical_identity() {
-    let sibling = tempdir().expect("create path sibling exposure fixture dir");
-    pin_pub_in_path(sibling.path(), PubInPath::Permitted);
-    fs::create_dir_all(sibling.path().join("src/a/odd")).expect("create fixture modules");
-    write_minimal_manifest(&sibling, "path_sibling_signature_exposure_fixture");
-    fs::write(sibling.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
-        .expect("write fixture main");
-    fs::write(sibling.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+fn assert_path_sibling_signature_exposure_uses_logical_identity(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let sibling = batch.add_member("path_sibling_signature_exposure_fixture", &[]);
+    pin_pub_in_path(&sibling, PubInPath::Permitted);
+    fs::create_dir_all(sibling.join("src/a/odd")).expect("create fixture modules");
+    fs::write(sibling.join("src/main.rs"), "mod a;\nfn main() {}\n").expect("write fixture main");
+    fs::write(sibling.join("src/a.rs"), "mod b;\n").expect("write outer module");
     fs::write(
-        sibling.path().join("src/a/b.rs"),
+        sibling.join("src/a/b.rs"),
         "#[path = \"odd/target.rs\"]\nmod target;\n#[path = \"odd/exposer.rs\"]\nmod exposer;\npub use exposer::Container;\n",
     )
     .expect("write logical parent boundary");
     fs::write(
-        sibling.path().join("src/a/odd/target.rs"),
+        sibling.join("src/a/odd/target.rs"),
         "pub(crate) struct Target;\n",
     )
     .expect("write target module");
     fs::write(
-        sibling.path().join("src/a/odd/exposer.rs"),
+        sibling.join("src/a/odd/exposer.rs"),
         "pub struct Container { pub target: super::target::Target }\n",
     )
     .expect("write sibling signature");
 
-    let sibling_report = run_mend_json(&sibling.path().join("Cargo.toml"));
-    let target_finding = sibling_report
-        .findings
-        .iter()
-        .find(|finding| {
-            finding.code == DiagnosticCode::OverbroadPubCrate
-                && finding.path == "src/a/odd/target.rs"
-        })
-        .expect("find target visibility finding");
-    assert!(
-        target_finding
-            .help
+    |sibling_report| {
+        let target_finding = sibling_report
+            .findings
             .iter()
-            .any(|line| { line == "consider using: `pub(in crate::a)`" }),
-        "logical sibling signature exposure must preserve its private-ancestor cap: {sibling_report:#?}"
-    );
+            .find(|finding| {
+                finding.code == DiagnosticCode::OverbroadPubCrate
+                    && finding.path == "path_sibling_signature_exposure_fixture/src/a/odd/target.rs"
+            })
+            .expect("find target visibility finding");
+        assert!(
+            target_finding
+                .help
+                .iter()
+                .any(|line| { line == "consider using: `pub(in crate::a)`" }),
+            "logical sibling signature exposure must preserve its private-ancestor cap: {sibling_report:#?}"
+        );
+    }
 }
 
-fn assert_split_definition_lookup_uses_hir_identity() {
-    let split_definition = tempdir().expect("create split definition fixture dir");
-    pin_pub_in_path(split_definition.path(), PubInPath::Permitted);
-    fs::create_dir_all(split_definition.path().join("src/a/types"))
-        .expect("create type fixture module");
-    fs::create_dir_all(split_definition.path().join("src/a/impls"))
-        .expect("create impl fixture module");
-    write_minimal_manifest(
-        &split_definition,
-        "path_split_definition_signature_exposure_fixture",
-    );
+fn assert_split_definition_lookup_uses_hir_identity(batch: &mut DiagnosticBatch) -> fn(&Report) {
+    let split_definition =
+        batch.add_member("path_split_definition_signature_exposure_fixture", &[]);
+    pin_pub_in_path(&split_definition, PubInPath::Permitted);
+    fs::create_dir_all(split_definition.join("src/a/types")).expect("create type fixture module");
+    fs::create_dir_all(split_definition.join("src/a/impls")).expect("create impl fixture module");
     fs::write(
-        split_definition.path().join("src/main.rs"),
+        split_definition.join("src/main.rs"),
         "mod a;\nfn main() {}\n",
     )
     .expect("write fixture main");
-    fs::write(split_definition.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(split_definition.join("src/a.rs"), "mod b;\n").expect("write outer module");
     fs::write(
-        split_definition.path().join("src/a/b.rs"),
+        split_definition.join("src/a/b.rs"),
         "#[path = \"types/widget.rs\"]\nmod types;\n#[path = \"impls/widget.rs\"]\nmod methods;\npub use types::Widget;\n",
     )
     .expect("write split definition boundary");
     fs::write(
-        split_definition.path().join("src/a/types/widget.rs"),
+        split_definition.join("src/a/types/widget.rs"),
         "pub struct Widget;\n",
     )
     .expect("write split type definition");
     fs::write(
-        split_definition.path().join("src/a/impls/widget.rs"),
+        split_definition.join("src/a/impls/widget.rs"),
         "use super::types::Widget;\nimpl Widget { pub fn activate(&self) {} }\n",
     )
     .expect("write split inherent implementation");
 
-    let split_report = run_mend_json(&split_definition.path().join("Cargo.toml"));
-    assert!(
-        !split_report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::SuspiciousPub
-                && finding.path == "src/a/impls/widget.rs"
-                && finding.item.as_deref() == Some("fn activate")
-        }),
-        "HIR definition lookup must find the re-exported self type: {split_report:#?}"
-    );
+    |split_report| {
+        assert!(
+            !split_report.findings.iter().any(|finding| {
+                finding.code == DiagnosticCode::SuspiciousPub
+                    && finding.path
+                        == "path_split_definition_signature_exposure_fixture/src/a/impls/widget.rs"
+                    && finding.item.as_deref() == Some("fn activate")
+            }),
+            "HIR definition lookup must find the re-exported self type: {split_report:#?}"
+        );
+    }
 }
 
-fn assert_parent_signature_exposure_uses_logical_identity() {
-    let parent_signature = tempdir().expect("create parent signature fixture dir");
-    pin_pub_in_path(parent_signature.path(), PubInPath::Permitted);
-    fs::create_dir_all(parent_signature.path().join("src/a/odd"))
+fn assert_parent_signature_exposure_uses_logical_identity(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let parent_signature = batch.add_member("path_parent_signature_exposure_fixture", &[]);
+    pin_pub_in_path(&parent_signature, PubInPath::Permitted);
+    fs::create_dir_all(parent_signature.join("src/a/odd"))
         .expect("create parent signature modules");
-    write_minimal_manifest(&parent_signature, "path_parent_signature_exposure_fixture");
     fs::write(
-        parent_signature.path().join("src/main.rs"),
+        parent_signature.join("src/main.rs"),
         "mod a;\nfn main() { let _: a::b::Response = a::b::make(); }\n",
     )
     .expect("write fixture main");
+    fs::write(parent_signature.join("src/a.rs"), "pub(crate) mod b;\n")
+        .expect("write outer module");
     fs::write(
-        parent_signature.path().join("src/a.rs"),
-        "pub(crate) mod b;\n",
-    )
-    .expect("write outer module");
-    fs::write(
-        parent_signature.path().join("src/a/b.rs"),
+        parent_signature.join("src/a/b.rs"),
         "#[path = \"odd/response.rs\"]\nmod child;\npub use child::Response;\npub fn make() -> Response { Response }\n",
     )
     .expect("write parent signature boundary");
     fs::write(
-        parent_signature.path().join("src/a/odd/response.rs"),
+        parent_signature.join("src/a/odd/response.rs"),
         "pub struct Response;\n",
     )
     .expect("write parent signature type");
 
-    let parent_report = run_mend_json(&parent_signature.path().join("Cargo.toml"));
-    assert!(
-        !parent_report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::SuspiciousPub
-                && finding.path == "src/a/odd/response.rs"
-                && finding.item.as_deref() == Some("struct Response")
-        }),
-        "logical parent signature usage must suppress suspicious_pub: {parent_report:#?}"
-    );
+    |parent_report| {
+        assert!(
+            !parent_report.findings.iter().any(|finding| {
+                finding.code == DiagnosticCode::SuspiciousPub
+                    && finding.path
+                        == "path_parent_signature_exposure_fixture/src/a/odd/response.rs"
+                    && finding.item.as_deref() == Some("struct Response")
+            }),
+            "logical parent signature usage must suppress suspicious_pub: {parent_report:#?}"
+        );
+    }
 }
 
 #[test]
 fn path_modules_use_logical_identity_for_signature_exposure() {
-    assert_path_sibling_signature_exposure_uses_logical_identity();
-    assert_split_definition_lookup_uses_hir_identity();
-    assert_parent_signature_exposure_uses_logical_identity();
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
+    let assertions = [
+        (
+            "path_sibling_signature_exposure_fixture",
+            assert_path_sibling_signature_exposure_uses_logical_identity(&mut batch),
+        ),
+        (
+            "path_split_definition_signature_exposure_fixture",
+            assert_split_definition_lookup_uses_hir_identity(&mut batch),
+        ),
+        (
+            "path_parent_signature_exposure_fixture",
+            assert_parent_signature_exposure_uses_logical_identity(&mut batch),
+        ),
+    ];
+    let reports = batch.member_reports();
+    for (member, assert_case) in assertions {
+        assert_case(&reports[member]);
+    }
 }
 
 #[test]
@@ -4285,6 +4299,7 @@ edition = "2024"
 
 #[test]
 fn restricted_sibling_reexports_add_common_ancestor_signature_reach() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
     for (package_name, sibling_facades) in [
         (
             "restricted_sibling_reexport_first_fixture",
@@ -4295,9 +4310,8 @@ fn restricted_sibling_reexports_add_common_ancestor_signature_reach() {
             "pub(self) use super::carriers::Carrier as PrivateCarrierAlias;\npub(super) use super::carriers::Carrier;\npub(super) use super::carriers::UnrelatedCarrier;\n",
         ),
     ] {
-        let temp = tempdir().expect("create restricted sibling reach fixture dir");
-        write_allowance_sources(
-            &temp,
+        batch.add_member(
+            package_name,
             &[
                 (
                     "Cargo.toml",
@@ -4319,12 +4333,17 @@ fn restricted_sibling_reexports_add_common_ancestor_signature_reach() {
                 ("src/api/sibling.rs", sibling_facades),
             ],
         );
-
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    }
+    let reports = batch.member_reports();
+    for package_name in [
+        "restricted_sibling_reexport_first_fixture",
+        "restricted_sibling_private_first_fixture",
+    ] {
+        let report = &reports[package_name];
         let target_finding = |line_start| {
             report.findings.iter().find(|finding| {
                 finding.code == DiagnosticCode::ForbiddenPubInCrate
-                    && finding.path == "src/api/carriers/targets.rs"
+                    && finding.path == format!("{package_name}/src/api/carriers/targets.rs")
                     && finding.line_start == line_start
             })
         };

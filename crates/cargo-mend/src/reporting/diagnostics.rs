@@ -661,7 +661,7 @@ impl Serialize for Finding {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Report {
     pub root:     String,
     pub summary:  ReportSummary,
@@ -670,7 +670,7 @@ pub(crate) struct Report {
     pub facts:    ReportFacts,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct ReportSummary {
     #[serde(rename = "error_count")]
     pub errors:                   usize,
