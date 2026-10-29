@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::Sender as StdSender;
+use std::time::Duration;
 use std::time::Instant;
 
 use tokio::runtime::Handle;
@@ -24,6 +25,80 @@ use crate::project::ResolvedBranch;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::MetadataDispatchContext;
+
+pub(super) const DISK_POLL_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Build trees have no watches. Reuse the bounded disk workers at a slow cadence.
+/// Running work is left alone so a slow walk cannot accumulate queued polls.
+pub(super) fn schedule_disk_poll(
+    now: Instant,
+    last_poll: &mut Instant,
+    projects: &HashMap<AbsolutePath, ProjectEntry>,
+    pending_disk: &mut HashMap<String, WatchState>,
+) {
+    if now.saturating_duration_since(*last_poll) < DISK_POLL_INTERVAL {
+        return;
+    }
+    *last_poll = now;
+    for entry in projects.values() {
+        let state = pending_disk
+            .entry(entry.label.clone())
+            .or_insert(WatchState::Idle);
+        if matches!(state, WatchState::Idle) {
+            *state = WatchState::pending(now, true);
+        }
+    }
+}
+
+enum DiskProbeScope {
+    ProjectTree,
+    TreeAndLinkedTarget {
+        target_dir: AbsolutePath,
+    },
+    TreeAndExternalTarget {
+        workspace_root: AbsolutePath,
+        target_dir:     AbsolutePath,
+    },
+}
+
+fn disk_probe_scope(dispatch: &MetadataDispatchContext, path: &AbsolutePath) -> DiskProbeScope {
+    if let Ok(store) = dispatch.metadata_store.lock()
+        && let Some(root) = store.containing_checkout_root(path)
+        && let Some(target) = store.resolved_target_dir(path)
+    {
+        if !target.starts_with(root) {
+            return DiskProbeScope::TreeAndExternalTarget {
+                workspace_root: root.clone(),
+                target_dir:     target.clone(),
+            };
+        }
+        return linked_target_scope(path, target);
+    }
+    linked_target_scope(path, &AbsolutePath::from(path.join(TARGET_DIR)))
+}
+
+fn linked_target_scope(path: &AbsolutePath, target: &AbsolutePath) -> DiskProbeScope {
+    if target.starts_with(path)
+        && let Ok(resolved_target) = target.canonicalize()
+        && let Ok(resolved_project) = path.canonicalize()
+        && !resolved_target.starts_with(resolved_project)
+    {
+        return DiskProbeScope::TreeAndLinkedTarget {
+            target_dir: AbsolutePath::from(resolved_target),
+        };
+    }
+    DiskProbeScope::ProjectTree
+}
+
+fn project_disk_bytes(path: &AbsolutePath, scope: &DiskProbeScope) -> u64 {
+    let bytes = scan::dir_size(path);
+    if path.is_dir()
+        && let DiskProbeScope::TreeAndLinkedTarget { target_dir } = scope
+    {
+        return bytes.saturating_add(scan::dir_size(target_dir));
+    }
+    bytes
+}
 
 pub(super) fn schedule_disk_refresh(
     pending_disk: &mut HashMap<String, WatchState>,
@@ -449,6 +524,7 @@ pub(super) fn fire_disk_updates(
     background_tx: &Sender<BackgroundMsg>,
     projects: &HashMap<AbsolutePath, ProjectEntry>,
     pending_disk: &mut HashMap<String, WatchState>,
+    metadata_dispatch: &MetadataDispatchContext,
 ) {
     let now = Instant::now();
     let ready: Vec<String> = pending_disk
@@ -474,17 +550,19 @@ pub(super) fn fire_disk_updates(
             background_tx.clone(),
             project_label.clone(),
             entry.abs_path.clone(),
+            disk_probe_scope(metadata_dispatch, &entry.abs_path),
         );
     }
 }
 
-pub(super) fn spawn_disk_update(
+fn spawn_disk_update(
     handle: &Handle,
     disk_limit: &Arc<Semaphore>,
     disk_done_tx: StdSender<String>,
     background_tx: Sender<BackgroundMsg>,
     project_label: String,
     abs_path: AbsolutePath,
+    target_probe: DiskProbeScope,
 ) {
     let handle = handle.clone();
     let disk_limit = Arc::clone(disk_limit);
@@ -503,10 +581,11 @@ pub(super) fn spawn_disk_update(
 
         let started = Instant::now();
         let abs_for_msg = abs_path.clone();
-        let bytes = tokio::task::spawn_blocking(move || scan::dir_size(&abs_path))
-            .await
-            .ok()
-            .unwrap_or(0);
+        let (bytes, target_probe) = tokio::task::spawn_blocking(move || {
+            (project_disk_bytes(&abs_path, &target_probe), target_probe)
+        })
+        .await
+        .unwrap_or((0, DiskProbeScope::ProjectTree));
         tracing::trace!(
             target: PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
@@ -518,6 +597,31 @@ pub(super) fn spawn_disk_update(
             path: abs_for_msg,
             bytes,
         });
+        if let DiskProbeScope::TreeAndExternalTarget {
+            workspace_root,
+            target_dir,
+        } = target_probe
+        {
+            let probe_path = target_dir.clone();
+            if let Ok(bytes) = tokio::task::spawn_blocking(move || {
+                let resolved = probe_path
+                    .canonicalize()
+                    .unwrap_or_else(|_| probe_path.to_path_buf());
+                scan::dir_size(&resolved)
+            })
+            .await
+            {
+                let _ = background_tx.send(BackgroundMsg::OutOfTreeTargetSize {
+                    workspace_root,
+                    target_dir,
+                    bytes,
+                });
+            }
+        }
         let _ = disk_done_tx.send(project_label);
     });
 }
+
+#[cfg(test)]
+#[path = "refresh_repair_tests.rs"]
+mod repair_tests;

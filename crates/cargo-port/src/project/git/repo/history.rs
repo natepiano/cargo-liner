@@ -46,8 +46,8 @@ pub(crate) fn get_first_commit(project_dir: &Path) -> CommitDate {
             Ok(GitAnswer::No) => CommitDate::NoCommits,
             Ok(GitAnswer::Yes(_)) | Err(_) => CommitDate::Unreadable,
         },
-        |output| {
-            output
+        |git_stdout| {
+            git_stdout
                 .lines()
                 .next()
                 .filter(|line| !line.is_empty())
@@ -68,8 +68,14 @@ pub(super) fn get_last_fetched(repo_root: &Path) -> Option<String> {
     system_time_to_iso8601_utc(modified)
 }
 
-fn system_time_to_iso8601_utc(t: SystemTime) -> Option<String> {
-    let secs = i64::try_from(t.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs()).ok()?;
+fn system_time_to_iso8601_utc(system_time: SystemTime) -> Option<String> {
+    let secs = i64::try_from(
+        system_time
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()?
+            .as_secs(),
+    )
+    .ok()?;
     let seconds_per_day = SECONDS_PER_DAY.cast_signed();
     let seconds_per_hour = SECONDS_PER_HOUR.cast_signed();
     let seconds_per_minute = SECONDS_PER_MINUTE.cast_signed();

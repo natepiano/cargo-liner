@@ -115,16 +115,24 @@ pub(in crate::compiler::visibility) struct ItemInfo<'a> {
     pub facade_subject:  LocalDefId,
 }
 
+/// Sources outside the analysis scope produce no report; successful persistence means the
+/// report was written. Operational failures remain errors instead of becoming either state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::compiler) enum FindingsPersistence {
+    OutsideAnalysisScope,
+    ReportWritten,
+}
+
 pub(in crate::compiler::visibility) fn collect_and_store_findings(
     tcx: TyCtxt<'_>,
     settings: &DriverSettings,
-) -> Result<bool> {
+) -> Result<FindingsPersistence> {
     let crate_root_file = source::real_file_path(tcx, tcx.def_span(CRATE_DEF_ID))
         .context("failed to determine local crate root file")?;
     let Some(source_root) =
         source_cache::analysis_source_root_for(&crate_root_file, &settings.package_root)
     else {
-        return Ok(false);
+        return Ok(FindingsPersistence::OutsideAnalysisScope);
     };
 
     let mut sink = FindingsSink::default();
@@ -201,7 +209,7 @@ pub(in crate::compiler::visibility) fn collect_and_store_findings(
     };
     fs::write(&output_path, to_vec_pretty(&report)?)
         .with_context(|| format!("failed to write findings file {}", output_path.display()))?;
-    Ok(true)
+    Ok(FindingsPersistence::ReportWritten)
 }
 
 /// Orders the sink's findings by source position so the stored report is
@@ -502,5 +510,220 @@ mod counter_tests {
                 _ => None,
             })
             .ok_or_else(|| anyhow!("missing item {name}"))
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use std::cell::RefCell;
+    use std::fs;
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    use anyhow::Context;
+    use anyhow::Result;
+    use rustc_driver::Callbacks;
+    use rustc_driver::Compilation;
+    use rustc_interface::interface::Compiler;
+    use rustc_middle::ty::TyCtxt;
+    use tempfile::tempdir;
+
+    use super::FindingsPersistence;
+    use super::ItemCategory;
+    use super::ItemInfo;
+    use super::VisibilityContext;
+    use super::build_source_cache;
+    use super::collect_and_store_findings;
+    use crate::compiler::cfg_excluded_references::CfgExcludedReferences;
+    use crate::compiler::exposure::SignatureExposureCache;
+    use crate::compiler::facade::ModuleSourceMap;
+    use crate::compiler::persistence;
+    use crate::compiler::persistence::FindingsSink;
+    use crate::compiler::settings;
+    use crate::compiler::settings::DriverSettings;
+    use crate::compiler::visibility::annotation::VisibilityAnnotation;
+    use crate::compiler::visibility::interface_ceiling;
+    use crate::compiler::visibility::scan;
+    use crate::compiler::visibility::scan::AnnotationHandling;
+    use crate::compiler::visibility::source;
+    use crate::compiler::visibility::use_sites;
+    use crate::config::VisibilityConfig;
+
+    #[test]
+    fn annotation_handling_and_persistence_preserve_distinct_outcomes() -> Result<()> {
+        let temp = tempdir()?;
+        fs::create_dir_all(temp.path().join("src"))?;
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            concat!(
+                "[package]\nname = \"state-fixture\"\nversion = \"0.1.0\"\n",
+                "edition = \"2024\"\n",
+            ),
+        )?;
+        let source = temp.path().join("src/main.rs");
+        fs::write(
+            &source,
+            concat!(
+                "mod owner {\n",
+                "    pub(crate) struct Emitted;\n",
+                "    pub(crate) struct Suppressed;\n",
+                "    pub struct Public;\n",
+                "    #[cfg(feature = \"optional\")] fn excluded(_: Suppressed) {}\n",
+                "}\nfn main() {}\n",
+            ),
+        )?;
+        let output = temp.path().join("fixture.rmeta");
+        let settings = DriverSettings {
+            config_root:          temp.path().to_path_buf(),
+            visibility_config:    VisibilityConfig::default(),
+            config_fingerprint:   String::from("test"),
+            analysis_fingerprint: settings::current_analysis_fingerprint(),
+            scope_fingerprint:    String::from("scope"),
+            analyzing_dir:        temp.path().join("mend-analyzing"),
+            package_root:         temp.path().to_path_buf(),
+        };
+        let arguments = vec![
+            String::from("rustc"),
+            source.display().to_string(),
+            String::from("--crate-name=state_fixture"),
+            String::from("--edition=2024"),
+            String::from("--emit=metadata"),
+            String::from("-o"),
+            output.display().to_string(),
+        ];
+        let mut callbacks = StateAssertions {
+            settings,
+            source,
+            report: persistence::report_path_for_metadata(&output),
+            result: None,
+        };
+        rustc_driver::catch_with_exit_code(|| {
+            rustc_driver::run_compiler(&arguments, &mut callbacks);
+        });
+        callbacks.result.context("state assertions did not run")?
+    }
+
+    struct StateAssertions {
+        settings: DriverSettings,
+        source:   PathBuf,
+        report:   PathBuf,
+        result:   Option<Result<()>>,
+    }
+
+    impl Callbacks for StateAssertions {
+        fn after_analysis(&mut self, _: &Compiler, tcx: TyCtxt<'_>) -> Compilation {
+            self.result = Some((|| {
+                assert_persistence(tcx, &self.settings, &self.report)?;
+                assert_annotation_handling(tcx, &self.settings, &self.source)
+            })());
+            Compilation::Stop
+        }
+    }
+
+    fn assert_persistence(tcx: TyCtxt<'_>, settings: &DriverSettings, report: &Path) -> Result<()> {
+        let mut outside = settings.clone();
+        outside.package_root = settings.package_root.join("unrequested-package");
+        assert_eq!(
+            collect_and_store_findings(tcx, &outside)?,
+            FindingsPersistence::OutsideAnalysisScope,
+        );
+        assert!(!report.exists());
+        assert_eq!(
+            collect_and_store_findings(tcx, settings)?,
+            FindingsPersistence::ReportWritten,
+        );
+        let bytes = fs::read(report)?;
+        assert_eq!(
+            collect_and_store_findings(tcx, settings)?,
+            FindingsPersistence::ReportWritten,
+        );
+        assert_eq!(fs::read(report)?, bytes);
+        fs::remove_file(report)?;
+        fs::create_dir(report)?;
+        let failure = match collect_and_store_findings(tcx, settings) {
+            Ok(FindingsPersistence::OutsideAnalysisScope | FindingsPersistence::ReportWritten) => {
+                anyhow::bail!("writing a report over a directory must fail");
+            },
+            Err(failure) => failure,
+        };
+        assert!(
+            failure
+                .to_string()
+                .contains("failed to write findings file")
+        );
+        fs::remove_dir(report)?;
+        Ok(())
+    }
+
+    fn assert_annotation_handling(
+        tcx: TyCtxt<'_>,
+        settings: &DriverSettings,
+        crate_root: &Path,
+    ) -> Result<()> {
+        let source_root = crate_root.parent().context("source root")?;
+        let source_cache = build_source_cache(tcx, crate_root)?;
+        let cfg_excluded_references = CfgExcludedReferences::collect(tcx, &source_cache);
+        let reexport_index = use_sites::reexport_index(tcx);
+        let module_sources = ModuleSourceMap::new(tcx, &source_cache);
+        let mut public_visibility_targets = rustc_hash::FxHashSet::default();
+        use_sites::collect_use_sites(tcx, &mut public_visibility_targets);
+        let interface_ceilings = interface_ceiling::collect_interface_ceilings(tcx);
+        let ctx = VisibilityContext {
+            tcx,
+            settings,
+            source_root,
+            root_module: crate_root,
+            effective_visibilities: tcx.effective_visibilities(()),
+            source_cache: &source_cache,
+            cfg_excluded_references: &cfg_excluded_references,
+            public_visibility_targets: &public_visibility_targets,
+            interface_ceilings: &interface_ceilings,
+            reexport_index: &reexport_index,
+            module_sources: &module_sources,
+            parent_facade_analyses: RefCell::default(),
+            signature_exposure_cache: SignatureExposureCache::default(),
+        };
+        let mut checked = 0;
+        for item_id in tcx.hir_crate_items(()).free_items() {
+            let item = tcx.hir_item(item_id);
+            let def_id = item.owner_id.def_id;
+            let Some(name) = tcx.opt_item_name(def_id.to_def_id()) else {
+                continue;
+            };
+            let expected = match name.as_str() {
+                "Emitted" => (AnnotationHandling::Handled, 1),
+                "Suppressed" => (AnnotationHandling::Handled, 0),
+                "Public" => (AnnotationHandling::Continue, 0),
+                _ => continue,
+            };
+            let text = source::visibility_text(tcx, item.vis_span)?.context("visibility text")?;
+            let annotation = VisibilityAnnotation::from_item(&text, def_id, tcx)
+                .context("annotated fixture declaration")?;
+            let info = ItemInfo {
+                def_id,
+                file_path: crate_root,
+                visibility_text: &text,
+                kind_label: Some("struct"),
+                name: Some(name.as_str()),
+                highlight_span: item.span,
+                category: ItemCategory::Declaration,
+                facade_subject: def_id,
+            };
+            let mut sink = FindingsSink::default();
+            assert_eq!(
+                scan::record_forbidden_visibility_annotation(
+                    &ctx,
+                    &info,
+                    &annotation,
+                    None,
+                    &mut sink,
+                )?,
+                expected.0,
+            );
+            assert_eq!(sink.findings.len(), expected.1, "{name}");
+            checked += 1;
+        }
+        assert_eq!(checked, 3);
+        Ok(())
     }
 }
