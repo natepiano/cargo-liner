@@ -903,7 +903,10 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 4. Red-first tests: a second scan over unchanged records parses none of them (counted, not timed); a changed or new record is parsed again; a removed record leaves the cache; the scripts do not run again while their inputs are unchanged and run once after a change. Each test under 1 s.
 5. Live measurement: CPU-s over 60 s with the installed binary and with the branch binary, both idle on natedev against the real `/tmp/claude` tree (check the build hold first). Target under 1 % of one core.
 
-**Files:** `crates/cargo-handler/src/census/{activity.rs, scan.rs, hierarchy.rs, accounts.rs, schedule.rs}`, `crates/cargo-handler/src/{constants.rs, app.rs}`, their test files, `crates/cargo-handler/CHANGELOG.md`.
+**Files:**
+- `crates/cargo-handler/src/census/{activity.rs, scan.rs, hierarchy.rs, accounts.rs, schedule.rs, command_inputs.rs}` and their test files — the retained records, process tables and input-driven commands
+- `crates/cargo-handler/src/{constants.rs, app.rs}` — intervals and wiring
+- `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer (`test` seat; the `impl` seat is on Phase 39).
 
@@ -913,7 +916,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Result (2026-10-28):** the c58 report did not reproduce on natedev HEAD 8c718383. Four live cases (a corrupt-HEAD and a valid-HEAD project, each made after cargo-port started and before it started, parent removed by Python `shutil.rmtree` one minute after the row appeared) all showed the existing Deleted strike-through within 0.55–0.89 s, and `x` dismissed each row. No cargo-port file changed. One finding for port-unit: with `NO_COLOR=1` in its environment, cargo-port writes SGR 9 and then an empty colour sequence (`ESC[;m`, crossterm `SetColors` under NO_COLOR), which resets the strike-through, so a Deleted row looks normal. This made the first scratch capture look like the defect; it is not proven that the user's cargo-port had NO_COLOR set. Evidence: unit session `phases/39/live/terminal_env_clean/`. From 2026-10-28 port-unit owns all cargo-port work.
 
-### Phase 36 — Selected tiles show "content rows: N of M"  · status: todo
+### Phase 36 — Selected tiles show "content rows: N of M"  · status: done
 
 **Depends on:** Phase 27
 
