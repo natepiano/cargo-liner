@@ -1443,6 +1443,36 @@ pub(crate) fn reconcile(
     )
 }
 
+/// Retain immutable object evidence throughout check's decision and acquisition passes.
+pub(crate) fn reconcile_for_check(
+    repository: &git::RepositorySnapshot,
+) -> Result<Enrollment<ReconciliationReport>, ReconcileError> {
+    let context = repository.context();
+    let config = match BerthConfig::read(&context.configuration_lookup())? {
+        Enrollment::Enrolled(config) => config,
+        Enrollment::Unconfigured {
+            expected_configuration_path,
+        } => {
+            return Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            });
+        },
+    };
+    let ledger = Ledger::open_from_discovered_worktree(context)?;
+    reconcile_with_open_ledger(
+        &repository.fresh_observation(),
+        &ledger,
+        &config,
+        ReconciliationRequest {
+            repository_observation_scope: RepositoryObservationScope::CurrentOrderingGraph,
+            recovered_bypass_reporting:   RecoveredBypassReporting::Defer,
+            merged_run_endings:           MergedRunEndings::End,
+            stale_scope_releases:         StaleScopeReleases::Defer,
+        },
+    )
+    .map(Enrollment::Enrolled)
+}
+
 /// Reconcile once while retaining the discovered worktree and opened ledger for drift.
 pub(crate) fn reconcile_for_drift<ConcurrentObservation>(
     invocation_directory: &Path,
