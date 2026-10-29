@@ -247,7 +247,9 @@ impl CargoLineKind {
         match self {
             Self::Finished | Self::DiagnosticOrText => ProgressLineDisposition::Suppress,
             Self::OtherProgress => match output_mode {
-                BuildOutputMode::Json | BuildOutputMode::Quiet => ProgressLineDisposition::Suppress,
+                BuildOutputMode::Json | BuildOutputMode::Validation => {
+                    ProgressLineDisposition::Suppress
+                },
                 // The main pass shows cargo's status lines even while the spinner runs:
                 // there the spinner reports which target mend is analyzing, which is
                 // additional to cargo's output rather than a replacement for it.
@@ -417,17 +419,15 @@ fn flush_diagnostic_block(
                 },
                 BuildOutputMode::Json
                 | BuildOutputMode::SuppressUnusedImportWarnings
-                | BuildOutputMode::Quiet => {},
+                | BuildOutputMode::Validation => {},
             }
         },
         DiagnosticBlockKind::CompilerWarningSummary {
             warning_count,
             fixable_count,
         } => {
-            if !matches!(output_mode, BuildOutputMode::Quiet) {
-                *compiler_warning_count += warning_count;
-                *compiler_fixable_count += fixable_count;
-            }
+            *compiler_warning_count += warning_count;
+            *compiler_fixable_count += fixable_count;
         },
         DiagnosticBlockKind::Forwarded => {
             if !matches!(output_mode, BuildOutputMode::Json) {
@@ -506,13 +506,16 @@ mod tests {
     }
 
     #[test]
-    fn progress_forwarding_preserves_full_json_and_quiet_policy() {
+    fn progress_forwarding_preserves_full_json_and_validation_policy() {
         let kind = CargoLineKind::OtherProgress;
         for activity in [ProgressActivity::Active, ProgressActivity::Inactive] {
             for (mode, expected) in [
                 (BuildOutputMode::Full, ProgressLineDisposition::Forward),
                 (BuildOutputMode::Json, ProgressLineDisposition::Suppress),
-                (BuildOutputMode::Quiet, ProgressLineDisposition::Suppress),
+                (
+                    BuildOutputMode::Validation,
+                    ProgressLineDisposition::Suppress,
+                ),
             ] {
                 assert_eq!(kind.disposition(mode, activity), expected);
             }
@@ -561,7 +564,7 @@ mod tests {
         for output_mode in [
             BuildOutputMode::Full,
             BuildOutputMode::Json,
-            BuildOutputMode::Quiet,
+            BuildOutputMode::Validation,
             BuildOutputMode::SuppressUnusedImportWarnings,
         ] {
             for status in [ProgressActivity::Active, ProgressActivity::Inactive] {
@@ -622,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn quiet_builds_do_not_accumulate_compiler_warning_summary_counts() {
+    fn validation_retains_compiler_warning_summary_counts_for_convergence() {
         let mut block = vec![
             format!(
                 "{CARGO_WARNING_SUMMARY_PREFIX}fixture` (lib){CARGO_WARNING_SUMMARY_TOKEN_GENERATED}3 warnings (1 duplicate) (run `cargo fix --lib -p fixture` {CARGO_WARNING_SUMMARY_TOKEN_TO_APPLY}1 suggestion)\n"
@@ -640,12 +643,12 @@ mod tests {
             &mut compiler_warning_facts,
             &mut compiler_warning_count,
             &mut compiler_fixable_count,
-            BuildOutputMode::Quiet,
+            BuildOutputMode::Validation,
             &mut ProgressRecorder::default(),
         );
 
-        assert_eq!(compiler_warning_count, 0);
-        assert_eq!(compiler_fixable_count, 0);
+        assert_eq!(compiler_warning_count, 3);
+        assert_eq!(compiler_fixable_count, 1);
     }
 
     #[test]
@@ -687,7 +690,7 @@ mod tests {
             &mut compiler_warning_facts,
             &mut compiler_warning_count,
             &mut compiler_fixable_count,
-            BuildOutputMode::Quiet,
+            BuildOutputMode::Validation,
             &mut progress,
         );
 

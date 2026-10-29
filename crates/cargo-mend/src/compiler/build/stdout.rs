@@ -97,7 +97,7 @@ pub(super) fn collect_units(
                 BuildOutputMode::Full => println!("{line}"),
                 BuildOutputMode::Json
                 | BuildOutputMode::SuppressUnusedImportWarnings
-                | BuildOutputMode::Quiet => {},
+                | BuildOutputMode::Validation => {},
             },
         }
     }

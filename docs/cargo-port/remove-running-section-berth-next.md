@@ -883,7 +883,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - Mac template cache key uses the canonical `current_exe` (a symlinked builder collided with its cache folder).
 - Result: the 20 tests 4888 → 4410 process starts; alone sum 79.8 → 59.6 s at varying load; every one still 2.3–3.8 s. Full Mac run 1306/1306 with 355 at 1 s or more (load 16–28; not comparable with the earlier 333/1303). Process-start pin updated from a complete Mac capture (42,291 starts). natedev 1307/1307.
 
-### Phase 38b — Every cargo-berth and cargo-mend test runs under a second on the Mac  · status: todo
+### Phase 38b — Every cargo-berth and cargo-mend test runs under a second on the Mac  · status: done
 
 **Why:** the cold Mac run on `fde451aa` (phase 24) passed 1268/1268, but 402 tests took 1 s or more (slowest 6.845 s; nextest 104 s). On natedev every test is under 1 s (slowest 0.667 s). The user rule: a test that takes seconds is a defect. The Mac run starts about 38,700 processes; a process start costs much more on macOS. (showrunner, 2026-10-28) The cargo-mend Mac suite is in scope too: 340 of 850 tests took 1 s or more in the full Mac run on the phase 39 merge, with the two phase 39 first-run tests at 1.6 s and 2.0 s (0.4 s alone). The parallel run does not show how much of each test's time is its own work and how much is contention.
 
@@ -924,3 +924,28 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 **Verification:** a fail-before test (under 1 s): a branch from trunk A, trunk moves to B with a change to file F, the branch does not touch F; its merge extent must not name F and no incursion on a holder of F is reported. `cargo-berth` lint and suite pass, each test under 1 s.
 
 **Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+
+### Phase 42 — The post-tool-use hook costs little CPU on a large ledger  · status: todo
+
+**Why:** (showrunner, 2026-10-28, urgent cost defect; builds-unit perf 11:28–11:40 AST) the post-tool-use hook runs after every Bash call in every session. In a hana worktree one run costs 2–9 CPU-s (0.4 core steady, about 5 cores at peaks). It loads 542 reservations and 15,245 race scopes from a 24 MB checkpoint and a 146 MB journal, 9x the 16 MB compaction limit (`ledger/constants.rs:28`). It checks overlap pair by pair with allocating compares (`ledger/journal.rs:1245-1252`, `scope/antichain.rs:76`) and computes 25 full ancestor sets (`git/reachability.rs:336`, `:675-682`). Perf data (read only): `/tmp/claude-1000/-home-natepiano-worktrees-claude-build-followups-builds/51505394-82db-43d3-a528-136f4ee38d7a/scratchpad/berth.data`.
+
+**Work Order (in this order):**
+1. Find why compaction stops. Three leftover `journal.ndjson.compact.tmp.*` files (about 135 MB each, Oct 21, 21, 23) are in the ledger folder. Find what left them and fix that. Do not delete them by hand. The unit director runs compaction once on the real ledger after install.
+2. Leave released reservations out of the post-tool-use pass.
+3. Compute ahead/behind only for the caller's worktree.
+4. Compare path components without allocation, and index scopes by their first component.
+5. (showrunner, 14:3x, same cause) `cargo-berth check` takes 29–39 s on a copy of hana_catalyst-assembly's ledger, and the 25 s pre-seat check of assembly-unit times out. Check runs repository-wide acting-head containment three times (decide, after reconcile, first-touch acquisition; `verb/check.rs`), each with about 23 merge-tree pairs and 114 history reads on tips of about 6,000 commits (`reservation/containment.rs`, `git/reachability.rs`). Compute reachable ancestry once per resolved trunk tip, and cache merge-tree pair results for the whole check so each pair runs once. Do not raise the timeout.
+
+**Verification:** each fix has a test that is red first, each under 1 s. Measure the hook's CPU-s per call in a hana worktree before and after (read only on the real ledger). Measure `check` on the assembly ledger copy before and after. `cargo-berth` lint and suite pass.
+
+**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+
+### Phase 44 — A rebuilt cargo-mend runs its own driver, not an earlier copy  · status: todo
+
+**Why:** (phase 38b review, 2026-10-28) phase 38b made the wrapper alias an independent copy under `mend-wrapper/<fingerprint>/independent-copy-v1/`, and reuses any regular file with one link there. The fingerprint is version + `MEND_GIT_HASH` + `MEND_BUILD_ID`, and `build.rs` renews those only when HEAD or a branch ref changes. A development rebuild with an uncommitted change keeps the same fingerprint, so `cargo mend` runs the copy of the earlier build as its rustc driver. The hard-link version replaced the alias when its inode differed from the running binary.
+
+**Work Order:** key the copy on the running executable's metadata as well (length and modification time), read without reading the binary. Test, red first: rebuild in place (same fingerprint, new contents, new mtime), run `wrapper_alias`, and read the new contents back.
+
+**Verification:** the new test, under 1 s; `cargo-mend` Mac suite and lint pass.
+
+**Files:** `crates/cargo-mend/src/compiler/build/execute.rs`
