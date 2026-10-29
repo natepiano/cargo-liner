@@ -20,17 +20,17 @@ use crate::project::TestCounts;
 /// Spawn the initial bulk test-count scan, batched per disk-usage tree to
 /// mirror the language-stats fan-out.
 pub(super) fn spawn_initial_test_counts(
-    scan_context: &StreamingScanContext,
+    streaming_scan_context: &StreamingScanContext,
     disk_entries: &[(String, AbsolutePath)],
 ) {
-    for tree in disk_usage::group_disk_usage_trees(disk_entries) {
-        spawn_test_counts_tree(scan_context, tree);
+    for disk_usage_tree in disk_usage::group_disk_usage_trees(disk_entries) {
+        spawn_test_counts_tree(streaming_scan_context, disk_usage_tree);
     }
 }
 
-fn spawn_test_counts_tree(scan_context: &StreamingScanContext, tree: DiskUsageTree) {
-    let handle = scan_context.client.handle.clone();
-    let sender = scan_context.sender.clone();
+fn spawn_test_counts_tree(streaming_scan_context: &StreamingScanContext, tree: DiskUsageTree) {
+    let handle = streaming_scan_context.client.handle.clone();
+    let sender = streaming_scan_context.sender.clone();
 
     handle.spawn(async move {
         let Ok(results) =
@@ -44,8 +44,11 @@ fn spawn_test_counts_tree(scan_context: &StreamingScanContext, tree: DiskUsageTr
     });
 }
 
-fn collect_test_counts_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, TestCounts)> {
-    tree.entries
+fn collect_test_counts_for_tree(
+    disk_usage_tree: &DiskUsageTree,
+) -> Vec<(AbsolutePath, TestCounts)> {
+    disk_usage_tree
+        .entries
         .iter()
         .map(|entry| (entry.clone(), collect_test_counts_single(entry.as_path())))
         .collect()
@@ -259,17 +262,17 @@ fn strip_block_star(line: &str) -> &str {
 /// Tally the code blocks in one doc-comment markdown document by how
 /// rustdoc would treat them.
 fn count_doctest_fences(markdown: &str) -> DocCounts {
-    let mut counts = DocCounts::default();
+    let mut doc_counts = DocCounts::default();
     for event in Parser::new(markdown) {
-        if let Event::Start(Tag::CodeBlock(kind)) = event {
-            match classify_code_block(&kind) {
-                FenceKind::Runnable => counts.runnable += 1,
-                FenceKind::Ignored => counts.ignored += 1,
+        if let Event::Start(Tag::CodeBlock(code_block_kind)) = event {
+            match classify_code_block(&code_block_kind) {
+                FenceKind::Runnable => doc_counts.runnable += 1,
+                FenceKind::Ignored => doc_counts.ignored += 1,
                 FenceKind::NotDoctest => {},
             }
         }
     }
-    counts
+    doc_counts
 }
 
 /// How rustdoc treats a code block in a doc comment.
@@ -282,8 +285,8 @@ enum FenceKind {
     NotDoctest,
 }
 
-fn classify_code_block(kind: &CodeBlockKind) -> FenceKind {
-    match kind {
+fn classify_code_block(code_block_kind: &CodeBlockKind) -> FenceKind {
+    match code_block_kind {
         CodeBlockKind::Indented => FenceKind::Runnable,
         CodeBlockKind::Fenced(info) => classify_fence(info),
     }
