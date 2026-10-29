@@ -186,6 +186,8 @@ pub(crate) const CODEX_ROLE: &str = "codex";
 pub(crate) const BUSY_ROLE: &str = "busy";
 /// `[variants.roles]` key for a `shell` status.
 pub(crate) const SHELL_ROLE: &str = "shell";
+/// Role column text for a shell whose program is `sleep`.
+pub(crate) const TIMER_ROLE: &str = "timer";
 /// `[variants.roles]` key for an `idle` status, a status the summary
 /// does not know, and a missing one.
 pub(crate) const IDLE_ROLE: &str = "idle";

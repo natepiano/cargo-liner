@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Shell rows for sleep commands show timer in the role column.
 - A tile with a selected row shows it and the total in its foot, `content rows: 3 of 12`; the number follows every selection move and scroll.
 - Select rows with Up, Down, PageUp, PageDown, Home and End, click a row, or scroll the tile under the pointer. Selection follows sessions and worker seats as their work changes. Role and status widths follow the painted rows while age units remain aligned through scrolling.
 
