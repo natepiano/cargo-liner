@@ -1,8 +1,10 @@
 use std::cell::OnceCell;
 #[cfg(feature = "test-counters")]
 use std::cell::RefCell;
+use std::cmp::Ordering;
 #[cfg(feature = "test-counters")]
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -134,11 +136,51 @@ pub(in crate::compiler) enum ParentFacadeSpelling {
     Other,
 }
 
+/// Whether a re-export's visibility reaches its owning module's parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::compiler) enum ParentReach {
+    ReachesParent,
+    RestrictedToChild,
+}
+
+impl ParentReach {
+    pub(in crate::compiler) const fn from_comparison(comparison: Option<Ordering>) -> Self {
+        match comparison {
+            Some(Ordering::Equal | Ordering::Greater) => Self::ReachesParent,
+            Some(Ordering::Less) | None => Self::RestrictedToChild,
+        }
+    }
+}
+
+/// Conflicting source spellings cannot supply exact facade syntax or an exact repair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::compiler) enum FacadeSpellingAgreement {
+    Consistent,
+    Conflicting,
+}
+
+/// A nonempty selection has one or several exports; only one supports a single-export repair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::compiler) enum ExportMultiplicity {
+    Single,
+    Multiple,
+}
+
+impl ExportMultiplicity {
+    pub(in crate::compiler) const fn from_count(count: NonZeroUsize) -> Self {
+        if count.get() == 1 {
+            Self::Single
+        } else {
+            Self::Multiple
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::compiler) struct ParentFacadeReach {
-    pub reaches_parent:    bool,
-    pub spelling:          ParentFacadeSpelling,
-    pub spelling_conflict: bool,
+    pub parent_reach:       ParentReach,
+    pub spelling:           ParentFacadeSpelling,
+    pub spelling_agreement: FacadeSpellingAgreement,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -164,8 +206,9 @@ pub(in crate::compiler) struct ParentFacadeExportStatus {
 
 impl ParentFacadeExportStatus {
     pub(in crate::compiler) const fn use_syntax(&self) -> Option<&'static str> {
-        if self.parent_facade_reach.spelling_conflict {
-            return None;
+        match self.parent_facade_reach.spelling_agreement {
+            FacadeSpellingAgreement::Consistent => {},
+            FacadeSpellingAgreement::Conflicting => return None,
         }
         match self.parent_facade_reach.spelling {
             ParentFacadeSpelling::Public => Some("pub use"),
@@ -190,7 +233,7 @@ pub(in crate::compiler) struct ParentFacadeExportRequest<'tcx, 'source> {
     pub parent_facade_reach: ParentFacadeReach,
     pub usage_by_name:       &'source OnceCell<ParentFacadeUsageByName>,
     pub export_names:        &'source [String],
-    pub unique_export:       bool,
+    pub export_multiplicity: ExportMultiplicity,
     pub child_file:          &'source Path,
     pub item_name:           &'source str,
 }
@@ -211,7 +254,7 @@ pub(in crate::compiler) fn parent_facade_export_status(
         parent_facade_reach,
         usage_by_name,
         export_names,
-        unique_export,
+        export_multiplicity,
         child_file,
         item_name,
     } = request;
@@ -235,7 +278,7 @@ pub(in crate::compiler) fn parent_facade_export_status(
             item_name,
             tcx,
             use_span,
-            unique_export,
+            export_multiplicity,
         ),
     };
     let usage_by_name = initialized_facade_usage(usage_by_name, || {
@@ -247,7 +290,7 @@ pub(in crate::compiler) fn parent_facade_export_status(
             tcx,
             module_sources,
             &parent_boundary,
-            &exported_names,
+            &exported_names.explicit,
         )
     })?;
     let usage = usage_by_name
@@ -288,9 +331,9 @@ fn parent_facade_fix_support(
     item_name: &str,
     tcx: TyCtxt<'_>,
     use_span: Span,
-    unique_export: bool,
+    export_multiplicity: ExportMultiplicity,
 ) -> ParentFacadeFixSupport {
-    if !unique_export {
+    if export_multiplicity == ExportMultiplicity::Multiple {
         return ParentFacadeFixSupport::Unsupported;
     }
     let Some(child_module_name) = rust_syntax::module_name_for_child_boundary_file(child_file)
@@ -321,7 +364,8 @@ fn parent_facade_fix_support(
         .find(|item_use| item_use_start_offset(source, item_use) == Some(use_offset))
         .is_some_and(|item_use| {
             fixes::facade_use_prefix(&item_use.vis).is_some()
-                && pub_use_is_fix_supported(&item_use.tree, child_module_name, item_name)
+                && pub_use_fix_support(&item_use.tree, child_module_name, item_name)
+                    == ParentFacadeFixSupport::Supported
         })
     {
         ParentFacadeFixSupport::Supported
@@ -359,6 +403,13 @@ pub(super) fn exported_names_from_parent_boundary(
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExportMatch {
+    Missing,
+    Found,
+}
+
+#[cfg(test)]
 fn collect_matching_pub_use_exports(
     item_use: &ItemUse,
     child_module_name: &str,
@@ -367,7 +418,7 @@ fn collect_matching_pub_use_exports(
 ) {
     let mut paths = Vec::new();
     source_cache::flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
-    let mut matched = false;
+    let mut matched = ExportMatch::Missing;
     for path in paths {
         let normalized = rust_syntax::trim_leading_self(&path);
         if normalized.len() >= 2
@@ -376,41 +427,60 @@ fn collect_matching_pub_use_exports(
             && let Some(export_name) = normalized.last()
         {
             exported.explicit.push(export_name.clone());
-            matched = true;
+            matched = ExportMatch::Found;
         }
     }
-    if matched
+    if matched == ExportMatch::Found
         && fixes::facade_use_prefix(&item_use.vis).is_some()
-        && pub_use_is_fix_supported(&item_use.tree, child_module_name, item_name)
+        && pub_use_fix_support(&item_use.tree, child_module_name, item_name)
+            == ParentFacadeFixSupport::Supported
     {
         exported.fix_support = ParentFacadeFixSupport::Supported;
     }
 }
 
-fn pub_use_is_fix_supported(tree: &UseTree, child_module_name: &str, item_name: &str) -> bool {
-    pub_use_is_fix_supported_with_prefix(Vec::new(), tree, child_module_name, item_name)
+fn pub_use_fix_support(
+    tree: &UseTree,
+    child_module_name: &str,
+    item_name: &str,
+) -> ParentFacadeFixSupport {
+    pub_use_fix_support_with_prefix(Vec::new(), tree, child_module_name, item_name)
 }
 
-fn pub_use_is_fix_supported_with_prefix(
+fn pub_use_fix_support_with_prefix(
     prefix: Vec<String>,
     tree: &UseTree,
     child_module_name: &str,
     item_name: &str,
-) -> bool {
+) -> ParentFacadeFixSupport {
     match tree {
         UseTree::Path(path) => {
             let mut next = prefix;
             next.push(path.ident.to_string());
-            pub_use_is_fix_supported_with_prefix(next, &path.tree, child_module_name, item_name)
+            pub_use_fix_support_with_prefix(next, &path.tree, child_module_name, item_name)
         },
         UseTree::Name(name) => {
             let normalized = rust_syntax::trim_leading_self(&prefix);
-            normalized.len() == 1 && normalized[0] == child_module_name && name.ident == item_name
+            if normalized.len() == 1
+                && normalized[0] == child_module_name
+                && name.ident == item_name
+            {
+                ParentFacadeFixSupport::Supported
+            } else {
+                ParentFacadeFixSupport::Unsupported
+            }
         },
-        UseTree::Group(group) => group.items.iter().any(|item| {
-            pub_use_is_fix_supported_with_prefix(prefix.clone(), item, child_module_name, item_name)
-        }),
-        UseTree::Rename(_) | UseTree::Glob(_) => false,
+        UseTree::Group(group) => {
+            if group.items.iter().any(|item| {
+                pub_use_fix_support_with_prefix(prefix.clone(), item, child_module_name, item_name)
+                    == ParentFacadeFixSupport::Supported
+            }) {
+                ParentFacadeFixSupport::Supported
+            } else {
+                ParentFacadeFixSupport::Unsupported
+            }
+        },
+        UseTree::Rename(_) | UseTree::Glob(_) => ParentFacadeFixSupport::Unsupported,
     }
 }
 
@@ -422,6 +492,7 @@ fn pub_use_is_fix_supported_with_prefix(
 mod tests {
     use std::cell::Cell;
     use std::cell::OnceCell;
+    use std::cmp::Ordering;
 
     use anyhow::anyhow;
     use syn::parse_file;
@@ -432,6 +503,126 @@ mod tests {
     use super::ParentFacadeUsageByName;
     use super::exported_names_from_parent_boundary;
     use super::initialized_facade_usage;
+
+    #[test]
+    fn parent_reach_requires_equal_or_wider_visibility() {
+        for (comparison, expected) in [
+            (Some(Ordering::Equal), super::ParentReach::ReachesParent),
+            (Some(Ordering::Greater), super::ParentReach::ReachesParent),
+            (Some(Ordering::Less), super::ParentReach::RestrictedToChild),
+            (None, super::ParentReach::RestrictedToChild),
+        ] {
+            assert_eq!(super::ParentReach::from_comparison(comparison), expected);
+        }
+    }
+
+    #[test]
+    fn export_multiplicity_admits_exactly_one_matching_occurrence() {
+        for (count, expected) in [
+            (1, super::ExportMultiplicity::Single),
+            (2, super::ExportMultiplicity::Multiple),
+            (usize::MAX, super::ExportMultiplicity::Multiple),
+        ] {
+            assert_eq!(
+                super::ExportMultiplicity::from_count(super::NonZeroUsize::new(count).unwrap()),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn facade_syntax_requires_consistent_spelling() {
+        for (spelling, syntax) in [
+            (super::ParentFacadeSpelling::Public, Some("pub use")),
+            (super::ParentFacadeSpelling::Crate, Some("pub(crate) use")),
+            (super::ParentFacadeSpelling::Super, Some("pub(super) use")),
+            (super::ParentFacadeSpelling::Other, None),
+        ] {
+            for (agreement, expected) in [
+                (super::FacadeSpellingAgreement::Consistent, syntax),
+                (super::FacadeSpellingAgreement::Conflicting, None),
+            ] {
+                for parent_reach in [
+                    super::ParentReach::ReachesParent,
+                    super::ParentReach::RestrictedToChild,
+                ] {
+                    let status = super::ParentFacadeExportStatus {
+                        usage:               ParentFacadeUsage::Unused,
+                        fix_support:         ParentFacadeFixSupport::Unsupported,
+                        parent_facade_reach: super::ParentFacadeReach {
+                            parent_reach,
+                            spelling,
+                            spelling_agreement: agreement,
+                        },
+                        parent_path:         "src/lib.rs".into(),
+                        parent_rel_path:     "src/lib.rs".into(),
+                        parent_line:         1,
+                        boundary_def_path:   String::from("crate"),
+                    };
+                    assert_eq!(status.use_syntax(), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn use_tree_support_preserves_group_anchor_and_leaf_policy() -> anyhow::Result<()> {
+        for (source, expected) in [
+            ("pub use child::Thing;", ParentFacadeFixSupport::Supported),
+            (
+                "pub use self::child::Thing;",
+                ParentFacadeFixSupport::Supported,
+            ),
+            (
+                "pub use child::{Else, Thing};",
+                ParentFacadeFixSupport::Supported,
+            ),
+            (
+                "pub use child::{Thing, Else};",
+                ParentFacadeFixSupport::Supported,
+            ),
+            (
+                "pub use child::{Thing as Alias};",
+                ParentFacadeFixSupport::Unsupported,
+            ),
+            ("pub use child::*;", ParentFacadeFixSupport::Unsupported),
+            ("pub use child::{};", ParentFacadeFixSupport::Unsupported),
+            ("pub use child::{{}};", ParentFacadeFixSupport::Unsupported),
+            (
+                "pub use child::{{}, Thing};",
+                ParentFacadeFixSupport::Supported,
+            ),
+            (
+                "pub use child::{{{}}, Thing};",
+                ParentFacadeFixSupport::Supported,
+            ),
+            (
+                "pub use child::nested::Thing;",
+                ParentFacadeFixSupport::Unsupported,
+            ),
+            (
+                "pub use sibling::Thing;",
+                ParentFacadeFixSupport::Unsupported,
+            ),
+            ("pub use child::Else;", ParentFacadeFixSupport::Unsupported),
+        ] {
+            let item_use = syn::parse_str::<syn::ItemUse>(source)?;
+            assert_eq!(
+                super::pub_use_fix_support(&item_use.tree, "child", "Thing"),
+                expected,
+                "{source}",
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn missing_export_does_not_promote_support() -> anyhow::Result<()> {
+        let file = parse_file("pub use child::{Else, Another};")?;
+        let exports = exported_names_from_parent_boundary(&file, "child", "Thing");
+        assert_eq!(exports, ParentFacadeExports::default());
+        Ok(())
+    }
 
     #[test]
     fn initialized_facade_usage_scans_once_and_preserves_export_usage() {

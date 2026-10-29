@@ -14,7 +14,7 @@ use std::process::Command;
 use std::process::Output;
 
 use crate::CommandDeadlineExt as _;
-use crate::berth_command::CLAUDE_CODE_SESSION_ENVIRONMENT;
+use crate::constants::CLAUDE_CODE_SESSION_ENVIRONMENT;
 
 /// Names a specific `cargo-berth` for a managed hook, ahead of the installed one.
 pub const EXECUTABLE_ENVIRONMENT: &str = "CARGO_BERTH_EXECUTABLE";

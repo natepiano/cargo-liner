@@ -118,6 +118,72 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 
 #[test]
+fn drift_reports_an_index_lock_without_comparing_or_writing() {
+    let repository = initialized_repository();
+    let (_directory, holder) = foreign_worktree(&repository, "index-writer");
+    claim(&holder, "file:claimed.txt", FIRST_RUN);
+    fs::write(holder.join("claimed.txt"), "write still in progress\n")
+        .expect("tracked file should write");
+    let git_directory = git_output(&holder, &["rev-parse", "--absolute-git-dir"]);
+    assert!(git_directory.status.success());
+    let git_directory = PathBuf::from(
+        String::from_utf8(git_directory.stdout)
+            .expect("git directory should be UTF-8")
+            .trim(),
+    );
+    fs::write(git_directory.join("index.lock"), "").expect("index lock should write");
+    let ledger_before = drift_state_files(&repository.path().join(".git/cargo-berth"));
+    let worktree_before = drift_state_files(&git_directory);
+
+    for arguments in [&["--full"][..], &[][..]] {
+        let output = drift(&holder, arguments);
+        let envelope = json_output(&output);
+        assert_eq!(
+            envelope["status"], "git_operation_in_progress",
+            "{envelope}"
+        );
+        assert_eq!(envelope["payload"]["kind"], "drift");
+        assert_eq!(
+            envelope["payload"]["data"],
+            serde_json::json!({"not_checked": "git_operation_in_progress"})
+        );
+        assert!(envelope["message"].as_str().is_some_and(|message| {
+            message.contains("git operation in progress") && message.contains("drift not checked")
+        }));
+        assert_eq!(
+            drift_state_files(&repository.path().join(".git/cargo-berth")),
+            ledger_before
+        );
+        assert_eq!(drift_state_files(&git_directory), worktree_before);
+    }
+    fs::remove_file(git_directory.join("index.lock")).expect("index lock should remove");
+    let settled = json_output(&drift(&holder, &["--full"]));
+    assert_eq!(settled["status"], "clear", "{settled}");
+    assert!(settled["payload"]["data"]["results"].is_array());
+}
+
+/// Include file contents and names so a deferred check cannot publish disposable state either.
+fn drift_state_files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    for entry in fs::read_dir(root).expect("drift state directory should read") {
+        let entry = entry.expect("drift state entry should read");
+        if entry
+            .file_type()
+            .expect("drift state kind should read")
+            .is_dir()
+        {
+            files.extend(drift_state_files(&entry.path()));
+        } else {
+            files.insert(
+                entry.path(),
+                fs::read(entry.path()).expect("drift state should read"),
+            );
+        }
+    }
+    files
+}
+
+#[test]
 fn unconfigured_drift_does_not_create_a_worktree_identity() {
     let repository = scratch_repository();
     let worktree_id_path = repository.path().join(WORKTREE_ID_PATH);
@@ -1865,6 +1931,123 @@ fn merged_trunk_commits_do_not_raise_an_incursion() {
             .any(|event| { event["op"] == "incursion" && event["reservation_id"] == subject_id }),
         "receiving the holder's trunk commit must not create an incident for {holder_id}"
     );
+}
+
+#[test]
+fn an_integrated_fast_forward_is_not_a_post_write() {
+    let (repo, lane, _) = integrated_merge_fixture();
+    let claims_before = repo
+        .journal()
+        .iter()
+        .filter(|event| event["op"] == "claim")
+        .count();
+    repo.git_without_hooks(&lane, &["merge", "--ff-only", "integration"]);
+    let observed = post_commit_drift(&lane, &[]);
+    assert_success(&observed);
+    assert_eq!(json(&observed)["status"], "clear", "{}", json(&observed));
+    assert_eq!(
+        repo.journal()
+            .iter()
+            .filter(|event| event["op"] == "claim")
+            .count(),
+        claims_before
+    );
+    assert!(
+        !repo
+            .journal()
+            .iter()
+            .any(|event| { event["op"] == "widen" || event["op"] == "incursion" })
+    );
+}
+
+#[test]
+fn an_integrated_merge_fast_forward_without_a_reservation_is_not_a_write() {
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let lane = repo.lane("unreserved-receiver", "integration");
+    assert_success(&repo.run(&lane, &["board", "--json"]));
+    let contributor = repo.lane("integrated-contributor", "integration");
+    commit_entering_path(&contributor, "integration.txt", "contributor change\n");
+    commit_entering_path(&contributor, "added.txt", "contributor addition\n");
+    commit_entering_path(&repo.integration, "target.txt", "target change\n");
+    repo.git_without_hooks(
+        &repo.integration,
+        &["merge", "--no-ff", "--no-commit", "integrated-contributor"],
+    );
+    fs::write(repo.integration.join("integration.txt"), "merged content\n")
+        .expect("merge resolution should write");
+    repo.git_without_hooks(&repo.integration, &["add", "integration.txt"]);
+    repo.git_without_hooks(
+        &repo.integration,
+        &["commit", "--quiet", "-m", "integration merge"],
+    );
+    assert!(!repo.journal().iter().any(|event| event["op"] == "claim"));
+    repo.git_without_hooks(&lane, &["merge", "--ff-only", "integration"]);
+    assert_eq!(git_stdout(&lane, &["status", "--porcelain"]), "");
+
+    let observed = post_commit_drift(&lane, &[]);
+    assert_success(&observed);
+    assert_eq!(json(&observed)["status"], "clear", "{}", json(&observed));
+    assert!(!repo.journal().iter().any(|event| event["op"] == "claim"));
+}
+
+#[test]
+fn a_merge_keeps_the_units_own_committed_paths() {
+    let (repo, lane, _) = integrated_merge_fixture();
+    assert_success(&repo.claim(&repo.integration, "file:unit.txt", FIRST_RUN, None));
+    fs::write(repo.integration.join("unit.txt"), "holder work\n").expect("holder edit");
+    let own_commit = commit_entering_path(&lane, "unit.txt", "unit work\n");
+    repo.git_without_hooks(&lane, &["merge", "--no-ff", "--no-edit", "integration"]);
+    let observed = post_commit_drift(&lane, &[]);
+    let response = json(&observed);
+    assert_eq!(response["status"], "incursion", "{response}");
+    let effects = incursion_effects(&response);
+    let own_entry = incursion_for(&effects, "unit.txt");
+    assert_eq!(own_entry["commits"][0]["commit"], own_commit, "{response}");
+    assert_eq!(own_entry["paths"], serde_json::json!(["unit.txt"]));
+    assert_eq!(effects.len(), 1, "{response}");
+    assert!(!repo.journal().iter().any(|event| event["op"] == "widen"));
+}
+
+#[test]
+fn a_working_tree_edit_after_an_integrated_fast_forward_still_counts() {
+    let (repo, lane, _) = integrated_merge_fixture();
+    repo.git_without_hooks(&lane, &["merge", "--ff-only", "integration"]);
+    fs::write(lane.join("held.txt"), "unit entered the held path\n").expect("edit");
+    let observed = post_commit_drift(&lane, &[]);
+    assert_eq!(
+        json(&observed)["status"],
+        "incursion",
+        "{}",
+        json(&observed)
+    );
+    assert_ne!(
+        incursion_effects(&json(&observed)),
+        [] as [serde_json::Value; 0]
+    );
+}
+
+fn integrated_merge_fixture() -> (IntegrationRepository, PathBuf, String) {
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let lane = repo.main_lane("receiving-unit");
+    // A recorded child target identifies integration as a trunk even for a lane
+    // whose own target remains main.
+    let child = repo.lane("child-unit", "integration");
+    assert_success(&repo.claim(&child, "file:child.txt", THIRD_RUN, None));
+    let claim = repo.claim(&lane, "file:own.txt", SECOND_RUN, None);
+    assert_success(&claim);
+    let id = json(&claim)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    assert_success(&repo.claim(&repo.integration, "file:held.txt", FIRST_RUN, None));
+    commit_entering_path(&repo.integration, "held.txt", "integrated held content\n");
+    commit_entering_path(
+        &repo.integration,
+        "received.txt",
+        "integrated free content\n",
+    );
+    fs::write(repo.integration.join("held.txt"), "holder still working\n").expect("holder edit");
+    (repo, lane, id)
 }
 
 #[test]
@@ -4732,8 +4915,8 @@ fn assert_batched_full_attribution_commands(commands: &[String]) {
             .iter()
             .filter(|command| command.as_str() == "rev-list")
             .count(),
-        1,
-        "full observation spends one batched phase-range ancestry walk",
+        0,
+        "ordinary phase-range ancestry is read in process",
     );
     assert!(!commands.iter().any(|command| command == "metadata"));
 }

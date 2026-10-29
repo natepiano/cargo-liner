@@ -20,41 +20,76 @@ use super::BuildOutputMode;
 use crate::compiler::constants::METADATA_FILE_EXTENSION;
 use crate::compiler::persistence;
 
-/// The one cargo message `collect_report_paths` acts on; every other `reason`
+/// The one cargo message `collect_units` acts on; every other `reason`
 /// deserializes to `CargoMessage::Other`.
 #[derive(Deserialize)]
 #[serde(tag = "reason")]
 enum CargoMessage {
     #[serde(rename = "compiler-artifact")]
-    CompilerArtifact { filenames: Vec<PathBuf> },
+    CompilerArtifact {
+        package_id: String,
+        target:     CargoTarget,
+        filenames:  Vec<PathBuf>,
+    },
     #[serde(other)]
     Other,
 }
 
-/// Reads cargo's stdout to its end and returns the `StoredReport` path of every
-/// unit whose `compiler-artifact` message lists a `.rmeta` file.
+#[derive(Deserialize)]
+struct CargoTarget {
+    kind:     Vec<String>,
+    src_path: PathBuf,
+}
+
+/// One Cargo unit whose metadata has a corresponding mend report.
+#[derive(Debug)]
+pub(super) struct AnalysisUnit {
+    pub package_id:    String,
+    pub metadata_path: PathBuf,
+    pub crate_root:    PathBuf,
+}
+
+impl AnalysisUnit {
+    pub(super) fn report_path(&self) -> PathBuf {
+        persistence::report_path_for_metadata(&self.metadata_path)
+    }
+}
+
+/// Reads cargo's stdout and keeps the owning package and metadata of each unit,
+/// including fresh units. Build scripts are outside mend's source analysis.
 ///
 /// A line that does not parse as a `CargoMessage` was written to cargo's stdout
 /// by another process, such as a user's `RUSTC_WRAPPER`; it is forwarded in
 /// `BuildOutputMode::Full`, the one mode that inherited cargo's stdout before
 /// this reader existed.
-pub(super) fn collect_report_paths(
+pub(super) fn collect_units(
     stdout: ChildStdout,
     output_mode: BuildOutputMode,
-) -> io::Result<Vec<PathBuf>> {
-    let mut report_paths = Vec::new();
+) -> io::Result<Vec<AnalysisUnit>> {
+    let mut units = Vec::new();
     for line in BufReader::new(stdout).lines() {
         let line = line?;
         match from_str::<CargoMessage>(&line) {
-            Ok(CargoMessage::CompilerArtifact { filenames }) => {
-                report_paths.extend(
+            Ok(CargoMessage::CompilerArtifact {
+                package_id,
+                target,
+                filenames,
+            }) => {
+                if target.kind.iter().any(|kind| kind == "custom-build") {
+                    continue;
+                }
+                units.extend(
                     filenames
                         .iter()
                         .filter(|filename| {
                             filename.extension().and_then(OsStr::to_str)
                                 == Some(METADATA_FILE_EXTENSION)
                         })
-                        .map(|metadata_path| persistence::report_path_for_metadata(metadata_path)),
+                        .map(|metadata_path| AnalysisUnit {
+                            package_id:    package_id.clone(),
+                            metadata_path: metadata_path.clone(),
+                            crate_root:    target.src_path.clone(),
+                        }),
                 );
             },
             Ok(CargoMessage::Other) => {},
@@ -62,9 +97,9 @@ pub(super) fn collect_report_paths(
                 BuildOutputMode::Full => println!("{line}"),
                 BuildOutputMode::Json
                 | BuildOutputMode::SuppressUnusedImportWarnings
-                | BuildOutputMode::Quiet => {},
+                | BuildOutputMode::Validation => {},
             },
         }
     }
-    Ok(report_paths)
+    Ok(units)
 }

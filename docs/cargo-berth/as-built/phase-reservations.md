@@ -24,7 +24,7 @@ The director skills (`/unit:direct`, `/unit:checkpoint`) carry this pattern; the
 `CheckArguments::into_check_request` (`src/cli.rs`) maps a bare `check` to `CheckReservationSelection::SessionMappingOrNew` and `check --reservation <id>` to `Explicit(id)`. The pre-tool-use edit hook builds its own `CheckRequest` with `SessionMappingOrSingleActive`.
 
 ```rust
-// src/verb/claim/mod.rs
+// src/verb/claim/acquisition.rs
 pub(crate) enum CheckReservationSelection {
     SessionMappingOrSingleActive, // edit hook
     SessionMappingOrNew,          // bare check
@@ -87,9 +87,9 @@ pub(crate) enum ClaimReservationSelection {
 }
 ```
 
-`claim::acquire` sends `Existing` to `src/verb/claim/named.rs`:
+`claim::acquire` sends `Existing` to `acquire_named` in `src/verb/claim/acquisition.rs`:
 
-- `validate` selects with the same `from_explicit_selection` rule as `check --reservation`. An unknown, inactive, foreign-run or foreign-worktree id is `ClaimRejection::IneligibleExplicitReservation` (`invalid_input`, exit 5) and changes neither the journal nor the mapping.
+- `validate_named` selects with the same `from_explicit_selection` rule as `check --reservation`. An unknown, inactive, foreign-run or foreign-worktree id is `ClaimRejection::IneligibleExplicitReservation` (`invalid_input`, exit 5) and changes neither the journal nor the mapping.
 - Conflicts come from `conflicts_for_claim`. `authorization` binds the answer through `bind_claim_authorization` with an `OrderingContext` whose `reservation_selection` is `Existing(id)`, so `replaced_orderings` (`--replace`) considers only edges incident on the selected reservation. `--defer`, and a conflict answered by the repository's `default_answer`, bind through `bind_answer_authorizations`.
 - `coverage` adds only paths neither the selected reservation nor an active sibling holds, and reports sibling coverage in `already_held`.
 - `mutation` chooses the journal record:
@@ -121,7 +121,7 @@ Without `--reservation`, a permissive claim opens a new reservation and an ordin
 
 ### Incomplete overlap answer
 
-`bind_claim_authorization` (permissive answers) and `bind_answer_authorizations` (`--defer` and the default answer) in `src/verb/claim/mod.rs` compare the holders an answer names with the conflicts recomputed under the ledger lock. When the sets differ and some holder still overlaps, the claim is refused as `ClaimRejection::IncompleteAnswer`, carrying an `IncompleteClaimAnswerRejection` (`src/verb/claim/incomplete_answer.rs`). This holds for a plain claim and for `claim --reservation`. An answer whose holders no longer overlap at all stays `invalid_input`.
+`bind_claim_authorization` (permissive answers) and `bind_answer_authorizations` (`--defer` and the default answer) in `src/verb/claim/authorization.rs` compare the holders an answer names with the conflicts recomputed under the ledger lock. When the sets differ and some holder still overlaps, the claim is refused as `ClaimRejection::IncompleteAnswer`, carrying an `IncompleteClaimAnswerRejection` (`src/verb/claim/incomplete_answer.rs`). This holds for a plain claim and for `claim --reservation`. An answer whose holders no longer overlap at all stays `invalid_input`.
 
 `OutputEnvelope::blocked_claim_with_answer_recovery` (`src/output.rs`) keeps the `blocked_claim` contract: status `blocked_by_overlap`, exit 1, `blocked_by` and the `ClaimPayload::Blocked` payload. Its `message` is the repair text alone; the presentation detail is that text, then `claim_holder_facts`, then `overlap_answer_chooser`, so the configured chooser guidance follows the holder facts. The repair text, ids comma-joined in wire order:
 
@@ -142,7 +142,7 @@ cargo-berth claim <paths> <selectors> <named flags> <unnamed flags> --overlap-wh
 
 ### Ambiguous edit
 
-With several active reservations and no selecting mapping, `from_unmapped_active_run_reservations` (`src/verb/claim/mod.rs`) calls `session::phase_reservation_sessions` under the selection's ledger lock. It reads the session store and groups the acting run's mappings by reservation. Each candidate becomes a `PhaseReservationCandidate` (`src/verb/claim/phase_candidate.rs`), rendered as:
+With several active reservations and no selecting mapping, `from_unmapped_active_run_reservations` (`src/verb/claim/acquisition.rs`) calls `session::phase_reservation_sessions` under the selection's ledger lock. It reads the session store and groups the acting run's mappings by reservation. Each candidate becomes a `PhaseReservationCandidate` (`src/verb/claim/phase_candidate.rs`), rendered as:
 
 - `` `<id>` (session <sid>) ``
 - `` `<id>` (sessions <sid>, <sid>, …) ``, sorted and deduplicated
@@ -160,8 +160,9 @@ With several active reservations and no selecting mapping, `from_unmapped_active
 | File | Role |
 | --- | --- |
 | `src/cli.rs` | bare `check` selection; `--reservation` on `claim`; `ClaimArguments::answer_recovery` |
-| `src/verb/claim/mod.rs` | `CheckReservationSelection`, `ClaimReservationSelection`, `ReservationAcquisition`, `SiblingHeldScopes`, `append_unheld_first_touch_scopes`, `partition_first_touch_protected_scopes`, `AlreadyHeldSessionMapping` |
-| `src/verb/claim/named.rs` | named claim: validate, coverage, mutation, consume |
+| `src/verb/claim/request.rs` | `ClaimReservationSelection` |
+| `src/verb/claim/acquisition.rs` | `CheckReservationSelection`, `ReservationAcquisition`, `SiblingHeldScopes`, `append_unheld_first_touch_scopes`, `partition_first_touch_protected_scopes`, `AlreadyHeldSessionMapping` |
+| `src/verb/claim/acquisition.rs` | named claim: `acquire_named`, `validate_named`, coverage, mutation, `consume_named` |
 | `src/verb/claim/phase_candidate.rs` | `PhaseReservationCandidate`: ambiguity candidates and their session labels |
 | `src/verb/claim/incomplete_answer.rs` | `IncompleteClaimAnswerRejection`: the incomplete-answer refusal |
 | `src/verb/claim/recovery_command.rs` | `ClaimRecoveryCommand`: renders the claim to copy |

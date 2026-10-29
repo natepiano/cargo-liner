@@ -16,11 +16,13 @@ use super::git_output::IncursionAttributionAnchorState;
 use super::git_output::WorkingTreeChangePartition;
 use super::ordering;
 use super::report::DriftComparisonMode;
+use super::selection::CommittedWriteSelection;
 use super::selection::DriftComparisonChoice;
 use crate::config::BerthConfig;
 use crate::git;
 use crate::git::CommitCandidateReachability;
 use crate::git::CommitTargetReachability;
+use crate::git::PhaseStartTargetFirstParentHistories;
 use crate::git::Reachability;
 use crate::git::RepositorySnapshot;
 use crate::ids::GitObjectId;
@@ -130,6 +132,7 @@ pub(super) enum FullPhaseHistoryObservation {
     Anchored {
         target:        GitObjectId,
         anchor_states: HashMap<GitObjectId, IncursionAttributionAnchorState>,
+        ancestry:      Box<PhaseStartTargetFirstParentHistories>,
     },
 }
 
@@ -143,6 +146,52 @@ pub(super) enum ObservedDriftChanges {
 }
 
 impl ObservedDriftChanges {
+    /// Remove received commits before classification; dirty paths remain independent writes.
+    pub(super) fn select_unit_writes(
+        &mut self,
+        repository: &RepositorySnapshot,
+        snapshot: &crate::edge::RepositorySnapshot,
+        reservations: &RetainedReservationSet,
+    ) -> Result<(), DriftFingerprintError> {
+        let Self::Full(changes) = self else {
+            return Ok(());
+        };
+        let mut paths = changes.head_commit.as_slice().to_vec();
+        for history in changes.committed.values() {
+            if let FullReservationPhaseHistory::Compared(committed) = history {
+                paths.extend(committed.as_slice().iter().cloned());
+            }
+        }
+        ordering::normalize_paths(&mut paths);
+        let CommittedWriteSelection::UnitWrites {
+            by_phase_start,
+            head_paths,
+        } = super::selection::CommittedWriteSelection::observe(
+            repository,
+            snapshot,
+            &changes.history,
+            &paths,
+        )?
+        else {
+            return Ok(());
+        };
+        for (id, history) in &mut changes.committed {
+            if let FullReservationPhaseHistory::Compared(committed) = history {
+                let reservation = reservations
+                    .reservation(*id)
+                    .map_err(|error| DriftFingerprintError::Reservation(error.to_string()))?;
+                if let Some(selected) = by_phase_start.get(reservation.phase_start_head().as_ref())
+                {
+                    committed.0.retain(|path| selected.contains(path));
+                }
+            }
+        }
+        if let HeadCommitOwnAttribution::Read(head) = &mut changes.head_commit {
+            head.0.retain(|path| head_paths.contains(path));
+        }
+        Ok(())
+    }
+
     pub(super) fn has_changes_for(&self, reservation_ids: &[ReservationId]) -> bool {
         match self {
             Self::Cheap(changes) => {
@@ -609,9 +658,8 @@ fn observe_phase_history(
             head_commit:         HeadCommitOwnAttribution::CommittedHistoryNotRead,
         });
     }
-    let (target, reachability) = match git::head_commit_reachability(repository, anchors)
-        .map_err(DriftFingerprintError::from)?
-    {
+    let observation = git::head_commit_reachability(repository, anchors)?;
+    let (target, reachability) = match observation.reachability {
         CommitTargetReachability::Resolved { target, candidates } => (target, candidates),
         CommitTargetReachability::Missing => {
             return Err(DriftFingerprintError::MalformedGitOutput(
@@ -673,6 +721,7 @@ fn observe_phase_history(
         history: FullPhaseHistoryObservation::Anchored {
             target,
             anchor_states,
+            ancestry: Box::new(observation.target_histories),
         },
         committed_by_anchor,
         head_commit,

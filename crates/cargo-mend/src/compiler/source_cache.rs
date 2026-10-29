@@ -15,7 +15,7 @@ use proc_macro2::Delimiter;
 use proc_macro2::Group;
 use proc_macro2::TokenStream;
 use proc_macro2::TokenTree;
-use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
@@ -153,12 +153,12 @@ pub(super) enum NameMention {
 }
 
 pub(super) struct SourceCache {
-    contents:                       FxHashMap<PathBuf, String>,
+    /// Each immutable source owns its sole lexical index; text and spans cannot diverge.
+    contents:                       FxHashMap<PathBuf, LexicalRegions>,
     files_by_dir:                   FxHashMap<PathBuf, Vec<PathBuf>>,
     parsed:                         FxHashMap<PathBuf, File>,
     extracted_paths:                FxHashMap<PathBuf, ExtractedPaths>,
     mentionable_names:              FxHashMap<PathBuf, FxHashSet<u64>>,
-    lexical_regions:                FxHashMap<PathBuf, LexicalRegions>,
     structural_parent_module_paths: FxHashMap<PathBuf, Vec<Vec<String>>>,
     all_features_coverage:          AllFeaturesCoverage,
     /// Memo for [`SourceCache::source_files_under`]; see that method for why the
@@ -204,29 +204,24 @@ impl SourceCache {
         for (path, ast) in &parsed {
             extracted_paths.insert(path.clone(), extract_paths(ast));
         }
-        // Only `mentionable_names_in` and `LexicalRegions::from` cross threads:
-        // both read `&str` and return owned data. `syn::File` is not `Send` —
-        // `proc_macro2` embeds a `PhantomData<Rc<()>>` marker in its spans and
-        // builds token streams on `Rc<Vec<TokenTree>>`, both unconditional — so
-        // parsing and `extract_paths` stay sequential. Walking the `content_entries`
-        // `Vec` snapshot and zipping the results back keeps insertion order identical
-        // to the sequential build, because Rayon's indexed `collect()` into `scans`
-        // preserves order.
-        let content_entries: Vec<(&PathBuf, &String)> = contents.iter().collect();
-        let scans: Vec<(FxHashSet<u64>, LexicalRegions)> = content_entries
-            .par_iter()
-            .map(|(_, source)| {
-                (
-                    mentionable_names_in(source),
-                    LexicalRegions::from(source.as_str()),
-                )
+        // Only name collection and lexical indexing cross threads. Parsing and
+        // path extraction stay sequential because syn spans are not Send.
+        // Move each String into its index without copying text or scanning twice.
+        // The Vec snapshot preserves the original hash iteration order, and Rayon's
+        // indexed collection keeps it when the results are inserted below.
+        let content_entries: Vec<(PathBuf, String)> = contents.into_iter().collect();
+        let scans: Vec<(PathBuf, FxHashSet<u64>, LexicalRegions)> = content_entries
+            .into_par_iter()
+            .map(|(path, source)| {
+                let names = mentionable_names_in(&source);
+                (path, names, LexicalRegions::from(source))
             })
             .collect();
+        let mut contents = FxHashMap::default();
         let mut mentionable_names = FxHashMap::default();
-        let mut lexical_regions = FxHashMap::default();
-        for ((path, _), (names, regions)) in content_entries.iter().zip(scans) {
-            mentionable_names.insert((*path).clone(), names);
-            lexical_regions.insert((*path).clone(), regions);
+        for (path, names, regions) in scans {
+            mentionable_names.insert(path.clone(), names);
+            contents.insert(path, regions);
         }
         let all_features_coverage = source_all_features_coverage(&contents, &parsed);
         Ok(Self {
@@ -235,7 +230,6 @@ impl SourceCache {
             parsed,
             extracted_paths,
             mentionable_names,
-            lexical_regions,
             structural_parent_module_paths: FxHashMap::default(),
             all_features_coverage,
             files_under: RefCell::new(FxHashMap::default()),
@@ -300,7 +294,7 @@ impl SourceCache {
     pub fn read_source(&self, path: &Path) -> Result<&str> {
         self.contents
             .get(path)
-            .map(String::as_str)
+            .map(LexicalRegions::source)
             .with_context(|| format!("source file not in cache: {}", path.display()))
     }
 
@@ -315,7 +309,7 @@ impl SourceCache {
     /// Sharing one scan keeps the whole-crate sweep from re-lexing a file per
     /// question asked of it.
     pub fn lexical_regions(&self, path: &Path) -> Result<&LexicalRegions> {
-        self.lexical_regions
+        self.contents
             .get(path)
             .with_context(|| format!("source file not in cache: {}", path.display()))
     }
@@ -451,7 +445,7 @@ fn collect_module_items(
 }
 
 fn source_all_features_coverage(
-    contents: &FxHashMap<PathBuf, String>,
+    contents: &FxHashMap<PathBuf, LexicalRegions>,
     parsed: &FxHashMap<PathBuf, File>,
 ) -> AllFeaturesCoverage {
     if contents.len() != parsed.len() {
@@ -899,6 +893,34 @@ mod tests {
     use crate::compiler::constants::SOURCE_DIR_EXAMPLES;
     use crate::compiler::constants::SOURCE_DIR_SRC;
     use crate::reporting::AllFeaturesCoverage;
+
+    #[test]
+    fn cached_text_and_lexical_endpoints_share_one_immutable_owner() -> Result<()> {
+        let temp = tempdir()?;
+        let file = temp.path().join("lib.rs");
+        let original = "pub fn café() {} /* tail */  ";
+        fs::write(&file, original)?;
+        let cache = SourceCache::build_files(std::slice::from_ref(&file))?;
+        fs::write(&file, "replacement")?;
+        let source = cache.read_source(&file)?;
+        let regions = cache.lexical_regions(&file)?;
+        assert_eq!(source, original);
+        assert!(std::ptr::eq(source, regions.source()));
+        assert!(std::ptr::eq(regions, cache.lexical_regions(&file)?));
+        assert_eq!(
+            regions
+                .endpoint(source.len())
+                .map(|end| end.trivia_start_before().prefix()),
+            Some("pub fn café() {}"),
+        );
+        assert!(
+            source
+                .find('é')
+                .is_some_and(|start| regions.endpoint(start + 1).is_none())
+        );
+        assert!(regions.endpoint(source.len() + 1).is_none());
+        Ok(())
+    }
 
     #[test]
     fn source_cache_excludes_cargo_target_directory() -> Result<()> {

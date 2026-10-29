@@ -1,4 +1,5 @@
-//! Regressions at conversation and detached-run boundaries.
+//! Regression fixtures for `ActivityRead` and `TranscriptRead` conversation event
+//! boundaries and for detached-run selection by `run_activity` and `verify_activity`.
 
 use std::error::Error;
 use std::io::Write;

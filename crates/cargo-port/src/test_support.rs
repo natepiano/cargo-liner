@@ -36,9 +36,9 @@ pub(crate) fn test_runtime() -> &'static Runtime {
 pub(crate) fn header_map(entries: &[(&str, &str)]) -> HeaderMap {
     let mut headers = HeaderMap::new();
     for (name, value) in entries {
-        let name: HeaderName = (*name).parse().expect("test header name is valid");
+        let header_name: HeaderName = (*name).parse().expect("test header name is valid");
         let value = HeaderValue::from_str(value).expect("test header value is valid");
-        headers.insert(name, value);
+        headers.insert(header_name, value);
     }
     headers
 }
@@ -160,9 +160,14 @@ thread_local! {
 
 fn record_allocation() {
     // `ALLOCATION_COUNTER.try_with` tolerates thread teardown so allocations still reach `System`.
-    let _ = ALLOCATION_COUNTER.try_with(|counter| {
-        if matches!(counter.scope.get(), AllocationCounting::Measuring) {
-            counter.calls.set(counter.calls.get().saturating_add(1));
+    let _ = ALLOCATION_COUNTER.try_with(|allocation_counter| {
+        if matches!(
+            allocation_counter.scope.get(),
+            AllocationCounting::Measuring
+        ) {
+            allocation_counter
+                .calls
+                .set(allocation_counter.calls.get().saturating_add(1));
         }
     });
 }
@@ -204,14 +209,16 @@ struct AllocationMeasurement<'a> {
 }
 
 impl<'a> AllocationMeasurement<'a> {
-    fn start(counter: &'a AllocationCounter) -> Self {
+    fn start(allocation_counter: &'a AllocationCounter) -> Self {
         assert!(
-            matches!(counter.scope.get(), AllocationCounting::Disabled),
+            matches!(allocation_counter.scope.get(), AllocationCounting::Disabled),
             "nested allocation measurement"
         );
-        counter.calls.set(0);
-        counter.scope.set(AllocationCounting::Measuring);
-        Self { counter }
+        allocation_counter.calls.set(0);
+        allocation_counter.scope.set(AllocationCounting::Measuring);
+        Self {
+            counter: allocation_counter,
+        }
     }
 
     fn finish(self) -> usize { self.counter.calls.get() }
@@ -224,8 +231,8 @@ impl Drop for AllocationMeasurement<'_> {
 /// Count allocation and reallocation calls in one synchronous operation.
 /// Fixture setup and other threads are excluded. Nested measurements are rejected.
 pub(crate) fn count_allocations<R>(operation: impl FnOnce() -> R) -> (R, usize) {
-    ALLOCATION_COUNTER.with(|counter| {
-        let measurement = AllocationMeasurement::start(counter);
+    ALLOCATION_COUNTER.with(|allocation_counter| {
+        let measurement = AllocationMeasurement::start(allocation_counter);
         let result = operation();
         (result, measurement.finish())
     })

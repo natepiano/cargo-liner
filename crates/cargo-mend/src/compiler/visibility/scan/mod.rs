@@ -23,10 +23,21 @@ pub(super) use finding_params::AllowanceReason;
 pub(super) use finding_params::FindingParams;
 pub(super) use finding_params::SuspiciousPubAssessment;
 pub(super) use finding_params::SuspiciousPubInput;
+pub(in crate::compiler) use visibility_context::FindingsPersistence;
 pub(super) use visibility_context::ItemCategory;
 pub(super) use visibility_context::ItemInfo;
 pub(super) use visibility_context::VisibilityContext;
 pub(super) use visibility_context::collect_and_store_findings;
+
+/// A handled annotation stops later diagnostics even when its finding was suppressed.
+/// Otherwise `record_review_pub_mod` could replace a suppressed diagnostic on the same line.
+/// Both narrowing diagnostics must respect callers in excluded configurations: narrowing or
+/// removing their annotation would prevent those configurations from compiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AnnotationHandling {
+    Handled,
+    Continue,
+}
 
 #[derive(Clone, Copy)]
 pub(super) enum ExposureConsumers {
@@ -40,32 +51,40 @@ pub(super) fn signature_exposure_for_annotation(
     annotation: &VisibilityAnnotation<'_>,
     consumers: ExposureConsumers,
 ) -> Result<SignatureExposure> {
-    if !annotation_consumes_signature_exposure(annotation.syntax(), consumers) {
-        return Ok(SignatureExposure::Contained);
+    match signature_exposure_demand(annotation.syntax(), consumers) {
+        SignatureExposureDemand::NotRequired => Ok(SignatureExposure::Contained),
+        SignatureExposureDemand::Required => {
+            policy::signature_exposure_reach(ctx, item.def_id, item.file_path, item.name)
+        },
     }
-    policy::signature_exposure_reach(ctx, item.def_id, item.file_path, item.name)
 }
 
-const fn annotation_consumes_signature_exposure(
+/// Signature exposure is only computed for annotations the selected consumer analyzes.
+/// Forbidden annotations always need it; a plain `pub` only needs it for the full scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignatureExposureDemand {
+    Required,
+    NotRequired,
+}
+
+const fn signature_exposure_demand(
     syntax: VisibilitySyntax,
     consumers: ExposureConsumers,
-) -> bool {
-    let forbidden_annotation = matches!(
-        syntax,
+) -> SignatureExposureDemand {
+    match syntax {
         VisibilitySyntax::Crate
-            | VisibilitySyntax::InCrate
-            | VisibilitySyntax::InParent
-            | VisibilitySyntax::InCurrent
-            | VisibilitySyntax::InPath(_)
-    );
-    forbidden_annotation
-        || matches!(
-            (syntax, consumers),
-            (
-                VisibilitySyntax::Public,
-                ExposureConsumers::AllVisibilityFindings
-            )
-        )
+        | VisibilitySyntax::InCrate
+        | VisibilitySyntax::InParent
+        | VisibilitySyntax::InCurrent
+        | VisibilitySyntax::InPath(_) => SignatureExposureDemand::Required,
+        VisibilitySyntax::Public => match consumers {
+            ExposureConsumers::AllVisibilityFindings => SignatureExposureDemand::Required,
+            ExposureConsumers::ForbiddenAnnotation => SignatureExposureDemand::NotRequired,
+        },
+        VisibilitySyntax::Private | VisibilitySyntax::Parent | VisibilitySyntax::Current => {
+            SignatureExposureDemand::NotRequired
+        },
+    }
 }
 
 pub(super) fn record_forbidden_visibility_annotation(
@@ -74,7 +93,7 @@ pub(super) fn record_forbidden_visibility_annotation(
     annotation: &VisibilityAnnotation<'_>,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     sink: &mut FindingsSink,
-) -> Result<bool> {
+) -> Result<AnnotationHandling> {
     let finding_context = classify::visibility_finding_context(ctx, item);
     let signature_exposure = signature_exposure_for_annotation(
         ctx,
@@ -96,8 +115,9 @@ pub(super) fn record_forbidden_visibility_annotation(
 #[cfg(test)]
 mod tests {
     use super::ExposureConsumers;
+    use super::SignatureExposureDemand;
     use super::VisibilitySyntax;
-    use super::annotation_consumes_signature_exposure;
+    use super::signature_exposure_demand;
     use crate::compiler::visibility::annotation::PathSpelling;
 
     #[test]
@@ -106,31 +126,43 @@ mod tests {
             ExposureConsumers::AllVisibilityFindings,
             ExposureConsumers::ForbiddenAnnotation,
         ] {
-            assert!(!annotation_consumes_signature_exposure(
+            for syntax in [
                 VisibilitySyntax::Private,
-                consumers,
-            ));
+                VisibilitySyntax::Parent,
+                VisibilitySyntax::Current,
+            ] {
+                assert_eq!(
+                    signature_exposure_demand(syntax, consumers),
+                    SignatureExposureDemand::NotRequired,
+                );
+            }
+            for syntax in [
+                VisibilitySyntax::Crate,
+                VisibilitySyntax::InCrate,
+                VisibilitySyntax::InParent,
+                VisibilitySyntax::InCurrent,
+                VisibilitySyntax::InPath(PathSpelling::CrateRooted),
+                VisibilitySyntax::InPath(PathSpelling::Relative),
+            ] {
+                assert_eq!(
+                    signature_exposure_demand(syntax, consumers),
+                    SignatureExposureDemand::Required,
+                );
+            }
         }
-        assert!(annotation_consumes_signature_exposure(
-            VisibilitySyntax::Public,
-            ExposureConsumers::AllVisibilityFindings,
-        ));
-        assert!(!annotation_consumes_signature_exposure(
-            VisibilitySyntax::Public,
-            ExposureConsumers::ForbiddenAnnotation,
-        ));
-        for syntax in [
-            VisibilitySyntax::Crate,
-            VisibilitySyntax::InCrate,
-            VisibilitySyntax::InParent,
-            VisibilitySyntax::InCurrent,
-            VisibilitySyntax::InPath(PathSpelling::CrateRooted),
-            VisibilitySyntax::InPath(PathSpelling::Relative),
-        ] {
-            assert!(annotation_consumes_signature_exposure(
-                syntax,
+        assert_eq!(
+            signature_exposure_demand(
+                VisibilitySyntax::Public,
+                ExposureConsumers::AllVisibilityFindings,
+            ),
+            SignatureExposureDemand::Required,
+        );
+        assert_eq!(
+            signature_exposure_demand(
+                VisibilitySyntax::Public,
                 ExposureConsumers::ForbiddenAnnotation,
-            ));
-        }
+            ),
+            SignatureExposureDemand::NotRequired,
+        );
     }
 }

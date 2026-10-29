@@ -150,6 +150,9 @@ pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
 pub(crate) const MIN_STATUS_LINE_TEXT_CONTRAST: f64 = 4.5;
 
 // test harness
+/// Reader CPU records; `reader_scenario.py` uses the same file name.
+#[cfg(test)]
+pub(crate) const READER_CPU_OBSERVATION_FILE: &str = "cpu-observation.tsv";
 /// Enables reader-harness timestamp output for a requested timing run.
 #[cfg(test)]
 pub(crate) const READER_TIMESTAMPS_ENV: &str = "CARGO_TILE_READER_TIMESTAMPS";

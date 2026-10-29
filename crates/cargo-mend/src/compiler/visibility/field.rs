@@ -18,9 +18,12 @@ use rustc_middle::middle::privacy::Level;
 use rustc_span::Span;
 use rustc_span::def_id::LocalDefId;
 
+use super::ReachDominance;
+use super::ReachWidening;
 use super::annotation::VisibilityAnnotation;
 use super::annotation::VisibilityReach;
 use super::scan;
+use super::scan::AnnotationHandling;
 use super::scan::FindingParams;
 use super::scan::ItemCategory;
 use super::scan::ItemInfo;
@@ -119,8 +122,9 @@ fn check_field(
         category: ItemCategory::Declaration,
         facade_subject: field_def_id,
     };
-    if scan::record_forbidden_visibility_annotation(ctx, &field_info, &annotation, None, sink)? {
-        return Ok(());
+    match scan::record_forbidden_visibility_annotation(ctx, &field_info, &annotation, None, sink)? {
+        AnnotationHandling::Handled => return Ok(()),
+        AnnotationHandling::Continue => {},
     }
 
     let Some(type_visibility_annotation_text) = type_visibility_text(ctx, type_def_id)? else {
@@ -144,7 +148,7 @@ fn check_field(
     let field_declared: VisibilityReach = ctx.tcx.visibility(field_def_id.to_def_id()).into();
     let type_declared: VisibilityReach = ctx.tcx.visibility(type_def_id.to_def_id()).into();
 
-    if !field_declared.is_strictly_wider(type_declared, ctx.tcx) {
+    if field_declared.widening(type_declared, ctx.tcx) == ReachWidening::NotWider {
         return Ok(());
     }
     // `effective_type_visibility` accounts for `pub use` re-exports: if the type
@@ -152,7 +156,7 @@ fn check_field(
     // visibility and should not
     // be flagged as unused.
     let type_effective = effective_type_visibility(ctx, type_def_id);
-    if type_effective.is_at_least(field_declared, ctx.tcx) {
+    if type_effective.dominance(field_declared, ctx.tcx) == ReachDominance::Dominates {
         return Ok(());
     }
 

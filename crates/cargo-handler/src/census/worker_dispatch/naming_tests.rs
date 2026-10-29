@@ -15,12 +15,11 @@ use super::*;
 const THREAD: &str = "01a142f0-1234-5678-9abc-0123456789ab";
 const TASK: &str = "Repair the portal without losing pending state";
 
-fn session(root: &str) -> TempDir {
-    let base = Path::new("/tmp/claude").join(root);
-    fs::create_dir_all(&base).expect("fixture session root exists");
+fn session(root: &Path) -> TempDir {
+    fs::create_dir_all(root).expect("fixture session root exists");
     tempfile::Builder::new()
         .prefix("handler-names-")
-        .tempdir_in(base)
+        .tempdir_in(root)
         .expect("isolated session")
 }
 
@@ -44,8 +43,10 @@ fn write_roster(directory: &Path, thread: &str, seat: &str, modified: u64) {
 
 #[test]
 fn worker_naming_launcher_gone_still_uses_its_session_roster_and_first_task_line() {
-    for root in ["unit", "delegate"] {
-        let directory = session(root);
+    let root = TempDir::new().expect("isolated session roots");
+    let roots = SessionRoots::new([root.path().join("unit"), root.path().join("delegate")]);
+    for family in ["unit", "delegate"] {
+        let directory = session(&root.path().join(family));
         write_roster(directory.path(), THREAD, "fixture-fix2", 100);
         let prompt = format!(
             "{TASK}\n\nWrite the summary to {}/phases/4/impl_summary_fix.txt\nIgnore this later task line.",
@@ -56,6 +57,7 @@ fn worker_naming_launcher_gone_still_uses_its_session_roster_and_first_task_line
             &prompt,
             &ThreadWorktree::Recorded(PathBuf::from("/work/fixture")),
             WorkerRoleSource::Unroled,
+            &roots,
         );
         assert_eq!(label, format!("fix2 · {TASK}"));
         assert!(!label.contains(THREAD));
@@ -64,6 +66,8 @@ fn worker_naming_launcher_gone_still_uses_its_session_roster_and_first_task_line
 
 #[test]
 fn worker_naming_no_matching_roster_uses_role_and_task_or_role_alone() {
+    let root = TempDir::new().expect("isolated session roots");
+    let roots = SessionRoots::new([root.path().to_path_buf()]);
     let mut names = WorkerNames::default();
     let role = WorkerRoleSource::Hierarchy(HierarchyRole::Test);
     assert_eq!(
@@ -71,7 +75,8 @@ fn worker_naming_no_matching_roster_uses_role_and_task_or_role_alone() {
             THREAD,
             &format!("{TASK}\nsecond task line"),
             &ThreadWorktree::Recorded(PathBuf::from("/work/fixture")),
-            role
+            role,
+            &roots
         ),
         format!("test · {TASK}")
     );
@@ -83,7 +88,8 @@ fn worker_naming_no_matching_roster_uses_role_and_task_or_role_alone() {
             THREAD,
             unreadable.first_prompt.text(),
             &ThreadWorktree::Recorded(PathBuf::from("/work/fixture")),
-            role
+            role,
+            &roots
         ),
         "test"
     );
@@ -92,7 +98,8 @@ fn worker_naming_no_matching_roster_uses_role_and_task_or_role_alone() {
             THREAD,
             "",
             &ThreadWorktree::Recorded(PathBuf::from("/work/fixture")),
-            WorkerRoleSource::Unroled
+            WorkerRoleSource::Unroled,
+            &roots
         ),
         "worker"
     );
@@ -100,8 +107,10 @@ fn worker_naming_no_matching_roster_uses_role_and_task_or_role_alone() {
 
 #[test]
 fn worker_naming_chooses_a_roster_that_lists_the_thread_then_the_newest_match() {
-    let older = session("unit");
-    let newer = session("delegate");
+    let root = TempDir::new().expect("isolated session roots");
+    let roots = SessionRoots::new([root.path().join("unit"), root.path().join("delegate")]);
+    let older = session(&root.path().join("unit"));
+    let newer = session(&root.path().join("delegate"));
     write_roster(older.path(), THREAD, "fixture-fix2", 100);
     write_roster(newer.path(), "other-thread", "fixture-review", 200);
     let prompt = format!(
@@ -115,7 +124,8 @@ fn worker_naming_chooses_a_roster_that_lists_the_thread_then_the_newest_match() 
             THREAD,
             &prompt,
             &ThreadWorktree::Recorded(PathBuf::from("/work/fixture")),
-            WorkerRoleSource::Unroled
+            WorkerRoleSource::Unroled,
+            &roots
         ),
         format!("fix2 · {TASK}")
     );
@@ -125,7 +135,8 @@ fn worker_naming_chooses_a_roster_that_lists_the_thread_then_the_newest_match() 
             THREAD,
             &prompt,
             &ThreadWorktree::Recorded(PathBuf::from("/work/fixture")),
-            WorkerRoleSource::Unroled
+            WorkerRoleSource::Unroled,
+            &roots
         ),
         format!("review · {TASK}"),
         "mtime invalidates the previously nonmatching roster"
@@ -136,7 +147,8 @@ fn worker_naming_chooses_a_roster_that_lists_the_thread_then_the_newest_match() 
             THREAD,
             &prompt,
             &ThreadWorktree::Recorded(PathBuf::from("/work/fixture")),
-            WorkerRoleSource::Unroled
+            WorkerRoleSource::Unroled,
+            &roots
         ),
         format!("impl · {TASK}"),
         "newest matching roster wins regardless of path order"
@@ -145,7 +157,9 @@ fn worker_naming_chooses_a_roster_that_lists_the_thread_then_the_newest_match() 
 
 #[test]
 fn worker_naming_reads_the_first_task_from_rollout_after_injected_context() {
-    let directory = session("unit");
+    let root = TempDir::new().expect("isolated session root");
+    let roots = SessionRoots::new([root.path().join("unit")]);
+    let directory = session(&root.path().join("unit"));
     write_roster(directory.path(), THREAD, "fixture-impl", 100);
     let rollout = directory.path().join("rollout.jsonl");
     let prompt = format!(
@@ -182,8 +196,31 @@ fn worker_naming_reads_the_first_task_from_rollout_after_injected_context() {
             THREAD,
             read.first_prompt.text(),
             &read.worktree,
-            WorkerRoleSource::Unroled
+            WorkerRoleSource::Unroled,
+            &roots
         ),
         format!("impl · {TASK}")
+    );
+}
+
+#[test]
+fn session_discovery_uses_only_supplied_roots_and_preserves_id_boundaries_and_order() {
+    let directory = TempDir::new().expect("isolated discovery roots");
+    let unit = directory.path().join("unit");
+    let delegate = directory.path().join("delegate");
+    let roots = SessionRoots::new([unit.clone(), delegate.clone()]);
+    let prompt = format!(
+        "{}/z-9/summary {}/a-1_more {}/z-9/board {}/unit-other/ignored {}/unlisted/ignored {}/",
+        unit.display(),
+        delegate.display(),
+        unit.display(),
+        directory.path().display(),
+        directory.path().display(),
+        delegate.display()
+    );
+    assert_eq!(
+        WorkerNames::session_dirs(&prompt, &roots),
+        vec![delegate.join("a-1"), unit.join("z-9")],
+        "discovery sorts and deduplicates, stops IDs before underscores, and ignores other roots"
     );
 }

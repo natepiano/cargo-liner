@@ -129,13 +129,6 @@ const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     build:            build_initialized_repository,
 };
 
-/// An initialized main checkout with committed policy, before integration lanes exist.
-const INTEGRATION_MAIN: RepositoryTemplate = RepositoryTemplate {
-    name: "integration-main",
-    build: |root| IntegrationRepository::build_main_template(root, BERTH_EXECUTABLE),
-    ..INITIALIZED_REPOSITORY
-};
-
 /// The source checkout with berth policy committed before linked lanes branch.
 const CONFIGURED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     name: "configured",
@@ -209,8 +202,8 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 
 #[test]
 fn integration_fixture_copies_keep_checkout_owners_and_ledger_state_private() {
-    let first = IntegrationRepository::from_template(INTEGRATION_MAIN);
-    let second = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let first = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
+    let second = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     for relative in [
         ".git/cargo-berth/repo-instance-id",
         ".git/cargo-berth-worktree-id",
@@ -253,7 +246,7 @@ fn integration_fixture_copies_keep_checkout_owners_and_ledger_state_private() {
 
 #[test]
 fn same_target_edge_waits_for_predecessor_to_reach_integration() {
-    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let predecessor = repo.lane("same-target-a", "integration");
     let successor = repo.lane("same-target-b", "integration");
     write_file(&predecessor, "shared.txt", "A\n");
@@ -345,7 +338,7 @@ fn same_target_edge_waits_for_predecessor_to_reach_integration() {
 
 #[test]
 fn active_cross_target_predecessor_released_during_sequence_has_trunk_evidence() {
-    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let predecessor = repo.lane("active-cross-a", "integration");
     let successor = repo.main_lane("active-cross-x");
     write_file(&predecessor, "shared.txt", "A\n");
@@ -458,7 +451,7 @@ fn cross_target_edge_waits_for_integration_to_land_on_main_then_successor() {
 
 #[test]
 fn cross_target_edge_is_fulfilled_when_successor_merges_outstanding_predecessor() {
-    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let predecessor = repo.lane("early-a", "integration");
     let successor = repo.main_lane("early-x");
     write_file(&predecessor, "shared.txt", "A\n");

@@ -77,6 +77,103 @@ struct RustcCode {
     explanation: Option<String>,
 }
 
+/// Source coordinates remain available even when the file cannot be resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourceCoordinates {
+    line:          usize,
+    column:        usize,
+    highlight_len: usize,
+}
+
+/// Only checked, ordered byte endpoints may describe a resolved span. Missing
+/// source must not masquerade as byte zero. A highlight can span several lines
+/// or count Unicode bytes rather than characters; keep available line endpoints
+/// so Cargo can apply its legacy clipping policy at serialization instead.
+#[derive(Debug, PartialEq, Eq)]
+enum SpanResolution {
+    Resolved(ResolvedSpan),
+    ClippedToLine(ClippedLineSpan),
+    Unavailable(SourceCoordinates),
+}
+
+/// The line is known, but a requested endpoint is past it. Exact byte positions
+/// remain checked; the encoder decides how a past-line endpoint is represented.
+#[derive(Debug, PartialEq, Eq)]
+struct ClippedLineSpan {
+    coordinates: SourceCoordinates,
+    start:       LineEndpoint,
+    end:         LineEndpoint,
+    line_end:    usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LineEndpoint {
+    Exact(usize),
+    PastLineEnd,
+}
+
+impl LineEndpoint {
+    const fn from_offset(offset: Option<usize>, line_start: usize) -> Self {
+        match offset {
+            Some(byte) => Self::Exact(line_start + byte),
+            None => Self::PastLineEnd,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ResolvedSpan {
+    coordinates: SourceCoordinates,
+    byte_start:  usize,
+    byte_end:    usize,
+}
+
+impl SpanResolution {
+    fn for_path(path: &Path, coordinates: SourceCoordinates) -> Self {
+        fs::read_to_string(path).map_or(Self::Unavailable(coordinates), |text| {
+            Self::in_source(&text, coordinates)
+        })
+    }
+
+    fn in_source(text: &str, coordinates: SourceCoordinates) -> Self {
+        let Some(start_column) = coordinates.column.checked_sub(1) else {
+            return Self::Unavailable(coordinates);
+        };
+        let Some(end_column) = start_column.checked_add(coordinates.highlight_len) else {
+            return Self::Unavailable(coordinates);
+        };
+        let mut offset = 0;
+        for (index, source_line) in text.lines().enumerate() {
+            if index + 1 == coordinates.line {
+                let column_offset = |column| {
+                    source_line
+                        .char_indices()
+                        .map(|(byte, _)| byte)
+                        .chain(std::iter::once(source_line.len()))
+                        .nth(column)
+                };
+                return match (column_offset(start_column), column_offset(end_column)) {
+                    (Some(start), Some(end)) => Self::Resolved(ResolvedSpan {
+                        coordinates,
+                        byte_start: offset + start,
+                        byte_end: offset + end,
+                    }),
+                    (start @ None, end @ (Some(_) | None)) | (start @ Some(_), end @ None) => {
+                        Self::ClippedToLine(ClippedLineSpan {
+                            coordinates,
+                            start: LineEndpoint::from_offset(start, offset),
+                            end: LineEndpoint::from_offset(end, offset),
+                            line_end: offset + source_line.len(),
+                        })
+                    },
+                };
+            }
+            offset += source_line.len() + 1;
+        }
+        Self::Unavailable(coordinates)
+    }
+}
+
 #[derive(Serialize, Clone)]
 struct RustcSpan {
     byte_end:                 usize,
@@ -224,7 +321,7 @@ fn rustc_diagnostic(finding: &Finding, span: RustcSpan) -> RustcDiagnostic {
         })
         .collect();
 
-    let level = severity_level(diagnostics::effective_severity(finding));
+    let level = severity_level(finding.severity());
     RustcDiagnostic {
         rendered: render_diagnostic(finding, &span, level, &annotations),
         message_type: CARGO_MESSAGE_TYPE_DIAGNOSTIC,
@@ -306,50 +403,45 @@ fn render_diagnostic(
 }
 
 fn rustc_span(finding: &Finding, display_path: String, absolute_path: &Path) -> RustcSpan {
-    let byte_start =
-        byte_offset_for_position(absolute_path, finding.line, finding.column).unwrap_or_default();
-    let byte_end = byte_offset_for_position(
-        absolute_path,
-        finding.line,
-        finding.column + finding.highlight_len,
-    )
-    .unwrap_or(byte_start + finding.highlight_len);
-    let column_end = finding.column + finding.highlight_len;
+    let coordinates = SourceCoordinates {
+        line:          finding.line,
+        column:        finding.column,
+        highlight_len: finding.highlight_len,
+    };
+    // Cargo requires byte fields even when the source is unavailable. Keep its
+    // legacy fallback here, at the serialized-span boundary, not in resolution.
+    let (coordinates, byte_start, byte_end) =
+        match SpanResolution::for_path(absolute_path, coordinates) {
+            SpanResolution::Resolved(span) => (span.coordinates, span.byte_start, span.byte_end),
+            SpanResolution::ClippedToLine(span) => {
+                let clip = |endpoint| match endpoint {
+                    LineEndpoint::Exact(byte) => byte,
+                    LineEndpoint::PastLineEnd => span.line_end,
+                };
+                (span.coordinates, clip(span.start), clip(span.end))
+            },
+            SpanResolution::Unavailable(coordinates) => (coordinates, 0, coordinates.highlight_len),
+        };
+    let column_end = coordinates.column + coordinates.highlight_len;
     RustcSpan {
         byte_end,
         byte_start,
         column_end,
-        column_start: finding.column,
+        column_start: coordinates.column,
         expansion: None,
         file_name: display_path,
         is_primary: true,
         label: finding.item.clone(),
-        line_end: finding.line,
-        line_start: finding.line,
+        line_end: coordinates.line,
+        line_start: coordinates.line,
         suggested_replacement: None,
         suggestion_applicability: None,
         text: vec![RustcSpanText {
             highlight_end:   column_end,
-            highlight_start: finding.column,
+            highlight_start: coordinates.column,
             text:            finding.source_line.clone(),
         }],
     }
-}
-
-fn byte_offset_for_position(path: &Path, line: usize, column: usize) -> Option<usize> {
-    let text = fs::read_to_string(path).ok()?;
-    let mut offset = 0;
-    for (index, source_line) in text.lines().enumerate() {
-        if index + 1 == line {
-            let column_offset = source_line
-                .char_indices()
-                .nth(column.saturating_sub(1))
-                .map_or(source_line.len(), |(byte, _)| byte);
-            return Some(offset + column_offset);
-        }
-        offset += source_line.len() + 1;
-    }
-    None
 }
 
 fn package_for_path<'a>(selection: &'a Selection, path: &Path) -> Option<&'a PackageMetadata> {
@@ -446,6 +538,113 @@ mod tests {
     use crate::reporting::diagnostics::Severity;
 
     #[test]
+    fn span_resolution_checks_both_endpoints_and_preserves_unicode_offsets() {
+        let text = "first\nαbeta\n";
+        let coordinates = super::SourceCoordinates {
+            line:          2,
+            column:        2,
+            highlight_len: 3,
+        };
+        assert_eq!(
+            super::SpanResolution::in_source(text, coordinates),
+            super::SpanResolution::Resolved(super::ResolvedSpan {
+                coordinates,
+                byte_start: 8,
+                byte_end: 11,
+            })
+        );
+        for (line, column, highlight_len) in [(0, 1, 1), (9, 1, 1), (1, 0, 1)] {
+            let coordinates = super::SourceCoordinates {
+                line,
+                column,
+                highlight_len,
+            };
+            assert_eq!(
+                super::SpanResolution::in_source(text, coordinates),
+                super::SpanResolution::Unavailable(coordinates)
+            );
+        }
+        let coordinates = super::SourceCoordinates {
+            line:          1,
+            column:        1,
+            highlight_len: 4,
+        };
+        assert_eq!(
+            super::SpanResolution::for_path(Path::new(""), coordinates),
+            super::SpanResolution::Unavailable(coordinates)
+        );
+    }
+
+    #[test]
+    fn cargo_spans_clip_available_lines_without_losing_the_real_start() -> anyhow::Result<()> {
+        let cases = [
+            (
+                "fn main() {\n    use std::{\n        fmt,\n    };\n}\n",
+                "    use std::{",
+                5,
+                30,
+                16,
+                26,
+            ),
+            (
+                "fn main() {\n    use crate::αβ;\n}\n",
+                "    use crate::αβ;",
+                9,
+                "crate::αβ".len(),
+                20,
+                32,
+            ),
+        ];
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("lib.rs");
+        for (text, source_line, column, highlight_len, byte_start, byte_end) in cases {
+            std::fs::write(&path, text)?;
+            let finding: Finding = serde_json::from_value(serde_json::json!({
+                "severity": "warning", "diagnostic_code": "imports_at_top",
+                "fixability": "fix_imports_at_top", "path": "lib.rs", "line": 2,
+                "column": column, "highlight_len": highlight_len, "source_line": source_line,
+                "message": "message",
+            }))?;
+            let span = rustc_span(&finding, "lib.rs".to_string(), &path);
+            let column_end = column + highlight_len;
+            assert_eq!(finding.highlight_len, highlight_len);
+            assert_eq!(
+                serde_json::to_string(&span)?,
+                format!(
+                    concat!(
+                        "{{\"byte_end\":{},\"byte_start\":{},\"column_end\":{},",
+                        "\"column_start\":{},\"expansion\":null,\"file_name\":\"lib.rs\",",
+                        "\"is_primary\":true,\"label\":null,\"line_end\":2,\"line_start\":2,",
+                        "\"suggested_replacement\":null,\"suggestion_applicability\":null,",
+                        "\"text\":[{{\"highlight_end\":{},\"highlight_start\":{},",
+                        "\"text\":\"{}\"}}]}}"
+                    ),
+                    byte_end, byte_start, column_end, column, column_end, column, source_line
+                )
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn clipped_coordinates_keep_line_evidence_for_both_endpoints() {
+        let coordinates = super::SourceCoordinates {
+            line:          2,
+            column:        7,
+            highlight_len: 0,
+        };
+        assert_eq!(
+            super::SpanResolution::in_source("first\nαbeta\n", coordinates),
+            super::SpanResolution::ClippedToLine(super::ClippedLineSpan {
+                coordinates,
+                start: super::LineEndpoint::PastLineEnd,
+                end: super::LineEndpoint::PastLineEnd,
+                line_end: 12,
+            })
+        );
+    }
+
+    #[test]
     fn finding_paths_preserve_relative_spelling_and_absolute_root_stripping() {
         let root = Path::new("/repo");
         for (spelling, absolute, display) in [
@@ -466,7 +665,11 @@ mod tests {
     #[test]
     fn shared_annotations_keep_child_order_spans_and_rendered_bytes() {
         let finding = Finding {
-            severity:        Severity::Error,
+            disposition:     Finding::disposition(
+                DiagnosticCode::InlinePathQualifiedType,
+                Severity::Error,
+                FixSupport::InlinePathQualifiedType,
+            ),
             diagnostic_code: DiagnosticCode::InlinePathQualifiedType,
             path:            "src/lib.rs".to_string(),
             line:            1,
@@ -476,11 +679,11 @@ mod tests {
             item:            None,
             message:         "message".to_string(),
             suggestion:      Some("replace".to_string()),
-            fix_support:     FixSupport::InlinePathQualifiedType,
             related:         Some("related".to_string()),
             item_visibility: ItemVisibility::default(),
         };
         let span = rustc_span(&finding, finding.path.clone(), Path::new(""));
+        assert_eq!((span.byte_start, span.byte_end), (0, 4));
         let diagnostic = rustc_diagnostic(&finding, span);
         let children = diagnostic
             .children

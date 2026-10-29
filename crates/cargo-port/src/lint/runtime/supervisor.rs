@@ -2166,13 +2166,14 @@ mod tests {
 
     #[test]
     fn reconcile_workers_stops_stale_threads() {
+        let cache_dir = tempfile::tempdir().expect("cache directory");
         let path = "/tmp/demo".into();
         let mut workers = HashMap::new();
         let (worker, exited) = dummy_worker();
         workers.insert(path, worker);
         let (background_tx, background_rx) = channel::unbounded();
         let config = WorkerConfig {
-            cache_root:       "/tmp/cache".into(),
+            cache_root:       cache_dir.path().into(),
             commands:         Vec::new(),
             cache_size_bytes: None,
             status_cache:     Arc::new(Mutex::new(HashMap::new())),
@@ -2202,6 +2203,7 @@ mod tests {
 
     #[test]
     fn run_now_worker_start_creates_worker() {
+        let cache_dir = tempfile::tempdir().expect("cache directory");
         let project_dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             project_dir.path().join("Cargo.toml"),
@@ -2214,7 +2216,7 @@ mod tests {
         let mut workers = HashMap::new();
         let (background_tx, _) = channel::unbounded();
         let config = WorkerConfig {
-            cache_root:       "/tmp/cache".into(),
+            cache_root:       cache_dir.path().into(),
             commands:         Vec::new(),
             cache_size_bytes: None,
             status_cache:     Arc::new(Mutex::new(HashMap::new())),

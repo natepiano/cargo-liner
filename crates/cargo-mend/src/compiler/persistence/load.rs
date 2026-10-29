@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use serde_json::from_str;
 
+use super::ReportCacheState;
 use super::StoredAncestorReexport;
 use super::StoredFinding;
 use super::StoredPubUseFixFact;
@@ -15,8 +16,6 @@ use super::caller_aware;
 use super::intersection;
 use super::visibility_constraint;
 use super::visibility_priority;
-use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
-use crate::compiler::settings;
 use crate::config::DiagnosticCode;
 use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::AncestorReexport;
@@ -37,11 +36,10 @@ use crate::selection::Selection;
 /// Whether any stored report reached this run.
 ///
 /// An empty `Report::findings` means the code is clean only when at least one
-/// `StoredReport` matched the selection and passed `stored_report_is_compatible`.
-/// With none, the compiler examined no code at all — cargo found nothing to
-/// rebuild, so the driver never ran, and no report beside the units cargo listed
-/// survived the compatibility check — and the empty findings list is
-/// indistinguishable from a clean crate without this.
+/// `StoredReport` matched the selection and had a compatible `ReportCacheState`.
+/// Without this evidence, an empty findings list is indistinguishable from a
+/// clean crate. Cargo may have reused units without compatible reports, or a
+/// different mend build may have produced reports this parent cannot read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::compiler) enum AnalysisEvidence {
     Present,
@@ -166,7 +164,8 @@ pub(in crate::compiler) fn load_report(
         ) {
             continue;
         }
-        if !stored_report_is_compatible(&stored, config_fingerprint) {
+        if ReportCacheState::for_report(&stored, config_fingerprint) != ReportCacheState::Compatible
+        {
             all_features_coverage = AllFeaturesCoverage::NotGuaranteed;
             continue;
         }
@@ -281,7 +280,7 @@ fn discard_fix_facts_for_suppressed_findings(reports: &mut [StoredReport]) {
 fn sort_and_dedup_findings(findings: &mut Vec<Finding>) {
     findings.sort_by(|a, b| {
         (
-            a.severity,
+            a.input_order(),
             &a.path,
             a.line,
             a.column,
@@ -290,7 +289,7 @@ fn sort_and_dedup_findings(findings: &mut Vec<Finding>) {
             &a.message,
         )
             .cmp(&(
-                b.severity,
+                b.input_order(),
                 &b.path,
                 b.line,
                 b.column,
@@ -300,7 +299,7 @@ fn sort_and_dedup_findings(findings: &mut Vec<Finding>) {
             ))
     });
     findings.dedup_by(|a, b| {
-        a.severity == b.severity
+        a.input_order() == b.input_order()
             && a.diagnostic_code == b.diagnostic_code
             && a.path == b.path
             && a.line == b.line
@@ -325,9 +324,9 @@ fn retain_one_restricted_annotation_fix_per_site(findings: &mut [Finding]) {
         findings.chunk_by_mut(|a, b| a.path == b.path && a.line == b.line && a.column == b.column);
     for site in sites {
         site.iter_mut()
-            .filter(|finding| finding.fix_support == FixSupport::RestrictedAnnotation)
+            .filter(|finding| finding.fix_support() == FixSupport::RestrictedAnnotation)
             .skip(1)
-            .for_each(|finding| finding.fix_support = FixSupport::None);
+            .for_each(Finding::withdraw_restricted_annotation_fix);
     }
 }
 
@@ -394,24 +393,6 @@ fn retain_mount_facts_of_fixable_crates(
     module_mount_facts.dedup();
 }
 
-fn stored_report_is_compatible(stored: &StoredReport, config_fingerprint: &str) -> bool {
-    stored.version == FINDINGS_SCHEMA_VERSION
-        && stored.analysis_fingerprint == settings::current_analysis_fingerprint()
-        && stored.config_fingerprint == config_fingerprint
-        && stored_crate_root_exists(stored)
-}
-
-fn stored_crate_root_exists(stored: &StoredReport) -> bool {
-    stored.crate_root_file.is_empty() || {
-        let crate_root = Path::new(&stored.crate_root_file);
-        if crate_root.is_absolute() {
-            crate_root.exists()
-        } else {
-            Path::new(&stored.package_root).join(crate_root).exists()
-        }
-    }
-}
-
 fn stored_matches_selected_root(
     stored: &StoredReport,
     selected_roots: &[PathBuf],
@@ -437,7 +418,11 @@ fn extend_report_from_stored(
 ) {
     for finding in stored.findings {
         findings.push(Finding {
-            severity:        finding.severity,
+            disposition:     Finding::disposition(
+                finding.diagnostic_code,
+                finding.severity,
+                finding.fix_support,
+            ),
             diagnostic_code: finding.diagnostic_code,
             path:            relativize_path(&finding.path, analysis_root),
             line:            finding.line,
@@ -447,7 +432,6 @@ fn extend_report_from_stored(
             item:            finding.item,
             message:         finding.message,
             suggestion:      finding.suggestion,
-            fix_support:     finding.fix_support,
             related:         finding
                 .related
                 .map(|related| relativize_path(&related, analysis_root)),
@@ -534,6 +518,7 @@ fn relativize_path(path: &str, analysis_root: &Path) -> String {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+
     use std::fs;
     use std::path::Path;
     use std::path::PathBuf;
@@ -549,6 +534,7 @@ mod tests {
     use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
     use crate::compiler::constants::REPORT_FILE_EXTENSION;
     use crate::compiler::constants::SOURCE_DIR_SRC;
+    use crate::compiler::persistence::ReportCacheState;
     use crate::compiler::persistence::StoredAncestorReexport;
     use crate::compiler::persistence::StoredFinding;
     use crate::compiler::persistence::StoredModuleMountFact;
@@ -562,6 +548,7 @@ mod tests {
     use crate::reporting::AncestorReexportInsertion;
     use crate::reporting::CompilerWarningFacts;
     use crate::reporting::ExactBoundarySpelling;
+    use crate::reporting::Finding;
     use crate::reporting::FixSupport;
     use crate::reporting::ModuleForm;
     use crate::reporting::ReexportVisibility;
@@ -569,6 +556,72 @@ mod tests {
     use crate::reporting::SubtreeReexportFixFact;
     use crate::selection::Selection;
     use crate::selection::SelectionScope;
+
+    #[test]
+    fn input_order_and_dedup_preserve_origins_and_shared_annotation_sites() -> anyhow::Result<()> {
+        let error = ordering_finding(Severity::Error, FixSupport::PubUse, "origin")?;
+        let warning = ordering_finding(Severity::Warning, FixSupport::PubUse, "origin")?;
+        let manual = ordering_finding(Severity::Error, FixSupport::None, "manual")?;
+        let first = ordering_finding(Severity::Error, FixSupport::RestrictedAnnotation, "site-a")?;
+        let second = ordering_finding(
+            Severity::Warning,
+            FixSupport::RestrictedAnnotation,
+            "site-b",
+        )?;
+        let mut findings = vec![
+            warning.clone(),
+            second,
+            error.clone(),
+            first,
+            manual,
+            error,
+            warning,
+        ];
+        super::sort_and_dedup_findings(&mut findings);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| finding.message.as_str())
+                .collect::<Vec<_>>(),
+            ["manual", "origin", "site-a", "origin", "site-b"]
+        );
+        let wires = findings
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            wires
+                .iter()
+                .map(|wire| wire["severity"].as_str())
+                .collect::<Vec<_>>(),
+            [
+                Some("error"),
+                Some("error"),
+                Some("error"),
+                Some("warning"),
+                Some("warning")
+            ]
+        );
+        assert_eq!(findings[2].fix_support(), FixSupport::RestrictedAnnotation);
+        assert_eq!(findings[4].fix_support(), FixSupport::None);
+        // Persistence alone withdraws the second shared-site fix, preserving its origin.
+        assert_eq!(wires[4]["fixability"], "none");
+        assert_eq!(findings[4].input_order(), findings[3].input_order());
+        Ok(())
+    }
+
+    fn ordering_finding(
+        severity: Severity,
+        support: FixSupport,
+        message: &str,
+    ) -> anyhow::Result<Finding> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "severity": severity, "fixability": support,
+            "diagnostic_code": "suspicious_pub", "path": "src/lib.rs",
+            "line": 1, "column": 1, "highlight_len": 3,
+            "source_line": "pub fn item() {}", "item": "item", "message": message,
+        }))?)
+    }
 
     const CONFIG_FINGERPRINT: &str = "config-fingerprint";
 
@@ -649,6 +702,40 @@ mod tests {
                 use_sites: Vec::new(),
             }
         }
+    }
+
+    #[test]
+    fn report_cache_states_distinguish_missing_build_and_input_changes() {
+        let fixture = PersistenceFixture::new();
+        let mut report = fixture.report_with_findings(Vec::new());
+        let path = fixture.reports_dir.join("cache.mend.json");
+        assert_eq!(
+            ReportCacheState::read(&path, CONFIG_FINGERPRINT),
+            ReportCacheState::Missing
+        );
+        let path = fixture.write_report("cache.mend.json", &report);
+        assert_eq!(
+            ReportCacheState::read(&path, CONFIG_FINGERPRINT),
+            ReportCacheState::Compatible
+        );
+        report.analysis_fingerprint = "previous-build".into();
+        fixture.write_report("cache.mend.json", &report);
+        assert_eq!(
+            ReportCacheState::read(&path, CONFIG_FINGERPRINT),
+            ReportCacheState::AnotherMendBuild
+        );
+        report.analysis_fingerprint = settings::current_analysis_fingerprint();
+        report.config_fingerprint = "previous-config".into();
+        fixture.write_report("cache.mend.json", &report);
+        assert_eq!(
+            ReportCacheState::read(&path, CONFIG_FINGERPRINT),
+            ReportCacheState::InputsChanged
+        );
+        fs::write(&path, b"not a report").expect("write unreadable report");
+        assert_eq!(
+            ReportCacheState::read(&path, CONFIG_FINGERPRINT),
+            ReportCacheState::Unreadable
+        );
     }
 
     #[test]

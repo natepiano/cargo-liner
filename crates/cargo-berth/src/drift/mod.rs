@@ -13,6 +13,7 @@ mod provenance;
 mod report;
 mod selection;
 mod widening;
+mod writes;
 
 pub(crate) use execution::execute;
 pub(crate) use fingerprint::WorkingTreeFingerprint;
@@ -20,6 +21,8 @@ pub(crate) use identity::DriftScopeAcquisition;
 pub(crate) use observation::observe_merge_working_tree;
 pub(crate) use observation::working_tree_changed_paths;
 pub(crate) use report::DriftEffect;
+pub(crate) use report::DriftNotCheckedReason;
+pub(crate) use report::DriftOutcome;
 pub(crate) use report::DriftPathAttributionOutcome;
 pub(crate) use report::DriftReport;
 pub(crate) use report::IncursionCommit;

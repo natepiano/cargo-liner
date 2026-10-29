@@ -54,7 +54,7 @@ pub(crate) fn execute(
 3. Otherwise calls `decide` again.
 4. With no conflicts, or a configured `default_answer`, runs the locked `acquire_first_touch`; otherwise answers `blocked_check`. Reconcile alerts are attached to either answer.
 
-### Fast-path selection (`verb/claim/mod.rs`)
+### Fast-path selection (`verb/claim/acquisition.rs`)
 
 ```rust
 pub(super) fn selected_reservation_check_acquisition(
@@ -133,7 +133,7 @@ The hook's contention presentation leads with "cargo-berth rejected this edit be
 ### Files
 
 - `crates/cargo-berth/src/verb/check.rs`: `execute`, `decide`, `CheckDecision`, `MergeObservationRequirement`, `reconcile_and_retry`, the fast return.
-- `crates/cargo-berth/src/verb/claim/mod.rs`: `CheckReservationSelection`, `CheckAcquisitionDecision`, `selected_reservation_check_acquisition`, and the shared `partition_first_touch_protected_scopes`, `already_held_acquisition` and `first_touch_acquisition`.
+- `crates/cargo-berth/src/verb/claim/acquisition.rs`: `CheckReservationSelection`, `CheckAcquisitionDecision`, `selected_reservation_check_acquisition`, and the shared `partition_first_touch_protected_scopes`, `already_held_acquisition` and `first_touch_acquisition`.
 - `crates/cargo-berth/src/ledger/handle.rs`: `read_for_edit_check`, `EditCheckLedgerSnapshot::into_parts`.
 - `crates/cargo-berth/src/reconcile.rs`: `derive_merge_extents[_with_observer]`, `observe_holder_merge_extents`, `MergeExtentGitCost`, `ReconcileError::into_output`.
 - `crates/cargo-berth/src/output.rs`: `clear_check`, `contention`.
@@ -227,14 +227,42 @@ Each value is the longest lock hold in one command. The p95 is the nearest-rank 
 
 ### The cold Mac runs and the hung drift test
 
-The cold timing on `bf27c025` did not start. The Mac coordinator refused the claim because an old phase 22 drift test was still alive after more than four days: `session_mapping_attributes_post_commit_widening_with_two_active_reservations`, its `cargo-berth drift --full --json` child and a `git cat-file --batch-check` child.
+An earlier cold timing attempt on `bf27c025` did not start. The Mac coordinator refused the claim because an old phase 22 drift test was still alive after more than four days: `session_mapping_attributes_post_commit_widening_with_two_active_reservations`, its `cargo-berth drift --full --json` child and a `git cat-file --batch-check` child.
 
 A stack and pipe capture found the cause. The drift child waited in `gix::open_opts` → `gix_path::env::git::config_paths_from_executable_at` → `Command::output` for EOF from the installation-config probe. The `cat-file` child held an inherited copy of that probe's pipe writer, so EOF never came. Phase 24 removed this cause with the spawn lock around `gix::open_opts`; the hung test ran on a tree before that change. Phase 27 then put a deadline on every cargo-berth wait for a child process, so the next cause of this kind fails with a named error instead of a hang.
 
-Still open, and run when the Mac is quiet again:
+The user removed the old scratch processes on 2026-10-27. A read-only check then found no member of process group 61414 and no entry in `~/rust/scratch`.
 
-- removal of the leftover process group from the hung test;
-- the cold timing on `bf27c025`, compared with the reference runs of 88.730 s and 114.970 s;
-- the cold full run on `fde451aa`, with every test under 1.000 s.
+The exact `bf27c025` archive passed all 1,258 tests. The fixture cache was empty at the start. The command was `cargo nextest run --no-fail-fast -p cargo-berth`, with the default thread count and no `TMPDIR` override. The template builder was built before timing. Load was checked before the build and before the timed run.
 
-A slowdown found there becomes a new phase. The cold natedev run on `fde451aa` passed all 1,269 tests in 9.239 s at load 12.68–14.32, with the slowest test at 0.667 s; it does not establish Mac performance.
+| Run | Nextest (s) | Setup (s) | Load at start | Load range during timing | Tests at 1 s or more |
+|---|---:|---:|---:|---|---:|
+| Accepted reference | 88.730 | 8.968 | 6.293 | 6.293–10.739 | 344 |
+| Phase 22 retry | 114.970 | 10.703 | 8.534 | 8.534–16.802 | 449 |
+| Exact `bf27c025`, 2026-10-27 | 109.454 | 9.123 | 4.155 | 4.155–14.572 | 420 |
+| Exact `fde451aa`, 2026-10-27 | 104.301 | 11.743 | 6.326 | 5.667–11.725 | 402 |
+
+The `bf27c025` time is 20.724 s above the accepted reference and 5.516 s below the retry. Setup is 0.155 s above the accepted reference and 1.580 s below the retry. The load increased during the new run. These runs do not give an equal-load comparison, so they do not prove a code regression.
+
+The largest measured increases against the accepted reference are in `tests/gate.rs`: `pending_rewrite_board_shares_its_object_reader_with_reconciliation` increased from 3.961 s to 8.183 s; `prepared_gate_settles_actual_trunk_evidence_but_never_a_proposed_witness` increased from 3.753 s to 7.887 s; and `pending_rewrite_gate_shares_its_object_reader_with_preflight` increased from 4.152 s to 8.056 s. These are measured test durations. They do not isolate time in a product call or fixture step. No source change was made.
+
+The cold full run on exact `fde451aa` passed all 1,268 tests. It used the same command, default threads, cold fixture cache and no `TMPDIR` override. The build finished before timing. Load was 8.507 before the build and 6.326 before the timed run. The nextest time was 104.301 s, including 11.743 s of setup. Wall time was 104.996 s.
+
+The Mac requirement failed: 402 tests took at least 1.000 s. The longest test took 6.845 s. The table gives the ten longest tests and their source locations in exact `fde451aa`. These locations refer to that commit, not the current main branch.
+
+| Test | Source in `fde451aa` | Time (s) |
+|---|---|---:|
+| `cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations` | `tests/board.rs:5606` | 6.845 |
+| `prepared_gate_settles_actual_trunk_evidence_but_never_a_proposed_witness` | `tests/gate.rs:4672` | 5.969 |
+| `managed_hook_reports_scenario_specific_binary_invocation_counts` | `tests/gate.rs:2954` | 5.963 |
+| `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` | `tests/lifecycle.rs:1106`, `tests/support/reanchoring.rs:1091` | 5.749 |
+| `target_gate_holds_a_default_answered_requester_that_sequence_orders` | `tests/gate.rs:720` | 5.429 |
+| `checkpoint_readiness_covers_incorporation_and_missing_objects` | `tests/edges.rs:619` | 5.401 |
+| `active_lower_reservation_keeps_both_split_commits_after_update_refs` | `tests/gate.rs:1740` | 5.256 |
+| `trunk_gate_checks_successor_recorded_against_another_target` | `tests/gate.rs:407` | 5.060 |
+| `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first` | `tests/lifecycle.rs:1100`, `tests/support/reanchoring.rs:1087` | 4.999 |
+| `split_checkpoint_survives_switching_the_issuing_checkout_before_board` | `tests/lifecycle.rs:1117`, `tests/support/reanchoring.rs:1173` | 4.953 |
+
+The slowest board test builds historical integration evidence, restores repository snapshots and repeats board queries for equivalent and different target rewrites, with distinct and duplicate reservations. The gate settlement test builds two witness cases through real claims, commits, release and prepared-hook commands. Those steps are present in the measured tests. This run did not measure each step separately, so the time in fixture setup versus product work remains unknown. The full run record contains all 402 slow test names, times and source locations. These costs require a new phase; no source was changed for this measurement.
+
+Compared with `bf27c025`, `fde451aa` reduced total nextest time by 5.153 s and increased setup by 2.620 s. Load ranges differ, so these changes do not isolate the effect of the code changes. The cold natedev run on the phase 24 implementation passed all 1,269 tests in 9.239 s at load 12.68–14.32, with the slowest test at 0.667 s; it does not establish Mac performance.

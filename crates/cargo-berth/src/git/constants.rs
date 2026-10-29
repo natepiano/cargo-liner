@@ -154,11 +154,6 @@ pub(super) const GIT_WRITE_TREE_ARG: &str = "--write-tree";
 /// List registered worktrees.
 pub(super) const GIT_WORKTREE_LIST_ARG: &str = "list";
 
-// Invocation count: `UNMERGED_BRANCH_PATH_GIT_QUERIES`.
-/// Git invocations one `unmerged_branch_paths` read of two different commits makes:
-/// `merge-tree`, then the diff from trunk to its result tree.
-pub(super) const UNMERGED_BRANCH_PATH_GIT_QUERIES: u64 = 2;
-
 // Output spellings: `GIT_AMBIGUOUS_OBJECT_SUFFIX` through `GIT_RIGHT_COMMIT_MARK`.
 /// Suffix reported by `cat-file --batch-check` for an ambiguous object expression.
 pub(super) const GIT_AMBIGUOUS_OBJECT_SUFFIX: &str = " ambiguous";
@@ -192,6 +187,8 @@ pub(super) const GIT_FIRST_PARENT_ANCESTOR_INFIX: &str = "~";
 pub(super) const GIT_HEAD_REVISION: &str = "HEAD";
 /// Git's configured hook directory selector.
 pub(super) const GIT_HOOKS_PATH: &str = "hooks";
+/// Git's per-worktree lock while the index and checked-out paths are being replaced.
+pub(super) const GIT_INDEX_LOCK_PATH: &str = "index.lock";
 /// The prefix for local branch refs.
 pub(super) const GIT_LOCAL_BRANCH_REF_PREFIX: &str = "refs/heads/";
 /// Git's per-worktree marker for a merge awaiting completion.

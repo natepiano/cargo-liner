@@ -10,6 +10,7 @@ use anyhow::Result;
 
 use super::BuildOutputMode;
 use super::progress::CargoProgress;
+use super::progress::ProgressActivity;
 use super::progress::ProgressDisplay;
 use super::progress::UnitCounter;
 use crate::compiler::constants::CARGO_PROGRESS_BAR_CLOSE;
@@ -53,15 +54,18 @@ enum SuppressionNotice {
     Printed,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum ProgressStatus {
-    Active,
-    #[default]
-    Inactive,
+/// Whether a Cargo progress line should be printed alongside mend's status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgressLineDisposition {
+    Forward,
+    Suppress,
 }
 
-impl From<bool> for ProgressStatus {
-    fn from(value: bool) -> Self { if value { Self::Active } else { Self::Inactive } }
+/// An erased progress frame is spent output, not a diagnostic-block separator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SanitizedLineContent {
+    Blank,
+    Visible,
 }
 
 /// Cargo's stderr split into lines the way `BufRead::read_line` splits it, with
@@ -147,7 +151,9 @@ pub(super) fn stream_cargo_stderr(
         // Once the carriage returns are applied a frame may leave nothing
         // behind, which is a spent frame rather than the blank line that ends a
         // diagnostic block.
-        if is_blank_after_sanitize(&current) && !is_blank_after_sanitize(&line) {
+        if sanitized_line_content(&current) == SanitizedLineContent::Blank
+            && sanitized_line_content(&line) == SanitizedLineContent::Visible
+        {
             continue;
         }
 
@@ -163,7 +169,9 @@ pub(super) fn stream_cargo_stderr(
                     output_mode,
                     &mut progress,
                 );
-                if line_kind.should_forward(output_mode, progress.is_active().into()) {
+                if line_kind.disposition(output_mode, progress.activity())
+                    == ProgressLineDisposition::Forward
+                {
                     // Through the progress display rather than straight to stderr:
                     // when the spinner is up it owns the last line, and a bare
                     // `eprint!` would interleave with the frame it is redrawing.
@@ -231,23 +239,26 @@ impl From<&str> for CargoLineKind {
 }
 
 impl CargoLineKind {
-    const fn should_forward(
+    const fn disposition(
         self,
         output_mode: BuildOutputMode,
-        progress_status: ProgressStatus,
-    ) -> bool {
+        progress_activity: ProgressActivity,
+    ) -> ProgressLineDisposition {
         match self {
-            Self::Finished | Self::DiagnosticOrText => false,
+            Self::Finished | Self::DiagnosticOrText => ProgressLineDisposition::Suppress,
             Self::OtherProgress => match output_mode {
-                BuildOutputMode::Json | BuildOutputMode::Quiet => false,
+                BuildOutputMode::Json | BuildOutputMode::Validation => {
+                    ProgressLineDisposition::Suppress
+                },
                 // The main pass shows cargo's status lines even while the spinner runs:
                 // there the spinner reports which target mend is analyzing, which is
                 // additional to cargo's output rather than a replacement for it.
-                BuildOutputMode::Full => true,
+                BuildOutputMode::Full => ProgressLineDisposition::Forward,
                 // The fix-candidate pass replaces cargo's output with the spinner, so a
                 // forwarded line would duplicate what the spinner already says.
-                BuildOutputMode::SuppressUnusedImportWarnings => {
-                    matches!(progress_status, ProgressStatus::Inactive)
+                BuildOutputMode::SuppressUnusedImportWarnings => match progress_activity {
+                    ProgressActivity::Active => ProgressLineDisposition::Suppress,
+                    ProgressActivity::Inactive => ProgressLineDisposition::Forward,
                 },
             },
         }
@@ -313,7 +324,13 @@ fn collapse_carriage_returns(line: &str) -> String {
     format!("{visible}{newline}")
 }
 
-fn is_blank_after_sanitize(line: &str) -> bool { sanitize_for_match(line).trim().is_empty() }
+fn sanitized_line_content(line: &str) -> SanitizedLineContent {
+    if sanitize_for_match(line).trim().is_empty() {
+        SanitizedLineContent::Blank
+    } else {
+        SanitizedLineContent::Visible
+    }
+}
 
 /// Parse cargo's "generated N warnings" summary line.
 /// Returns `(warning_count, fixable_count)` if the line matches.
@@ -402,17 +419,15 @@ fn flush_diagnostic_block(
                 },
                 BuildOutputMode::Json
                 | BuildOutputMode::SuppressUnusedImportWarnings
-                | BuildOutputMode::Quiet => {},
+                | BuildOutputMode::Validation => {},
             }
         },
         DiagnosticBlockKind::CompilerWarningSummary {
             warning_count,
             fixable_count,
         } => {
-            if !matches!(output_mode, BuildOutputMode::Quiet) {
-                *compiler_warning_count += warning_count;
-                *compiler_fixable_count += fixable_count;
-            }
+            *compiler_warning_count += warning_count;
+            *compiler_fixable_count += fixable_count;
         },
         DiagnosticBlockKind::Forwarded => {
             if !matches!(output_mode, BuildOutputMode::Json) {
@@ -435,14 +450,17 @@ fn flush_diagnostic_block(
 mod tests {
     use super::CargoLineKind;
     use super::DiagnosticBlockKind;
-    use super::ProgressStatus;
+    use super::ProgressLineDisposition;
+    use super::SanitizedLineContent;
     use super::StderrReader;
     use super::SuppressionNotice;
     use super::classify_diagnostic_block;
     use super::collapse_carriage_returns;
     use super::flush_diagnostic_block;
     use super::parse_unit_counter;
+    use super::sanitized_line_content;
     use crate::compiler::build::BuildOutputMode;
+    use crate::compiler::build::progress::ProgressActivity;
     use crate::compiler::build::progress::ProgressDisplay;
     use crate::compiler::build::progress::UnitCounter;
     use crate::compiler::constants::CARGO_PROGRESS_BAR_CLOSE;
@@ -470,9 +488,43 @@ mod tests {
         )
     }
 
+    #[test]
+    fn sanitized_content_distinguishes_erased_frames_from_blank_separators() {
+        for line in ["", " \n", "\u{1b}[K\r\n", "\u{1b}[32m \u{1b}[0m"] {
+            assert_eq!(sanitized_line_content(line), SanitizedLineContent::Blank);
+        }
+        let line = "building\r\u{1b}[K\n";
+        assert_eq!(sanitized_line_content(line), SanitizedLineContent::Visible);
+        assert_eq!(
+            sanitized_line_content(&collapse_carriage_returns(line)),
+            SanitizedLineContent::Blank
+        );
+        assert_eq!(
+            sanitized_line_content("warning: café"),
+            SanitizedLineContent::Visible
+        );
+    }
+
+    #[test]
+    fn progress_forwarding_preserves_full_json_and_validation_policy() {
+        let kind = CargoLineKind::OtherProgress;
+        for activity in [ProgressActivity::Active, ProgressActivity::Inactive] {
+            for (mode, expected) in [
+                (BuildOutputMode::Full, ProgressLineDisposition::Forward),
+                (BuildOutputMode::Json, ProgressLineDisposition::Suppress),
+                (
+                    BuildOutputMode::Validation,
+                    ProgressLineDisposition::Suppress,
+                ),
+            ] {
+                assert_eq!(kind.disposition(mode, activity), expected);
+            }
+        }
+    }
+
     #[derive(Default)]
     struct ProgressRecorder {
-        progress_status: ProgressStatus,
+        progress_status: ProgressActivity,
         notices:         Vec<String>,
         stops:           usize,
         unit_counters:   Vec<UnitCounter>,
@@ -481,7 +533,7 @@ mod tests {
     impl ProgressRecorder {
         const fn active() -> Self {
             Self {
-                progress_status: ProgressStatus::Active,
+                progress_status: ProgressActivity::Active,
                 notices:         Vec::new(),
                 stops:           0,
                 unit_counters:   Vec::new(),
@@ -490,7 +542,7 @@ mod tests {
     }
 
     impl ProgressDisplay for ProgressRecorder {
-        fn is_active(&self) -> bool { matches!(self.progress_status, ProgressStatus::Active) }
+        fn activity(&self) -> ProgressActivity { self.progress_status }
 
         fn record_unit_counter(&mut self, unit_counter: UnitCounter) {
             self.unit_counters.push(unit_counter);
@@ -500,7 +552,7 @@ mod tests {
 
         fn stop_for_forwarded_output(&mut self) {
             self.stops += 1;
-            self.progress_status = ProgressStatus::Inactive;
+            self.progress_status = ProgressActivity::Inactive;
         }
     }
 
@@ -512,11 +564,14 @@ mod tests {
         for output_mode in [
             BuildOutputMode::Full,
             BuildOutputMode::Json,
-            BuildOutputMode::Quiet,
+            BuildOutputMode::Validation,
             BuildOutputMode::SuppressUnusedImportWarnings,
         ] {
-            for status in [ProgressStatus::Active, ProgressStatus::Inactive] {
-                assert!(!kind.should_forward(output_mode, status));
+            for status in [ProgressActivity::Active, ProgressActivity::Inactive] {
+                assert_eq!(
+                    kind.disposition(output_mode, status),
+                    ProgressLineDisposition::Suppress
+                );
             }
         }
         for diagnostic in ["warning: unused import", "error: failed"] {
@@ -570,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn quiet_builds_do_not_accumulate_compiler_warning_summary_counts() {
+    fn validation_retains_compiler_warning_summary_counts_for_convergence() {
         let mut block = vec![
             format!(
                 "{CARGO_WARNING_SUMMARY_PREFIX}fixture` (lib){CARGO_WARNING_SUMMARY_TOKEN_GENERATED}3 warnings (1 duplicate) (run `cargo fix --lib -p fixture` {CARGO_WARNING_SUMMARY_TOKEN_TO_APPLY}1 suggestion)\n"
@@ -588,12 +643,12 @@ mod tests {
             &mut compiler_warning_facts,
             &mut compiler_warning_count,
             &mut compiler_fixable_count,
-            BuildOutputMode::Quiet,
+            BuildOutputMode::Validation,
             &mut ProgressRecorder::default(),
         );
 
-        assert_eq!(compiler_warning_count, 0);
-        assert_eq!(compiler_fixable_count, 0);
+        assert_eq!(compiler_warning_count, 3);
+        assert_eq!(compiler_fixable_count, 1);
     }
 
     #[test]
@@ -601,14 +656,20 @@ mod tests {
         let line = format!("    {CARGO_PROGRESS_PREFIX_CHECKING}fixture v0.1.0\n");
         let kind = CargoLineKind::from(line.as_str());
 
-        assert!(!kind.should_forward(
-            BuildOutputMode::SuppressUnusedImportWarnings,
-            ProgressStatus::Active
-        ));
-        assert!(kind.should_forward(
-            BuildOutputMode::SuppressUnusedImportWarnings,
-            ProgressStatus::Inactive
-        ));
+        assert_eq!(
+            kind.disposition(
+                BuildOutputMode::SuppressUnusedImportWarnings,
+                ProgressActivity::Active,
+            ),
+            ProgressLineDisposition::Suppress
+        );
+        assert_eq!(
+            kind.disposition(
+                BuildOutputMode::SuppressUnusedImportWarnings,
+                ProgressActivity::Inactive,
+            ),
+            ProgressLineDisposition::Forward
+        );
     }
 
     #[test]
@@ -629,13 +690,13 @@ mod tests {
             &mut compiler_warning_facts,
             &mut compiler_warning_count,
             &mut compiler_fixable_count,
-            BuildOutputMode::Quiet,
+            BuildOutputMode::Validation,
             &mut progress,
         );
 
         assert_eq!(progress.stops, 1);
         assert_eq!(progress.notices, [] as [String; 0]);
-        assert_eq!(progress.progress_status, ProgressStatus::Inactive);
+        assert_eq!(progress.progress_status, ProgressActivity::Inactive);
     }
 
     #[test]
@@ -668,7 +729,7 @@ mod tests {
             ]
         );
         assert_eq!(progress.stops, 0);
-        assert_eq!(progress.progress_status, ProgressStatus::Active);
+        assert_eq!(progress.progress_status, ProgressActivity::Active);
     }
 
     #[test]

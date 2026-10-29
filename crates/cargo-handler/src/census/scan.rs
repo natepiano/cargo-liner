@@ -73,6 +73,7 @@ use super::tree::ThreadEntry;
 use super::tree::TreeSources;
 use super::unix_now;
 use super::worker_dispatch::ParsedDispatch;
+use super::worker_dispatch::SessionRoots;
 use super::worker_dispatch::WorkerDispatch;
 use super::worker_dispatch::WorkerIdentity;
 use super::worker_dispatch::WorkerNames;
@@ -141,6 +142,7 @@ pub(super) struct LocalScanner {
     subagent_activity:   HashMap<PathBuf, TranscriptRead>,
     subagent_reads:      SubagentReads,
     worker_names:        WorkerNames,
+    session_roots:       SessionRoots,
     /// Where desktop information comes from for this scanner.
     desktop_source:      DesktopSource,
     /// What `KWin` and tmux last answered, kept for
@@ -270,6 +272,7 @@ impl LocalScanner {
             subagent_activity: HashMap::new(),
             subagent_reads: SubagentReads::default(),
             worker_names: WorkerNames::default(),
+            session_roots: SessionRoots::production(),
             reviewer_pools: ReviewerPools::default(),
             processes: System::new(),
             run_records: activity::RunRecords::default(),
@@ -421,10 +424,12 @@ impl LocalScanner {
                     return None;
                 };
                 let read = self.rollouts.thread(id)?;
-                match self
-                    .worker_names
-                    .resolve(id, read.first_prompt.text(), &read.worktree)
-                {
+                match self.worker_names.resolve(
+                    id,
+                    read.first_prompt.text(),
+                    &read.worktree,
+                    &self.session_roots,
+                ) {
                     WorkerDispatch::Worker(worker) => Some((id.clone(), worker)),
                     WorkerDispatch::Plain => None,
                 }
@@ -556,7 +561,9 @@ impl LocalScanner {
                     continue;
                 };
                 let prompt = read.first_prompt.text();
-                let dispatch = self.worker_names.resolve(id, prompt, &read.worktree);
+                let dispatch =
+                    self.worker_names
+                        .resolve(id, prompt, &read.worktree, &self.session_roots);
                 child.worker_task = WorkerTask::from_prompt(prompt);
                 child.name = match &dispatch {
                     WorkerDispatch::Worker(worker) => worker.label(),
@@ -576,7 +583,7 @@ impl LocalScanner {
                     child.dispatch = WorkerDispatch::Plain;
                 }
 
-                let records: Vec<_> = WorkerNames::session_dirs(prompt)
+                let records: Vec<_> = WorkerNames::session_dirs(prompt, &self.session_roots)
                     .into_iter()
                     .flat_map(|directory| {
                         seen_run_sessions.insert(directory.clone());
@@ -1666,6 +1673,7 @@ mod tests {
             subagent_activity:   HashMap::new(),
             subagent_reads:      SubagentReads::default(),
             worker_names:        WorkerNames::default(),
+            session_roots:       SessionRoots::new([]),
             reviewer_pools:      ReviewerPools::default(),
             desktop_source:      DesktopSource::Windows(Vec::new()),
             desktops:            None,

@@ -94,11 +94,11 @@ impl HttpClient {
         );
 
         let mut parts = vec![repo_fragment];
-        for (i, run) in runs.iter().enumerate() {
+        for (i, gh_run) in runs.iter().enumerate() {
             parts.push(format!(
                 "run_{i}: node(id: \"{}\") \
                  {{ ... on WorkflowRun {{ databaseId {run_fragment} }} }}",
-                run.node_id
+                gh_run.node_id
             ));
         }
 
@@ -115,7 +115,7 @@ impl HttpClient {
         };
 
         // Build `RepoMetaInfo` from the `GITHUB_GRAPHQL_REPO_KEY` object.
-        let meta = data.get(GITHUB_GRAPHQL_REPO_KEY).and_then(|r| {
+        let repo_meta_info = data.get(GITHUB_GRAPHQL_REPO_KEY).and_then(|r| {
             let stars = r.get(GITHUB_GRAPHQL_STARGAZER_COUNT_KEY)?.as_u64()?;
             let description = r
                 .get(GITHUB_GRAPHQL_DESCRIPTION_KEY)
@@ -132,15 +132,15 @@ impl HttpClient {
                 obj.iter()
                     .filter(|(key, _)| key.starts_with(GITHUB_GRAPHQL_RUN_ALIAS_PREFIX))
                     .filter_map(|(_, val)| {
-                        let node: GqlRunNode = serde_json::from_value(val.clone()).ok()?;
-                        let check_runs = node.check_suite?.check_runs.nodes;
-                        Some((node.database_id, check_runs))
+                        let gql_run_node: GqlRunNode = serde_json::from_value(val.clone()).ok()?;
+                        let check_runs = gql_run_node.check_suite?.check_runs.nodes;
+                        Some((gql_run_node.database_id, check_runs))
                     })
                     .collect()
             })
             .unwrap_or_default();
 
-        (Some((jobs, meta)), signal)
+        (Some((jobs, repo_meta_info)), signal)
     }
 
     /// List recent completed workflow runs (sync wrapper).

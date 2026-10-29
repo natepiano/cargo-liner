@@ -5,6 +5,9 @@ use std::fs;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io;
+use std::io::ErrorKind;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process;
@@ -16,16 +19,22 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Context;
+use anyhow::Error;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use serde_json::to_string;
 
+use super::cache;
+use super::cache::AnalysisCache;
 use super::progress::CargoProgress;
+use super::progress::ProgressActivity;
 use super::progress::ProgressDisplay;
 use super::source_transaction::CompilerFixTransaction;
 use super::stderr;
 use super::stdout;
+use super::stdout::AnalysisUnit;
+use crate::compiler::ToolchainProbes;
 use crate::compiler::analyzing;
 use crate::compiler::constants::ANALYZING_DIR_ENV;
 use crate::compiler::constants::CARGO_BIN;
@@ -78,7 +87,8 @@ pub(crate) enum BuildOutputMode {
     Full,
     Json,
     SuppressUnusedImportWarnings,
-    Quiet,
+    /// Retain the checked tree's warning counts for the next convergence pass.
+    Validation,
 }
 
 #[derive(Debug)]
@@ -88,14 +98,28 @@ struct CommandOutcome {
     duration:               Duration,
     compiler_warnings:      usize,
     compiler_fixable:       usize,
-    /// The `StoredReport` path of every unit cargo listed, fresh or rebuilt.
-    report_paths:           Vec<PathBuf>,
+    /// Metadata and ownership of every unit Cargo listed, fresh or rebuilt.
+    units:                  Vec<AnalysisUnit>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CargoFixFeatures {
     All,
     Plan,
+}
+
+/// Only an independent copy in this build's copy namespace can be reused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WrapperAliasResolution {
+    Current,
+    NeedsReplacement,
+}
+
+/// Explicit feature flags preserve the user's selection during the fix pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FeatureSelection {
+    Explicit,
+    Automatic,
 }
 
 pub(crate) struct SelectionResult {
@@ -111,35 +135,22 @@ pub(crate) fn run_selection(
     loaded_config: &LoadedConfig,
     output_mode: BuildOutputMode,
     color_mode: ColorMode,
+    toolchain_probes: &ToolchainProbes,
 ) -> Result<SelectionResult, MendFailure> {
-    let analyzing_dir = analyzing::analyzing_dir(cargo_plan.target_directory.as_path());
-    let scope_fingerprint = scope_fingerprint_for(cargo_plan);
-
-    let command_outcome = run_cargo_check(
+    let command_outcome = check_with_cache_recovery(
+        selection,
         cargo_plan,
         loaded_config,
-        &analyzing_dir,
-        &scope_fingerprint,
         output_mode,
         color_mode,
-    )
-    .map_err(|err| {
-        MendFailure::Analysis(AnalysisFailure {
-            cause: CompilerFailureCause::DriverSetup(err),
-        })
-    })?;
-
-    if !command_outcome.exit_status.success() {
-        return Err(MendFailure::Analysis(AnalysisFailure {
-            cause: CompilerFailureCause::CargoCheck,
-        }));
-    }
-
-    let loaded = persistence::load_report(
-        &command_outcome.report_paths,
-        selection,
-        &loaded_config.fingerprint,
-    );
+        toolchain_probes,
+    )?;
+    let report_paths: Vec<_> = command_outcome
+        .units
+        .iter()
+        .map(stdout::AnalysisUnit::report_path)
+        .collect();
+    let loaded = persistence::load_report(&report_paths, selection, &loaded_config.fingerprint);
 
     match loaded.analysis_evidence {
         AnalysisEvidence::Absent => {
@@ -157,6 +168,86 @@ pub(crate) fn run_selection(
         check_duration: command_outcome.duration,
         compiler_warnings: command_outcome.compiler_warnings,
         compiler_fixable: command_outcome.compiler_fixable,
+    })
+}
+
+fn check_with_cache_recovery(
+    selection: &Selection,
+    cargo_plan: &CargoCheckPlan,
+    loaded_config: &LoadedConfig,
+    output_mode: BuildOutputMode,
+    color_mode: ColorMode,
+    toolchain_probes: &ToolchainProbes,
+) -> Result<CommandOutcome, MendFailure> {
+    let analyzing_dir = analyzing::analyzing_dir(cargo_plan.target_directory.as_path());
+    let scope_fingerprint = scope_fingerprint_for(cargo_plan);
+
+    let mut command_outcome = run_cargo_check(
+        cargo_plan,
+        loaded_config,
+        &analyzing_dir,
+        &scope_fingerprint,
+        output_mode,
+        color_mode,
+        toolchain_probes,
+    )
+    .map_err(driver_setup_failure)?;
+
+    if !command_outcome.exit_status.success() {
+        return Err(MendFailure::Analysis(AnalysisFailure {
+            cause: CompilerFailureCause::CargoCheck,
+        }));
+    }
+
+    let paths = match AnalysisCache::inspect(
+        &command_outcome.units,
+        selection,
+        &loaded_config.fingerprint,
+    ) {
+        AnalysisCache::Compatible => return Ok(command_outcome),
+        AnalysisCache::RebuildRequired(paths) => paths,
+        AnalysisCache::Unrepairable => {
+            return Err(MendFailure::Analysis(AnalysisFailure {
+                cause: CompilerFailureCause::NoAnalysisProduced,
+            }));
+        },
+    };
+    cache::invalidate_metadata(&paths).map_err(driver_setup_failure)?;
+    let previous_duration = command_outcome.duration;
+    command_outcome = run_cargo_check(
+        cargo_plan,
+        loaded_config,
+        &analyzing_dir,
+        &scope_fingerprint,
+        output_mode,
+        color_mode,
+        toolchain_probes,
+    )
+    .map_err(driver_setup_failure)?;
+    command_outcome.duration += previous_duration;
+    if !command_outcome.exit_status.success() {
+        return Err(MendFailure::Analysis(AnalysisFailure {
+            cause: CompilerFailureCause::CargoCheck,
+        }));
+    }
+    match AnalysisCache::inspect(
+        &command_outcome.units,
+        selection,
+        &loaded_config.fingerprint,
+    ) {
+        AnalysisCache::Compatible => {},
+        AnalysisCache::RebuildRequired(_) | AnalysisCache::Unrepairable => {
+            return Err(MendFailure::Analysis(AnalysisFailure {
+                cause: CompilerFailureCause::NoAnalysisProduced,
+            }));
+        },
+    }
+    Ok(command_outcome)
+}
+
+const fn driver_setup_failure(error: Error) -> MendFailure {
+    MendFailure::Analysis(AnalysisFailure {
+        cause: CompilerFailureCause::DriverSetup(error),
     })
 }
 
@@ -179,6 +270,7 @@ fn run_cargo_check(
     scope_fingerprint: &str,
     output_mode: BuildOutputMode,
     color_mode: ColorMode,
+    toolchain_probes: &ToolchainProbes,
 ) -> Result<CommandOutcome> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
     let mut command = Command::new(CARGO_BIN);
@@ -189,6 +281,7 @@ fn run_cargo_check(
     let wrapper =
         wrapper_alias(cargo_plan.target_directory.as_path(), &current_exe).unwrap_or(current_exe);
     configure_rustc_wrapper(&mut command, &wrapper);
+    toolchain_probes.configure(&mut command);
 
     command
         .env(DRIVER_ENV, DRIVER_ENV_ENABLED)
@@ -210,73 +303,107 @@ fn run_cargo_check(
 /// Names a per-build alias of the mend binary for cargo to invoke as the
 /// wrapper, in place of the binary's own path.
 ///
-/// Cargo keys a unit's fingerprint on the wrapper's path and reads nothing else
-/// about the file — neither mtime nor contents. Installing a new mend over the
-/// old one therefore leaves every workspace member fresh, so the driver never
-/// runs and writes no report. Every report already on disk names the previous
-/// build in its `analysis_fingerprint` and fails `stored_report_is_compatible`,
-/// so the run reaches [`CompilerFailureCause::NoAnalysisProduced`] and tells the
-/// user to touch a source file.
+/// The build-specific path changes Cargo's unit ids after an install. Retaining
+/// an independent executable inode is equally necessary: a symlink follows
+/// later installs, and a hard link shares in-place writes with the installed
+/// binary. Those writes invalidate running code signatures on macOS. A copy
+/// keeps the driver attached to the build its directory names.
 ///
-/// Naming the alias directory after that same `analysis_fingerprint` turns a new
-/// mend build into a new wrapper path, which is the one input cargo does rebuild
-/// for. Re-running the same build reuses the alias and stays fresh, and two mend
-/// builds keep separate alias paths, so cargo keeps both artifact sets and
-/// switching between them costs nothing. The alias path is part of each unit id,
-/// and every unit's `StoredReport` is named after its unit id by
-/// `persistence::report_path_for_metadata`, so each build's reports sit beside
-/// its own artifacts and a build that finds its units fresh still loads them.
-///
-/// Returns `None` when the alias cannot be created; the caller then passes the
-/// binary's own path and behaves as before.
+/// The copy namespace excludes aliases published by the former hard-link
+/// protocol. The build fingerprint identifies the contents, so reuse needs
+/// metadata checks, not a read of the whole binary on every mend invocation.
+/// Returns `None` when the copy cannot be created.
 fn wrapper_alias(target_directory: &Path, current_exe: &Path) -> Option<PathBuf> {
     let alias_dir = target_directory
         .join(WRAPPER_DIR_NAME)
-        .join(settings::current_analysis_fingerprint());
+        .join(settings::current_analysis_fingerprint())
+        .join("independent-copy-v1");
     fs::create_dir_all(&alias_dir).ok()?;
     let alias = alias_dir.join(current_exe.file_name()?);
-    if alias_points_at(&alias, current_exe) {
+    if wrapper_alias_resolution(&alias) == WrapperAliasResolution::Current {
         return Some(alias);
     }
     replace_wrapper_alias(current_exe, &alias).ok()?;
     Some(alias)
 }
 
-/// Whether `alias` already resolves to `current_exe`, making a rewrite needless.
-fn alias_points_at(alias: &Path, current_exe: &Path) -> bool {
-    let Ok(resolved) = fs::canonicalize(alias) else {
-        return false;
-    };
-    fs::canonicalize(current_exe).is_ok_and(|target| resolved == target)
+/// The build-specific copy namespace supplies the build identity. Reject
+/// symlinks and multiply linked files; neither owns its executable inode.
+fn wrapper_alias_resolution(alias: &Path) -> WrapperAliasResolution {
+    let independent = fs::symlink_metadata(alias).is_ok_and(|metadata| {
+        #[cfg(unix)]
+        let owns_inode = metadata.nlink() == 1;
+        #[cfg(not(unix))]
+        let owns_inode = true;
+        metadata.file_type().is_file() && owns_inode
+    });
+    if independent {
+        WrapperAliasResolution::Current
+    } else {
+        WrapperAliasResolution::NeedsReplacement
+    }
 }
 
-/// Points `alias` at `current_exe` without ever leaving the alias path absent.
-///
-/// Cargo bakes this path into a unit fingerprint and executes it once per
-/// compilation unit, so unlinking before relinking opens a window in which those
-/// executions fail with `ENOENT` and the build aborts before any code is
-/// checked. Renaming a staged link over the alias closes the window: the path
-/// resolves to the old binary or the new one and is never missing. The staging
-/// name carries the process id so two mend runs on one target directory cannot
-/// stage onto each other.
+/// An unpublished executable with its own inode. Only copying can construct
+/// this state; publication cannot accidentally rename a hard-linked alias.
+struct StagedWrapperCopy {
+    path: PathBuf,
+}
+
+impl StagedWrapperCopy {
+    fn create(current_exe: &Path, alias: &Path) -> io::Result<Self> {
+        let path = alias.with_extension(format!(
+            "{WRAPPER_ALIAS_STAGING_EXTENSION}-{}",
+            process::id()
+        ));
+        match fs::remove_file(&path) {
+            Ok(()) => {},
+            Err(error) if error.kind() == ErrorKind::NotFound => {},
+            Err(error) => return Err(error),
+        }
+        copy_wrapper_executable(current_exe, &path)
+            .and_then(|()| {
+                if wrapper_alias_resolution(&path) == WrapperAliasResolution::Current {
+                    Ok(())
+                } else {
+                    Err(io::Error::other("wrapper copy does not own its inode"))
+                }
+            })
+            .inspect_err(|_| drop(fs::remove_file(&path)))?;
+        Ok(Self { path })
+    }
+
+    fn publish(self, alias: &Path) -> io::Result<()> { fs::rename(&self.path, alias) }
+}
+
+impl Drop for StagedWrapperCopy {
+    fn drop(&mut self) { drop(fs::remove_file(&self.path)); }
+}
+
+/// Publish a complete copy without ever leaving the alias path absent.
+/// Cargo can execute the old or new copy during the rename. The process id
+/// prevents separate mend runs from sharing an unpublished staging path.
 fn replace_wrapper_alias(current_exe: &Path, alias: &Path) -> io::Result<()> {
-    let staged = alias.with_extension(format!(
-        "{WRAPPER_ALIAS_STAGING_EXTENSION}-{}",
-        process::id()
-    ));
-    drop(fs::remove_file(&staged));
-    link_wrapper_alias(current_exe, &staged)?;
-    fs::rename(&staged, alias).inspect_err(|_| drop(fs::remove_file(&staged)))
+    StagedWrapperCopy::create(current_exe, alias)?.publish(alias)
 }
 
-#[cfg(unix)]
-fn link_wrapper_alias(current_exe: &Path, alias: &Path) -> io::Result<()> {
-    std::os::unix::fs::symlink(current_exe, alias)
+#[cfg(target_os = "linux")]
+fn copy_wrapper_executable(source: &Path, destination: &Path) -> io::Result<()> {
+    let mut source = fs::File::open(source)?;
+    let mut destination = fs::File::create_new(destination)?;
+    // FICLONE shares extents, never the inode. Unsupported filesystems use an
+    // ordinary byte copy of the same opened source, retaining execute bits.
+    if rustix::fs::ioctl_ficlone(&destination, &source).is_err() {
+        io::copy(&mut source, &mut destination)?;
+    }
+    destination.set_permissions(source.metadata()?.permissions())
 }
 
-#[cfg(not(unix))]
-fn link_wrapper_alias(current_exe: &Path, alias: &Path) -> io::Result<()> {
-    fs::copy(current_exe, alias).map(drop)
+#[cfg(not(target_os = "linux"))]
+fn copy_wrapper_executable(source: &Path, destination: &Path) -> io::Result<()> {
+    // On macOS std::fs::copy first uses fclonefileat (clonefile), with a
+    // copyfile fallback off APFS. The staging path is absent to permit cloning.
+    fs::copy(source, destination).map(drop)
 }
 
 /// Installs mend as the workspace wrapper, leaving any ambient `RUSTC_WRAPPER`
@@ -407,12 +534,15 @@ fn cargo_fix_features_for(
     cargo_args: &[OsString],
     all_features_coverage: AllFeaturesCoverage,
 ) -> CargoFixFeatures {
-    match (
-        has_explicit_feature_selection(cargo_args),
-        all_features_coverage,
-    ) {
-        (false, AllFeaturesCoverage::Superset) => CargoFixFeatures::All,
-        (true, _) | (false, AllFeaturesCoverage::NotGuaranteed) => CargoFixFeatures::Plan,
+    match (feature_selection(cargo_args), all_features_coverage) {
+        (FeatureSelection::Automatic, AllFeaturesCoverage::Superset) => CargoFixFeatures::All,
+        (
+            FeatureSelection::Explicit,
+            AllFeaturesCoverage::Superset | AllFeaturesCoverage::NotGuaranteed,
+        )
+        | (FeatureSelection::Automatic, AllFeaturesCoverage::NotGuaranteed) => {
+            CargoFixFeatures::Plan
+        },
     }
 }
 
@@ -474,8 +604,8 @@ fn run_cargo_fix_command(
         .context("failed to run cargo fix")
 }
 
-fn has_explicit_feature_selection(cargo_args: &[OsString]) -> bool {
-    cargo_args.iter().any(|arg| {
+fn feature_selection(cargo_args: &[OsString]) -> FeatureSelection {
+    if cargo_args.iter().any(|arg| {
         arg == CARGO_FLAG_ALL_FEATURES
             || arg == CARGO_FLAG_FEATURES
             || arg == CARGO_FLAG_NO_DEFAULT_FEATURES
@@ -483,7 +613,11 @@ fn has_explicit_feature_selection(cargo_args: &[OsString]) -> bool {
                 .to_str()
                 .and_then(|arg| arg.strip_prefix(CARGO_FLAG_FEATURES))
                 .is_some_and(|suffix| suffix.starts_with('='))
-    })
+    }) {
+        FeatureSelection::Explicit
+    } else {
+        FeatureSelection::Automatic
+    }
 }
 
 fn run_cargo_command(
@@ -498,7 +632,7 @@ fn run_cargo_command(
     let progress = CargoProgress::start(output_mode, analyzing_dir);
     // The status line takes its counter from cargo's bar, which cargo draws on
     // a pipe only when asked to and given a width to draw it at.
-    if progress.is_active() {
+    if progress.activity() == ProgressActivity::Active {
         command
             .env(
                 CARGO_TERM_PROGRESS_WHEN_ENV,
@@ -522,9 +656,9 @@ fn run_cargo_command(
     // Cargo writes both pipes as the build runs; reading stdout on its own
     // thread keeps a full stdout pipe from stalling cargo while this thread
     // is still streaming stderr.
-    let stdout_reader = thread::spawn(move || stdout::collect_report_paths(stdout, output_mode));
+    let stdout_reader = thread::spawn(move || stdout::collect_units(stdout, output_mode));
     let stderr_outcome = stderr::stream_cargo_stderr(stderr, output_mode, progress)?;
-    let report_paths = stdout_reader
+    let units = stdout_reader
         .join()
         .map_err(|_| anyhow!("cargo stdout reader panicked"))?
         .context("failed to read cargo stdout")?;
@@ -536,19 +670,228 @@ fn run_cargo_command(
         duration,
         compiler_warnings: stderr_outcome.warning_count,
         compiler_fixable: stderr_outcome.fixable_count,
-        report_paths,
+        units,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::fs;
+    #[cfg(unix)]
+    use std::io::BufRead;
+    #[cfg(unix)]
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use std::process::Command;
+    #[cfg(unix)]
+    use std::process::Stdio;
 
-    use super::has_explicit_feature_selection;
+    use anyhow::Context;
+    use tempfile::tempdir;
+
+    use super::CargoFixFeatures;
+    use super::FeatureSelection;
+    use super::WrapperAliasResolution;
+    use super::cargo_fix_features_for;
+    use super::feature_selection;
+    use super::wrapper_alias_resolution;
     use crate::compiler::constants::CARGO_FLAG_ALL_FEATURES;
     use crate::compiler::constants::CARGO_FLAG_FEATURES;
     use crate::compiler::constants::CARGO_FLAG_MANIFEST_PATH;
     use crate::compiler::constants::CARGO_FLAG_NO_DEFAULT_FEATURES;
+    use crate::reporting::AllFeaturesCoverage;
+
+    #[test]
+    fn alias_resolution_reuses_only_regular_independent_copies() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("mend");
+        let alias = directory.path().join("retained-mend");
+        fs::write(&source, "current")?;
+        assert_eq!(
+            wrapper_alias_resolution(&alias),
+            WrapperAliasResolution::NeedsReplacement
+        );
+        super::replace_wrapper_alias(&source, &alias)?;
+        assert_eq!(
+            wrapper_alias_resolution(&alias),
+            WrapperAliasResolution::Current
+        );
+        // The source path can disappear; the build-specific copy remains valid.
+        fs::remove_file(&source)?;
+        assert_eq!(
+            wrapper_alias_resolution(&alias),
+            WrapperAliasResolution::Current
+        );
+        assert_eq!(
+            wrapper_alias_resolution(directory.path()),
+            WrapperAliasResolution::NeedsReplacement
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wrapper_alias_replaces_legacy_hard_links_and_reuses_the_copy() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let source = directory.path().join("cargo-mend");
+        fs::write(&source, b"current build")?;
+        let alias = super::wrapper_alias(directory.path(), &source).context("create alias")?;
+        fs::remove_file(&alias)?;
+        fs::hard_link(&source, &alias)?;
+        assert_eq!(
+            wrapper_alias_resolution(&alias),
+            WrapperAliasResolution::NeedsReplacement
+        );
+        assert_eq!(
+            super::wrapper_alias(directory.path(), &source),
+            Some(alias.clone())
+        );
+        let inode = fs::metadata(&alias)?.ino();
+        assert_ne!(inode, fs::metadata(&source)?.ino());
+        assert_eq!(fs::metadata(&alias)?.nlink(), 1);
+        assert_eq!(
+            super::wrapper_alias(directory.path(), &source),
+            Some(alias.clone())
+        );
+        assert_eq!(fs::metadata(&alias)?.ino(), inode);
+        fs::write(&source, b"changed build")?;
+        assert_eq!(fs::read(alias)?, b"current build");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wrapper_copy_ignores_a_legacy_slot_after_its_source_was_unlinked() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let source = directory.path().join("cargo-mend");
+        let legacy_directory = directory
+            .path()
+            .join(crate::compiler::constants::WRAPPER_DIR_NAME)
+            .join(crate::compiler::settings::current_analysis_fingerprint());
+        fs::create_dir_all(&legacy_directory)?;
+        let legacy = legacy_directory.join("cargo-mend");
+        fs::write(&source, b"legacy overwritten contents")?;
+        fs::hard_link(&source, &legacy)?;
+        fs::remove_file(&source)?;
+        fs::write(&source, b"current build")?;
+        let alias = super::wrapper_alias(directory.path(), &source).context("create copy")?;
+        assert_ne!(alias, legacy);
+        assert_eq!(fs::read(alias)?, b"current build");
+        assert_eq!(fs::read(legacy)?, b"legacy overwritten contents");
+        Ok(())
+    }
+
+    #[test]
+    fn failed_wrapper_copy_keeps_the_published_executable() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let source = directory.path().join("cargo-mend");
+        fs::write(&source, b"retained build")?;
+        let alias = super::wrapper_alias(directory.path(), &source).context("create copy")?;
+        fs::remove_file(&source)?;
+        assert!(super::replace_wrapper_alias(&source, &alias).is_err());
+        assert_eq!(fs::read(alias)?, b"retained build");
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_features_and_incomplete_coverage_keep_the_plan() {
+        for coverage in [
+            AllFeaturesCoverage::Superset,
+            AllFeaturesCoverage::NotGuaranteed,
+        ] {
+            assert_eq!(
+                cargo_fix_features_for(&[OsString::from(CARGO_FLAG_ALL_FEATURES)], coverage),
+                CargoFixFeatures::Plan
+            );
+        }
+        assert_eq!(
+            cargo_fix_features_for(&[], AllFeaturesCoverage::Superset),
+            CargoFixFeatures::All
+        );
+        assert_eq!(
+            cargo_fix_features_for(&[], AllFeaturesCoverage::NotGuaranteed),
+            CargoFixFeatures::Plan
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wrapper_copy_survives_source_rewrite_before_exec() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let installed = directory.path().join("cargo-mend");
+        fs::write(&installed, b"#!/bin/sh\nprintf 'retained build'\n")?;
+        fs::set_permissions(&installed, fs::Permissions::from_mode(0o755))?;
+        let alias = super::wrapper_alias(directory.path(), &installed).context("create alias")?;
+        // The child announces that it is about to exec this alias, then waits
+        // for the source rewrite. No clock or scheduler timing decides the test.
+        let mut child = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "printf 'ready\\n'; read -r go; exec \"$1\"",
+                "wrapper",
+            ])
+            .arg(&alias)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let stdout = child.stdout.take().context("child stdout")?;
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut ready = String::new();
+        reader.read_line(&mut ready)?;
+        assert_eq!(ready, "ready\n");
+        fs::write(&installed, b"#!/bin/sh\nprintf 'rewritten build'\n")?;
+        child
+            .stdin
+            .take()
+            .context("child stdin")?
+            .write_all(b"go\n")?;
+        let mut output = String::new();
+        std::io::Read::read_to_string(&mut reader, &mut output)?;
+        assert!(child.wait()?.success());
+        assert_eq!(output, "retained build");
+        Ok(())
+    }
+
+    #[test]
+    fn wrapper_alias_retains_its_build_when_the_installed_binary_is_replaced() -> anyhow::Result<()>
+    {
+        let temp = tempdir()?;
+        let installed = temp.path().join("cargo-mend");
+        fs::write(&installed, b"first build")?;
+        let alias = super::wrapper_alias(temp.path(), &installed).context("create alias")?;
+        let replacement = temp.path().join("replacement");
+        fs::write(&replacement, b"next build")?;
+        fs::rename(replacement, &installed)?;
+        assert_eq!(fs::read(&alias)?, b"first build");
+        assert_eq!(
+            super::wrapper_alias(temp.path(), &installed),
+            Some(alias.clone())
+        );
+        assert_eq!(fs::read(alias)?, b"first build");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wrapper_alias_replaces_a_legacy_symlink_with_the_retained_build() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let installed = temp.path().join("cargo-mend");
+        fs::write(&installed, b"current build")?;
+        let alias = super::wrapper_alias(temp.path(), &installed).context("create alias")?;
+        fs::remove_file(&alias)?;
+        std::os::unix::fs::symlink(&installed, &alias)?;
+        assert_eq!(
+            super::wrapper_alias(temp.path(), &installed),
+            Some(alias.clone())
+        );
+        assert!(!fs::symlink_metadata(alias)?.file_type().is_symlink());
+        Ok(())
+    }
 
     #[test]
     fn detects_explicit_cargo_feature_selections() {
@@ -562,7 +905,7 @@ mod tests {
             vec![OsString::from(CARGO_FLAG_NO_DEFAULT_FEATURES)],
         ];
         for cargo_args in selections {
-            assert!(has_explicit_feature_selection(&cargo_args));
+            assert_eq!(feature_selection(&cargo_args), FeatureSelection::Explicit);
         }
     }
 
@@ -573,6 +916,6 @@ mod tests {
             OsString::from("Cargo.toml"),
         ];
 
-        assert!(!has_explicit_feature_selection(&cargo_args));
+        assert_eq!(feature_selection(&cargo_args), FeatureSelection::Automatic);
     }
 }

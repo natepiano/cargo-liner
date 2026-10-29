@@ -22,6 +22,8 @@ use super::observation::FingerprintObservation;
 use super::observation::PostWriteAuthorship;
 use super::observation::PostWriteClaimSubject;
 use super::provenance;
+use super::report::DriftNotCheckedReason;
+use super::report::DriftOutcome;
 use super::report::DriftPathAttributionOutcome;
 use super::report::DriftReport;
 use super::report::PostWriteFreePathProtection;
@@ -42,6 +44,7 @@ use crate::coordination_identity::IssuingWorktreeRun;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::edge::RepositorySnapshot;
 use crate::git::WorktreeOperation;
+use crate::git::WorktreeSettlement;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger;
@@ -134,6 +137,19 @@ pub(crate) fn execute(
             return OutputEnvelope::ledger_unreadable(CommandVerb::Drift, &error.to_string());
         },
     };
+    // This must precede reconciliation as well as fingerprint observation: no comparison
+    // ran, so this invocation may publish neither journal events nor disposable caches.
+    // Discovery failures still receive the existing reconciliation error below.
+    if let Ok(context) = WorktreeContext::discover(&invocation_directory) {
+        match WorktreeSettlement::observe(context.administrative_directory()) {
+            WorktreeSettlement::Settled => {},
+            WorktreeSettlement::GitOperationInProgress => {
+                return OutputEnvelope::drift(DriftOutcome::NotChecked {
+                    not_checked: DriftNotCheckedReason::GitOperationInProgress,
+                });
+            },
+        }
+    }
     let reconciled_drift_preflight = match reconcile::reconcile_for_drift(
         &invocation_directory,
         |repository, _, reservations| {
@@ -166,7 +182,9 @@ pub(crate) fn execute(
             &mut capacity_recovery,
         )
     }) {
-        Ok(Enrollment::Enrolled(report)) => OutputEnvelope::drift(report),
+        Ok(Enrollment::Enrolled(report)) => {
+            OutputEnvelope::drift(DriftOutcome::Checked(Box::new(report)))
+        },
         Ok(Enrollment::Unconfigured {
             expected_configuration_path,
         }) => OutputEnvelope::unconfigured(CommandVerb::Drift, &expected_configuration_path),
@@ -290,7 +308,7 @@ fn execute_inner(
         initial_reservations,
         initial_subjects,
         cache_path,
-        observation,
+        mut observation,
         acting_identity,
         resolved_edit_authorization,
         identity_validation,
@@ -300,6 +318,11 @@ fn execute_inner(
         },
         PreparedDriftExecution::Observed(observed) => *observed,
     };
+    observation.changes.select_unit_writes(
+        repository,
+        repository_snapshot,
+        &initial_reservations,
+    )?;
     if !observation
         .changes
         .has_changes_for(initial_subjects.reporting.as_slice())
@@ -1065,8 +1088,10 @@ mod tests {
         assert!(!report.has_reportable_effect());
         assert!(!report.has_blocking_effect());
 
-        let output_envelope = serde_json::to_value(OutputEnvelope::drift(report))
-            .expect("drift output should serialize");
+        let output_envelope = serde_json::to_value(OutputEnvelope::drift(
+            crate::drift::DriftOutcome::Checked(Box::new(report)),
+        ))
+        .expect("drift output should serialize");
         assert_eq!(output_envelope["status"], "clear");
         assert_eq!(output_envelope["exit_code"], 0);
         assert_eq!(output_envelope["reservations"], Value::Array(Vec::new()));

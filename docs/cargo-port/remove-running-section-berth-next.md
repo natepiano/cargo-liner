@@ -679,7 +679,8 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - A cold quiet natedev run (load 12.7–14.3) passed 1269 of 1269 tests, each under 1 s; the slowest took 667 ms. Checkpoint `fde451aa`.
 - Spec 8 (240 of 240 samples, on `bf27c025`): every after p95 is under 100 ms (repair 7.5, reconcile 33.5, claim 27.5, post-tool-use 29.4, release 49.2, gate 35.0 ms), against before medians of 2.9–8.7 s. The full table is in `docs/cargo-berth/as-built/check-under-load.md`.
 
-**Open (showrunner, 2026-10-23: the checkpoint does not wait for a Mac window):** the cold Mac timing on `bf27c025` compared with 88.730 s and 114.970 s, and the cold Mac run on `fde451aa` with every test under 1 s. The first attempt found a phase 22 drift test hung for four days (the cause phase 24 fixed; phase 27 bounds the wait). The `mac` seat runs both when the Mac is free and records them in `check-under-load.md`. A slowdown found there becomes a new phase.
+- Cold Mac runs (2026-10-27, exact archives, cold fixture cache, default threads): `bf27c025` passed 1258/1258 in 109.454 s (setup 9.123 s, load 4.2–14.6), against 88.730 s and 114.970 s; the loads differ, so this is not an equal-load regression proof. `fde451aa` passed 1268/1268 in 104.301 s (load 5.7–11.7), but **402 tests took 1 s or more** (slowest 6.845 s, `tests/board.rs` `cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations`). The Mac goal of this phase failed; phase 38 owns it. Full record and the ten slowest tests: `docs/cargo-berth/as-built/check-under-load.md`.
+- The four-day hung phase 22 drift test was the probe-pipe inheritance this phase fixed (stack and pipe capture); phase 27 bounds every child wait.
 
 **Files:**
 - `crates/cargo-berth-test-support/src/integration_repository.rs`, `crates/cargo-berth/tests/support/` — shared seeds and recorded histories
@@ -825,3 +826,126 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - Checkpoint snapshots, `current_trunk`, reconcile reachability, scoped patch checks, orphan evidence, merge extent, unchanged-scopes releases, release and `IntegratedAs` recovery all read the proof commit. Drift provenance keeps both bases, so local authorship history stays.
 - A local merge that is not pushed shows the existing `not_integrated` state; no new board state or schema. Journal, dispositions and replay are unchanged.
 - Proof: `a_local_merge_waits_for_the_pushed_integration_target` (`tests/lifecycle.rs`) failed before (released before the push); checkpoint and rollback tests (no evidence-lost alert); a repository without a remote keeps the old behaviour. 1295/1295.
+
+### Phase 34 — A merge that brings in only integrated commits is not a write  · status: done
+
+#### As-built
+
+- Why: in cargo-liner-style, `git merge --ff-only style/main` into a clean unit branch fired POST-WRITE INCURSION on other units' paths and opened a first-touch reservation on the 22 merged-in paths. Nothing was written. Showrunner, 2026-10-27.
+- `CommittedWriteSelection` {`Unclassified`, `NoReceivedCommits`, `UnitWrites`} (`src/drift/selection.rs`, built in `src/drift/writes.rs`): before classification, committed drift keeps only paths from commits outside the history of every recorded integration target (repository trunk and child trunks, local tip and available upstream). Staged, unstaged and untracked changes stay unit writes.
+- When every integration tip precedes every phase start, the phase start graph already read proves that nothing was received, with no new Git process. Otherwise one shared range query and one path log select the unit's own content.
+- A checkout of an integration branch keeps the per-holder cover checks. Missing or unreadable ancestry keeps the old conservative observation. Integration targets come from the ledger's recorded targets, not branch-name guesses.
+- No journal, disposition, output contract or replay change.
+- Proof: `an_integrated_fast_forward_is_not_a_post_write` (`tests/drift.rs`) failed before (incursion on a held path, widening onto received paths). Companion tests: the unit's own committed foreign-scope path still incurs after a merge; a dirty edit after the fast-forward still incurs. 1298/1298.
+
+### Phase 35 — Tests leave no paths behind in shared temp roots  · status: done
+
+#### As-built
+
+- Why: builds-unit found test leftovers in `/tmp/cache`, `/tmp/claude` and the live `/tmp/claude/unit`, where the census scans. Showrunner, 2026-10-27.
+- cargo-port `supervisor.rs`: both `/tmp/cache` `cache_root` values come from a test-owned `TempDir`.
+- cargo-berth `tests/hooks.rs`: `SCRATCH_ROOT` is gone; every fixture uses a default `TempDir`. Three wrappers that could no longer fail were removed; callers use the template constants directly.
+- tui_pane `app_config/loaded.rs`: the test `Scratch` owns a `TempDir`, not a fixed `tui_pane-<test>-<pid>` path.
+- cargo-handler: session discovery takes its roots as input (showrunner-approved production change). `SessionRoots` (`pub(super)`, `census/worker_dispatch/mod.rs`) owns the root directories; `SessionRoots::production()` is the one conversion of `SESSION_ROOTS`, built once in `LocalScanner::new`. `WorkerNames::session_dirs`, `resolve` and `name` take `&SessionRoots`. Production roots, session-id parsing and order are unchanged.
+- Every fixture in `worker_dispatch/{tests,dispatch_form_tests,naming_tests,prompt_opening_tests}.rs` and `census/scan/activity_scan_tests.rs` lives in a `TempDir`. New test `session_discovery_uses_only_supplied_roots_and_preserves_id_boundaries_and_order`.
+- Proof: cargo-port 1082/1082, cargo-handler 683/683, tui_pane 1140/1140, cargo-berth 1298/1298. No new entry in the three shared roots after the suites.
+
+### Phase 36 — A background launch or a git operation in progress is not a write  · status: done
+
+#### As-built
+
+- Why: on 2026-10-27 names-unit ran `git fetch …; git merge --ff-only origin/style/main` as one background Bash call. Claude Code runs the PostToolUse hook when a background command is launched, so cargo-berth read the tree while git was still checking out `69982ccb`: three changed files were on disk while HEAD and the index still named `38bad718`. It opened a first-touch reservation on them; `git status` was clean right after. A replay of the finished fast-forward on a private ledger copy opened no claim, so the race was the cause.
+- `BashLaunch::{Foreground(ObservedBashCall), Background}` (`src/hook/post_tool_use.rs`): a launch is background when `tool_input.run_in_background` is true or `tool_response.backgroundTaskId` is a non-empty string. Only `Foreground` can build a drift request; a background launch records nothing. The next hook observes its writes.
+- `WorktreeSettlement::{Settled, GitOperationInProgress}` (`src/git/worktree_operation.rs`): `index.lock` in the worktree's own git dir means git is still writing. The hook and shared drift preparation record nothing then; the next hook reads the settled tree. `MERGE_HEAD` trial-merge handling is unchanged.
+- No journal, disposition, output contract or replay change.
+- Proof: `post_tool_use_defers_a_background_bash_launch` and `post_tool_use_defers_a_worktrees_index_lock` (`tests/hooks.rs`) failed before (each opened a first-touch reservation). Guard: `an_integrated_merge_fast_forward_without_a_reservation_is_not_a_write` (`tests/drift.rs`). 1303/1303.
+
+### Phase 37 — A git lock is reported, never read as a clear worktree  · status: done
+
+#### As-built
+
+- Why: the Claude review of phase 36 (2026-10-27) found two defects. A stale `index.lock` made every PostToolUse hook silent for good, and an explicit `cargo-berth drift` printed the unchanged report although nothing was compared. The drift-level lock check had no test that could fail, because the hook returned before drift ran.
+- Drift is the only place that checks `index.lock`. It reads the worktree's own git dir (a linked worktree's too) before reconciliation, journal work or fingerprint reads. The hook's own settlement check and `WorktreeContext::discover` call were removed; the hook goes through drift like every other caller.
+- `DriftOutcome::{Checked(Box<DriftReport>), NotChecked { not_checked: DriftNotCheckedReason }}` with `DriftNotCheckedReason::GitOperationInProgress` (crate-private). Status `git_operation_in_progress`; the message says drift was not checked. It writes no journal event, fingerprint or told-once record. `DeferredGitOperationInProgress` was removed from `WorktreeComparability`. The checked-report wire shape is unchanged; the output contract was regenerated (version stays 6).
+- The PostToolUse hook prints nothing for `NotChecked`; explicit `cargo-berth drift` shows it, so a stale lock is visible. Post-commit warns. Berth does not delete or age the lock.
+- No journal, disposition, ledger schema or replay change.
+- Proof: `drift_reports_an_index_lock_without_comparing_or_writing` (`tests/drift.rs`) failed before (status `clear`). It snapshots the berth state and the linked git dir, so any write fails it. The phase 36 hook tests and the phase 34 fast-forward guards stay green. 1304/1304; 5/5 support.
+
+### Phase 38 — Fewer process starts in each slow cargo-berth test (round 1 of 3)  · status: done
+
+#### As-built
+
+- Why: the cold Mac run on `fde451aa` had 402 of 1268 cargo-berth tests at 1 s or more. Measured on the Mac (571d24ac): the 20 slowest are slow alone (1.7–3.2 s), each with 140–330 process starts. Packaging: round 1 lands as this phase so that phase 41 (same files) can go first; the goal continues as phase 38b.
+- Product Git reads: exact commit objects, commit history (`git/history.rs`, `CommitHistory`) and merge-result tree paths now use gix. A repository with replacement refs, a shallow boundary or legacy grafts keeps the Git child (`GitReadRequirement::HistoryOverrides`); revision expressions keep the Git batch reader. On the 20 tests: `unmerged_branch_paths` 330 → 262 starts, `target_commit_history` 182 → 118, cat-file readers 184 → 125. The installation probe is already once per process.
+- Managed hook: the shell no longer starts berth for a valid branch record whose old and new values are the same.
+- Fixtures: integration-pair seeds and split-phase states are recorded `BeforeRun` templates (32 → 34); prepared-gate cases restore one snapshot.
+- Lock test: `queued_writer_acquires_without_a_retry_sleep_after_release` counts one try-lock and one queued wait (`MutationLockRequest::{Granted, Queued}`); no wall-clock time.
+- Mac template cache key uses the canonical `current_exe` (a symlinked builder collided with its cache folder).
+- Result: the 20 tests 4888 → 4410 process starts; alone sum 79.8 → 59.6 s at varying load; every one still 2.3–3.8 s. Full Mac run 1306/1306 with 355 at 1 s or more (load 16–28; not comparable with the earlier 333/1303). Process-start pin updated from a complete Mac capture (42,291 starts). natedev 1307/1307.
+
+### Phase 38b — Every cargo-berth and cargo-mend test runs under a second on the Mac  · status: done
+
+**Why:** the cold Mac run on `fde451aa` (phase 24) passed 1268/1268, but 402 tests took 1 s or more (slowest 6.845 s; nextest 104 s). On natedev every test is under 1 s (slowest 0.667 s). The user rule: a test that takes seconds is a defect. The Mac run starts about 38,700 processes; a process start costs much more on macOS. (showrunner, 2026-10-28) The cargo-mend Mac suite is in scope too: 340 of 850 tests took 1 s or more in the full Mac run on the phase 39 merge, with the two phase 39 first-run tests at 1.6 s and 2.0 s (0.4 s alone). The parallel run does not show how much of each test's time is its own work and how much is contention.
+
+**Work Order:**
+1. Measured. cargo-berth (after phase 38): the 20 slowest are still 2.3–3.8 s alone, at 110–320 process starts each. cargo-mend (`eaa5bab1`): 286 of 850 at 1 s or more; the 20 slowest are 1.4–2.6 s alone. The mend causes: each mend run repeats the cargo entry and the toolchain probes, some tests run three fixtures and three mend runs, post-fix validation starts cargo again, and preservation tests compile fixtures explicitly. The Mac cargo-tile capture shim is tile-unit's; measure each cut against the same shim as its baseline.
+2. Cut the measured cost where it lives: fewer process starts per test (shared recorded templates through `prepare_fixture_build`, in-process `gix` reads in place of Git children where the product already has them), and product work a test repeats with no new assertion. Each cut is measured on the Mac against the tree before it.
+3. Update the process-start pin from a complete Mac capture.
+
+**Verification:** cold full Mac runs of `cargo-berth` and `cargo-mend` on the phase checkpoint with default threads: every test under 1.000 s, all pass. natedev stays all under 1 s. Product-cost tests count work, never wall-clock time. No skipped tests, no thread-count change, no raised timeout, no wall-clock assertion. Round 1 is phase 38; at most 2 more rounds; then land if the branch has fewer slow Mac tests than main.
+
+### Phase 39 — The first cargo-mend run after an install examines the code  · status: done
+
+#### As-built
+
+- Why: (showrunner, 2026-10-27) the first `cargo mend --all-targets --workspace --fail-on-warn` after a new cargo-mend install failed with "no analysis was produced for this crate"; a rerun passed.
+- Measured cause: the per-build wrapper alias was a symlink to the installed binary. When the binary was replaced while a run was in progress, the old build's alias followed the new binary. The new build wrote its reports beside the old build's unit ids, and the old run rejected them. The log of the original run has no per-unit capture, so this race matches the symptom but is not proved to be that run's cause. A report from another build beside a fresh cargo unit gave the same failure.
+- The alias is now a hard link (a copy across filesystems) that keeps its own build. A legacy symlink is replaced atomically. On Unix a reused alias must be a regular file with the same device and inode as the executable.
+- `ReportCacheState::{Compatible, AnotherMendBuild, InputsChanged, Missing, Unreadable}` replaces the compatibility bool. `AnalysisCache::{Compatible, RebuildRequired(Vec<PathBuf>), Unrepairable}`: for units whose report is not compatible, mend removes only their `.rmeta` and runs the same cargo check once more. A second incompatible result fails. The "touch a source file" advice remains only for `Unrepairable` (cargo gave no analyzable selected unit).
+- Proof: `fresh_units_with_another_builds_reports_are_examined_on_the_first_run` failed before (`NoAnalysisProduced`). Also `fresh_units_without_reports_are_examined_on_the_first_run`, `cache_repair_invalidates_only_unusable_selected_units`, `report_cache_states_distinguish_missing_build_and_input_changes`, `wrapper_alias_retains_its_build_when_the_installed_binary_is_replaced`, `wrapper_alias_replaces_a_legacy_symlink_with_the_retained_build`. 827/827.
+
+### Phase 40 — `cargo mend --fix` keeps a local binding that shadows an import  · status: done
+
+#### As-built
+
+- Why: (showrunner, 2026-10-28) a wrong result. A module had `use super::invocation_rows::row;`, and `if let Ok(mut row) = registration_row(..) { row.invocation_id = identity; rows.push(row); }` in one function. `cargo mend --fix` rewrote the local's uses to `invocation_rows::row`, the compiler failed (E0609, E0308) and mend rolled back (tile-unit's split of cargo-tile `census/scan.rs`).
+- Cause: `ReferenceCollector` in `fixes/prefer_module_import/references.rs` (the one collector for parent-module and sibling-module qualification) registered `let`, `let … else`, `match` arm, closure, `for` and function parameter bindings, but not `if let`, `while let` or let-chain bindings.
+- `visit_expr_if` and `visit_expr_while` open a scope for the condition and the body. `visit_condition` visits `&&` operands from left to right: a `let` initializer sees the outer bindings, and its pattern binds for later operands and the body. The scope closes before the `else` branch. Patterns use the existing `collect_pat_bindings` (`mut`, `ref`, `@`, tuple, struct, slice, alternatives).
+- Proof: `module_import_fix_keeps_if_let_registration_row_local` failed before with the exact rewrite from the report. Also `conditional_bindings_resolve_initializers_chains_bodies_and_else_separately` and `existing_binding_forms_keep_locals_and_resolve_only_outer_import_uses`. 853/853 on the Mac.
+
+### Phase 41 — A merge extent holds only the unit's own changes, not the trunk's newer ones  · status: todo
+
+**Why:** (showrunner, 2026-10-28) a wrong result. Tile reservation 01a17e32 has a race extent of only its plan docs. Its merge extent key (trunk 0e5e78dd, head e21d5b93) lists cargo-mend `compiler/facade/`, `compiler/exposure/` and `compiler/visibility/` files and the handler and berth-next plan docs. Those came into the trunk from other units after tile's branch point. They gave false incursions: 01a1821a on style types' 01a18160 (`policy.rs`, `scan/record.rs`), and earlier ones into the handler and berth-next docs. Checked on the board: `git diff --name-only 0e5e78dd e21d5b93` names 60 paths, 8 of them cargo-mend; `git diff --name-only $(git merge-base 0e5e78dd e21d5b93) e21d5b93` names 52 and no cargo-mend path. So the extent compares against the trunk tip, not the merge base.
+
+**Work Order:**
+1. Find where the merge extent's paths are computed and every reader that takes them as the unit's own changes (incursion detection included).
+2. The unit's committed changes are `merge-base(trunk, head)..head`, plus the working tree and index against `head`, plus untracked paths. A trunk that moved after the branch point adds nothing to them.
+
+**Verification:** a fail-before test (under 1 s): a branch from trunk A, trunk moves to B with a change to file F, the branch does not touch F; its merge extent must not name F and no incursion on a holder of F is reported. `cargo-berth` lint and suite pass, each test under 1 s.
+
+**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+
+### Phase 42 — The post-tool-use hook costs little CPU on a large ledger  · status: todo
+
+**Why:** (showrunner, 2026-10-28, urgent cost defect; builds-unit perf 11:28–11:40 AST) the post-tool-use hook runs after every Bash call in every session. In a hana worktree one run costs 2–9 CPU-s (0.4 core steady, about 5 cores at peaks). It loads 542 reservations and 15,245 race scopes from a 24 MB checkpoint and a 146 MB journal, 9x the 16 MB compaction limit (`ledger/constants.rs:28`). It checks overlap pair by pair with allocating compares (`ledger/journal.rs:1245-1252`, `scope/antichain.rs:76`) and computes 25 full ancestor sets (`git/reachability.rs:336`, `:675-682`). Perf data (read only): `/tmp/claude-1000/-home-natepiano-worktrees-claude-build-followups-builds/51505394-82db-43d3-a528-136f4ee38d7a/scratchpad/berth.data`.
+
+**Work Order (in this order):**
+1. Find why compaction stops. Three leftover `journal.ndjson.compact.tmp.*` files (about 135 MB each, Oct 21, 21, 23) are in the ledger folder. Find what left them and fix that. Do not delete them by hand. The unit director runs compaction once on the real ledger after install.
+2. Leave released reservations out of the post-tool-use pass.
+3. Compute ahead/behind only for the caller's worktree.
+4. Compare path components without allocation, and index scopes by their first component.
+5. (showrunner, 14:3x, same cause) `cargo-berth check` takes 29–39 s on a copy of hana_catalyst-assembly's ledger, and the 25 s pre-seat check of assembly-unit times out. Check runs repository-wide acting-head containment three times (decide, after reconcile, first-touch acquisition; `verb/check.rs`), each with about 23 merge-tree pairs and 114 history reads on tips of about 6,000 commits (`reservation/containment.rs`, `git/reachability.rs`). Compute reachable ancestry once per resolved trunk tip, and cache merge-tree pair results for the whole check so each pair runs once. Do not raise the timeout.
+
+**Verification:** each fix has a test that is red first, each under 1 s. Measure the hook's CPU-s per call in a hana worktree before and after (read only on the real ledger). Measure `check` on the assembly ledger copy before and after. `cargo-berth` lint and suite pass.
+
+**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+
+### Phase 44 — A rebuilt cargo-mend runs its own driver, not an earlier copy  · status: todo
+
+**Why:** (phase 38b review, 2026-10-28) phase 38b made the wrapper alias an independent copy under `mend-wrapper/<fingerprint>/independent-copy-v1/`, and reuses any regular file with one link there. The fingerprint is version + `MEND_GIT_HASH` + `MEND_BUILD_ID`, and `build.rs` renews those only when HEAD or a branch ref changes. A development rebuild with an uncommitted change keeps the same fingerprint, so `cargo mend` runs the copy of the earlier build as its rustc driver. The hard-link version replaced the alias when its inode differed from the running binary.
+
+**Work Order:** key the copy on the running executable's metadata as well (length and modification time), read without reading the binary. Test, red first: rebuild in place (same fingerprint, new contents, new mtime), run `wrapper_alias`, and read the new contents back.
+
+**Verification:** the new test, under 1 s; `cargo-mend` Mac suite and lint pass.
+
+**Files:** `crates/cargo-mend/src/compiler/build/execute.rs`

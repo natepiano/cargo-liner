@@ -1,6 +1,8 @@
 //! Discovery and measurement of cargo invocation groups.
 
 pub(crate) mod command_text;
+#[cfg(test)]
+pub(crate) mod cpu_observation;
 pub(crate) mod direct_capture;
 pub(crate) mod invocation_cpu_accounting;
 #[cfg(test)]

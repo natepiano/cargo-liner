@@ -3,10 +3,10 @@ use tui_pane::Action;
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum ProjectListAction {
-        ExpandAll   => ("expand_all",   "+", "Expand all");
-        CollapseAll => ("collapse_all", "-", "Collapse all");
-        ExpandRow   => ("expand_row",   "→", "Expand row");
-        CollapseRow => ("collapse_row", "←", "Collapse row");
+        ExpandAll   => ("expand_all",   "expand all", "Expand all");
+        CollapseAll => ("collapse_all", "collapse all", "Collapse all");
+        ExpandRow   => ("expand_row",   "expand row", "Expand row");
+        CollapseRow => ("collapse_row", "collapse row", "Collapse row");
     }
 }
 
@@ -70,3 +70,10 @@ tui_pane::action_enum! {
 pub(super) fn action_toml_key<A: Action>(action: A) -> &'static str { action.toml_key() }
 
 pub(super) fn action_from_toml_key<A: Action>(key: &str) -> Option<A> { A::from_toml_key(key) }
+
+tui_pane::action_enum! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum SccacheAction {
+        Cancel => ("cancel", "close", "Close sccache stats");
+    }
+}

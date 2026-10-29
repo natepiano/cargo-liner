@@ -289,7 +289,11 @@ impl LedgerTemplate {
                 return root;
             }
         }
-        let test_binary = env::current_exe().expect("test binary path should resolve");
+        // macOS can name the setup script's `builder` symlink here. Resolve it
+        // before using its file name beside that link as a cache directory.
+        let test_binary =
+            fs::canonicalize(env::current_exe().expect("test binary path should resolve"))
+                .expect("test binary should canonicalize");
         let builds = Path::new(self.repository.target_directory)
             .join(TEMPLATES_DIRECTORY)
             .join(

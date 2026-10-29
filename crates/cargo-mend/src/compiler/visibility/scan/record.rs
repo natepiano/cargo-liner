@@ -12,6 +12,7 @@ use rustc_span::Symbol;
 use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
 
+use super::AnnotationHandling;
 use super::ExposureConsumers;
 use super::FindingParams;
 use super::ItemCategory;
@@ -27,10 +28,13 @@ use super::classify::VisibilityFindingContext;
 use crate::compiler::cfg_excluded_references::CfgExcludedReference;
 use crate::compiler::constants::PRELUDE_MODULE_NAME;
 use crate::compiler::facade;
+use crate::compiler::facade::ExternalChildUsage;
+use crate::compiler::facade::FacadeSpellingAgreement;
 use crate::compiler::facade::ParentFacadeExportStatus;
 use crate::compiler::facade::ParentFacadeFixSupport;
 use crate::compiler::facade::ParentFacadeReach;
 use crate::compiler::facade::ParentFacadeSpelling;
+use crate::compiler::facade::ParentReach;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::persistence::StoredCallerReconciliation;
 use crate::compiler::persistence::StoredConstraintOutcome;
@@ -104,7 +108,7 @@ pub(super) fn record_visibility_findings(
         ExposureConsumers::AllVisibilityFindings,
     )?;
 
-    if record_forbidden_visibility_annotation(
+    match record_forbidden_visibility_annotation(
         ctx,
         item,
         &annotation,
@@ -113,7 +117,8 @@ pub(super) fn record_visibility_findings(
         signature_exposure,
         sink,
     )? {
-        return Ok(());
+        AnnotationHandling::Handled => return Ok(()),
+        AnnotationHandling::Continue => {},
     }
     record_review_pub_mod(ctx, item, &annotation, &finding_context, sink)?;
     maybe_record_unused_pub(
@@ -217,14 +222,14 @@ fn maybe_record_unused_pub(
         matches!(signature_exposure, SignatureExposure::ExposedAt(_))
             && signature_exposure.is_satisfied_by(annotation.reach(item.def_id, ctx.tcx), ctx);
     if parent_facade_exports_item(parent_facade_analysis)
-        || facade::path_exists_outside_child_module(
+        || facade::external_child_usage(
             ctx.source_cache,
             ctx.source_root,
             ctx.tcx,
             ctx.module_sources,
             &use_sites::parent_module_path_segments(ctx.tcx, item.def_id),
             name,
-        )
+        ) == ExternalChildUsage::Present
         || annotation_reaches_signature
     {
         return Ok(());
@@ -277,7 +282,7 @@ pub(super) fn record_forbidden_visibility_annotation(
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     signature_exposure: SignatureExposure,
     sink: &mut FindingsSink,
-) -> Result<bool> {
+) -> Result<AnnotationHandling> {
     if matches!(annotation.syntax(), VisibilitySyntax::Crate)
         && facade_is_possible(ctx, item.def_id)
         && joined_required_reach(
@@ -299,30 +304,20 @@ pub(super) fn record_forbidden_visibility_annotation(
             },
             sink,
         );
-        return Ok(false);
+        return Ok(AnnotationHandling::Continue);
+    }
+    if matches!(
+        annotation.syntax(),
+        VisibilitySyntax::Crate
+            | VisibilitySyntax::InCrate
+            | VisibilitySyntax::InParent
+            | VisibilitySyntax::InCurrent
+            | VisibilitySyntax::InPath(_)
+    ) && cfg_excluded_source_names_item(ctx, item)
+    {
+        return Ok(AnnotationHandling::Handled);
     }
     match annotation.syntax() {
-        // `true` means `annotation` is handled, not that a finding was recorded.
-        // `record_overbroad_pub_crate` and `record_forbidden_pub_in_crate`
-        // return `true` on every path reaching a decision, and both callers
-        // stop there. Returning `false` would pass a `pub(crate) mod` to
-        // `record_review_pub_mod`, which reports every module it receives:
-        // suppressing one diagnostic would produce another on the same line.
-        //
-        // Both narrowing diagnostics need `cfg_excluded_source_names_item`:
-        // `DiagnosticCode::OverbroadPubCrate` suggests a narrower spelling,
-        // and `DiagnosticCode::ForbiddenPubInCrate` suggests removing the
-        // annotation outright.
-        // Either repair would prevent the excluded configuration compiling.
-        VisibilitySyntax::Crate
-        | VisibilitySyntax::InCrate
-        | VisibilitySyntax::InParent
-        | VisibilitySyntax::InCurrent
-        | VisibilitySyntax::InPath(_)
-            if cfg_excluded_source_names_item(ctx, item) =>
-        {
-            Ok(true)
-        },
         VisibilitySyntax::Crate | VisibilitySyntax::InCrate => record_overbroad_pub_crate(
             ctx,
             item,
@@ -346,7 +341,7 @@ pub(super) fn record_forbidden_visibility_annotation(
         VisibilitySyntax::Private
         | VisibilitySyntax::Public
         | VisibilitySyntax::Parent
-        | VisibilitySyntax::Current => Ok(false),
+        | VisibilitySyntax::Current => Ok(AnnotationHandling::Continue),
     }
 }
 
@@ -588,10 +583,10 @@ fn record_overbroad_pub_crate(
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     signature_exposure: SignatureExposure,
     sink: &mut FindingsSink,
-) -> Result<bool> {
+) -> Result<AnnotationHandling> {
     if item.category == ItemCategory::Use && matches!(annotation.syntax(), VisibilitySyntax::Crate)
     {
-        return Ok(false);
+        return Ok(AnnotationHandling::Continue);
     }
     let reach_requirements = ReachRequirements::for_analysis(
         ctx,
@@ -647,7 +642,7 @@ fn record_overbroad_pub_crate(
         },
         sink,
     );
-    Ok(true)
+    Ok(AnnotationHandling::Handled)
 }
 
 struct OverbroadPubCrateAdvice {
@@ -832,26 +827,24 @@ fn overbroad_pub_crate_parent_facade_reason(
     module_location: ModuleLocation,
 ) -> OverbroadPubCrateSuggestionReason {
     let parent_facade_reach = parent_facade_reach(parent_facade_analysis, ctx);
-    if !parent_facade_reach.reaches_parent {
+    if parent_facade_reach.parent_reach == ParentReach::RestrictedToChild {
         return OverbroadPubCrateSuggestionReason::LocationPolicy { module_location };
     }
     let boundary_path = resolved_facade_boundary_path(parent_facade_analysis, ctx);
-    match (
-        parent_facade_reach.spelling,
-        parent_facade_reach.spelling_conflict,
-        boundary_path,
-    ) {
-        (ParentFacadeSpelling::Super, false, Some(boundary_path)) => {
-            OverbroadPubCrateSuggestionReason::ExactPubSuperParentFacade { boundary_path }
-        },
-        (ParentFacadeSpelling::Super, false, None) => {
-            OverbroadPubCrateSuggestionReason::ExactPubSuperParentFacadeWithoutKnownBoundary
-        },
-        (_, _, Some(boundary_path)) => {
-            OverbroadPubCrateSuggestionReason::ParentFacade { boundary_path }
-        },
-        (_, _, None) => OverbroadPubCrateSuggestionReason::ParentFacadeWithoutKnownBoundary,
+    if parent_facade_reach.spelling == ParentFacadeSpelling::Super
+        && parent_facade_reach.spelling_agreement == FacadeSpellingAgreement::Consistent
+    {
+        return boundary_path.map_or(
+            OverbroadPubCrateSuggestionReason::ExactPubSuperParentFacadeWithoutKnownBoundary,
+            |boundary_path| OverbroadPubCrateSuggestionReason::ExactPubSuperParentFacade {
+                boundary_path,
+            },
+        );
     }
+    boundary_path.map_or(
+        OverbroadPubCrateSuggestionReason::ParentFacadeWithoutKnownBoundary,
+        |boundary_path| OverbroadPubCrateSuggestionReason::ParentFacade { boundary_path },
+    )
 }
 
 fn overbroad_pub_crate_no_facade_advice(
@@ -930,7 +923,7 @@ fn record_forbidden_pub_in_crate(
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
     signature_exposure: SignatureExposure,
     sink: &mut FindingsSink,
-) -> Result<bool> {
+) -> Result<AnnotationHandling> {
     let reach_requirements = ReachRequirements::for_analysis(
         ctx,
         resolved_facade_reach(parent_facade_analysis),
@@ -949,14 +942,14 @@ fn record_forbidden_pub_in_crate(
             },
             sink,
         );
-        return Ok(false);
+        return Ok(AnnotationHandling::Continue);
     }
 
     if !matches!(
         annotation.syntax(),
         VisibilitySyntax::InParent | VisibilitySyntax::InCurrent | VisibilitySyntax::InPath(_)
     ) {
-        return Ok(false);
+        return Ok(AnnotationHandling::Continue);
     }
     let ForbiddenPubInText {
         message,
@@ -1003,7 +996,7 @@ fn record_forbidden_pub_in_crate(
         },
         sink,
     );
-    Ok(true)
+    Ok(AnnotationHandling::Handled)
 }
 
 fn public_signature_pub_in_advice(annotation: &VisibilityAnnotation<'_>) -> ForbiddenPubInAdvice {
@@ -2076,7 +2069,7 @@ fn maybe_record_narrow_to_pub_crate_nested(
     };
     let combined_required_reach = signature_exposure.combined_with(required, ctx);
     let crate_reach = VisibilityAnnotation::Crate.reach(item.def_id, ctx.tcx);
-    if parent_facade_analysis.nearest.spelling_conflict
+    if parent_facade_analysis.nearest.spelling_agreement == FacadeSpellingAgreement::Conflicting
         || !reach_is_pub_crate(combined_required_reach, ctx)
         || !matches!(
             crate_reach.compare(combined_required_reach, ctx.tcx),
@@ -2140,7 +2133,7 @@ fn parent_facade_reach(
     policy::parent_facade_reach_for_occurrence(
         ctx,
         occurrence,
-        parent_facade_analysis.nearest.spelling_conflict,
+        parent_facade_analysis.nearest.spelling_agreement,
     )
 }
 
@@ -2850,11 +2843,14 @@ mod tests {
     use super::PubCrateNarrowing;
     use super::ReachRequirements;
     use super::ValidatedRestrictedBoundary;
+    use crate::compiler::facade::FacadeSpellingAgreement;
     use crate::compiler::facade::ParentFacadeExportStatus;
     use crate::compiler::facade::ParentFacadeFixSupport;
     use crate::compiler::facade::ParentFacadeReach;
     use crate::compiler::facade::ParentFacadeSpelling;
     use crate::compiler::facade::ParentFacadeUsage;
+    use crate::compiler::facade::ParentReach;
+    use crate::compiler::visibility::VisibilityAudience;
     use crate::compiler::visibility::annotation::VisibilityReach;
     use crate::compiler::visibility::annotation::VisibilitySyntax;
     use crate::compiler::visibility::policy::NoFacadeVisibilityRepair;
@@ -2879,14 +2875,14 @@ mod tests {
         assert!(
             requirements
                 .required_reach()
-                .is_some_and(VisibilityReach::is_public)
+                .is_some_and(|reach| reach.audience() == VisibilityAudience::Public)
         );
         let signature = ReachRequirements::SignatureOnly { required };
         assert!(signature.facade_reach().is_none());
         assert!(
             signature
                 .required_reach()
-                .is_some_and(VisibilityReach::is_public)
+                .is_some_and(|reach| reach.audience() == VisibilityAudience::Public)
         );
         assert!(ReachRequirements::Unconstrained.facade_reach().is_none());
         assert!(ReachRequirements::Unconstrained.required_reach().is_none());
@@ -3002,9 +2998,9 @@ mod tests {
             usage:               ParentFacadeUsage::Unused,
             fix_support:         ParentFacadeFixSupport::Unsupported,
             parent_facade_reach: ParentFacadeReach {
-                reaches_parent:    true,
-                spelling:          ParentFacadeSpelling::Crate,
-                spelling_conflict: false,
+                parent_reach:       ParentReach::ReachesParent,
+                spelling:           ParentFacadeSpelling::Crate,
+                spelling_agreement: FacadeSpellingAgreement::Consistent,
             },
             parent_path:         "src/lib.rs".into(),
             parent_rel_path:     "src/lib.rs".into(),
@@ -3027,7 +3023,7 @@ mod tests {
             owner_module: CRATE_DEF_ID,
             visibility,
             facade_spelling: ParentFacadeSpelling::Crate,
-            spelling_conflict: false,
+            spelling_agreement: FacadeSpellingAgreement::Consistent,
             use_kind: FacadeUseKind::Glob,
             alias: None,
             export_names: Vec::new(),
@@ -3036,9 +3032,9 @@ mod tests {
         };
         let analysis = ParentFacadeAnalysis {
             nearest:                     ParentFacadeOccurrences {
-                selected:          &occurrence,
-                matching:          vec![&occurrence],
-                spelling_conflict: false,
+                selected:           &occurrence,
+                matching:           vec![&occurrence],
+                spelling_agreement: FacadeSpellingAgreement::Consistent,
             },
             chain:                       FacadeChainResolution::Unresolvable {
                 blocker: FacadeChainBlocker::Glob(&occurrence),

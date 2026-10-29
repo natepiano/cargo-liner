@@ -19,6 +19,8 @@ use super::error::GitError;
 use super::object::CommitAvailability;
 use super::object::CommitObjectResolution;
 use super::object::OperationObjectReader;
+use super::reachability;
+use super::reachability::ResolvedTrunkAncestry;
 use super::read;
 use super::refs::HeadAttachment;
 use crate::ids::GitObjectId;
@@ -38,6 +40,14 @@ struct BranchPathKey {
     trunk:    GitObjectId,
     head:     GitObjectId,
 }
+
+#[derive(Eq, Hash, PartialEq)]
+struct TrunkAncestryKey {
+    checkout: PathBuf,
+    trunk:    GitObjectId,
+}
+
+type TrunkAncestryFacts = HashMap<TrunkAncestryKey, Arc<RepositoryFact<ResolvedTrunkAncestry>>>;
 
 type BranchPathFacts = HashMap<BranchPathKey, Arc<RepositoryFact<Vec<ReservationScopePath>>>>;
 type CheckoutStatusFacts = HashMap<PathBuf, Arc<RepositoryFact<CheckoutStatus>>>;
@@ -66,6 +76,7 @@ pub(crate) struct RepositorySnapshot {
     status:                Arc<RepositoryFact<CheckoutStatus>>,
     other_checkout_status: Arc<Mutex<CheckoutStatusFacts>>,
     branch_paths:          Arc<Mutex<BranchPathFacts>>,
+    trunk_ancestry:        Arc<Mutex<TrunkAncestryFacts>>,
     head:                  Arc<RepositoryFact<GitObjectId>>,
     attachment:            Arc<RepositoryFact<HeadAttachment>>,
     objects:               OperationObjectReader,
@@ -86,6 +97,7 @@ impl RepositorySnapshot {
             status: Arc::new(RepositoryFact::unread()),
             other_checkout_status: Arc::new(Mutex::new(HashMap::new())),
             branch_paths: Arc::new(Mutex::new(HashMap::new())),
+            trunk_ancestry: Arc::new(Mutex::new(HashMap::new())),
             head: Arc::new(RepositoryFact::unread()),
             attachment: Arc::new(RepositoryFact::unread()),
         }
@@ -100,6 +112,7 @@ impl RepositorySnapshot {
             status:                Arc::new(RepositoryFact::unread()),
             other_checkout_status: Arc::new(Mutex::new(HashMap::new())),
             branch_paths:          Arc::clone(&self.branch_paths),
+            trunk_ancestry:        Arc::clone(&self.trunk_ancestry),
             head:                  Arc::new(RepositoryFact::unread()),
             attachment:            Arc::new(RepositoryFact::unread()),
             objects:               self.objects.clone(),
@@ -202,8 +215,27 @@ impl RepositorySnapshot {
             .clone();
         let mut queries = 0;
         let paths = fact.read(|| {
-            queries = super::unmerged_branch_path_queries(trunk, head);
-            super::unmerged_branch_paths(checkout, trunk, head)
+            if trunk == head {
+                return Ok(Vec::new());
+            }
+            let ancestry_key = TrunkAncestryKey {
+                checkout: std::fs::canonicalize(checkout)?,
+                trunk:    trunk.clone(),
+            };
+            let ancestry = self
+                .trunk_ancestry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(ancestry_key)
+                .or_insert_with(|| Arc::new(RepositoryFact::unread()))
+                .clone();
+            let ancestry =
+                ancestry.read(|| reachability::ResolvedTrunkAncestry::read(checkout, trunk))?;
+            let observation = reachability::observe_unmerged_branch_paths_with_ancestry(
+                checkout, trunk, head, ancestry,
+            )?;
+            queries = observation.git_queries;
+            Ok(observation.paths)
         })?;
         Ok((paths.clone(), queries))
     }
@@ -283,6 +315,29 @@ mod tests {
     use crate::git::HeadAttachment;
     use crate::git::fixture::FixtureResult;
     use crate::git::fixture::PatchEquivalenceFixture;
+
+    #[test]
+    fn check_trunk_ancestry_is_read_once_for_distinct_heads() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let first = fixture.phase_start_head.clone();
+        fixture.write("second.txt", "second")?;
+        let second = fixture.commit("empty observation")?;
+        fixture.write("trunk.txt", "trunk")?;
+        let trunk = fixture.commit("empty observation")?;
+        let snapshot = RepositorySnapshot::discover(fixture.root())?;
+        let work = crate::test_work::WorkCounter::start();
+        for head in [&first, &second] {
+            let (paths, queries) = snapshot.unmerged_branch_paths(fixture.root(), &trunk, head)?;
+            assert_eq!(paths, Vec::new());
+            assert_eq!(queries, 0);
+        }
+        assert_eq!(
+            work.finish().history_reads,
+            1,
+            "one walk per resolved trunk tip"
+        );
+        Ok(())
+    }
 
     #[test]
     fn repository_snapshot_shares_holder_status_between_workers_and_path_aliases() -> FixtureResult
@@ -365,12 +420,15 @@ mod tests {
                 assert!(paths.is_empty(), "the new commit changes no tree paths");
                 queries += started;
             }
-            assert_eq!(queries, 2, "all workers share one branch-path read");
+            assert_eq!(
+                queries, 1,
+                "all workers share one merge-tree read; tree comparison starts no child"
+            );
             Ok(())
         })?;
         let (_, queries) = fresh.unmerged_branch_paths(fixture.root(), &head, current_head)?;
         assert_eq!(
-            queries, 2,
+            queries, 1,
             "a fresh pass reads its own branch-path evidence"
         );
         Ok(())

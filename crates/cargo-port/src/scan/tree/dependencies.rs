@@ -1,10 +1,10 @@
+use tui_pane::normalize_path_components;
+
 use super::AbsolutePath;
 use super::CARGO_TOML;
-use super::Component;
 use super::HashMap;
 use super::HashSet;
 use super::Path;
-use super::PathBuf;
 use super::Table;
 use super::Value;
 
@@ -94,20 +94,4 @@ fn resolve_dependency_path(path: &str, base_path: &Path) -> AbsolutePath {
         base_path.join(raw_path)
     };
     AbsolutePath::from(normalize_path_components(&resolved))
-}
-
-fn normalize_path_components(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {},
-            Component::ParentDir => {
-                normalized.pop();
-            },
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
-                normalized.push(component.as_os_str());
-            },
-        }
-    }
-    normalized
 }

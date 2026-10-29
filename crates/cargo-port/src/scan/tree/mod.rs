@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Component;
 use std::path::Path;
-use std::path::PathBuf;
 
 use itertools::Itertools;
 use toml::Table;

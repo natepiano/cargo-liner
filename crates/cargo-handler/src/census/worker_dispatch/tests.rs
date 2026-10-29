@@ -82,11 +82,11 @@ fn explicit_dispatch_seat_resolves_from_the_fixture_roster() {
 
 #[test]
 fn worker_job_headings_are_clean_in_role_roster_and_folded_names() {
-    let base = Path::new("/tmp/claude/unit");
-    fs::create_dir_all(base).expect("session root exists");
+    let root = TempDir::new().expect("isolated session root");
+    let roots = SessionRoots::new([root.path().to_path_buf()]);
     let directory = tempfile::Builder::new()
         .prefix("handler-job-heading-")
-        .tempdir_in(base)
+        .tempdir_in(root.path())
         .expect("isolated worker session");
     fs::write(
         directory.path().join(ROSTER_FILE),
@@ -122,11 +122,11 @@ fn worker_job_headings_are_clean_in_role_roster_and_folded_names() {
             assert_eq!(task, WorkerTask::RoleOnly);
         }
         assert_eq!(
-            names.name("other-thread", &prompt, &worktree, role),
+            names.name("other-thread", &prompt, &worktree, role, &roots),
             expected_role
         );
         assert_eq!(
-            names.name("worker-thread", &prompt, &worktree, role),
+            names.name("worker-thread", &prompt, &worktree, role, &roots),
             expected_seat
         );
 

@@ -121,25 +121,12 @@ pub(crate) struct FixNotice {
     outcome:  FixOutcome,
 }
 
+/// Applied states always carry at least one edit; zero belongs to `NoneAvailable`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FixOutcome {
     NoneAvailable,
-    PreviewApplied(usize),
-    Applied(usize),
-}
-
-enum AppliedEditCount {
-    NoneAvailable,
-    Positive(NonZeroUsize),
-}
-
-impl AppliedEditCount {
-    const fn classify(count: usize) -> Self {
-        match NonZeroUsize::new(count) {
-            Some(count) => Self::Positive(count),
-            None => Self::NoneAvailable,
-        }
-    }
+    PreviewApplied(NonZeroUsize),
+    Applied(NonZeroUsize),
 }
 
 enum NoticeEffect {
@@ -171,17 +158,18 @@ impl From<&NoticeKind> for NoticeEffect {
     }
 }
 
+/// Applied pub-use states require a positive count; skipped work can stand alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PubUseNotice {
     NoneAvailable {
         skipped_unsupported: usize,
     },
     PreviewApplied {
-        applied:             usize,
+        applied:             NonZeroUsize,
         skipped_unsupported: usize,
     },
     Applied {
-        applied:             usize,
+        applied:             NonZeroUsize,
         skipped_unsupported: usize,
     },
 }
@@ -196,9 +184,8 @@ pub(crate) enum MendFailure {
 #[derive(Debug)]
 pub(crate) enum CompilerFailureCause {
     CargoCheck,
-    /// No stored report reached `load_report`, so nothing was analyzed. Reported
-    /// as a failure because an empty findings list would otherwise print as a
-    /// clean crate.
+    /// Automatic recovery could not supply compatible analysis for the selected
+    /// units. An empty or partial report must never print as a clean crate.
     NoAnalysisProduced,
     DriverSetup(Error),
     Unexpected(Error),
@@ -254,7 +241,7 @@ impl Display for AnalysisFailure {
             CompilerFailureCause::NoAnalysisProduced => {
                 write!(
                     f,
-                    "no analysis was produced for this crate\n\nmend: cargo had nothing to rebuild and no compatible cached findings were available, so no code was examined; force a rebuild (touch a source file, or `cargo clean -p <package>`) and run again"
+                    "no analysis was produced for this crate\n\nmend: automatic cache recovery could not produce compatible findings for every selected unit; force a rebuild (touch a source file, or `cargo clean -p <package>`) and run again"
                 )
             },
             CompilerFailureCause::DriverSetup(error) | CompilerFailureCause::Unexpected(error) => {
@@ -323,25 +310,51 @@ impl ExecutionNotice {
                 },
                 NoticeEffect::RetainedWithoutEdits => {},
             }
-            let existing = self
-                .kinds
-                .iter_mut()
-                .find(|existing| match (&**existing, &kind) {
-                    (NoticeKind::Fixes(left), NoticeKind::Fixes(right)) => {
-                        left.fix_kind == right.fix_kind
+            self.merge_kind(kind);
+        }
+    }
+
+    /// Select the family and fix key before merging its payload. A mismatched
+    /// family cannot silently discard a notice, nor can different fixes combine.
+    fn merge_kind(&mut self, kind: NoticeKind) {
+        match kind {
+            NoticeKind::Fixes(FixNotice { fix_kind, outcome }) => {
+                let current = self.kinds.iter_mut().find_map(|entry| match entry {
+                    NoticeKind::Fixes(notice) => {
+                        (notice.fix_kind == fix_kind).then_some(&mut notice.outcome)
                     },
-                    (NoticeKind::PubUseFixes(_), NoticeKind::PubUseFixes(_))
-                    | (
-                        NoticeKind::SubtreeReexportSkipped(_),
-                        NoticeKind::SubtreeReexportSkipped(_),
-                    ) => true,
-                    _ => false,
+                    NoticeKind::PubUseFixes(_) | NoticeKind::SubtreeReexportSkipped(_) => None,
                 });
-            if let Some(existing) = existing {
-                existing.merge(kind);
-            } else {
-                self.kinds.push(kind);
-            }
+                if let Some(current) = current {
+                    current.merge(outcome);
+                } else {
+                    self.kinds
+                        .push(NoticeKind::Fixes(FixNotice { fix_kind, outcome }));
+                }
+            },
+            NoticeKind::PubUseFixes(additional) => {
+                let current = self.kinds.iter_mut().find_map(|entry| match entry {
+                    NoticeKind::PubUseFixes(notice) => Some(notice),
+                    NoticeKind::Fixes(_) | NoticeKind::SubtreeReexportSkipped(_) => None,
+                });
+                if let Some(current) = current {
+                    current.merge(additional);
+                } else {
+                    self.kinds.push(NoticeKind::PubUseFixes(additional));
+                }
+            },
+            NoticeKind::SubtreeReexportSkipped(additional) => {
+                let current = self.kinds.iter_mut().find_map(|entry| match entry {
+                    NoticeKind::SubtreeReexportSkipped(skipped) => Some(skipped),
+                    NoticeKind::Fixes(_) | NoticeKind::PubUseFixes(_) => None,
+                });
+                if let Some(current) = current {
+                    *current = additional;
+                } else {
+                    self.kinds
+                        .push(NoticeKind::SubtreeReexportSkipped(additional));
+                }
+            },
         }
     }
 }
@@ -355,19 +368,6 @@ impl From<Vec<NoticeKind>> for ExecutionNotice {
 }
 
 impl NoticeKind {
-    fn merge(&mut self, additional: Self) {
-        match (self, additional) {
-            (Self::Fixes(current), Self::Fixes(additional)) => current.merge(additional),
-            (Self::PubUseFixes(current), Self::PubUseFixes(additional)) => {
-                current.merge(additional);
-            },
-            (Self::SubtreeReexportSkipped(current), Self::SubtreeReexportSkipped(additional)) => {
-                *current = additional;
-            },
-            _ => {},
-        }
-    }
-
     fn render_part(&self) -> Option<String> {
         match self {
             Self::Fixes(notice) => Some(notice.render()),
@@ -404,22 +404,29 @@ impl FixKind {
     }
 }
 
-impl FixNotice {
+impl FixOutcome {
     fn merge(&mut self, additional: Self) {
-        debug_assert_eq!(self.fix_kind, additional.fix_kind);
-        self.outcome = match (&self.outcome, additional.outcome) {
-            (FixOutcome::NoneAvailable, additional) => additional,
-            (current, FixOutcome::NoneAvailable) => current.clone(),
-            (FixOutcome::PreviewApplied(current), FixOutcome::PreviewApplied(additional)) => {
-                FixOutcome::PreviewApplied(current + additional)
+        *self = match (&*self, additional) {
+            (
+                Self::NoneAvailable,
+                additional @ (Self::NoneAvailable | Self::PreviewApplied(_) | Self::Applied(_)),
+            )
+            | (Self::PreviewApplied(_), additional @ Self::Applied(_))
+            | (Self::Applied(_), additional @ Self::PreviewApplied(_)) => additional,
+            (current @ (Self::PreviewApplied(_) | Self::Applied(_)), Self::NoneAvailable) => {
+                current.clone()
             },
-            (FixOutcome::Applied(current), FixOutcome::Applied(additional)) => {
-                FixOutcome::Applied(current + additional)
+            (Self::PreviewApplied(current), Self::PreviewApplied(additional)) => {
+                Self::PreviewApplied(current.saturating_add(additional.get()))
             },
-            (_, additional) => additional,
+            (Self::Applied(current), Self::Applied(additional)) => {
+                Self::Applied(current.saturating_add(additional.get()))
+            },
         };
     }
+}
 
+impl FixNotice {
     fn render(&self) -> String {
         match self.outcome {
             FixOutcome::NoneAvailable => format!("no {} available", self.fix_kind.plural()),
@@ -437,16 +444,11 @@ impl FixNotice {
         fix_kind: FixKind,
         count: usize,
     ) -> Self {
-        let outcome = match (intent, AppliedEditCount::classify(count)) {
-            (OperationIntent::ReadOnly, _) | (_, AppliedEditCount::NoneAvailable) => {
-                FixOutcome::NoneAvailable
-            },
-            (OperationIntent::DryRun, AppliedEditCount::Positive(count)) => {
-                FixOutcome::PreviewApplied(count.get())
-            },
-            (OperationIntent::Apply, AppliedEditCount::Positive(count)) => {
-                FixOutcome::Applied(count.get())
-            },
+        let outcome = match (intent, NonZeroUsize::new(count)) {
+            (OperationIntent::ReadOnly, None | Some(_))
+            | (OperationIntent::DryRun | OperationIntent::Apply, None) => FixOutcome::NoneAvailable,
+            (OperationIntent::DryRun, Some(count)) => FixOutcome::PreviewApplied(count),
+            (OperationIntent::Apply, Some(count)) => FixOutcome::Applied(count),
         };
         Self { fix_kind, outcome }
     }
@@ -454,42 +456,60 @@ impl FixNotice {
 
 impl PubUseNotice {
     const fn merge(&mut self, additional: Self) {
-        let (current_applied, current_skipped, current_intent) = self.counts();
-        let (additional_applied, additional_skipped, additional_intent) = additional.counts();
-        let applied = current_applied + additional_applied;
-        let skipped_unsupported = current_skipped + additional_skipped;
-        let merged_intent = match (current_intent, additional_intent) {
-            (OperationIntent::DryRun, _) | (_, OperationIntent::DryRun) => OperationIntent::DryRun,
-            _ => OperationIntent::Apply,
+        let (current, current_skipped) = self.parts();
+        let (additional, additional_skipped) = additional.parts();
+        // Preview dominates applied for pub-use notices, including mixed passes.
+        let current = match (current, additional) {
+            (
+                FixOutcome::NoneAvailable,
+                additional @ (FixOutcome::NoneAvailable
+                | FixOutcome::PreviewApplied(_)
+                | FixOutcome::Applied(_)),
+            ) => additional,
+            (
+                current @ (FixOutcome::PreviewApplied(_) | FixOutcome::Applied(_)),
+                FixOutcome::NoneAvailable,
+            ) => current,
+            (
+                FixOutcome::PreviewApplied(left),
+                FixOutcome::PreviewApplied(right) | FixOutcome::Applied(right),
+            )
+            | (FixOutcome::Applied(left), FixOutcome::PreviewApplied(right)) => {
+                FixOutcome::PreviewApplied(left.saturating_add(right.get()))
+            },
+            (FixOutcome::Applied(left), FixOutcome::Applied(right)) => {
+                FixOutcome::Applied(left.saturating_add(right.get()))
+            },
         };
-        *self = match (applied, merged_intent) {
-            (0, _) => Self::NoneAvailable {
+        let skipped_unsupported = current_skipped + additional_skipped;
+        *self = match current {
+            FixOutcome::NoneAvailable => Self::NoneAvailable {
                 skipped_unsupported,
             },
-            (_, OperationIntent::DryRun) => Self::PreviewApplied {
+            FixOutcome::PreviewApplied(applied) => Self::PreviewApplied {
                 applied,
                 skipped_unsupported,
             },
-            (_, OperationIntent::ReadOnly | OperationIntent::Apply) => Self::Applied {
+            FixOutcome::Applied(applied) => Self::Applied {
                 applied,
                 skipped_unsupported,
             },
         };
     }
 
-    const fn counts(&self) -> (usize, usize, OperationIntent) {
+    const fn parts(self) -> (FixOutcome, usize) {
         match self {
             Self::NoneAvailable {
                 skipped_unsupported,
-            } => (0, *skipped_unsupported, OperationIntent::ReadOnly),
+            } => (FixOutcome::NoneAvailable, skipped_unsupported),
             Self::PreviewApplied {
                 applied,
                 skipped_unsupported,
-            } => (*applied, *skipped_unsupported, OperationIntent::DryRun),
+            } => (FixOutcome::PreviewApplied(applied), skipped_unsupported),
             Self::Applied {
                 applied,
                 skipped_unsupported,
-            } => (*applied, *skipped_unsupported, OperationIntent::Apply),
+            } => (FixOutcome::Applied(applied), skipped_unsupported),
         }
     }
 
@@ -531,20 +551,17 @@ impl PubUseNotice {
         applied: usize,
         skipped_unsupported: usize,
     ) -> Self {
-        match (intent, AppliedEditCount::classify(applied)) {
-            (OperationIntent::ReadOnly, _) | (_, AppliedEditCount::NoneAvailable) => {
-                Self::NoneAvailable {
-                    skipped_unsupported,
-                }
+        match (intent, NonZeroUsize::new(applied)) {
+            (OperationIntent::ReadOnly, None | Some(_))
+            | (OperationIntent::DryRun | OperationIntent::Apply, None) => Self::NoneAvailable {
+                skipped_unsupported,
             },
-            (OperationIntent::DryRun, AppliedEditCount::Positive(applied)) => {
-                Self::PreviewApplied {
-                    applied: applied.get(),
-                    skipped_unsupported,
-                }
+            (OperationIntent::DryRun, Some(applied)) => Self::PreviewApplied {
+                applied,
+                skipped_unsupported,
             },
-            (OperationIntent::Apply, AppliedEditCount::Positive(applied)) => Self::Applied {
-                applied: applied.get(),
+            (OperationIntent::Apply, Some(applied)) => Self::Applied {
+                applied,
                 skipped_unsupported,
             },
         }
@@ -566,6 +583,114 @@ mod tests {
     use super::PubUseNotice;
     use super::RollbackStatus;
     use crate::config::OperationIntent;
+
+    #[test]
+    fn applied_states_retain_positive_counts_and_zero_has_its_own_state() {
+        for intent in [
+            OperationIntent::ReadOnly,
+            OperationIntent::DryRun,
+            OperationIntent::Apply,
+        ] {
+            for count in [0, 2] {
+                let fix = FixNotice::from_intent(intent, FixKind::Import, count);
+                let pub_use = PubUseNotice::from_intent(intent, count, 3);
+                let expected = match intent {
+                    OperationIntent::ReadOnly => 0,
+                    OperationIntent::DryRun | OperationIntent::Apply => count,
+                };
+                let fix_count = match fix.outcome {
+                    super::FixOutcome::NoneAvailable => 0,
+                    super::FixOutcome::PreviewApplied(count)
+                    | super::FixOutcome::Applied(count) => count.get(),
+                };
+                let pub_use_count = match pub_use {
+                    PubUseNotice::NoneAvailable { .. } => 0,
+                    PubUseNotice::PreviewApplied { applied, .. }
+                    | PubUseNotice::Applied { applied, .. } => applied.get(),
+                };
+                assert_eq!((fix_count, pub_use_count), (expected, expected));
+            }
+        }
+    }
+
+    #[test]
+    fn merge_payloads_preserve_counts_and_each_familys_mode_policy() {
+        let cases = [
+            (
+                OperationIntent::ReadOnly,
+                OperationIntent::ReadOnly,
+                0,
+                false,
+            ),
+            (OperationIntent::ReadOnly, OperationIntent::DryRun, 3, true),
+            (OperationIntent::ReadOnly, OperationIntent::Apply, 3, false),
+            (OperationIntent::DryRun, OperationIntent::ReadOnly, 2, true),
+            (OperationIntent::DryRun, OperationIntent::DryRun, 5, true),
+            (OperationIntent::DryRun, OperationIntent::Apply, 3, false),
+            (OperationIntent::Apply, OperationIntent::ReadOnly, 2, false),
+            (OperationIntent::Apply, OperationIntent::DryRun, 3, true),
+            (OperationIntent::Apply, OperationIntent::Apply, 5, false),
+        ];
+        for (left, right, count, preview) in cases {
+            let mut fix = FixNotice::from_intent(left, FixKind::Import, 2);
+            fix.outcome
+                .merge(FixNotice::from_intent(right, FixKind::Import, 3).outcome);
+            let intent = if preview {
+                OperationIntent::DryRun
+            } else {
+                OperationIntent::Apply
+            };
+            assert_eq!(fix, FixNotice::from_intent(intent, FixKind::Import, count));
+            let mut pub_use = PubUseNotice::from_intent(left, 2, 1);
+            pub_use.merge(PubUseNotice::from_intent(right, 3, 2));
+            let total = usize::from(left != OperationIntent::ReadOnly) * 2
+                + usize::from(right != OperationIntent::ReadOnly) * 3;
+            let intent = if left == OperationIntent::DryRun || right == OperationIntent::DryRun {
+                OperationIntent::DryRun
+            } else {
+                OperationIntent::Apply
+            };
+            assert_eq!(pub_use, PubUseNotice::from_intent(intent, total, 3));
+        }
+    }
+
+    #[test]
+    fn keyed_merge_keeps_all_families_and_fix_kinds_in_first_seen_order() {
+        let kinds = [
+            FixKind::Import,
+            FixKind::PubRemoval,
+            FixKind::Narrowing,
+            FixKind::Annotation,
+            FixKind::FieldVisibility,
+        ];
+        let mut notice = ExecutionNotice::from(Vec::new());
+        for count in [2, 3] {
+            for kind in kinds {
+                notice.merge_kind(NoticeKind::Fixes(FixNotice::from_intent(
+                    OperationIntent::Apply,
+                    kind,
+                    count,
+                )));
+            }
+            notice.merge_kind(NoticeKind::PubUseFixes(PubUseNotice::from_intent(
+                OperationIntent::Apply,
+                count,
+                1,
+            )));
+            notice.merge_kind(NoticeKind::SubtreeReexportSkipped(count));
+        }
+        let mut expected = kinds
+            .into_iter()
+            .map(|kind| NoticeKind::Fixes(FixNotice::from_intent(OperationIntent::Apply, kind, 5)))
+            .collect::<Vec<_>>();
+        expected.push(NoticeKind::PubUseFixes(PubUseNotice::from_intent(
+            OperationIntent::Apply,
+            5,
+            2,
+        )));
+        expected.push(NoticeKind::SubtreeReexportSkipped(3));
+        assert_eq!(notice.kinds, expected);
+    }
 
     #[test]
     fn analysis_failure_message_uses_typed_collection_wording() {
@@ -739,10 +864,7 @@ mod tests {
                 FixKind::Annotation,
                 1,
             )),
-            NoticeKind::PubUseFixes(PubUseNotice::Applied {
-                applied:             1,
-                skipped_unsupported: 0,
-            }),
+            NoticeKind::PubUseFixes(PubUseNotice::from_intent(OperationIntent::Apply, 1, 0)),
         ]);
         assert_eq!(
             notice.render(),
@@ -758,10 +880,7 @@ mod tests {
                 FixKind::Annotation,
                 2,
             )),
-            NoticeKind::PubUseFixes(PubUseNotice::Applied {
-                applied:             1,
-                skipped_unsupported: 0,
-            }),
+            NoticeKind::PubUseFixes(PubUseNotice::from_intent(OperationIntent::Apply, 1, 0)),
         ]);
         notice.merge(ExecutionNotice::from(vec![
             NoticeKind::Fixes(FixNotice::from_intent(

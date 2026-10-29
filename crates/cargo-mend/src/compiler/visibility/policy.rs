@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
+use std::num::NonZeroUsize;
 use std::path::Path;
 
 use anyhow::Result;
@@ -14,6 +15,7 @@ use rustc_middle::ty::Visibility;
 use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
 
+use super::VisibilityAudience;
 use super::annotation;
 use super::annotation::ReachBoundary;
 use super::annotation::VisibilityReach;
@@ -39,12 +41,15 @@ use crate::compiler::exposure::BoundaryScopeCache;
 use crate::compiler::exposure::ExposureContext;
 use crate::compiler::exposure::ModuleScopeCache;
 use crate::compiler::facade;
+use crate::compiler::facade::ExportMultiplicity;
+use crate::compiler::facade::FacadeSpellingAgreement;
 use crate::compiler::facade::ParentFacadeExportRequest;
 use crate::compiler::facade::ParentFacadeExportStatus;
 use crate::compiler::facade::ParentFacadeFixSupport;
 use crate::compiler::facade::ParentFacadeReach;
 use crate::compiler::facade::ParentFacadeSpelling;
 use crate::compiler::facade::ParentFacadeUsage;
+use crate::compiler::facade::ParentReach;
 use crate::config::PubInPath;
 use crate::reporting::FixSupport;
 
@@ -95,7 +100,7 @@ impl SignatureExposure {
     pub(super) fn reaches_outside_crate(self) -> bool {
         match self {
             Self::Contained => false,
-            Self::ExposedAt(reach) => reach.is_public(),
+            Self::ExposedAt(reach) => reach.audience() == VisibilityAudience::Public,
         }
     }
 
@@ -935,7 +940,7 @@ fn assess_parent_facade_usage(
             AllowanceReason::InternalParentFacadeBoundary,
         ));
     }
-    if !status.parent_facade_reach.spelling_conflict
+    if status.parent_facade_reach.spelling_agreement == FacadeSpellingAgreement::Consistent
         && status.parent_facade_reach.spelling == ParentFacadeSpelling::Super
         && !matches!(status.usage, ParentFacadeUsage::Unused)
     {
@@ -1048,16 +1053,18 @@ pub(super) fn parent_facade_export_status(
         return Ok(None);
     };
     let occurrences = &parent_facade_analysis.nearest;
-    let unique_export = occurrences.matching.len() == 1;
+    let Some(matching_count) = NonZeroUsize::new(occurrences.matching.len()) else {
+        return Ok(None);
+    };
+    let export_multiplicity = ExportMultiplicity::from_count(matching_count);
     let selected_reach = VisibilityReach::from(occurrences.selected.visibility);
-    let mut selected_status: Option<ParentFacadeExportStatus> = None;
-    for occurrence in &occurrences.matching {
+    select_parent_facade_status(occurrences.matching.iter().map(|occurrence| {
         if VisibilityReach::from(occurrence.visibility).compare(selected_reach, ctx.tcx)
             == Some(Ordering::Less)
         {
-            continue;
+            return Ok(None);
         }
-        let status = facade::parent_facade_export_status(ParentFacadeExportRequest {
+        facade::parent_facade_export_status(ParentFacadeExportRequest {
             source_cache: ctx.source_cache,
             settings: ctx.settings,
             source_root: ctx.source_root,
@@ -1070,15 +1077,24 @@ pub(super) fn parent_facade_export_status(
             parent_facade_reach: parent_facade_reach_for_occurrence(
                 ctx,
                 occurrence,
-                occurrence.spelling_conflict,
+                occurrence.spelling_agreement,
             ),
             usage_by_name: &occurrence.usage_by_name,
             export_names: &occurrence.export_names,
-            unique_export,
+            export_multiplicity,
             child_file,
             item_name,
-        })?;
-        let Some(status) = status else {
+        })
+    }))
+}
+
+/// Empty selections have no status; equal priorities keep the first candidate's diagnostics.
+fn select_parent_facade_status(
+    statuses: impl IntoIterator<Item = Result<Option<ParentFacadeExportStatus>>>,
+) -> Result<Option<ParentFacadeExportStatus>> {
+    let mut selected_status: Option<ParentFacadeExportStatus> = None;
+    for status in statuses {
+        let Some(status) = status? else {
             continue;
         };
         if selected_status.as_ref().is_none_or(|selected| {
@@ -1093,7 +1109,7 @@ pub(super) fn parent_facade_export_status(
 pub(super) fn parent_facade_reach_for_occurrence(
     ctx: &VisibilityContext<'_, '_>,
     occurrence: &ReexportOccurrence,
-    spelling_conflict: bool,
+    spelling_agreement: FacadeSpellingAgreement,
 ) -> ParentFacadeReach {
     let parent_module = ctx
         .tcx
@@ -1102,16 +1118,13 @@ pub(super) fn parent_facade_reach_for_occurrence(
     let parent_reach = VisibilityReach::from(Visibility::Restricted(parent_module));
     let occurrence_reach = VisibilityReach::from(occurrence.visibility);
     ParentFacadeReach {
-        reaches_parent: matches!(
-            occurrence_reach.compare(parent_reach, ctx.tcx),
-            Some(Ordering::Equal | Ordering::Greater)
-        ),
+        parent_reach: ParentReach::from_comparison(occurrence_reach.compare(parent_reach, ctx.tcx)),
         spelling: occurrence.facade_spelling,
-        spelling_conflict,
+        spelling_agreement,
     }
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ParentFacadeStatusPriority {
     Unused,
     CrateImport,
@@ -1128,13 +1141,15 @@ const fn parent_facade_status_priority(
     if matches!(status.usage, ParentFacadeUsage::UsedOutsideSubtree) {
         return ParentFacadeStatusPriority::Outside;
     }
-    if !status.parent_facade_reach.spelling_conflict
-        && matches!(
-            status.parent_facade_reach.spelling,
-            ParentFacadeSpelling::Super
-        )
-        && !matches!(status.usage, ParentFacadeUsage::Unused)
-    {
+    if match status.parent_facade_reach.spelling_agreement {
+        FacadeSpellingAgreement::Consistent => {
+            matches!(
+                status.parent_facade_reach.spelling,
+                ParentFacadeSpelling::Super
+            ) && !matches!(status.usage, ParentFacadeUsage::Unused)
+        },
+        FacadeSpellingAgreement::Conflicting => false,
+    } {
         return ParentFacadeStatusPriority::UsedSuper;
     }
     match status.usage {
@@ -1233,9 +1248,13 @@ mod tests {
     use std::path::Path;
 
     use super::CrateKind;
+    use super::FacadeSpellingAgreement as Agreement;
     use super::ModuleLocation;
     use super::NoFacadeVisibilityRepair;
     use super::OverbroadPubCrateSuggestionReason;
+    use super::ParentFacadeSpelling as Spelling;
+    use super::ParentFacadeStatusPriority as Priority;
+    use super::ParentFacadeUsage as Usage;
     use super::classify_no_facade_callers;
     use super::common_ancestor_def_path;
     use super::crate_kind_for_root;
@@ -1246,6 +1265,105 @@ mod tests {
     use crate::compiler::constants::SOURCE_DIR_BENCHES;
     use crate::compiler::constants::SOURCE_DIR_EXAMPLES;
     use crate::compiler::constants::SOURCE_DIR_TESTS;
+
+    fn facade_status(
+        usage: super::ParentFacadeUsage,
+        spelling: super::ParentFacadeSpelling,
+        spelling_agreement: super::FacadeSpellingAgreement,
+    ) -> super::ParentFacadeExportStatus {
+        super::ParentFacadeExportStatus {
+            usage,
+            fix_support: super::facade::ParentFacadeFixSupport::Unsupported,
+            parent_facade_reach: super::ParentFacadeReach {
+                parent_reach: super::ParentReach::ReachesParent,
+                spelling,
+                spelling_agreement,
+            },
+            parent_path: "src/lib.rs".into(),
+            parent_rel_path: String::from("src/lib.rs"),
+            parent_line: 1,
+            boundary_def_path: String::from("crate"),
+        }
+    }
+
+    #[test]
+    fn empty_facade_selection_has_no_status() -> anyhow::Result<()> {
+        assert_eq!(super::select_parent_facade_status([])?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn facade_status_priority_preserves_order_and_first_winner() -> anyhow::Result<()> {
+        let mut candidates = Vec::new();
+        for (usage, ordinary, consistent_super) in [
+            (Usage::Unused, Priority::Unused, Priority::Unused),
+            (
+                Usage::UsedOutsideSubtree,
+                Priority::Outside,
+                Priority::Outside,
+            ),
+            (
+                Usage::UsedInsideSubtreeByCrateImport,
+                Priority::CrateImport,
+                Priority::UsedSuper,
+            ),
+            (
+                Usage::UsedInsideSubtreeByCratePath,
+                Priority::CratePath,
+                Priority::UsedSuper,
+            ),
+            (
+                Usage::UsedInsideSubtreeByRelativeImport,
+                Priority::RelativeImport,
+                Priority::UsedSuper,
+            ),
+            (
+                Usage::UsedInsideSubtreeByRelativePath,
+                Priority::RelativePath,
+                Priority::UsedSuper,
+            ),
+        ] {
+            for (spelling, agreed_priority) in [
+                (Spelling::Public, ordinary),
+                (Spelling::Crate, ordinary),
+                (Spelling::Super, consistent_super),
+                (Spelling::Other, ordinary),
+            ] {
+                for (agreement, expected) in [
+                    (Agreement::Consistent, agreed_priority),
+                    (Agreement::Conflicting, ordinary),
+                ] {
+                    let status = facade_status(usage, spelling, agreement);
+                    assert_eq!(
+                        super::parent_facade_status_priority(&status),
+                        expected,
+                        "{status:?}"
+                    );
+                    candidates.push((status, expected));
+                }
+            }
+        }
+        for (first, first_priority) in &candidates {
+            for (second, second_priority) in &candidates {
+                let mut second = second.clone();
+                second.parent_line = 2;
+                let expected = if first_priority >= second_priority {
+                    first
+                } else {
+                    &second
+                };
+                assert_eq!(
+                    super::select_parent_facade_status([
+                        Ok(Some(first.clone())),
+                        Ok(Some(second.clone())),
+                    ])?,
+                    Some(expected.clone()),
+                    "first={first:?}, second={second:?}",
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn crate_kind_for_root_detects_library_from_lib_rs() {

@@ -108,14 +108,6 @@ const INITIALIZED_REFTABLE_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     ..INITIALIZED_REPOSITORY
 };
 
-/// The empty-ledger main checkout used by the integration landing scenarios.
-const INTEGRATION_MAIN: RepositoryTemplate = RepositoryTemplate {
-    target_directory: env!("CARGO_TARGET_TMPDIR"),
-    executable:       BERTH_EXECUTABLE,
-    name:             "integration-main",
-    build:            |root| IntegrationRepository::build_main_template(root, BERTH_EXECUTABLE),
-};
-
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -216,7 +208,7 @@ mod integration_cover {
 
     #[test]
     fn first_lane_creates_a_cover_in_the_integration_worktree_with_its_main_diff() {
-        let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
+        let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
         let lane = repo.lane("cover-lane", "integration");
         let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -263,7 +255,7 @@ mod integration_cover {
 
     #[test]
     fn prepared_main_hook_creates_cover_under_the_integration_checkout_actor() {
-        let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
+        let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
         let integration_path = repo.integration.to_str().expect("UTF-8 worktree path");
         repo.git(
             repo.root(),
@@ -303,7 +295,7 @@ mod integration_cover {
 
     #[test]
     fn empty_integration_footprint_waits_until_the_branch_has_work_to_cover() {
-        let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
+        let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
         repo.git(&repo.integration, &["reset", "--hard", "main"]);
         let lane = repo.lane("empty-cover-lane", "integration");
         let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
@@ -386,7 +378,7 @@ mod integration_cover {
 
     #[test]
     fn a_later_lane_gets_a_new_cover_after_the_previous_cover_ends() {
-        let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
+        let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
         let first = repo.lane("first-cover-lane", "integration");
         let claimed = repo.claim(&first, "file:first.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -432,7 +424,8 @@ mod integration_cover {
     #[test]
     fn cover_uses_existing_marker_and_unmapped_session_respects_its_held_paths() {
         for existing_marker in [false, true] {
-            let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
+            let repo =
+                IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
             let lane = repo.lane("session-cover-lane", "integration");
             let marker_name = repo.git_stdout(
                 &repo.integration,
@@ -840,7 +833,7 @@ fn rebase_resnapshot_updates_protected_tip_and_retention_ref() {
 
 #[test]
 fn outstanding_rebase_uses_its_integration_target_as_the_new_anchor() {
-    let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
+    let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
     let lane = repo.lane("target-rebase-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -877,7 +870,7 @@ fn outstanding_rebase_uses_its_integration_target_as_the_new_anchor() {
 
 #[test]
 fn outstanding_rebase_uses_trunk_when_its_integration_target_disappears() {
-    let repo = IntegrationRepository::from_template(crate::INTEGRATION_MAIN);
+    let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
     let lane = repo.lane("missing-target-rebase-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -2539,7 +2532,7 @@ mod merge_extent {
 
     #[test]
     fn lanes_release_when_their_integration_target_receives_a_merge_commit_or_fast_forward() {
-        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
+        let repo = IntegrationRepository::from_recorded_template(super::INITIAL_INTEGRATION_PAIR);
         let a = repo.lane("lane-a", "integration");
         let b = repo.lane("lane-b", "integration");
         let a_claim = repo.claim(&a, "file:shared.txt", FIRST_RUN, None);
@@ -2597,7 +2590,7 @@ mod merge_extent {
 
     #[test]
     fn merge_extents_exclude_changes_already_on_the_integration_target() {
-        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
+        let repo = IntegrationRepository::from_recorded_template(super::INITIAL_INTEGRATION_PAIR);
         repo.commit_file(
             &repo.integration,
             "Cargo.toml",
@@ -2641,7 +2634,7 @@ mod merge_extent {
 
     #[test]
     fn an_unlanded_missing_target_alerts_and_shows_an_unresolved_commit() {
-        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
+        let repo = IntegrationRepository::from_recorded_template(super::INITIAL_INTEGRATION_PAIR);
         let lane = repo.lane("missing-target-lane", "integration");
         let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -2745,7 +2738,7 @@ mod merge_extent {
 
     #[test]
     fn a_released_lane_stays_released_after_its_target_lands_on_main_and_is_deleted() {
-        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
+        let repo = IntegrationRepository::from_recorded_template(super::INITIAL_INTEGRATION_PAIR);
         let lane = repo.lane("landed-lane", "integration");
         let claimed = repo.claim(&lane, "file:landed.txt", FIRST_RUN, None);
         assert_success(&claimed);

@@ -51,15 +51,8 @@ pub(super) fn write(cache_root: &Path, bytes: u64) -> io::Result<()> {
     fs::rename(tmp_path, final_path)
 }
 
-/// Stat `target_path` (returns 0 on missing/error). Pair with
-/// [`apply_write_delta`] around any write that overwrites or creates
-/// a file inside the cache, so the index tracks the size change.
-pub(super) fn file_size_or_zero(target_path: &Path) -> u64 {
-    fs::metadata(target_path).map_or(0, |meta| meta.len())
-}
-
 /// Adjust the index by `new_size - old_size` (in bytes). Pair with a
-/// preceding [`file_size_or_zero`] call before the write.
+/// preceding [`tui_pane::file_size_or_zero`] call before the write.
 pub(super) fn apply_write_delta(cache_root: &Path, old_size: u64, new_size: u64) {
     if new_size == old_size {
         return;

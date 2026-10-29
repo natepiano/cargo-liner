@@ -35,11 +35,11 @@ pub(crate) const BINARY_NAME: &str = "cargo-handler";
 /// The one line `--help` opens with. A placeholder until the tool's
 /// purpose is written up.
 pub(crate) const CLI_ABOUT: &str = "A terminal UI cargo tool";
-/// The word cargo knows this tool by, which is the binary's name with
-/// cargo's own prefix taken off. Cargo runs `cargo handler ...` by
-/// finding `cargo-handler` on the path and handing it this word ahead
-/// of every other argument, so the command line drops it before
-/// parsing.
+/// `SUBCOMMAND_NAME` is the binary name without Cargo's prefix. Cargo runs
+/// `cargo handler ...` by finding `cargo-handler` on the path and inserting
+/// `SUBCOMMAND_NAME` at argument index 1, before all other arguments.
+/// `crate::cli::Cli::parse_arguments` calls `crate::cli::without_subcommand_name`
+/// to remove that argument before parsing.
 pub(crate) const SUBCOMMAND_NAME: &str = "handler";
 
 // settings overlay
