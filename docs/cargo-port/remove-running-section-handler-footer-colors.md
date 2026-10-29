@@ -1198,36 +1198,22 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 41 — Renamed Codex sessions show in cargo-handler  · status: done
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
+An interactive Codex session that the user renamed shows its name in its tile and the summary, not `pid N`.
 
-**Goal:** an interactive Codex session that the user renamed shows its name in its tile and the summary, not `pid N`, when Codex stores the thread with an originator other than `codex-tui`.
-
-**Source:** change review C85 back (showrunner, 2026-10-28). Live case on natedev: process 607499 (codex 0.163.0, `CODEX_HOME=~/.codex1`, cwd `~/rust/cargo-liner`) named "test-codex" shows as "pid 607499". Diagnosis: unit session `phases/41/diagnosis.md`.
-
-**Constraints from prior phases:**
-- The name is stored in `~/.codex1/session_index.jsonl` (`thread_name`) and in `~/.codex1/state_5.sqlite` `threads` with `name='test-codex'`, `originator='roster'`, `source='vscode'`, `thread_source='user'`, `cli_version='0.165.0'`, created 6 s after the process start. Worker threads have `thread_source` NULL; `codex exec` threads have `source='exec'`. The last `codex-tui` thread is from 2026-10-16 (`.codex1`) and 2026-10-20 (`.codex2`), so no new interactive session has had its name since then.
-- Cause: `CODEX_THREADS_QUERY` (`constants.rs` ≈391) selects `WHERE originator = ?1` with `CODEX_TUI_ORIGINATOR = "codex-tui"` (≈398), bound in `query_threads` (`census/codex.rs` ≈248). The thread is dropped, so `classify::codex_startup_threads` finds none, and the name pass in `census/scan.rs` (≈474) leaves `row.name = "pid {pid}"` and goes on before `SessionNames` (`census/codex_names.rs`) is read.
-- `CODEX_THREAD_BY_ID_QUERY` (≈411) and `CODEX_LAST_THREAD_QUERY` already accept any originator; do not change them. The match by cwd and start window (`CODEX_THREAD_START_WINDOW`, 60 s) stays.
-- `constants.rs` is also in Phase 40's **Files** (intervals only; its working-tree diff does not touch the Codex constants). Claim it after Phase 40's reservation or `--before` it; change only the Codex thread query lines.
-- The `codex.rs` test fixture table (`THREADS_TABLE`, `mod tests` ≈271) has no `source` or `thread_source` column today.
-
-**Spec:**
-1. Select interactive threads by what they are, not by one originator: `thread_source = 'user' AND (source IS NULL OR source <> 'exec')`, or `originator = 'codex-tui'` for older rows that have no `thread_source`. Keep the creation window bounds. Rename `CODEX_TUI_ORIGINATOR` or its doc comment so the name states its role as the older-row alternative.
-2. A database without the `thread_source` or `source` column (an older Codex) still reads through the `codex-tui` alternative; the query must not fail on it. If one query cannot cover both layouts, check the columns once per database open and pick the query by a typed layout (`enum ThreadsLayout { WithThreadSource, OriginatorOnly }`), never a string switch at the call site.
-3. Tests, red first: in `census/codex.rs` tests, a thread with `originator='roster'`, `source='vscode'`, `thread_source='user'` inside the window is returned by `read_threads`; a worker thread (`thread_source` NULL, originator not `codex-tui`) and an exec thread (`source='exec'`) are not; an `OriginatorOnly` fixture table still returns its `codex-tui` thread. In `census/codex_session_tests.rs`, the same `roster` row plus a `session_index.jsonl` record with `thread_name` "test-codex" names the row "test-codex", not "pid N". Each test under one second.
-4. CHANGELOG: one line under Fixed.
+- `CODEX_THREADS_QUERY` selects an interactive thread by what it is: `thread_source = 'user'` with `source` not `'exec'`, or `originator = 'codex-tui'` on older rows that have no `thread_source`. Newer Codex writes originator `roster` on interactive threads, so the originator alone no longer finds them.
+- `CODEX_LEGACY_THREADS_QUERY` serves a database that has no `source` or `thread_source` column. It reads through the `codex-tui` originator only.
+- `enum ThreadsLayout { WithThreadSource, OriginatorOnly }` picks the query. The layout is checked once per database open, never per call.
+- The match by cwd and the 60 s start window are unchanged. `CODEX_THREAD_BY_ID_QUERY` and `CODEX_LAST_THREAD_QUERY` still accept any originator.
+- Tests cover a `roster` thread (returned), a worker thread with NULL `thread_source` (not returned), an exec thread (not returned), an `OriginatorOnly` table (still returns its `codex-tui` thread), and a `session_index.jsonl` name that replaces `pid N` on the row.
 
 **Files:**
-- `crates/cargo-handler/src/constants.rs` — the threads query and the originator constant only
-- `crates/cargo-handler/src/census/codex.rs` — the query parameters, the layout check if needed, and the fixture table tests
-- `crates/cargo-handler/src/census/codex_session_tests.rs` — the named-row test
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/constants.rs` — `CODEX_THREADS_QUERY` and `CODEX_LEGACY_THREADS_QUERY`
+- `crates/cargo-handler/src/census/codex.rs` — `ThreadsLayout`, the layout check at database open, and the thread-row fixture tests
+- `crates/cargo-handler/src/census/codex_session_tests.rs` — the named-row test and the `ThreadsLayout` cases; `ThreadsLayout` is an implementation detail owned here
 
-**Workers:** 1 writer (`impl`); the census has no `tests/` lane and the change is small.
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: on natedev, start an interactive `codex` under `~/.codex1`, rename it, and a shot of cargo-handler shows its name in the tile and the summary. The checkpoint adds a Change-Review line.
+**Binds later work:** the work that reads Codex model and effort beside these thread rows keeps the once-per-open `ThreadsLayout` choice.
 
 ### Phase 42 — A dispatch shell folds into its Codex worker row  · status: todo
 
