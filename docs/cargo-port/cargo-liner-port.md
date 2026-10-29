@@ -70,9 +70,46 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Gotchas:** the disk column updates up to 30 s after a build. Run `verify.sh build` from the worktree; from another folder it fails with a JSON decode error.
 
-### Phase 2b — cargo-port watches only project folders and the folders that lead to them  · status: todo
+### Phase 2m — On macOS cargo-port watches each root recursively again  · status: done
 
 **Depends on:** Phase 2
+
+#### Work Order
+
+**Goal:** on macOS cargo-port registers one recursive watch per root, as before phase 2, and still drops events from `target/` and `.git/objects`; on Linux it keeps phase 2's one non-recursive watch per folder.
+
+**Source:** showrunner ruling, 2026-10-28, from the user's report. Before phase 2 each root had one `RecursiveMode::Recursive` watch: on macOS that is one FSEvents stream per root, cheap, and the Mac never had the watch problem. Phase 2 made both platforms register one non-recursive path per folder, so on macOS thousands of paths go into FSEvents and notify rebuilds its stream on each added path. This is a regression on the Mac. Fix it alone, before the rest of phase 2b.
+
+**Constraints:**
+- One typed backend choice (for example `enum WatchRegistration { RecursiveRoot, PerFolder }`), chosen once from the platform where the watcher is made (`watcher/runtime.rs` ≈118, `RecommendedWatcher::new`). No `cfg` checks spread through the registration code.
+- `RecursiveRoot` (macOS): `register_watch_roots_with_skips` and Cargo-home registration (`watcher/roots.rs`) add one recursive watch per root and no per-folder watches; create and remove events add or drop no watches; `replace_skip_set` adds or drops no watches. The event filter stays: `event.paths.retain(|path| !registered_roots.skips(path))` (`runtime.rs` ≈347).
+- `PerFolder` (Linux inotify): phase 2 behaviour, unchanged.
+- The target size still comes from the 30 s disk poll on both platforms.
+
+**Spec:**
+1. The backend choice type and its single point of choice.
+2. `RecursiveRoot` registration: one recursive watch per root; no folder walk.
+3. `PerFolder` registration unchanged.
+4. **Tests, red first, each under one second:** with `RecursiveRoot`, a root with nested folders, `target/` and `.git/objects` gives exactly one registered path (the root) and a created folder adds none, while an event inside `target/` is still dropped; with `PerFolder`, the phase 2 counts are unchanged. Test the registration plan as data (the paths and modes it would register), with no live watcher.
+5. **Mac check** (unit director): run the tests on the Mac, and run the branch binary there briefly with a scratch config to confirm startup is quick.
+6. CHANGELOG: one line in `crates/cargo-port/CHANGELOG.md`.
+
+**Files:**
+- `crates/cargo-port/src/watcher/roots.rs` — registration by backend
+- `crates/cargo-port/src/watcher/runtime.rs` — the backend choice where the watcher is made
+- `crates/cargo-port/src/watcher/mod.rs` — test module registration
+- `crates/cargo-port/src/watcher/watch_registration_tests.rs` — new; tester
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — specs 1–3 and 6; hub: `crates/cargo-port/src/watcher/roots.rs`.
+- `test` — spec 4, in `crates/cargo-port/src/watcher/watch_registration_tests.rs`, registered by `impl`.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean on natedev and the tests pass on the Mac; no test takes a second. The checkpoint adds a Change-Review line.
+
+### Phase 2b — cargo-port watches only project folders and the folders that lead to them  · status: todo
+
+**Depends on:** Phase 2m. The folder roles apply only to the `PerFolder` backend (Linux inotify); the `RecursiveRoot` backend (macOS) keeps one recursive watch per root.
 
 #### Work Order
 
@@ -119,6 +156,36 @@ you need to create a new unit to handle all cargo port enhancements it should be
 - `test` — spec 8, in a new test module `crates/cargo-port/src/watcher/watch_role_tests.rs`, registered by `impl` in `watcher/mod.rs`.
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; the live count of spec 9 is far under 90,266 and near the folder count of the user's projects plus their discovery folders. The checkpoint adds a Change-Review line.
+
+### Phase 2c — On macOS overlapping roots get one recursive watch  · status: todo
+
+**Depends on:** Phase 2b
+
+#### Work Order
+
+**Goal:** with the `RecursiveRoot` backend (macOS), a configured root that another configured root covers gets no second recursive watch.
+
+**Source:** phase 2m contract review, finding F001 (minor). The showrunner moved it out of 2m on 2026-10-29: overlapping roots are a rare setup, and two recursive watches still cost far less than per-folder watches.
+
+**Constraints:**
+- The invariant at `watcher/runtime.rs` ≈887 holds by construction: one notify watch per path; no `watch()` call lands on a path a recursive root covers.
+- Under `RecursiveRoot`, register a recursive watch only for each root that no other configured root covers, in any root order (`/r` then `/r/project`, and `/r/project` then `/r`, both give one watch on `/r`). Each configured root stays its own discovery root (`RegisteredRoots.dirs` unchanged); only the watch set changes.
+- `PerFolder` behaviour is unchanged.
+
+**Spec:**
+1. Covered-root removal in the `RecursiveRoot` registration plan (`roots.rs`, `registration_plan` / `register_watch_roots_with_skips`).
+2. **Tests, red first, each under one second:** both root orders give one registered path; the invariant test at `runtime.rs` ≈887 also runs with `RecursiveRoot`.
+3. CHANGELOG: one line.
+
+**Files:**
+- `crates/cargo-port/src/watcher/roots.rs`
+- `crates/cargo-port/src/watcher/runtime.rs` — the invariant test only
+- `crates/cargo-port/src/watcher/watch_registration_tests.rs`
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer (`impl`), who also writes the tests.
+
+**Acceptance gate:** `verify.sh test cargo-port` (Mac) and `verify.sh lint cargo-port` clean; no test takes a second.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 

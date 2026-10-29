@@ -25,6 +25,7 @@ use notify::event::RemoveKind;
 
 use super::refresh;
 use super::roots;
+use super::roots::WatchRegistration;
 use super::runtime;
 use super::runtime::ProjectEntry;
 use crate::channel;
@@ -248,6 +249,7 @@ fn resolved_custom_target_is_skipped_at_registration_and_creation() {
         &mut watcher,
         &[AbsolutePath::from(scratch.path())],
         skips,
+        WatchRegistration::PerFolder,
     );
 
     assert!(failures.is_empty());

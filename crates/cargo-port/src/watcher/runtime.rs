@@ -21,6 +21,7 @@ use super::probe;
 use super::refresh;
 use super::roots;
 use super::roots::RegisteredRoots;
+use super::roots::WatchRegistration;
 use super::skip::WatchSkipSet;
 use crate::channel;
 use crate::channel::Receiver;
@@ -118,6 +119,11 @@ pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
     let Ok(watcher) = RecommendedWatcher::new(handler, config) else {
         return watch_tx;
     };
+    let registration = if cfg!(target_os = "macos") {
+        WatchRegistration::RecursiveRoot
+    } else {
+        WatchRegistration::PerFolder
+    };
     let metadata_dispatch = MetadataDispatchContext {
         handle: client.handle.clone(),
         sender: background_tx.clone(),
@@ -125,6 +131,7 @@ pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
         metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
     };
     let startup = WatcherLoopStartup {
+        registration,
         watch_roots: watch_roots.to_vec(),
         background_tx,
         ci_run_count,
@@ -145,6 +152,7 @@ pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
 /// consumes. [`spawn_watcher_thread`] turns one into a [`WatcherLoopContext`]
 /// on the watcher thread, which is what keeps registration off the caller.
 struct WatcherLoopStartup {
+    registration:      WatchRegistration,
     watch_roots:       Vec<AbsolutePath>,
     background_tx:     Sender<BackgroundMsg>,
     ci_run_count:      u32,
@@ -161,8 +169,12 @@ impl WatcherLoopStartup {
     fn register(self, watcher: &mut impl Watcher) -> WatcherLoopContext {
         let started = Instant::now();
         let skips = known_target_skips(&self.metadata_dispatch, self.watch_roots.iter());
-        let (mut registered_roots, failures) =
-            roots::register_watch_roots_with_skips(watcher, &self.watch_roots, skips);
+        let (mut registered_roots, failures) = roots::register_watch_roots_with_skips(
+            watcher,
+            &self.watch_roots,
+            skips,
+            self.registration,
+        );
         for failure in &failures {
             tracing::error!(
                 dir = %failure.dir.display(),
@@ -344,7 +356,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
         let notify_events = notify_events
             .into_iter()
             .filter_map(|mut event| {
-                event.paths.retain(|path| !registered_roots.skips(path));
+                roots::filter_event_paths(&registered_roots, &mut event);
                 (!event.paths.is_empty()).then_some(event)
             })
             .collect();
@@ -560,6 +572,7 @@ mod tests {
     use notify::event::ModifyKind;
     use tempfile::TempDir;
 
+    use super::roots::WatchRegistration;
     use super::*;
     use crate::channel;
     use crate::channel::Receiver;
@@ -1331,6 +1344,7 @@ mod tests {
         let client_for_dispatch = client.clone();
         let watcher_thread = spawn_watcher_thread(
             WatcherLoopStartup {
+                registration: WatchRegistration::PerFolder,
                 watch_roots: Vec::new(),
                 background_tx,
                 ci_run_count: 0,

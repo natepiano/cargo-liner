@@ -11,6 +11,7 @@ use super::WatchSkipSet;
 use crate::project::AbsolutePath;
 use crate::watcher::repair_test_support::RecordedFolderWatches;
 use crate::watcher::roots;
+use crate::watcher::roots::WatchRegistration;
 
 #[test]
 fn custom_target_symlink_skips_real_tree_at_registration_and_creation() -> Result<(), Box<dyn Error>>
@@ -25,8 +26,12 @@ fn custom_target_symlink_skips_real_tree_at_registration_and_creation() -> Resul
     let mut skips = WatchSkipSet::default();
     skips.add_target_directory(AbsolutePath::from(alias.clone()));
     let mut watcher = RecordedFolderWatches::default();
-    let (mut registered, failures) =
-        roots::register_watch_roots_with_skips(&mut watcher, std::slice::from_ref(&root), skips);
+    let (mut registered, failures) = roots::register_watch_roots_with_skips(
+        &mut watcher,
+        std::slice::from_ref(&root),
+        skips,
+        WatchRegistration::PerFolder,
+    );
     assert!(failures.is_empty());
     assert!(watcher.watched.contains(&root.join("src")));
     assert!(
