@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Watch source folders without watching target trees or Git objects; poll build sizes every 30 seconds.
+
 - Settings rows below the first screen can be selected with a click; the painted rows and the click targets match. A wheel move while a setting is edited ends the edit.
 - Test HTTP clients skip host proxy discovery, so fixture setup does not wait for the Mac network configuration service.
 - Independent Git metadata reads run concurrently on scoped threads, so repository and checkout probes do not wait for unrelated commands or network work in the shared thread pool.
