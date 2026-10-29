@@ -149,7 +149,6 @@ use crate::constants::ELISION;
 use crate::constants::FROZEN_NOTE_LABEL;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
-use crate::constants::HEADING_MIN_TAIL;
 use crate::constants::MANAGED_COLUMN;
 use crate::constants::MEMORY_COLUMN;
 use crate::constants::MEMORY_UNIT;
@@ -2668,18 +2667,7 @@ impl PathGroup<'_> {
         if cell_width(&whole) <= room {
             return whole;
         }
-        if cell_width(self.path) <= room {
-            return self.path.to_string();
-        }
-        let components = self.component_heading("", room);
-        if !components.is_empty() {
-            return components;
-        }
-        let tail = self.tail_heading("", room);
-        if !tail.is_empty() {
-            return tail;
-        }
-        String::new()
+        fit_directory_path(self.path, room)
     }
 
     /// A marked heading retaining the greatest number of whole trailing components.
@@ -2706,42 +2694,120 @@ impl PathGroup<'_> {
         }
         String::new()
     }
+}
 
-    /// A marked heading retaining the tail of the final component.
-    fn tail_heading(&self, prefix: &str, room: u16) -> String {
-        let component = self
-            .path
-            .rsplit(std::path::MAIN_SEPARATOR)
-            .find(|component| !component.is_empty())
-            .unwrap_or_default();
-        let tail_room = room
-            .saturating_sub(cell_width(prefix))
-            .saturating_sub(cell_width(ELISION))
-            .min(cell_width(component).saturating_sub(1));
-        if tail_room < HEADING_MIN_TAIL {
-            return String::new();
-        }
-        let span = Span::raw(component);
-        let graphemes: Vec<_> = span.styled_graphemes(Style::default()).collect();
-        let mut used = 0u16;
-        let mut first = graphemes.len();
-        for (index, grapheme) in graphemes.iter().enumerate().rev() {
-            let next = used.saturating_add(cell_width(grapheme.symbol));
-            if next > tail_room {
-                break;
-            }
-            used = next;
-            first = index;
-        }
-        if used < HEADING_MIN_TAIL {
-            return String::new();
-        }
-        let tail: String = graphemes[first..]
-            .iter()
-            .map(|grapheme| grapheme.symbol)
-            .collect();
-        format!("{prefix}{ELISION}{tail}")
+/// Prefer GUID cuts, then cut the original path while keeping its last folder.
+fn fit_directory_path(path: &str, room: u16) -> String {
+    let width = cell_width(path);
+    if width <= room {
+        return path.to_string();
     }
+    let mut remaining = width.saturating_sub(room);
+    let mut shortened = String::with_capacity(path.len());
+    for part in path.split_inclusive(std::path::MAIN_SEPARATOR) {
+        // The final folder follows the whole-folder rule, including GUID names.
+        if let Some(component) = part.strip_suffix(std::path::MAIN_SEPARATOR)
+            && is_guid_directory(component)
+            && remaining > 0
+        {
+            let reduction = remaining.min(35);
+            let retained = usize::from(35 - reduction);
+            let start = retained.div_ceil(2);
+            let end = component.len() - retained / 2;
+            shortened.push_str(&component[..start]);
+            shortened.push_str(ELISION);
+            shortened.push_str(&component[end..]);
+            shortened.push(std::path::MAIN_SEPARATOR);
+            remaining -= reduction;
+        } else {
+            shortened.push_str(part);
+        }
+    }
+    if remaining == 0 {
+        return shortened;
+    }
+    heading_middle(path, room)
+}
+
+/// A GUID folder has exactly the hexadecimal 8-4-4-4-12 form.
+fn is_guid_directory(component: &str) -> bool {
+    component.len() == 36
+        && component.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
+/// Reserve the last folder, then share the other columns between both ends.
+fn heading_middle(path: &str, room: u16) -> String {
+    if room == 0 {
+        return String::new();
+    }
+    let last = path
+        .rsplit_once(std::path::MAIN_SEPARATOR)
+        .map_or(path, |(_, last)| last);
+    let last_width = cell_width(last);
+    if last_width > room {
+        return heading_tail(last, room);
+    }
+    if last_width == room {
+        return last.to_string();
+    }
+    let available = room.saturating_sub(cell_width(ELISION));
+    let start_room = available.saturating_sub(last_width) / 2;
+    let start = heading_start(path, start_room);
+    let end = heading_end(path, available.saturating_sub(cell_width(&start)));
+    // Reuse any column a wide suffix grapheme could not fill at the start.
+    let start = heading_start(path, available.saturating_sub(cell_width(&end)));
+    format!("{start}{ELISION}{end}")
+}
+
+/// Keep complete graphemes from the start within the column budget.
+fn heading_start(text: &str, room: u16) -> String {
+    let span = Span::raw(text);
+    let mut start = String::new();
+    let mut used = 0u16;
+    for grapheme in span.styled_graphemes(Style::default()) {
+        let next = used.saturating_add(cell_width(grapheme.symbol));
+        if next > room {
+            break;
+        }
+        used = next;
+        start.push_str(grapheme.symbol);
+    }
+    start
+}
+
+/// A marked heading retaining the longest directory suffix that fits the cell.
+fn heading_tail(path: &str, room: u16) -> String {
+    let fixed = cell_width(ELISION);
+    if room < fixed {
+        return String::new();
+    }
+    format!("{ELISION}{}", heading_end(path, room.saturating_sub(fixed)))
+}
+
+/// Keep complete graphemes from the end within the column budget.
+fn heading_end(path: &str, room: u16) -> String {
+    let span = Span::raw(path);
+    let graphemes: Vec<_> = span.styled_graphemes(Style::default()).collect();
+    let mut used = 0u16;
+    let mut first = graphemes.len();
+    for (index, grapheme) in graphemes.iter().enumerate().rev() {
+        let next = used.saturating_add(cell_width(grapheme.symbol));
+        if next > room {
+            break;
+        }
+        used = next;
+        first = index;
+    }
+    graphemes[first..]
+        .iter()
+        .map(|grapheme| grapheme.symbol)
+        .collect()
 }
 
 /// Width fitting needs numeric text; row selection defers it until contributors are known.
@@ -4754,36 +4820,7 @@ impl TableAccountHeadings {
             GroupQualification::Unqualified => false,
         };
         if drops && !group.names_only_account() {
-            if cell_width(group.path) <= width {
-                return group.path.to_string();
-            }
-            let components = group.component_heading("", width);
-            if !components.is_empty() {
-                return components;
-            }
-            return group.tail_heading("", width);
-        }
-        if !self.path_only.is_empty()
-            && !group.names_only_account()
-            && !matches!(
-                group.identity.qualification,
-                GroupQualification::Unqualified
-            )
-        {
-            let whole = group.heading();
-            if cell_width(&whole) <= width {
-                return whole;
-            }
-            let prefix = group.heading_prefix();
-            let components = group.component_heading(&prefix, width);
-            if !components.is_empty() {
-                return components;
-            }
-            let tail = group.tail_heading(&prefix, width);
-            if !tail.is_empty() {
-                return tail;
-            }
-            return group.fitted_heading(width);
+            return fit_directory_path(group.path, width);
         }
         group.fitted_heading(width)
     }
@@ -9408,13 +9445,12 @@ mod tests {
             })
             .expect("settled draw");
         let lines = buffer_rows(terminal.backend().buffer());
-        for segment in ["mat-alone", "check-alone", "hana"] {
-            assert!(
-                lines
-                    .iter()
-                    .any(|line| line.trim_matches([' ', '│']) == format!("…/{segment}")),
-                "{lines:#?}"
-            );
+        for (row, expected) in [
+            (2, "~/long…y-name/hana"),
+            (5, "~/lo…ame/mat-alone"),
+            (8, "~/l…me/check-alone"),
+        ] {
+            assert_eq!(lines[row].trim_matches([' ', '│']), expected, "{lines:#?}");
         }
         assert!(
             !lines.iter().any(|line| line.contains("[natepiano] …")),
@@ -9526,15 +9562,14 @@ mod tests {
     #[test]
     fn a_cut_prefix_before_a_whole_path_segment_keeps_its_slash() {
         let source = row_at("~/long/hana_catalyst-lfo", None);
-        for width in 17..=19 {
+        for (width, expected) in [
+            (17, "hana_catalyst-lfo"),
+            (18, "…hana_catalyst-lfo"),
+            (19, "…/hana_catalyst-lfo"),
+        ] {
             let buffer = narrow_table_buffer(&[&source], TableKind::Summary, width, 5);
             let heading = buffer_line(&buffer, 1);
-            if heading.trim().ends_with("hana_catalyst-lfo") {
-                assert!(heading.trim().starts_with("…/"), "{width}: {heading}");
-            }
-            if width == 19 {
-                assert_eq!(heading.trim(), "…/hana_catalyst-lfo");
-            }
+            assert_eq!(heading.trim(), expected, "{width}");
         }
     }
 
@@ -12315,7 +12350,7 @@ mod tests {
             ),
             (
                 "~/very-long-parent/tool-based-ui-geometry-material",
-                "…/tool-based-ui-geometry-material",
+                "~/v…nt/tool-based-ui-geometry-material",
             ),
         ] {
             let mut row = row_at(path, None);
@@ -15334,42 +15369,43 @@ mod tests {
         let whole = "[runner-one] /very-long-parent/component";
 
         assert_eq!(group.fitted_heading(cell_width(whole)), whole);
-        assert_eq!(group.fitted_heading(24), format!("{ELISION}/component"));
-        assert_eq!(group.fitted_heading(22), format!("{ELISION}/component"));
+        assert_eq!(group.fitted_heading(24), "/very-l…parent/component");
+        assert_eq!(group.fitted_heading(22), "/very-…arent/component");
         assert_eq!(group.fitted_heading(11), format!("{ELISION}/component"));
-        assert_eq!(group.fitted_heading(9), format!("{ELISION}omponent"));
-        assert_eq!(group.fitted_heading(8), "");
+        assert_eq!(group.fitted_heading(9), "component");
+        assert_eq!(group.fitted_heading(8), "…mponent");
 
         let mut row = row_at("/very-long-parent/tool-based-ui-frame-time", None);
         row.process.provenance = RowProvenance::Direct(capture_context());
         let rows = [&row];
         let groups = group_by_path(&rows, PinnedGroup::Unpinned);
-        assert_eq!(
-            groups[0].fitted_heading(25),
-            format!("{ELISION}ool-based-ui-frame-time")
-        );
+        assert_eq!(groups[0].fitted_heading(25), "…tool-based-ui-frame-time");
 
         let row = row_at("/very-long-parent/tool-based-ui-frame-time", None);
         let rows = [&row];
         let groups = group_by_path(&rows, PinnedGroup::Unpinned);
-        assert_eq!(
-            groups[0].fitted_heading(25),
-            format!("{ELISION}ool-based-ui-frame-time")
-        );
+        assert_eq!(groups[0].fitted_heading(25), "…tool-based-ui-frame-time");
     }
 
     #[test]
     fn a_wide_directory_tail_fits_its_cell_budget() {
-        for (path, room) in [
-            (format!("/{}", "界".repeat(6)), 10),
-            (format!("/{}AB", "界".repeat(17)), 36),
+        for (path, room, expected) in [
+            (format!("/{}", "界".repeat(6)), 10, "…界界界界".to_string()),
+            (format!("/{}", "界".repeat(6)), 2, "…".to_string()),
+            (
+                format!("/{}AB", "界".repeat(17)),
+                36,
+                format!("…{}AB", "界".repeat(16)),
+            ),
         ] {
-            let row = row_at(&path, None);
-            let rows = [&row];
-            let groups = group_by_path(&rows, PinnedGroup::Unpinned);
-            let tail = groups[0].tail_heading("", room);
+            let tail = heading_tail(&path, room);
+            assert_eq!(tail, expected, "{room}");
             assert!(tail.starts_with(ELISION), "{tail:?}");
             assert!(cell_width(&tail) <= room, "{room}: {tail:?}");
+            assert!(
+                matches!(room.saturating_sub(cell_width(&tail)), 0 | 1),
+                "a one-column gap is permitted only because the next grapheme is two columns wide: {room}: {tail:?}"
+            );
             assert!(path.ends_with(tail.strip_prefix(ELISION).unwrap()));
         }
     }
@@ -15405,7 +15441,7 @@ mod tests {
             }
             let heading = heading.trim_end();
             assert_eq!(heading.trim(), fitted, "{kind:?}: {heading:?}");
-            assert!(heading.contains(ELISION), "{heading:?}");
+            assert_eq!(heading.trim(), format!("{}AB", "界".repeat(17)));
             assert!(heading.ends_with("AB"), "{heading:?}");
             assert_eq!(
                 buffer[(area.right() - 1, TABLE_HEADER_HEIGHT)].symbol(),
@@ -17307,10 +17343,19 @@ mod tests {
         false
     }
 
-    /// Every word above the summary's foot must be complete or carry its cut mark.
-    fn assert_summary_words(buffer: &Buffer, values: &[&str], inner_width: u16) {
+    /// Check the directory exactly; all other words are whole or marked.
+    fn assert_summary_words(
+        buffer: &Buffer,
+        values: &[&str],
+        inner_width: u16,
+        directory_heading: &str,
+    ) {
         for y in 1..buffer.area.height.saturating_sub(2) {
             let text: String = (1..=inner_width).map(|x| buffer[(x, y)].symbol()).collect();
+            if y == TABLE_HEADER_HEIGHT + 1 && !directory_heading.is_empty() {
+                assert_eq!(text.trim(), directory_heading, "inner width {inner_width}");
+                continue;
+            }
             for word in text.split_whitespace() {
                 if word == ELISION {
                     assert_eq!(y, 1, "bare summary mark at inner width {inner_width}");
@@ -17394,7 +17439,24 @@ mod tests {
         for inner_width in 6..=last_summary_only_inner_width {
             let occupied = summary_alone_buffer(&roster, inner_width);
             assert_summary_alone(&occupied, inner_width);
-            assert_summary_words(&occupied, &occupied_values, inner_width);
+            let directory_heading = match inner_width {
+                6 => "…ner",
+                7 => "…iner",
+                8 => "…liner",
+                9 => "…-liner",
+                10 => "…o-liner",
+                11 => "…go-liner",
+                12 => "…rgo-liner",
+                13 => "cargo-liner",
+                14 => "…cargo-liner",
+                15 => "…/cargo-liner",
+                16 => "~…/cargo-liner",
+                17 => "~…t/cargo-liner",
+                18 => "~/…t/cargo-liner",
+                19 => "~/…st/cargo-liner",
+                _ => "~/rust/cargo-liner",
+            };
+            assert_summary_words(&occupied, &occupied_values, inner_width, directory_heading);
             let foot = drawn_summary_foot_text(&occupied, whole_foot);
             assert!(
                 foot.is_empty() || foot == whole_foot,
@@ -17403,7 +17465,7 @@ mod tests {
 
             let empty = summary_alone_buffer(&Roster::new(), inner_width);
             assert_summary_alone(&empty, inner_width);
-            assert_summary_words(&empty, &empty_values, inner_width);
+            assert_summary_words(&empty, &empty_values, inner_width, "");
             let empty_note: String = (1..=inner_width)
                 .map(|x| empty[(x, 2)].symbol())
                 .collect::<String>()
@@ -18761,6 +18823,150 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+    mod directory_header_tests {
+        use super::*;
+
+        #[test]
+        fn a_directory_header_keeps_a_long_path_that_fits_the_inner_width() {
+            let path = "/tmp/claude/11a8e01e-1234-5678-9012-123456789012/scratchpad/clone88ci";
+            let row = same_second(path, 40);
+            let area = Rect::new(0, 0, 100, 6);
+            let mut buffer = Buffer::empty(area);
+            draw_process_table(
+                &mut buffer,
+                area,
+                &[&row],
+                TableKind::Command,
+                Color::Reset,
+                PinnedGroup::Unpinned,
+                CommandView::long(),
+            );
+            assert_eq!(buffer_line(&buffer, TABLE_HEADER_HEIGHT).trim(), path);
+        }
+
+        #[test]
+        fn a_directory_header_fills_its_inner_width_by_shortening_a_guid() {
+            let path = "/tmp/claude/11a8e01e-1234-5678-9012-123456789012/scratchpad/clone88ci";
+            let row = same_second(path, 40);
+            let area = Rect::new(0, 0, 52, 6);
+            let mut buffer = Buffer::empty(area);
+            draw_process_table(
+                &mut buffer,
+                area,
+                &[&row],
+                TableKind::Command,
+                Color::Reset,
+                PinnedGroup::Unpinned,
+                CommandView::long(),
+            );
+            assert_eq!(
+                buffer_line(&buffer, TABLE_HEADER_HEIGHT).trim(),
+                "/tmp/claude/11a8e01e…56789012/scratchpad/clone88ci"
+            );
+        }
+
+        #[test]
+        fn a_mixed_account_header_keeps_a_whole_path_that_fits() {
+            let mut first = row_at("/a-very-long-parent/component", None);
+            let mut first_context = capture_context();
+            first_context.account.name = AccountName::Resolved("first".into());
+            first.process.provenance = RowProvenance::Direct(first_context.clone());
+            let mut second = row_at("/abcdefghij/x", None);
+            let mut second_context = first_context;
+            second_context.account.uid += 1;
+            second_context.account.name = AccountName::Resolved("second".into());
+            second.process.provenance = RowProvenance::Direct(second_context);
+            let first_rows = [&first];
+            let second_rows = [&second];
+            let mut groups = group_by_path(&first_rows, PinnedGroup::Unpinned);
+            groups.extend(group_by_path(&second_rows, PinnedGroup::Unpinned));
+            let headings = TableAccountHeadings::of(&groups, 20);
+            assert_eq!(headings.path_only.len(), 1);
+            assert_eq!(headings.heading(&groups[1], 20), "/abcdefghij/x");
+        }
+
+        #[test]
+        fn a_directory_header_shortens_guids_before_the_rest_of_the_path() {
+            let path = "/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile/11a8e01e-8f31-4338-a81d-007a1289a078/scratchpad/clone88ci";
+            for (room, expected) in [
+                (112, path),
+                (
+                    100,
+                    "/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile/11a8e01e-8f3…07a1289a078/scratchpad/clone88ci",
+                ),
+                (
+                    85,
+                    "/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile/11a8…a078/scratchpad/clone88ci",
+                ),
+                (
+                    77,
+                    "/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile/…/scratchpad/clone88ci",
+                ),
+                (50, "/tmp/claude-1000/-ho…1289a078/scratchpad/clone88ci"),
+            ] {
+                assert_eq!(fitted_path(path, room), expected, "{room}");
+            }
+        }
+
+        #[test]
+        fn a_directory_header_cuts_the_original_middle_and_keeps_the_last_folder() {
+            let path = "/very-long-parent/component";
+            for (room, expected) in [
+                (cell_width(path), path),
+                (24, "/very-l…parent/component"),
+                (22, "/very-…arent/component"),
+                (11, "…/component"),
+                (9, "component"),
+                (8, "…mponent"),
+            ] {
+                assert_eq!(fitted_path(path, room), expected, "{room}");
+            }
+        }
+
+        #[test]
+        fn directory_guids_shorten_in_path_order() {
+            let path =
+                "/11a8e01e-8f31-4338-a81d-007a1289a078/22b9f12f-9f42-5449-b92e-118b239ab189/leaf";
+            for (room, expected) in [
+                (
+                    60,
+                    "/11a8e01e…1289a078/22b9f12f-9f42-5449-b92e-118b239ab189/leaf",
+                ),
+                (40, "/…/22b9f12f-9f42-54…2e-118b239ab189/leaf"),
+            ] {
+                assert_eq!(fitted_path(path, room), expected, "{room}");
+            }
+        }
+
+        #[test]
+        fn directory_cuts_keep_the_last_folder_and_complete_graphemes() {
+            for (path, room, expected) in [
+                ("/prefix/界界/end", 13, "/pre…界界/end"),
+                ("/prefix/界界/end", 12, "/pref…界/end"),
+                ("/prefix/界界界界界界", 10, "…界界界界"),
+                ("/prefix/界界界界界界", 2, "…"),
+                (
+                    "/parent/11a8e01e-8f31-4338-a81d-007a1289a078",
+                    36,
+                    "11a8e01e-8f31-4338-a81d-007a1289a078",
+                ),
+                (
+                    "/parent/11a8e01e-8f31-4338-a81d-007a1289a078",
+                    8,
+                    "…289a078",
+                ),
+            ] {
+                assert_eq!(fitted_path(path, room), expected, "{room}");
+            }
+        }
+
+        fn fitted_path(path: &str, room: u16) -> String {
+            let row = row_at(path, None);
+            let rows = [&row];
+            let groups = group_by_path(&rows, PinnedGroup::Unpinned);
+            groups[0].fitted_heading(room)
+        }
     }
 }
 

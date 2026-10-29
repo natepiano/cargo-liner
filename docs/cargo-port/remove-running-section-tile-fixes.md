@@ -1367,7 +1367,7 @@ Port of the approved capture shim cost work (one process per call apart from car
 
 Port of the summary-arguments rule and the nextest header ANSI handling onto main. Work order: phases/35m/implementation_prompt.md.
 
-### Phase 36m — Directory header rule on main  · status: todo
+### Phase 36m — Directory header rule on main  · status: done
 
 Port of the directory header rule (whole path; GUID middle cut; middle cut; last folder whole) onto main's render.rs. Work order: phases/36m/implementation_prompt.md.
 
