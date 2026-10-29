@@ -1,16 +1,13 @@
 use std::collections::HashMap;
-#[cfg(unix)]
-use std::collections::HashSet;
-use std::fs::Metadata;
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use sysinfo::Disks;
+use tui_pane::HardLinks;
 use tui_pane::PERF_LOG_TARGET;
+pub(crate) use tui_pane::dir_size;
 use walkdir::WalkDir;
 
 use super::BackgroundMsg;
@@ -247,46 +244,6 @@ fn is_lint_source(path: &Path) -> bool {
         Some(CARGO_TOML | CARGO_LOCK) => true,
         _ => path.extension().is_some_and(|ext| ext == "rs"),
     }
-}
-
-/// Per-walk record of the hard-linked files a size walk has already counted.
-///
-/// cargo hard-links each binary, example, and test executable it builds in
-/// `deps/` into the profile directory (`target/debug/hana` and
-/// `target/debug/deps/hana-<hash>` are one file), and rustc hard-links
-/// unchanged artifacts from one `incremental/` session directory into the
-/// next. Summing `Metadata::len` per path counted those files once per link:
-/// a `target/` that `du` measures at 96 GiB was reported as 150 GiB.
-#[derive(Default)]
-struct HardLinks {
-    /// `(st_dev, st_ino)` of every multiply-linked file already counted.
-    #[cfg(unix)]
-    counted: HashSet<(u64, u64)>,
-}
-
-impl HardLinks {
-    /// Bytes `metadata`'s file adds to the walk: its length the first time the
-    /// walk reaches its inode, zero at every later link to that inode. Non-unix
-    /// `Metadata` carries no inode identity, so there every path counts.
-    fn unseen_bytes(&mut self, metadata: &Metadata) -> u64 {
-        #[cfg(unix)]
-        if metadata.nlink() > 1 && !self.counted.insert((metadata.dev(), metadata.ino())) {
-            return 0;
-        }
-        metadata.len()
-    }
-}
-
-/// Bytes held by the files under `path`, each hard-linked file counted once.
-pub(crate) fn dir_size(path: &Path) -> u64 {
-    let mut hard_links = HardLinks::default();
-    WalkDir::new(path)
-        .into_iter()
-        .flatten()
-        .filter(|entry| entry.file_type().is_file())
-        .filter_map(|entry| entry.metadata().ok())
-        .map(|metadata| hard_links.unseen_bytes(&metadata))
-        .sum()
 }
 
 fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {
