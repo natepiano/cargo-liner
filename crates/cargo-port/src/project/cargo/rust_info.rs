@@ -92,7 +92,10 @@ impl Cargo {
     pub(crate) fn benches(&self) -> &[String] { &self.benches }
 
     pub(crate) fn example_count(&self) -> usize {
-        self.examples.iter().map(|g| g.names.len()).sum()
+        self.examples
+            .iter()
+            .map(|example_group| example_group.names.len())
+            .sum()
     }
 
     #[allow(
@@ -101,7 +104,9 @@ impl Cargo {
                   PackageRecord.targets."
     )]
     pub(super) fn is_binary(&self) -> bool {
-        self.types.iter().any(|t| matches!(t, ProjectType::Binary))
+        self.types
+            .iter()
+            .any(|project_type| matches!(project_type, ProjectType::Binary))
     }
 
     pub(crate) const fn publishable(&self) -> bool { self.publish_status.is_publishable() }
@@ -115,17 +120,17 @@ impl From<&PackageRecord> for Cargo {
     ///
     /// `ProjectType::Workspace` is not derived here — that's a property
     /// of the `[workspace]` table presence, owned by the parse path.
-    fn from(record: &PackageRecord) -> Self {
-        let manifest_dir = record.manifest_path.as_path().parent();
+    fn from(package_record: &PackageRecord) -> Self {
+        let manifest_dir = package_record.manifest_path.as_path().parent();
         let mut has_lib = false;
         let mut has_bin = false;
         let mut has_proc_macro = false;
         let mut example_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut benches: Vec<String> = Vec::new();
 
-        for target in &record.targets {
-            for kind in &target.kinds {
-                match kind {
+        for target_record in &package_record.targets {
+            for target_kind in &target_record.kinds {
+                match target_kind {
                     TargetKind::Bin => has_bin = true,
                     TargetKind::Lib
                     | TargetKind::RLib
@@ -134,13 +139,14 @@ impl From<&PackageRecord> for Cargo {
                     | TargetKind::StaticLib => has_lib = true,
                     TargetKind::ProcMacro => has_proc_macro = true,
                     TargetKind::Example => {
-                        let category = example_category(manifest_dir, target.src_path.as_path());
+                        let category =
+                            example_category(manifest_dir, target_record.src_path.as_path());
                         example_groups
                             .entry(category)
                             .or_default()
-                            .push(target.name.clone());
+                            .push(target_record.name.clone());
                     },
-                    TargetKind::Bench => benches.push(target.name.clone()),
+                    TargetKind::Bench => benches.push(target_record.name.clone()),
                     _ => {},
                 }
             }
@@ -165,18 +171,18 @@ impl From<&PackageRecord> for Cargo {
             .collect();
         // `examples.sort_by` puts the empty `ExampleGroup::category` first, then
         // sorts categories alphabetically, preserving the pre-retirement ordering.
-        examples.sort_by(|a, b| {
-            let a_root = a.category.is_empty();
+        examples.sort_by(|left_example_group, b| {
+            let a_root = left_example_group.category.is_empty();
             let b_root = b.category.is_empty();
             match (a_root, b_root) {
                 (true, false) => Ordering::Less,
                 (false, true) => Ordering::Greater,
-                _ => a.category.cmp(&b.category),
+                _ => left_example_group.category.cmp(&b.category),
             }
         });
         benches.sort();
 
-        let publish_status = if matches!(record.publish, PublishPolicy::Never) {
+        let publish_status = if matches!(package_record.publish, PublishPolicy::Never) {
             PublishStatus::NotPublishable
         } else {
             PublishStatus::Publishable
@@ -204,7 +210,7 @@ fn example_category(manifest_dir: Option<&Path>, src_path: &Path) -> String {
     };
     let parts: Vec<String> = rel
         .components()
-        .filter_map(|c| match c {
+        .filter_map(|component| match component {
             Component::Normal(seg) => Some(seg.to_string_lossy().into_owned()),
             _ => None,
         })

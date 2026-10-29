@@ -12,6 +12,7 @@ pub(crate) use actions::LintsAction;
 pub(crate) use actions::OutputAction;
 pub(crate) use actions::PackageAction;
 pub(crate) use actions::ProjectListAction;
+pub(crate) use actions::SccacheAction;
 pub(crate) use actions::TargetsAction;
 pub(crate) use canonical::canonical_code;
 pub(crate) use canonical::canonical_event_code_and_mods;

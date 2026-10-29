@@ -15,6 +15,7 @@ use super::LangPane;
 use super::OutputPane;
 use super::OwnerRepo;
 use super::PackagePane;
+use super::SccachePane;
 use super::TrackedItemKey;
 use super::lints_pane::LintsPane;
 use super::project_list_pane::ProjectListPane;
@@ -58,6 +59,8 @@ pub fn build_framework_keymap(
         .register::<OutputPane>(OutputPane)
         .register_copy_selection::<OutputPane>()
         .register::<FinderPane>(FinderPane)
+        .register::<SccachePane>(SccachePane)
+        .register_copy_selection::<SccachePane>()
         .build_into(framework)
 }
 
@@ -75,10 +78,16 @@ pub fn owner_repo_key(repo: &OwnerRepo) -> TrackedItemKey { TrackedItemKey::new(
 
 #[cfg(test)]
 mod tests {
+    use tui_pane::Keymap;
+    use tui_pane::VimMode;
+
+    use super::build_framework_keymap;
     use super::owner_repo_key;
     use super::path_key;
     use crate::ci::OwnerRepo;
     use crate::project::AbsolutePath;
+    use crate::tui::integration::framework_keymap::AppPaneId;
+    use crate::tui::test_support;
 
     #[test]
     fn path_key_uses_cargo_port_absolute_path_string() {
@@ -93,5 +102,53 @@ mod tests {
         let repo = OwnerRepo::new("natepiano", "cargo-port");
 
         assert_eq!(owner_repo_key(&repo).as_str(), "natepiano/cargo-port");
+    }
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "tests should panic on unexpected values"
+    )]
+    fn sccache_scope_template_bar_and_conflicts_use_the_registered_keymap() {
+        let mut app = test_support::make_app(&[]);
+        let keymap = build_framework_keymap(
+            Keymap::builder().vim_mode(VimMode::Disabled),
+            &mut app.framework,
+        )
+        .expect("default keymap");
+        let slots = keymap.render_app_pane_bar_slots(AppPaneId::Sccache, &app);
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].label, "close");
+        assert_eq!(slots[0].key.display_short(), "Esc");
+        let toml = tui_pane::keymap_toml(&app, &keymap);
+        assert_eq!(
+            toml,
+            include_str!("../../../../tests/assets/default-keymap.toml")
+        );
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let path = directory.path().join("keymap.toml");
+        std::fs::write(&path, "[sccache]\ncancel = \"down\"").expect("write cross-scope fixture");
+        let builder = Keymap::builder()
+            .vim_mode(VimMode::Disabled)
+            .load_toml(path.clone())
+            .expect("load cross scope");
+        let cross_scope = build_framework_keymap(builder, &mut app.framework)
+            .expect("cross-scope overlap allowed");
+        assert_eq!(
+            cross_scope
+                .key_for_toml_key(AppPaneId::Sccache, "cancel")
+                .expect("cancel")
+                .display_short(),
+            "↓"
+        );
+        std::fs::write(&path, "[navigation]\nup = \"ctrl-j\"\ndown = \"ctrl-j\"")
+            .expect("write collision fixture");
+        let builder = Keymap::builder()
+            .vim_mode(VimMode::Disabled)
+            .load_toml(path)
+            .expect("load collision");
+        assert!(
+            build_framework_keymap(builder, &mut app.framework).is_err(),
+            "same-scope collision is rejected"
+        );
     }
 }

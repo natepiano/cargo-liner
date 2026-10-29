@@ -80,3 +80,51 @@ static PROJECT_LIST_VIM_EXTRAS: [(ProjectListAction, KeyBind); 2] = [
     (ProjectListAction::ExpandRow, KeyBind::from_char('l')),
     (ProjectListAction::CollapseRow, KeyBind::from_char('h')),
 ];
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use tui_pane::Action;
+    use tui_pane::AppContext;
+    use tui_pane::BarPalette;
+    use tui_pane::FocusedPane;
+    use tui_pane::render_status_bar;
+
+    use super::*;
+    use crate::tui::test_support;
+
+    #[test]
+    fn project_list_bar_keeps_its_compact_pair_and_actions_have_word_labels() {
+        let app = test_support::make_app(&[]);
+        let bar = render_status_bar(
+            &FocusedPane::App(AppPaneId::ProjectList),
+            &app,
+            &app.framework_keymap,
+            app.framework(),
+            &BarPalette::default(),
+        );
+        let nav: String = bar.nav.iter().map(|span| span.content.as_ref()).collect();
+        assert!(nav.contains("=/- all"));
+        assert_eq!(bar.pane_action, [] as [ratatui::prelude::Span<'_>; 0]);
+        let actions = ProjectListAction::ALL
+            .iter()
+            .map(|action| {
+                let key = app
+                    .framework_keymap
+                    .key_for_toml_key(AppPaneId::ProjectList, action.toml_key())
+                    .expect("bound action");
+                format!("{} {}", key.display_short(), action.bar_label())
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        assert_eq!(
+            actions,
+            "= expand all · - collapse all · → expand row · ← collapse row"
+        );
+        println!("Project List compact bar: {nav}");
+        println!("Project List action labels: {actions}");
+    }
+}
