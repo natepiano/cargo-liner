@@ -291,7 +291,7 @@ impl Display for UnitCounter {
 const fn progress_message_for(output_mode: BuildOutputMode) -> Option<&'static str> {
     match output_mode {
         BuildOutputMode::SuppressUnusedImportWarnings => Some("checking for fix candidates"),
-        BuildOutputMode::Quiet => Some("validating applied fixes"),
+        BuildOutputMode::Validation => Some("validating applied fixes"),
         // The main pass forwards cargo's own status lines, so the spinner is
         // there for what cargo cannot report: a package's status line is printed
         // once however many targets it holds, and mend analyzes each of those
@@ -385,9 +385,9 @@ mod tests {
     }
 
     #[test]
-    fn quiet_mode_uses_validation_status_message() {
+    fn validation_mode_uses_validation_status_message() {
         assert_eq!(
-            progress_message_for(BuildOutputMode::Quiet),
+            progress_message_for(BuildOutputMode::Validation),
             Some("validating applied fixes")
         );
     }

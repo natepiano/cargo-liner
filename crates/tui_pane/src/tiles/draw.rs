@@ -6,7 +6,11 @@
 //! reserves, the number an empty cell carries, and the one pass of
 //! [`GridLines`] that draws every border the cells share.
 
+use std::error::Error;
 use std::fmt::Debug;
+use std::fmt::Display;
+use std::fmt::Formatter;
+use std::num::NonZeroUsize;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -90,6 +94,81 @@ pub enum CellReadoutFade {
     Fading(CellFadeProgress),
 }
 
+/// Content row count, with the current one-based selection when the surface has one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RowsReadout {
+    /// Measured content rows without a selected row.
+    Count(usize),
+    /// A selected row checked against the surface's total by [`Self::selected`].
+    Selected(SelectedRow),
+}
+
+/// A one-based selection that is within its surface's row count.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SelectedRow {
+    row:  NonZeroUsize,
+    rows: usize,
+}
+
+impl SelectedRow {
+    /// The one-based selected row.
+    #[must_use]
+    pub const fn row(self) -> NonZeroUsize { self.row }
+
+    /// The number of selectable rows on the surface.
+    #[must_use]
+    pub const fn rows(self) -> usize { self.rows }
+}
+
+/// A selected row falls outside the surface's row count.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RowExceedsTotal;
+
+impl Display for RowExceedsTotal {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("selected row exceeds the surface row count")
+    }
+}
+
+impl Error for RowExceedsTotal {}
+
+impl RowsReadout {
+    /// Check a one-based selection against its surface's total.
+    ///
+    /// # Errors
+    /// Returns [`RowExceedsTotal`] when `row` exceeds `rows`.
+    pub const fn selected(row: NonZeroUsize, rows: usize) -> Result<Self, RowExceedsTotal> {
+        if row.get() > rows {
+            Err(RowExceedsTotal)
+        } else {
+            Ok(Self::Selected(SelectedRow { row, rows }))
+        }
+    }
+}
+
+/// A cell's foot text and the content measurement used for its fit ink.
+#[derive(Clone, Copy)]
+struct CellRowsReadout {
+    text:         RowsReadout,
+    content_rows: usize,
+}
+
+impl CellRowsReadout {
+    const fn new(text: RowsReadout, measured_rows: usize) -> Self {
+        Self {
+            text,
+            // Count providers keep their existing readout_rows adjustment.
+            // A selected item's count does not measure its wrapped content.
+            content_rows: match text {
+                RowsReadout::Count(rows) => rows,
+                RowsReadout::Selected(_) => measured_rows,
+            },
+        }
+    }
+
+    const fn count(rows: usize) -> Self { Self::new(RowsReadout::Count(rows), rows) }
+}
+
 /// Whether the measured rows include the cell's complete source content.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CellContentExtent {
@@ -127,6 +206,22 @@ impl CellReadoutInk {
 struct CellReadout {
     extent: CellContentExtent,
     ink:    CellReadoutInk,
+}
+
+impl CellReadout {
+    fn for_content<Id>(
+        cells: &impl TileCells<Id>,
+        content: &TileContent<Id>,
+        ground: Color,
+    ) -> Self {
+        Self {
+            extent: cells.content_extent(content),
+            ink:    match cells.readout_fade(content) {
+                CellReadoutFade::Unfaded => CellReadoutInk::Unfaded,
+                CellReadoutFade::Fading(progress) => CellReadoutInk::Fading { progress, ground },
+            },
+        }
+    }
 }
 
 impl From<CellReadoutInk> for CellReadout {
@@ -181,6 +276,16 @@ pub trait TileCells<Id> {
     /// The allocation and motion continue to use the original demand.
     fn readout_rows(&self, _content: &TileContent<Id>, _area: Rect, measured_rows: usize) -> usize {
         measured_rows
+    }
+
+    /// Readout for this surface after frame preparation, without changing its demand.
+    fn rows_readout(
+        &self,
+        content: &TileContent<Id>,
+        area: Rect,
+        measured_rows: usize,
+    ) -> RowsReadout {
+        RowsReadout::Count(self.readout_rows(content, area, measured_rows))
     }
 
     /// Text drawn whole or not at all at the left end of the summary
@@ -399,21 +504,22 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
                 TileContent::Group(_) | TileContent::Empty(_) => SummaryFoot::Empty,
             };
             draw_clipped(buffer, placement.frame, |buffer, inner| {
-                draw_cell(
+                draw_cell_with_rows_readout(
                     buffer,
                     inner,
-                    cells.readout_rows(&placement.content, content_area(inner), content_rows),
+                    || {
+                        CellRowsReadout::new(
+                            cells.rows_readout(
+                                &placement.content,
+                                content_area(inner),
+                                content_rows,
+                            ),
+                            content_rows,
+                        )
+                    },
                     demand_width,
                     &summary_foot,
-                    CellReadout {
-                        extent: cells.content_extent(&placement.content),
-                        ink:    match cells.readout_fade(&placement.content) {
-                            CellReadoutFade::Unfaded => CellReadoutInk::Unfaded,
-                            CellReadoutFade::Fading(progress) => {
-                                CellReadoutInk::Fading { progress, ground }
-                            },
-                        },
-                    },
+                    CellReadout::for_content(cells, &placement.content, ground),
                     |buffer, inner| match &placement.content {
                         TileContent::Empty(number) if draws_name => {
                             draw_number(buffer, *number, inner);
@@ -544,11 +650,33 @@ fn draw_cell(
     readout: impl Into<CellReadout>,
     draw: impl FnOnce(&mut Buffer, Rect),
 ) {
+    draw_cell_with_rows_readout(
+        buffer,
+        inner,
+        || CellRowsReadout::count(rows),
+        measured_at,
+        summary_foot,
+        readout,
+        draw,
+    );
+}
+
+/// Read the selected row after painting has resolved this allocation's surface.
+fn draw_cell_with_rows_readout(
+    buffer: &mut Buffer,
+    inner: Rect,
+    rows: impl FnOnce() -> CellRowsReadout,
+    measured_at: u16,
+    summary_foot: &SummaryFoot,
+    readout: impl Into<CellReadout>,
+    draw: impl FnOnce(&mut Buffer, Rect),
+) {
     let CellReadout { extent, ink } = readout.into();
     let contents = content_area(inner);
     if !contents.is_empty() {
         draw(buffer, contents);
     }
+    let rows = rows();
     let foot_draw_outcome = match summary_foot {
         SummaryFoot::Empty => SummaryFootDrawOutcome::NotDrawn,
         SummaryFoot::Text(line) => draw_summary_foot(buffer, inner, line, ink),
@@ -627,7 +755,7 @@ fn measured_width<Id: Eq>(widths: &[(TileContent<Id>, u16)], content: &TileConte
 fn draw_rows_readout(
     buffer: &mut Buffer,
     inner: Rect,
-    rows: usize,
+    rows: CellRowsReadout,
     measured_at: u16,
     extent: CellContentExtent,
     ink: CellReadoutInk,
@@ -647,7 +775,7 @@ fn draw_rows_readout(
 fn draw_rows_readout_after_foot(
     buffer: &mut Buffer,
     inner: Rect,
-    rows: usize,
+    rows: CellRowsReadout,
     measured_at: u16,
     foot_width: u16,
     extent: CellContentExtent,
@@ -672,21 +800,33 @@ fn draw_rows_readout_after_foot(
 /// Build the styled readouts that fit progressively narrower cells.
 fn extent_readout_lines(
     inner: Rect,
-    rows: usize,
+    rows: CellRowsReadout,
     measured_at: u16,
     extent: CellContentExtent,
 ) -> Vec<Line<'static>> {
     let reading = if extent == CellContentExtent::Measured
-        && rows <= usize::from(content_area(inner).height)
+        && rows.content_rows <= usize::from(content_area(inner).height)
     {
         success_color()
     } else {
         error_color()
     };
-    let content = vec![
+    let mut content = vec![
         Span::styled(TILE_ROWS_CONTENT_LABEL, Style::default().fg(label_color())),
-        Span::styled(rows.to_string(), Style::default().fg(reading)),
+        Span::styled(
+            match rows.text {
+                RowsReadout::Count(rows) => rows.to_string(),
+                RowsReadout::Selected(selected) => selected.row().to_string(),
+            },
+            Style::default().fg(reading),
+        ),
     ];
+    if let RowsReadout::Selected(selected) = rows.text {
+        content.extend([
+            Span::styled(" of ", Style::default().fg(label_color())),
+            Span::styled(selected.rows().to_string(), Style::default().fg(reading)),
+        ]);
+    }
     let mut whole = content.clone();
     if measured_at != inner.width {
         whole.push(Span::styled(
@@ -722,7 +862,12 @@ fn extent_readout_lines(
 
 #[cfg(test)]
 fn rows_readout_lines(inner: Rect, rows: usize, measured_at: u16) -> Vec<Line<'static>> {
-    extent_readout_lines(inner, rows, measured_at, CellContentExtent::Measured)
+    extent_readout_lines(
+        inner,
+        CellRowsReadout::count(rows),
+        measured_at,
+        CellContentExtent::Measured,
+    )
 }
 
 /// Right-align one rows readout that already fits its reserved row.
@@ -898,6 +1043,28 @@ mod tests {
     };
 
     #[test]
+    #[expect(clippy::expect_used, reason = "test row fixtures must be valid")]
+    fn selected_rows_readout_checks_bounds_and_preserves_count_text() {
+        let row = NonZeroUsize::new(3).expect("positive row");
+        assert_eq!(RowsReadout::selected(row, 2), Err(RowExceedsTotal));
+        assert_eq!(RowsReadout::selected(row, 0), Err(RowExceedsTotal));
+        let selected = RowsReadout::selected(row, 12).expect("row within total");
+        let area = Rect::new(0, 0, 80, 10);
+        let lines = extent_readout_lines(
+            area,
+            CellRowsReadout::new(selected, 12),
+            80,
+            CellContentExtent::Measured,
+        );
+        assert_eq!(lines[0].to_string(), "content rows: 3 of 12  r/c: 10/80");
+        assert_eq!(lines[1].to_string(), "content rows: 3 of 12");
+        assert_eq!(
+            rows_readout_lines(area, 12, 80)[0].to_string(),
+            "content rows: 12  r/c: 10/80"
+        );
+    }
+
+    #[test]
     fn a_shifted_summary_returns_only_the_frame_its_buffer_paints()
     -> Result<(), Box<dyn std::error::Error>> {
         struct ToastFrameApp {
@@ -994,6 +1161,52 @@ mod tests {
     struct SourceCutCells {
         cells:  StubCells,
         extent: CellContentExtent,
+    }
+
+    struct WrappedSelectedRows;
+
+    impl TileCells<u32> for WrappedSelectedRows {
+        fn summary_title(&self) -> &'static str { "summary" }
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            TileDemands {
+                summary: 12,
+                ..TileDemands::default()
+            }
+        }
+        #[expect(
+            clippy::expect_used,
+            reason = "the test account has one selectable row"
+        )]
+        fn rows_readout(&self, _: &TileContent<u32>, _: Rect, _: usize) -> RowsReadout {
+            RowsReadout::selected(NonZeroUsize::MIN, 1).expect("one selectable account")
+        }
+        fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
+    }
+
+    #[test]
+    #[expect(clippy::expect_used, reason = "the test readout must fit its buffer")]
+    fn selected_rows_readout_uses_measured_content_for_fit_ink() {
+        let area = Rect::new(0, 0, 80, 8);
+        let mut buffer = Buffer::empty(area);
+        let mut grid = TileGrid::new();
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            TileGrowth::default(),
+            TileGridContents::Shown,
+            &WrappedSelectedRows,
+        );
+        let y = area.bottom() - 2;
+        let line: String = (0..area.width).map(|x| buffer[(x, y)].symbol()).collect();
+        let start = line.find("content rows: 1 of 1").expect("selected readout");
+        let value = start + "content rows: ".len();
+        let x = u16::try_from(line[..value].chars().count()).expect("value column");
+        assert_eq!(
+            buffer[(x, y)].fg,
+            error_color(),
+            "12 content rows exceed the five-row body"
+        );
     }
 
     impl TileCells<u32> for SourceCutCells {
@@ -5124,7 +5337,7 @@ mod tests {
             draw_rows_readout(
                 &mut buffer,
                 inner,
-                22,
+                CellRowsReadout::count(22),
                 measured_at,
                 CellContentExtent::Measured,
                 CellReadoutInk::Unfaded,

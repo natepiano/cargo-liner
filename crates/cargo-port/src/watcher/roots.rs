@@ -18,12 +18,30 @@ use super::skip::WatchSkipSet;
 use crate::constants::DOT_CARGO_DIR;
 use crate::project::AbsolutePath;
 
-/// Discovery roots and the individual folders successfully subscribed beneath them.
+/// Subscription strategy chosen for the platform watcher.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum WatchRegistration {
+    RecursiveRoot,
+    #[default]
+    PerFolder,
+}
+
+impl WatchRegistration {
+    const fn mode(self) -> RecursiveMode {
+        match self {
+            Self::RecursiveRoot => RecursiveMode::Recursive,
+            Self::PerFolder => RecursiveMode::NonRecursive,
+        }
+    }
+}
+
+/// Roots, their subscription strategy, and successfully registered paths.
 #[derive(Clone, Default)]
 pub(super) struct RegisteredRoots {
-    dirs:    Vec<AbsolutePath>,
-    watched: HashSet<AbsolutePath>,
-    skips:   WatchSkipSet,
+    dirs:         Vec<AbsolutePath>,
+    watched:      HashSet<AbsolutePath>,
+    skips:        WatchSkipSet,
+    registration: WatchRegistration,
 }
 
 impl RegisteredRoots {
@@ -39,6 +57,7 @@ impl RegisteredRoots {
             dirs,
             watched,
             skips: WatchSkipSet::default(),
+            registration: WatchRegistration::PerFolder,
         }
     }
 
@@ -47,6 +66,10 @@ impl RegisteredRoots {
     }
 
     pub(super) fn skips(&self, path: &Path) -> bool { self.skips.skips(path) }
+}
+
+pub(super) fn filter_event_paths(registered: &RegisteredRoots, event: &mut Event) {
+    event.paths.retain(|path| !registered.skips(path));
 }
 
 pub(super) struct WatchRootRegistrationFailure {
@@ -86,21 +109,45 @@ pub(super) fn watch_directories(root: &AbsolutePath, skips: &WatchSkipSet) -> Ve
     directory_walk(root, skips).collect()
 }
 
+/// Yield subscriptions lazily so each parent is watched before walking its children.
+pub(super) fn registration_plan<'a>(
+    root: &'a AbsolutePath,
+    skips: &'a WatchSkipSet,
+    registration: WatchRegistration,
+) -> Box<dyn Iterator<Item = (AbsolutePath, RecursiveMode)> + 'a> {
+    match registration {
+        WatchRegistration::RecursiveRoot => Box::new(
+            std::iter::once((root.clone(), RecursiveMode::Recursive))
+                .filter(move |(path, _)| !skips.skips(path)),
+        ),
+        WatchRegistration::PerFolder => {
+            Box::new(directory_walk(root, skips).map(|path| (path, RecursiveMode::NonRecursive)))
+        },
+    }
+}
+
 #[cfg(test)]
 pub(super) fn register_watch_roots(
     watcher: &mut impl Watcher,
     watch_dirs: &[AbsolutePath],
 ) -> (RegisteredRoots, Vec<WatchRootRegistrationFailure>) {
-    register_watch_roots_with_skips(watcher, watch_dirs, WatchSkipSet::default())
+    register_watch_roots_with_skips(
+        watcher,
+        watch_dirs,
+        WatchSkipSet::default(),
+        WatchRegistration::PerFolder,
+    )
 }
 
 pub(super) fn register_watch_roots_with_skips(
     watcher: &mut impl Watcher,
     watch_dirs: &[AbsolutePath],
     skips: WatchSkipSet,
+    registration: WatchRegistration,
 ) -> (RegisteredRoots, Vec<WatchRootRegistrationFailure>) {
     let mut registered = RegisteredRoots {
         skips,
+        registration,
         ..RegisteredRoots::default()
     };
     let mut failures = Vec::new();
@@ -139,11 +186,11 @@ fn register_directory_tree(
     let mut failures = Vec::new();
     // Walk lazily: watch each parent before reading its children, so concurrent
     // folder creation is either seen by the walk or queued as a parent event.
-    for folder in directory_walk(dir, &registered.skips) {
+    for (folder, mode) in registration_plan(dir, &registered.skips, registered.registration) {
         if registered.watched.contains(&folder) {
             continue;
         }
-        match watcher.watch(&folder, RecursiveMode::NonRecursive) {
+        match watcher.watch(&folder, mode) {
             Ok(()) => {
                 registered.watched.insert(folder);
             },
@@ -182,6 +229,9 @@ pub(super) fn update_directory_watches(
     registered: &mut RegisteredRoots,
     event: &Event,
 ) {
+    if registered.registration == WatchRegistration::RecursiveRoot {
+        return;
+    }
     if !matches!(
         event.kind,
         EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
@@ -218,6 +268,10 @@ pub(super) fn replace_skip_set(
     registered: &mut RegisteredRoots,
     skips: WatchSkipSet,
 ) {
+    if registered.registration == WatchRegistration::RecursiveRoot {
+        registered.skips = skips;
+        return;
+    }
     if registered.skips == skips {
         return;
     }
@@ -264,7 +318,7 @@ pub(super) fn register_cargo_home_watch(
     register_cargo_home_directory(watcher, registered_roots, &cargo_home);
 }
 
-fn register_cargo_home_directory(
+pub(super) fn register_cargo_home_directory(
     watcher: &mut impl Watcher,
     registered_roots: &mut RegisteredRoots,
     cargo_home: &Path,
@@ -275,7 +329,15 @@ fn register_cargo_home_directory(
     if registered_roots.watched.contains(cargo_home) {
         return;
     }
-    match watcher.watch(cargo_home, RecursiveMode::NonRecursive) {
+    if registered_roots.registration == WatchRegistration::RecursiveRoot
+        && registered_roots
+            .watched
+            .iter()
+            .any(|root| cargo_home.starts_with(root))
+    {
+        return;
+    }
+    match watcher.watch(cargo_home, registered_roots.registration.mode()) {
         Ok(()) => {
             registered_roots
                 .watched
