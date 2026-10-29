@@ -54,6 +54,10 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::num::NonZeroU16;
 use std::sync::OnceLock;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+#[cfg(test)]
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::time::Instant;
 
 use ratatui::layout::Layout;
@@ -1296,6 +1300,10 @@ pub struct TileGrid<Id> {
     motion_heights:         MotionHeightPath,
     /// Filled destination geometry constrained by a content change in flight.
     retargeted_destination: RetargetedMotionDestination,
+    /// Admission is checked once until an arrangement or its rules change.
+    layout_admission:       OnceLock<CheckedLayoutAdmission>,
+    #[cfg(test)]
+    admission_checks:       AtomicUsize,
 }
 
 impl<Id: Clone + Eq + Debug> Default for TileGrid<Id> {
@@ -1307,40 +1315,56 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            slots:                  Vec::new(),
-            depth:                  1,
-            pending:                VecDeque::new(),
-            held:                   HeldCellLayout {
+            slots:                         Vec::new(),
+            depth:                         1,
+            pending:                       VecDeque::new(),
+            held:                          HeldCellLayout {
                 rows:          Vec::new(),
                 focused:       FocusLocation::Departing,
                 summary_span:  1,
                 summary_depth: 1,
             },
-            demands:                TileDemands::default(),
-            motion:                 GridMotion::Settled,
-            area:                   Rect::ZERO,
-            growth:                 TileGrowth::default(),
-            held_display:           GridDisplay::Cells,
-            next_slot:              0,
-            focus:                  Focus::Summary,
-            settings:               TileSettings::default(),
-            painted_summary_frames: Vec::new(),
-            painted_cells:          PaintedCells::Undrawn,
-            frame_row_usage:        Vec::new(),
-            last_settled_geometry:  LastSettledCellGeometry::default(),
-            motion_heights:         MotionHeightPath::default(),
-            retargeted_destination: RetargetedMotionDestination::default(),
+            demands:                       TileDemands::default(),
+            motion:                        GridMotion::Settled,
+            area:                          Rect::ZERO,
+            growth:                        TileGrowth::default(),
+            held_display:                  GridDisplay::Cells,
+            next_slot:                     0,
+            focus:                         Focus::Summary,
+            settings:                      TileSettings::default(),
+            painted_summary_frames:        Vec::new(),
+            painted_cells:                 PaintedCells::Undrawn,
+            frame_row_usage:               Vec::new(),
+            last_settled_geometry:         LastSettledCellGeometry::default(),
+            motion_heights:                MotionHeightPath::default(),
+            retargeted_destination:        RetargetedMotionDestination::default(),
+            layout_admission:              OnceLock::new(),
+            #[cfg(test)]
+            admission_checks:              AtomicUsize::new(0),
         }
     }
 
     /// Sets the core width, including its frame. The floor is required by default.
     pub fn set_min_tile_width(&mut self, width: u16) {
-        self.settings.min_tile_width = width.max(super::constants::MIN_TILE_WIDTH);
+        let width = width.max(super::constants::MIN_TILE_WIDTH);
+        self.update_layout_rules(
+            self.area,
+            EndpointLayoutRules {
+                min_tile_width: width,
+                ..EndpointLayoutRules::new(self.growth, &self.settings)
+            },
+        );
     }
 
     /// Sets whether a terminal below the core width keeps a compressed column.
-    pub const fn set_tile_width_floor(&mut self, floor: TileWidthFloor) {
-        self.settings.tile_width_floor = floor;
+    pub fn set_tile_width_floor(&mut self, floor: TileWidthFloor) {
+        self.update_layout_rules(
+            self.area,
+            EndpointLayoutRules {
+                width_floor: floor,
+                ..EndpointLayoutRules::new(self.growth, &self.settings)
+            },
+        );
     }
 
     /// Sets the rule that chooses command cells or the summary alone.
@@ -1360,12 +1384,25 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
 
     /// Sets the shortest height a tile may occupy, including its frame.
     pub fn set_min_tile_height(&mut self, height: u16) {
-        self.settings.min_tile_height = height.max(super::constants::MIN_TILE_HEIGHT);
+        let height = height.max(super::constants::MIN_TILE_HEIGHT);
+        self.update_layout_rules(
+            self.area,
+            EndpointLayoutRules {
+                min_tile_height: height,
+                ..EndpointLayoutRules::new(self.growth, &self.settings)
+            },
+        );
     }
 
     /// Choose whether the summary keeps its measured rows before the tiles.
-    pub const fn set_summary_row_allocation(&mut self, allocation: SummaryRowAllocation) {
-        self.settings.summary_row_allocation = allocation;
+    pub fn set_summary_row_allocation(&mut self, allocation: SummaryRowAllocation) {
+        self.update_layout_rules(
+            self.area,
+            EndpointLayoutRules {
+                summary_allocation: allocation,
+                ..EndpointLayoutRules::new(self.growth, &self.settings)
+            },
+        );
     }
 
     /// Probe destination row steps, then nearby heights this moving frame may use.
@@ -1571,7 +1608,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         );
         let mut bounds = vec![
             MotionSpanBounds {
-                smallest: grid.min_tile_height.saturating_sub(1),
+                smallest: grid.rules.min_tile_height.saturating_sub(1),
                 largest:  grid.area.height.saturating_sub(1),
             };
             panes.len()
@@ -1664,7 +1701,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             || *span != grid.span
             || panes
                 .iter()
-                .any(|pane| pane.area.height < grid.min_tile_height)
+                .any(|pane| pane.area.height < grid.rules.min_tile_height)
         {
             return false;
         }
@@ -2061,9 +2098,44 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     }
 
     /// Record the geometry the pane just laid out.
-    pub const fn set_layout(&mut self, area: Rect, growth: TileGrowth) {
-        self.area = area;
-        self.growth = growth;
+    pub fn set_layout(&mut self, area: Rect, growth: TileGrowth) {
+        self.update_layout_rules(area, EndpointLayoutRules::new(growth, &self.settings));
+    }
+
+    /// The only rule-writing boundary also retires geometry made under the old rules.
+    fn update_layout_rules(&mut self, area: Rect, rules: EndpointLayoutRules) {
+        if self.area != area || EndpointLayoutRules::new(self.growth, &self.settings) != rules {
+            self.area = area;
+            self.growth = rules.growth;
+            self.settings.min_tile_width = rules.min_tile_width;
+            self.settings.min_tile_height = rules.min_tile_height;
+            self.settings.tile_width_floor = rules.width_floor;
+            self.settings.summary_row_allocation = rules.summary_allocation;
+            self.replan_layout_endpoints();
+        }
+    }
+
+    /// A changed allocation cannot inherit geometry measured under the old floors.
+    /// Keep the requested final cell order, then resolve it through the checked planner.
+    fn replan_layout_endpoints(&mut self) {
+        self.layout_admission.take();
+        let depth = self.target_depth();
+        self.complete_arrangement(self.target(), depth);
+        self.pending.clear();
+        self.motion = GridMotion::Settled;
+        self.last_settled_geometry = LastSettledCellGeometry::NoCellsFrame;
+        self.frame_row_usage.clear();
+        self.motion_heights = MotionHeightPath::default();
+        self.retargeted_destination = RetargetedMotionDestination::Unconstrained;
+        let rows = cell_wants(&self.demands, &self.slots, &self.settings);
+        self.depth = depth;
+        self.held = HeldCellLayout {
+            rows,
+            focused: self.focused_cell(),
+            summary_span: self.wanted_span(),
+            summary_depth: self.depth,
+        };
+        self.commit_display();
     }
 
     /// Record one drawn layout, completing a move that began in another area.
@@ -2139,8 +2211,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         growth: TileGrowth,
         demand_sync: DemandSync,
     ) {
-        self.demands = demands.clone();
-        self.growth = growth;
+        if self.demands != *demands {
+            self.layout_admission.take();
+            self.demands = demands.clone();
+        }
+        self.set_layout(self.area, growth);
         if demand_sync == DemandSync::CurrentRender {
             self.fold_rendered_claims();
         }
@@ -2247,6 +2322,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             && wanted_depth == self.target_depth()
             && matches!(self.motion, GridMotion::Settled)
         {
+            if self.held != settled {
+                self.layout_admission.take();
+            }
             self.held = settled;
         }
         self.queue_with_depth(steps, wanted_depth, DestinationDepthStatus::Resolved);
@@ -2361,8 +2439,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let progress = self.motion_heights.progress;
         let drawn = self.drawing_at(self.area, self.growth, progress);
         self.pending.clear();
-        self.slots = target;
-        self.retargeted_destination = RetargetedMotionDestination::Unconstrained;
+        self.complete_arrangement(target, self.depth);
         self.resolve_key_destination_depth();
         if !self.motion_heights.piece_heights.is_empty() {
             let next = self.drawing_at_with_height_snap(
@@ -2539,15 +2616,26 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             return;
         };
         transition.depth_status = DestinationDepthStatus::Resolved;
+        if self.depth != wanted {
+            self.layout_admission.take();
+        }
         self.depth = wanted;
-        self.held = self.settled_held();
+        let held = self.settled_held();
+        if self.held != held {
+            self.layout_admission.take();
+        }
+        self.held = held;
         for step in &mut self.pending {
-            step.depth = summary_depth(
+            let depth = summary_depth(
                 self.area,
                 &cell_wants(&self.demands, &step.slots, &self.settings),
                 self.growth,
                 &self.settings,
             );
+            if step.depth != depth {
+                self.layout_admission.take();
+                step.depth = depth;
+            }
         }
     }
 
@@ -2594,6 +2682,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let GridMotion::Moving(transition) = &mut self.motion else {
             return false;
         };
+        self.layout_admission.take();
         let claim = |slots: &mut [Slot<Id>]| {
             for slot in slots {
                 if slot == empty {
@@ -2617,6 +2706,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         if steps.is_empty() {
             return;
         }
+        self.layout_admission.take();
         let millis = u64::try_from(steps.len())
             .ok()
             .and_then(|count| self.settings.animation_millis.checked_div(count))
@@ -2651,6 +2741,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// the units it was drawn at, and the one arriving takes whatever
     /// the current demands and focus come to.
     fn advance(&mut self) {
+        self.layout_admission.take();
         let drawn_held = self.drawn_held();
         let Some(step) = self.pending.pop_front() else {
             self.motion_heights = MotionHeightPath::default();
@@ -2663,19 +2754,17 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let last_settled_geometry = std::mem::take(&mut self.last_settled_geometry);
         let source = match (was_settled, last_settled_geometry) {
             (true, LastSettledCellGeometry::Drawn { area, growth, grid })
-                if area == self.area && growth == self.growth =>
+                if area == self.area
+                    && growth == self.growth
+                    && grid.is_current_endpoint(self.area, self.growth, &self.settings) =>
             {
                 grid
             },
             _ => self.resolved_grid(self.area, &drawn_held, self.growth),
         };
         let source = self.last_drawn_motion_source(source, &step.slots);
-        self.retargeted_destination = RetargetedMotionDestination::Unconstrained;
         self.motion_heights = MotionHeightPath::default();
-        let previous = std::mem::replace(&mut self.slots, step.slots);
-        self.depth = step.depth;
-        self.settle_focus(&previous);
-        self.held = self.settled_held();
+        let previous = self.complete_arrangement(step.slots, step.depth);
         self.motion = GridMotion::Moving(Transition {
             from:         previous,
             held:         drawn_held,
@@ -2684,6 +2773,17 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             millis:       step.millis,
             depth_status: step.depth_status,
         });
+    }
+
+    /// Install an arrival and settle its identity-dependent state against the slots it left.
+    fn complete_arrangement(&mut self, slots: Vec<Slot<Id>>, depth: usize) -> Vec<Slot<Id>> {
+        self.layout_admission.take();
+        self.retargeted_destination = RetargetedMotionDestination::Unconstrained;
+        let previous = std::mem::replace(&mut self.slots, slots);
+        self.depth = depth;
+        self.settle_focus(&previous);
+        self.held = self.settled_held();
+        previous
     }
 
     /// Keep the drawn heights when a queued key follows a column's motion.
@@ -2715,7 +2815,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 .is_none_or(|slot| next_slots.contains(slot));
             if pieces.next().is_some()
                 || frame.shift() != 0
-                || (survives && frame.clip().height < source.min_tile_height)
+                || (survives && frame.clip().height < source.rules.min_tile_height)
                 || source.cell(*pane).is_none_or(|endpoint| {
                     frame.clip().x != endpoint.x || frame.clip().width != endpoint.width
                 })
@@ -2799,6 +2899,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// travel takes on the wall clock.
     #[doc(hidden)]
     pub fn settle_for_test(&mut self) {
+        self.layout_admission.take();
         while !self.pending.is_empty() {
             self.advance();
         }
@@ -3074,29 +3175,77 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
 
     /// Whether every arrangement that may still be drawn fits in `area`.
     pub(super) fn holds_in(&self, area: Rect, growth: TileGrowth) -> bool {
-        let arrangement_fits = |slots: &[Slot<Id>], depth: usize| {
+        let admission = self
+            .layout_admission
+            .get_or_init(|| self.check_admission(area, growth));
+        if admission.area == area
+            && admission.rules == EndpointLayoutRules::new(growth, &self.settings)
+        {
+            admission.fits
+        } else {
+            self.check_admission(area, growth).fits
+        }
+    }
+
+    /// Stamp a changed arrangement once, preserving concurrent read-only access.
+    fn check_admission(&self, area: Rect, growth: TileGrowth) -> CheckedLayoutAdmission {
+        #[cfg(test)]
+        self.admission_checks.fetch_add(1, AtomicOrdering::Relaxed);
+        CheckedLayoutAdmission {
+            area,
+            rules: EndpointLayoutRules::new(growth, &self.settings),
+            fits: self.check_arrangements(area, growth),
+        }
+    }
+
+    /// Validate changed arrangements, borrowing held row demands when available.
+    fn check_arrangements(&self, area: Rect, growth: TileGrowth) -> bool {
+        let arrangement_fits = |slots: &[Slot<Id>], depth: usize, held: &HeldCellLayout| {
+            let ColumnPlan::Columns(plan) = column_layout(
+                slots.len() + TABLE_CELL,
+                depth,
+                growth,
+                area,
+                &self.settings,
+            ) else {
+                return false;
+            };
+            let measured;
+            let rows = if held.rows.len() == slots.len() + TABLE_CELL {
+                &held.rows
+            } else {
+                measured = cell_wants(&self.demands, slots, &self.settings);
+                &measured
+            };
+            let span = if growth.widen_summary {
+                summary_span(area, plan.columns.widths.len(), self.demands.summary_width)
+                    .max(held.summary_span)
+            } else {
+                1
+            };
             matches!(
-                column_layout(
-                    slots.len() + TABLE_CELL,
-                    depth,
-                    growth,
-                    area,
-                    &self.settings
-                ),
+                plan.for_summary_rows(area, rows, span, &self.settings),
                 ColumnPlan::Columns(_)
             )
         };
-        arrangement_fits(&self.slots, self.depth)
+        arrangement_fits(&self.slots, self.depth, &self.held)
             && match &self.motion {
                 GridMotion::Settled => true,
                 GridMotion::Moving(transition) => {
-                    arrangement_fits(&transition.from, transition.held.summary_depth)
+                    transition
+                        .source
+                        .is_current_endpoint(area, growth, &self.settings)
+                        && arrangement_fits(
+                            &transition.from,
+                            transition.held.summary_depth,
+                            &transition.held,
+                        )
                 },
             }
             && self
                 .pending
                 .iter()
-                .all(|step| arrangement_fits(&step.slots, step.depth))
+                .all(|step| arrangement_fits(&step.slots, step.depth, &HeldCellLayout::default()))
     }
 
     /// The one display state shared by drawing, hit-testing and focus movement.
@@ -3333,7 +3482,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             return self.settled_drawing(destination);
         };
         let before = transition.source.as_ref();
-        if before.area != area {
+        if !before.is_current_endpoint(area, self.growth, &self.settings) {
             return self.settled_drawing(destination);
         }
 
@@ -3430,7 +3579,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// holds, which decides whether a new cell still fits and where a
     /// step of the ring lands.
     pub fn apply(&mut self, action: TileAction, growth: TileGrowth) {
-        self.growth = growth;
+        self.set_layout(self.area, growth);
         match action {
             TileAction::Add => self.add(growth),
             TileAction::Remove => self.remove(),
@@ -3528,20 +3677,49 @@ fn kept<Id: Eq>(arrangement: &[Slot<Id>], ids: &[Id]) -> usize {
 /// describe a uniform grid.
 struct Grid {
     /// The rect the whole grid fills.
-    area:            Rect,
+    area:     Rect,
     /// Rows in each column, left to right.
-    widths:          Vec<usize>,
+    widths:   Vec<usize>,
     /// Positions represented by the summary, including its first.
-    depth:           usize,
+    depth:    usize,
     /// Where each cell sits, keyed by cell number.
-    resolved:        ResolvedPaneLayout<usize>,
+    resolved: ResolvedPaneLayout<usize>,
     /// The rect each column's cells divide: the column's whole height,
     /// or what the summary leaves below it in a column it widens over.
-    columns:         Vec<Rect>,
+    columns:  Vec<Rect>,
     /// Columns the summary covers, its own included.
-    span:            usize,
-    /// Shortest framed height a resident piece may keep through motion.
-    min_tile_height: u16,
+    span:     usize,
+    /// Floor and allocation rules under which this endpoint was checked.
+    rules:    EndpointLayoutRules,
+}
+
+/// Geometry rules that must still hold before a cached endpoint can be reused.
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct EndpointLayoutRules {
+    growth:             TileGrowth,
+    min_tile_width:     u16,
+    min_tile_height:    u16,
+    width_floor:        TileWidthFloor,
+    summary_allocation: SummaryRowAllocation,
+}
+
+/// Admission of the held, moving and queued arrangements under one rule stamp.
+struct CheckedLayoutAdmission {
+    area:  Rect,
+    rules: EndpointLayoutRules,
+    fits:  bool,
+}
+
+impl EndpointLayoutRules {
+    const fn new(growth: TileGrowth, settings: &TileSettings) -> Self {
+        Self {
+            growth,
+            min_tile_width: settings.min_tile_width,
+            min_tile_height: settings.min_tile_height,
+            width_floor: settings.tile_width_floor,
+            summary_allocation: settings.summary_row_allocation,
+        }
+    }
 }
 
 /// Choose retained content for donors and painted content for receiving steps.
@@ -3716,11 +3894,22 @@ fn column_layout(
 impl RowAdmissibleColumnLayout {
     /// Recheck each redistributed candidate, including bands below the summary.
     fn for_summary(self, area: Rect, held: &HeldCellLayout, settings: &TileSettings) -> ColumnPlan {
+        self.for_summary_rows(area, &held.rows, held.summary_span, settings)
+    }
+
+    /// Borrow the summary reservation without copying the held row record.
+    fn for_summary_rows(
+        self,
+        area: Rect,
+        rows: &[CellRowDemand],
+        summary_span: usize,
+        settings: &TileSettings,
+    ) -> ColumnPlan {
         let columns = self.columns;
         let initial_columns = columns.widths.len();
         if settings.summary_row_allocation != SummaryRowAllocation::BeforeTiles {
             return ColumnLayout {
-                summary_span: held.summary_span.min(initial_columns).max(1),
+                summary_span: summary_span.min(initial_columns).max(1),
                 ..columns
             }
             .checked(area, settings, 0);
@@ -3740,13 +3929,12 @@ impl RowAdmissibleColumnLayout {
             let candidate = ColumnLayout {
                 widths,
                 summary_depth: depth,
-                summary_span: held
-                    .summary_span
+                summary_span: summary_span
                     .saturating_mul(count)
                     .div_ceil(initial_columns)
                     .max(1),
             };
-            let wants = &held.rows[..candidate.residents(0).min(held.rows.len())];
+            let wants = &rows[..candidate.residents(0).min(rows.len())];
             let shared = shares(
                 wants,
                 area.height,
@@ -3828,6 +4016,11 @@ impl GridRowReadings<'_> {
 }
 
 impl Grid {
+    /// Construction checked the bands once; unchanged rules preserve that guarantee.
+    fn is_current_endpoint(&self, area: Rect, growth: TileGrowth, settings: &TileSettings) -> bool {
+        self.area == area && self.rules == EndpointLayoutRules::new(growth, settings)
+    }
+
     /// Resolve the cells `held` describes against `area`.
     ///
     /// The first column is divided before the rest, because the summary
@@ -3869,10 +4062,10 @@ impl Grid {
         let ColumnPlan::Columns(layout) =
             column_layout(count, held.summary_depth, growth, area, settings)
         else {
-            return Self::summary_only(area, settings);
+            return Self::summary_only(area, growth, settings);
         };
         let ColumnPlan::Columns(layout) = layout.for_summary(area, held, settings) else {
-            return Self::summary_only(area, settings);
+            return Self::summary_only(area, growth, settings);
         };
         let ColumnLayout {
             widths,
@@ -3951,12 +4144,12 @@ impl Grid {
                 .map(|&column| share_borders(column, area))
                 .collect(),
             span,
-            min_tile_height: settings.min_tile_height,
+            rules: EndpointLayoutRules::new(growth, settings),
         }
     }
 
     /// No column arrangement meets the configured floors in this area.
-    fn summary_only(area: Rect, settings: &TileSettings) -> Self {
+    fn summary_only(area: Rect, growth: TileGrowth, settings: &TileSettings) -> Self {
         Self {
             area,
             widths: vec![1],
@@ -3967,7 +4160,7 @@ impl Grid {
             }]),
             columns: Vec::new(),
             span: 1,
-            min_tile_height: settings.min_tile_height,
+            rules: EndpointLayoutRules::new(growth, settings),
         }
     }
 
@@ -5295,7 +5488,7 @@ fn place_band_pieces<Id: Clone + Eq>(
             pieces: &pieces,
             in_band: &in_band,
             band,
-            min_tile_height: after.min_tile_height,
+            min_tile_height: after.rules.min_tile_height,
             height_snap,
         };
         let dividers = band_piece_dividers(&search, from_band, to_band);
@@ -7051,6 +7244,228 @@ mod tests {
                 "cell {cell} is under the floor: {rect:?}"
             );
         }
+    }
+
+    /// Paint the wide, short right band that is admissible only at the old floor.
+    fn painted_widened_floor_fixture() -> (TileGrid<u32>, Rect, TileGrowth, TileDemands<u32>) {
+        let area = Rect::new(0, 0, 80, 47);
+        let growth = widening(4);
+        let mut grid = TileGrid::<u32>::new();
+        grid.set_min_tile_width(40);
+        grid.set_min_tile_height(3);
+        grid.set_layout(area, growth);
+        let demands = TileDemands {
+            summary:       33,
+            summary_width: 80,
+            groups:        (1..=9).map(|id| TileDemand { id, rows: 3 }).collect(),
+        };
+        grid.sync(&demands, growth);
+        grid.settle_for_test();
+        grid.measure_row_steps(
+            area,
+            growth,
+            PROGRESS_SCALE,
+            |_, content| content.height,
+            |_, content| content.height,
+        );
+        assert!(
+            matches!(&grid.last_settled_geometry, LastSettledCellGeometry::Drawn { grid, .. } if grid.span == 2)
+        );
+        (grid, area, growth, demands)
+    }
+
+    fn demand_resize_motion_fixture() -> (TileGrid<u32>, Rect, TileGrowth, TileDemands<u32>) {
+        let area = Rect::new(0, 0, 200, 50);
+        let growth = redistribute(4);
+        let mut grid = TileGrid::<u32>::new();
+        grid.set_layout(area, growth);
+        let mut demands = TileDemands {
+            summary:       3,
+            summary_width: 0,
+            groups:        (1..=3).map(|id| TileDemand { id, rows: 3 }).collect(),
+        };
+        grid.sync(&demands, growth);
+        grid.settle_for_test();
+        grid.measure_row_steps(
+            area,
+            growth,
+            PROGRESS_SCALE,
+            |_, area| area.height,
+            |_, area| area.height,
+        );
+        demands.groups[0].rows = 30;
+        grid.sync(&demands, growth);
+        assert!(matches!(grid.motion, GridMotion::Moving(_)));
+        (grid, area, growth, demands)
+    }
+
+    fn assert_growth_keeps_groups_visible(grid: &TileGrid<u32>, area: Rect, growth: TileGrowth) {
+        for progress in [0, PROGRESS_SCALE / 2, PROGRESS_SCALE] {
+            let drawing = grid.drawing_at(area, growth, progress);
+            for id in 1..=3 {
+                assert!(
+                    drawing.pieces.iter().any(|piece| {
+                        piece.placement.content == TileContent::Group(id)
+                            && piece.placement.frame.clip().height >= grid.settings.min_tile_height
+                    }),
+                    "growth change hides group {id} at progress {progress}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_growth_change_during_demand_motion_keeps_every_group_visible() {
+        let (mut grid, area, _, demands) = demand_resize_motion_fixture();
+        let growth = redistribute(1);
+        grid.sync(&demands, growth);
+        grid.set_layout(area, growth);
+        assert_growth_keeps_groups_visible(&grid, area, growth);
+    }
+
+    #[test]
+    fn an_action_growth_change_replans_the_motion_endpoints() {
+        let (mut grid, area, _, _) = demand_resize_motion_fixture();
+        let growth = redistribute(1);
+        grid.apply(TileAction::FocusDown, growth);
+        assert_growth_keeps_groups_visible(&grid, area, growth);
+    }
+
+    #[test]
+    fn a_layout_growth_change_replans_the_motion_endpoints() {
+        let (mut grid, area, _, _) = demand_resize_motion_fixture();
+        let growth = redistribute(1);
+        grid.set_layout(area, growth);
+        assert_growth_keeps_groups_visible(&grid, area, growth);
+    }
+
+    #[test]
+    fn unchanged_motion_frames_reuse_endpoint_admission() {
+        let (mut grid, area, growth, demands) = demand_resize_motion_fixture();
+        assert!(grid.holds_in(area, growth));
+        let checks = grid.admission_checks.load(AtomicOrdering::Relaxed);
+        for progress in [0, PROGRESS_SCALE / 2, PROGRESS_SCALE] {
+            grid.sync_rendered_demands(&demands, growth);
+            grid.set_layout(area, growth);
+            assert_eq!(grid.display(), GridDisplay::Cells);
+            assert_growth_keeps_groups_visible(&grid, area, growth);
+            grid.measure_row_steps(
+                area,
+                growth,
+                progress,
+                |_, area| area.height,
+                |_, area| area.height,
+            );
+        }
+        assert_eq!(
+            grid.admission_checks.load(AtomicOrdering::Relaxed),
+            checks,
+            "unchanged frames must not validate admission again"
+        );
+        grid.set_min_tile_height(6);
+        assert!(grid.holds_in(area, growth));
+        assert_eq!(
+            grid.admission_checks.load(AtomicOrdering::Relaxed),
+            checks + 1,
+            "changed rules need one new admission check"
+        );
+    }
+
+    #[test]
+    fn a_floor_change_rechecks_the_painted_widened_summary_endpoint() {
+        let (mut grid, area, growth, demands) = painted_widened_floor_fixture();
+        grid.set_min_tile_height(6);
+        grid.sync(&demands, growth);
+        grid.measure_row_steps(
+            area,
+            growth,
+            PROGRESS_SCALE / 2,
+            |_, content| content.height,
+            |_, content| content.height,
+        );
+        let drawing = grid.drawing_at(area, growth, PROGRESS_SCALE / 2);
+        assert!(!drawing.pieces.is_empty());
+        for piece in &drawing.pieces {
+            assert!(piece.placement.frame.clip().height >= 6);
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum MotionLayoutChange {
+        HeightFloor,
+        GridArea,
+    }
+
+    /// Fill every motion cache and queue another endpoint before changing its inputs.
+    fn assert_layout_change_discards_old_motion_geometry(change: MotionLayoutChange) {
+        let (mut grid, area, growth, mut demands) = painted_widened_floor_fixture();
+        demands.groups[0].rows = 12;
+        grid.sync(&demands, growth);
+        grid.measure_row_steps(
+            area,
+            growth,
+            PROGRESS_SCALE / 2,
+            |_, content| content.height,
+            |_, content| content.height,
+        );
+        assert!(matches!(grid.motion, GridMotion::Moving(_)));
+        assert_ne!(grid.frame_row_usage, [] as [FrameCellRowUsage<u32>; 0]);
+        assert_ne!(grid.motion_heights.piece_heights, [] as [u16; 0]);
+        grid.retain_measured_destination_for_test();
+        assert!(grid.has_retargeted_destination_for_test());
+        grid.apply(TileAction::Add, growth);
+        assert!(!grid.pending.is_empty());
+        let target = grid.target();
+        let (area, floor) = match change {
+            MotionLayoutChange::HeightFloor => {
+                grid.set_min_tile_height(6);
+                (area, 6)
+            },
+            MotionLayoutChange::GridArea => {
+                let resized = Rect::new(2, 1, 80, 39);
+                grid.set_draw_layout(resized, growth);
+                (resized, 3)
+            },
+        };
+        assert_eq!(
+            grid.slots, target,
+            "the requested cell order survives replanning"
+        );
+        assert!(grid.pending.is_empty());
+        assert!(matches!(grid.motion, GridMotion::Settled));
+        assert_eq!(grid.frame_row_usage, [] as [FrameCellRowUsage<u32>; 0]);
+        assert_eq!(grid.motion_heights.piece_heights, [] as [u16; 0]);
+        assert!(!grid.has_retargeted_destination_for_test());
+        assert!(matches!(
+            grid.last_settled_geometry,
+            LastSettledCellGeometry::NoCellsFrame
+        ));
+        grid.measure_row_steps(
+            area,
+            growth,
+            PROGRESS_SCALE / 2,
+            |_, content| content.height,
+            |_, content| content.height,
+        );
+        for progress in [0, PROGRESS_SCALE / 2, PROGRESS_SCALE] {
+            let drawing = grid.drawing_at(area, growth, progress);
+            assert!(!drawing.pieces.is_empty());
+            for piece in &drawing.pieces {
+                let frame = piece.placement.frame.clip();
+                assert!(frame.height >= floor, "changed layout floor: {frame:?}");
+                assert_eq!(frame.intersection(area), frame);
+            }
+        }
+    }
+
+    #[test]
+    fn a_floor_change_discards_queued_endpoints_and_measured_motion_heights() {
+        assert_layout_change_discards_old_motion_geometry(MotionLayoutChange::HeightFloor);
+    }
+
+    #[test]
+    fn an_area_change_discards_queued_endpoints_and_measured_motion_heights() {
+        assert_layout_change_discards_old_motion_geometry(MotionLayoutChange::GridArea);
     }
 
     #[test]
@@ -9251,10 +9666,10 @@ mod tests {
         );
 
         let destination = grid.resolved_grid(area, &grid.drawn_held(), growth);
-        assert_eq!(destination.min_tile_height, 6);
+        assert_eq!(destination.rules.min_tile_height, 6);
         assert_eq!(destination.resolved.panes.len(), 2);
         for pane in &destination.resolved.panes {
-            assert!((destination.min_tile_height..=area.height).contains(&pane.area.height));
+            assert!((destination.rules.min_tile_height..=area.height).contains(&pane.area.height));
         }
         assert_eq!(destination.resolved.panes[1].area.height, 6);
     }
@@ -11716,6 +12131,46 @@ mod tests {
             FocusLocation::Cell(3),
             "one place forward"
         );
+    }
+
+    #[test]
+    fn a_resize_during_queued_closings_settles_focus_and_keeps_navigation_working() {
+        let growth = redistribute(4);
+        let mut grid = seeded_grid();
+        grid.sync(&quiet(&[1, 2, 3]), growth);
+        grid.settle_for_test();
+        grid.focus_cell(TABLE_CELL + 3);
+        grid.settle_for_test();
+
+        grid.sync(&quiet(&[1]), growth);
+        assert!(matches!(grid.motion, GridMotion::Moving(_)));
+        assert!(!grid.pending.is_empty());
+        assert_eq!(grid.focus, Focus::Cell(Slot::Group(3)));
+
+        let area = Rect {
+            width: grid.area.width - 1,
+            ..grid.area
+        };
+        grid.set_layout(area, growth);
+        assert_eq!(shown(&grid), vec![TileContent::Group(1)]);
+        assert_eq!(
+            grid.focus,
+            Focus::Summary,
+            "the removed group releases focus"
+        );
+        assert_eq!(grid.held.focused, FocusLocation::Cell(TABLE_CELL));
+        assert!(grid.pending.is_empty());
+        assert!(matches!(grid.motion, GridMotion::Settled));
+
+        assert!(
+            grid.cycle_focus(CycleDirection::Next),
+            "Tab reaches a live cell"
+        );
+        assert_eq!(grid.focus, Focus::Cell(Slot::Group(1)));
+        grid.apply(TileAction::FocusUp, growth);
+        assert_eq!(grid.focus, Focus::Summary, "arrows reach the summary");
+        grid.apply(TileAction::FocusDown, growth);
+        assert_eq!(grid.focus, Focus::Cell(Slot::Group(1)));
     }
 
     #[test]

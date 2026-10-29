@@ -866,7 +866,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Binds later work:** every column layout goes through `ColumnLayout::checked`; a width policy (`CompressSingleColumn`) never relaxes the height floor. A cached motion endpoint after a floor change belongs to "Motion endpoints keep the band floor after a floor change".
 
-### Phase 38 — Motion endpoints keep the band floor after a floor change  · status: todo
+### Phase 38 — Motion endpoints keep the band floor after a floor change  · status: done
 
 **Depends on:** Phase 37
 
@@ -886,42 +886,66 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `verify.sh lint tui_pane`, `verify.sh test tui_pane`, `verify.sh test cargo-tile`, `verify.sh test cargo-handler` clean; no test takes a second. Its own fix checkpoint, ahead of Phase 36.
 
-### Phase 36 — Handler tiles show no row-count readout  · status: todo
+### Phase 40 — cargo-handler idles under 1 % of one core  · status: todo
+
+**Depends on:** none
+
+#### Work Order
+
+**Goal:** an idle cargo-handler uses under 1 % of one core (today about 7 % per instance, two instances on natedev).
+
+**Source:** showrunner, 2026-10-28, from the CPU measurement report (`/tmp/claude-1000/-home-natepiano-rust-cargo-liner/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/scratchpad/cpu_investigation.md`, section "cargo-handler"). The user said on 2026-10-28 that CPU optimization comes first in all work.
+
+**Constraints:** every 2 s (`LOCAL_SCAN_INTERVAL`, `constants.rs:458`) `activity::read_runs` (`census/activity.rs:634-642`) reads and parses every `*.json` in each Codex worker's `mesh_runs` directory (1,000–2,800 files, 15.6 MB/s of reads); only records whose pid is live matter (`activity.rs:615-618`). Each scan makes a new sysinfo `System` and refreshes all processes (`census/scan.rs:1135-1141`); `hierarchy.rs:292` does the same each 30 s. `production_tree.py` runs each 30 s (`HIERARCHY_REFRESH_INTERVAL`) and `accounts.py` each 60 s (`ACCOUNTS_REFRESH_INTERVAL`). Census behaviour and every displayed row stay the same.
+
+**Spec:**
+1. Parse each run record once: keep the parsed records keyed by path and mtime, and read only new or changed files. A removed file leaves the cache.
+2. Keep one sysinfo `System` for the scan and one for the hierarchy, and refresh each in place.
+3. Run `production_tree.py` and `accounts.py` only when their input changes (find the files each one reads); keep a slow fallback only if an input cannot be watched, and name it.
+4. Red-first tests: a second scan over unchanged records parses none of them (counted, not timed); a changed or new record is parsed again; a removed record leaves the cache; the scripts do not run again while their inputs are unchanged and run once after a change. Each test under 1 s.
+5. Live measurement: CPU-s over 60 s with the installed binary and with the branch binary, both idle on natedev against the real `/tmp/claude` tree (check the build hold first). Target under 1 % of one core.
+
+**Files:** `crates/cargo-handler/src/census/{activity.rs, scan.rs, hierarchy.rs, accounts.rs, schedule.rs}`, `crates/cargo-handler/src/{constants.rs, app.rs}`, their test files, `crates/cargo-handler/CHANGELOG.md`.
+
+**Workers:** 1 writer (`test` seat; the `impl` seat is on Phase 39).
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean, in either order; no test takes a second; the live measurement meets the target. The checkpoint adds a Change-Review line.
+
+### Phase 39 — A project whose parent is deleted shows as deleted  · status: done (not reproduced, no code change)
+
+**Result (2026-10-28):** the c58 report did not reproduce on natedev HEAD 8c718383. Four live cases (a corrupt-HEAD and a valid-HEAD project, each made after cargo-port started and before it started, parent removed by Python `shutil.rmtree` one minute after the row appeared) all showed the existing Deleted strike-through within 0.55–0.89 s, and `x` dismissed each row. No cargo-port file changed. One finding for port-unit: with `NO_COLOR=1` in its environment, cargo-port writes SGR 9 and then an empty colour sequence (`ESC[;m`, crossterm `SetColors` under NO_COLOR), which resets the strike-through, so a Deleted row looks normal. This made the first scratch capture look like the defect; it is not proven that the user's cargo-port had NO_COLOR set. Evidence: unit session `phases/39/live/terminal_env_clean/`. From 2026-10-28 port-unit owns all cargo-port work.
+
+### Phase 36 — Selected tiles show "content rows: N of M"  · status: todo
 
 **Depends on:** Phase 27
 
 #### Work Order
 
-**Goal:** cargo-handler tiles no longer draw the tile foot readout ("content rows: N  r/c: a/b"). The row it took goes back to the tile's content. cargo-tile keeps its readout as it is.
+**Goal:** in a cargo-handler tile whose rows are selectable and scrollable, the foot readout names the selected row: `content rows: 3 of 12`. The `r/c: H/W` part stays. A tile with no selection shows `content rows: 12` as today. cargo-tile stays byte-identical.
 
-**Source:** phase 27 shots (2026-10-28) found the readout on every cargo-handler tile, on main too. Showrunner, 2026-10-28: hide it in cargo-handler only, through a typed hook `FootReadout::{Shown, Hidden}` with default Shown; cargo-tile shipped the readout on purpose (d7aa3f4b, tile-fixes phase 16 33cebc06) and tests it (`cargo-tile/src/shim_registration/app_scenarios.rs` ≈663 shows, ≈699 hides).
+**Source:** the user, via the showrunner, 2026-10-28: "we need a handler enhancements to change content rows that are selectable and scrollable as in cargo handler to indicate the current row selected as in content rows: {row} of {rows}". Showrunner design ruling, 2026-10-28 (it replaces the earlier hidden-readout design; there is no Hidden path and no reclaimed row).
 
 **Constraints from prior phases:**
-- `draw_tile_grid` (`tui_pane/src/tiles/draw.rs`) owns the readout. `TileCells` (≈166) has `readout_rows` (≈182), `summary_foot` (≈188) and `readout_fade` (≈192). `readout_row(inner)` (≈791) gives `ReadoutRow::{Reserved(Rect), CellTooSmall}`; the readout is drawn at ≈635, ≈656 and ≈751; the content area is cut at ≈773–784. The labels are `TILE_ROWS_CONTENT_LABEL` and `TILE_ROWS_CELL_LABEL` (`tiles/constants.rs` ≈49–54); `TILE_ROWS_READOUT_HEIGHT` is 1.
-- Readout demand is added in `tiles/draw.rs` by `add_readout_rows` (≈571), called at ≈296–297. Content capacity also flows through grid preparation (`grid.rs` ≈2001), motion preparation (`grid.rs` ≈2023) and `RowProbe::content_area` (`grid.rs` ≈3516). These paths must use the same resolved foot geometry: a hidden readout takes no row in demand, allocation, motion or drawing. The `grid.rs` readout references from ≈6280 on are in its test module (it starts at ≈6163), not in production demand code. `tiles/flow_layout.rs` (≈290, ≈298) is the flow packer, and no path calls it now; it is not the active grid demand path.
-- `content_click` (`tiles/host.rs` ≈176) maps presses and wheel steps, and it always removes the readout row (≈185). A change to drawing only leaves the reclaimed content row outside the input area. Keep the resolved content rectangle with the existing painted-cell record. Drawing, preparation, presses and wheel steps use that rectangle, also during motion and before redraw.
-- The summary cell's foot row also carries `summary_foot()` text (`SummaryFoot`). Hiding the cell readout does not remove a summary foot that an app draws.
-- cargo-handler's `impl TileCells<TileKey> for Cells` is in `render/mod.rs` (≈696). Handler fixtures that show the readout are in `render/mod.rs` (≈1057–1251); other handler tests may match it too (search for "r/c: " and "content rows").
-- `tiles/draw.rs` and `tui_pane/src/lib.rs` are held by the tile unit (reservation 01a17e32-a770-7b20-8fd3-78b9c527961b). Claim them `--before` it, as phase 27 did.
-- Phase 27: the tile core width and `measure_trees` read the tile body height through `tui_pane::frame_inner`. A tile without a readout has one more body row.
+- `draw_tile_grid` (`tui_pane/src/tiles/draw.rs`) owns the readout. The text is built at ≈675–712 from `TILE_ROWS_CONTENT_LABEL` (`tiles/constants.rs` ≈54) and the measured rows; `TileCells::readout_rows` (≈182) gives the count. The readout row, its demand (`add_readout_rows` ≈571) and the content area do not change in this phase.
+- cargo-handler's `impl TileCells<TileKey> for Cells` is in `render/mod.rs` (≈696). Selection state is `app.selections` (`render/mod.rs` ≈161–220; `interaction.rs` `SurfaceSelection`). Handler fixtures that show the readout are in `render/mod.rs` (≈1057–1251).
+- `tiles/draw.rs` and `tui_pane/src/lib.rs` are held by the tile unit (reservation 01a17e32-a770-7b20-8fd3-78b9c527961b). Claim them `--before` it.
+- Start fresh from HEAD; the parked hidden-readout patch is obsolete.
 
 **Spec:**
-1. Add `FootReadout::{Shown, Hidden}` in tui_pane and a `TileCells` method `fn foot_readout(&self) -> FootReadout` with default `Shown`. Export it like `CellReadoutFade`.
-2. With `Hidden`, no cell draws the readout, and no demand, allocation, motion or draw path reserves its row. With `Shown`, every path is byte-identical to today.
-3. cargo-handler returns `Hidden`. Its tiles get the row back for content.
-4. Tests, red first: a cargo-handler frame at 200x50 and 80x50 has no "content rows" and no "r/c:" text in any tile. A tui_pane test at one identical allocated rectangle: `Hidden` with an empty summary foot shows one more content row than `Shown`, which keeps one row for the readout; `Hidden` with a summary foot text keeps that foot and keeps it out of content input; demand and drawing agree. A tui_pane regression in `tiles/host_tests.rs` clicks and scrolls the reclaimed last content row and reaches the content. Existing tui_pane and cargo-tile readout tests pass unchanged. Update the handler fixtures that drew the readout. Every test under one second.
-5. CHANGELOG: one line in each crate (tui_pane: the hook; cargo-handler: tiles show no row-count readout).
+1. Add `RowsReadout::{Count(usize), Selected { row: NonZeroUsize, rows: usize }}` in tui_pane. `Selected` is built only by a checked constructor that refuses `row > rows`. Add a `TileCells` method that gives it for a cell, with the default `Count` of today's rows. Export only what cargo-handler needs.
+2. `Count(n)` draws `content rows: n` exactly as today. `Selected` draws `content rows: {row} of {rows}`, with the same label and value inks. With the default, every path is byte-identical to today.
+3. cargo-handler returns `Selected` for a selectable surface with a current selection (1-based row of the selected row among the surface's rows) and `Count` otherwise. The readout follows every selection move and scroll, also during motion.
+4. Tests, red first: a cargo-handler tile with selection on row 1 then row 3 shows `content rows: 1 of N`, then `content rows: 3 of N`; a tile with no selection shows today's text; the checked constructor refuses `row > rows`; existing tui_pane and cargo-tile readout tests pass unchanged. Update the handler fixtures whose text changes. Every test under one second.
+5. CHANGELOG: one line in each crate.
 
 **Files:**
-- `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/flow_layout.rs`, `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs` — the hook and every path that reserves the row
-- `crates/tui_pane/src/tiles/host.rs`, `crates/tui_pane/src/tiles/host_tests.rs` — the resolved content rectangle for presses and wheel steps, and the reclaimed-row regression
-- `crates/cargo-handler/src/render/mod.rs` — `Hidden`, and the fixtures that drew the readout
-- `crates/cargo-handler/src/render/narrow_width_tests.rs` — handler tests for spec 4
+- `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/tiles/constants.rs`, `crates/tui_pane/src/lib.rs` — the type, the hook and the text
+- `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/interaction.rs` — the selected row, and the fixtures
 - `crates/tui_pane/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md`
 
-**Workers:** 1 writer. `impl` — all specs, `tiles/host.rs` and `tiles/host_tests.rs` included; hubs: `crates/tui_pane/src/tiles/draw.rs` and `crates/cargo-handler/src/render/mod.rs`.
+**Workers:** 1 writer (`impl`).
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-tile --filter readout` clean; the cargo-tile readout tests pass unchanged. No test takes a second. Live: a cargo-handler shot at 200 and 80 columns with no readout line in any tile. The checkpoint adds a Change-Review line.
+**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-handler`, `verify.sh test cargo-tile --filter readout` and one `verify.sh lint` clean, tests and lint in either order; no test takes a second. Live: a cargo-handler shot before and after two arrow-key moves shows the number follow the selection. The checkpoint adds `Change-Review: "content rows: 3 of 12" in the selected tile's foot | run cargo-handler, move the selection with the arrow keys | the number follows the selection`.
 
 ### Phase 35 — Subagent role words and an even reset ramp  · status: todo
 
