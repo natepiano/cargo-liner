@@ -90,6 +90,10 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Gotchas:** overlapping configured roots (`/r` and `/r/project`) still get two recursive watches on macOS until Phase 2c.
 
+### Phase 2f — cargo-port passes clippy on macOS  · status: done
+
+**As-built:** `InsufficientProcessIdentity::PlatformCreationTokenUnavailable` (`crates/cargo-port/src/process_observation/identity.rs`) is gated `cfg(not(target_os = "macos"))`, the only platform that constructs it. Before, it also existed in macOS test builds, where `dead_code` failed clippy under `-D warnings`. Each other variant's cfg matches the cfg of its constructors. Proof: macOS `cargo clippy -p cargo-port --all-targets -- -D warnings` passes; the identity tests pass on the Mac.
+
 ### Phase 2b — cargo-port watches only project folders and the folders that lead to them  · status: todo
 
 **Depends on:** Phase 2m. The folder roles apply only to the `PerFolder` backend (Linux inotify); the `RecursiveRoot` backend (macOS) keeps one recursive watch per root.
