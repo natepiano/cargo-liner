@@ -1,6 +1,6 @@
-//! Watches source folders individually, excluding build trees and Git objects.
-//! New folders receive non-recursive watches. Disk polling covers changes in
-//! unwatched build trees; filesystem events still drive Git and source updates.
+//! Uses recursive root watches on macOS and individual folder watches elsewhere.
+//! Build trees and Git objects are filtered from events and per-folder watches.
+//! Disk polling covers build sizes; events drive Git and source updates.
 
 mod events;
 mod probe;
@@ -12,6 +12,8 @@ mod runtime;
 mod skip;
 #[cfg(test)]
 mod skip_tests;
+#[cfg(test)]
+mod watch_registration_tests;
 
 use runtime::ProjectEntry;
 use runtime::WatchDrainResult;

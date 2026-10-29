@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restore recursive root watches on macOS to keep startup quick; Linux keeps filtered per-folder watches, and both poll build sizes.
+
 - Watch source folders without watching target trees or Git objects; poll build sizes every 30 seconds.
 
 - Settings rows below the first screen can be selected with a click; the painted rows and the click targets match. A wheel move while a setting is edited ends the edit.
