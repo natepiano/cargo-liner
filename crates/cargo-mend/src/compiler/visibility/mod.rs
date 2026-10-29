@@ -28,6 +28,7 @@ pub(super) use policy::parent_scope_def_path;
 pub(super) use policy::resolved_boundary_headline;
 pub(super) use policy::resolved_boundary_note;
 use rustc_middle::ty::TyCtxt;
+pub(super) use scan::FindingsPersistence;
 pub(super) use use_sites::ReexportIndex;
 
 use super::settings::DriverSettings;
@@ -35,6 +36,6 @@ use super::settings::DriverSettings;
 pub(super) fn collect_and_store_findings(
     tcx: TyCtxt<'_>,
     settings: &DriverSettings,
-) -> Result<bool> {
+) -> Result<FindingsPersistence> {
     scan::collect_and_store_findings(tcx, settings)
 }
