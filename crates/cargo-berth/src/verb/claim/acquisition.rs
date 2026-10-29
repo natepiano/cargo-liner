@@ -1185,8 +1185,12 @@ fn record_first_touch_default_answer(
                 &validation_context.repository,
                 validation_context.worktree_id,
                 &validation_context.recovery_command_line,
-                target,
-                &validation_context.repository_trunk,
+                ClaimContainmentRequest {
+                    target,
+                    repository_trunk: &validation_context.repository_trunk,
+                    scopes: &validation_context.edit_scopes,
+                    path_case: validation_context.path_case,
+                },
             ) {
                 Ok(reservations) => reservations,
                 Err(rejection) => return TransactionValidation::Reject(rejection),
@@ -1497,8 +1501,12 @@ fn validate_claim_transaction(
         &repository,
         worktree_id,
         &recovery_command_line,
-        &prepared_claim.target.target,
-        &repository_trunk,
+        ClaimContainmentRequest {
+            target: &prepared_claim.target.target,
+            repository_trunk: &repository_trunk,
+            scopes: &prepared_claim.scopes,
+            path_case,
+        },
     ) {
         Ok(reservations) => reservations,
         Err(rejection) => return TransactionValidation::Reject(rejection),
@@ -1568,6 +1576,15 @@ fn validate_claim_transaction(
     }
 }
 
+/// Complete scope inspected by one locked claim decision, before containment narrows it.
+#[derive(Clone, Copy)]
+struct ClaimContainmentRequest<'a> {
+    target:           &'a IntegrationTarget,
+    repository_trunk: &'a IntegrationTarget,
+    scopes:           &'a ReservationScopeSet,
+    path_case:        PathCase,
+}
+
 /// Read the prepared reservations, observe the acting head, and validate the acting run.
 fn locked_claim_reservations(
     state: &ReplayedLedgerState<'_>,
@@ -1575,20 +1592,21 @@ fn locked_claim_reservations(
     repository: &RepositorySnapshot,
     worktree_id: WorktreeId,
     recovery_command_line: &RecoveryCommandLine,
-    target: &IntegrationTarget,
-    repository_trunk: &IntegrationTarget,
+    request: ClaimContainmentRequest<'_>,
 ) -> Result<RetainedReservationSet, ClaimRejection> {
     let worktree_context = repository.context();
     let reservations = state
         .reservations()
         .map_err(ClaimRejection::Replay)?
         .clone();
-    let acting_head_containment = ActingHeadContainment::observe(
+    let acting_head_containment = ActingHeadContainment::observe_for_claim(
         &reservations,
         repository,
         worktree_id,
-        target,
-        repository_trunk,
+        request.target,
+        request.repository_trunk,
+        request.scopes,
+        request.path_case,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);
     run_validation
@@ -1627,12 +1645,14 @@ fn validate_first_touch_transaction(
             return CommittedActionValidation::Reject(FirstTouchClaimRejection::Replay(error));
         },
     };
-    let acting_head_containment = ActingHeadContainment::observe(
+    let acting_head_containment = ActingHeadContainment::observe_for_claim(
         &reservations,
         &repository,
         worktree_id,
         &prepared_claim.target.target,
         &repository_trunk,
+        &edit_scopes,
+        path_case,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);
     if let Err(rejection) = validate_first_touch_run(
@@ -2494,7 +2514,7 @@ fn validate_named(
     CommittedActionValidation<ClaimRejection, CommittedReservationAcquisition>,
     ClaimRejection,
 > {
-    let reservations = locked_reservations(state, id, context)?;
+    let reservations = locked_reservations(state, id, &scopes, context)?;
     let FirstTouchReservationSelection::ExplicitReservation(selected) =
         FirstTouchReservationSelection::from_explicit_selection(
             &reservations,
@@ -2684,6 +2704,7 @@ fn coverage(
 fn locked_reservations(
     state: &ReplayedLedgerState<'_>,
     id: ReservationId,
+    requested: &ReservationScopeSet,
     context: &ClaimValidationContext,
 ) -> Result<RetainedReservationSet, ClaimRejection> {
     let recorded = state.reservations().map_err(ClaimRejection::Replay)?;
@@ -2701,14 +2722,28 @@ fn locked_reservations(
         RecordedTarget::Recorded { target, .. } => target,
         RecordedTarget::Unrecorded => &context.repository_trunk,
     };
+    let scopes = ReservationScopeSet::try_from(
+        selected
+            .declared_race_scopes()
+            .as_slice()
+            .iter()
+            .chain(requested.as_slice())
+            .cloned()
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|_| ClaimRejection::IneligibleExplicitReservation(id))?;
     locked_claim_reservations(
         state,
         context.run_validation,
         &context.repository,
         context.worktree_id,
         &context.recovery_command_line,
-        target,
-        &context.repository_trunk,
+        ClaimContainmentRequest {
+            target,
+            repository_trunk: &context.repository_trunk,
+            scopes: &scopes,
+            path_case: context.path_case,
+        },
     )
 }
 
