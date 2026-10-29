@@ -1305,33 +1305,25 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 46 — A sleep shell shows the role `timer`  · status: done
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
-
-**Goal:** a shell row whose command is `sleep` shows `timer` in its role column; every other shell keeps an empty role cell.
-
-**Source:** change review C92 back (user via the showrunner, 2026-10-29): "but it's role could easily be 'timer' so you should send it back to handler to add that". The showrunner runs it beside Phase 40, before Phase 41's checkpoint. Unit session `phases/46/source.md`.
-
-**Constraints from prior phases:**
-- `TreeLine::role_text` (`agent_cell.rs` ≈1210) returns `""` for `LineKind::Shell`. A shell row's name is its command text (for example `cargo nextest run`, `agent_cell.rs` ≈3379). `ShellTimerObservation` (census) and the countdown text (`ShellRunState`, `agent_cell.rs` ≈225) stay as they are.
-- `constants.rs` is in Phase 40's and Phase 41's **Files**; add only one role text constant next to `SHELL_ROLE` (≈188), nothing else. `census/**` is Phase 40's: do not edit it.
-
-**Spec:**
-1. Decide the shell's purpose once, as a typed value `ShellPurpose { Timer, Command }` built `From<&ShellTimerObservation>`: `ObservedCountdown` is `Timer`, `Untimed` is `Command` (unit director's decision: a tool call's description replaces the command as the row's name, `census/tree.rs` ≈411, so the text cannot decide). A sleep whose length the census cannot read has no role. The role column shows `timer` for `Timer` and stays empty for `Command`.
-2. Sort and column width use the same text, so the role column sorts and fits `timer` like any role.
-3. Tests, red first, in `agent_cell/tests/tree_tests.rs`: a shell with an observed countdown shows role `timer`; a described countdown shell (name `Wait for completion`) shows `timer`; an untimed `cargo` shell and an untimed shell named `sleep 300` show an empty role. Each test under one second.
-4. CHANGELOG: one line under Added.
+- A shell row whose census observation is a countdown (`ShellTimerObservation::ObservedCountdown`) shows `timer` in the role column. Every other shell keeps an empty role cell.
+- `ShellPurpose { Timer, Command }` is built `From<&ShellTimerObservation>`: `ObservedCountdown` is `Timer`, `Untimed` is `Command`. `TreeLine::role_text` returns `TIMER_ROLE` for `Timer` and `""` for `Command`.
+- The role never comes from the row's display text. A tool call's description replaces the command as the row name, so the name cannot decide. A described countdown shell (name `Wait for completion`) shows `timer`. An untimed shell named `sleep 300` shows no role.
+- `sleep infinity` has no countdown, so it shows no role.
+- Sort and column width use the same role text, so `timer` sorts and fits like any role.
+- `ChildKind` is unchanged.
 
 **Files:**
-- `crates/cargo-handler/src/agent_cell.rs` — the shell purpose and its role text
-- `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` — the role tests
-- `crates/cargo-handler/src/constants.rs` — one role text constant only
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/agent_cell.rs` — `ShellPurpose` and the shell role text in `TreeLine::role_text`
+- `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` — role tests for observed countdown, described countdown, untimed `cargo`, and untimed `sleep 300`
+- `crates/cargo-handler/src/constants.rs` — `TIMER_ROLE`, next to `SHELL_ROLE`
 
-**Workers:** 1 writer (`impl`); one small rule with its tests.
+**Binds later work:** fixture updates for tile-tree tests keep the `timer` role and the countdown text on countdown shell rows.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of a tile that holds a running `sleep` shell shows `timer` in its role column. The checkpoint adds a Change-Review line.
+**Gotchas:** the shell purpose comes from the census observation only. Reading it from the display description or the command text gives wrong roles.
+
+**Ruled out:** a `ChildKind` variant for timers (it touches about 20 sites in `census/mod.rs`).
 
 ### Phase 47 — cargo-handler idles under 1 % of one core, second cut  · status: todo
 
