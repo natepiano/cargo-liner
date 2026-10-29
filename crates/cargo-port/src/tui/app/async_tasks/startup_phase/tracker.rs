@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use ratatui::style::Color;
 use tui_pane::PERF_LOG_TARGET;
+use tui_pane::ProgressDetail;
 
 use super::orchestrator::StartupPlan;
 use super::orchestrator::StartupReadiness;
@@ -81,7 +82,7 @@ impl Startup {
                 Some(ProgressRow {
                     label,
                     state,
-                    detail,
+                    detail: detail.map_or(ProgressDetail::Absent, ProgressDetail::Message),
                 })
             })
             .collect();
