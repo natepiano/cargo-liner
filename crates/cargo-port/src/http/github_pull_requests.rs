@@ -131,9 +131,9 @@ struct GqlPullRequestStatusNode {
 }
 
 const fn unavailable_reason_from_signal(
-    signal: Option<ServiceSignal>,
+    service_signal: Option<ServiceSignal>,
 ) -> PullRequestUnavailableReason {
-    match signal {
+    match service_signal {
         Some(ServiceSignal::RateLimited(ServiceKind::GitHub)) => {
             PullRequestUnavailableReason::RateLimited
         },
@@ -145,10 +145,10 @@ const fn unavailable_reason_from_signal(
 }
 
 const fn combine_optional_signal(
-    left: Option<ServiceSignal>,
-    right: Option<ServiceSignal>,
+    left_service_signal: Option<ServiceSignal>,
+    right_service_signal: Option<ServiceSignal>,
 ) -> Option<ServiceSignal> {
-    match (left, right) {
+    match (left_service_signal, right_service_signal) {
         (Some(ServiceSignal::Unreachable(service)), _)
         | (_, Some(ServiceSignal::Unreachable(service))) => {
             Some(ServiceSignal::Unreachable(service))
@@ -202,36 +202,36 @@ fn build_project_pr_info(
     viewer_login: String,
     default_branch: String,
     nodes: Vec<GqlPullRequestNode>,
-    completeness: PullRequestCompleteness,
+    pull_request_completeness: PullRequestCompleteness,
 ) -> ProjectPrInfo {
     ProjectPrInfo {
         open: nodes.into_iter().map(pull_request_info_from_node).collect(),
         default_branch,
         fetched_at: Utc::now().format("%+").to_string(),
-        completeness,
+        completeness: pull_request_completeness,
         viewer_login,
         owner_repo,
     }
 }
 
 fn pull_request_info_from_node(node: GqlPullRequestNode) -> PullRequestInfo {
-    let state = reduce_pull_request_state(
+    let pull_request_state = reduce_pull_request_state(
         node.is_draft,
         node.review_decision.as_deref(),
         node.merge_state_status.as_deref(),
     );
     PullRequestInfo {
-        number: node.number,
-        title: node.title,
-        url: node.url,
-        state,
-        head: node.head_ref_name,
+        number:     node.number,
+        title:      node.title,
+        url:        node.url,
+        state:      pull_request_state,
+        head:       node.head_ref_name,
         head_owner: node
             .head_repository
             .as_ref()
             .map(|repo| repo.owner.login.clone()),
-        head_repo: node.head_repository.map(|repo| repo.name),
-        base: node.base_ref_name,
+        head_repo:  node.head_repository.map(|repo| repo.name),
+        base:       node.base_ref_name,
     }
 }
 
@@ -275,20 +275,20 @@ impl HttpClient {
         let Some(body) = body else {
             return (Some(Err(unavailable_reason_from_signal(signal))), signal);
         };
-        let Ok(response) = serde_json::from_slice::<GqlViewerResponse>(&body) else {
+        let Ok(gql_viewer_response) = serde_json::from_slice::<GqlViewerResponse>(&body) else {
             return (
                 Some(Err(PullRequestUnavailableReason::GraphQlError)),
                 signal,
             );
         };
-        if response
+        if gql_viewer_response
             .errors
             .as_ref()
             .is_some_and(|errors| !errors.is_empty())
         {
             return (Some(Err(PullRequestUnavailableReason::Forbidden)), signal);
         }
-        let Some(login) = response.data.map(|data| data.viewer.login) else {
+        let Some(login) = gql_viewer_response.data.map(|data| data.viewer.login) else {
             return (
                 Some(Err(PullRequestUnavailableReason::GraphQlError)),
                 signal,
@@ -315,7 +315,7 @@ impl HttpClient {
         if self
             .rate_limit()
             .graphql
-            .is_some_and(|quota| quota.remaining == 0)
+            .is_some_and(|rate_limit_quota| rate_limit_quota.remaining == 0)
         {
             return (
                 Some(PullRequestFetch::Unavailable(
@@ -327,10 +327,15 @@ impl HttpClient {
 
         let (viewer, viewer_signal) = self.github_viewer_login_async().await;
         let Some(Ok(viewer_login)) = viewer else {
-            let reason = viewer
+            let pull_request_unavailable_reason = viewer
                 .and_then(Result::err)
                 .unwrap_or_else(|| unavailable_reason_from_signal(viewer_signal));
-            return (Some(PullRequestFetch::Unavailable(reason)), viewer_signal);
+            return (
+                Some(PullRequestFetch::Unavailable(
+                    pull_request_unavailable_reason,
+                )),
+                viewer_signal,
+            );
         };
 
         let search_query = format!(
@@ -342,19 +347,24 @@ impl HttpClient {
             .fetch_pull_request_pages(&owner_repo, &search_query)
             .await;
         let Some(Ok((nodes, default_branch, completeness))) = pages else {
-            let reason = pages
+            let pull_request_unavailable_reason = pages
                 .and_then(Result::err)
                 .unwrap_or_else(|| unavailable_reason_from_signal(signal));
-            return (Some(PullRequestFetch::Unavailable(reason)), signal);
+            return (
+                Some(PullRequestFetch::Unavailable(
+                    pull_request_unavailable_reason,
+                )),
+                signal,
+            );
         };
-        let info = build_project_pr_info(
+        let project_pr_info = build_project_pr_info(
             owner_repo,
             viewer_login,
             default_branch,
             nodes,
             completeness,
         );
-        (Some(PullRequestFetch::Loaded(info)), signal)
+        (Some(PullRequestFetch::Loaded(project_pr_info)), signal)
     }
 
     pub(crate) async fn fetch_pull_request_gone_reason_async(
@@ -370,20 +380,25 @@ impl HttpClient {
         let Some(body) = body else {
             return (Some(PullRequestGoneReason::Unknown), signal);
         };
-        let Ok(response) = serde_json::from_slice::<GqlPullRequestStatusResponse>(&body) else {
+        let Ok(gql_pull_request_status_response) =
+            serde_json::from_slice::<GqlPullRequestStatusResponse>(&body)
+        else {
             return (Some(PullRequestGoneReason::Unknown), signal);
         };
-        if response
+        if gql_pull_request_status_response
             .errors
             .as_ref()
             .is_some_and(|errors| !errors.is_empty())
         {
             return (Some(PullRequestGoneReason::Unknown), signal);
         }
-        let Some(repository) = response.data.and_then(|data| data.repository) else {
+        let Some(gql_pull_request_status_repository) = gql_pull_request_status_response
+            .data
+            .and_then(|data| data.repository)
+        else {
             return (Some(PullRequestGoneReason::Missing), signal);
         };
-        let Some(pull_request) = repository.pull_request else {
+        let Some(pull_request) = gql_pull_request_status_repository.pull_request else {
             return (Some(PullRequestGoneReason::Missing), signal);
         };
         let reason = if pull_request.merged {
@@ -420,13 +435,15 @@ impl HttpClient {
             let Some(body) = body else {
                 return (Some(Err(unavailable_reason_from_signal(signal))), signal);
             };
-            let Ok(response) = serde_json::from_slice::<GqlPullRequestsResponse>(&body) else {
+            let Ok(gql_pull_requests_response) =
+                serde_json::from_slice::<GqlPullRequestsResponse>(&body)
+            else {
                 return (
                     Some(Err(PullRequestUnavailableReason::GraphQlError)),
                     signal,
                 );
             };
-            if response
+            if gql_pull_requests_response
                 .errors
                 .as_ref()
                 .is_some_and(|errors| !errors.is_empty())
@@ -436,29 +453,31 @@ impl HttpClient {
                     signal,
                 );
             }
-            let Some(data) = response.data else {
+            let Some(gql_pull_requests_data) = gql_pull_requests_response.data else {
                 return (
                     Some(Err(PullRequestUnavailableReason::GraphQlError)),
                     signal,
                 );
             };
-            let Some(repository) = data.repository else {
+            let Some(gql_pull_request_repository) = gql_pull_requests_data.repository else {
                 return (
                     Some(Err(PullRequestUnavailableReason::RepositoryMissing)),
                     signal,
                 );
             };
             if default_branch.is_none() {
-                default_branch = repository.default_branch_ref.map(|branch| branch.name);
+                default_branch = gql_pull_request_repository
+                    .default_branch_ref
+                    .map(|branch| branch.name);
             }
-            let Some(search) = data.search else {
+            let Some(gql_pull_request_search) = gql_pull_requests_data.search else {
                 return (
                     Some(Err(PullRequestUnavailableReason::GraphQlError)),
                     signal,
                 );
             };
-            all_nodes.extend(search.nodes.into_iter().flatten());
-            if !search.page_info.has_next_page {
+            all_nodes.extend(gql_pull_request_search.nodes.into_iter().flatten());
+            if !gql_pull_request_search.page_info.has_next_page {
                 return (
                     Some(Ok((
                         all_nodes,
@@ -468,7 +487,7 @@ impl HttpClient {
                     signal,
                 );
             }
-            let Some(next_cursor) = search.page_info.end_cursor else {
+            let Some(next_cursor) = gql_pull_request_search.page_info.end_cursor else {
                 return (
                     Some(Err(PullRequestUnavailableReason::IncompletePagination)),
                     signal,

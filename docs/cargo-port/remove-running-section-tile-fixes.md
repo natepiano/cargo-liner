@@ -2,7 +2,7 @@
 
 > **Status: IMPLEMENTATION PLAN — phased, delegate-ready.** cargo-tile draws a moving cell on the painted ground, keeps every label and readout whole or marked, follows the system's light or dark setting, shows the summary alone when the window is too small for cells, sizes the summary to what it asks, and nextest starts the slow tests first.
 
-> **Production: remove-running-section** — unit `tile-fixes-unit`; production doc `docs/cargo-port/remove-running-section-production.md`
+> **Production: remove-running-section** — unit `tile-fixes-unit`; production doc `docs/cargo-port/cargo-liner-production.md`
 
 > Renumbered 2026-10-12: the slow-test shortening was split out of the old phase 19 as phase 17; the old phases 17, 18, 19, 20 are now 18, 19, 20, 21.
 
@@ -948,7 +948,11 @@ Not landed (showrunner ruling 2026-10-26, after 3 repair rounds). The round 3 tr
 - An OSC record in normal product output — the recorder is test-only by construction.
 - `ps` as the independent CPU source — its rounding gave false failures.
 
-### Phase 28 — Phase 25's one-place work returns on main  · status: ready (landing exception with the user)
+### Phase 28 — Phase 25's one-place work returns on main  · status: redo (does not land; showrunner 2026-10-29 13:20)
+
+> **2026-10-29 ruling.** Phase 28 is past its 3 repair rounds and is worse than main on live fill (live gate at 393 x 89 on both machines: columns end above the foot in 73-88% of frames, main about 1%). It does not land. This branch is set back to main 655c7948 by a revert commit; phases 30, 32, 35 and 36 are ported onto main and checkpointed one by one. The phase 28 tree with phases 29-36 is kept at `refs/tile-unit/p28-snapshot-1322`. The redo works in a scratch tree made from that snapshot: live bisect, a red test from the worst live frame, then a fix of the cause; no install until the live gate matches main.
+>
+> **Landing rule for the redo.** The revert enters main's history at this unit's first checkpoint after the ruling. So the redo must land as NEW commits ported on top of main. Never merge `refs/tile-unit/p28-snapshot-1322`, or any branch that holds the old phase 28 commits (e21d5b93 and the merges after it): git keeps the revert and silently drops phase 28's changes.
 
 **Outcome (2026-10-28).** Phase 28 was rebuilt on main and used its 3 repair rounds. The closure reviews accepted all 130 review findings. Main 3f00dce9 (handler phase 27) is merged into the tree. The tree passes the four full Mac suites (`tui_pane` 1208, `cargo-tile` 1284, `cargo-handler` 719, `cargo-port` 1082) and the lint pass on the whole tree. The paired live capture against main 3f00dce9 (shots45, four pairs; 1-minute load up to 524) gives LAND no by the landing rule. The three-round rule is the user's, thus the showrunner takes the landing exception to the user. Phase 28 does no new repair work.
 - Better than main: rule a/b/c 1/1/0 against 37/42/802; content-rows-0 and blank body 0 against 774/802; F040 0 against 34, F044 0 against 18, F045 0 against 21. One place: no frame shows a job in the summary and in a cell (main: 22 to 29 stretches in each capture). Admission 64/64 against 56/64; never-drawn 0 against 6; d80 census max 0.37 s against 2.07 s. All the Phase 25 faults are gone.
@@ -1338,8 +1342,8 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 3. **`TileSettings::min_tile_height` is a `NonZeroU16`** (tile-unit add-on, 2026-10-27). Keep the value as a `NonZeroU16`: the private field and the default. The public setter does not change. This removes the last `NonZeroU16` fallback from style item 17. Other reservations hold `crates/tui_pane/src/tiles/settings.rs`: claim it `--after` them. This item is not a move, thus the review examines its code.
 
 **Files:**
-- `crates/cargo-tile/src/census/scan.rs`, `crates/cargo-tile/src/census/mod.rs` and the new `census/` submodules — item 1.
-- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/mod.rs` and the new `tiles/` submodules — item 2.
+- `crates/cargo-tile/src/census/` — item 1: `scan.rs`, `mod.rs` and the new submodules.
+- `crates/tui_pane/src/tiles/` — item 2: `grid.rs`, `draw.rs`, `mod.rs` and the new submodules.
 - `crates/tui_pane/src/tiles/settings.rs` — item 3.
 
 **Seats:** 1 writer — `impl`, every file above.
@@ -1350,6 +1354,22 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 - `verify.sh lint` and `verify.sh test` for `tui_pane`, `cargo-tile`, `cargo-handler` and `cargo-port`, green, with no test changed by items 1 and 2.
 - The review of items 1 and 2 finds no change apart from module paths and imports.
 - Change-review line: none (no visible change).
+
+### Phase 32m — CPU fix 1 on main  · status: todo
+
+Port of the session's CPU fix 1 (one retained System refreshed in place, Active/Idle pace, 2 s idle discovery, exec name refresh) onto main 655c7948 after the phase 28 ruling. Work order: the session's phases/32m/implementation_prompt.md.
+
+### Phase 30m — Capture shim cost on main  · status: todo
+
+Port of the approved capture shim cost work (one process per call apart from cargo and tee, boot receipt, shim v4) onto main. Work order: phases/30m/implementation_prompt.md.
+
+### Phase 35m — Summary arguments on main  · status: todo
+
+Port of the summary-arguments rule and the nextest header ANSI handling onto main. Work order: phases/35m/implementation_prompt.md.
+
+### Phase 36m — Directory header rule on main  · status: todo
+
+Port of the directory header rule (whole path; GUID middle cut; middle cut; last folder whole) onto main's render.rs. Work order: phases/36m/implementation_prompt.md.
 
 ### Phase 30 — The capture shim costs one process per cargo call  · status: todo
 

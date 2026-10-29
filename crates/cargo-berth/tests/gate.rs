@@ -103,13 +103,6 @@ const SCRATCH_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     ..INITIALIZED_REPOSITORY
 };
 
-/// An initialized main checkout with committed policy, before integration lanes exist.
-const INTEGRATION_MAIN: RepositoryTemplate = RepositoryTemplate {
-    name: "integration-main",
-    build: |root| IntegrationRepository::build_main_template(root, BERTH_EXECUTABLE),
-    ..INITIALIZED_REPOSITORY
-};
-
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -161,7 +154,7 @@ const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";
 /// lacks. Every branch path read is those two invocations. Authorship also reads the
 /// locally available upstream once per distinct integration target.
 /// In-process repository reads also discover Git's installation configuration once per process.
-const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 10;
+const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 5;
 const POST_COMMIT_SUBJECT_BRANCH: &str = "hook-subject";
 const RAW_GIT_BEHAVIOR_ENVIRONMENT: &str = "CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
@@ -307,7 +300,7 @@ struct MainPredecessorIntegrationSuccessor {
 }
 
 fn main_predecessor_integration_successor() -> MainPredecessorIntegrationSuccessor {
-    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repository = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let predecessor = repository.main_lane("main-predecessor");
     let successor = repository.lane("integration-successor", "integration");
     let main_before = repository.git_stdout(repository.root(), &["rev-parse", "main"]);
@@ -464,7 +457,7 @@ fn cross_target_main_predecessor_recovery_prescribes_integrate() {
 
 #[test]
 fn renamed_trunk_refusal_names_its_branch() {
-    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repository = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     repository.git(repository.root(), &["branch", "develop", "main"]);
     repository.set_trunk("develop");
     assert_success(&repository.run(repository.root(), &["init", "--json"]));
@@ -509,7 +502,7 @@ fn renamed_trunk_refusal_names_its_branch() {
 
 #[test]
 fn reinitialization_clears_gate_targets() {
-    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repository = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repository.lane("reset-target", "integration");
     write_file(&lane, "held.txt", "held\n");
     assert_success(&repository.claim(&lane, "file:held.txt", FIRST_RUN, Some("integration")));
@@ -523,7 +516,7 @@ fn reinitialization_clears_gate_targets() {
 
 #[test]
 fn committed_hook_skips_unlisted_fast_forward_before_journal_replay() {
-    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repository = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let listed_lane = repository.lane("listed-source", "integration");
     write_file(&listed_lane, "listed.txt", "listed\n");
     assert_success(&repository.claim(
@@ -583,7 +576,7 @@ fn committed_hook_skips_unlisted_fast_forward_before_journal_replay() {
 fn gate_targets_tracks_live_recorded_targets_and_default_is_empty() {
     let default = initialized_repository();
     assert_eq!(gate_targets(default.path()), [] as [String; 0]);
-    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repository = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repository.lane("target-list-lane", "integration");
     write_file(&lane, "listed.txt", "listed\n");
     let claimed = repository.claim(&lane, "file:listed.txt", FIRST_RUN, Some("integration"));
@@ -656,7 +649,7 @@ fn target_gate_rejects_successor_until_predecessor_lands_on_target() {
 /// the requester lands first, then the holder lands after merging that work in.
 #[test]
 fn target_gate_holds_neither_lane_after_a_default_answered_overlap() {
-    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repository = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let holder = repository.lane("target-a", "integration");
     let requester = repository.lane("target-b", "integration");
     let integration_before =
@@ -718,7 +711,7 @@ fn target_gate_holds_neither_lane_after_a_default_answered_overlap() {
 /// requester's update is refused until the holder lands, then admitted.
 #[test]
 fn target_gate_holds_a_default_answered_requester_that_sequence_orders() {
-    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repository = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let holder = repository.lane("target-a", "integration");
     let requester = repository.lane("target-b", "integration");
     let integration_before =
@@ -806,7 +799,7 @@ fn target_gate_holds_a_default_answered_requester_that_sequence_orders() {
 /// predecessor's reserved scopes.
 #[test]
 fn target_gate_holds_the_successor_of_an_unanswered_sequenced_pair() {
-    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repository = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let predecessor = repository.lane("target-a", "integration");
     let successor = repository.lane("target-b", "integration");
     let integration_before =
@@ -943,7 +936,7 @@ fn target_gate_observe_and_enforce_messages_name_the_target() {
 
 #[test]
 fn unlisted_prepared_branch_update_does_not_start_cargo_berth() {
-    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repository = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repository.lane("filter-lane", "integration");
     let claimed = repository.claim(&lane, "file:filter.txt", FIRST_RUN, Some("integration"));
     assert_success(&claimed);
@@ -1031,7 +1024,7 @@ fn unlisted_prepared_branch_update_does_not_start_cargo_berth() {
 /// of the new branch and its worktree reads the same after it.
 #[test]
 fn hooked_worktree_add_of_a_new_branch_leaves_the_repository_unchanged() {
-    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repository = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repository.lane("claimed-lane", "integration");
     let claimed = repository.claim(&lane, "file:lane.txt", FIRST_RUN, Some("integration"));
     assert_success(&claimed);
@@ -1330,7 +1323,7 @@ fn two_gated_refs_in_one_transaction_refuse_before_journal_changes() {
 #[test]
 fn integrate_moves_the_present_target_and_missing_target_falls_back_to_main() {
     for remove_target in [false, true] {
-        let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+        let repository = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
         let lane = repository.lane(
             if remove_target {
                 "missing-lane"
@@ -1439,7 +1432,7 @@ fn integrate_from_an_observing_checkout_is_blocked_under_the_main_gate_mode() {
 
 #[test]
 fn held_integrate_is_blocked_even_when_target_tip_is_unchanged() {
-    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repository = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let predecessor = repository.lane("noop-a", "integration");
     let successor = repository.lane("noop-b", "integration");
     write_file(&predecessor, "shared.txt", "A\n");
@@ -2886,6 +2879,8 @@ fn managed_hook_dispatches_only_actionable_phase_and_reference_pairs() {
     let detached = format!("{base} {base} HEAD\n");
     let remote = format!("{base} {base} refs/remotes/origin/main\n");
     let local_feature = format!("{base} {base} refs/heads/feature\n");
+    let moved_trunk = format!("{base} {} refs/heads/main\n", "1".repeat(40));
+    let moved_feature = format!("{base} {} refs/heads/feature\n", "1".repeat(40));
 
     for (phase, input) in [
         ("preparing", trunk.as_str()),
@@ -2896,6 +2891,9 @@ fn managed_hook_dispatches_only_actionable_phase_and_reference_pairs() {
         ("prepared", remote.as_str()),
         ("committed", detached.as_str()),
         ("committed", remote.as_str()),
+        ("prepared", trunk.as_str()),
+        ("committed", trunk.as_str()),
+        ("committed", local_feature.as_str()),
     ] {
         assert!(
             run_hook_script(repository.path(), phase, input, ReleaseValve::Unset)
@@ -2906,15 +2904,20 @@ fn managed_hook_dispatches_only_actionable_phase_and_reference_pairs() {
     assert!(!spy.phase_log.exists());
 
     assert!(
-        run_hook_script(repository.path(), "prepared", &trunk, ReleaseValve::Unset,)
-            .status
-            .success()
+        run_hook_script(
+            repository.path(),
+            "prepared",
+            &moved_trunk,
+            ReleaseValve::Unset,
+        )
+        .status
+        .success()
     );
     assert!(
         run_hook_script(
             repository.path(),
             "committed",
-            &local_feature,
+            &moved_feature,
             ReleaseValve::Set,
         )
         .status
@@ -2975,7 +2978,7 @@ fn managed_hook_replays_unchanged_transaction_bytes_into_the_binary() {
     let repository = initialized_repository();
     let spy = replace_managed_hook_executable_with_spy(repository.path());
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
-    let input = format!("{base}\t{base}  refs/heads/main");
+    let input = format!("{base}\t{}  refs/heads/main", "1".repeat(40));
 
     let dispatched = run_hook_script(repository.path(), "prepared", &input, ReleaseValve::Unset);
 
@@ -3085,8 +3088,8 @@ fn managed_hook_decides_without_starting_helper_processes() {
     );
 
     fs::remove_file(&git_log).expect("git invocation log should remove");
-    let trunk = format!("{base}\t{base}  refs/heads/main");
-    let target = format!("{base} {base} refs/heads/integration\n");
+    let trunk = format!("{}\t{base}  refs/heads/main", "0".repeat(40));
+    let target = format!("{} {base} refs/heads/integration\n", "0".repeat(40));
     hook_run("prepared", &trunk);
     hook_run("prepared", &target);
 
@@ -3123,7 +3126,7 @@ fn renamed_trunk_refreshes_dispatch_before_next_prepared_update() {
     let prepared = run_hook_script(
         repository.path(),
         "prepared",
-        &format!("{base} {base} refs/heads/renamed\n"),
+        &format!("{} {base} refs/heads/renamed\n", "0".repeat(40)),
         ReleaseValve::Unset,
     );
     assert!(prepared.status.success());
@@ -3399,7 +3402,7 @@ fn packing_a_loose_trunk_ref_leaves_dispatch_unchanged_without_a_notice() {
 
 #[test]
 fn packing_two_gated_refs_at_the_same_tip_succeeds_without_a_refusal() {
-    let repository = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    let repository = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     GIT.run_without_hooks(repository.root(), ["branch", "style/main", "main"]);
     let lane = repository.lane("packing-lane", "style/main");
     let claimed = repository.claim(&lane, "file:shared.txt", FIRST_RUN, Some("style/main"));
@@ -3542,7 +3545,7 @@ fn managed_hook_fails_open_and_marks_a_bypass_for_an_unavailable_binary() {
     let broken = pin_managed_hook_executable(&installed, Path::new("/missing/cargo-berth"));
     write_private_hook(&hook_path, broken);
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
-    let input = format!("{base} {base} refs/heads/main\n");
+    let input = format!("{} {base} refs/heads/main\n", "0".repeat(40));
 
     let permitted = run_hook_script(repository.path(), "prepared", &input, ReleaseValve::Unset);
     assert!(permitted.status.success());
@@ -3579,7 +3582,7 @@ fn managed_hook_fails_open_and_marks_a_bypass_for_an_unavailable_binary() {
 fn managed_hook_journals_an_environment_bypass_when_the_journal_is_writable() {
     let repository = initialized_repository();
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
-    let input = format!("{base} {base} refs/heads/main\n");
+    let input = format!("{} {base} refs/heads/main\n", "0".repeat(40));
 
     let bypassed = run_hook_script(repository.path(), "prepared", &input, ReleaseValve::Set);
     assert!(
@@ -3652,7 +3655,7 @@ fn pending_markers_import_the_action_they_name_and_default_to_integration() {
 fn one_trunk_transaction_among_merge_hook_invocations_records_one_audit_fact() {
     let repository = initialized_repository();
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
-    let trunk_input = format!("{base} {base} refs/heads/main\n");
+    let trunk_input = format!("{} {base} refs/heads/main\n", "0".repeat(40));
 
     let trunk = run_hook_script(
         repository.path(),
@@ -3687,7 +3690,7 @@ fn an_unconfigured_worktree_bypasses_without_writing_shared_audit_state() {
     let saved_configuration = repository.path().join("berth.toml.saved");
     fs::rename(&configuration_path, &saved_configuration).expect("configuration should move aside");
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
-    let input = format!("{base} {base} refs/heads/main\n");
+    let input = format!("{} {base} refs/heads/main\n", "0".repeat(40));
 
     let bypassed = run_hook_script(repository.path(), "prepared", &input, ReleaseValve::Set);
 
@@ -3719,7 +3722,7 @@ fn a_bypass_the_binary_cannot_record_still_leaves_a_marker() {
     assert_ne!(rejecting, installed);
     write_private_hook(&hook_path, rejecting);
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
-    let input = format!("{base} {base} refs/heads/main\n");
+    let input = format!("{} {base} refs/heads/main\n", "0".repeat(40));
 
     let bypassed = run_hook_script(repository.path(), "prepared", &input, ReleaseValve::Set);
     assert!(
@@ -3779,7 +3782,7 @@ fn a_trunk_bypass_without_an_invocation_directory_leaves_a_fallback_marker() {
         .take()
         .expect("managed hook stdin should exist")
         .write_all(
-            b"0000000000000000000000000000000000000000 0000000000000000000000000000000000000000 refs/heads/main\n",
+            b"0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 refs/heads/main\n",
         )
         .expect("reference transaction should write");
 
@@ -3849,7 +3852,7 @@ fn a_bypass_without_an_invocation_directory_warns_without_blocking_the_ref_updat
         .take()
         .expect("private gate stdin should exist")
         .write_all(
-            b"0000000000000000000000000000000000000000 0000000000000000000000000000000000000000 refs/heads/main\n",
+            b"0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 refs/heads/main\n",
         )
         .expect("reference transaction should write");
     let bypassed = child
@@ -4318,7 +4321,7 @@ fn pending_rewrite_board_shares_its_object_reader_with_reconciliation() {
     );
     assert_eq!(
         git_command_count(&invocations, "cat-file"),
-        1,
+        0,
         "{invocations:?}"
     );
     assert_eq!(
@@ -4357,7 +4360,7 @@ fn pending_rewrite_gate_shares_its_object_reader_with_preflight() {
     assert!(String::from_utf8_lossy(&direct.stderr).contains("Ordering edge"));
     assert_eq!(
         git_command_count(&invocations, "cat-file"),
-        1,
+        0,
         "{invocations:?}"
     );
     assert_eq!(
@@ -4670,37 +4673,41 @@ fn committed_hook_persists_one_scoped_patch_evaluation_record() {
 
 #[test]
 fn prepared_gate_settles_actual_trunk_evidence_but_never_a_proposed_witness() {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let holder = add_worktree(repository.path(), worktrees.path(), "settlement-holder");
+    let base = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    let id = reservation_id(&claim(
+        &holder,
+        "file:src/lib.rs",
+        FIRST_RUN,
+        "docs/settlement.md",
+        "settlement",
+    ));
+    let checkpoint = commit_work_without_hooks(
+        &holder,
+        "src/lib.rs",
+        "pub fn integrated() {}\n",
+        "protected checkpoint",
+    );
+    let released = run_berth(&holder, &["release", &id, "--json"]);
+    assert!(released.status.success());
+    assert_eq!(
+        json_output(&released)["payload"]["data"]["status"],
+        "checkpointed"
+    );
+    let witness = commit_work_without_hooks(
+        repository.path(),
+        "src/lib.rs",
+        "pub fn integrated() {}\n",
+        "equivalent trunk witness",
+    );
+    assert_ne!(checkpoint, witness);
+    let repository_snapshot = DirectorySnapshot::capture(repository.path());
+    let worktree_snapshot = DirectorySnapshot::capture(worktrees.path());
     for witness_is_actual in [false, true] {
-        let repository = initialized_repository();
-        let worktrees = tempdir().expect("worktree parent should exist");
-        let holder = add_worktree(repository.path(), worktrees.path(), "settlement-holder");
-        let base = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-        let id = reservation_id(&claim(
-            &holder,
-            "file:src/lib.rs",
-            FIRST_RUN,
-            "docs/settlement.md",
-            "settlement",
-        ));
-        let checkpoint = commit_work_without_hooks(
-            &holder,
-            "src/lib.rs",
-            "pub fn integrated() {}\n",
-            "protected checkpoint",
-        );
-        let released = run_berth(&holder, &["release", &id, "--json"]);
-        assert!(released.status.success());
-        assert_eq!(
-            json_output(&released)["payload"]["data"]["status"],
-            "checkpointed"
-        );
-        let witness = commit_work_without_hooks(
-            repository.path(),
-            "src/lib.rs",
-            "pub fn integrated() {}\n",
-            "equivalent trunk witness",
-        );
-        assert_ne!(checkpoint, witness);
+        repository_snapshot.restore(repository.path());
+        worktree_snapshot.restore(worktrees.path());
         let (actual, proposed) = if witness_is_actual {
             (witness.clone(), checkpoint.clone())
         } else {
@@ -4708,7 +4715,7 @@ fn prepared_gate_settles_actual_trunk_evidence_but_never_a_proposed_witness() {
                 repository.path(),
                 &["-c", "core.hooksPath=/dev/null", "reset", "--hard", &base],
             );
-            (base, witness.clone())
+            (base.clone(), witness.clone())
         };
         let before = journal_text(repository.path()).lines().count();
         let input = format!("{actual} {proposed} refs/heads/main\n");
@@ -5110,6 +5117,10 @@ fn batched_git_path_distinguishes_spawn_failure_from_completed_failure() {
         "docs/unavailable.md",
         "unavailable git boundary",
     ));
+    // Legacy grafts require Git's history semantics, so this still exercises the
+    // subprocess failure boundary when ordinary parent walks run in process.
+    fs::write(unavailable_repository.path().join(".git/info/grafts"), b"")
+        .expect("history fallback fixture should write");
     let (unavailable, unavailable_trace) = run_berth_with_raw_git_behavior(
         unavailable_repository.path(),
         &[

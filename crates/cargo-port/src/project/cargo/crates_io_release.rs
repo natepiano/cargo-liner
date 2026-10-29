@@ -21,7 +21,7 @@ impl CratesIoReleaseState {
     pub(crate) fn version(&self) -> Option<&str> {
         match self {
             Self::Awaiting => None,
-            Self::Released(release) => Some(&release.version),
+            Self::Released(crates_io_release) => Some(&crates_io_release.version),
         }
     }
 }

@@ -12,7 +12,6 @@ use notify::Config;
 use notify::Event;
 use notify::EventKindMask;
 use notify::RecommendedWatcher;
-use notify::RecursiveMode;
 use notify::Watcher;
 use tui_pane::PERF_LOG_TARGET;
 
@@ -22,6 +21,8 @@ use super::probe;
 use super::refresh;
 use super::roots;
 use super::roots::RegisteredRoots;
+use super::roots::WatchRegistration;
+use super::skip::WatchSkipSet;
 use crate::channel;
 use crate::channel::Receiver;
 use crate::channel::Sender;
@@ -61,7 +62,7 @@ pub(crate) enum WatcherMsg {
 }
 
 /// Spawn a unified background watcher thread. Watches the include
-/// directories recursively and handles disk-usage updates,
+/// directories with filtered folder watches and handles disk-usage updates,
 /// new-project detection, and deleted-project detection.
 // Ancestor `.cargo/` watch-set subsystem is not yet implemented.
 // Today we only refresh cargo metadata when a `Cargo.toml` /
@@ -118,6 +119,11 @@ pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
     let Ok(watcher) = RecommendedWatcher::new(handler, config) else {
         return watch_tx;
     };
+    let registration = if cfg!(target_os = "macos") {
+        WatchRegistration::RecursiveRoot
+    } else {
+        WatchRegistration::PerFolder
+    };
     let metadata_dispatch = MetadataDispatchContext {
         handle: client.handle.clone(),
         sender: background_tx.clone(),
@@ -125,6 +131,7 @@ pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
         metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
     };
     let startup = WatcherLoopStartup {
+        registration,
         watch_roots: watch_roots.to_vec(),
         background_tx,
         ci_run_count,
@@ -145,6 +152,7 @@ pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
 /// consumes. [`spawn_watcher_thread`] turns one into a [`WatcherLoopContext`]
 /// on the watcher thread, which is what keeps registration off the caller.
 struct WatcherLoopStartup {
+    registration:      WatchRegistration,
     watch_roots:       Vec<AbsolutePath>,
     background_tx:     Sender<BackgroundMsg>,
     ci_run_count:      u32,
@@ -156,21 +164,17 @@ struct WatcherLoopStartup {
 }
 
 impl WatcherLoopStartup {
-    /// Subscribe `watcher` to the watch roots and the cargo home, then hand
-    /// back the loop context carrying the registration witness.
-    ///
-    /// Runs on the watcher thread, never the caller's. `notify`'s inotify
-    /// backend has no recursive watch, so `RecursiveMode::Recursive` walks the
-    /// whole tree and adds one inotify watch per directory — roughly a second
-    /// for a large `include_dirs` set, and syscall-bound, so a faster machine
-    /// does not shorten it. macOS `FSEvents` subscribes to a root in a single
-    /// call, which is why leaving this on the calling thread delayed the first
-    /// frame on Linux alone. Watch registration finishes shortly after startup;
-    /// the `WatcherMsg`s the app sends meanwhile queue on the unbounded channel
-    /// and are drained once the loop begins.
+    /// Install filtered folder watches on the watcher thread, before draining
+    /// project registrations and queued filesystem events.
     fn register(self, watcher: &mut impl Watcher) -> WatcherLoopContext {
         let started = Instant::now();
-        let (registered_roots, failures) = roots::register_watch_roots(watcher, &self.watch_roots);
+        let skips = known_target_skips(&self.metadata_dispatch, self.watch_roots.iter());
+        let (mut registered_roots, failures) = roots::register_watch_roots_with_skips(
+            watcher,
+            &self.watch_roots,
+            skips,
+            self.registration,
+        );
         for failure in &failures {
             tracing::error!(
                 dir = %failure.dir.display(),
@@ -186,7 +190,7 @@ impl WatcherLoopStartup {
             elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
             "watcher_root_registration_complete"
         );
-        roots::register_cargo_home_watch(watcher, &registered_roots);
+        roots::register_cargo_home_watch(watcher, &mut registered_roots);
         WatcherLoopContext {
             watch_roots:       registered_roots,
             background_tx:     self.background_tx,
@@ -329,6 +333,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
     let disk_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_DISK_CONCURRENCY));
     let git_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_GIT_CONCURRENCY));
 
+    let mut last_disk_poll = Instant::now();
     let mut tick: u64 = 0;
     loop {
         tick += 1;
@@ -339,7 +344,22 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             return;
         }
 
+        roots::replace_skip_set(
+            &mut watcher,
+            &mut registered_roots,
+            known_target_skips(metadata_dispatch, state.projects.keys()),
+        );
         let notify_events = events::drain_notify_events(notify_rx);
+        for event in &notify_events {
+            roots::update_directory_watches(&mut watcher, &mut registered_roots, event);
+        }
+        let notify_events = notify_events
+            .into_iter()
+            .filter_map(|mut event| {
+                roots::filter_event_paths(&registered_roots, &mut event);
+                (!event.paths.is_empty()).then_some(event)
+            })
+            .collect();
         events::process_notify_events(
             tick,
             &watch_drain,
@@ -370,6 +390,13 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             &mut state.pending_git,
         );
 
+        refresh::schedule_disk_poll(
+            Instant::now(),
+            &mut last_disk_poll,
+            &state.projects,
+            &mut state.pending_disk,
+        );
+
         // `refresh::fire_disk_updates` recalculates `state.pending_disk` entries whose debounce has
         // expired.
         refresh::fire_disk_updates(
@@ -379,6 +406,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             background_tx,
             &state.projects,
             &mut state.pending_disk,
+            metadata_dispatch,
         );
 
         // `probe::probe_new_projects` probes `state.pending_new` candidates whose debounce has
@@ -485,37 +513,31 @@ fn register_project_watch_if_needed(
     registered_roots: &mut RegisteredRoots,
 ) {
     if registered_roots.covers(req.abs_path.as_path()) {
-        tracing::trace!(
-            target: PERF_LOG_TARGET,
-            path = %req.abs_path.display(),
-            "watcher_dynamic_root_covered"
-        );
         return;
     }
-    if !req.abs_path.is_dir() {
-        tracing::warn!(
-            path = %req.abs_path.display(),
-            "watcher_dynamic_root_missing"
-        );
-        return;
+    for failure in roots::register_project_root(watcher, registered_roots, &req.abs_path) {
+        tracing::error!(path = %failure.dir.display(), reason = %failure.reason, "watcher_dynamic_root_registration_failed");
     }
-    match watcher.watch(&req.abs_path, RecursiveMode::Recursive) {
-        Ok(()) => {
-            registered_roots.add_registered_dir(req.abs_path.clone());
-            tracing::trace!(
-                target: PERF_LOG_TARGET,
-                path = %req.abs_path.display(),
-                "watcher_dynamic_root_registered"
-            );
-        },
-        Err(err) => {
-            tracing::error!(
-                path = %req.abs_path.display(),
-                error = %err,
-                "watcher_dynamic_root_registration_failed"
-            );
-        },
+}
+
+pub(super) fn known_target_skips<'a>(
+    dispatch: &MetadataDispatchContext,
+    paths: impl Iterator<Item = &'a AbsolutePath>,
+) -> WatchSkipSet {
+    let mut skips = WatchSkipSet::default();
+    if let Ok(store) = dispatch.metadata_store.lock() {
+        for path in store.dispatch_generations.keys() {
+            if let Some(target) = store.resolved_target_dir(path) {
+                skips.add_target_directory(target.clone());
+            }
+        }
+        for path in paths {
+            if let Some(target) = store.resolved_target_dir(path) {
+                skips.add_target_directory(target.clone());
+            }
+        }
     }
+    skips
 }
 
 /// Background sinks the watcher fans events out to. Bundled so
@@ -550,6 +572,7 @@ mod tests {
     use notify::event::ModifyKind;
     use tempfile::TempDir;
 
+    use super::roots::WatchRegistration;
     use super::*;
     use crate::channel;
     use crate::channel::Receiver;
@@ -759,7 +782,7 @@ mod tests {
         std::fs::create_dir_all(&cargo_home).expect("mkdir cargo_home");
         // `registered_roots` contains `cargo_home`'s parent as a recursive root, covering Cargo
         // home.
-        let registered_roots = RegisteredRoots::from_dirs(vec![AbsolutePath::from(tmp.path())]);
+        let mut registered_roots = RegisteredRoots::from_dirs(vec![AbsolutePath::from(tmp.path())]);
 
         let mut watcher = RecordingWatcher::new_for_test();
         let watched_handle = Arc::clone(&watcher.watched);
@@ -769,7 +792,7 @@ mod tests {
         unsafe {
             std::env::set_var("CARGO_HOME", cargo_home.as_os_str());
         }
-        roots::register_cargo_home_watch(&mut watcher, &registered_roots);
+        roots::register_cargo_home_watch(&mut watcher, &mut registered_roots);
         // SAFETY: std::env::remove_var("CARGO_HOME") follows the same serial-test reasoning as
         // set_var above.
         unsafe { std::env::remove_var("CARGO_HOME") };
@@ -965,7 +988,8 @@ mod tests {
 
         let mut guard = GuardedWatcher::wrap(RecordingWatcher::new_for_test());
 
-        let (registered_roots, failures) = roots::register_watch_roots(&mut guard, &watch_roots);
+        let (mut registered_roots, failures) =
+            roots::register_watch_roots(&mut guard, &watch_roots);
         assert!(
             failures.is_empty(),
             "register_watch_roots must not produce per-root failures for non-overlapping inputs; \
@@ -982,7 +1006,7 @@ mod tests {
         unsafe {
             std::env::set_var("CARGO_HOME", cargo_home.as_os_str());
         }
-        roots::register_cargo_home_watch(&mut guard, &registered_roots);
+        roots::register_cargo_home_watch(&mut guard, &mut registered_roots);
         // SAFETY: std::env::remove_var("CARGO_HOME") follows the same serial-test reasoning as
         // set_var above.
         unsafe { std::env::remove_var("CARGO_HOME") };
@@ -1161,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn registering_uncovered_project_adds_recursive_watch_root() {
+    fn registering_uncovered_project_adds_filtered_folder_watches() {
         let (watch_tx, watch_rx) = channel::unbounded();
         let project_dir = tempfile::tempdir().expect("tempdir");
         test_support::init_git_repo(project_dir.path());
@@ -1185,7 +1209,13 @@ mod tests {
             .clone();
         assert_eq!(
             recorded,
-            vec![(project_dir.path().to_path_buf(), RecursiveMode::Recursive)]
+            roots::watch_directories(
+                &AbsolutePath::from(project_dir.path()),
+                &WatchSkipSet::default()
+            )
+            .into_iter()
+            .map(|path| (path.to_path_buf(), RecursiveMode::NonRecursive))
+            .collect::<Vec<_>>()
         );
         assert!(registered_roots.covers(project_dir.path()));
         assert!(
@@ -1314,6 +1344,7 @@ mod tests {
         let client_for_dispatch = client.clone();
         let watcher_thread = spawn_watcher_thread(
             WatcherLoopStartup {
+                registration: WatchRegistration::PerFolder,
                 watch_roots: Vec::new(),
                 background_tx,
                 ci_run_count: 0,
@@ -2999,6 +3030,12 @@ mod tests {
             &tx,
             &projects,
             &mut pending,
+            &test_metadata_dispatch(
+                &HttpClient::new_without_github_auth_for_test(
+                    test_support::test_runtime().handle().clone(),
+                )
+                .expect("test HTTP client"),
+            ),
         );
         wait_for_completion(&disk_done_rx);
 
@@ -3316,6 +3353,12 @@ mod tests {
             &background_tx,
             &projects,
             &mut pending_disk,
+            &test_metadata_dispatch(
+                &HttpClient::new_without_github_auth_for_test(
+                    test_support::test_runtime().handle().clone(),
+                )
+                .expect("test HTTP client"),
+            ),
         );
         wait_for_completion(&disk_done_rx);
 

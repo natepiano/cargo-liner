@@ -40,8 +40,5 @@ uuid          = { workspace = true }
 # captures the desktop behind the window for the attract screen.
 tui_pane = { workspace = true, features = ["backdrop"] }
 
-[dev-dependencies]
-tui_pane = { workspace = true, features = ["test-clock"] }
-
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

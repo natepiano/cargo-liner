@@ -4,14 +4,12 @@
 
 use ratatui::layout::Rect;
 
-use super::SummaryDemand;
 use super::SummaryRowAllocation;
 use super::TileContent;
 use super::TileDemand;
 use super::TileDemands;
 use super::TileGrid;
 use super::TileGrowth;
-use super::constants::TILE_ROWS_READOUT_HEIGHT;
 use super::draw;
 use crate::TileView;
 
@@ -26,9 +24,9 @@ fn allocated_summary(policy: SummaryRowAllocation, width: u16, rows: usize) -> u
     grid.set_min_tile_width(width);
     grid.set_summary_row_allocation(policy);
     grid.set_layout(area, growth);
-    grid.sync_test_cells(
+    grid.sync(
         &TileDemands {
-            summary:       SummaryDemand::new(rows + usize::from(TILE_ROWS_READOUT_HEIGHT), []),
+            summary:       rows + usize::from(super::constants::TILE_ROWS_READOUT_HEIGHT),
             summary_width: width.saturating_sub(2),
             groups:        (1..=5).map(|id| TileDemand { id, rows: 100 }).collect(),
         },
@@ -79,9 +77,9 @@ fn assert_narrow_summary_width(width: u16) {
     grid.set_min_tile_width(28);
     grid.set_summary_row_allocation(SummaryRowAllocation::BeforeTiles);
     grid.set_layout(area, growth);
-    grid.sync_test_cells(
+    grid.sync(
         &TileDemands {
-            summary:       SummaryDemand::new(18 + usize::from(TILE_ROWS_READOUT_HEIGHT), []),
+            summary:       18 + usize::from(super::constants::TILE_ROWS_READOUT_HEIGHT),
             summary_width: 30,
             groups:        (1..=20).map(|id| TileDemand { id, rows: 8 }).collect(),
         },
@@ -154,12 +152,12 @@ fn narrow_resize_replans_existing_cells_instead_of_hiding_every_agent_tile() {
     grid.set_min_tile_width(28);
     grid.set_summary_row_allocation(SummaryRowAllocation::BeforeTiles);
     let demands = TileDemands {
-        summary:       SummaryDemand::new(18 + usize::from(TILE_ROWS_READOUT_HEIGHT), []),
+        summary:       18 + usize::from(super::constants::TILE_ROWS_READOUT_HEIGHT),
         summary_width: 30,
         groups:        (1..=20).map(|id| TileDemand { id, rows: 8 }).collect(),
     };
     grid.set_layout(Rect::new(0, 0, 200, 50), growth);
-    grid.sync_test_cells(&demands, growth);
+    grid.sync(&demands, growth);
     grid.settle_for_test();
     assert!(
         grid.placements(Rect::new(0, 0, 200, 50), growth).len() > 1,
@@ -168,7 +166,7 @@ fn narrow_resize_replans_existing_cells_instead_of_hiding_every_agent_tile() {
     for width in [80, 50, 40, 34] {
         let area = Rect::new(0, 0, width, 50);
         grid.set_layout(area, growth);
-        grid.sync_test_cells(&demands, growth);
+        grid.sync(&demands, growth);
         grid.settle_for_test();
         let placements = grid.placements(area, growth);
         assert!(

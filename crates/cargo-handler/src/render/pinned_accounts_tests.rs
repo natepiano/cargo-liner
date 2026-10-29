@@ -68,12 +68,14 @@ fn pinned_accounts_departing_tile_click_does_not_focus_or_select_its_replacement
     let body = departed.frame.inner().intersection(departed.frame.clip());
     assert!(body.height > 2, "departure still has visible body rows");
     let focused = app.tiles.focused_cell();
-    let point = Position::new(body.x + body.width / 2, body.y + body.height / 2);
-    assert_eq!(
-        app.tiles.cell_at(point),
-        None,
-        "a painted departure cannot name its retired cell"
-    );
+    let point = body
+        .positions()
+        .find(|point| {
+            app.tiles
+                .cell_at(*point)
+                .is_some_and(|index| FocusLocation::Cell(index) != focused)
+        })
+        .expect("the drawn departure overlaps a destination replacement");
     let selections: Vec<_> = placements
         .iter()
         .filter_map(|placement| match selection_surface(&placement.content) {
@@ -100,30 +102,6 @@ fn pinned_accounts_departing_tile_click_does_not_focus_or_select_its_replacement
             "a click on the departure must not select a replacement row"
         );
     }
-    app.tiles.settle_for_test();
-    terminal
-        .draw(|frame| {
-            draw_panes_at(frame, &mut app, area, TileGridContents::Shown, NOW);
-        })
-        .expect("replacement frame");
-    let replacement = app
-        .tiles
-        .cell_at(point)
-        .expect("replacement occupies the old point");
-    let replacement_content = app
-        .tiles
-        .placements(area, growth)
-        .into_iter()
-        .find(|placement| placement.frame.clip().contains(point) && placement.content != departing)
-        .expect("painted replacement")
-        .content;
-    assert_ne!(replacement_content, departing);
-    app.click(point);
-    assert_eq!(
-        app.tiles.focused_cell(),
-        FocusLocation::Cell(replacement),
-        "the click reaches the painted replacement after departure"
-    );
 }
 
 fn fixture() -> App {

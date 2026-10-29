@@ -34,8 +34,11 @@ use std::time::Instant;
 
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
+use cargo_berth_test_support::LedgerFixture;
+use cargo_berth_test_support::LedgerTemplate;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::RepositoryTemplate;
+use cargo_berth_test_support::TemplateBuildTiming;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::json;
@@ -66,6 +69,17 @@ const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     build:            build_initialized_repository,
 };
 
+/// The integration pair prepared by `recorded_templates` before tests start.
+const INITIAL_INTEGRATION_PAIR: LedgerTemplate = LedgerTemplate {
+    repository:   RepositoryTemplate {
+        name: "initial-integration-pair",
+        build: |root| IntegrationRepository::build_initial_integration_pair(root, BERTH_EXECUTABLE),
+        ..INITIALIZED_REPOSITORY
+    },
+    ledger:       LedgerFixture::Recorded,
+    build_timing: TemplateBuildTiming::BeforeRun,
+};
+
 /// Unclaimed terminal work and a separate rewritten source, before any recovery answer.
 const RECOVERY_SOURCES: RepositoryTemplate = RepositoryTemplate {
     target_directory: env!("CARGO_TARGET_TMPDIR"),
@@ -78,7 +92,7 @@ const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_RE
 
 #[test]
 fn retarget_records_new_target_tip_and_refuses_invalid_targets() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repo.lane("retarget-lane", "integration");
     let claim = repo.claim(&lane, "file:retarget.txt", FIRST_RUN, None);
     assert_success(&claim);
@@ -127,7 +141,7 @@ fn retarget_records_new_target_tip_and_refuses_invalid_targets() {
 #[test]
 fn direct_release_waits_for_a_cover_at_a_present_integration_target() {
     for covered in [false, true] {
-        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+        let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
         let lane = repo.lane("cover-release-lane", "integration");
         let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -201,7 +215,7 @@ fn direct_release_waits_for_a_cover_at_a_present_integration_target() {
 
 #[test]
 fn integrated_as_accepts_an_uncovered_target_commit() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repo.lane("uncovered-recovery-lane", "integration");
     let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -240,7 +254,7 @@ fn integrated_as_accepts_an_uncovered_target_commit() {
 
 #[test]
 fn retarget_distinguishes_a_nonbranch_target_from_an_unresolved_branch() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repo.lane("malformed-retarget-lane", "integration");
     let claim = repo.claim(&lane, "file:retarget.txt", FIRST_RUN, None);
     assert_success(&claim);
@@ -269,7 +283,7 @@ fn retarget_distinguishes_a_nonbranch_target_from_an_unresolved_branch() {
 
 #[test]
 fn release_recognizes_a_checkpoint_on_the_reservation_target() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repo.lane("target-release-lane", "integration");
     let claim = repo.claim(&lane, "file:released.txt", FIRST_RUN, None);
     assert_success(&claim);
@@ -294,7 +308,7 @@ fn release_recognizes_a_checkpoint_on_the_reservation_target() {
 
 #[test]
 fn release_uses_trunk_after_the_reservation_target_disappears() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repo.lane("missing-target-release-lane", "integration");
     let claimed = repo.claim(&lane, "file:landed.txt", FIRST_RUN, None);
     assert_success(&claimed);
@@ -391,7 +405,7 @@ fn released_integration_target_witness_can_be_replaced() {
 
 #[test]
 fn orphan_alert_and_manual_recovery_use_the_reservation_target() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repo.lane("target-orphan-lane", "integration");
     let claimed = repo.claim(&lane, "file:orphan.txt", SECOND_RUN, None);
     assert_success(&claimed);
@@ -468,7 +482,7 @@ fn orphan_alert_and_manual_recovery_use_the_reservation_target() {
 
 #[test]
 fn integrated_as_uses_trunk_after_the_reservation_target_disappears() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repo.lane("missing-target-recovery-lane", "integration");
     let claimed = repo.claim(&lane, "file:recovered.txt", SECOND_RUN, None);
     assert_success(&claimed);
@@ -527,7 +541,7 @@ fn integrated_as_uses_trunk_after_the_reservation_target_disappears() {
 
 #[test]
 fn retarget_of_checkpointed_reservation_remains_outstanding() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repo.lane("checkpoint-retarget-lane", "integration");
     repo.commit_file(&lane, "checkpointed.txt", "work\n", "checkpointed work");
     let claim = repo.claim(&lane, "file:checkpointed.txt", SECOND_RUN, None);
@@ -566,7 +580,7 @@ fn retarget_of_checkpointed_reservation_remains_outstanding() {
 
 #[test]
 fn retarget_refuses_released_reservation() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
     let lane = repo.lane("released-retarget-lane", "integration");
     repo.commit_file(
         &lane,

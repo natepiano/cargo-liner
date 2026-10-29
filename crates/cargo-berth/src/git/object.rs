@@ -423,6 +423,11 @@ mod tests {
                 .child_mut()
                 .id())
         };
+        assert!(
+            objects.reader.get().is_none(),
+            "exact object availability needs no child"
+        );
+        assert_eq!(objects.commit("HEAD~0")?, head);
         let first_child = child_id()?;
         assert_eq!(crate::git::branch_object_id(&objects, "main")?, head);
         assert!(matches!(
@@ -473,6 +478,11 @@ mod tests {
             "exact HEAD needs no Git child"
         );
         assert!(objects.commit_is_available(&head)?);
+        assert!(
+            objects.reader.get().is_none(),
+            "exact object availability needs no child"
+        );
+        assert_eq!(objects.commit("HEAD~0")?, head);
         let child = child_id()?;
         assert!(matches!(
             crate::git::local_target_upstream(&objects, "no-upstream")?,
@@ -604,6 +614,11 @@ mod tests {
                 .child_mut()
                 .id())
         };
+        assert!(
+            objects.reader.get().is_none(),
+            "exact object availability needs no child"
+        );
+        assert_eq!(objects.commit("HEAD~0")?, head);
         let first_child = child_id()?;
         drop(snapshot);
         assert!(objects.commit_is_available(&head)?);

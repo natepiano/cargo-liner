@@ -1,5 +1,6 @@
 use super::MendRunner;
 use super::RunPlan;
+use super::mend_runner::NextAnalysis;
 use crate::compiler::BuildOutputMode;
 use crate::fixes::imports;
 use crate::reporting::AppliedFixCounts;
@@ -56,11 +57,11 @@ impl MendRunner<'_> {
         let validation_output_mode = if self.output_format == OutputFormat::Json {
             BuildOutputMode::Json
         } else {
-            BuildOutputMode::Quiet
+            BuildOutputMode::Validation
         };
         match self.build_selection(validation_output_mode) {
             Ok(checked) => {
-                let validation = checked.result;
+                let validation = &checked.result;
                 let check_duration = plan_check_duration + validation.check_duration;
                 let notice = Self::build_fix_notice(
                     planned.operation_mode.intent,
@@ -69,8 +70,10 @@ impl MendRunner<'_> {
                     applied,
                 );
                 let warning_facts = validation.report.facts.compiler_warning_facts;
+                let report = validation.report.clone();
+                self.next_analysis = NextAnalysis::Validated(Box::new(checked));
                 Ok(ExecutionOutcome {
-                    report: validation.report,
+                    report,
                     notice,
                     check_duration,
                     compiler_warnings,

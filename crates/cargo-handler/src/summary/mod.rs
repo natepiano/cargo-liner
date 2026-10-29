@@ -31,7 +31,6 @@ use tui_pane::ColumnSpec;
 use tui_pane::ColumnWidths;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
-use tui_pane::SummaryDemand;
 use tui_pane::label_color;
 use tui_pane::text_default;
 use unicode_segmentation::UnicodeSegmentation;
@@ -449,8 +448,6 @@ impl SummaryLayout {
             machines: SummaryMachines::new(frame, width),
         }
     }
-
-    pub(crate) fn demand<Id>(&self) -> SummaryDemand<Id> { SummaryDemand::new(self.height(), []) }
 
     pub(crate) const fn allocation_width(&self) -> u16 { self.width }
 

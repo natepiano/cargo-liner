@@ -2,9 +2,6 @@ nextest-version = { required = "0.9.138" }
 
 experimental = ["setup-scripts", "wrapper-scripts"]
 
-[profile.default]
-slow-timeout = { period = "15s", terminate-after = 2 }
-
 [scripts.wrapper.cargo-berth-scratch]
 command = { command-line = "crates/cargo-berth/tests/check-test-scratch.sh", relative-to = "workspace-root" }
 

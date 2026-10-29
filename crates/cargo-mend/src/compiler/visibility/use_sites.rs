@@ -61,9 +61,12 @@ use rustc_middle::ty::Visibility;
 use rustc_span::Ident;
 use rustc_span::Span;
 
+use super::ReachDominance;
+use super::VisibilityAudience;
 use super::annotation;
 use super::annotation::VisibilityReach;
 use super::annotation::VisibilitySyntax;
+use crate::compiler::facade::FacadeSpellingAgreement;
 use crate::compiler::facade::ParentFacadeSpelling;
 use crate::compiler::facade::ParentFacadeUsageByName;
 use crate::compiler::persistence::UseSiteIndex;
@@ -77,51 +80,61 @@ pub(super) enum FacadeUseKind {
     ExternCrate,
 }
 
+/// Whether a use declaration exposes its subject beyond its owning module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FacadeExposure {
+    Private,
+    Reexport,
+}
+
+/// Unknown source spelling stays a facade to avoid false findings;
+/// conflicting spellings block exact repairs.
 #[derive(Clone, Copy)]
 struct FacadeVisibilityDecision {
-    is_reexport:       bool,
-    spelling:          ParentFacadeSpelling,
-    spelling_conflict: bool,
+    exposure:           FacadeExposure,
+    spelling:           ParentFacadeSpelling,
+    spelling_agreement: FacadeSpellingAgreement,
 }
 
 impl FacadeVisibilityDecision {
     const fn reexport(spelling: ParentFacadeSpelling) -> Self {
         Self {
-            is_reexport: true,
+            exposure: FacadeExposure::Reexport,
             spelling,
-            spelling_conflict: false,
+            spelling_agreement: FacadeSpellingAgreement::Consistent,
         }
     }
 
     const fn reexport_with_unknown_spelling() -> Self {
         Self {
-            is_reexport:       true,
-            spelling:          ParentFacadeSpelling::Other,
-            spelling_conflict: true,
+            exposure:           FacadeExposure::Reexport,
+            spelling:           ParentFacadeSpelling::Other,
+            spelling_agreement: FacadeSpellingAgreement::Conflicting,
         }
     }
 
     const fn private() -> Self {
         Self {
-            is_reexport:       false,
-            spelling:          ParentFacadeSpelling::Other,
-            spelling_conflict: false,
+            exposure:           FacadeExposure::Private,
+            spelling:           ParentFacadeSpelling::Other,
+            spelling_agreement: FacadeSpellingAgreement::Consistent,
         }
     }
 }
 
 #[derive(Clone)]
 pub(super) struct ReexportOccurrence {
-    pub(super) use_def_id:        LocalDefId,
-    pub(super) owner_module:      LocalDefId,
-    pub(super) visibility:        Visibility<DefId>,
-    pub(super) facade_spelling:   ParentFacadeSpelling,
-    pub(super) spelling_conflict: bool,
-    pub(super) use_kind:          FacadeUseKind,
-    pub(super) alias:             Option<String>,
-    pub(super) export_names:      Vec<String>,
-    pub(super) span:              Span,
-    pub(super) usage_by_name:     Rc<OnceCell<ParentFacadeUsageByName>>,
+    pub(super) use_def_id:         LocalDefId,
+    pub(super) owner_module:       LocalDefId,
+    pub(super) visibility:         Visibility<DefId>,
+    pub(super) facade_spelling:    ParentFacadeSpelling,
+    /// Conflicting or unavailable exact spelling prevents an exact facade repair.
+    pub(super) spelling_agreement: FacadeSpellingAgreement,
+    pub(super) use_kind:           FacadeUseKind,
+    pub(super) alias:              Option<String>,
+    pub(super) export_names:       Vec<String>,
+    pub(super) span:               Span,
+    pub(super) usage_by_name:      Rc<OnceCell<ParentFacadeUsageByName>>,
 }
 
 #[derive(Default)]
@@ -141,16 +154,33 @@ pub(super) enum ExactGlobSubjectResolution {
 
 #[derive(Clone)]
 pub(super) struct ParentFacadeOccurrences<'index> {
-    pub(super) selected:          &'index ReexportOccurrence,
-    pub(super) matching:          Vec<&'index ReexportOccurrence>,
-    pub(super) spelling_conflict: bool,
+    pub(super) selected:           &'index ReexportOccurrence,
+    pub(super) matching:           Vec<&'index ReexportOccurrence>,
+    /// Conflicting or unavailable exact spelling prevents an exact facade repair.
+    pub(super) spelling_agreement: FacadeSpellingAgreement,
+}
+
+/// A public re-export requires a public declaration even when enclosing modules cap its reach.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PublicDeclarationRequirement {
+    Required,
+    NotRequired,
+}
+
+impl PublicDeclarationRequirement {
+    const fn from_audience(audience: VisibilityAudience) -> Self {
+        match audience {
+            VisibilityAudience::Public => Self::Required,
+            VisibilityAudience::Restricted => Self::NotRequired,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 struct ApplicableReexportReach<'index> {
-    occurrence:                  &'index ReexportOccurrence,
-    reach:                       VisibilityReach,
-    requires_public_declaration: bool,
+    occurrence:                     &'index ReexportOccurrence,
+    reach:                          VisibilityReach,
+    public_declaration_requirement: PublicDeclarationRequirement,
 }
 
 enum ExportedAncestorPathReachResolution {
@@ -246,9 +276,9 @@ impl ReexportIndex {
                 .find(|occurrence| occurrence.use_def_id == facade_subject)?;
             return Some(ParentFacadeAnalysis {
                 nearest:                     ParentFacadeOccurrences {
-                    selected:          occurrence,
-                    matching:          vec![occurrence],
-                    spelling_conflict: occurrence.spelling_conflict,
+                    selected:           occurrence,
+                    matching:           vec![occurrence],
+                    spelling_agreement: occurrence.spelling_agreement,
                 },
                 chain:                       FacadeChainResolution::Unresolvable {
                     blocker: FacadeChainBlocker::ForeignBoundary(occurrence),
@@ -275,7 +305,7 @@ impl ReexportIndex {
             ) {
                 let occurrences = ParentFacadeOccurrences {
                     selected,
-                    spelling_conflict: Self::spelling_conflict(selected, &named_occurrences, tcx),
+                    spelling_agreement: Self::spelling_agreement(selected, &named_occurrences, tcx),
                     matching: named_occurrences,
                 };
                 let boundary_reach = Self::joined_occurrence_reach(tcx, &occurrences.matching)?;
@@ -298,13 +328,13 @@ impl ReexportIndex {
                     glob_occurrences.iter().copied(),
                 ) {
                     let nearest = nearest.unwrap_or_else(|| ParentFacadeOccurrences {
-                        selected:          blocking_glob,
-                        spelling_conflict: Self::spelling_conflict(
+                        selected:           blocking_glob,
+                        spelling_agreement: Self::spelling_agreement(
                             blocking_glob,
                             &glob_occurrences,
                             tcx,
                         ),
-                        matching:          glob_occurrences,
+                        matching:           glob_occurrences,
                     });
                     return Some(ParentFacadeAnalysis {
                         nearest,
@@ -336,7 +366,9 @@ impl ReexportIndex {
         facade_subject: LocalDefId,
     ) -> bool {
         self.applicable_reexport_reaches(tcx, item_def_id, facade_subject)
-            .any(|reexport| reexport.requires_public_declaration)
+            .any(|reexport| {
+                reexport.public_declaration_requirement == PublicDeclarationRequirement::Required
+            })
     }
 
     /// Whether a `pub use` that rustc requires a `pub` declaration for sits
@@ -356,7 +388,7 @@ impl ReexportIndex {
         let parent_module: LocalDefId = tcx.parent_module_from_def_id(item_def_id).into();
         self.applicable_reexport_reaches(tcx, item_def_id, facade_subject)
             .any(|reexport| {
-                reexport.requires_public_declaration
+                reexport.public_declaration_requirement == PublicDeclarationRequirement::Required
                     && !Self::is_module_within(tcx, parent_module, reexport.occurrence.owner_module)
             })
     }
@@ -492,12 +524,14 @@ impl ReexportIndex {
                 Some(ApplicableReexportReach {
                     occurrence,
                     reach: annotation::anchored(capped_reach, item_def_id, tcx),
-                    requires_public_declaration: match occurrence.use_kind {
-                        FacadeUseKind::Named | FacadeUseKind::ExternCrate => {
-                            occurrence.visibility.is_public()
+                    public_declaration_requirement: PublicDeclarationRequirement::from_audience(
+                        match occurrence.use_kind {
+                            FacadeUseKind::Named | FacadeUseKind::ExternCrate => {
+                                VisibilityReach::from(occurrence.visibility).audience()
+                            },
+                            FacadeUseKind::Glob => effective_reach.audience(),
                         },
-                        FacadeUseKind::Glob => effective_reach.is_public(),
-                    },
+                    ),
                 })
             })
     }
@@ -549,18 +583,22 @@ impl ReexportIndex {
         }
     }
 
-    fn spelling_conflict(
+    fn spelling_agreement(
         selected: &ReexportOccurrence,
         occurrences: &[&ReexportOccurrence],
         tcx: TyCtxt<'_>,
-    ) -> bool {
-        occurrences.iter().any(|occurrence| {
-            VisibilityReach::from(occurrence.visibility)
+    ) -> FacadeSpellingAgreement {
+        for occurrence in occurrences {
+            if VisibilityReach::from(occurrence.visibility)
                 .compare(VisibilityReach::from(selected.visibility), tcx)
                 == Some(Ordering::Equal)
-                && (occurrence.spelling_conflict
+                && (occurrence.spelling_agreement == FacadeSpellingAgreement::Conflicting
                     || occurrence.facade_spelling != selected.facade_spelling)
-        })
+            {
+                return FacadeSpellingAgreement::Conflicting;
+            }
+        }
+        FacadeSpellingAgreement::Consistent
     }
 
     fn joined_occurrence_reach(
@@ -625,7 +663,7 @@ impl ReexportIndex {
             return true;
         }
         let item_reach: VisibilityReach = tcx.visibility(item_def_id.to_def_id()).into();
-        item_reach.is_at_least(occurrence_reach, tcx)
+        item_reach.dominance(occurrence_reach, tcx) == ReachDominance::Dominates
     }
 
     pub(super) fn exact_glob_subject_resolution(
@@ -1622,7 +1660,7 @@ pub(super) fn reexport_index(tcx: TyCtxt<'_>) -> ReexportIndex {
         let visibility_decision =
             facade_visibility_decision(visibility_syntax, visibility, owner_module, parent_module);
         if matches!(item.kind, ItemKind::Use(..) | ItemKind::ExternCrate(..))
-            && !visibility_decision.is_reexport
+            && visibility_decision.exposure == FacadeExposure::Private
         {
             continue;
         }
@@ -1631,7 +1669,7 @@ pub(super) fn reexport_index(tcx: TyCtxt<'_>) -> ReexportIndex {
             owner_module,
             visibility,
             facade_spelling: visibility_decision.spelling,
-            spelling_conflict: visibility_decision.spelling_conflict,
+            spelling_agreement: visibility_decision.spelling_agreement,
             use_kind: FacadeUseKind::Named,
             alias: None,
             export_names: Vec::new(),
@@ -1903,6 +1941,10 @@ pub(super) fn parent_module_path_segments(tcx: TyCtxt<'_>, def_id: LocalDefId) -
 mod tests {
     use std::fs;
 
+    use ReachDominance::DoesNotDominate;
+    use ReachDominance::Dominates;
+    use ReachWidening::NotWider;
+    use ReachWidening::StrictlyWider;
     use anyhow::Result;
     use anyhow::anyhow;
     use rustc_driver::Callbacks;
@@ -1922,12 +1964,97 @@ mod tests {
     use super::ExactGlobSubjectResolution;
     use super::FacadeChainBlocker;
     use super::FacadeChainResolution;
+    use super::FacadeExposure;
+    use super::FacadeSpellingAgreement;
     use super::FacadeUseKind;
     use super::ParentFacadeSpelling;
+    use super::PublicDeclarationRequirement;
+    use super::ReachDominance;
     use super::ReexportIndex;
+    use super::VisibilityAudience;
     use super::VisibilityReach;
     use super::facade_visibility_decision;
     use super::reexport_index;
+    use crate::compiler::visibility::ReachWidening;
+
+    #[test]
+    fn public_declarations_follow_the_uncapped_audience() {
+        for (audience, expected) in [
+            (
+                VisibilityAudience::Public,
+                PublicDeclarationRequirement::Required,
+            ),
+            (
+                VisibilityAudience::Restricted,
+                PublicDeclarationRequirement::NotRequired,
+            ),
+        ] {
+            assert_eq!(
+                PublicDeclarationRequirement::from_audience(audience),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn written_visibility_preserves_private_and_reexport_classification() {
+        let owner_module: LocalDefId = CRATE_DEF_ID;
+        for (syntax, exposure, spelling) in [
+            (
+                super::VisibilitySyntax::Private,
+                FacadeExposure::Private,
+                ParentFacadeSpelling::Other,
+            ),
+            (
+                super::VisibilitySyntax::Current,
+                FacadeExposure::Private,
+                ParentFacadeSpelling::Other,
+            ),
+            (
+                super::VisibilitySyntax::InCurrent,
+                FacadeExposure::Private,
+                ParentFacadeSpelling::Other,
+            ),
+            (
+                super::VisibilitySyntax::Public,
+                FacadeExposure::Reexport,
+                ParentFacadeSpelling::Public,
+            ),
+            (
+                super::VisibilitySyntax::Crate,
+                FacadeExposure::Reexport,
+                ParentFacadeSpelling::Crate,
+            ),
+            (
+                super::VisibilitySyntax::InCrate,
+                FacadeExposure::Reexport,
+                ParentFacadeSpelling::Other,
+            ),
+            (
+                super::VisibilitySyntax::Parent,
+                FacadeExposure::Reexport,
+                ParentFacadeSpelling::Super,
+            ),
+            (
+                super::VisibilitySyntax::InParent,
+                FacadeExposure::Reexport,
+                ParentFacadeSpelling::Other,
+            ),
+        ] {
+            let decision = facade_visibility_decision(
+                Some(syntax),
+                Visibility::Public,
+                owner_module,
+                owner_module,
+            );
+            assert_eq!(decision.exposure, exposure);
+            assert_eq!(decision.spelling, spelling);
+            assert_eq!(
+                decision.spelling_agreement,
+                FacadeSpellingAgreement::Consistent
+            );
+        }
+    }
 
     #[test]
     fn reexport_index_propagates_local_extern_reexports_to_foreign_subjects() -> Result<()> {
@@ -1977,6 +2104,8 @@ mod tests {
         let a_module = child_module(tcx, crate_module, "a")?;
         let nested_child_module = child_module(tcx, a_module, "child")?;
         let nested_grandchild_module = child_module(tcx, nested_child_module, "grandchild")?;
+        assert_reach_relations(tcx, a_module, nested_child_module)?;
+        assert_spelling_agreement(tcx, &index)?;
         assert_unsnippable_visibility_fallback(
             nested_grandchild_module,
             nested_child_module,
@@ -1993,6 +2122,75 @@ mod tests {
         assert_outward_glob_behavior(tcx, &index, crate_module)?;
         assert_shadowed_glob_behavior(tcx, &index, crate_module)?;
         assert_visibility_filtered_glob_behavior(tcx, &index, crate_module)?;
+        Ok(())
+    }
+
+    fn assert_reach_relations(
+        tcx: TyCtxt<'_>,
+        ancestor: LocalDefId,
+        child: LocalDefId,
+    ) -> Result<()> {
+        let sibling = child_module(tcx, ancestor, "parent_local")?;
+        let public = VisibilityReach::from(Visibility::<DefId>::Public);
+        let root = VisibilityReach::from(Visibility::Restricted(CRATE_DEF_ID.to_def_id()));
+        let ancestor = VisibilityReach::from(Visibility::Restricted(ancestor.to_def_id()));
+        let child = VisibilityReach::from(Visibility::Restricted(child.to_def_id()));
+        let sibling = VisibilityReach::from(Visibility::Restricted(sibling.to_def_id()));
+        for (left, right, dominance, widening) in [
+            (public, public, Dominates, NotWider),
+            (public, root, Dominates, StrictlyWider),
+            (root, public, DoesNotDominate, NotWider),
+            (root, ancestor, Dominates, StrictlyWider),
+            (ancestor, child, Dominates, StrictlyWider),
+            (child, ancestor, DoesNotDominate, NotWider),
+            (child, child, Dominates, NotWider),
+            (child, sibling, DoesNotDominate, NotWider),
+            (sibling, child, DoesNotDominate, NotWider),
+        ] {
+            assert_eq!(left.dominance(right, tcx), dominance);
+            assert_eq!(left.widening(right, tcx), widening);
+        }
+        Ok(())
+    }
+
+    fn assert_spelling_agreement(tcx: TyCtxt<'_>, index: &ReexportIndex) -> Result<()> {
+        let target = foreign_reexport_target(tcx)?;
+        let selected = index
+            .named
+            .get(&target)
+            .and_then(|occurrences| occurrences.first())
+            .ok_or_else(|| anyhow!("missing spelling fixture occurrence"))?;
+        assert_eq!(
+            selected.spelling_agreement,
+            FacadeSpellingAgreement::Consistent
+        );
+        let mut unknown = selected.clone();
+        unknown.spelling_agreement = FacadeSpellingAgreement::Conflicting;
+        let mut different = selected.clone();
+        different.facade_spelling = ParentFacadeSpelling::Super;
+        let mut narrower = different.clone();
+        narrower.visibility = Visibility::Restricted(CRATE_DEF_ID.to_def_id());
+        let cases: &[(&[&super::ReexportOccurrence], FacadeSpellingAgreement)] = &[
+            (&[], FacadeSpellingAgreement::Consistent),
+            (&[selected, selected], FacadeSpellingAgreement::Consistent),
+            (&[selected, &unknown], FacadeSpellingAgreement::Conflicting),
+            (&[&unknown, selected], FacadeSpellingAgreement::Conflicting),
+            (
+                &[selected, &different],
+                FacadeSpellingAgreement::Conflicting,
+            ),
+            (
+                &[&different, selected],
+                FacadeSpellingAgreement::Conflicting,
+            ),
+            (&[selected, &narrower], FacadeSpellingAgreement::Consistent),
+        ];
+        for (occurrences, expected) in cases {
+            assert_eq!(
+                ReexportIndex::spelling_agreement(selected, occurrences, tcx),
+                *expected
+            );
+        }
         Ok(())
     }
 
@@ -2029,6 +2227,14 @@ mod tests {
         let facade_module = child_module(tcx, crate_module, "facade")?;
         let facade_child_module = child_module(tcx, facade_module, "child")?;
         let widget = child_item(tcx, facade_child_module, "Widget")?;
+        let reexports = index
+            .applicable_reexport_reaches(tcx, widget, widget)
+            .collect::<Vec<_>>();
+        assert_eq!(reexports.len(), 1);
+        assert_eq!(
+            reexports[0].public_declaration_requirement,
+            PublicDeclarationRequirement::NotRequired,
+        );
         let accepted_method = impl_item(tcx, "accepted_method")?;
         let accepted_const = impl_item(tcx, "ACCEPTED_CONST")?;
         let capped_method = impl_item(tcx, "capped_method")?;
@@ -2076,6 +2282,9 @@ mod tests {
             .applicable_reexports_outside_parent(tcx, carrier, carrier)
             .collect::<Vec<_>>();
         assert_eq!(occurrences.len(), 2);
+        assert!(occurrences.iter().all(|reexport| {
+            reexport.public_declaration_requirement == PublicDeclarationRequirement::Required
+        }));
         assert!(occurrences.iter().all(|reexport| {
             reexport.occurrence.use_kind == FacadeUseKind::Glob
                 && matches!(
@@ -2189,9 +2398,12 @@ mod tests {
         let crate_module: LocalDefId = CRATE_DEF_ID;
         let public =
             facade_visibility_decision(None, Visibility::Public, owner_module, parent_module);
-        assert!(public.is_reexport);
+        assert_eq!(public.exposure, FacadeExposure::Reexport);
         assert_eq!(public.spelling, ParentFacadeSpelling::Public);
-        assert!(!public.spelling_conflict);
+        assert_eq!(
+            public.spelling_agreement,
+            FacadeSpellingAgreement::Consistent
+        );
 
         let private = facade_visibility_decision(
             None,
@@ -2199,9 +2411,12 @@ mod tests {
             owner_module,
             parent_module,
         );
-        assert!(!private.is_reexport);
+        assert_eq!(private.exposure, FacadeExposure::Private);
         assert_eq!(private.spelling, ParentFacadeSpelling::Other);
-        assert!(!private.spelling_conflict);
+        assert_eq!(
+            private.spelling_agreement,
+            FacadeSpellingAgreement::Consistent
+        );
 
         let parent = facade_visibility_decision(
             None,
@@ -2209,8 +2424,11 @@ mod tests {
             owner_module,
             parent_module,
         );
-        assert!(parent.is_reexport);
-        assert!(parent.spelling_conflict);
+        assert_eq!(parent.exposure, FacadeExposure::Reexport);
+        assert_eq!(
+            parent.spelling_agreement,
+            FacadeSpellingAgreement::Conflicting
+        );
 
         let distant_parent = facade_visibility_decision(
             None,
@@ -2218,9 +2436,12 @@ mod tests {
             owner_module,
             parent_module,
         );
-        assert!(distant_parent.is_reexport);
+        assert_eq!(distant_parent.exposure, FacadeExposure::Reexport);
         assert_eq!(distant_parent.spelling, ParentFacadeSpelling::Other);
-        assert!(!distant_parent.spelling_conflict);
+        assert_eq!(
+            distant_parent.spelling_agreement,
+            FacadeSpellingAgreement::Consistent
+        );
 
         let crate_root = facade_visibility_decision(
             None,
@@ -2228,8 +2449,11 @@ mod tests {
             crate_module,
             crate_module,
         );
-        assert!(crate_root.is_reexport);
-        assert!(crate_root.spelling_conflict);
+        assert_eq!(crate_root.exposure, FacadeExposure::Reexport);
+        assert_eq!(
+            crate_root.spelling_agreement,
+            FacadeSpellingAgreement::Conflicting
+        );
     }
 
     fn assert_local_extern_reexport(

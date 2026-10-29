@@ -18,6 +18,7 @@ use std::io;
 use std::io::Stdout;
 use std::io::Write;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -26,7 +27,6 @@ use std::time::Instant;
 use tui_pane::FramePhase;
 use tui_pane::FrameProbe;
 
-use crate::census::InvocationId;
 use crate::constants::ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
 use crate::constants::PROBE_THRESHOLD;
 
@@ -147,6 +147,8 @@ impl FrameProbe for FrameLog {
     fn timed<T>(phase: FramePhase, body: impl FnOnce() -> T) -> T { timed(phase, body) }
 
     fn note(line: &str) { note(line); }
+
+    fn trace() { trace(); }
 }
 
 /// How many frames go into one summary line.
@@ -164,6 +166,30 @@ static WRITTEN_FRAME: AtomicU64 = AtomicU64::new(0);
 static WORST: AtomicU64 = AtomicU64::new(0);
 /// Gaps over the threshold since the last summary line.
 static SLOW: AtomicU64 = AtomicU64::new(0);
+
+/// How many frames are written out in full once tracing has started.
+///
+/// Four seconds at the poll interval, which is long enough to show a
+/// cadence rather than a moment of one.
+const TRACE_FRAMES: u64 = 500;
+
+/// Whether every frame is being written out in full.
+static TRACING: AtomicBool = AtomicBool::new(false);
+/// How many frames have been written out since tracing started.
+static TRACED: AtomicU64 = AtomicU64::new(0);
+
+/// Start writing every frame out in full for the next
+/// [`TRACE_FRAMES`] frames, rather than only the slow ones.
+///
+/// A summary hides the two things a stuttering animation is most
+/// likely to be made of: frames that arrive early, which no worst-case
+/// gap can show, and frames that drew nothing at all.
+fn trace() {
+    if !on() {
+        return;
+    }
+    TRACING.store(true, Ordering::Relaxed);
+}
 
 /// Whether the log has been opened yet, so the first write truncates
 /// what a previous run left and the rest append.
@@ -188,7 +214,8 @@ fn append(line: &str) {
         if first {
             let _ = writeln!(
                 file,
-                "probe on -- every frame, a summary per {SUMMARY_FRAMES} frames, threshold {}ms",
+                "probe on -- one line per {SUMMARY_FRAMES} frames, plus every \
+                 frame over {}ms",
                 PROBE_THRESHOLD.as_millis(),
             );
         }
@@ -207,13 +234,22 @@ fn frame(gap: Duration, threshold: Duration) {
     if !on() {
         return;
     }
-    let phases = PHASES.map(|phase| (phase, slot(phase).swap(0, Ordering::Relaxed)));
+    let phases: Vec<(FramePhase, u64)> = PHASES
+        .into_iter()
+        .map(|phase| (phase, slot(phase).swap(0, Ordering::Relaxed)))
+        .collect();
     let nanos = u64::try_from(gap.as_nanos()).unwrap_or(u64::MAX);
     WORST.fetch_max(nanos, Ordering::Relaxed);
     ELAPSED.fetch_add(nanos, Ordering::Relaxed);
-    append(&describe("frame", gap, &phases));
     if gap >= threshold {
         SLOW.fetch_add(1, Ordering::Relaxed);
+        append(&describe("gap", gap, &phases));
+    } else if TRACING.load(Ordering::Relaxed) {
+        if TRACED.fetch_add(1, Ordering::Relaxed) < TRACE_FRAMES {
+            append(&describe("frame", gap, &phases));
+        } else {
+            TRACING.store(false, Ordering::Relaxed);
+        }
     }
     if COUNT.fetch_add(1, Ordering::Relaxed) + 1 >= u64::from(SUMMARY_FRAMES) {
         COUNT.store(0, Ordering::Relaxed);
@@ -238,32 +274,6 @@ fn note(message: &str) {
         return;
     }
     append(message);
-}
-
-/// `PublicationStage` in `census::scan` logs `stage` and `elapsed_us` after a worker reply.
-pub(crate) fn scanner_cost(stage: &str, elapsed: Duration) {
-    if on() {
-        append(&format!(
-            "scanner stage={stage} elapsed_us={}",
-            elapsed.as_micros()
-        ));
-    }
-}
-
-/// `Invocations::publish` in `census::scan` logs `publication_us`, `lag_us` and `invocation`.
-pub(crate) fn invocation_ended(id: &InvocationId, published: Instant) {
-    if !on() {
-        return;
-    }
-    let wall = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let lag = published.elapsed();
-    append(&format!(
-        "end publication_us={} lag_us={} invocation={id:?}",
-        wall.as_micros().saturating_sub(lag.as_micros()),
-        lag.as_micros()
-    ));
 }
 
 /// `bytes` spread over `over`, in bytes per second, or zero where no

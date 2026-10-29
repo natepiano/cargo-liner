@@ -29,11 +29,14 @@ use super::reanchoring_templates::DrainedSplitCheckpointState;
 use super::reanchoring_templates::PENDING_PREFIX;
 use super::reanchoring_templates::REWRITE_MAIN;
 use super::reanchoring_templates::RewriteRepository;
+use super::reanchoring_templates::SPLIT_ACTIVE_PHASE;
 use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION;
 use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING;
+use super::reanchoring_templates::SPLIT_OUTSTANDING_PHASE;
 use super::reanchoring_templates::STACKED_UPPER_CHECKPOINT;
 use super::reanchoring_templates::STATE_PATH;
 use super::reanchoring_templates::SplitLowerCheckpointState;
+use super::reanchoring_templates::SplitPhaseState;
 use super::reanchoring_templates::SplitRefChange;
 use super::reanchoring_templates::SplitReservationStage;
 use super::reanchoring_templates::StackedUpperCheckpointState;
@@ -985,13 +988,12 @@ pub(super) fn soft_reset_split_keeps_both_protected_hunks_in_the_active_phase() 
 }
 
 fn assert_split_keeps_both_hunks(workflow: SplitWorkflow, stage: SplitReservationStage) {
-    let fixture = RewriteFixture::new();
-    let id = fixture.start_phase();
-    fixture.commit("one", "two");
-    let old_tip = fixture.head();
-    if matches!(stage, SplitReservationStage::Outstanding) {
-        fixture.checkpoint(&id);
-    }
+    let template = match stage {
+        SplitReservationStage::Active => SPLIT_ACTIVE_PHASE,
+        SplitReservationStage::Outstanding => SPLIT_OUTSTANDING_PHASE,
+    };
+    let fixture = RewriteFixture::from_repository(template.instantiate());
+    let SplitPhaseState { id, old_tip } = read_state(fixture.root());
     if matches!(
         (stage, workflow),
         (

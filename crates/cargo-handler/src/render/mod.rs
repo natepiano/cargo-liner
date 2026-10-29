@@ -3,8 +3,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-#[cfg(test)]
-use std::num::NonZeroU16;
 use std::rc::Rc;
 
 use ratatui::Frame;
@@ -16,26 +14,21 @@ use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use tui_pane::AdmissibleCell;
 use tui_pane::AttractGridPresentation;
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
 use tui_pane::CellClick;
 use tui_pane::CellPoint;
 use tui_pane::FocusLocation;
-use tui_pane::FrameLayoutPreparation;
-use tui_pane::FramePlacement;
 use tui_pane::Keymap;
 use tui_pane::NavAction;
-use tui_pane::NotAdmissible;
 use tui_pane::PaneFocusState;
+use tui_pane::RowsReadout;
 use tui_pane::ScanIndicator;
 use tui_pane::ScrollDirection;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
-#[cfg(test)]
-use tui_pane::SummaryDemand;
 use tui_pane::SummaryRowAllocation;
 use tui_pane::TileCells;
 use tui_pane::TileDemand;
@@ -462,27 +455,6 @@ pub(crate) fn draw_allocated_tiles_for_test(
 }
 
 impl<'a> Cells<'a> {
-    /// Set each `SurfaceSelection` area and tile viewport from the painted allocations.
-    fn prepare_selection_areas(&self, allocations: &[(TileContent, Rect)]) {
-        let mut selections = self.selections.borrow_mut();
-        for (content, area) in allocations {
-            if let SelectableSurface::Surface(surface) = selection_surface(content)
-                && let SurfaceLookup::Current(state) = selections.surface_mut(&surface)
-            {
-                match content {
-                    TileContent::Group(key) => {
-                        if let Some(tile) = self.tile(key) {
-                            state.set_area(tile.row_area(*area, self.now, self.account_column));
-                            tile.set_viewport(state.viewport());
-                        }
-                    },
-                    TileContent::Summary => state.set_area(*area),
-                    TileContent::Empty(_) => {},
-                }
-            }
-        }
-    }
-
     /// Source widths are retained for allocation fitting in this frame.
     fn measure_trees(&self, area: Rect) -> u16 {
         let mut measurements = self.measurements.borrow_mut();
@@ -722,16 +694,7 @@ impl<'a> Cells<'a> {
     }
 }
 
-#[derive(Debug)]
-struct ObservedAgentTile;
-
 impl TileCells<TileKey> for Cells<'_> {
-    fn admission(&self, id: &TileKey) -> Result<AdmissibleCell<TileKey>, NotAdmissible<TileKey>> {
-        self.tile(id)
-            .map(|tile| AdmissibleCell::new(tile.key(), std::iter::empty(), ObservedAgentTile))
-            .ok_or_else(|| NotAdmissible::MissingEvidence(id.clone()))
-    }
-
     fn prepare_moving_frame(
         &self,
         _: impl FnOnce() -> Vec<(TileContent, Rect)>,
@@ -779,16 +742,40 @@ impl TileCells<TileKey> for Cells<'_> {
             tile.share_metrics(metrics.clone());
             layouts.insert(tile.key(), metrics);
         }
-        self.prepare_selection_areas(&allocations);
+        let mut selections = self.selections.borrow_mut();
+        for (content, area) in &allocations {
+            if let SelectableSurface::Surface(surface) = selection_surface(content)
+                && let SurfaceLookup::Current(state) = selections.surface_mut(&surface)
+            {
+                match content {
+                    TileContent::Group(key) => {
+                        if let Some(tile) = self.tile(key) {
+                            state.set_area(tile.row_area(*area, self.now, self.account_column));
+                            tile.set_viewport(state.viewport());
+                        }
+                    },
+                    TileContent::Summary => state.set_area(*area),
+                    TileContent::Empty(_) => {},
+                }
+            }
+        }
     }
 
-    fn prepare_painted_frame(
+    fn rows_readout(
         &self,
-        _: &FramePlacement<TileKey>,
-        allocations: impl FnOnce() -> Vec<(TileContent, Rect)>,
-    ) -> FrameLayoutPreparation {
-        self.prepare_selection_areas(&allocations());
-        FrameLayoutPreparation::Ready
+        content: &TileContent,
+        _area: Rect,
+        measured_rows: usize,
+    ) -> RowsReadout {
+        let SelectableSurface::Surface(surface) = selection_surface(content) else {
+            return RowsReadout::Count(measured_rows);
+        };
+        self.selections
+            .borrow()
+            .surface(&surface)
+            .map_or(RowsReadout::Count(measured_rows), |state| {
+                state.rows_readout(measured_rows)
+            })
     }
 
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
@@ -814,7 +801,7 @@ impl TileCells<TileKey> for Cells<'_> {
             .map_or(narrowest, |&(_, width)| width);
         let layout = self.summary_layout(summary_width);
         TileDemands {
-            summary:       layout.demand(),
+            summary:       layout.height(),
             summary_width: layout.preferred_width(&self.summary_frame()),
             groups:        self
                 .tiles
@@ -1085,7 +1072,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 1  r/c: 21/78 │",
+        "│                                             content rows: 1 of 1  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -1098,7 +1085,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                   content rows: 1  r/c: 7/78 │",
+        "│                                              content rows: 1 of 1  r/c: 7/78 │",
         "├──────────────────────────────────────────────────────────────────────────────┤",
         "│ 2                                                                            │",
         "│                                                                              │",
@@ -1128,7 +1115,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 1  r/c: 10/78 │",
+        "│                                             content rows: 1 of 1  r/c: 10/78 │",
         "├──────────────────────────────────────────────────────────────────────────────┤",
         "│ 2                                                                            │",
         "│                                                                              │",
@@ -1194,7 +1181,7 @@ fraying = "leading"
         "│        │   Randomize the attract screen                  r         │         │",
         "│        │   Remove an empty tile                          -         │         │",
         "│        └─────────────────────────1 of 6 ▼──────────────────────────┘         │",
-        "│                                                  content rows: 1  r/c: 21/78 │",
+        "│                                             content rows: 1 of 1  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -1248,7 +1235,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 1  r/c: 21/78 │",
+        "│                                             content rows: 1 of 1  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -1268,7 +1255,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 1  r/c: 10/78 │",
+        "│                                             content rows: 1 of 1  r/c: 10/78 │",
         "├ unassigned · natedev─────────────────────────────────────────────────────────┤",
         "│ session ▲       status  directory                                        age │",
         "│ boss of bosses  idle    ~/rust/hana_catalyst/docs/hana                   21h │",
@@ -1279,7 +1266,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 2  r/c: 10/78 │",
+        "│                                             content rows: 1 of 1  r/c: 10/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -1344,6 +1331,51 @@ fraying = "leading"
             .map(str::to_string)
             .chain([status_row(status_left, None)])
             .collect()
+    }
+
+    #[test]
+    fn selected_rows_readout_follows_moves_and_keeps_unselected_counts() {
+        let mut app = laid_out_app();
+        dispatch_key(&mut app, key('+'));
+        app.tiles.settle_for_test();
+        assert!(
+            drawn_rows(&mut app, 1)
+                .join("\n")
+                .contains("content rows: 0  r/c:")
+        );
+        app.census.apply(CensusUpdate::Local {
+            rows:      (1..=3)
+                .map(|pid| AgentRow {
+                    pid,
+                    children: Vec::new(),
+                    ..boss(60)
+                })
+                .collect(),
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        });
+        drawn_rows(&mut app, 1);
+        app.tiles.settle_for_test();
+        let rows = drawn_rows(&mut app, 1);
+        assert!(rows.join("\n").contains("content rows: 1 of 3"), "{rows:?}");
+        app.tiles.focus_cell(tui_pane::TABLE_CELL + 1);
+        dispatch_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let rows = drawn_rows(&mut app, 1);
+        assert!(rows.join("\n").contains("content rows: 2 of 3"), "{rows:?}");
+        dispatch_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let rows = drawn_rows(&mut app, 1);
+        assert!(rows.join("\n").contains("content rows: 3 of 3"), "{rows:?}");
+        if let SurfaceLookup::Current(state) =
+            app.selections
+                .surface_mut(&SelectionSurface::Tile(TileKey::Unassigned {
+                    machine: "natedev".to_string(),
+                }))
+        {
+            state.scroll(ScrollDirection::Up);
+        }
+        dispatch_key(&mut app, key('+'));
+        let rows = drawn_rows(&mut app, 1);
+        assert!(rows.join("\n").contains("content rows: 2 of 3"), "{rows:?}");
     }
 
     #[test]

@@ -122,10 +122,10 @@ mod crates_io_tests {
             "max_version": "0.21.0-rc.2",
             "downloads": 663,
         });
-        let info = crates_io_info_from_crate(&krate).expect("info");
-        assert_eq!(info.version, "0.20.2");
-        assert_eq!(info.prerelease.as_deref(), Some("0.21.0-rc.2"));
-        assert_eq!(info.downloads, 663);
+        let crates_io_release = crates_io_info_from_crate(&krate).expect("info");
+        assert_eq!(crates_io_release.version, "0.20.2");
+        assert_eq!(crates_io_release.prerelease.as_deref(), Some("0.21.0-rc.2"));
+        assert_eq!(crates_io_release.downloads, 663);
     }
 
     #[test]
@@ -135,9 +135,9 @@ mod crates_io_tests {
             "max_version": "1.2.3",
             "downloads": 10,
         });
-        let info = crates_io_info_from_crate(&krate).expect("info");
-        assert_eq!(info.version, "1.2.3");
-        assert_eq!(info.prerelease, None);
+        let crates_io_release = crates_io_info_from_crate(&krate).expect("info");
+        assert_eq!(crates_io_release.version, "1.2.3");
+        assert_eq!(crates_io_release.prerelease, None);
     }
 
     #[test]
@@ -147,9 +147,9 @@ mod crates_io_tests {
             "max_version": "0.1.0-alpha.1",
             "downloads": 5,
         });
-        let info = crates_io_info_from_crate(&krate).expect("info");
-        assert_eq!(info.version, "0.1.0-alpha.1");
-        assert_eq!(info.prerelease, None);
+        let crates_io_release = crates_io_info_from_crate(&krate).expect("info");
+        assert_eq!(crates_io_release.version, "0.1.0-alpha.1");
+        assert_eq!(crates_io_release.prerelease, None);
     }
 
     #[test]
@@ -168,8 +168,8 @@ mod crates_io_tests {
     #[test]
     fn zero_downloads_is_a_real_release_value() {
         let krate = serde_json::json!({ "max_stable_version": "1.2.3", "downloads": 0 });
-        let release = crates_io_info_from_crate(&krate).expect("complete release");
-        assert_eq!(release.downloads, 0);
+        let crates_io_release = crates_io_info_from_crate(&krate).expect("complete release");
+        assert_eq!(crates_io_release.downloads, 0);
     }
 
     #[test]

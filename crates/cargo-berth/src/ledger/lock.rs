@@ -10,6 +10,7 @@ use std::io::Write;
 use std::net::UdpSocket;
 use std::path::Path;
 use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
 use std::sync::mpsc::RecvTimeoutError;
 use std::thread;
 use std::time::Duration;
@@ -17,11 +18,21 @@ use std::time::Duration;
 use super::constants;
 use super::constants::MUTATION_LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
 use super::constants::MUTATION_LOCK_READY_PATH_ENVIRONMENT;
+#[cfg(test)]
+use crate::test_work;
+#[cfg(test)]
+use crate::test_work::Work;
 
 /// A held advisory lock whose descriptor releases automatically on process death.
 #[derive(Debug)]
 pub(super) struct MutationLock {
     descriptor: File,
+}
+
+/// An immediate grant or one kernel-queued acquisition, before applying the caller's deadline.
+enum MutationLockRequest {
+    Granted(MutationLock),
+    Queued(Receiver<std::io::Result<MutationLock>>),
 }
 
 impl MutationLock {
@@ -34,6 +45,26 @@ impl MutationLock {
             MUTATION_LOCK_CONTENTION_TOLERANCE_ENVIRONMENT,
             acquisition_timeout,
         );
+        match Self::request(lock_path, acquisition_timeout)? {
+            MutationLockRequest::Granted(lock) => Ok(lock),
+            MutationLockRequest::Queued(receiver) => {
+                match receiver.recv_timeout(acquisition_timeout) {
+                    Ok(acquired) => acquired.map_err(MutationLockError::Io),
+                    Err(RecvTimeoutError::Timeout) => Err(MutationLockError::AcquisitionTimedOut),
+                    Err(RecvTimeoutError::Disconnected) => {
+                        Err(MutationLockError::Io(std::io::Error::other(
+                            "ledger lock waiter stopped before acquiring the lock",
+                        )))
+                    },
+                }
+            },
+        }
+    }
+
+    fn request(
+        lock_path: &Path,
+        acquisition_timeout: Duration,
+    ) -> Result<MutationLockRequest, MutationLockError> {
         let descriptor = OpenOptions::new()
             .read(true)
             .write(true)
@@ -47,8 +78,10 @@ impl MutationLock {
                 .open(Path::new(&ready_path).with_extension("acquisitions"))?;
             writeln!(acquisitions, "acquire")?;
         }
+        #[cfg(test)]
+        test_work::record(Work::MutationLockAttempt);
         match descriptor.try_lock() {
-            Ok(()) => return Ok(Self { descriptor }),
+            Ok(()) => return Ok(MutationLockRequest::Granted(Self { descriptor })),
             Err(TryLockError::Error(error)) => return Err(error.into()),
             Err(TryLockError::WouldBlock) => {},
         }
@@ -56,6 +89,8 @@ impl MutationLock {
             return Err(MutationLockError::AcquisitionTimedOut);
         }
         let (sender, receiver) = mpsc::sync_channel(1);
+        #[cfg(test)]
+        test_work::record(Work::MutationLockWait);
         // Queue in the kernel instead of competing with later arrivals after a backoff.
         // On timeout the receiver closes; the worker then drops the acquired descriptor,
         // so an abandoned request can never leave a lock held in the background.
@@ -74,13 +109,7 @@ impl MutationLock {
             UdpSocket::bind("127.0.0.1:0")?
                 .send_to(b"queued", socket_address.to_string_lossy().as_ref())?;
         }
-        match receiver.recv_timeout(acquisition_timeout) {
-            Ok(acquired) => acquired.map_err(MutationLockError::Io),
-            Err(RecvTimeoutError::Timeout) => Err(MutationLockError::AcquisitionTimedOut),
-            Err(RecvTimeoutError::Disconnected) => Err(MutationLockError::Io(
-                std::io::Error::other("ledger lock waiter stopped before acquiring the lock"),
-            )),
-        }
+        Ok(MutationLockRequest::Queued(receiver))
     }
 }
 
@@ -120,6 +149,7 @@ impl From<std::io::Error> for MutationLockError {
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
+    clippy::panic,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
@@ -203,22 +233,21 @@ mod tests {
         let path = directory.path().join("mutation.lock");
         let holder =
             MutationLock::acquire(&path, LOCK_ACQUISITION_TIMEOUT).expect("initial holder");
-        let (started, ready) = std::sync::mpsc::sync_channel(1);
-        let (acquired, received) = std::sync::mpsc::sync_channel(1);
-        let waiter = thread::spawn(move || {
-            started.send(()).expect("report waiter start");
-            let lock =
-                MutationLock::acquire(&path, LOCK_ACQUISITION_TIMEOUT).expect("queued writer");
-            acquired.send(()).expect("report acquisition");
-            std::mem::drop(lock);
-        });
-        ready.recv().expect("waiter started");
-        thread::sleep(Duration::from_millis(15));
+        let counter = crate::test_work::WorkCounter::start();
+        let super::MutationLockRequest::Queued(receiver) =
+            MutationLock::request(&path, LOCK_ACQUISITION_TIMEOUT).expect("queued request")
+        else {
+            panic!("a second descriptor must queue while the holder owns the lock");
+        };
         std::mem::drop(holder);
-        received
-            .recv_timeout(Duration::from_millis(25))
-            .expect("a queued writer wakes on release, without a polling interval");
-        waiter.join().expect("writer finishes");
+        let lock = receiver
+            .recv()
+            .expect("waiter reports")
+            .expect("queued writer acquires");
+        let work = counter.finish();
+        assert_eq!(work.mutation_lock_attempts, 1);
+        assert_eq!(work.mutation_lock_waits, 1);
+        std::mem::drop(lock);
     }
 
     #[test]

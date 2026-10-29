@@ -269,9 +269,9 @@ pub(crate) struct ReconciliationGitCost {
 struct MergeExtentGitCost {
     /// Includes attempted status reads that report an observation failure.
     worktree_status_queries: u64,
-    /// Counts both invocations of each `git::unmerged_branch_paths` read, including failed
-    /// reads and fresh committed-path reads needed to settle a cached extent, plus the ancestry
-    /// read that ends a clean run whose head trunk contains.
+    /// Actual subprocess queries from fresh committed-path reads, plus the ancestry read
+    /// that ends a clean run whose head trunk contains. In-process reads and cache hits
+    /// contribute no subprocess queries.
     path_queries:            u64,
 }
 
@@ -1441,6 +1441,36 @@ pub(crate) fn reconcile(
         RepositoryObservationScope::CurrentOrderingGraph,
         recovered_bypass_reporting,
     )
+}
+
+/// Retain immutable object evidence throughout check's decision and acquisition passes.
+pub(crate) fn reconcile_for_check(
+    repository: &git::RepositorySnapshot,
+) -> Result<Enrollment<ReconciliationReport>, ReconcileError> {
+    let context = repository.context();
+    let config = match BerthConfig::read(&context.configuration_lookup())? {
+        Enrollment::Enrolled(config) => config,
+        Enrollment::Unconfigured {
+            expected_configuration_path,
+        } => {
+            return Ok(Enrollment::Unconfigured {
+                expected_configuration_path,
+            });
+        },
+    };
+    let ledger = Ledger::open_from_discovered_worktree(context)?;
+    reconcile_with_open_ledger(
+        &repository.fresh_observation(),
+        &ledger,
+        &config,
+        ReconciliationRequest {
+            repository_observation_scope: RepositoryObservationScope::CurrentOrderingGraph,
+            recovered_bypass_reporting:   RecoveredBypassReporting::Defer,
+            merged_run_endings:           MergedRunEndings::End,
+            stale_scope_releases:         StaleScopeReleases::Defer,
+        },
+    )
+    .map(Enrollment::Enrolled)
 }
 
 /// Reconcile once while retaining the discovered worktree and opened ledger for drift.

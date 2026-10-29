@@ -228,8 +228,8 @@ pub(super) fn info_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'
     if ws.path() == path {
         return Some(&ws.rust.project_info);
     }
-    for group in ws.groups() {
-        for member in group.members() {
+    for member_group in ws.groups() {
+        for member in member_group.members() {
             if member.path() == path {
                 return Some(&member.rust.project_info);
             }
@@ -307,8 +307,8 @@ enum WorkspaceInfoTarget {
 }
 
 fn workspace_info_target(ws: &Workspace, path: &Path) -> Option<WorkspaceInfoTarget> {
-    for (group_index, group) in ws.groups().iter().enumerate() {
-        for (member_index, member) in group.members().iter().enumerate() {
+    for (group_index, member_group) in ws.groups().iter().enumerate() {
+        for (member_index, member) in member_group.members().iter().enumerate() {
             if member.path() == path {
                 return Some(WorkspaceInfoTarget::Member {
                     group_index,
@@ -356,8 +356,8 @@ pub(super) fn rust_info_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Opti
     if ws.path() == path {
         return Some(&ws.rust);
     }
-    for group in ws.groups() {
-        for member in group.members() {
+    for member_group in ws.groups() {
+        for member in member_group.members() {
             if member.path() == path {
                 return Some(&member.rust);
             }
@@ -384,8 +384,8 @@ pub(super) fn rust_info_in_workspace_mut<'a>(
         .groups()
         .iter()
         .enumerate()
-        .find_map(|(group_index, group)| {
-            group
+        .find_map(|(group_index, member_group)| {
+            member_group
                 .members()
                 .iter()
                 .position(|member| member.path() == path)
@@ -414,8 +414,8 @@ pub(super) fn vendored_in_workspace<'a>(
     ws: &'a Workspace,
     path: &Path,
 ) -> Option<&'a VendoredPackage> {
-    for group in ws.groups() {
-        for member in group.members() {
+    for member_group in ws.groups() {
+        for member in member_group.members() {
             if let Some(vendored) = vendored_in_package(member, path) {
                 return Some(vendored);
             }
@@ -462,8 +462,8 @@ enum WorkspaceVendoredTarget {
 }
 
 fn workspace_vendored_target(ws: &Workspace, path: &Path) -> Option<WorkspaceVendoredTarget> {
-    for (group_index, group) in ws.groups().iter().enumerate() {
-        for (member_index, member) in group.members().iter().enumerate() {
+    for (group_index, member_group) in ws.groups().iter().enumerate() {
+        for (member_index, member) in member_group.members().iter().enumerate() {
             if let Some(vendored_index) = member
                 .vendored()
                 .iter()
@@ -504,7 +504,7 @@ pub(super) fn lint_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'
     let is_member = ws
         .groups()
         .iter()
-        .any(|g| g.members().iter().any(|m| m.path() == path));
+        .any(|member_group| member_group.members().iter().any(|m| m.path() == path));
     is_member.then_some(&ws.rust.lint_runs)
 }
 
@@ -530,7 +530,7 @@ pub(super) fn lint_in_workspace_mut<'a>(
     let is_member = ws
         .groups()
         .iter()
-        .any(|g| g.members().iter().any(|m| m.path() == path));
+        .any(|member_group| member_group.members().iter().any(|m| m.path() == path));
     if ws.path() == path || is_member {
         return Some(&mut ws.rust.lint_runs);
     }
@@ -550,8 +550,8 @@ pub(super) fn lint_in_package_mut<'a>(
 
 fn collect_project_info_from_workspace(ws: &Workspace, out: &mut Vec<(AbsolutePath, ProjectInfo)>) {
     out.push((ws.path().clone(), ws.rust.project_info.clone()));
-    for group in ws.groups() {
-        for member in group.members() {
+    for member_group in ws.groups() {
+        for member in member_group.members() {
             out.push((member.path().clone(), member.rust.project_info.clone()));
             for vendored in member.vendored() {
                 out.push((vendored.path().clone(), vendored.project_info.clone()));

@@ -60,8 +60,8 @@ pids="$root/state/pids"
 capture=1
 
 # Query and tooling invocations compile nothing, so they have no progress
-# to report. Global options and their values precede the subcommand,
-# along with any +toolchain selector.
+# to report. The subcommand is the first argument past any +toolchain
+# selector.
 #
 # A `--message-format=json` run is not among them. Its caller is usually
 # rust-analyzer, and it compiles and takes the build-directory lock like
@@ -71,16 +71,9 @@ capture=1
 # -- and that path mirrors stderr alone, leaving the JSON on stdout byte
 # for byte what the caller expects.
 first=
-next=argument
 for arg in "$@"; do
-    if [ "$next" = value ]; then
-        next=argument
-        continue
-    fi
     case $arg in
-        @CARGO_GLOBAL_VALUED_OPTIONS@) next=value; continue ;;
-        -V | --version | -vV | --list) first=$arg; break ;;
-        -* | +*) continue ;;
+        +*) continue ;;
     esac
     first=$arg
     break
