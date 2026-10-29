@@ -9,6 +9,10 @@ use super::read;
 use super::read::GitReadRequirement;
 use super::read::RepositoryRead;
 use crate::ids::GitObjectId;
+#[cfg(test)]
+use crate::test_work;
+#[cfg(test)]
+use crate::test_work::Work;
 
 /// A resolved tip and all of its reachable parent links.
 pub(super) struct CommitHistory {
@@ -21,6 +25,8 @@ pub(super) fn read(
     root: &Path,
     expression: &str,
 ) -> Result<RepositoryRead<CommitHistory>, GitError> {
+    #[cfg(test)]
+    test_work::record(Work::HistoryRead);
     let target = match read::commit(root, expression)? {
         RepositoryRead::InProcess(CommitObjectResolution::Resolved(target)) => target,
         RepositoryRead::InProcess(_) => {
