@@ -885,7 +885,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** a clamp guard, bound swap or lower floor at `band_piece_dividers`; revalidating each endpoint on every frame (the admission cache replaces it).
 
-### Phase 40 — cargo-handler idles under 1 % of one core  · status: todo
+### Phase 40 — cargo-handler idles under 1 % of one core  · status: done (landed at 9.7 % against 13.2 % installed; the under-1 % target moved to Phase 47)
 
 **Depends on:** none
 
@@ -905,8 +905,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 5. Live measurement: CPU-s over 60 s with the installed binary and with the branch binary, both idle on natedev against the real `/tmp/claude` tree (check the build hold first). Target under 1 % of one core.
 
 **Files:**
-- `crates/cargo-handler/src/census/{mod.rs,activity.rs,scan.rs,hierarchy.rs,accounts.rs,schedule.rs,command_inputs.rs,activity_regression_tests.rs}` — the retained records, process tables, input-driven commands and their regression tests
-- `crates/cargo-handler/src/{constants.rs,app.rs}` — intervals and wiring
+- `crates/cargo-handler/src/census/{activity.rs,scan.rs,hierarchy.rs,accounts.rs,schedule.rs,command_inputs.rs,activity_regression_tests.rs}` — the retained records, process tables, input-driven commands and their regression tests
 - `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer (`test` seat; the `impl` seat is on Phase 39).
@@ -1302,6 +1301,69 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 **Workers:** 1 writer (`impl`); one small rule change with fixture updates.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of the summary and one tile shows ages with no seconds and aligned d/h/m slots. The checkpoint adds a Change-Review line.
+
+### Phase 46 — A sleep shell shows the role `timer`  · status: todo
+
+**Depends on:** none
+
+#### Work Order
+
+**Goal:** a shell row whose command is `sleep` shows `timer` in its role column; every other shell keeps an empty role cell.
+
+**Source:** change review C92 back (user via the showrunner, 2026-10-29): "but it's role could easily be 'timer' so you should send it back to handler to add that". The showrunner runs it beside Phase 40, before Phase 41's checkpoint. Unit session `phases/46/source.md`.
+
+**Constraints from prior phases:**
+- `TreeLine::role_text` (`agent_cell.rs` ≈1210) returns `""` for `LineKind::Shell`. A shell row's name is its command text (for example `cargo nextest run`, `agent_cell.rs` ≈3379). `ShellTimerObservation` (census) and the countdown text (`ShellRunState`, `agent_cell.rs` ≈225) stay as they are.
+- `constants.rs` is in Phase 40's and Phase 41's **Files**; add only one role text constant next to `SHELL_ROLE` (≈188), nothing else. `census/**` is Phase 40's: do not edit it.
+
+**Spec:**
+1. Decide the shell's purpose once, from its command's program word, as a typed value (for example `enum ShellPurpose { Timer, Command }`); `sleep` with or without a path prefix (`/bin/sleep`) is `Timer`. The role column shows `timer` for `Timer` and stays empty for `Command`.
+2. Sort and column width use the same text, so the role column sorts and fits `timer` like any role.
+3. Tests, red first, in `agent_cell/tests/tree_tests.rs`: a `sleep 300` shell row shows role `timer`; a `/bin/sleep 5` shell shows `timer`; a `cargo nextest run` shell and a `sleeper` command show an empty role. Each test under one second.
+4. CHANGELOG: one line under Added.
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs` — the shell purpose and its role text
+- `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` — the role tests
+- `crates/cargo-handler/src/constants.rs` — one role text constant only
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer (`impl`); one small rule with its tests.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of a tile that holds a running `sleep` shell shows `timer` in its role column. The checkpoint adds a Change-Review line.
+
+### Phase 47 — cargo-handler idles under 1 % of one core, second cut  · status: todo
+
+**Depends on:** Phase 40
+
+#### Work Order
+
+**Goal:** an idle cargo-handler uses under 1 % of one core: 0.60 own CPU-s per minute at most.
+
+**Source:** showrunner ruling, 2026-10-29: Phase 40 landed at 9.7 % of one core (5.81 own CPU-s per minute; installed 13.2 %), and the under-1 % target moved here. CPU work ranks first after Phases 41 and 46. Remaining-cost table: unit session `phases/47/source.md`.
+
+**Constraints from prior phases:**
+- Phase 40 keeps one `System` per scan and per hierarchy, refreshes in place, reads no executable paths, detects a same-pid exec through `CurrentProcessNames` (`census/scan.rs`), keeps parsed run records keyed by file revision (`census/activity.rs`), and runs the account and hierarchy scripts only when their inputs change (`census/command_inputs.rs`). Keep each of these behaviours and their regression tests.
+- Remaining cost per minute, largest first (release profile): run directory listing and file stats 1.20 CPU-s, ancestry `System` refresh 1.14, frame draw 0.84, process commands and directories 0.76, transcript subagents 0.27, agent environments 0.27, worker dispatches 0.23, process names 0.23, app server thread data 0.19; each other step is under 0.06.
+- The `System` refresh alone is over the budget, so a full process enumeration every 2 s cannot stay.
+- Measure with the Phase 40 method: the release branch binary and the installed binary idle in the same 60 s window against the real `/tmp/claude` tree, own CPU and child CPU apart.
+
+**Spec:**
+1. Measure first: profile each step on the release build, then fix the largest costs at their cause.
+2. Run directories: list and stat a directory only when it changes (a file change watch, with a named recovery scan for the cases a watch cannot see).
+3. Processes: refresh only the rows whose process changed (new pid/start time, exec, or a directory change); never enumerate every process field on a routine tick.
+4. Frame draw: draw a frame only when its content, geometry or a time-dependent text changes.
+5. Counted, red-first regression tests for each cut, each under 1 s.
+6. Live measurement as in Phase 40: own CPU under 1 % of one core, and no worse than the installed binary.
+
+**Files:**
+- `crates/cargo-handler/src/census/{activity.rs,scan.rs,hierarchy.rs,command_inputs.rs,activity_regression_tests.rs}` — the watched run records and the changed-row process refresh
+- `crates/cargo-handler/src/app.rs` — draw only on change
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer (`test` seat, which wrote Phase 40).
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second; the live measurement meets the goal. The checkpoint adds a Change-Review line.
 
 ### Phase 44 — The accounts summary shows a session count per account  · status: todo
 

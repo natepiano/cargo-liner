@@ -207,3 +207,184 @@ fn remote_verification_finds_a_step_after_shell_setup_without_matching_substring
     ];
     assert_eq!(verify_activity(&unrelated, 100).text(), "waiting");
 }
+
+fn run_file(directory: &Path, name: &str, pid: u32) -> TestResult {
+    fs::create_dir_all(directory.join("mesh_runs"))?;
+    fs::write(
+        directory.join("mesh_runs").join(name),
+        serde_json::to_vec(&serde_json::json!({
+            "pid":pid,"started_at":1,"thread_id":"worker","status":"running",
+            "command":["bash","verify.sh","test"]
+        }))?,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn idle_run_records_parse_unchanged_files_only_once() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    run_file(directory.path(), "one.json", 1)?;
+    let mut records = RunRecords::default();
+    let mut parses = 0;
+    for _ in 0..2 {
+        let answer = records.read_with(directory.path(), |bytes| {
+            parses += 1;
+            serde_json::from_slice(bytes).ok()
+        });
+        assert_eq!(answer.len(), 1);
+    }
+    assert_eq!(parses, 1, "unchanged records must not be parsed again");
+    Ok(())
+}
+
+#[test]
+fn idle_run_records_parse_changed_and_new_files_only() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    run_file(directory.path(), "one.json", 1)?;
+    let mut records = RunRecords::default();
+    records.read(directory.path());
+    run_file(directory.path(), "one.json", 12345)?;
+    run_file(directory.path(), "two.json", 2)?;
+    let mut parses = 0;
+    let answer = records.read_with(directory.path(), |bytes| {
+        parses += 1;
+        serde_json::from_slice(bytes).ok()
+    });
+    assert_eq!(parses, 2);
+    assert_eq!(answer.len(), 2);
+    let mut unchanged = 0;
+    records.read_with(directory.path(), |bytes| {
+        unchanged += 1;
+        serde_json::from_slice(bytes).ok()
+    });
+    assert_eq!(
+        unchanged, 0,
+        "changed records are retained after their first parse"
+    );
+    Ok(())
+}
+
+#[test]
+fn idle_run_records_remove_deleted_files_from_the_cache() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    run_file(directory.path(), "one.json", 1)?;
+    let mut records = RunRecords::default();
+    assert_eq!(records.read(directory.path()).len(), 1);
+    fs::remove_file(directory.path().join("mesh_runs/one.json"))?;
+    assert!(
+        records.read(directory.path()).is_empty(),
+        "removed records leave the cache"
+    );
+    Ok(())
+}
+
+#[test]
+fn idle_run_records_keep_sessions_separate_and_retry_revised_partial_json() -> TestResult {
+    let first = tempfile::tempdir()?;
+    let second = tempfile::tempdir()?;
+    run_file(first.path(), "one.json", 1)?;
+    run_file(second.path(), "two.json", 2)?;
+    let mut records = RunRecords::default();
+    assert_eq!(records.read(first.path()).len(), 1);
+    assert_eq!(records.read(second.path()).len(), 1);
+    let partial = first.path().join("mesh_runs/partial.json");
+    fs::write(&partial, "{")?;
+    let mut parses = 0;
+    for _ in 0..2 {
+        assert_eq!(
+            records
+                .read_with(first.path(), |bytes| {
+                    parses += 1;
+                    serde_json::from_slice(bytes).ok()
+                })
+                .len(),
+            1
+        );
+    }
+    assert_eq!(parses, 1, "one parse per partial revision");
+    run_file(first.path(), "partial.json", 3)?;
+    assert_eq!(records.read(first.path()).len(), 2);
+    records.retain_sessions(&HashSet::from([second.path().to_owned()]));
+    assert_eq!(records.sessions.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn idle_run_records_detect_same_size_rewrites_and_replacements() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    run_file(directory.path(), "one.json", 1)?;
+    let path = directory.path().join("mesh_runs/one.json");
+    let modified = fs::metadata(&path)?.modified()?;
+    let mut records = RunRecords::default();
+    records.read(directory.path());
+    for (pid, replace) in [(2, false), (3, true)] {
+        if replace {
+            run_file(directory.path(), "replacement.json", pid)?;
+            fs::rename(directory.path().join("mesh_runs/replacement.json"), &path)?;
+        } else {
+            run_file(directory.path(), "one.json", pid)?;
+        }
+        fs::File::options()
+            .write(true)
+            .open(&path)?
+            .set_times(fs::FileTimes::new().set_modified(modified))?;
+        let answer = records.read(directory.path());
+        assert!(
+            matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == pid),
+            "equal-size records with restored mtime must replace the old answer"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn idle_run_records_retry_failed_io_but_keep_malformed_revisions() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    run_file(directory.path(), "one.json", 1)?;
+    let mut records = RunRecords::default();
+    let parse = |bytes: &[u8]| serde_json::from_slice(bytes).ok();
+    assert!(
+        records
+            .read_with_io(directory.path(), parse, |_| {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            })
+            .is_empty()
+    );
+    assert_eq!(
+        records.read(directory.path()).len(),
+        1,
+        "a transient read failure must retry even with unchanged metadata"
+    );
+    fs::write(directory.path().join("mesh_runs/one.json"), "{")?;
+    let mut parses = 0;
+    for _ in 0..2 {
+        records.read_with(directory.path(), |bytes| {
+            parses += 1;
+            serde_json::from_slice(bytes).ok()
+        });
+    }
+    assert_eq!(
+        parses, 1,
+        "malformed JSON retries only after its revision changes"
+    );
+    Ok(())
+}
+
+#[test]
+fn idle_run_records_copy_only_live_verification_candidates() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    for pid in 1..=3 {
+        run_file(directory.path(), &format!("{pid}.json"), pid)?;
+    }
+    let mut records = RunRecords::default();
+    for _ in 0..2 {
+        let answer = records.read_for_processes(directory.path(), &HashSet::from([2]));
+        assert_eq!(
+            answer.len(),
+            1,
+            "only live runs are copied out for worker matching"
+        );
+        assert!(matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == 2));
+    }
+    Ok(())
+}

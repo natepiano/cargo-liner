@@ -22,6 +22,10 @@ use crate::startup_log;
 #[path = "scan/staged_tests.rs"]
 mod staged_tests;
 
+use std::ffi::OsStr;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStringExt;
+
 use sysinfo::Pid;
 use sysinfo::Process;
 use sysinfo::ProcessRefreshKind;
@@ -39,6 +43,7 @@ use super::account;
 use super::account::AccountLabels;
 use super::account::ConfigHome;
 use super::activity;
+use super::activity::RunRecords;
 use super::activity::TranscriptRead;
 use super::branch;
 use super::classify;
@@ -108,6 +113,8 @@ type ProcessKey = (u32, u64);
 #[derive(Debug)]
 pub(super) struct LocalScanner {
     reviewer_pools:      ReviewerPools,
+    processes:           System,
+    run_records:         RunRecords,
     /// Whether a completed answer has replaced the startup classification.
     publication:         LocalPublication,
     /// This machine's home directory: where the session records live,
@@ -264,6 +271,8 @@ impl LocalScanner {
             subagent_reads: SubagentReads::default(),
             worker_names: WorkerNames::default(),
             reviewer_pools: ReviewerPools::default(),
+            processes: System::new(),
+            run_records: activity::RunRecords::default(),
             desktop_source: DesktopSource::System,
             desktops: None,
         }
@@ -272,9 +281,8 @@ impl LocalScanner {
     /// Every agent running now, oldest first, with what it is running.
     /// The wire probe consumes only the completed answer.
     ///
-    /// Each scan reads a fresh process table, so a pid handed out again
-    /// since the last scan cannot keep the command line or directory of
-    /// the process that had it before.
+    /// Each scan refreshes the retained process table. sysinfo replaces a reused
+    /// pid when its start time changes, including its command and directory.
     pub(super) fn scan(&mut self) -> Vec<AgentRow> {
         let mut rows = Vec::new();
         self.scan_staged(|_, answer| rows = answer);
@@ -289,7 +297,9 @@ impl LocalScanner {
                 .map(|home| read_sessions(&home.join(CLAUDE_DIRNAME).join(CLAUDE_SESSIONS_DIRNAME)))
                 .unwrap_or_default()
         });
-        let processes = startup_log::startup_stage("process_table", || process_table(&sessions));
+        let processes = startup_log::startup_stage("process_table", || {
+            process_table(&mut self.processes, &sessions)
+        });
         // Codex's database is opened only while an interactive Codex runs,
         // and read only for the span its threads could have been created in.
         let codex_threads = startup_log::startup_stage("codex_sqlite", || {
@@ -504,11 +514,17 @@ impl LocalScanner {
         rows: &mut [AgentRow],
     ) {
         let mut runs = HashMap::new();
+        let live_processes = processes.iter().map(|process| process.pid).collect();
+        let mut seen_run_sessions = HashSet::new();
         ReviewerPools::root().update(&mut self.reviewer_pools);
         let reviewer_outcomes = self.reviewer_pools.outcomes();
         ReviewerPools::apply_outcomes(rows, &reviewer_outcomes);
         let mut seen_transcripts = HashSet::new();
         let table = classify::pid_table(processes);
+        let verifications: Vec<_> = processes
+            .iter()
+            .filter(|process| is_verification_process(process))
+            .collect();
         for row in rows.iter_mut() {
             if let Some(path) = transcripts.get(&row.pid) {
                 seen_transcripts.insert(path.clone());
@@ -525,13 +541,10 @@ impl LocalScanner {
                     row.activity = read.activity();
                 }
             }
-            if let Some(verify) = processes.iter().find(|process| {
-                process.arguments.iter().any(|arg| {
-                    Path::new(arg)
-                        .file_name()
-                        .is_some_and(|name| name == VERIFY_SCRIPT)
-                }) && process_is_below(process.pid, row.pid, &table)
-            }) {
+            if let Some(verify) = verifications
+                .iter()
+                .find(|process| process_is_below(process.pid, row.pid, &table))
+            {
                 row.activity = activity::verify_activity(processes, verify.pid).activity();
             }
             for child in &mut row.children {
@@ -566,8 +579,12 @@ impl LocalScanner {
                 let records: Vec<_> = WorkerNames::session_dirs(prompt)
                     .into_iter()
                     .flat_map(|directory| {
+                        seen_run_sessions.insert(directory.clone());
                         runs.entry(directory.clone())
-                            .or_insert_with(|| activity::read_runs(&directory))
+                            .or_insert_with(|| {
+                                self.run_records
+                                    .read_for_processes(&directory, &live_processes)
+                            })
                             .clone()
                     })
                     .collect();
@@ -579,6 +596,7 @@ impl LocalScanner {
                 };
             }
         }
+        self.run_records.retain_sessions(&seen_run_sessions);
         fold_claude_dispatches(rows);
         self.transcript_activity
             .retain(|path, _| seen_transcripts.contains(path));
@@ -1116,6 +1134,21 @@ fn read_sessions(directory: &Path) -> Vec<SessionRecord> {
         .collect()
 }
 
+#[cfg(test)]
+thread_local! {
+    static VERIFICATION_ARGUMENT_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn is_verification_process(process: &ProcessEntry) -> bool {
+    #[cfg(test)]
+    VERIFICATION_ARGUMENT_CHECKS.with(|checks| checks.set(checks.get() + 1));
+    process.arguments.iter().any(|arg| {
+        Path::new(arg)
+            .file_name()
+            .is_some_and(|name| name == VERIFY_SCRIPT)
+    })
+}
+
 /// The process table the classification and the tree read.
 ///
 /// Three passes. The first reads every process's name, parent and
@@ -1124,25 +1157,19 @@ fn read_sessions(directory: &Path) -> Vec<SessionRecord> {
 /// [`detailed_pids`] names. The third reads every Codex and Claude Code
 /// environment for its configuration home, including version-named Claude
 /// binaries identified by session records. Codex also supplies `CLAUDE_PID`.
-fn process_table(sessions: &[SessionRecord]) -> Vec<ProcessEntry> {
-    let mut system = System::new();
-    startup_log::startup_stage("proc_ancestry", || {
-        system.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing().without_tasks(),
-        )
+fn process_table(system: &mut System, sessions: &[SessionRecord]) -> Vec<ProcessEntry> {
+    let names = startup_log::startup_stage("proc_ancestry", || refresh_process_identities(system));
+    let detailed = startup_log::startup_stage("proc_detail_selection", || {
+        detailed_pids(system, sessions, &names)
     });
-    let detailed =
-        startup_log::startup_stage("proc_detail_selection", || detailed_pids(&system, sessions));
     startup_log::startup_stage("proc_commands_directories", || {
         system.refresh_processes_specifics(
             ProcessesToUpdate::Some(&detailed),
             false,
             ProcessRefreshKind::nothing()
                 .without_tasks()
-                .with_cmd(UpdateKind::OnlyIfNotSet)
-                .with_cwd(UpdateKind::OnlyIfNotSet),
+                .with_cmd(UpdateKind::Always)
+                .with_cwd(UpdateKind::Always),
         )
     });
     let session_pids: HashSet<u32> = sessions.iter().map(|session| session.pid).collect();
@@ -1150,8 +1177,8 @@ fn process_table(sessions: &[SessionRecord]) -> Vec<ProcessEntry> {
         .processes()
         .values()
         .filter(|process| {
-            process.name() == CODEX_AGENT
-                || process.name() == CLAUDE_AGENT
+            names.of(process) == CODEX_AGENT
+                || names.of(process) == CLAUDE_AGENT
                 || session_pids.contains(&process.pid().as_u32())
         })
         .map(Process::pid)
@@ -1162,7 +1189,7 @@ fn process_table(sessions: &[SessionRecord]) -> Vec<ProcessEntry> {
             false,
             ProcessRefreshKind::nothing()
                 .without_tasks()
-                .with_environ(UpdateKind::OnlyIfNotSet),
+                .with_environ(UpdateKind::Always),
         )
     });
     system
@@ -1172,7 +1199,7 @@ fn process_table(sessions: &[SessionRecord]) -> Vec<ProcessEntry> {
             let mut entry = ProcessEntry {
                 pid:         process.pid().as_u32(),
                 parent:      process.parent().map(Pid::as_u32),
-                name:        process.name().to_string_lossy().into_owned(),
+                name:        names.of(process).to_string_lossy().into_owned(),
                 arguments:   process
                     .cmd()
                     .iter()
@@ -1181,7 +1208,7 @@ fn process_table(sessions: &[SessionRecord]) -> Vec<ProcessEntry> {
                 started:     process.start_time(),
                 directory:   process.cwd().map(Path::to_path_buf),
                 config_home: ConfigHome::Unread,
-                claude_pid:  if process.name() == CODEX_AGENT {
+                claude_pid:  if names.of(process) == CODEX_AGENT {
                     claude_pid(process.environ())
                 } else {
                     None
@@ -1194,6 +1221,73 @@ fn process_table(sessions: &[SessionRecord]) -> Vec<ProcessEntry> {
             entry
         })
         .collect()
+}
+
+/// Names observed now, rather than sysinfo's names retained from process birth.
+/// A failed OS read falls back to the retained name for that process.
+struct CurrentProcessNames(HashMap<Pid, OsString>);
+
+impl CurrentProcessNames {
+    fn of<'a>(&'a self, process: &'a Process) -> &'a OsStr {
+        self.0
+            .get(&process.pid())
+            .map_or_else(|| process.name(), OsString::as_os_str)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read(system: &System) -> Self {
+        Self(
+            system
+                .processes()
+                .keys()
+                .filter_map(|pid| {
+                    let mut name = fs::read(format!("/proc/{pid}/comm")).ok()?;
+                    if name.last() == Some(&b'\n') {
+                        name.pop();
+                    }
+                    Some((*pid, OsString::from_vec(name)))
+                })
+                .collect(),
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn read(_system: &System) -> Self {
+        let names = Command::new("/bin/ps")
+            .args(["-axo", "pid=,ucomm="])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default();
+        Self(
+            names
+                .lines()
+                .filter_map(|line| {
+                    let (pid, name) = line.trim().split_once(char::is_whitespace)?;
+                    Some((
+                        Pid::from_u32(pid.parse().ok()?),
+                        OsString::from(name.trim()),
+                    ))
+                })
+                .collect(),
+        )
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn read(_system: &System) -> Self { Self(HashMap::new()) }
+}
+
+/// Refresh only the ancestry fields consumed by the census. Executable paths
+/// are not census inputs. Read current names separately so exec cannot leave a
+/// cached launcher name, and never replace the retained System to update a name.
+fn refresh_process_identities(system: &mut System) -> CurrentProcessNames {
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
+    CurrentProcessNames::read(system)
 }
 
 /// The pid `CLAUDE_PID` names in `environment`, one `NAME=value` per
@@ -1259,7 +1353,11 @@ fn tmux_output(program: &str, arguments: &[&str]) -> Option<String> {
 /// is only recognised as Claude Code by its command line. The tree
 /// reads a `sleep`'s arguments for the span of a shell timer, and
 /// nothing above it for that, so each [`ACTIVITY_PROCESS_NAMES`] is read alone.
-fn detailed_pids(system: &System, sessions: &[SessionRecord]) -> Vec<Pid> {
+fn detailed_pids(
+    system: &System,
+    sessions: &[SessionRecord],
+    names: &CurrentProcessNames,
+) -> Vec<Pid> {
     let processes = system.processes();
     let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
     for process in processes.values() {
@@ -1273,7 +1371,7 @@ fn detailed_pids(system: &System, sessions: &[SessionRecord]) -> Vec<Pid> {
         .chain(
             processes
                 .values()
-                .filter(|process| process.name() == CLAUDE_AGENT)
+                .filter(|process| names.of(process) == CLAUDE_AGENT)
                 .map(Process::pid),
         )
         .collect();
@@ -1290,7 +1388,7 @@ fn detailed_pids(system: &System, sessions: &[SessionRecord]) -> Vec<Pid> {
         .chain(
             processes
                 .values()
-                .filter(|process| process.name() == CODEX_AGENT)
+                .filter(|process| names.of(process) == CODEX_AGENT)
                 .map(Process::pid),
         );
     let mut detailed = HashSet::new();
@@ -1311,7 +1409,7 @@ fn detailed_pids(system: &System, sessions: &[SessionRecord]) -> Vec<Pid> {
             .filter(|process| {
                 ACTIVITY_PROCESS_NAMES
                     .iter()
-                    .any(|name| process.name() == *name)
+                    .any(|name| names.of(process) == *name)
             })
             .map(Process::pid),
     );
@@ -1324,6 +1422,13 @@ fn detailed_pids(system: &System, sessions: &[SessionRecord]) -> Vec<Pid> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    #[cfg(unix)]
+    use std::io::BufRead;
+    #[cfg(unix)]
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::process::Child;
+
     use chrono::DateTime;
     use serde_json::json;
     use tempfile::TempDir;
@@ -1333,6 +1438,129 @@ mod tests {
     use crate::census::RoleFallback;
     use crate::census::SessionIdentity;
     use crate::census::hierarchy::ReviewerPools;
+
+    #[test]
+    fn idle_verification_arguments_are_checked_once_per_process() {
+        let processes: Vec<_> = (1..=3)
+            .map(|pid| entry(pid, 0, "claude", 1, &["claude"]))
+            .collect();
+        let mut rows: Vec<_> = (1..=3).map(|pid| claude_row(pid, "agent", 1)).collect();
+        VERIFICATION_ARGUMENT_CHECKS.with(|checks| checks.set(0));
+        scanner().attach_activity_and_names(&processes, &HashMap::new(), &mut rows);
+        assert_eq!(
+            VERIFICATION_ARGUMENT_CHECKS.with(std::cell::Cell::get),
+            processes.len(),
+            "argument classification must not repeat for every agent row"
+        );
+    }
+
+    #[test]
+    fn idle_process_table_does_not_read_unused_executable_paths() {
+        let pid = Pid::from_u32(std::process::id());
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().without_tasks(),
+        );
+        assert!(
+            system
+                .process(pid)
+                .expect("current process")
+                .exe()
+                .is_none()
+        );
+        for _ in 0..2 {
+            let entries = process_table(&mut system, &[]);
+            assert!(entries.iter().any(|entry| entry.pid == pid.as_u32()));
+            let paths = system
+                .processes()
+                .values()
+                .filter(|process| process.exe().is_some())
+                .count();
+            assert_eq!(paths, 0, "the census does not consume executable paths");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn idle_process_table_recognizes_an_agent_after_same_pid_exec()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct ChildUntilDrop(Child);
+        impl Drop for ChildUntilDrop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let directory = tempfile::tempdir()?;
+        let binary = directory.path().join("codex");
+        let search_path = std::env::var_os("PATH").ok_or("fixture executable search path")?;
+        let cat = std::env::split_paths(&search_path)
+            .map(|directory| directory.join("cat"))
+            .find(|path| path.is_file())
+            .ok_or("cat fixture executable on PATH")?;
+        fs::copy(cat, &binary)?;
+        #[cfg(target_os = "macos")]
+        assert!(
+            Command::new("/usr/bin/codesign")
+                .args(["--force", "--sign", "-"])
+                .arg(&binary)
+                .status()?
+                .success(),
+            "the copied system fixture needs a valid local signature"
+        );
+        let mut child = ChildUntilDrop(Command::new("python3")
+            .args(["-u", "-c", "import os,sys; print('launcher',flush=True); sys.stdin.readline(); print('executing',flush=True); os.execv(sys.argv[1],[sys.argv[1]])"])
+            .arg(&binary).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?);
+        let mut input = child.0.stdin.take().ok_or("child stdin")?;
+        let mut output = std::io::BufReader::new(child.0.stdout.take().ok_or("child stdout")?);
+        let mut line = String::new();
+        output.read_line(&mut line)?;
+        assert_eq!(line.trim(), "launcher");
+        let pid = Pid::from_u32(child.0.id());
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing()
+                .without_tasks()
+                .with_exe(UpdateKind::Always),
+        );
+        let started = system.process(pid).ok_or("live launcher")?.start_time();
+        input.write_all(b"exec\n")?;
+        input.flush()?;
+        line.clear();
+        output.read_line(&mut line)?;
+        assert_eq!(line.trim(), "executing");
+        input.write_all(b"agent\n")?;
+        input.flush()?;
+        line.clear();
+        output.read_line(&mut line)?;
+        assert_eq!(
+            line.trim(),
+            "agent",
+            "the copied agent executable is running"
+        );
+        let entries = process_table(&mut system, &[]);
+        let agent = entries
+            .iter()
+            .find(|entry| entry.pid == pid.as_u32())
+            .ok_or("live agent")?;
+        assert_eq!(agent.started, started, "exec retains PID and start time");
+        assert!(
+            agent.is_codex(),
+            "exec must replace the cached launcher name: {}",
+            agent.name
+        );
+        assert!(
+            agent
+                .arguments
+                .iter()
+                .any(|argument| argument == &binary.to_string_lossy())
+        );
+        Ok(())
+    }
 
     /// Only `.json` files that parse are records: the key files beside
     /// them and a record caught half written are skipped.
@@ -1423,6 +1651,8 @@ mod tests {
     /// A scanner with nothing found yet, reading no home directory.
     fn scanner() -> LocalScanner {
         LocalScanner {
+            processes:           System::new(),
+            run_records:         activity::RunRecords::default(),
             publication:         LocalPublication::FirstAnswerPending,
             home:                None,
             account_labels:      AccountLabels::default(),
