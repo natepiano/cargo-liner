@@ -25,6 +25,7 @@ use super::sweep_counters;
 use super::toolchain_probes;
 use super::toolchain_probes::ProbeInvocation;
 use super::visibility;
+use super::visibility::FindingsPersistence;
 use crate::reporting::EXIT_CODE_ERROR;
 
 #[derive(Debug)]
@@ -51,7 +52,9 @@ impl Callbacks for AnalysisCallbacks {
         let findings = visibility::collect_and_store_findings(tcx, &self.driver_settings);
         sweep_counters::report(crate_name.as_str(), analysis_start.elapsed());
         match findings {
-            Ok(true | false) => Compilation::Continue,
+            Ok(FindingsPersistence::OutsideAnalysisScope | FindingsPersistence::ReportWritten) => {
+                Compilation::Continue
+            },
             Err(err) => {
                 self.error = Some(err);
                 Compilation::Stop

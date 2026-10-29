@@ -6,31 +6,21 @@ use crate::compiler::BuildOutputMode;
 use crate::config::DiagnosticCode;
 use crate::config::DiagnosticStatus;
 use crate::config::FixKind;
+use crate::config::FixKindSelection;
 use crate::config::OperationMode;
 use crate::fixes::field_visibility;
 use crate::fixes::narrow_pub_crate;
 use crate::fixes::pub_use_fixes;
+use crate::fixes::pub_use_fixes::PubUseFixScan;
 use crate::fixes::restricted_annotation;
+use crate::fixes::restricted_annotation::RestrictedAnnotationScan;
 use crate::fixes::subtree_reexport;
+use crate::fixes::subtree_reexport::SubtreeReexportScan;
 use crate::fixes::unused_pub;
 use crate::reporting::MendFailure;
 use crate::reporting::OutputFormat;
-
-#[derive(Clone, Copy)]
-enum PubUseActivation {
-    Enabled,
-    Disabled,
-}
-
-impl From<bool> for PubUseActivation {
-    fn from(enabled: bool) -> Self {
-        if enabled {
-            Self::Enabled
-        } else {
-            Self::Disabled
-        }
-    }
-}
+use crate::reporting::Report;
+use crate::rust_syntax::ParsedSources;
 
 enum PassOutputPolicy {
     Json,
@@ -39,11 +29,13 @@ enum PassOutputPolicy {
 }
 
 impl PassOutputPolicy {
-    const fn for_pass(format: OutputFormat, pub_use: PubUseActivation) -> Self {
+    const fn for_pass(format: OutputFormat, pub_use: FixKindSelection) -> Self {
         match (format, pub_use) {
-            (OutputFormat::Json, _) => Self::Json,
-            (OutputFormat::Human, PubUseActivation::Enabled) => Self::PubUseText,
-            (OutputFormat::Human, PubUseActivation::Disabled) => Self::FullText,
+            (OutputFormat::Json, FixKindSelection::Selected | FixKindSelection::NotSelected) => {
+                Self::Json
+            },
+            (OutputFormat::Human, FixKindSelection::Selected) => Self::PubUseText,
+            (OutputFormat::Human, FixKindSelection::NotSelected) => Self::FullText,
         }
     }
 }
@@ -60,7 +52,7 @@ impl From<PassOutputPolicy> for BuildOutputMode {
 
 impl MendRunner<'_> {
     pub(super) fn plan(&mut self, operation_mode: OperationMode) -> Result<RunPlan, MendFailure> {
-        let pub_use = PubUseActivation::from(operation_mode.fixes.contains(FixKind::PubUse));
+        let pub_use = operation_mode.fixes.selection(FixKind::PubUse);
         let output_mode =
             BuildOutputMode::from(PassOutputPolicy::for_pass(self.output_format, pub_use));
         let checked = match std::mem::replace(&mut self.next_analysis, NextAnalysis::Required) {
@@ -80,7 +72,7 @@ impl MendRunner<'_> {
         &self,
         operation_mode: OperationMode,
         checked: CheckedSelection,
-        pub_use: PubUseActivation,
+        pub_use: FixKindSelection,
     ) -> Result<RunPlan, MendFailure> {
         let CheckedSelection {
             result: selection_result,
@@ -92,75 +84,73 @@ impl MendRunner<'_> {
         let compiler_warnings = selection_result.compiler_warnings;
         let compiler_fixable = selection_result.compiler_fixable;
         let enabled = |fix_kind: FixKind, codes: &[DiagnosticCode]| {
-            self.fix_enabled(&operation_mode, fix_kind, codes)
+            self.fix_selection(&operation_mode, fix_kind, codes)
         };
         let prefer_module_import_scan = scans.prefer_module_import.filter(|_| {
-            enabled(
+            match enabled(
                 FixKind::PreferModuleImport,
                 &[DiagnosticCode::PreferModuleImport],
-            )
+            ) {
+                FixKindSelection::Selected => true,
+                FixKindSelection::NotSelected => false,
+            }
         });
         let inline_path_scan = scans.inline_path.filter(|_| {
-            enabled(
+            match enabled(
                 FixKind::InlinePathQualifiedType,
                 &[DiagnosticCode::InlinePathQualifiedType],
-            )
+            ) {
+                FixKindSelection::Selected => true,
+                FixKindSelection::NotSelected => false,
+            }
         });
         let import_scan = scans.imports.filter(|_| {
-            enabled(
+            match enabled(
                 FixKind::ShortenImport,
                 &[
                     DiagnosticCode::ShortenLocalCrateImport,
                     DiagnosticCode::ReplaceDeepSuperImport,
                 ],
-            )
+            ) {
+                FixKindSelection::Selected => true,
+                FixKindSelection::NotSelected => false,
+            }
         });
-        let narrow_pub_crate_scan = enabled(
+        let narrow_pub_crate_scan = match enabled(
             FixKind::NarrowToPubCrate,
             &[DiagnosticCode::NarrowToPubCrate],
-        )
-        .then(|| narrow_pub_crate::scan_from_report(&report))
-        .transpose()
-        .map_err(MendFailure::Unexpected)?;
-        let restricted_annotation_scan = enabled(
-            FixKind::RestrictedAnnotation,
-            &[
-                DiagnosticCode::OverbroadPubCrate,
-                DiagnosticCode::ForbiddenPubInCrate,
-                DiagnosticCode::SuspiciousPub,
-            ],
-        )
-        .then(|| restricted_annotation::scan_from_report(&report))
-        .transpose()
-        .map_err(MendFailure::Unexpected)?;
-        let unused_pub_scan = enabled(FixKind::UnusedPub, &[DiagnosticCode::UnusedPub])
-            .then(|| unused_pub::scan_from_report(&report))
-            .transpose()
-            .map_err(MendFailure::Unexpected)?;
-        let field_visibility_fix_scan = enabled(
+        ) {
+            FixKindSelection::Selected => {
+                Some(narrow_pub_crate::scan_from_report(&report).map_err(MendFailure::Unexpected)?)
+            },
+            FixKindSelection::NotSelected => None,
+        };
+        let restricted_annotation_scan =
+            self.scan_restricted_annotations(&operation_mode, &report)?;
+        let unused_pub_scan = match enabled(FixKind::UnusedPub, &[DiagnosticCode::UnusedPub]) {
+            FixKindSelection::Selected => {
+                Some(unused_pub::scan_from_report(&report).map_err(MendFailure::Unexpected)?)
+            },
+            FixKindSelection::NotSelected => None,
+        };
+        let field_visibility_fix_scan = match enabled(
             FixKind::FieldVisibility,
             &[DiagnosticCode::FieldVisibilityWiderThanType],
-        )
-        .then(|| field_visibility::scan_from_report(&report))
-        .transpose()
-        .map_err(MendFailure::Unexpected)?;
-        let imports_at_top_scan = scans
-            .imports_at_top
-            .filter(|_| enabled(FixKind::ImportsAtTop, &[DiagnosticCode::ImportsAtTop]));
-        let pub_use_scan = match pub_use {
-            PubUseActivation::Enabled => Some(
-                pub_use_fixes::scan_selection(self.selection, &report, &sources)
-                    .map_err(MendFailure::Unexpected)?,
-            ),
-            PubUseActivation::Disabled => None,
+        ) {
+            FixKindSelection::Selected => {
+                Some(field_visibility::scan_from_report(&report).map_err(MendFailure::Unexpected)?)
+            },
+            FixKindSelection::NotSelected => None,
         };
-        let subtree_reexport_scan = enabled(
-            FixKind::PubUseOutsideSubtree,
-            &[DiagnosticCode::PubUseOutsideSubtree],
-        )
-        .then(|| subtree_reexport::scan_selection(self.selection, &report, &sources))
-        .transpose()
-        .map_err(MendFailure::Unexpected)?;
+        let imports_at_top_scan = scans.imports_at_top.filter(|_| {
+            match enabled(FixKind::ImportsAtTop, &[DiagnosticCode::ImportsAtTop]) {
+                FixKindSelection::Selected => true,
+                FixKindSelection::NotSelected => false,
+            }
+        });
+        let pub_use_scan = self.scan_parent_facades(pub_use, &report, &sources)?;
+        let subtree_reexport_scan =
+            self.scan_subtree_reexports(&operation_mode, &report, &sources)?;
 
         Ok(RunPlan {
             operation_mode,
@@ -181,31 +171,97 @@ impl MendRunner<'_> {
         })
     }
 
-    /// Whether `fix_kind` runs this pass: the mode requests it and at least
+    fn scan_restricted_annotations(
+        &self,
+        operation_mode: &OperationMode,
+        report: &Report,
+    ) -> Result<Option<RestrictedAnnotationScan>, MendFailure> {
+        match self.fix_selection(
+            operation_mode,
+            FixKind::RestrictedAnnotation,
+            &[
+                DiagnosticCode::OverbroadPubCrate,
+                DiagnosticCode::ForbiddenPubInCrate,
+                DiagnosticCode::SuspiciousPub,
+            ],
+        ) {
+            FixKindSelection::Selected => restricted_annotation::scan_from_report(report)
+                .map(Some)
+                .map_err(MendFailure::Unexpected),
+            FixKindSelection::NotSelected => Ok(None),
+        }
+    }
+
+    fn scan_parent_facades(
+        &self,
+        pub_use: FixKindSelection,
+        report: &Report,
+        sources: &ParsedSources,
+    ) -> Result<Option<PubUseFixScan>, MendFailure> {
+        match pub_use {
+            FixKindSelection::Selected => {
+                pub_use_fixes::scan_selection(self.selection, report, sources)
+                    .map(Some)
+                    .map_err(MendFailure::Unexpected)
+            },
+            FixKindSelection::NotSelected => Ok(None),
+        }
+    }
+
+    fn scan_subtree_reexports(
+        &self,
+        operation_mode: &OperationMode,
+        report: &Report,
+        sources: &ParsedSources,
+    ) -> Result<Option<SubtreeReexportScan>, MendFailure> {
+        match self.fix_selection(
+            operation_mode,
+            FixKind::PubUseOutsideSubtree,
+            &[DiagnosticCode::PubUseOutsideSubtree],
+        ) {
+            FixKindSelection::Selected => {
+                subtree_reexport::scan_selection(self.selection, report, sources)
+                    .map(Some)
+                    .map_err(MendFailure::Unexpected)
+            },
+            FixKindSelection::NotSelected => Ok(None),
+        }
+    }
+
+    /// Selects `fix_kind` for this pass only when the mode requests it and at least
     /// one diagnostic it fixes is enabled.
-    fn fix_enabled(
+    fn fix_selection(
         &self,
         operation_mode: &OperationMode,
         fix_kind: FixKind,
         codes: &[DiagnosticCode],
-    ) -> bool {
-        operation_mode.fixes.contains(fix_kind)
-            && codes.iter().any(|&code| {
-                self.loaded_config.diagnostics_config.is_enabled(code) == DiagnosticStatus::Enabled
-            })
+    ) -> FixKindSelection {
+        match operation_mode.fixes.selection(fix_kind) {
+            FixKindSelection::NotSelected => FixKindSelection::NotSelected,
+            FixKindSelection::Selected => {
+                if codes.iter().any(|&code| {
+                    self.loaded_config.diagnostics_config.is_enabled(code)
+                        == DiagnosticStatus::Enabled
+                }) {
+                    FixKindSelection::Selected
+                } else {
+                    FixKindSelection::NotSelected
+                }
+            },
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::PassOutputPolicy;
-    use super::PubUseActivation;
     use crate::compiler::BuildOutputMode;
+    use crate::config::FixKindSelection;
     use crate::reporting::OutputFormat;
 
     #[test]
     fn json_output_wins_over_pub_use_warning_suppression() {
-        for activation in [PubUseActivation::Enabled, PubUseActivation::Disabled] {
+        for activation in [FixKindSelection::Selected, FixKindSelection::NotSelected] {
             assert!(matches!(
                 BuildOutputMode::from(PassOutputPolicy::for_pass(OutputFormat::Json, activation)),
                 BuildOutputMode::Json
@@ -214,14 +270,14 @@ mod tests {
         assert!(matches!(
             BuildOutputMode::from(PassOutputPolicy::for_pass(
                 OutputFormat::Human,
-                PubUseActivation::Enabled
+                FixKindSelection::Selected
             )),
             BuildOutputMode::SuppressUnusedImportWarnings
         ));
         assert!(matches!(
             BuildOutputMode::from(PassOutputPolicy::for_pass(
                 OutputFormat::Human,
-                PubUseActivation::Disabled
+                FixKindSelection::NotSelected
             )),
             BuildOutputMode::Full
         ));

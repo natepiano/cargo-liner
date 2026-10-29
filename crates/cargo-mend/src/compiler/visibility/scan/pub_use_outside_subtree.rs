@@ -66,9 +66,13 @@ pub(super) fn record(
         return Ok(());
     }
     let owner_module: LocalDefId = tcx.parent_module_from_def_id(item.owner_id.def_id).into();
-    if !is_reexport(tcx, item.owner_id.def_id, owner_module) || is_prelude_module(tcx, owner_module)
-    {
-        return Ok(());
+    match ImportReach::for_visibility(tcx.local_visibility(item.owner_id.def_id), owner_module) {
+        ImportReach::Private => return Ok(()),
+        ImportReach::Reexport => {},
+    }
+    match module_role(tcx, owner_module) {
+        ModuleRole::Prelude => return Ok(()),
+        ModuleRole::Ordinary => {},
     }
     // `module_segments` excludes the last segment of a single import, which names
     // an item; a glob names the module it opens with every segment.
@@ -141,18 +145,53 @@ pub(super) fn record(
 
 /// A `use` whose reach extends past its own module re-exports what it names.
 /// `pub(self) use` and a bare `use` stay private and re-export nothing.
-fn is_reexport(tcx: TyCtxt<'_>, use_def_id: LocalDefId, owner_module: LocalDefId) -> bool {
-    match tcx.local_visibility(use_def_id) {
-        Visibility::Public => true,
-        Visibility::Restricted(scope) => scope.to_local_def_id() != owner_module,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportReach {
+    Reexport,
+    Private,
+}
+
+impl ImportReach {
+    fn for_visibility(visibility: Visibility, owner_module: LocalDefId) -> Self {
+        match visibility {
+            Visibility::Public => Self::Reexport,
+            Visibility::Restricted(scope) => {
+                if scope.to_local_def_id() == owner_module {
+                    Self::Private
+                } else {
+                    Self::Reexport
+                }
+            },
+        }
     }
 }
 
-fn is_prelude_module(tcx: TyCtxt<'_>, module: LocalDefId) -> bool {
-    module != CRATE_DEF_ID
-        && tcx
-            .opt_item_name(module.to_def_id())
-            .is_some_and(|name| name.as_str() == PRELUDE_MODULE_NAME)
+/// A prelude re-exporting its parent's items fulfills its purpose, not a sideways facade.
+/// The crate root is always ordinary, even when the crate itself is named `prelude`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModuleRole {
+    Prelude,
+    Ordinary,
+}
+
+impl ModuleRole {
+    fn for_name(name: &str) -> Self {
+        if name == PRELUDE_MODULE_NAME {
+            Self::Prelude
+        } else {
+            Self::Ordinary
+        }
+    }
+}
+
+fn module_role(tcx: TyCtxt<'_>, module: LocalDefId) -> ModuleRole {
+    if module == CRATE_DEF_ID {
+        return ModuleRole::Ordinary;
+    }
+    tcx.opt_item_name(module.to_def_id())
+        .map_or(ModuleRole::Ordinary, |name| {
+            ModuleRole::for_name(name.as_str())
+        })
 }
 
 /// Walks `segments` from `owner_module` and returns the last local module the
@@ -202,5 +241,59 @@ pub(super) fn module_display_path(tcx: TyCtxt<'_>, module: LocalDefId) -> String
         "crate".to_string()
     } else {
         format!("crate::{}", tcx.def_path_str(module.to_def_id()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rustc_middle::ty::Visibility;
+    use rustc_span::def_id::CRATE_DEF_ID;
+    use rustc_span::def_id::DefIndex;
+    use rustc_span::def_id::LocalDefId;
+    use rustc_span::def_id::LocalModId;
+
+    use super::ImportReach;
+    use super::ModuleRole;
+
+    #[test]
+    fn import_reach_distinguishes_private_and_outward_restrictions() {
+        let owner_module = LocalDefId {
+            local_def_index: DefIndex::from_u32(1),
+        };
+        for (visibility, expected) in [
+            (Visibility::Public, ImportReach::Reexport),
+            (
+                Visibility::Restricted(LocalModId::new_unchecked(owner_module)),
+                ImportReach::Private,
+            ),
+            (
+                Visibility::Restricted(LocalModId::new_unchecked(CRATE_DEF_ID)),
+                ImportReach::Reexport,
+            ),
+        ] {
+            assert_eq!(
+                ImportReach::for_visibility(visibility, owner_module),
+                expected
+            );
+        }
+        assert_eq!(
+            ImportReach::for_visibility(
+                Visibility::Restricted(LocalModId::new_unchecked(CRATE_DEF_ID)),
+                CRATE_DEF_ID,
+            ),
+            ImportReach::Private,
+        );
+    }
+
+    #[test]
+    fn only_the_exact_prelude_name_has_the_prelude_role() {
+        for (name, expected) in [
+            ("prelude", ModuleRole::Prelude),
+            ("prelude_helpers", ModuleRole::Ordinary),
+            ("Prelude", ModuleRole::Ordinary),
+            ("", ModuleRole::Ordinary),
+        ] {
+            assert_eq!(ModuleRole::for_name(name), expected);
+        }
     }
 }
