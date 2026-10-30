@@ -28,6 +28,9 @@ use crate::edge::IntegrationReservationFacts;
 use crate::edge::IntegrationSubject;
 use crate::git;
 use crate::git::GitError;
+use crate::git::IntegrationProofRef;
+use crate::git::Reachability;
+use crate::git::RepositorySnapshot;
 use crate::ids::CoordinationRunId;
 use crate::ids::ForcedIntegrationPermitId;
 use crate::ids::GitObjectId;
@@ -91,11 +94,11 @@ pub(crate) enum GateDecision {
         /// The exact replay generation validated under the mutation lock.
         generation: ProjectionGeneration,
     },
-    /// Observe-only policy found violations but permits the update.
+    /// Policy or upstream integration proof permits the update with observed holds.
     Observed {
         /// The exact replay generation validated under the mutation lock.
         generation: ProjectionGeneration,
-        /// Every violation that enforcing mode would reject.
+        /// Every hold observed without requiring a forced integration permit.
         violations: Vec<IntegrationViolation>,
     },
     /// Enforcing policy rejects these violations.
@@ -146,6 +149,47 @@ pub(super) enum GatePurpose {
         request:             IntegrationRequest,
         identity_validation: Box<CoordinationIdentityValidationContext>,
     },
+}
+
+/// Whether this hook move repeats integration already proven by trunk's upstream.
+#[derive(Clone, Copy)]
+pub(super) enum HookMoveIntegration {
+    AlreadyIntegratedUpstream,
+    SubjectToGatePolicy,
+}
+
+pub(super) fn hook_move_integration(
+    repository: &RepositorySnapshot,
+    update: &ProposedTargetMove,
+    repository_trunk: &IntegrationTarget,
+    purpose: &GatePurpose,
+) -> Result<HookMoveIntegration, GitError> {
+    if !matches!(purpose, GatePurpose::Hook { .. }) || &update.target != repository_trunk {
+        return Ok(HookMoveIntegration::SubjectToGatePolicy);
+    }
+    let objects = repository.object_reader();
+    let proof = git::IntegrationProofRef::resolve(&objects, repository_trunk.short_name())?;
+    let upstream = match proof {
+        IntegrationProofRef::Upstream(_) => match proof.commit(&objects) {
+            Ok(commit) => commit,
+            Err(
+                GitError::MissingCommitExpression { .. }
+                | GitError::WrongCommitExpressionType { .. },
+            ) => {
+                return Ok(HookMoveIntegration::SubjectToGatePolicy);
+            },
+            Err(error) => return Err(error),
+        },
+        IntegrationProofRef::LocalOnly(_) => {
+            return Ok(HookMoveIntegration::SubjectToGatePolicy);
+        },
+    };
+    match git::reachability(repository.repository_root(), &update.proposed, &upstream)? {
+        Reachability::Ancestor => Ok(HookMoveIntegration::AlreadyIntegratedUpstream),
+        Reachability::NotAncestor | Reachability::ObjectUnknown => {
+            Ok(HookMoveIntegration::SubjectToGatePolicy)
+        },
+    }
 }
 
 /// Evaluate one explicit integration request through the same locked decision path as the hook.
@@ -204,6 +248,8 @@ pub(super) fn evaluate_locked(
     let journal_mutation_actor = resolved_edit_authorization
         .journal_mutation_actor_for(purpose.coordination_run_id(&identity_validation));
     let repository = crate::git::RepositorySnapshot::new(worktree_context.clone());
+    let integration = hook_move_integration(&repository, update, &repository_trunk, purpose)
+        .map_err(GateError::Git)?;
     retry_rewrite_reconciliation(|| {
         let outcome = ledger
             .transact_reconciliation_then(
@@ -251,6 +297,7 @@ pub(super) fn evaluate_locked(
                         &entering,
                         purpose,
                         berth_config.gate_mode,
+                        integration,
                     ) {
                         Ok(decision) => decision,
                         Err(error) => return ReconciliationValidation::Reject(error),
@@ -421,6 +468,7 @@ pub(super) fn decide(
     entering: &[ReservationId],
     purpose: &GatePurpose,
     gate_mode: GateMode,
+    integration: HookMoveIntegration,
 ) -> Result<(GateDecision, Vec<JournalOperation>), GateTransactionRejection> {
     let mut violations = Vec::new();
     for reservation_id in entering {
@@ -449,6 +497,7 @@ pub(super) fn decide(
             &violations,
             gate_mode,
             *phase,
+            integration,
         ),
         GatePurpose::Integrate {
             reservation_id,
@@ -512,9 +561,22 @@ fn decide_hook(
     violations: &[IntegrationViolation],
     gate_mode: GateMode,
     phase: ReferenceTransactionPhase,
+    integration: HookMoveIntegration,
 ) -> Result<(GateDecision, Vec<JournalOperation>), GateTransactionRejection> {
     if violations.is_empty() {
         return Ok((GateDecision::Clear { generation }, Vec::new()));
+    }
+    match integration {
+        HookMoveIntegration::AlreadyIntegratedUpstream => {
+            return Ok((
+                GateDecision::Observed {
+                    generation,
+                    violations: violations.to_vec(),
+                },
+                Vec::new(),
+            ));
+        },
+        HookMoveIntegration::SubjectToGatePolicy => {},
     }
     let permits = permit::available_forced_integration_permits(events)
         .map_err(GateTransactionRejection::PermitReplay)?;
