@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use super::cli::FixCli;
 use super::cli::FixExecution;
 use super::cli::FixRequest;
+use super::cli::FixRequestSelection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum FixKind {
@@ -63,13 +64,13 @@ impl From<&FixCli> for FixSelection {
             FixExecution::ReadOnly => Self::default(),
             FixExecution::ApplyRequested | FixExecution::PreviewRequested => {
                 let mut fix_kinds = BTreeSet::new();
-                if fix_cli.includes(FixRequest::Mend) {
+                if fix_cli.includes(FixRequest::Mend) == FixRequestSelection::Requested {
                     fix_kinds.insert(FixKind::RestrictedAnnotation);
                 }
-                if fix_cli.includes(FixRequest::PubUse) {
+                if fix_cli.includes(FixRequest::PubUse) == FixRequestSelection::Requested {
                     fix_kinds.insert(FixKind::PubUse);
                 }
-                if fix_cli.includes(FixRequest::Mend) {
+                if fix_cli.includes(FixRequest::Mend) == FixRequestSelection::Requested {
                     fix_kinds.insert(FixKind::UnusedPub);
                     fix_kinds.insert(FixKind::PreferModuleImport);
                     fix_kinds.insert(FixKind::InlinePathQualifiedType);

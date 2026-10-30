@@ -360,6 +360,20 @@ fn tree_header(buffer: &Buffer) -> String {
         .expect("tree header")
 }
 
+fn assert_age_at_header_edge(buffer: &Buffer, label: &str, header: &str, expected: &str) -> u16 {
+    let age = header.find("age ▼").expect("age sort header");
+    let end = buffer.area.x + summary::cell_width(&header[..age]) + summary::cell_width("age ▼");
+    let y = locate(buffer, label).y;
+    let through_age: String = (buffer.area.x..end)
+        .map(|x| buffer[(x, y)].symbol())
+        .collect();
+    let (_, actual) = through_age
+        .rsplit_once(char::is_whitespace)
+        .expect("age follows another column");
+    assert_eq!(actual, expected, "{label}: age ends at the header edge");
+    end
+}
+
 #[test]
 fn scrolling_measures_painted_roles_but_keeps_complete_group_age_slots() {
     let now = census::unix_now();
@@ -398,18 +412,11 @@ fn scrolling_measures_painted_roles_but_keeps_complete_group_age_slots() {
     for word in ["status", "age"] {
         assert_eq!(before_header.find(word), after_header.find(word), "{word}");
     }
-    let before_y = locate(&before, "task-01").y;
-    let after_y = locate(&after, "task-69").y;
-    let last_unit = |buffer: &Buffer, y| {
-        (0..buffer.area.width)
-            .rev()
-            .find(|&x| buffer[(x, y)].symbol() == "m")
-            .expect("minute unit")
-    };
+    assert_age_at_header_edge(&before, "task-00", &before_header, "6:17:00");
     assert_eq!(
-        last_unit(&before, before_y),
-        last_unit(&after, after_y),
-        "the offscreen day/hour slots remain part of the complete group layout"
+        assert_age_at_header_edge(&before, "task-01", &before_header, "1:09"),
+        assert_age_at_header_edge(&after, "task-69", &after_header, "1"),
+        "the offscreen age remains part of the complete group width"
     );
 }
 
@@ -458,15 +465,17 @@ fn grouped_scrolled_tiles_keep_role_columns_and_complete_age_slots() {
             })
             .expect("retained tree header")
     };
-    let minute_column = |buffer: &Buffer, label: &str| {
-        let point = locate(buffer, label);
-        (0..buffer.area.width)
-            .rev()
-            .find(|&x| buffer[(x, point.y)].symbol() == "m")
-            .expect("drawn minute unit")
-    };
     let before_headers = [10, 20].map(|pid| header_for(&before, &format!("group-{pid}-task-01")));
-    let before_units = [10, 20].map(|pid| minute_column(&before, &format!("group-{pid}-task-01")));
+    assert_age_at_header_edge(&before, "group-10-task-00", &before_headers[0], "6:17:00");
+    let before_edges = [0, 1].map(|index| {
+        let pid = [10, 20][index];
+        assert_age_at_header_edge(
+            &before,
+            &format!("group-{pid}-task-01"),
+            &before_headers[index],
+            "39",
+        )
+    });
     for pid in [10, 20] {
         let current = paint_at(&mut app, now);
         app.click(locate(&current, &format!("group-{pid}-task-00")));
@@ -475,7 +484,7 @@ fn grouped_scrolled_tiles_keep_role_columns_and_complete_age_slots() {
     }
     let after = paint_at(&mut app, now);
     let after_headers = [10, 20].map(|pid| header_for(&after, &format!("group-{pid}-task-39")));
-    assert_eq!(before_units[0], before_units[1], "shared minute slot");
+    assert_eq!(before_edges[0], before_edges[1], "shared age right edge");
     for (index, pid) in [10, 20].into_iter().enumerate() {
         let label = format!("group-{pid}-task-39");
         let after_header = &after_headers[index];
@@ -494,7 +503,10 @@ fn grouped_scrolled_tiles_keep_role_columns_and_complete_age_slots() {
                 assert_eq!(after_header.find(word), Some(column), "scrolled {word}");
             }
         }
-        assert_eq!(minute_column(&after, &label), before_units[index]);
+        assert_eq!(
+            assert_age_at_header_edge(&after, &label, after_header, "1"),
+            before_edges[index]
+        );
         let drawn: String = after
             .content
             .iter()

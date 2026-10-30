@@ -1258,7 +1258,7 @@ fraying = "leading"
         "│                                             content rows: 1 of 1  r/c: 10/78 │",
         "├ unassigned · natedev─────────────────────────────────────────────────────────┤",
         "│ session ▲       status  directory                                        age │",
-        "│ boss of bosses  idle    ~/rust/hana_catalyst/docs/hana                   21h │",
+        "│ boss of bosses  idle    ~/rust/hana_catalyst/docs/hana                 21:00 │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",

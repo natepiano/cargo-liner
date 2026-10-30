@@ -40,6 +40,9 @@ pub(super) fn commit_forced_permit_audits(
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
         .journal_mutation_actor_for(CoordinationRunId::new());
     let repository = crate::git::RepositorySnapshot::new(worktree_context.clone());
+    let integration =
+        decision::hook_move_integration(&repository, update, &repository_trunk, &purpose)
+            .map_err(GateError::Git)?;
     decision::retry_rewrite_reconciliation(|| {
         let outcome = ledger
             .transact_reconciliation(
@@ -83,6 +86,7 @@ pub(super) fn commit_forced_permit_audits(
                         &entering,
                         &purpose,
                         berth_config.gate_mode,
+                        integration,
                     ) {
                         Ok(decision) => decision,
                         Err(error) => return ReconciliationValidation::Reject(error),

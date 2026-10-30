@@ -954,7 +954,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 ### Phase 45 — Paths that a merge of the merge branch brings in are not incursions  · status: todo
 
-**Depends on:** 42 (cut 2c lands first)
+**Depends on:** 42
 
 **Why:** (hana's showrunner via the cargo-liner showrunner, 2026-10-29) a wrong result. build-speed merged the landed merge branch `init/catalyst` at 2bbd4c1fba (merge commit 466e6aae05). Its next commit d5436ae86f changed only its plan doc, but berth raised 13 incursions on reservation 01a18271 for paths that only the merge brought in (assembly P2 wrote them). hana's checkout shows the same defect. Phase 34 covers a fast-forward onto an integration target; this is a true merge commit of the production's merge branch.
 
@@ -966,9 +966,9 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
 
-### Phase 46 — Trunk may move to a commit its upstream already contains  · status: todo
+### Phase 46 — Trunk may move to a commit its upstream already contains  · status: done
 
-**Depends on:** 42 (cut 2c lands first; this phase runs before phase 45)
+**Depends on:** 42
 
 **Why:** (hana's showrunner via the cargo-liner showrunner, 2026-10-29) a wrong refusal. hana's trunk is the local `init/catalyst` at ab40610ebf; the merge gate pushed `origin/init/catalyst` 2bbd4c1fba from another checkout. `git merge --ff-only origin/init/catalyst` wrote the tree, but the reference-transaction hook refused the ref move (`gate/decision.rs` `decide_hook`: entering reservations with ordering holds, no permit). `resolve --integrated-as 2bbd4c1fba` then refuses ("must be reachable from trunk"), nothing landed since ab40610 can release, and hana's ledger filled (128/128). `integrate --force` cannot help: it forces one reservation, and any other entering hold still blocks. The integration already happened upstream, so a local refusal only splits berth's trunk from the truth.
 
@@ -979,3 +979,37 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 **Verification:** a red-first test (under 1 s): trunk with an upstream that is one commit ahead, and an entering reservation with an ordering hold; a fast-forward of trunk to the upstream tip is not refused, and the hold shows as observed. A companion test: a move to a commit the upstream does not contain is still refused. `cargo-berth` lint and related tests pass.
 
 **Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+
+### Phase 47 — cargo-berth keeps its ledger and indexes in memory between requests  · status: todo
+
+**Depends on:** 42, 45
+
+**Why:** (user, 2026-10-29; showrunner approved) every check, claim and hook rebuilds its view: it decodes the replay checkpoint (24 MB) and builds holder indexes on each call. Second Astra review: /tmp/claude/astra/20261030T012333Z-1840552/review.md, cut A.
+
+**Work Order:**
+1. Load the existing journal once in a resident process per common git directory and keep identity, protection and authorization indexes across requests (interned path ids, path → holders, a component trie with descendant summaries for directory scopes). The journal stays the source of truth.
+2. Requests use the kept indexes. Today's answers do not change: same status, reservation and target in every A/B trial.
+
+**Verification:** a warm held check decodes zero checkpoint bytes and builds zero holder indexes (counted in a test under 1 s). Release A/B on a quiet Mac under a Mac build hold, interleaved, before and after. `cargo-berth` lint and the package suite pass.
+
+**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+
+### Phase 48 — An unchanged request runs no status scan, hash, history walk or merge  · status: todo
+
+**Depends on:** 47
+
+**Why:** the post-tool-use hook costs about 24 CPU-s, 68% SHA-1 from repeated status reads of foreign worktrees; every read starts from nothing. Second Astra review, cut B.
+
+**Work Order:**
+1. Keep a per-worktree observation cache and the committed merge-pair cache (keyed by ordered commits and full merge rules, with conflict paths) across requests; invalidate them from file and ref events.
+2. Hash only to settle a changed entry or to prove a dirty file clean. Today's answers do not change.
+
+**Verification:** a repeated request with no change runs zero status scans, content hashes, history walks and merge evaluations (counted in a test under 1 s). Release A/B on a quiet Mac, interleaved. `cargo-berth` lint and the package suite pass.
+
+**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+
+**Decided for the later steps (C: background updater and short request paths; D: compact durable state), judged after phases 47 and 48 land on their measured numbers:** step C keeps today's claim rule (user, 2026-10-29, via the showrunner). Toward other worktrees, a claim protects only what changed there; the showrunner sequences overlaps. Keeping protection for narrow named-file claims is out of scope now.
+
+Step C's spec, when it is written, carries these two states and a test for each (showrunner, 2026-10-29):
+- **Bounded wait.** A request on a path that another worktree changed and the updater has not yet indexed waits a bounded few milliseconds for that update, then answers from the index. Test (under 1 s): change a file in a foreign worktree and check that path at once; the answer names the change, and the wait stays under its bound.
+- **Refresh required after lost events.** When the watcher loses events (restart, overflow, missing worktree), coverage for that worktree is unknown. A request that depends on it answers "refresh required" (a blocking result, never the "ledger unreadable" result that lets an edit through) until the updater takes a new baseline. Test (under 1 s): simulate an overflow, then check a path in that worktree; the answer is "refresh required", and after the rebaseline it is the normal answer.

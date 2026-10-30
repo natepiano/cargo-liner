@@ -24,23 +24,23 @@ enum RolePalette {
     HighContrastLight,
 }
 
-pub(super) fn apply_role_defaults_to_registry(registry: &mut ThemeRegistry) {
-    registry.update_themes(|id, appearance, theme| {
-        apply_role_defaults_to_theme(theme, Some(id), appearance);
+pub(super) fn apply_role_defaults_to_registry(theme_registry: &mut ThemeRegistry) {
+    theme_registry.update_themes(|theme_id, appearance, theme| {
+        apply_role_defaults_to_theme(theme, Some(theme_id), appearance);
     });
 }
 
 pub(super) fn apply_role_defaults_to_theme(
     theme: &mut Theme,
-    id: Option<&ThemeId>,
+    theme_id: Option<&ThemeId>,
     appearance: Appearance,
 ) {
-    let palette = palette_for(id, appearance);
+    let role_palette = palette_for(theme_id, appearance);
     for role in ROLE_KEYS {
         theme
             .roles
             .entry(String::from(role))
-            .or_insert_with(|| default_role(role, palette));
+            .or_insert_with(|| default_role(role, role_palette));
     }
 }
 
@@ -62,8 +62,8 @@ fn role_color(role: &str) -> Color {
     tui_pane::role_color(role, default_role(role, RolePalette::DefaultDark))
 }
 
-fn palette_for(id: Option<&ThemeId>, appearance: Appearance) -> RolePalette {
-    match id.map(ThemeId::as_str) {
+fn palette_for(theme_id: Option<&ThemeId>, appearance: Appearance) -> RolePalette {
+    match theme_id.map(ThemeId::as_str) {
         Some(DEFAULT_HC_DARK_THEME) => RolePalette::HighContrastDark,
         Some(DEFAULT_HC_LIGHT_THEME) => RolePalette::HighContrastLight,
         _ => match appearance {
@@ -73,8 +73,8 @@ fn palette_for(id: Option<&ThemeId>, appearance: Appearance) -> RolePalette {
     }
 }
 
-fn default_role(role: &str, palette: RolePalette) -> StyleSpec {
-    match (role, palette) {
+fn default_role(role: &str, role_palette: RolePalette) -> StyleSpec {
+    match (role, role_palette) {
         (COLUMN_HEADER, RolePalette::DefaultDark) => bold(Color::Rgb(150, 190, 180)),
         (COLUMN_HEADER, RolePalette::DefaultLight) => bold(Color::Rgb(60, 100, 90)),
         (COLUMN_HEADER | DISCOVERY_SHIMMER, RolePalette::HighContrastDark) => {

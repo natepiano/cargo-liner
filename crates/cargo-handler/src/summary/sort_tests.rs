@@ -155,8 +155,14 @@ fn default_summary_sort_keeps_phase_one_machine_order_rows_and_colors() {
     let buffer = sorted_buffer(&machines, SummarySort::default());
     assert_eq!(order(&buffer), ["zeta", "alpha", "other-machine"]);
     for (name, expected) in [
-        ("zeta", "100 z-account zeta idle 2h z-desktop /z-directory"),
-        ("alpha", "20 a-account alpha git 1h a-desktop /a-directory"),
+        (
+            "zeta",
+            "100 z-account zeta idle 2:00 z-desktop /z-directory",
+        ),
+        (
+            "alpha",
+            "20 a-account alpha git 1:00 a-desktop /a-directory",
+        ),
     ] {
         let y = find_label(&buffer, name).1;
         let text: String = (0..buffer.area.width)

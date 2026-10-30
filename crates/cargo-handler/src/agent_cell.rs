@@ -1329,7 +1329,7 @@ impl TreeLine<'_> {
         }
     }
 
-    /// Text written into a tree cell, including the shared unit slots.
+    /// Text written into a tree cell, with the shared age width.
     fn cell_text(&self, column: TreeColumn, now: u64, ages: &AgeLayout) -> String {
         match column {
             TreeColumn::Age => ages.format(now.saturating_sub(self.started())),
@@ -3279,17 +3279,17 @@ mod tests {
         assert_eq!(
             lines(&buffer),
             [
-                " pid 3266367 · claude · thinking · 23h · natedev · berth_fix",
+                " pid 3266367 · claude · thinking · 23:00 · natedev · berth_fix",
                 " ~/rust/tool-based-ui-trunk",
                 " launched by boss of bosses",
-                "    session                                                                                                                                      type      role    status     age ▼",
-                " ├─ Launch the Phase 1 implementation seat                                                                                                       shell             running  12m",
-                " │  └─ tool-based-ui-trunk-impl                                                                                                                            worker  idle     11m",
-                " └─ Review the permission queue                                                                                                                  subagent          idle      5m  3s",
-                "    └─ cargo nextest run -p hana_video --no-fail-fast -- permission_queue                                                                        shell             running      45s",
+                "    session                                                                                                                                        type      role    status   age ▼",
+                " ├─ Launch the Phase 1 implementation seat                                                                                                         shell             running     12",
+                " │  └─ tool-based-ui-trunk-impl                                                                                                                              worker  idle        11",
+                " └─ Review the permission queue                                                                                                                    subagent          idle         5",
+                "    └─ cargo nextest run -p hana_video --no-fail-fast -- permission_queue                                                                          shell             running      0",
             ]
         );
-        let heading = " pid 3266367 · claude · thinking · 23h · natedev · berth_fix";
+        let heading = " pid 3266367 · claude · thinking · 23:00 · natedev · berth_fix";
         for (index, character) in heading.chars().enumerate() {
             if character == '·' {
                 assert_eq!(
@@ -3341,7 +3341,7 @@ mod tests {
         assert_eq!(
             lines(&drawn(&arrange, None, WIDE)),
             [
-                " pid 3337048 · claude · thinking · 2h · natedev · —",
+                " pid 3337048 · claude · thinking · 2:00 · natedev · —",
                 " ~/rust/tool-based-ui-arrange",
                 " launched by pid 1579022",
                 " nothing running",
@@ -3389,7 +3389,7 @@ mod tests {
         assert_eq!(
             lines(&whole),
             [
-                " pid 1579022 · claude · thinking · 2d · natedev · —",
+                " pid 1579022 · claude · thinking · 2:00:00 · natedev · —",
                 " ~/rust/boss of bosses",
                 " nothing running",
             ]
@@ -3898,7 +3898,7 @@ mod tests {
     /// A narrow cell, where its header's line would be cut, draws its
     /// compressed view even given every row its full view takes at a
     /// wide width. It keeps whole role and status words, drops age when its
-    /// shared unit slots do not fit, and restores age as soon as they fit.
+    /// age labels do not fit, and restores age as soon as they fit.
     #[test]
     fn a_narrow_cell_compresses_however_many_rows_it_has() {
         let state = boss_group();
@@ -3907,14 +3907,14 @@ mod tests {
         let buffer = drawn_into(
             boss,
             &cells,
-            NARROW,
+            34,
             height(boss, 160, NOW, AccountColumn::Hidden),
         );
         let rendered = lines(&buffer);
         assert!(find(&buffer, "directory").is_none());
         assert!(!rendered[0].contains("pid"));
-        // The 36-cell table needs 38 cells for session (7), role (7),
-        // thinking (8), shared age slots (10) and three two-cell gaps.
+        // The table needs 33 cells for session (7), role (7),
+        // thinking (8), age (5) and three two-cell gaps.
         assert!(!rendered[0].contains("age"), "{rendered:?}");
         assert!(rendered[0].contains("session"), "{rendered:?}");
         assert!(rendered[0].contains("role"), "{rendered:?}");
@@ -3926,7 +3926,7 @@ mod tests {
         let restored = lines(&drawn_into(
             boss,
             &cells,
-            NARROW + 2,
+            35,
             usize::from(buffer.area.height),
         ));
         assert!(restored[0].contains("age"), "{restored:?}");
@@ -4017,21 +4017,21 @@ mod tests {
         assert_eq!(
             CellView::at_width(
                 &entry(&trunk, Some("boss of bosses")),
-                NARROW,
+                NARROW + 2,
                 NOW,
                 AccountColumn::Hidden
             ),
             CellView::Compressed
         );
 
-        let buffer = drawn(&trunk, Some("boss of bosses"), NARROW);
+        let buffer = drawn(&trunk, Some("boss of bosses"), NARROW + 2);
 
         let mark = TRUNCATION_MARK;
         assert_eq!(
             lines(&buffer)[..3],
             [
-                " pid 3266367 · claude · thinking · 23h".to_string(),
-                format!(" ~/rust/tool-based-ui-geometry-materi{mark}"),
+                " pid 3266367 · claude · thinking · 23:00".to_string(),
+                format!(" ~/rust/tool-based-ui-geometry-material{mark}"),
                 " launched by boss of bosses".to_string(),
             ]
         );
@@ -4043,9 +4043,9 @@ mod tests {
     fn launched_heading_keeps_partial_location_and_omits_a_location_without_text() {
         let trunk = trunk();
         for (width, expected) in [
-            (NARROW, " pid 3266367 · claude · thinking · 23h"),
-            (42, " pid 3266367 · claude · thinking · 23h"),
-            (43, " pid 3266367 · claude · thinking · 23h · n…"),
+            (NARROW + 2, " pid 3266367 · claude · thinking · 23:00"),
+            (44, " pid 3266367 · claude · thinking · 23:00"),
+            (45, " pid 3266367 · claude · thinking · 23:00 · n…"),
         ] {
             let buffer = drawn(&trunk, Some("boss of bosses"), width);
             assert_eq!(lines(&buffer)[0], expected, "heading at {width} cells");
