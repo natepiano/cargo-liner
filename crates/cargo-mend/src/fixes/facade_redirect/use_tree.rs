@@ -23,13 +23,20 @@ pub(in crate::fixes) fn render_use_tree(tree: &UseTree) -> String {
     }
 }
 
+/// Whether an ordinary named use leaf remains in the rewritten tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::fixes) enum LeafRetention {
+    Keep,
+    Remove,
+}
+
 /// `tree` without the `Name` leaves `remove` selects, given each leaf's
 /// written prefix segments and identifier. A group left with one item
 /// collapses to it; a tree left with nothing is `None`.
 pub(in crate::fixes) fn remove_use_leaves(
     prefix: Vec<String>,
     tree: &UseTree,
-    remove: &impl Fn(&[String], &Ident) -> bool,
+    remove: &impl Fn(&[String], &Ident) -> LeafRetention,
 ) -> Option<UseTree> {
     match tree {
         UseTree::Path(path) => {
@@ -42,7 +49,10 @@ pub(in crate::fixes) fn remove_use_leaves(
                 tree:         Box::new(rewritten),
             }))
         },
-        UseTree::Name(name) => (!remove(&prefix, &name.ident)).then(|| tree.clone()),
+        UseTree::Name(name) => match remove(&prefix, &name.ident) {
+            LeafRetention::Keep => Some(tree.clone()),
+            LeafRetention::Remove => None,
+        },
         UseTree::Group(group) => {
             let kept_items = group
                 .items
@@ -121,6 +131,7 @@ mod tests {
     use syn::UseTree;
     use syn::parse_str;
 
+    use super::LeafRetention;
     use super::remove_use_leaves;
     use super::render_use_lines;
     use super::render_use_tree;
@@ -130,7 +141,11 @@ mod tests {
     #[test]
     fn removing_one_of_two_group_leaves_collapses_the_group() {
         let kept = remove_use_leaves(Vec::new(), &tree("use a::{b::X, Y};"), &|prefix, name| {
-            prefix == ["a", "b"] && name == "X"
+            if prefix == ["a", "b"] && name == "X" {
+                LeafRetention::Remove
+            } else {
+                LeafRetention::Keep
+            }
         })
         .expect("a leaf is left");
         assert_eq!(render_use_tree(&kept), "a::Y");
@@ -138,7 +153,12 @@ mod tests {
 
     #[test]
     fn removing_every_leaf_leaves_nothing() {
-        assert!(remove_use_leaves(Vec::new(), &tree("use a::X;"), &|_, _| true).is_none());
+        assert!(
+            remove_use_leaves(Vec::new(), &tree("use a::X;"), &|_, _| {
+                LeafRetention::Remove
+            })
+            .is_none()
+        );
     }
 
     #[test]
@@ -147,5 +167,26 @@ mod tests {
             render_use_lines(&tree("use a::{b::{X, Y as Z}, *};"), "pub use"),
             ["pub use a::b::X;", "pub use a::b::Y as Z;", "pub use a::*;"]
         );
+    }
+    #[test]
+    fn leaf_retention_preserves_renames_globs_and_recursive_group_order() {
+        for (source, keep, remove) in [
+            ("use a::X;", Some("a::X"), None),
+            ("use a::{};", None, None),
+            ("use a::{b::{}, X};", Some("a::X"), None),
+            (
+                "use a::{X, Y as Z, *};",
+                Some("a::{X, Y as Z, *}"),
+                Some("a::{Y as Z, *}"),
+            ),
+        ] {
+            let tree = tree(source);
+            for (retention, expected) in
+                [(LeafRetention::Keep, keep), (LeafRetention::Remove, remove)]
+            {
+                let actual = remove_use_leaves(Vec::new(), &tree, &|_, _| retention);
+                assert_eq!(actual.as_ref().map(render_use_tree).as_deref(), expected);
+            }
+        }
     }
 }
