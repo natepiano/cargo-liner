@@ -1377,6 +1377,8 @@ Showrunner request (2026-10-29): the 36m merge tree fails `census::scan::refresh
 
 ### Phase 43 — The reader uses less CPU under load  · status: todo
 
+**Depends on:** Phase 32m
+
 Showrunner request (2026-10-29): the installed reader (main 043dc8c6, phase 32m's CPU fix) uses 63.2% of one core on natedev at load 124 in a 393×89 pty (15 s warmup, then 60 s). The reader before 32m used 59.7%. A restart does not help. This phase profiles the reader under load, then cuts the largest costs. It goes ahead of phases 30m, 35m and 39.
 
 #### Work Order
@@ -1401,7 +1403,7 @@ Showrunner request (2026-10-29): the installed reader (main 043dc8c6, phase 32m'
 - `cargo nextest run -p cargo-tile -p tui_pane`, workspace clippy with `-D warnings`, and `cargo +nightly fmt --check` green (natedev, `verify.sh` with `--local` while the Mac is blocked; the Mac after 00:05).
 - A live capture against main shows the same layout.
 
-### Phase 38 — A new cell's text starts near its final color  · status: todo
+### Phase 38 — A new cell's text starts near its final color  · status: done
 
 User report (2026-10-29, via the showrunner): a new cell's text fades in from black and then goes away so fast that it cannot be read. The first frame of a new cell's text is drawn near its final color, not near the ground. Exact-color test red on main first. Work order: phases/38/implementation_prompt.md.
 
@@ -1451,6 +1453,8 @@ User (2026-10-29, via builds and the showrunner): "yes cargo-tile should strive 
 
 ### Phase 40 — Capture falls back to plain cargo when its stderr mirror cannot run  · status: todo
 
+**Depends on:** Phase 30m
+
 From phase 30m review 3 (routed at repair round 4). When `sh` runs but `tee` is missing or fails, the capture mirror signals ready before `exec tee` (hook.rs, `ReadyCaptureMirror::start`), so cargo starts with a stderr pipe nobody reads: cargo loses its stderr bytes and can get SIGPIPE. Main's shim has the same defect (`exec tee` in `run_captured`, cargo-capture-shim.sh), so phase 30m did not cause it.
 
 **Spec:** replace the shell/tee mirror with a native stderr pump made by a fallible constructor before cargo spawns. If the constructor fails: close what it opened, remove the capture publication, and exec the original cargo with its own arguments, streams and status. Keep helper diagnostics private until the capture commits. The guarantee is bounded: an exec acknowledgement followed by EOF is uncertain, and cargo never runs twice. (Astra review, phase 30m F001.)
@@ -1460,6 +1464,8 @@ From phase 30m review 3 (routed at repair round 4). When `sh` runs but `tee` is 
 **Files:** `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/cargo-capture-shim.sh`, `crates/cargo-tile/tests/shim_modes.rs`.
 
 ### Phase 42 — A delayed cell decides its entry on the frame its text first shows  · status: todo
+
+**Depends on:** Phase 38
 
 From phase 38's live check (routed at repair round 4; phase 38 landed because it beats main on every live count: delayed cells readable 3 of 6 on the branch against 0 of 8 on main, fades and deadlines as main). A cell that opens from the foot of its column first paints only its column-header row. Phase 38 decides the cell's entry on that frame, so when the alpha there is 60–63 the cell takes main's fade, and its command text appears 1–2 frames later below 75% and fades out (live b1, cells s3–s5, first text frame 0.731).
 
