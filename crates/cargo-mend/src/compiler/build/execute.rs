@@ -534,9 +534,7 @@ fn run_cargo_fix_validation(
     if cargo_fix_features == CargoFixFeatures::All {
         command.arg(CARGO_FLAG_ALL_FEATURES);
     }
-    if color_mode.is_enabled() {
-        command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
-    }
+    configure_cargo_color(&mut command, color_mode);
     command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -621,9 +619,7 @@ fn run_cargo_fix_command(
         command.arg(CARGO_FLAG_ALL_FEATURES);
     }
 
-    if color_mode.is_enabled() {
-        command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
-    }
+    configure_cargo_color(&mut command, color_mode);
 
     command
         .stdin(Stdio::inherit())
@@ -649,15 +645,24 @@ fn feature_selection(cargo_args: &[OsString]) -> FeatureSelection {
     }
 }
 
+/// `configure_cargo_color` forces Cargo color only for `ColorMode::Enabled`.
+/// `ColorMode::Disabled` preserves the inherited environment and existing command overrides.
+fn configure_cargo_color(command: &mut Command, color_mode: ColorMode) {
+    match color_mode {
+        ColorMode::Enabled => {
+            command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
+        },
+        ColorMode::Disabled => {},
+    }
+}
+
 fn run_cargo_command(
     command: &mut Command,
     output_mode: BuildOutputMode,
     color_mode: ColorMode,
     analyzing_dir: &Path,
 ) -> Result<CommandOutcome> {
-    if color_mode.is_enabled() {
-        command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
-    }
+    configure_cargo_color(command, color_mode);
     let progress = CargoProgress::start(output_mode, analyzing_dir);
     // The status line takes its counter from cargo's bar, which cargo draws on
     // a pipe only when asked to and given a width to draw it at.
@@ -705,6 +710,7 @@ fn run_cargo_command(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::ffi::OsString;
     use std::fs;
     #[cfg(unix)]
@@ -715,7 +721,6 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    #[cfg(unix)]
     use std::process::Command;
     #[cfg(unix)]
     use std::process::Stdio;
@@ -727,13 +732,61 @@ mod tests {
     use super::FeatureSelection;
     use super::WrapperAliasResolution;
     use super::cargo_fix_features_for;
+    use super::configure_cargo_color;
     use super::feature_selection;
     use super::wrapper_alias_resolution;
+    use crate::compiler::constants::CARGO_BIN;
     use crate::compiler::constants::CARGO_FLAG_ALL_FEATURES;
     use crate::compiler::constants::CARGO_FLAG_FEATURES;
     use crate::compiler::constants::CARGO_FLAG_MANIFEST_PATH;
     use crate::compiler::constants::CARGO_FLAG_NO_DEFAULT_FEATURES;
     use crate::reporting::AllFeaturesCoverage;
+    use crate::reporting::CARGO_TERM_COLOR_ALWAYS;
+    use crate::reporting::CARGO_TERM_COLOR_ENV;
+    use crate::reporting::CARGO_TERM_COLOR_NEVER;
+    use crate::reporting::ColorMode;
+
+    #[test]
+    fn enabled_cargo_color_overrides_the_command_environment() {
+        let mut command = Command::new(CARGO_BIN);
+        command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_NEVER);
+
+        configure_cargo_color(&mut command, ColorMode::Enabled);
+
+        assert_eq!(
+            command.get_envs().collect::<Vec<_>>(),
+            [(
+                OsStr::new(CARGO_TERM_COLOR_ENV),
+                Some(OsStr::new(CARGO_TERM_COLOR_ALWAYS)),
+            )]
+        );
+    }
+
+    #[test]
+    fn disabled_cargo_color_preserves_inheritance_and_command_overrides() {
+        let mut command = Command::new(CARGO_BIN);
+
+        configure_cargo_color(&mut command, ColorMode::Disabled);
+
+        assert_eq!(command.get_envs().next(), None);
+
+        command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_NEVER);
+        configure_cargo_color(&mut command, ColorMode::Disabled);
+        assert_eq!(
+            command.get_envs().collect::<Vec<_>>(),
+            [(
+                OsStr::new(CARGO_TERM_COLOR_ENV),
+                Some(OsStr::new(CARGO_TERM_COLOR_NEVER)),
+            )]
+        );
+
+        command.env_remove(CARGO_TERM_COLOR_ENV);
+        configure_cargo_color(&mut command, ColorMode::Disabled);
+        assert_eq!(
+            command.get_envs().collect::<Vec<_>>(),
+            [(OsStr::new(CARGO_TERM_COLOR_ENV), None)]
+        );
+    }
 
     #[test]
     fn alias_resolution_reuses_only_regular_independent_copies() -> anyhow::Result<()> {
