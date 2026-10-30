@@ -96,53 +96,27 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 ### Phase 2b — cargo-port watches only project folders and the folders that lead to them  · status: done
 
-**Depends on:** Phase 2m. The folder roles apply only to the `PerFolder` backend (Linux inotify); the `RecursiveRoot` backend (macOS) keeps one recursive watch per root.
+**Depends on:** Phase 2m
 
-#### Work Order
+#### As-built
 
-**Goal:** cargo-port puts inotify watches only inside its projects and on the folders between a watch root and a project, so the watch count follows the number of projects, not the number of folders under the roots.
-
-**Source:** showrunner ruling, 2026-10-28 ~21:40 ("phase 2b is current. Watch only project folders and their parents for discovery, and put 2b before phase 3"). Phase 2 live count on natedev with the user's roots (`/etc`, `/tmp`, `~/.claude`, `~/rust`, `include_non_rust = true`): the branch binary held 90,266 watches, one per folder outside `target/` and `.git/objects` (`/tmp` 64,125, `~/rust` 20,632, `~/.claude` 5,421, `/etc` 129). Most of the `/tmp` folders are scratch and session trees that hold no project. The debug branch binary also used about 9 cores for the first 40 s of the folder walk.
-
-**Constraints from prior phases:**
-- Phase 2 put registration in `watcher/roots.rs`: a lazy folder walk (`directory_walk`, `watch_directories`) adds one non-recursive watch per folder; `register_directory_tree` watches a created folder and its subfolders; `update_directory_watches` and `remove_directory_watches` follow create, remove and rename. `RegisteredRoots` (`roots.rs`) records each watched folder. `WatchSkipSet` (`watcher/skip.rs`) is the one typed skip value: `target/`, `.git/objects`, and known Cargo target directories, canonical paths included. Keep all of it; this phase changes which folders the walk visits, not how a watch is added or skipped.
-- The target size reaches the project by the 30 s disk poll (`watcher/refresh.rs`, `DiskProbeScope`), not by events. No change.
-- Events inside a project feed lint triggers, the cargo metadata refresh, the git refresh and the disk refresh (`watcher/events.rs` `handle_notify_event`). Events outside every project feed discovery: `probe::project_level_dir` walks up to the project level and `probe_new_projects` probes the folder after `NEW_PROJECT_DEBOUNCE` (`watcher/probe.rs`). A project is a folder with `Cargo.toml`, or with `.git` when `include_non_rust` is on (`probe_project`).
-- A deleted project still shows struck through (`Visibility::Deleted`) until the user dismisses it; the zero-byte `DiskUsage` reply for a missing folder must still reach the app.
-
-**Spec:**
-1. **Watched folder roles, by type.** Every watched folder has one role held in `RegisteredRoots` as an enum (for example `WatchedFolderRole`): `Project` (a project root and every folder in it, with the phase 2 skips), `Discovery` (a configured watch root, and each folder on the path from a watch root to a known project's parent), `Candidate` (a folder created in a `Discovery` folder, watched non-recursively while the probe decides), and `ConfigSource` (folders cargo-port reads outside projects: the Cargo home watch from `register_cargo_home_watch`, each ancestor `.cargo/` folder that `refresh.rs` (≈302) reads for `config.toml`, and the Git folder of a linked worktree that lives outside its project). A folder with no role gets no watch. No bool, and no path-prefix check at call sites, decides a role.
-2. **Startup handoff.** `WatcherLoopStartup::register` (`runtime.rs` ≈158) runs before the scan delivers projects (`handle_scan_result`, `tui/app/async_tasks/dispatch.rs` ≈39, sends `WatcherMsg::Register`). Make it a typed sequence: (a) watch each configured root as `Discovery`; (b) on the scan's project list, watch each project's ancestors as `Discovery` and each project tree as `Project`; (c) then compare what the scan saw with the folders now watched, and probe any project folder made or removed between the scan and its watches. Buffered events are replayed after (b). The watcher reports ready only after (c). No walk visits a tree that holds no known project.
-3. **Discovery routing.** `probe::project_level_dir` (`probe.rs` ≈154) takes the configured watch roots as the project-level boundary. Keep that list as configured roots only; a new `Discovery` or `Candidate` folder never joins it. A project made directly in a configured root, or in a `Discovery` folder, is found: event → candidate → probe → promotion to `Project`.
-4. **Candidates are short-lived.** A folder created in a `Discovery` folder gets one non-recursive `Candidate` watch. When the probe (after `NEW_PROJECT_DEBOUNCE`) finds a project there, the folder becomes `Project` and its tree gets the phase 2 watches. When it finds none, the watch is removed; a folder made inside a `Candidate` gets no watch. So folder churn with no project (for example new session folders in `/tmp`) leaves no watch behind.
-5. **Promotion and skip updates keep the roles.** `register_project_watch_if_needed` (`runtime.rs` ≈498) stops treating "under a registered root" as covered; it registers by role. `replace_skip_set` (`roots.rs` ≈216) re-applies skips only to `Project` trees and never walks a `Discovery` folder's other children.
-6. **Removal.** A removed `Project`, `Discovery` or `Candidate` folder drops its watches. A removed project, and each project under a removed ancestor, still sends the zero-byte `DiskUsage` reply, so the row shows `Deleted` until the user dismisses it.
-7. **Known limit, stated.** A project made inside an existing folder with no role is found by the next full rescan, not by a watch. Say this in the CHANGELOG line.
-8. **Tests, red first, each under one second:** (a) a root with a project two levels down and a sibling tree with no project watches the root, the folder between and the project tree, and nothing in the sibling tree; (b) startup: a project made after the scan list and before its watches is found by step (c); (c) a folder created in a `Discovery` folder gets a `Candidate` watch, a project made in it is promoted to `Project`, a project made directly in a configured root is probed at the root level, not at its `Cargo.toml`; (d) a `Candidate` with no project loses its watch, and a folder made inside it gets none; (e) a late target-directory change prunes the target and adds no watch to a sibling tree; (f) an ancestor `.cargo/config.toml` change and a linked-worktree Git change still reach their refresh; (g) removing a project, and removing an ancestor of two projects, sends a zero-byte reply for each project. Call the registration, event and probe functions directly; no live inotify and no timing sleeps.
-9. **Live count:** after checking that no natedev build hold is in force, run the branch binary (release build if `verify.sh build` offers one; else debug, and say so) from the worktree, with a scratch `XDG_CONFIG_HOME` holding a copy of the user's `~/.config/cargo-port/config.toml` with a scratch `[cache] root`. After 40 s count the inotify lines in `/proc/<pid>/fdinfo/<inotify fd>` and the CPU seconds. Phase 2 gave 90,266 and the installed binary about 438,000.
-10. CHANGELOG: one line in `crates/cargo-port/CHANGELOG.md`.
-11. **Test file names.** Phase 2 left `refresh_repair_tests.rs`, `roots_repair_tests.rs`, `skip_repair_tests.rs` and `repair_test_support.rs` in `watcher/`; "repair" is process history. Rename each for what it tests (for example `skip_alias_tests.rs`) and give `repair_test_support.rs` a name for what it provides.
+- On Linux (`PerFolder`) each watched folder has one `WatchedFolderRole` in `RegisteredRoots` (`watcher/roots.rs`): `Project`, `Discovery`, `Candidate` or `ConfigSource`. A folder with no project below it gets no watch. Live count with the user's roots: 27,811 watches (phase 2: 90,266; before: about 438,000).
+- `role()` and `event_role()` return `Subscription::{Unwatched, Watched(WatchedFolderRole)}`.
+- Startup registration, the check of folders made or removed between the scan and its watches, and the replay of buffered events are one typed sequence that ends in ready (`watcher/runtime.rs`, `complete_startup_registration`).
+- A folder made in a `Discovery` folder gets one `Candidate` watch; the probe promotes it to `Project` or removes the watch. A folder that comes back gets the watches of its known projects again.
+- External Git events (a linked worktree's `FETCH_HEAD` and `ORIG_HEAD`, a containing repository's `.git/config`) reach the Git refresh without a project-containment check (`watcher/events.rs`).
+- macOS (`RecursiveRoot`) keeps one recursive watch per configured root.
 
 **Files:**
-- `crates/cargo-port/src/watcher/roots.rs` — folder roles, startup registration, new-folder handling
-- `crates/cargo-port/src/watcher/runtime.rs` — startup handoff, role-aware registration, promotion
-- `crates/cargo-port/src/watcher/probe.rs` — candidate probe result, promotion
+- `crates/cargo-port/src/watcher/roots.rs` — roles, registration, recovery of known projects under a folder that comes back
+- `crates/cargo-port/src/watcher/runtime.rs` — startup sequence
 - `crates/cargo-port/src/watcher/events.rs` — event routing by role
-- `crates/cargo-port/src/watcher/mod.rs` — test module registration
-- `crates/cargo-port/src/watcher/refresh_repair_tests.rs` — renamed (spec 11)
-- `crates/cargo-port/src/watcher/roots_repair_tests.rs` — renamed (spec 11)
-- `crates/cargo-port/src/watcher/skip_repair_tests.rs` — renamed (spec 11)
-- `crates/cargo-port/src/watcher/repair_test_support.rs` — renamed (spec 11)
-- `crates/cargo-port/src/watcher/refresh.rs` — `#[path]` line of a renamed test module; ancestor `.cargo/` reads
-- `crates/cargo-port/src/watcher/skip.rs` — `#[path]` line of a renamed test module
-- `crates/cargo-port/src/tui/app/async_tasks/dispatch.rs` — only if the scan must send its project list to the watcher as one message (spec 2)
-- `crates/cargo-port/CHANGELOG.md`
+- `crates/cargo-port/src/watcher/probe.rs` — candidate outcomes
+- tests in `crates/cargo-port/src/watcher/`: `watch_role_tests.rs`, `discovery_event_tests.rs`, `subscription_recovery_tests.rs`, `linked_target_poll_tests.rs`, `cargo_home_watch_tests.rs`, `skip_alias_tests.rs`, `watch_test_support.rs`
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — specs 1–7, 10 and 11; hub: `crates/cargo-port/src/watcher/roots.rs`. All of `watcher/` except the tester's file.
-- `test` — spec 8, in a new test module `crates/cargo-port/src/watcher/watch_role_tests.rs`, registered by `impl` in `watcher/mod.rs`.
+**Binds later work:** Phase 2c uses the `Subscription` API; coverage follows successful subscriptions. Phase 3 measures idle CPU after the startup sequence is ready.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; the live count of spec 9 is far under 90,266 and near the folder count of the user's projects plus their discovery folders. The checkpoint adds a Change-Review line.
+**Gotchas:** a `.cargo/` folder outside the configured roots that is deleted and made again gets its watch back only at the next rescan (CHANGELOG). A project made inside an existing folder with no role is found by the next full rescan.
 
 ### Phase 2d — A manifest cargo cannot read shows once on its row  · status: todo
 
@@ -150,16 +124,35 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Depends on:** Phase 2b.
 
-**Work:**
+#### Work Order
+
+**Goal:** a discovered project whose manifest `cargo metadata` rejects shows that error once, as a state on its own row, with no toast on later scans; the state clears when the manifest parses.
+
+**Constraints:**
+- Scope is the reported case: a manifest that is valid TOML, so discovery (`project/cargo/parse.rs` `manifest_targets` ≈158) makes a row, and that `cargo metadata` then rejects (for example `version.workspace = true` with no workspace root). A manifest that is not valid TOML never becomes a row and stays out of scope.
+- No metadata state enum exists yet. The writer names its owner (a per-manifest store that outlives one scan, not the row: a rescan clears the list, `tui/app/async_tasks/tree.rs` ≈58), its renderer, and how the state carries across a scan replacement.
+- Keep the existing `WorkspaceMissing` suppression and the startup completion accounting in `metadata_handlers.rs` (≈72).
+- A new state is an enum variant, never a bare `Option` or a flag (Type Design Contract).
+
+**Spec:**
 1. A manifest cargo cannot parse is an error state on that project's row. It is a variant of the project's metadata state enum, not a flag, and carries cargo's first error line.
 2. The failure is stated once. A later scan that gets the same failure for the same manifest makes no toast. A changed manifest that then parses clears the state.
 3. Update the test at `tui/app/mod.rs` ≈13911 that now expects the toast.
 
-**Tests:** a test that is red on main first: an orphan member manifest (`version.workspace = true`, no workspace root) in a temp root gives the error state on its row and no toast on a second scan; after the manifest is fixed, the state clears.
+4. **Tests, red on main first, each under one second:** an orphan member manifest (`version.workspace = true`, no workspace root) in a temp root gives the error state on its row and no toast; a second, completed rescan keeps the state and makes no toast; after the manifest is fixed, the state clears.
 
-**Files:** `crates/cargo-port/src/tui/app/async_tasks/metadata_handlers.rs`, the project metadata state type and the row that draws it (writer finds them), `crates/cargo-port/src/tui/app/mod.rs` (tests), CHANGELOG. 1 writer.
+**Files:**
+- `crates/cargo-port/src/tui/app/async_tasks/metadata_handlers.rs` — the failure path (≈61) and its classification
+- `crates/cargo-port/src/tui/app/async_tasks/tree.rs` — keep the state across a scan replacement
+- `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs` — the row draws the error state; the new per-manifest state type goes beside its owner, and the writer names both in its report
+- `crates/cargo-port/src/tui/app/mod.rs` — tests
+- `crates/cargo-port/src/tui/state/scan.rs` — `Scan` owns the per-manifest metadata state (owner approved during the phase)
+- `crates/cargo-port/src/tui/app/manifest_metadata.rs` — the per-manifest metadata state type
+- `crates/cargo-port/CHANGELOG.md`
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; live on natedev, with a scratch project under a configured root whose Cargo.toml cargo cannot parse, no toast appears and its row shows the error. (hana's showrunner fixes the demo bundler, so hana_demo may be gone.) The checkpoint adds a Change-Review line.
+**Workers:** 1 writer (`impl`), who also writes the tests.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; live on natedev, with a scratch project under a configured root whose Cargo.toml is valid TOML that `cargo metadata` rejects (`version.workspace = true`, no workspace root), no toast appears and its row shows the error. (hana's showrunner fixes the demo bundler, so hana_demo may be gone.) The checkpoint adds a Change-Review line.
 
 ### Phase 2c — On macOS overlapping roots get one recursive watch  · status: todo
 
@@ -172,13 +165,15 @@ you need to create a new unit to handle all cargo port enhancements it should be
 **Source:** phase 2m contract review, finding F001 (minor). The showrunner moved it out of 2m on 2026-10-29: overlapping roots are a rare setup, and two recursive watches still cost far less than per-folder watches.
 
 **Constraints:**
-- The invariant at `watcher/runtime.rs` ≈887 holds by construction: one notify watch per path; no `watch()` call lands on a path a recursive root covers.
+- Coverage follows successful subscriptions: `RegisteredRoots::covers()` (`roots.rs` ≈109) reads `dirs`, and recursive registration adds only paths it watched. Keep every configured root as a discovery boundary while removing duplicate watches, and add tests for both root orders that check the configured boundaries stay and that a failed parent registration still leaves the covered root watched.
+- From phase 2b: `RegisteredRoots` keeps a role map; `role()` and `event_role()` return `Subscription::{Unwatched, Watched(WatchedFolderRole)}`.
+- The invariant at `watcher/runtime.rs` ≈989 (its tests ≈1071) holds by construction: one notify watch per path; no `watch()` call lands on a path a recursive root covers.
 - Under `RecursiveRoot`, register a recursive watch only for each root that no other configured root covers, in any root order (`/r` then `/r/project`, and `/r/project` then `/r`, both give one watch on `/r`). Each configured root stays its own discovery root (`RegisteredRoots.dirs` unchanged); only the watch set changes.
 - `PerFolder` behaviour is unchanged.
 
 **Spec:**
 1. Covered-root removal in the `RecursiveRoot` registration plan (`roots.rs`, `registration_plan` / `register_watch_roots_with_skips`).
-2. **Tests, red first, each under one second:** both root orders give one registered path; the invariant test at `runtime.rs` ≈887 also runs with `RecursiveRoot`.
+2. **Tests, red first, each under one second:** both root orders give one registered path; the invariant test at `runtime.rs` ≈1071 also runs with `RecursiveRoot`.
 3. CHANGELOG: one line.
 
 **Files:**
@@ -202,6 +197,10 @@ you need to create a new unit to handle all cargo port enhancements it should be
 **Source:** showrunner, 2026-10-28; the user ranks CPU work above all other work. Measured on natedev at 11:12–11:25: the cargo-port main thread used 14% of one core; perf put 90% of it in `Path == Path` compares from `RootItem::at_path` (`crates/cargo-port/src/project/root_item.rs`), about 4 frames each second at about 30 ms each. Notes: `/tmp/claude-1000/-home-natepiano-rust-cargo-liner/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/scratchpad/cpu_investigation.md`, section "cargo-port: a full frame".
 
 **Constraints:**
+- From phase 2b: a `DiskUsage` reply can change a row from `Visible` to `Deleted` with the byte count still zero (`async_tasks/disk_handlers.rs` `apply_disk_usage` ≈65), so equal bytes do not mean equal visible state. Test that this change draws once and an identical later reply draws nothing.
+- From phase 2d: the row error state for a manifest cargo rejects is a visible input. Test redraws for an unselected row's error, its recovery, and `ProjectDiscovered`.
+- The detail cache owns `Option<DetailCacheKey>` (`tui/panes/data.rs` ≈21). Replace it with a named state that tells cleared details from details current for a key, like the new caches.
+- Measure idle CPU only after the startup folder walk, watcher registration and reconciliation, and startup enrichment end (the walk alone uses several cores for tens of seconds in a debug build; scan completion, `dispatch.rs` ≈96, comes before the watcher's Ready, `watcher/runtime.rs` ≈427). Add a named log marker or a repeatable procedure for that point and start both 60 s windows after it.
 - The event loop (`tui/terminal/event_loop.rs`, the `loop` in its run function) calls `ensure_visible_rows_cached`, `ensure_disk_cache`, `ensure_fit_widths_cached`, `ensure_detail_cached` and `draw_frame` on every wakeup. It wakes on input, on each background message, on each CPU pane sample, at least each second (`IDLE_HEARTBEAT`, `tui/app/mod.rs` ≈437), and each 80 ms while a lint, clean or run is live (`ANIMATION_TICK`).
 - `ensure_detail_cached` (`tui/app/navigation/cache.rs`) already skips work with a `DetailCacheKey` of the selected row and `scan.generation()`. Use the same pattern: a typed key of the inputs, not a bool flag set by hand at call sites. That generation alone is not a full key: `update_generations_for_msg` (`tui/app/async_tasks/dispatch.rs` ≈32) leaves it unchanged for an unselected project's `DiskUsage`, and `ProjectStorage` (`scan/background.rs` ≈258) does not touch it. Each cache names its own inputs: list rows, disk totals, column widths and storage. A new cache state is an enum (for example `NotComputed` / `Current(key)`), not a bare `Option<Key>`.
 - Phase 2 made the target size arrive by a 30 s disk poll. A poll reply that changes no size must not draw a frame; one that changes an unselected project's size must update its row.
@@ -215,11 +214,12 @@ you need to create a new unit to handle all cargo port enhancements it should be
 1. **Draw on change.** The loop draws a frame only when input, a background message, a timer or an animation changed visible state since the last frame. The 1 s idle heartbeat draws nothing when nothing changed.
 2. **Path index.** `ProjectList` keeps an index from project path to its place in the roots, rebuilt when the roots change, so `at_path` and its siblings, `visible_row_disk_usage` and the render's per-row lookup do no linear search.
 3. **Disk and width caches.** `ensure_disk_cache` and `ensure_fit_widths_cached` recompute only when their inputs change (scan generation, visible rows, the settings they read), keyed like `ensure_detail_cached`. `compute_disk_cache` clones no vector per child node.
-4. **Tests, red first, each under one second:** an idle loop iteration with no change draws no frame; a background message that changes a row draws one; a `DiskUsage` reply for an unselected project with a new size updates its row, and one with the same size draws nothing; the index finds the right project after insert, replace, regroup and rescan; a lookup by path returns the same project as the linear search for roots, members, worktrees and vendored packages; the disk cache does not recompute when nothing changed and does when a disk size changes.
+4. **Tests, red first, each under one second:** an idle loop iteration with no change draws no frame; a background message that changes a row draws one; a `DiskUsage` reply for an unselected project with a new size updates its row, one that changes `Visible` to `Deleted` draws once, and an identical later reply draws nothing; the index finds the right project after insert, replace, regroup and rescan; a lookup by path returns the same project as the linear search for roots, members, worktrees and vendored packages; the disk cache does not recompute when nothing changed and does when a disk size changes.
 5. **Live CPU measure:** CPU seconds over 60 s, idle (no input, no cargo running in the scratch roots), for the installed binary and the branch binary, with the method in `docs/cargo-port/as-built/overview.md`, after checking that no natedev build hold is in force. Record both numbers and the frames drawn per second from the frame counter. Then the same with a `cargo build` running in a scratch project and no spinner on screen.
 6. CHANGELOG: one line in `crates/cargo-port/CHANGELOG.md`.
 
 **Files:**
+- `crates/cargo-port/src/tui/panes/data.rs` and `crates/cargo-port/src/tui/panes/system.rs` — the detail cache state
 - `crates/cargo-port/src/tui/terminal/event_loop.rs` — draw on change
 - `crates/cargo-port/src/tui/app/mod.rs` — idle heartbeat; the two slow interaction tests (≈7200, ≈8238)
 - `crates/cargo-port/src/tui/app/navigation/cache.rs` — cache keys
@@ -254,6 +254,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 - Style's live shots (`/tmp/claude/unit/b063796c-82d6-4693-bea2-342456902a3a/phases/67/shots/after2`): at 160 columns the sccache popup's widest body row ("Cache location … ~/.cache/sccache") has one column of padding on the left and none on the right; at 80 columns the Git pane shows "fleet" as "flet". Both were in the code before style's change.
 
 **Constraints:**
+- From phase 3: retained `Deleted` rows and stored dismissals stay reachable through the path index, and each retention change keeps its caches current. The late-reply dismissal guard already exists with a test (`async_tasks/disk_handlers.rs` ≈147); the work is to keep it through a scan replacement. The tester's acceptance case covers a discovery folder removed with two projects below it, a completed rescan, a dismissal, and late replies.
 - Build the rescan fix with a type, not a guard: the rescan keeps each Deleted entry in its root as its own state until `x` (or the close box) dismisses it. A fresh scan that does not find the project does not drop that state.
 - Under `NO_COLOR`, write text attributes (strike-through, bold, dim) without colour codes; never send a colour reset that also resets attributes.
 - The sccache popup width is the widest row plus the left and right padding (`tui/sccache/render.rs`), so both sides get the same padding.

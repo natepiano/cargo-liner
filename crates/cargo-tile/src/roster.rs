@@ -10,8 +10,11 @@
 //! Every entry is keyed by invocation identity, so a row and its tile survive a scan
 //! unchanged rather than being rebuilt four times a second.
 
+use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::rc::Rc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -24,6 +27,7 @@ use crate::census::RunStart;
 use crate::census::VisibleParent;
 use crate::census::scan;
 use crate::census::scan::AncestryWalk;
+use crate::constants::CELL_ENTRY_FADE_LIMIT;
 use crate::constants::FADE_ALPHA_STEP;
 use crate::render::SessionColumnWidths;
 use crate::theme;
@@ -35,6 +39,17 @@ enum RowLifetime {
     Live,
     /// The invocation left the scan at this instant.
     Finished(Instant),
+}
+
+/// A command cell's first paint, independent of when its process finished.
+#[derive(Clone, Copy)]
+enum CellEntry {
+    /// Layout has not painted this row's command cell yet.
+    AwaitingPaint,
+    /// This row was readable when first painted and keeps the ordinary fade.
+    MainFade,
+    /// First paint was delayed; hold final ink until the ordinary expiry.
+    ReadableStart,
 }
 
 /// Whether an invocation heads a family whose children share its colour.
@@ -68,6 +83,8 @@ pub(crate) struct TrackedRow {
     /// runs, [`u8::MAX`] once it has reached the ground and is about to
     /// be let go of.
     faded:              u8,
+    /// Shared with frame snapshots so only the first actual paint sets the start.
+    entry:              Rc<Cell<CellEntry>>,
     /// The family this invocation heads, where it has cargo running
     /// under it, as an index into the palette.
     family:             FamilyHead,
@@ -83,6 +100,7 @@ impl From<CargoProcess> for TrackedRow {
             process,
             lifetime: RowLifetime::Live,
             faded: 0,
+            entry: Rc::new(Cell::new(CellEntry::AwaitingPaint)),
             // Stamped by the roster once the whole scan is in: which
             // colours are free is a question about every group at
             // once, not about this row.
@@ -101,6 +119,23 @@ impl TrackedRow {
     /// How far the row's text has been carried toward the ground.
     pub(crate) const fn faded(&self) -> u8 { self.faded }
 
+    /// Ink fade for an actual command-cell paint, leaving roster timing intact.
+    fn painted_fade(&self) -> u8 {
+        match self.entry.get() {
+            CellEntry::AwaitingPaint => {
+                if self.faded > CELL_ENTRY_FADE_LIMIT && self.faded < u8::MAX {
+                    self.entry.set(CellEntry::ReadableStart);
+                    0
+                } else {
+                    self.entry.set(CellEntry::MainFade);
+                    self.faded
+                }
+            },
+            CellEntry::MainFade => self.faded,
+            CellEntry::ReadableStart => 0,
+        }
+    }
+
     /// The family this invocation heads, where it heads one.
     pub(crate) const fn family(&self) -> FamilyHead { self.family }
 
@@ -112,6 +147,9 @@ impl TrackedRow {
         self.process = process;
         self.lifetime = RowLifetime::Live;
         self.faded = 0;
+        if matches!(self.entry.get(), CellEntry::ReadableStart) {
+            self.entry.set(CellEntry::MainFade);
+        }
     }
 
     /// Stamp the row as finished, leaving an earlier stamp alone so the
@@ -192,6 +230,19 @@ impl From<CargoGroup> for TrackedGroup {
 }
 
 impl TrackedGroup {
+    /// Apply a delayed first paint only to drawn ink, not retention or summaries.
+    /// Ordinary cells borrow the snapshot without copying their process data.
+    pub(crate) fn for_painting(&self) -> Cow<'_, Self> {
+        if self.rows().all(|row| row.painted_fade() == row.faded) {
+            return Cow::Borrowed(self);
+        }
+        let mut group = self.clone();
+        for row in group.rows_mut() {
+            row.faded = row.painted_fade();
+        }
+        Cow::Owned(group)
+    }
+
     /// Every row the group's tile draws, the lead first.
     pub(crate) fn rows(&self) -> impl Iterator<Item = &TrackedRow> {
         std::iter::once(&self.lead).chain(self.rest.iter())
