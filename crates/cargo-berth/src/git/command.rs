@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn inherited_child_pipe_returns_a_named_timeout() -> Result<(), Box<dyn Error>> {
+    fn inherited_child_pipe_is_stopped_before_collecting_output() -> Result<(), Box<dyn Error>> {
         let mut command = Command::new("/bin/sh");
         command
             .args(["-c", "sleep 30 & exit 0"])
@@ -295,10 +295,14 @@ mod tests {
         })?;
         let error = result
             .err()
-            .ok_or("an inherited pipe writer must time out")?;
-        assert_eq!(error.kind(), ErrorKind::TimedOut);
+            .ok_or("a surviving descendant must be reported")?;
+        assert_eq!(error.kind(), ErrorKind::Other);
         assert!(error.to_string().contains("child"), "{error}");
         assert!(error.to_string().contains("output"), "{error}");
+        assert!(
+            error.to_string().contains("terminated the process group"),
+            "{error}"
+        );
         assert!(started.elapsed() < Duration::from_secs(1));
         Ok(())
     }

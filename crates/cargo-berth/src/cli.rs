@@ -12,6 +12,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Read;
 use std::io::Write;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
@@ -2040,7 +2041,8 @@ fn schedule_managed_hook_refresh_after_trunk_deletion(
         .current_dir(invocation_directory)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
     {
         Ok(refresh_worker) => drop(refresh_worker),

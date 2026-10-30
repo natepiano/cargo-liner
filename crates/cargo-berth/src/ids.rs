@@ -297,6 +297,11 @@ impl<'de> Deserialize<'de> for GitObjectId {
 #[schemars(transparent)]
 pub(crate) struct ReservationScopePath(#[schemars(length(min = 1))] String);
 
+impl ReservationScopePath {
+    /// Borrow the normalized repository path without copying its spelling.
+    pub(crate) fn as_str(&self) -> &str { &self.0 }
+}
+
 impl Display for ReservationScopePath {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
 }
