@@ -180,6 +180,66 @@ fn row_of(buffer: &Buffer, name: &str) -> u16 {
     find(buffer, name).expect("the tree line is drawn").1
 }
 
+/// A shell keeps its display name and uses its timer observation for the role.
+fn assert_shell_role(name: &str, observation: ShellTimerObservation, role: &str) {
+    let row = AgentRow {
+        children: vec![child(
+            0,
+            ChildKind::Shell(observation),
+            Some(101),
+            name,
+            MINUTE,
+        )],
+        ..agent(10, "shell owner", HOUR, None)
+    };
+    let cell = entry(&row, None);
+    assert_eq!(cell.lines[0].value(TreeColumn::Role, NOW), role);
+    let buffer = rendered(&cell, &[], 200, AccountColumn::Hidden);
+    let shell_row = row_of(&buffer, name);
+    if role.is_empty() {
+        assert!(find(&buffer, TREE_ROLE_HEADER).is_none());
+    } else {
+        assert_eq!(
+            column_value(&buffer, TREE_ROLE_HEADER, shell_row, &HEADERS),
+            role
+        );
+    }
+}
+
+#[test]
+fn a_shell_countdown_shows_the_timer_role() {
+    assert_shell_role(
+        "sleep 300",
+        ShellTimerObservation::ObservedCountdown(Timer {
+            started:  NOW,
+            deadline: NOW + 300,
+        }),
+        "timer",
+    );
+}
+
+#[test]
+fn a_described_shell_countdown_shows_the_timer_role() {
+    assert_shell_role(
+        "Wait for completion",
+        ShellTimerObservation::ObservedCountdown(Timer {
+            started:  NOW,
+            deadline: NOW + 300,
+        }),
+        "timer",
+    );
+}
+
+#[test]
+fn an_untimed_sleep_shell_keeps_an_empty_role() {
+    assert_shell_role("sleep 300", ShellTimerObservation::Untimed, "");
+}
+
+#[test]
+fn an_untimed_cargo_shell_keeps_an_empty_role() {
+    assert_shell_role("cargo nextest run", ShellTimerObservation::Untimed, "");
+}
+
 #[test]
 fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     let state = mockup(["claude2", "claude1", "claude3"]);
@@ -504,7 +564,7 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
     }
     for (name, role, status, account, age) in [
         ("unit-member", "session", "thinking", "claude1", "2h"),
-        ("clock job", "", "1:00", "claude1", "10m"),
+        ("clock job", "timer", "1:00", "claude1", "10m"),
         ("unheld worker", "worker", "idle", "codex1", "9m"),
         ("review worker", "", "idle", "claude1", "8m"),
         ("nested command", "", "running", "claude1", "7m"),

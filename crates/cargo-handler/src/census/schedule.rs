@@ -32,6 +32,7 @@ use super::RemoteMachines;
 use super::SessionIdentity;
 use super::account::AccountLabels;
 use super::hierarchy;
+#[cfg(test)]
 use super::hierarchy::CommandRunner;
 use super::hierarchy::HierarchyCache;
 use super::hierarchy::HierarchyError;
@@ -41,6 +42,7 @@ use super::hierarchy::HierarchyPublication;
 use super::hierarchy::HierarchyRefreshScope;
 use super::hierarchy::HierarchyRequestKind;
 use super::hierarchy::HierarchyRunner;
+use super::hierarchy::InputDrivenHierarchyRunner;
 use super::hierarchy::ReviewerPools;
 use super::probe;
 use super::remote;
@@ -230,11 +232,11 @@ struct HeldHierarchyRows {
 
 /// A cache is available only after its pending command has returned.
 enum LocalHierarchy {
-    Available(HierarchyCache),
+    Available(Box<HierarchyCache>),
     Pending {
         cache:   Box<HierarchyCache>,
         source:  HierarchySource,
-        request: PendingHierarchyRequest,
+        request: Box<PendingHierarchyRequest>,
         publish: HeldHierarchyRows,
     },
 }
@@ -263,7 +265,7 @@ impl PendingHierarchyRequest {
 }
 
 impl Default for LocalHierarchy {
-    fn default() -> Self { Self::Available(HierarchyCache::default()) }
+    fn default() -> Self { Self::Available(Box::default()) }
 }
 
 /// A scan publishes through shared state so detail reads cannot delay a ready hierarchy answer.
@@ -377,7 +379,7 @@ impl LocalPublications {
             publish, request, ..
         } = &mut self.state
         {
-            let rows = match request {
+            let rows = match request.as_ref() {
                 PendingHierarchyRequest::Initial(_) => PendingPlacementRows::new(rows),
                 PendingHierarchyRequest::Refresh { placement, .. } => {
                     PendingPlacementRows::refreshing(rows, placement)
@@ -482,9 +484,9 @@ impl LocalPublications {
             },
         };
         self.state = LocalHierarchy::Pending {
-            cache: Box::new(cache),
+            cache,
             source,
-            request,
+            request: Box::new(request),
             publish: HeldHierarchyRows {
                 rows,
                 stage,
@@ -509,7 +511,7 @@ impl LocalPublications {
         };
         let rows = publish.rows.independent();
         let hierarchy = cache.retained(source.clone());
-        let stage = match request {
+        let stage = match request.as_ref() {
             PendingHierarchyRequest::Initial(_) => publish.stage,
             PendingHierarchyRequest::Refresh { .. } => ScanStage::Classified,
         };
@@ -547,7 +549,7 @@ impl LocalPublications {
         } = std::mem::take(&mut self.state)
         {
             let rows = publish.rows.into_rows();
-            let (hierarchy, requested) = match request {
+            let (hierarchy, requested) = match *request {
                 PendingHierarchyRequest::Initial(answer) => (
                     cache.first_outcome(source.clone(), &rows, outcome, publish.observed),
                     answer.requested,
@@ -563,7 +565,7 @@ impl LocalPublications {
                     HierarchyPublication::RefreshNeeded
                 )
             {
-                self.state = LocalHierarchy::Available(*cache);
+                self.state = LocalHierarchy::Available(cache);
                 return self.discover_at(rows, publish.stage, publish.observed);
             }
             self.discovery = match publish.stage {
@@ -573,7 +575,7 @@ impl LocalPublications {
                 },
                 ScanStage::Completed => ScanDiscovery::Unstarted,
             };
-            self.state = LocalHierarchy::Available(*cache);
+            self.state = LocalHierarchy::Available(cache);
             self.deliver(rows, hierarchy, publish.stage)?;
         }
         Ok(())
@@ -635,7 +637,7 @@ pub(crate) fn spawn(
     spawn_staged_with(
         remotes,
         hierarchy,
-        Arc::new(CommandRunner),
+        Arc::new(InputDrivenHierarchyRunner::default()),
         Arc::new(SshRunner::new()),
         move |sender| {
             let mut schedule = ScanSchedule::NextRound;
@@ -762,7 +764,7 @@ fn spawn_with(
     spawn_staged_with(
         remotes,
         HierarchyCommand::new(HierarchySource::Off),
-        Arc::new(CommandRunner),
+        Arc::new(InputDrivenHierarchyRunner::default()),
         runner,
         move |sender| {
             if sender.send(scan_local()).is_ok() {
