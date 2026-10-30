@@ -203,7 +203,7 @@ pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> Option<&mut V
         PaneId::Git => &mut app.panes.git.viewport,
         PaneId::Finder => &mut app.overlays.finder_pane.viewport,
         PaneId::Sccache => &mut app.overlays.sccache_pane.viewport,
-        PaneId::Output => &mut app.panes.output.viewport,
+        PaneId::Output => app.panes.output.viewport_mut(),
         PaneId::Targets => &mut app.panes.targets.viewport,
         PaneId::ProjectList => &mut app.panes.project_list.viewport,
         PaneId::Keymap | PaneId::Settings | PaneId::Toasts => return None,

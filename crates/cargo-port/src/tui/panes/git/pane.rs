@@ -10,8 +10,10 @@ use tui_pane::PaneFrameChrome;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::Viewport;
+use tui_pane::VisualRowHit;
+use tui_pane::VisualRowHitLayout;
+use tui_pane::VisualRowSpan;
 
-use super::render::GitVisualRowSpan;
 use crate::project::AbsolutePath;
 use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes::GitData;
@@ -40,7 +42,7 @@ struct GitRowLayout {
     content_area:     Rect,
     scroll_offset:    usize,
     row_offset:       usize,
-    row_spans:        Vec<GitVisualRowSpan>,
+    row_spans:        Vec<VisualRowSpan>,
 }
 
 impl GitPane {
@@ -84,7 +86,7 @@ impl GitPane {
         description_rect: Option<Rect>,
         content_area: Rect,
         row_offset: usize,
-        row_spans: Vec<GitVisualRowSpan>,
+        row_spans: Vec<VisualRowSpan>,
     ) {
         self.row_layout = GitRowLayout {
             description_rect,
@@ -122,31 +124,18 @@ impl Hittable<HoverTarget> for GitPane {
                 row:  0,
             });
         }
-        let inner = layout.content_area;
-        if !inner.contains(pos) {
-            return None;
+        match (VisualRowHitLayout {
+            content_area:  layout.content_area,
+            scroll_offset: layout.scroll_offset,
+            spans:         &layout.row_spans,
+        })
+        .hit_test(pos)
+        {
+            VisualRowHit::Row(row_index) => Some(HoverTarget::PaneRow {
+                pane: PaneId::Git,
+                row:  layout.row_offset + row_index,
+            }),
+            VisualRowHit::Miss => None,
         }
-        let visible_top = inner.y;
-        let visible_bottom = inner.y.saturating_add(inner.height);
-        for (row_index, span) in layout.row_spans.iter().enumerate() {
-            if span.start_y.saturating_add(span.height) <= layout.scroll_offset {
-                continue;
-            }
-            let offset = span.start_y.saturating_sub(layout.scroll_offset);
-            let screen_y = inner
-                .y
-                .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
-            let screen_bottom = screen_y.saturating_add(u16::try_from(span.height).unwrap_or(1));
-            if screen_bottom <= visible_top || screen_y >= visible_bottom {
-                continue;
-            }
-            if pos.y >= screen_y && pos.y < screen_bottom {
-                return Some(HoverTarget::PaneRow {
-                    pane: PaneId::Git,
-                    row:  layout.row_offset + row_index,
-                });
-            }
-        }
-        None
     }
 }
