@@ -1,11 +1,11 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::Line;
 use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
+use tui_pane::FooterPlacement;
 use tui_pane::PaneFrameChrome;
 use tui_pane::PaneTitleCount;
 use tui_pane::PaneTitleGroup;
@@ -102,14 +102,14 @@ pub(super) fn render_project_list_pane_body(
     }
 
     let summary_height = u16::try_from(summary_lines.len()).unwrap_or(u16::MAX);
-    let pin_summary =
-        should_pin_project_summary(total_project_rows, summary_lines.len(), content_area.height);
+    let placement =
+        tui_pane::footer_placement(total_project_rows, summary_lines.len(), content_area.height);
 
-    if !pin_summary {
+    if placement == FooterPlacement::Inline {
         items.extend(summary_lines.iter().cloned().map(ListItem::new));
     }
 
-    let list_area = if pin_summary {
+    let list_area = if placement == FooterPlacement::Pinned {
         Rect::new(
             content_area.x,
             content_area.y,
@@ -138,8 +138,8 @@ pub(super) fn render_project_list_pane_body(
     // path doesn't supply. Dropped.
     set_project_list_dismiss_actions(pane, ctx, list_area, row_width);
 
-    if pin_summary {
-        render_project_list_footer(frame, content_area, &summary_lines);
+    if placement == FooterPlacement::Pinned {
+        tui_pane::render_pinned_footer_lines(frame, content_area, &summary_lines);
     }
 
     chrome.labels.extend(tui_pane::overflow_affordance_label(
@@ -185,27 +185,6 @@ fn set_project_list_dismiss_actions(
         actions.push((Rect::new(x, y, suffix_width, 1), target));
     }
     pane.set_dismiss_actions(actions);
-}
-
-fn render_project_list_footer(frame: &mut Frame, content_area: Rect, lines: &[Line<'static>]) {
-    let footer_height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    let footer_area = Rect::new(
-        content_area.x,
-        content_area
-            .y
-            .saturating_add(content_area.height.saturating_sub(footer_height)),
-        content_area.width,
-        footer_height,
-    );
-    for (index, line) in lines.iter().cloned().enumerate() {
-        let y = footer_area
-            .y
-            .saturating_add(u16::try_from(index).unwrap_or(u16::MAX));
-        frame.render_widget(
-            Paragraph::new(line),
-            Rect::new(footer_area.x, y, footer_area.width, 1),
-        );
-    }
 }
 
 fn project_panel_title_with_counts(
@@ -310,16 +289,6 @@ pub(super) fn project_roots_title(body: &str, max_width: usize) -> String {
     )
 }
 
-pub(super) fn should_pin_project_summary(
-    project_rows: usize,
-    summary_rows: usize,
-    inner_height: u16,
-) -> bool {
-    summary_rows > 0
-        && usize::from(inner_height) > summary_rows
-        && project_rows.saturating_add(summary_rows) > usize::from(inner_height)
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -329,7 +298,6 @@ mod tests {
     use super::project_roots_title;
     use super::project_title_groups;
     use super::selected_top_level_node_index;
-    use super::should_pin_project_summary;
     use crate::project::AbsolutePath;
     use crate::project::MemberGroup;
     use crate::project::NonRustProject;
@@ -418,26 +386,6 @@ mod tests {
             PaneTitleCount::Grouped(project_title_groups(&list, &[rust_root], false, None)).body(),
             "/workspace/rust (2)"
         );
-    }
-
-    #[test]
-    fn project_summary_stays_inline_when_everything_fits() {
-        assert!(!should_pin_project_summary(5, 1, 6));
-    }
-
-    #[test]
-    fn project_summary_pins_when_list_overflows() {
-        assert!(should_pin_project_summary(6, 1, 6));
-    }
-
-    #[test]
-    fn project_summary_does_not_pin_without_summary_content() {
-        assert!(!should_pin_project_summary(100, 0, 6));
-    }
-
-    #[test]
-    fn project_summary_stays_inline_without_room_for_project_rows() {
-        assert!(!should_pin_project_summary(1, 2, 2));
     }
 
     fn package(path: &str) -> RootItem {
