@@ -366,13 +366,15 @@ fn observe_target_footprint(
     } = footprint_target;
     check_enrollment_operation(&context)?;
     let merge_base = observe_merge_base(root, &trunk, &head)?;
-    let committed = git::unmerged_branch_paths(root, &trunk, &head).map_err(|error| {
-        failure(
-            root,
-            WorktreeEnrollmentFailureReason::GitFailure,
-            format!("git merge-tree {trunk} {head}: {error}"),
-        )
-    })?;
+    let (committed, _) = repository
+        .unmerged_branch_paths(root, &trunk, &head)
+        .map_err(|error| {
+            failure(
+                root,
+                WorktreeEnrollmentFailureReason::GitFailure,
+                format!("git merge-tree {trunk} {head}: {error}"),
+            )
+        })?;
     let working_tree = drift::observe_merge_working_tree(repository, root).map_err(|error| {
         failure(
             root,
@@ -610,6 +612,7 @@ fn failure(
 }
 
 fn mutual_remainders(
+    repository: &RepositorySnapshot,
     candidate: &EnrollmentFootprint,
     footprints: &[EnrollmentFootprint],
 ) -> Result<HashMap<WorktreeId, MutualWorkRemainder>, WorktreeEnrollmentFailure> {
@@ -618,11 +621,12 @@ fn mutual_remainders(
         if holder.worktree_id == candidate.worktree_id {
             continue;
         }
-        let candidate_paths = remaining_work(candidate, &holder.head)?;
-        let holder_paths = remaining_work(holder, &candidate.head).map_err(|mut error| {
-            error.worktree_root = candidate.context.repository_root().to_path_buf();
-            error
-        })?;
+        let candidate_paths = remaining_work(repository, candidate, &holder.head)?;
+        let holder_paths =
+            remaining_work(repository, holder, &candidate.head).map_err(|mut error| {
+                error.worktree_root = candidate.context.repository_root().to_path_buf();
+                error
+            })?;
         remainders.insert(
             holder.worktree_id,
             MutualWorkRemainder {
@@ -635,21 +639,23 @@ fn mutual_remainders(
 }
 
 fn remaining_work(
+    repository: &RepositorySnapshot,
     worktree: &EnrollmentFootprint,
     other_head: &GitObjectId,
 ) -> Result<Vec<ReservationScopePath>, WorktreeEnrollmentFailure> {
-    let mut paths = git::unmerged_branch_paths(
-        worktree.context.repository_root(),
-        other_head,
-        &worktree.head,
-    )
-    .map_err(|error| {
-        failure(
+    let (mut paths, _) = repository
+        .unmerged_branch_paths(
             worktree.context.repository_root(),
-            WorktreeEnrollmentFailureReason::GitFailure,
-            format!("git merge-tree {other_head} {}: {error}", worktree.head),
+            other_head,
+            &worktree.head,
         )
-    })?;
+        .map_err(|error| {
+            failure(
+                worktree.context.repository_root(),
+                WorktreeEnrollmentFailureReason::GitFailure,
+                format!("git merge-tree {other_head} {}: {error}", worktree.head),
+            )
+        })?;
     paths.extend(worktree.working_tree.tracked_paths.iter().cloned());
     paths.extend(worktree.working_tree.untracked_paths.iter().cloned());
     Ok(paths)
@@ -685,7 +691,7 @@ fn enroll_candidate(
         repository_trunk,
         &candidate.head,
     );
-    let remainders = mutual_remainders(candidate, footprints)?;
+    let remainders = mutual_remainders(repository, candidate, footprints)?;
     let worktree_root: CanonicalWorktreeRoot = root
         .to_str()
         .ok_or_else(|| git_failure("worktree root is not UTF-8".to_owned()))?
