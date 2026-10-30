@@ -94,7 +94,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **As-built:** `InsufficientProcessIdentity::PlatformCreationTokenUnavailable` (`crates/cargo-port/src/process_observation/identity.rs`) is gated `cfg(not(target_os = "macos"))`, the only platform that constructs it. Before, it also existed in macOS test builds, where `dead_code` failed clippy under `-D warnings`. Each other variant's cfg matches the cfg of its constructors. Proof: macOS `cargo clippy -p cargo-port --all-targets -- -D warnings` passes; the identity tests pass on the Mac.
 
-### Phase 2b — cargo-port watches only project folders and the folders that lead to them  · status: todo
+### Phase 2b — cargo-port watches only project folders and the folders that lead to them  · status: done
 
 **Depends on:** Phase 2m. The folder roles apply only to the `PerFolder` backend (Linux inotify); the `RecursiveRoot` backend (macOS) keeps one recursive watch per root.
 
@@ -143,6 +143,23 @@ you need to create a new unit to handle all cargo port enhancements it should be
 - `test` — spec 8, in a new test module `crates/cargo-port/src/watcher/watch_role_tests.rs`, registered by `impl` in `watcher/mod.rs`.
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; the live count of spec 9 is far under 90,266 and near the folder count of the user's projects plus their discovery folders. The checkpoint adds a Change-Review line.
+
+### Phase 2d — A manifest cargo cannot read shows once on its row  · status: todo
+
+**Why:** user report 2026-10-29, both machines. `~/rust/hana_demo/f3a25eaca/crates/hana/Cargo.toml` is a workspace member copied out of its workspace (`*.workspace = true` with no workspace root). Each scan shows a timed "cargo metadata failed" error toast for it (`tui/app/async_tasks/metadata_handlers.rs:61`). Showrunner approved 2026-10-29: current, right after 2b.
+
+**Depends on:** Phase 2b.
+
+**Work:**
+1. A manifest cargo cannot parse is an error state on that project's row. It is a variant of the project's metadata state enum, not a flag, and carries cargo's first error line.
+2. The failure is stated once. A later scan that gets the same failure for the same manifest makes no toast. A changed manifest that then parses clears the state.
+3. Update the test at `tui/app/mod.rs` ≈13911 that now expects the toast.
+
+**Tests:** a test that is red on main first: an orphan member manifest (`version.workspace = true`, no workspace root) in a temp root gives the error state on its row and no toast on a second scan; after the manifest is fixed, the state clears.
+
+**Files:** `crates/cargo-port/src/tui/app/async_tasks/metadata_handlers.rs`, the project metadata state type and the row that draws it (writer finds them), `crates/cargo-port/src/tui/app/mod.rs` (tests), CHANGELOG. 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; live on natedev, with a scratch project under a configured root whose Cargo.toml cargo cannot parse, no toast appears and its row shows the error. (hana's showrunner fixes the demo bundler, so hana_demo may be gone.) The checkpoint adds a Change-Review line.
 
 ### Phase 2c — On macOS overlapping roots get one recursive watch  · status: todo
 

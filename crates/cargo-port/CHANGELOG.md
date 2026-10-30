@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Linux, recreated external `.cargo` folders need a rescan to regain their config watch when their parent is unwatched; watching every ancestor would add a watch per ancestor folder.
+
+- On Linux, watch project folders and their discovery paths instead of unrelated root trees; projects added inside existing unwatched folders appear on the next full rescan.
+
 - Restore recursive root watches on macOS to keep startup quick; Linux keeps filtered per-folder watches, and both poll build sizes.
 
 - Watch source folders without watching target trees or Git objects; poll build sizes every 30 seconds.
