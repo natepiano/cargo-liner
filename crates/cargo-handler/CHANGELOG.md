@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Select rows with Up, Down, PageUp, PageDown, Home and End, click a row, or scroll the tile under the pointer. Selection follows sessions and worker seats as their work changes. Role and status widths follow the painted rows while age units remain aligned through scrolling.
 
 ### Changed
+- Summary and tile ages use d:hh:mm without seconds and align to the right.
 - Idle census scans retain parsed run records and process tables; stored account and hierarchy commands run when their inputs change.
 - Narrow terminals show fewer agent tiles in a row so each keeps its session, role and status whole; cut text ends with “…” and uses complete graphemes.
 - Accounts headings and column headers stay in view while account rows scroll; the summary receives its measured rows before agent tiles.

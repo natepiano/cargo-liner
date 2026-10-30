@@ -421,14 +421,18 @@ fn unassigned_age_column_reaches_the_right_content_edge_at_each_width() {
         let buffer = draw_pool(entry, width);
         let content = header_indented(buffer.area);
         let (header_x, header_y) = find(&buffer, "age").expect("age header");
-        let (value_x, value_y) = find(&buffer, "21h").expect("age value");
+        let (value_x, value_y) = find(&buffer, "21:00").expect("age value");
         assert_eq!(
             header_x + 3,
             content.right(),
             "width={width}: {}",
             lines(&buffer).join("\n")
         );
-        assert_eq!(value_x + 3, content.right(), "width={width}");
+        assert_eq!(
+            value_x + summary::cell_width("21:00"),
+            content.right(),
+            "width={width}"
+        );
         assert!(value_y > header_y);
         for absent in ["type", "role"] {
             assert!(find(&buffer, absent).is_none(), "{absent}: width={width}");

@@ -109,34 +109,25 @@ fn rendered(
 fn column_value(buffer: &Buffer, header: &str, row: u16, headers: &[&str]) -> String {
     // Read the last age from drawn cells: right alignment puts its values before
     // the header start, so that start cannot delimit the preceding directory.
-    let mut age_parts = Vec::new();
-    let mut cursor = buffer.area.right();
-    while cursor > buffer.area.x {
-        while cursor > buffer.area.x && buffer[(cursor - 1, row)].symbol() == " " {
-            cursor -= 1;
-        }
-        let end = cursor;
-        while cursor > buffer.area.x && buffer[(cursor - 1, row)].symbol() != " " {
-            cursor -= 1;
-        }
-        let part: String = (cursor..end).map(|x| buffer[(x, row)].symbol()).collect();
-        if part.len() <= 1
-            || !part.ends_with(['d', 'h', 'm', 's'])
-            || !part.as_bytes()[..part.len() - 1]
-                .iter()
-                .all(u8::is_ascii_digit)
+    let mut age_end = buffer.area.right();
+    while age_end > buffer.area.x && buffer[(age_end - 1, row)].symbol() == " " {
+        age_end -= 1;
+    }
+    let mut age_start = age_end;
+    while age_start > buffer.area.x {
+        let symbol = buffer[(age_start - 1, row)].symbol();
+        if !symbol
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b':')
         {
             break;
         }
-        age_parts.push((cursor, part));
+        age_start -= 1;
     }
-    age_parts.reverse();
     if header == TREE_AGE_HEADER {
-        return age_parts
-            .iter()
-            .map(|(_, part)| part.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
+        return (age_start..age_end)
+            .map(|x| buffer[(x, row)].symbol())
+            .collect();
     }
     let header_at = |label| {
         find_all(buffer, label)
@@ -152,7 +143,7 @@ fn column_value(buffer: &Buffer, header: &str, row: u16, headers: &[&str]) -> St
         .min()
         .unwrap_or(buffer.area.width);
     let end = if header == TREE_DIRECTORY_HEADER {
-        age_parts.first().map_or(end, |(x, _)| end.min(*x))
+        end.min(age_start)
     } else {
         end
     };
@@ -263,7 +254,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
             "thinking",
             "claude1",
             "dashboard",
-            "6h"
+            "6:00"
         ]
     );
     assert_eq!(
@@ -276,21 +267,21 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
             "idle",
             "codex1",
             "dashboard",
-            "5h"
+            "5:00"
         ]
     );
     assert_eq!(
         text[3].split_whitespace().collect::<Vec<_>>(),
-        ["└─", "diagrams", "unit", "idle", "claude3", "—", "4h"]
+        ["└─", "diagrams", "unit", "idle", "claude3", "—", "4:00"]
     );
     assert_eq!(
         find(&buffer, "session").expect("header").0,
         find(&buffer, "dashboard").expect("name").0
     );
     for (name, role, status, account, age) in [
-        ("dashboard", "unit", "thinking", "claude1", "6h"),
-        ("hanadocs-dashboard-impl", "impl", "idle", "codex1", "5h"),
-        ("diagrams", "unit", "idle", "claude3", "4h"),
+        ("dashboard", "unit", "thinking", "claude1", "6:00"),
+        ("hanadocs-dashboard-impl", "impl", "idle", "codex1", "5:00"),
+        ("diagrams", "unit", "idle", "claude3", "4:00"),
     ] {
         let row = row_of(&buffer, name);
         for (header, expected) in [
@@ -563,12 +554,12 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
         assert!(!text.contains(hidden), "{hidden} is not a tree line");
     }
     for (name, role, status, account, age) in [
-        ("unit-member", "session", "thinking", "claude1", "2h"),
-        ("clock job", "timer", "1:00", "claude1", "10m"),
-        ("unheld worker", "worker", "idle", "codex1", "9m"),
-        ("review worker", "", "idle", "claude1", "8m"),
-        ("nested command", "", "running", "claude1", "7m"),
-        ("root command", "", "running", "claude2", "1h"),
+        ("unit-member", "session", "thinking", "claude1", "2:00"),
+        ("clock job", "timer", "1:00", "claude1", "10"),
+        ("unheld worker", "worker", "idle", "codex1", "9"),
+        ("review worker", "", "idle", "claude1", "8"),
+        ("nested command", "", "running", "claude1", "7"),
+        ("root command", "", "running", "claude2", "1:00"),
     ] {
         let y = row_of(&buffer, name);
         assert_eq!(find_all(&buffer, name).len(), 1, "{name} is drawn once");

@@ -167,12 +167,6 @@ pub(crate) const AGENT_PLURAL: &str = "top-level agents";
 /// Shown in a cell that has no value, such as the status of an agent
 /// that reports none.
 pub(crate) const MISSING_VALUE: &str = "—";
-/// The units an age is written in, largest first: seconds in the unit,
-/// then its suffix.
-pub(crate) const AGE_UNITS: [(u64, &str); 4] = [(86_400, "d"), (3_600, "h"), (60, "m"), (1, "s")];
-/// Below this, an age's leading value is a single digit and the next
-/// unit down is written after it.
-pub(crate) const AGE_DETAIL_BELOW: u64 = 10;
 
 /// The metadata agent type that delegates responsibility to its description.
 pub(crate) const GENERAL_SUBAGENT_TYPE: &str = "general-purpose";

@@ -1,4 +1,4 @@
-//! Summary and tile age cells share aligned unit slots.
+//! Summary and tile age cells share one right edge.
 
 #![expect(
     clippy::expect_used,
@@ -49,70 +49,30 @@ fn age_header_row(buffer: &Buffer) -> u16 {
         .expect("drawn age header")
 }
 
-fn assert_unit_slots(buffer: &Buffer) -> Vec<String> {
+fn assert_age_right_edge(buffer: &Buffer) -> Vec<String> {
     let header_y = age_header_row(buffer);
     let header = row_text(buffer, header_y);
     let age_header = cell_width(&header[..header.find("age").expect("age header")]);
-    let age_end = AGES
-        .iter()
-        .map(|(name, _)| {
-            let (_, y) = locate(buffer, name);
-            let text = row_text(buffer, y);
-            age::age_label(AGES.iter().find(|(label, _)| label == name).expect("age").1)
-                .split_whitespace()
-                .map(|token| {
-                    cell_width(&text[..text.rfind(token).expect("age token")]) + cell_width(token)
-                })
-                .max()
-                .expect("age")
-        })
-        .max()
-        .expect("rows");
-    let age_start = AGES
-        .iter()
-        .map(|(name, seconds)| {
-            let (_, y) = locate(buffer, name);
-            let text = row_text(buffer, y);
-            age::age_label(*seconds)
-                .split_whitespace()
-                .map(|token| cell_width(&text[..text.rfind(token).expect("age token")]))
-                .min()
-                .expect("age")
-        })
-        .min()
-        .expect("rows");
-    let mut columns = std::collections::HashMap::new();
+    let age_end = age_header + cell_width("age");
+    let expected = [" 8:20:00", "    5:16", "14:00:00", "       2"];
+    let age_start = age_end - cell_width(expected[0]);
     let mut labels = Vec::new();
-    for (name, seconds) in AGES {
+    for ((name, _), expected) in AGES.into_iter().zip(expected) {
         let (_, y) = locate(buffer, name);
-        let text = row_text(buffer, y);
-        let mut slots = Vec::new();
-        for unit in age::age_label(seconds).split_whitespace() {
-            let index = text.rfind(unit).expect("age unit draws");
-            let x = cell_width(&text[..index]) + cell_width(unit) - 1;
-            let suffix = unit.chars().last().expect("unit suffix");
-            if let Some(previous) = columns.insert(suffix, x) {
-                assert_eq!(x, previous, "{suffix}: {text}");
-            }
-            slots.push(unit.to_owned());
-        }
-        assert_eq!(slots.join(" "), age::age_label(seconds));
-        labels.push(
-            (age_start..age_end)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect(),
+        let actual: String = (age_start..age_end)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "{name}: age and header share a right edge"
         );
+        labels.push(actual);
     }
-    assert_eq!(
-        age_header + cell_width("age"),
-        age_end,
-        "age header right edge aligns with age column"
-    );
     labels
 }
 
 #[test]
-fn summary_and_tree_ages_align_each_unit_and_right_align_the_header() {
+fn summary_and_tree_ages_right_align_values_and_header() {
     let rows:Vec<AgentRow>=AGES.iter().enumerate().map(|(index,(name,seconds))|serde_json::from_value(serde_json::json!({
         "agent":"claude","name":name,"pid":100+index,"started":NOW-seconds,"directory":"/fixture",
         "children":[{"depth":0,"kind":"shell","pid":999,"name":"fixture work","started":NOW-seconds}]
@@ -144,7 +104,7 @@ fn summary_and_tree_ages_align_each_unit_and_right_align_the_header() {
             },
         },
     );
-    let summary_labels = assert_unit_slots(&summary);
+    let summary_labels = assert_age_right_edge(&summary);
     let mut root = rows[0].clone();
     root.name = "root".into();
     root.children=rows.iter().map(|row|serde_json::from_value(serde_json::json!({"depth":0,"kind":"thread","name":row.name,"started":row.started})).expect("thread row")).collect();
@@ -178,10 +138,10 @@ fn summary_and_tree_ages_align_each_unit_and_right_align_the_header() {
         AccountColumn::Shown,
         &FooterColors::default(),
     );
-    let tree_labels = assert_unit_slots(&tree);
+    let tree_labels = assert_age_right_edge(&tree);
     assert_eq!(
         summary_labels, tree_labels,
-        "the same ages draw the same unit-slot text in both tables"
+        "the same ages draw the same text in both tables"
     );
 }
 
@@ -233,7 +193,7 @@ fn summary_pid_digits_end_under_the_right_aligned_pid_header() {
 }
 
 #[test]
-fn summary_age_header_ends_at_the_last_unit_used_by_its_rows() {
+fn summary_age_header_ends_at_the_last_digit_used_by_its_rows() {
     let ages = [
         ("week-old", 7 * 86400 + 21 * 3600),
         ("twenty-days", 20 * 86400),
@@ -280,9 +240,9 @@ fn summary_age_header_ends_at_the_last_unit_used_by_its_rows() {
     let header = row_text(&buffer, header_y);
     let header_x = cell_width(&header[..header.find("age").expect("age column header")]);
     let end = header_x + 3;
-    for (name, expected) in [("week-old", " 7d 21h"), ("twenty-days", "20d    ")] {
+    for (name, expected) in [("week-old", " 7:21:00"), ("twenty-days", "20:00:00")] {
         let (_, y) = locate(&buffer, name);
-        let actual: String = (end - 7..end).map(|x| buffer[(x, y)].symbol()).collect();
-        assert_eq!(actual, expected, "{name}: no unused minute or second slots");
+        let actual: String = (end - 8..end).map(|x| buffer[(x, y)].symbol()).collect();
+        assert_eq!(actual, expected, "{name}: no second field");
     }
 }
