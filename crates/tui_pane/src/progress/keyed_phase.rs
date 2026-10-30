@@ -40,12 +40,8 @@ impl<K: Eq + Hash> Denominator<K> {
     }
 
     /// Number of expected keys; `0` while `Unknown`.
-    #[expect(
-        clippy::len_without_is_empty,
-        reason = "unknown and known-empty denominators have distinct progress semantics"
-    )]
     #[must_use]
-    pub fn len(&self) -> usize { self.keys().map_or(0, HashSet::len) }
+    pub fn expected_count(&self) -> usize { self.keys().map_or(0, HashSet::len) }
 
     /// `true` when no denominator is known yet — the row is omitted.
     #[must_use]
@@ -111,7 +107,7 @@ impl<K: Eq + Hash> Default for KeyedPhase<K> {
 impl<K: Eq + Hash> KeyedPhase<K> {
     /// Length of the expected set; `0` when the denominator is `Unknown`.
     #[must_use]
-    pub fn expected_len(&self) -> usize { self.expected.len() }
+    pub fn expected_len(&self) -> usize { self.expected.expected_count() }
 
     /// Stamp `first_seen` the first time the row becomes visible. Idempotent.
     pub fn stamp_first_seen(&mut self, now: Instant) { self.first_seen.get_or_insert(now); }
