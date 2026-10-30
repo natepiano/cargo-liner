@@ -909,7 +909,7 @@ fn populated_columns(
         .collect()
 }
 
-/// Every listed age contributes its unit slots to the shared summary column.
+/// Every listed age contributes its label width to the shared summary column.
 fn age_layout(machines: &[Machine<'_>], placement: &AgentPlacement<'_>, now: u64) -> AgeLayout {
     age::AgeLayout::from_ages(
         machines
@@ -1487,15 +1487,15 @@ mod tests {
             lines(&buffer),
             [
                 " natedev · 4 top-level agents",
-                "     pid  account  session                               status      age ▼  desktop        directory",
-                " 1579022  claude   boss of bosses                        idle      21h      boss           ~/rust/hana_catalyst/docs/hana",
-                " 2747564  claude   tmp cleanup then merge to berth and…  running    2h 29m  berth_fix      ~/rust/cargo-handler",
-                "  428044  claude   enh/handler                           thinking   1h 36m  cargo handler  ~/rust/handler",
-                " 4039085  codex    --model gpt-5                         —             12m  —              ~/rust/handler",
+                "     pid  account  session                               status    age ▼  desktop        directory",
+                " 1579022  claude   boss of bosses                        idle      21:00  boss           ~/rust/hana_catalyst/docs/hana",
+                " 2747564  claude   tmp cleanup then merge to berth and…  running    2:29  berth_fix      ~/rust/cargo-handler",
+                "  428044  claude   enh/handler                           thinking   1:36  cargo handler  ~/rust/handler",
+                " 4039085  codex    --model gpt-5                         —            12  —              ~/rust/handler",
                 "",
                 " mac · 1 top-level agent",
-                "     pid  account  session                               status      age ▼  desktop        directory",
-                "   12055  claude   natemccoy-30                          idle      23h      —              ~",
+                "     pid  account  session                               status    age ▼  desktop        directory",
+                "   12055  claude   natemccoy-30                          idle      23:00  —              ~",
                 "",
                 " studio · unreachable",
                 "",
@@ -1613,9 +1613,9 @@ mod tests {
             lines(&buffer),
             [
                 " natedev · 2 top-level agents",
-                "     pid  account     session        status     age ▼  directory",
-                "  428044  claude      enh/handler    thinking  1h      ~/rust/handler",
-                " 4039085  codex fast  --model gpt-5  —            12m  ~/rust/handler",
+                "     pid  account     session        status    age ▼  directory",
+                "  428044  claude      enh/handler    thinking   1:00  ~/rust/handler",
+                " 4039085  codex fast  --model gpt-5  —            12  ~/rust/handler",
             ]
         );
         for x in [10, 19] {
