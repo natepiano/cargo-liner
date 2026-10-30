@@ -620,6 +620,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Section names come from `crates/tui_pane/src/keymap/mod.rs` (`"Global Navigation"` ≈460, ≈545; `"Global Shortcuts"` ≈475, ≈550), which feeds both the overlay and the keymap viewer.
 - Key names come from `crates/tui_pane/src/keymap/key_bind.rs` (`KeyCode::Esc => "Esc"` ≈236). The bar's paired `nav` label is `crates/tui_pane/src/bar/nav_region.rs` ≈52.
 - cargo-port draws its sccache value in `crates/cargo-port/src/tui/sccache/status_line.rs` ≈59 (`"{cache_size} - hit rate {hit_rate}"`); cargo-tile has `SCCACHE_HIT_RATE_WORD` (`crates/cargo-tile/src/constants.rs` ≈938). cargo-tile files are the tile unit's; send an overlap to the showrunner.
+- Title padding today: cargo-tile supplies `" summary "` (`crates/cargo-tile/src/constants.rs` ≈211); cargo-handler supplies `" summary"` and puts one space before group titles. Item 5a puts the padding in one owner in `tiles/draw.rs` and tests both supplied forms; after it, hosts supply bare titles.
+- Phase 58 changes `render/selected_ink_tests.rs` ≈207 and ≈325 to the unfocused selection ruling; "unchanged expectations" below means unchanged from Phase 58.
 - Phase 16 binds up/down in cargo-handler to the row selection, so "Focus the tile above" and "Focus the tile below" show no key in its overlay.
 - `theme::ResetRank::color` (`crates/cargo-handler/src/theme/mod.rs` ≈125) stays the one reset source. The readability correction applies after it. The failed-reading dot keeps `tui_pane::error_color()`. The shared lift below must not add a reset source.
 - The phase 16 lift today: `SelectedGroundInk::resolve(color, ground)` (`crates/cargo-handler/src/footer_colors/mod.rs` ≈421) reads and fills the handler palette cache `PALETTE` (`ReadablePalette.selected_inks` ≈185). `ReadablePalette::current` (≈233) rebuilds the cache when the theme identity (`Arc::ptr_eq`) or the grounds (`InkGrounds::current`) change. The calculation is `lightness_for` with `LightnessTarget::Selected(ground)` (≈501): an OKLCH lightness search along `SelectedHueChroma` (≈610) through `search_lightness` (≈547), measured by `InkCoverage::Antialiased` on that one ground. Phase 18: `InkCoverage::contrast` (≈367) returns the lower of the unrounded and the byte-rounded 208/255 covered contrast over all grounds (a terminal can blend in whole bytes); the handler test oracles use the same two-way minimum. `Oklch::from_color` (≈615) uses `SelectedHueChroma` directly, and `render/selected_ink_tests.rs` and `footer_colors::tests::oklch_ink` read that OKLCH measurement. `search_lightness` (≈575) returns its first candidate when no end of the search reaches the target: on a mid ground such as rgb 127,127,127 even black (≈4.46:1) and white (≈3.24:1) stay under 4.5:1 with the two-way minimum. A session row draws its inks through `SessionRowInk::style()` (`theme/mod.rs` ≈58).
@@ -631,6 +633,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 3. The title shows once: the section heading that repeats the title is removed.
 4. One blank row stands before each section heading after the first. The fit and page height count it.
 5. "Focus the tile above" and "Focus the tile below" show their bound key. A row with no bound key is left out of the overlay.
+5a. A tile title has one space on each side inside its frame line ("┌ summary ───"); today it has one space before and none after (Phase 48 design check, 2026-10-30, routed from Phase 48).
 6. cargo-handler says "tile" everywhere, the framework navigation entries and bar labels included ("Next tile", "tab tile").
 7. Key names use one form: lower case, with the spellings the bar already uses ("esc", "enter", "pageup", "shift-tab"). The keymap file keeps accepting its current spellings.
 8. The cargo-port bar uses the same verbs as the cargo-tile and cargo-handler bars: "↑/↓ move", and "=/- expand all" / "collapse all" or the shared equivalent.
@@ -639,6 +642,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 11. Tests, each red before its fix: a rendered overlay has a full-width selection bar, sentence-case title and headings without colons, no repeated title heading, a blank row before each later heading (fit and paging heights counted), and no row without a key; the rendered cargo-handler bar and overlay say "tile" and never "pane"; every key name drawn on a bar or the overlay is lower case; the cargo-port bar draws "move" and the expand/collapse verbs; the sccache helper formats 85.40 as "85.4%". A rendered cargo-port pane with a selected row reads every non-emoji ink on that row at 4.5:1 or more with its own literal 208/255 coverage, in all four themes (named test `selected_project_row_inks_read_at_4_5_in_every_theme` in `crates/cargo-port/src/tui/panes/project_list/selected_row_ink_tests.rs`). The shared resolver has its own tests in `crates/tui_pane/src/theme/selected_ink_tests.rs`: an ink under 4.5:1 lifts to 4.5:1 with its hue kept, an ink already at 4.5:1 stays unchanged, and on ground rgb 127,127,127 the resolver gives the unreachable outcome with the end of higher two-way contrast. cargo-handler's `render/selected_ink_tests.rs` passes unchanged, and an unselected session row draws the same inks as before.
 
 **Files:**
+- `crates/tui_pane/src/tiles/draw.rs` — the tile title spacing (5a) and its rendered test
 - `crates/tui_pane/src/overlays/global_shortcuts.rs`, `crates/tui_pane/src/overlays/global_shortcuts_tests.rs`, `crates/tui_pane/src/keymap/mod.rs`, `crates/tui_pane/src/keymap/key_bind.rs`, `crates/tui_pane/src/bar/nav_region.rs`, `crates/tui_pane/CHANGELOG.md`
 - `crates/cargo-handler/src/keymap.rs`, `crates/cargo-handler/CHANGELOG.md`
 - `crates/cargo-port/src/tui/sccache/status_line.rs`, `crates/cargo-port/src/sccache.rs`, `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs`, `crates/cargo-port/src/tui/keymap/`, `crates/cargo-port/src/themes/`, `crates/cargo-port/CHANGELOG.md`
@@ -650,7 +654,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/cargo-handler/src/footer_colors/tests.rs` — `oklch_ink` moves to the shared measurement API
 
 **Workers:** 1 writer + 1 tester.
-- `impl` — overlay, keymap, bar, the shared formatter, both sccache callers, the shared resolver module (`theme/selected_ink.rs`) and its exports, the application callers (cargo-handler `SelectedGroundInk`, cargo-port `tree_rows.rs`), the cache integration in `footer_colors/mod.rs`, the registrations and the CHANGELOGs; hub: `crates/tui_pane/src/lib.rs` and `crates/tui_pane/src/theme/mod.rs` (exports).
+- `impl` — `tiles/draw.rs` title padding and its inline test, overlay, keymap, bar, the shared formatter, both sccache callers, the shared resolver module (`theme/selected_ink.rs`) and its exports, the application callers (cargo-handler `SelectedGroundInk`, cargo-port `tree_rows.rs`), the cache integration in `footer_colors/mod.rs`, the registrations and the CHANGELOGs; hub: `crates/tui_pane/src/lib.rs` and `crates/tui_pane/src/theme/mod.rs` (exports).
 - `test` — the external rendered tests, the separate resolver tests (`theme/selected_ink_tests.rs`), the handler selected-ink tests (`render/selected_ink_tests.rs`), the named cargo-port selected-row render test (`selected_row_ink_tests.rs`), and the move of `footer_colors::tests::oklch_ink` and the selected-ink tests to the shared measurement API.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test cargo-port`, `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` and `bash ~/.claude/scripts/direct/verify.sh lint tui_pane` clean. No test takes a second. Live: framed shots of the overlay in cargo-handler and cargo-tile, and of the cargo-handler and cargo-port bars, in a dark and a light theme. The checkpoint carries `Change-Review: the shortcuts overlay and the status bars use sentence case, lower-case key names, one word for tiles in cargo-handler and one sccache percent format | open the global shortcuts overlay in cargo-handler and cargo-tile, and read the cargo-handler and cargo-port bars`.
@@ -1339,31 +1343,24 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 48 — The focus tint fills the whole tile  · status: done
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
-
-**Goal:** a focused tile's tint covers its whole interior, edge to edge, from the row below its top border to its foot readout, as one uniform tint, in cargo-handler and cargo-tile.
-
-**Source:** user, 2026-10-29, after enabling Ghostty `background-opacity-cells`: the focused summary tile is tinted only under its two tables, and the empty rows below stay clear ("i'm not sure i appreciate the esthetic"). Showrunner approved the whole-interior tint. Unit session `phases/48/source.md`.
-
-**Constraints from prior phases:**
-- `tiles/draw.rs` ≈486-489 takes the ground from `pane_background(placement.frame.is_focused())`; ≈566 says focus is the background tint under a tile's contents and lights the border only where the screen is transparent and no tint is painted.
-- `tiles/draw.rs` is also in tile-unit's fill-fix work: claim it through berth; whoever lands second merges main and resolves.
-
-**Spec:**
-1. Paint the focus tint on every interior cell of the focused tile, content rows and empty rows alike, and on its foot readout row; an unfocused tile paints no tint.
-1a. Transparent screen (showrunner ruling 2026-10-29, review F001): the focused tile paints no ground at all, content rows included; focus shows only as the lit border. One owner (`tint_painted()`) decides the ground for the fill, the content and the readout fading.
-2. Red-first test: a focused tile with fewer content rows than its height has the tint on the empty rows below the content and on the cells right of short content rows; an unfocused tile has none; on a transparent screen the focused tile paints no ground on content, empty or readout rows. Under 1 s.
-3. CHANGELOG: one line under Changed in tui_pane.
+- On an opaque screen, a focused tile paints its focus tint on every interior cell, content rows and empty rows alike, and on its foot readout row. An unfocused tile paints the screen ground.
+- On a transparent screen, a focused tile paints no ground (`Color::Reset`). Focus shows only as the lit border.
+- `tint_painted()` is the policy owner. One resolved ground, from `screen_ground()` and `pane_background(true)`, feeds the interior fill, the content provider and `CellReadout::for_content`.
+- The coverage test helper permits a blank inactive foot only when the readout cannot fit.
 
 **Files:**
-- `crates/tui_pane/src/tiles/draw.rs` — the tint fill and its test
-- `crates/tui_pane/CHANGELOG.md`
+- `crates/tui_pane/src/tiles/draw.rs` — the ground resolution, the interior tint fill, and the tests `focused_tile_tint_covers_short_rows_empty_rows_and_readout` and `an_erased_inactive_readout_that_fits_does_not_cover_its_row`
+- `crates/tui_pane/CHANGELOG.md` — one line under Changed
 
-**Workers:** 1 writer (`impl`).
+**Binds later work:** the fill, the content and the readout fading all get their ground from `tint_painted()`; a new ground decision goes there too.
 
-**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-handler` and `verify.sh lint tui_pane` clean; no test takes a second. Live: a shot of cargo-handler with the summary focused shows one uniform tint over the whole tile. The checkpoint adds a Change-Review line.
+**Gotchas:**
+- On an opaque screen, border cells keep the default ground, so a dark band shows between the frame line and the tint.
+- An unfocused tile's selected row (#2e2e2e) is almost the same colour as the focus tint (#2e2e39).
+- A capture that reads `~/.config` is transparent, because the user config sets `transparent = true`. An opaque shot needs a scratch config with `transparent = false`.
+- The opaque path fills the interior a second time after `draw_clipped` fills the pane. Its cost is not measured.
 
 ### Phase 54 — Tile hosts draw only frames that change  · status: todo
 
@@ -1384,12 +1381,12 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - `age_label` (`crates/cargo-handler/src/summary/age.rs` ≈4) writes elapsed whole minutes from each session's own start. So each session's age text changes at its own elapsed-minute boundary, not at one shared wall-clock minute. A label that gains a digit or a `:` part also widens the shared age column (`AgeLayout`, same file). Neither change comes with a census revision.
 
 **Spec:**
-1. One owner in `tiles/` gives the visual state of the grid (motion step, column bands, titles, motion heights) and answers whether it changed since the last drawn frame. No host compares parts of it by hand.
+1. One owner in `tiles/` gives the visual state of the grid (motion step, column bands, titles, motion heights, and the appearance inputs `tile_background` reads: theme, transparency and tint settings) and answers whether it changed since the last drawn frame. No host compares parts of it by hand. Its last-painted record is the one Phase 9 reads for input.
 2. `TileGrid::tick` asks for a repaint only when that answer is yes.
 3. cargo-handler and cargo-tile each skip a frame whose visual state and content are equal to the last drawn one.
 4. The comparison state changes only after a body frame is painted. Hold it in an explicit enum, for example `LastPainted::{NeverPainted, Painted(..)}`. A poll that draws no body, and a status-only draw, leave it unchanged.
 5. The display-time state asks each session's age for its own next change: the next elapsed-minute boundary of that session, and the next width growth of the shared age column. No census revision is needed for either draw.
-6. Red-first counted tests in tui_pane and in each host: an unchanged settled grid asks for no frame; each motion step, band change and title change asks for one; several polls with no body draw keep the comparison state; status-only draws keep it; fading content with settled geometry still draws each fade step; motion completes after skipped equal frames; age deadlines for sessions with offset starts each draw at their own minute; an age width growth draws with no census revision. Each under 1 s.
+6. Red-first counted tests in tui_pane and in each host: an unchanged settled grid asks for no frame; each motion step, band change and title change asks for one; several polls with no body draw keep the comparison state; status-only draws keep it; fading content with settled geometry still draws each fade step; motion completes after skipped equal frames; age deadlines for sessions with offset starts each draw at their own minute; an age width growth draws with no census revision; a theme, transparency or tint change with equal geometry draws. Each under 1 s.
 7. Live measurement in both hosts, before and after, with the Phase 40 paired method: own CPU under 1 % of one core, and no worse than the installed binary.
 8. CHANGELOG: one Changed line in tui_pane, cargo-handler and cargo-tile.
 
@@ -1404,15 +1401,50 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-handler`, `verify.sh test cargo-tile` and `verify.sh lint tui_pane` clean; no test takes a second. Final CPU gate (moved from Phase 47): own CPU under 0.60 CPU-s per minute in the Phase 40 paired method, measured in cargo-handler and in cargo-tile. The checkpoint adds a Change-Review line.
 
-### Phase 57 — The mouse wheel scrolls the shortcuts overlay in every host  · status: todo
+### Phase 58 — The focus tint reaches the frame and stands apart from selection  · status: todo
 
-**Depends on:** Phase 54
+**Depends on:** Phase 48, Phase 54; runs before Phase 25 and Phase 50 (shared `render/selected_ink_tests.rs`)
 
 #### Work Order
 
-**Goal:** the mouse wheel scrolls the `?` global shortcuts overlay, and the other framework overlays, in cargo-tile and cargo-handler, from one shared tui_pane path.
+**Goal:** on an opaque screen a focused tile is one tinted surface up to and under its frame line, and a selected row in an unfocused tile never reads as the focus tint.
 
-**Source:** the user (via the showrunner), 2026-10-30, on change review row C119 (Phase 18, merge 2a881055), returned: "it does split but what doesn't work is mouse scrolling on either one - it does work on cargo port - this needs to be shared code". Showrunner: put overlay wheel scrolling in tui_pane so every host gets it from one place, with a test per host; CPU work runs first. When this lands, port-unit moves cargo-port to the shared path and removes its own; the showrunner tells port-unit. The fix returns as a new change review row.
+**Source:** Phase 48 design check, 2026-10-30, on `phases/48/live/final_opaque2/focused_summary.png` (built from 531e8ca4), rows routed from Phase 48: (1) a black band shows between the tint and the summary frame on all four sides, because the border cells keep the default ground; (2) the selected row of an unfocused tile (#2e2e2e) is almost the same colour as the focus tint (#2e2e39); (3) the opaque shot had no empty row below the content, so the shot set did not show the empty-row fill.
+
+**Constraints from prior phases:**
+- Phase 48: `tint_painted()` (`crates/tui_pane/src/pane/chrome.rs` ≈135) is the one owner of whether a ground is painted; `pane_fill` (≈129) and `pane_background` (≈157) take their answer from it. On a transparent screen a focused tile paints no ground and shows focus only as the lit border (showrunner ruling 2026-10-29); keep that.
+- `pane_tint(focused)` (`chrome.rs` ≈175) carries a focused pane further along the same lift than an unfocused one.
+- Phase 54 changes `tiles/draw.rs` first (the visual state owner); this phase runs after it on the same file.
+- `GridLines::render` (`crates/tui_pane/src/pane/frame.rs` ≈659) paints the final border styles; `mark` already combines focus ownership for shared edge cells.
+- `pane_fill` (`chrome.rs` ≈129) returns `Option<Style>` and `screen_ground` returns `Option<Color>`; absence means a transparent screen or a disabled tint.
+- cargo-handler's `paint_selection` (`crates/cargo-handler/src/render/mod.rs` ≈487) changes the row ground and adjusts ink; it draws no selection marker. `render/selected_ink_tests.rs` ≈207 requires the remembered ground and ≈325 requires contrast between it and the tile.
+- The shared selection style also reaches cargo-port through `PaneSelectionState::overlay_style`; it stays unchanged, so the tile grid applies the rule where it draws a tile.
+
+**Spec:**
+1. Opaque screen: a focused tile paints its tint on its border cells too, so the frame line stands on the tint with no default-ground band beside it. A shared edge takes the tint when `mark` gives it to the focused tile. Unfocused tiles and the transparent screen do not change. `tint_painted()` stays the one owner.
+1a. One chrome-owned paint result replaces `pane_fill`'s `Option<Style>` and `screen_ground`'s `Option<Color>`, for example `PaneGround::{TerminalBackground, Opaque(Color)}`; the fill, the border and the readout all take it.
+2. Showrunner rulings, 2026-10-30: in the tile grid, an unfocused tile shows no selection; its remembered row shows again when the tile takes focus, so the tint alone means focus. cargo-handler draws no selection marker (`paint_selection` ≈487), so no ground means no visible selection there. The rule is the tile grid's only: the shared selection style for all panes does not change, and cargo-port's unfocused panes stay as they are. Today that row draws #2e2e2e in Default Dark against the focus tint #2e2e39 (`crates/tui_pane/src/pane/state.rs` `selection_state_for` ≈73).
+3. Red-first buffer tests: a focused tile on an opaque screen has the tint on every border cell and every interior cell; a transparent screen paints no ground on any of them; a shared edge takes the tint in both paint orders, with moving clips and titles; a remembered row in an unfocused tile draws no selection and shows again when the tile takes focus; a cargo-port pane's unfocused selection does not change; a selected row in the focused tile does not change; `render/selected_ink_tests.rs` ≈207 and ≈325 change to the ruling with an Assertion-Change line. Each under 1 s.
+4. CHANGELOG: one Changed line in tui_pane.
+
+**Files:**
+- `crates/tui_pane/src/pane/chrome.rs`, `crates/tui_pane/src/pane/state.rs`, `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/tiles/draw.rs` — the paint result, the border ground, the unfocused selection ground and their tests
+- `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/render/selected_ink_tests.rs` — the handler selection paint and its tests
+- `crates/tui_pane/CHANGELOG.md`
+
+**Workers:** 1 writer (`impl`).
+
+**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-handler` and `verify.sh lint tui_pane` clean; no test takes a second. Live: an opaque shot of cargo-handler with the summary focused, at least one empty row below its content and an unfocused tile with a selected row, and a transparent shot of the same state; both pass a fresh design check. The checkpoint adds a Change-Review line.
+
+### Phase 57 — The mouse wheel scrolls the shortcuts overlay in every host  · status: todo
+
+**Depends on:** Phase 54; port-unit's Phase 2e "The shortcuts overlay's wheel scroll lives in tui_pane". Showrunner, 2026-10-30: it returns `OverlayWheel::{Consumed, NoOverlay}`, where `Consumed` covers any wheel step over an open overlay; port-unit, 2026-10-30: `pub fn wheel_framework_overlay<Ctx: SettingsHost>(ctx: &mut Ctx, position: Position, direction: ScrollDirection) -> OverlayWheel` and `pub enum OverlayWheel { Consumed, NoOverlay }`, both exported from the tui_pane crate root; `ScrollDirection` is `tui_pane::ScrollDirection`; `SettingsHost` (`app_settings/navigation.rs`) extends `AppContext`. `Consumed` is any wheel event while Settings, Keymap or GlobalShortcuts is open; the caller applies its own `invert_scroll` first. Port Phase 2e runs after its 2d and 2g; port-unit says if the signature changes. Background: cargo-port's `scroll_modal_overlay_at` (`crates/cargo-port/src/tui/input/dispatch.rs` ≈721) consumes a wheel event over an open overlay even outside its content or when it cannot move (for example `OverlayWheel::{Consumed, NoOverlay}`, with shared tests for those cases)
+
+#### Work Order
+
+**Goal:** the mouse wheel scrolls the `?` global shortcuts overlay, and the other framework overlays, in cargo-tile and cargo-handler, through the one shared tui_pane function that cargo-port also calls.
+
+**Source:** the user (via the showrunner), 2026-10-30, on change review row C119 (Phase 18, merge 2a881055), returned: "it does split but what doesn't work is mouse scrolling on either one - it does work on cargo port - this needs to be shared code". Showrunner: put overlay wheel scrolling in tui_pane so every host gets it from one place, with a test per host; CPU work runs first. When this lands, port-unit moves cargo-port to the shared path and removes its own; the showrunner tells port-unit. The fix returns as a new change review row. Showrunner, 2026-10-30, after the user's no-duplication rule: port-unit moves cargo-port's overlay scroll into one public tui_pane function (`OverlayScroll::{Scrolled, NoOverlay}`) and cargo-port calls it, with no copy left; this phase only wires the hosts to it.
 
 **Constraints from prior phases:**
 - The runner gives every wheel step to `TerminalApp::scroll` (`crates/tui_pane/src/runner/event_loop.rs` ≈214, `handle_mouse`). The trait default does nothing (`crates/tui_pane/src/runner/app.rs` ≈56).
@@ -1421,18 +1453,15 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - cargo-port's working path is `scroll_modal_overlay_at` (`crates/cargo-port/src/tui/input/dispatch.rs` ≈705). For the framework overlays it does: `Settings` moves the selection (`NavAction::Up`/`Down`) when the pointer is inside the settings content area; `Keymap` and `GlobalShortcuts` call `viewport_mut().scroll_if_contains(pos, direction)`. It applies cargo-port's own `invert_scroll` before that call (≈651).
 - The framework holds the open overlay (`Framework::overlay`, `crates/tui_pane/src/framework/mod.rs` ≈379) and the panes (`global_shortcuts_pane` ≈101, `keymap_pane`, `settings_pane`).
 - Phase 56 also edits `tiles/host.rs` (`content_click`); this phase runs first.
+- No duplicated state, logic or data: one owner for each fact. The overlay scroll has one owner, the tui_pane function from port-unit's phase. Do not copy its arms.
 
 **Spec:**
-1. One tui_pane function scrolls the open framework overlay under the pointer, moved from cargo-port's framework arms: `Settings`, `Keymap` and `GlobalShortcuts`. It returns an enum that says whether an overlay took the step (for example `OverlayScroll::{Scrolled, NoOverlay}`), so a host knows not to scroll the tiles behind it.
-2. `handle_tile_scroll` calls it first. A wheel step over an open overlay never scrolls a tile behind it.
-3. cargo-tile implements `scroll` through `handle_tile_scroll`, as cargo-handler does.
-4. The function is public in tui_pane so that cargo-port can call it after its own `invert_scroll`; this phase does not change cargo-port.
-5. Red-first tests, each under 1 s: in cargo-tile and in cargo-handler, with the global shortcuts overlay open and taller than its viewport, a wheel step down moves the overlay viewport and a step up moves it back; a step outside the overlay does not scroll a tile; the keymap and settings overlays scroll in one host.
+1. `handle_tile_scroll` calls the shared tui_pane overlay scroll function first. When it returns `OverlayWheel::Consumed`, the step stops there, so a wheel step over an open overlay never scrolls a tile behind it.
+2. cargo-tile implements `scroll` through `handle_tile_scroll`, as cargo-handler does.
+3. Red-first tests, each under 1 s: in cargo-tile and in cargo-handler, with the global shortcuts overlay open and taller than its viewport, a wheel step down moves the overlay viewport and a step up moves it back; a step outside the overlay does not scroll a tile.
 
 **Files:**
-- `crates/tui_pane/src/tiles/host.rs` — `handle_tile_scroll` calls the overlay scroll first
-- `crates/tui_pane/src/overlays/mod.rs` — the shared overlay scroll function and its result enum
-- `crates/tui_pane/src/lib.rs` — the public export
+- `crates/tui_pane/src/tiles/host.rs` — `handle_tile_scroll` calls the shared overlay scroll first
 - `crates/cargo-tile/src/app.rs` — `scroll` through `handle_tile_scroll`
 - `crates/cargo-tile/src/` — one wheel test in a cargo-tile test module
 - `crates/cargo-handler/src/` — one wheel test in a cargo-handler test module
@@ -1463,7 +1492,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 1. At 120×40 the natedev tile drew two depth-3 rows ("ws-impl…", "Dispatch…") at the tile's left edge with no guides. Draw every row's guides at its own depth at every width; cut the name after the guides, never the guides.
 2. The same tile cut session names to two letters ("re…" for both "report" and "resources") beside a type column empty in 17 of 19 rows. Give an empty column's space to the session column, as the hana tile does. A column that is empty on most rows never takes room from session names.
 3. Its header "session ▲" started flush at the guides; the other tiles' headers sit 3 cells in, over the names. One header inset for every tile.
-4. Minimum agent tile width (showrunner ruling, 2026-10-30). An agent tile's minimum width is its deepest drawn guide prefix plus a minimum readable name plus the age column. The grid never gives an agent tile less than that. Optional columns drop first. A tile that cannot get its minimum goes to overflow and counts in `+n unseen`; the handler overflow work draws that count.
+4. Minimum agent tile width (showrunner ruling, 2026-10-30). An agent tile's minimum width is its deepest drawn guide prefix plus a minimum readable name plus the age column. The grid never gives an agent tile less than that. Optional columns drop first. This phase gives the grid that minimum and tests it. Today the display fallback (`crates/tui_pane/src/tiles/grid.rs` ≈3252) shows the summary alone when admission fails; sending an undersized tile to overflow and counting it in `+n unseen` belongs to the handler overflow work (next items), with its width-admission contract and boundary test.
 5. Red-first buffer tests for 1–3 at the widths that failed. Tests for 4 at the minimum-width boundary, in local fitting and in shared-column fitting: at the minimum, every row keeps its guides, a readable name and its age; one cell less does not give the tile that width. Each test under 1 s.
 
 **Files:**
@@ -1627,28 +1656,31 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean with no test over one second; lint clean. Change-Review: none (test time only).
 
-### Phase 51 — Design check follow-ups: the timer shot and a stale unassigned row  · status: todo
+### Phase 51 — Design check follow-ups: the timer shot, a stale unassigned row and the account notice inset  · status: todo
 
 **Depends on:** Phase 47
 
 #### Work Order
 
-**Goal:** the `timer` role is proved in a live shot with its row in view, and the unassigned pane never draws more rows than it counts.
+**Goal:** the `timer` role is proved in a live shot with its row in view, the unassigned pane never draws more rows than it counts, and the summary's account notices start at the same inset as its other rows.
 
-**Source:** showrunner design check of the Phase 46 and 41 shots, 2026-10-29 ≈16:25 EDT. Unit session `phases/51/source.md`; shots `phases/46/live/handler-timer.png`, `phases/41/live/handler_named.png`.
+**Source:** showrunner design check of the Phase 46 and 41 shots, 2026-10-29 ≈16:25 EDT. Unit session `phases/51/source.md`; shots `phases/46/live/handler-timer.png`, `phases/41/live/handler_named.png`. Phase 48 design check, 2026-10-30, on `phases/48/live/final_opaque2/focused_summary.png`: the account notice rows ("claude2: mcpServers differ from ~/.claude; …") start at column 1, flush with the frame, while every other summary row starts at column 2 (routed from Phase 48).
 
 **Constraints from prior phases:**
 - Phase 46: the role comes from `ShellTimerObservation::ObservedCountdown`; the shot showed only the first rows of each pane, so the sleep shell was out of view.
 - Phase 41's shot: the unassigned pane says "content rows: 2 of 2" and draws 3 rows; the third, `phase41-check`, has the same status, account, branch and age as `cargo-liner-handler-c6`, with only its session cell lit.
 - `SurfaceSelection::rows_readout` (`crates/cargo-handler/src/interaction.rs` ≈361) counts selectable identities. An unassigned table also draws its header line, which the count does not include.
 - Phase 56 hides the rows readout by default; its key shows it.
+- The account notices and the failure note draw through `wrap_line(note(..), width, 0)` (`crates/cargo-handler/src/summary/accounts.rs` ≈898-906) with indent 0; the account rows draw with `SECTION_ITEM_INDENT`. The notice text comes from the accounts board (`~/.claude/scripts/accounts/accounts.py`), which this unit does not edit.
 
 **Spec:**
 1. Retake the live capture with a sleep shell's row in view showing `timer`; send the path.
 2. Find out whether `phase41-check` is a real second session or a row left from an earlier frame. Stale: the pane clears every row it no longer draws. Real: the count includes it. Red test first for whichever it is, under 1 s.
-3. CHANGELOG: one Fixed line when code changes.
+3. The account notices and the failure note start at the same inset as the other summary rows, wrapped lines included. Red-first buffer test under 1 s.
+4. CHANGELOG: one Fixed line when code changes.
 
 **Files:**
+- `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/` — the notice inset and its buffer test
 - `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs` — the unassigned pane rows and count (the writer names any other file in a blocked post)
 - `crates/cargo-handler/CHANGELOG.md`
 
