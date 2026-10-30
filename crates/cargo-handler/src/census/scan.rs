@@ -1502,12 +1502,11 @@ mod tests {
         }
         let directory = tempfile::tempdir()?;
         let binary = directory.path().join("codex");
-        let search_path = std::env::var_os("PATH").ok_or("fixture executable search path")?;
-        let cat = std::env::split_paths(&search_path)
-            .map(|directory| directory.join("cat"))
-            .find(|path| path.is_file())
-            .ok_or("cat fixture executable on PATH")?;
-        fs::copy(cat, &binary)?;
+        // A copied Python executable retains its name; multicall coreutils cannot run as codex.
+        let python = Command::new("python3")
+            .args(["-c", "import sys; print(sys.executable)"])
+            .output()?;
+        fs::copy(String::from_utf8(python.stdout)?.trim(), &binary)?;
         #[cfg(target_os = "macos")]
         assert!(
             Command::new("/usr/bin/codesign")
@@ -1518,7 +1517,7 @@ mod tests {
             "the copied system fixture needs a valid local signature"
         );
         let mut child = ChildUntilDrop(Command::new("python3")
-            .args(["-u", "-c", "import os,sys; print('launcher',flush=True); sys.stdin.readline(); print('executing',flush=True); os.execv(sys.argv[1],[sys.argv[1]])"])
+            .args(["-u", "-c", "import os,sys; print('launcher',flush=True); sys.stdin.readline(); print('executing',flush=True); os.execv(sys.argv[1],[sys.argv[1],'-u','-c',\"import sys; [print(line.rstrip(),flush=True) for line in sys.stdin]\"])"])
             .arg(&binary).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?);
         let mut input = child.0.stdin.take().ok_or("child stdin")?;
         let mut output = std::io::BufReader::new(child.0.stdout.take().ok_or("child stdout")?);
