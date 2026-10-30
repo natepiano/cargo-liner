@@ -34,8 +34,8 @@ impl Shortcuts<App> for PackagePane {
         }
     }
 
-    fn state(&self, action: PackageAction, ctx: &App) -> ShortcutState {
-        match action {
+    fn state(&self, package_action: PackageAction, ctx: &App) -> ShortcutState {
+        match package_action {
             PackageAction::Activate => activate_state(ctx),
         }
     }
@@ -44,11 +44,11 @@ impl Shortcuts<App> for PackagePane {
 }
 
 impl CopySelection<App> for PackagePane {
-    fn copy_selection(ctx: &App) -> CopySelectionResult {
-        let Some(pkg) = ctx.panes.package.content() else {
+    fn copy_selection(app: &App) -> CopySelectionResult {
+        let Some(package_data) = app.panes.package.content() else {
             return CopySelectionResult::Nothing;
         };
-        panes::copy_payload_for_package(pkg, ctx.panes.package.viewport.pos())
+        panes::copy_payload_for_package(package_data, app.panes.package.viewport.pos())
     }
 }
 
@@ -59,13 +59,13 @@ impl CopySelection<App> for PackagePane {
 /// is a no-op. The crates.io rows are rendered only for publishable
 /// projects with data (see `build_crates_io_rows`), so `Activate` is
 /// implicitly disabled on packages without crates.io data too.
-pub(super) fn activate_state(ctx: &App) -> ShortcutState {
-    let Some(pkg) = ctx.panes.package.content() else {
+pub(super) fn activate_state(app: &App) -> ShortcutState {
+    let Some(package_data) = app.panes.package.content() else {
         return ShortcutState::Disabled;
     };
-    let pos = ctx.panes.package.viewport.pos();
+    let pos = app.panes.package.viewport.pos();
     if matches!(
-        panes::package_rows_from_data(pkg).get(pos),
+        panes::package_rows_from_data(package_data).get(pos),
         Some(PackageRow::CratesIo(_))
     ) {
         ShortcutState::Enabled

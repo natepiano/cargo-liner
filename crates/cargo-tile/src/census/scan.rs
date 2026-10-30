@@ -10,6 +10,8 @@ use std::ffi::OsString;
 use std::fs;
 use std::ops::Add;
 use std::os::unix::ffi::OsStrExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -87,6 +89,7 @@ use crate::constants::CARGO_SUBCOMMAND_PREFIX;
 use crate::constants::CARGO_TARGET_DIR_FLAG;
 use crate::constants::COMPILER_PROCESS_NAMES;
 use crate::constants::PARENT_WALK_LIMIT;
+use crate::constants::PROCESS_IDLE_POLL_MILLIS;
 use crate::constants::ROOT_PROCESS_PID;
 use crate::constants::RUSTC_BINARY;
 use crate::constants::RUSTC_OUT_DIR_FLAG;
@@ -541,6 +544,256 @@ impl CensusScope {
     }
 }
 
+/// The last census chooses discovery's active or idle pace.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RefreshPace {
+    Active,
+    Idle,
+}
+
+impl RefreshPace {
+    fn for_census(census: &Census, capture: &Capture) -> Self {
+        if census.live_cargo().next().is_some() || !capture.confirmed().is_empty() {
+            Self::Active
+        } else {
+            Self::Idle
+        }
+    }
+}
+
+/// Start deadlines share the cadence's minimum spacing, even when idle is interrupted.
+/// Idle discovery reserves one publication pass before its maximum interval elapses.
+struct NextRefresh {
+    poll:   Duration,
+    active: Instant,
+    idle:   Instant,
+}
+
+impl NextRefresh {
+    const fn new(cadence: CensusCadence, now: Instant) -> Self {
+        Self {
+            poll:   cadence.poll,
+            active: now,
+            idle:   now,
+        }
+    }
+
+    fn start(&mut self, now: Instant, pace: RefreshPace) -> Result<(), RefreshNotDue> {
+        let permitted = match pace {
+            RefreshPace::Active => self.active,
+            RefreshPace::Idle => self.idle,
+        };
+        if now < permitted {
+            return Err(RefreshNotDue);
+        }
+        self.active = now + self.poll;
+        self.idle = now
+            + Duration::from_millis(PROCESS_IDLE_POLL_MILLIS)
+                .saturating_sub(self.poll / 2)
+                .max(self.poll);
+        Ok(())
+    }
+}
+
+struct RefreshNotDue;
+
+/// A refresh source owns the process table and publishes independent snapshots.
+trait ProcessRefreshSource {
+    type Snapshot;
+
+    fn refresh(&mut self) -> Self::Snapshot;
+}
+
+/// One table survives every refresh; the worker's actual start time sets its next deadline.
+struct RefreshWorker<Source> {
+    source: Source,
+    next:   NextRefresh,
+}
+
+impl<Source: ProcessRefreshSource> RefreshWorker<Source> {
+    fn new(build: impl FnOnce() -> Source, cadence: CensusCadence, now: Instant) -> Self {
+        Self {
+            source: build(),
+            next:   NextRefresh::new(cadence, now),
+        }
+    }
+
+    fn sample(&mut self, now: Instant, pace: RefreshPace) -> StageAnswer<Source::Snapshot> {
+        if self.next.start(now, pace).is_err() {
+            return StageAnswer::Pending;
+        }
+        StageAnswer::Completed(self.source.refresh())
+    }
+}
+
+/// This table belongs only to the refresh worker, never to a published snapshot.
+struct SystemRefresh {
+    system: System,
+}
+
+impl ProcessRefreshSource for SystemRefresh {
+    type Snapshot = ProcessDiscovery;
+
+    fn refresh(&mut self) -> Self::Snapshot {
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            process_discovery_refresh_kind(),
+        );
+        ProcessDiscovery {
+            processes: self
+                .system
+                .processes()
+                .iter()
+                .map(|(&pid, process)| (pid, DiscoveryProcess::from_process(process)))
+                .collect(),
+            baselines: self
+                .system
+                .processes()
+                .iter()
+                .map(|(&pid, process)| (pid, CpuBaseline::from(process)))
+                .collect(),
+        }
+    }
+}
+
+/// Discovery evidence is copied on the refresh worker, including native lifetime reads.
+struct ProcessDiscovery {
+    processes: HashMap<Pid, DiscoveryProcess>,
+    baselines: HashMap<Pid, CpuBaseline>,
+}
+
+impl ProcessDiscovery {
+    #[cfg(test)]
+    fn observations(&self, previous: &Self) -> ProcessObservations<'_> {
+        self.observations_since(&previous.baselines)
+    }
+
+    fn observations_since(&self, previous: &HashMap<Pid, CpuBaseline>) -> ProcessObservations<'_> {
+        ProcessObservations {
+            records: self
+                .processes
+                .iter()
+                .filter_map(|(&pid, process)| {
+                    self.baselines
+                        .get(&pid)
+                        .map(|baseline| (pid, process.observation(baseline, previous)))
+                })
+                .collect(),
+        }
+    }
+}
+/// Cheap process fields copied out while the refresh worker retains its OS table.
+/// Detailed metadata still comes only from the independent detail readers.
+struct DiscoveryProcess {
+    name:        OsString,
+    pid:         Pid,
+    parent:      ProcessField<Pid>,
+    uid:         ProcessField<u32>,
+    cpu:         f32,
+    memory:      u64,
+    accumulated: u64,
+    started:     u64,
+    elapsed:     u64,
+}
+
+impl DiscoveryProcess {
+    fn from_process(process: &Process) -> Self {
+        Self {
+            name:        Self::current_name(process),
+            pid:         process.pid(),
+            parent:      process
+                .parent()
+                .or_else(|| kernel_parent(process.pid()))
+                .into(),
+            uid:         process.user_id().map(|uid| **uid).into(),
+            cpu:         process.cpu_usage(),
+            memory:      process.memory(),
+            accumulated: process.accumulated_cpu_time(),
+            started:     process.start_time(),
+            elapsed:     process.run_time(),
+        }
+    }
+
+    /// sysinfo retains its first name across exec; discovery needs the current image.
+    /// Linux reads comm afresh; macOS requests an executable-path refresh each pass.
+    fn current_name(process: &Process) -> OsString {
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::read(format!("/proc/{}/comm", process.pid())).map_or_else(
+                |_| OsString::new(),
+                |mut name| {
+                    if name.last() == Some(&b'\n') {
+                        name.pop();
+                    }
+                    OsString::from_vec(name)
+                },
+            )
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // The discovery refresh always rereads this path on macOS.
+            process
+                .exe()
+                .and_then(Path::file_name)
+                .map_or_else(OsString::new, OsStr::to_os_string)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        process.name().to_os_string()
+    }
+
+    fn observation<'scan>(
+        &'scan self,
+        baseline: &'scan CpuBaseline,
+        previous: &HashMap<Pid, CpuBaseline>,
+    ) -> ProcessObservation<'scan> {
+        ProcessObservation {
+            pid:         self.pid,
+            parent:      self.parent,
+            name:        (!self.name.is_empty())
+                .then_some(self.name.as_os_str())
+                .into(),
+            argv:        ProcessField::Unavailable,
+            directory:   ProcessField::Unavailable,
+            executable:  ProcessField::Unavailable,
+            uid:         self.uid,
+            environment: &[],
+            lifetime:    Cow::Borrowed(&baseline.lifetime),
+            cpu:         Census::measure_cpu(self.pid, self.cpu, baseline, previous),
+            memory:      self.memory,
+            accumulated: self.accumulated,
+            native_cpu:  Cell::new(Measurement::Unavailable(MeasurementAbsence::ReadFailed)),
+            started:     self.started,
+            elapsed:     self.elapsed,
+            details:     DetailPresence::Absent,
+        }
+    }
+}
+
+/// A refresh has either no preceding sample or counters from its actual predecessor.
+enum RefreshHistory {
+    FirstObservation,
+    Previous(HashMap<Pid, CpuBaseline>),
+}
+
+impl RefreshHistory {
+    fn observations<'scan>(
+        &self,
+        discovery: &'scan ProcessDiscovery,
+    ) -> ProcessObservations<'scan> {
+        match self {
+            Self::FirstObservation => discovery.observations_since(&HashMap::new()),
+            Self::Previous(baselines) => discovery.observations_since(baselines),
+        }
+    }
+}
+
+/// A declined refresh never manufactures a process snapshot.
+enum StageAnswer<T> {
+    Completed(T),
+    Pending,
+}
+
 /// Start the scanner thread and hand back the channel it publishes on.
 ///
 /// The thread ends when the receiver is dropped.
@@ -559,21 +812,25 @@ pub(crate) fn spawn_with_resolver(
     scope: CensusScope,
     resolve: impl FnOnce() -> CaptureRoots + Send + 'static,
 ) -> (Receiver<Scan>, JoinHandle<()>) {
-    spawn_resolved_scan_loop(cadence.poll, resolve, move || {
-        let mut system = System::new();
-        let mut smoothing = InvocationCpuAccounting::new(cadence);
-        let home = dirs::home_dir();
-        move |roots| {
-            scan(
-                &mut system,
-                &mut smoothing,
+    spawn_resolved_scan_loop(cadence.poll / 2, resolve, move || {
+        let mut worker = ScanWorker {
+            refresh: RefreshWorker::new(
+                || SystemRefresh {
+                    system: System::new(),
+                },
+                cadence,
                 Instant::now(),
-                home.as_deref().into(),
-                &excluded.snapshot(),
-                roots,
-                scope,
-            )
-        }
+            ),
+            history: RefreshHistory::FirstObservation,
+            pace: RefreshPace::Active,
+            smoothing: InvocationCpuAccounting::new(cadence),
+            home: dirs::home_dir()
+                .map_or(ScannerHomeLocation::Unavailable, ScannerHomeLocation::Known),
+            excluded,
+            scope,
+            cadence,
+        };
+        move |roots| worker.scan(roots)
     })
 }
 
@@ -602,87 +859,89 @@ where
     (receiver, worker)
 }
 
-/// One two-phase scan, newest group first.
-///
-/// `smoothing` outlives the scan because a CPU share is settled across
-/// scans rather than read out of one, and `now` is what tells it when
-/// the table is due a fresh reading.
-fn scan(
-    system: &mut System,
-    smoothing: &mut InvocationCpuAccounting,
-    now: Instant,
-    home: ScannerHome<'_>,
-    excluded: &[String],
-    roots: &CaptureRoots,
-    scope: CensusScope,
-) -> Scan {
-    let previous = system
-        .processes()
-        .iter()
-        .map(|(&pid, process)| {
-            (
-                pid,
-                CpuBaseline {
-                    lifetime:    smoothing
-                        .observed
-                        .get(&pid)
-                        .cloned()
-                        .unwrap_or(LifetimeEvidence::Unavailable),
-                    accumulated: process.accumulated_cpu_time(),
-                },
-            )
-        })
-        .collect();
-    // Phase one: pid, name, parent and start time for everything. None of
-    // the fields this asks for require a per-process read of the argument
-    // area, which is what makes it cheap enough to poll continuously.
-    // Read CPU counters on the full-system pass so short-lived descendants
-    // can contribute without requiring detailed command metadata. The invocation's
-    // own counter must be readable before accumulated work is published.
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        process_discovery_refresh_kind(),
-    );
+/// The scanner account's home, retained across scan publications.
+enum ScannerHomeLocation {
+    Known(PathBuf),
+    Unavailable,
+}
 
-    let discovery: Vec<_> = system
-        .processes()
-        .values()
-        .map(|process| (process, CpuBaseline::from(process)))
-        .collect();
-    let mut observations = ProcessObservations::from_discovery(&discovery, &previous);
-    let mut census = Census::take(observations.records.values());
-    census.restrict_to(scope);
-    census.identities = smoothing.identities.observe(&census.lifetimes);
-
-    // Phase two reads cargo, its ancestors, and compiler drivers. Ancestors name
-    // the launcher; compiler arguments associate cache-server work with its requester.
-    // Verification precedes row filtering, and registration pids must receive fresh
-    // argv even when the cheap snapshot retains a pre-exec process name.
-    let mut capture = Capture::take(roots);
-    let mut detailed = census.detailed();
-    for pid in capture.registered_pids().into_iter().map(Pid::from_u32) {
-        for candidate in
-            std::iter::once(pid).chain(census.ancestor_pids(pid).as_slice().iter().copied())
-        {
-            if !detailed.contains(&candidate) {
-                detailed.push(candidate);
-            }
+impl ScannerHomeLocation {
+    fn borrowed(&self) -> ScannerHome<'_> {
+        match self {
+            Self::Known(home) => ScannerHome::Known(home.as_path()),
+            Self::Unavailable => ScannerHome::Unavailable,
         }
     }
-    let details = process_details(&detailed);
-    observations.overlay_details(&details);
-    census.prepare(&observations, &capture, excluded);
-    let attributed = census.attribute(&observations, smoothing, now);
-    let groups = census.groups(&observations, &attributed, home, &capture);
-    census.associate_status(&mut capture, &groups);
-    Scan {
-        #[cfg(test)]
-        cpu_scan_publication: attributed.cpu_scan_publication,
-        sccache: census.sccache(),
-        groups,
-        root_status: capture.root_status,
-        shared_directory: capture.shared_directory,
+}
+
+/// The worker owns discovery, accounting and its last completed census's pace.
+struct ScanWorker {
+    refresh:   RefreshWorker<SystemRefresh>,
+    history:   RefreshHistory,
+    pace:      RefreshPace,
+    smoothing: InvocationCpuAccounting,
+    home:      ScannerHomeLocation,
+    excluded:  ExcludedCommands,
+    scope:     CensusScope,
+    cadence:   CensusCadence,
+}
+
+impl ScanWorker {
+    /// Check registrations between refreshes so an idle worker wakes within one poll.
+    fn scan(&mut self, roots: &CaptureRoots) -> Scan {
+        loop {
+            let capture = Capture::take(roots);
+            if !capture.confirmed().is_empty() {
+                self.pace = RefreshPace::Active;
+            }
+            let now = Instant::now();
+            if let StageAnswer::Completed(discovery) = self.refresh.sample(now, self.pace) {
+                return self.scan_discovery(discovery, capture, now);
+            }
+            thread::sleep(self.cadence.poll / 2);
+        }
+    }
+
+    /// Assemble a publication from one fresh discovery and independently read details.
+    fn scan_discovery(
+        &mut self,
+        discovery: ProcessDiscovery,
+        mut capture: Capture,
+        now: Instant,
+    ) -> Scan {
+        let mut observations = self.history.observations(&discovery);
+        let mut census = Census::take(observations.records.values());
+        census.restrict_to(self.scope);
+        // Excluded cargo still counts as live work for choosing the refresh pace.
+        self.pace = RefreshPace::for_census(&census, &capture);
+        census.identities = self.smoothing.identities.observe(&census.lifetimes);
+
+        // Registration pids receive fresh argv even when they exec between refreshes.
+        let mut detailed = census.detailed();
+        for pid in capture.registered_pids().into_iter().map(Pid::from_u32) {
+            for candidate in
+                std::iter::once(pid).chain(census.ancestor_pids(pid).as_slice().iter().copied())
+            {
+                if !detailed.contains(&candidate) {
+                    detailed.push(candidate);
+                }
+            }
+        }
+        let details = process_details(&detailed);
+        observations.overlay_details(&details);
+        census.prepare(&observations, &capture, &self.excluded.snapshot());
+        let attributed = census.attribute(&observations, &mut self.smoothing, now);
+        let groups = census.groups(&observations, &attributed, self.home.borrowed(), &capture);
+        census.associate_status(&mut capture, &groups);
+        self.history = RefreshHistory::Previous(discovery.baselines);
+        Scan {
+            #[cfg(test)]
+            cpu_scan_publication: attributed.cpu_scan_publication,
+            sccache: census.sccache(),
+            groups,
+            root_status: capture.root_status,
+            shared_directory: capture.shared_directory,
+        }
     }
 }
 
@@ -691,10 +950,13 @@ fn scan(
 /// Tasks are Linux threads. They inherit a process's name and command,
 /// so including them would draw one cargo invocation more than once.
 fn process_discovery_refresh_kind() -> ProcessRefreshKind {
-    ProcessRefreshKind::nothing()
+    let kind = ProcessRefreshKind::nothing()
         .without_tasks()
         .with_cpu()
-        .with_memory()
+        .with_memory();
+    #[cfg(target_os = "macos")]
+    let kind = kind.with_exe(UpdateKind::Always);
+    kind
 }
 
 /// Fields read for cargo, its ancestors, and compiler ownership evidence.
@@ -762,6 +1024,7 @@ pub(crate) struct ProcessObservation<'scan> {
 }
 
 impl<'scan> ProcessObservation<'scan> {
+    #[cfg(test)]
     fn from_process(
         process: &'scan Process,
         baseline: &'scan CpuBaseline,
@@ -855,6 +1118,7 @@ pub(crate) struct ProcessObservations<'scan> {
 }
 
 impl<'scan> ProcessObservations<'scan> {
+    #[cfg(test)]
     fn from_discovery(
         discovery: &'scan [(&'scan Process, CpuBaseline)],
         previous: &HashMap<Pid, CpuBaseline>,
@@ -7824,3 +8088,7 @@ mod tests {
         assert_eq!(cpu_label(783.2), "783%");
     }
 }
+
+#[cfg(test)]
+#[path = "refresh_worker_tests.rs"]
+mod refresh_worker_tests;

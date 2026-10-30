@@ -44,7 +44,9 @@ impl Default for LanguagePhase {
 }
 
 impl LanguagePhase {
-    pub(super) fn expected_len(&self) -> usize { self.expected.len() + self.work_expected }
+    pub(super) fn expected_len(&self) -> usize {
+        self.expected.expected_count() + self.work_expected
+    }
 
     pub(super) fn stamp_first_seen(&mut self, now: Instant) { self.first_seen.get_or_insert(now); }
 
