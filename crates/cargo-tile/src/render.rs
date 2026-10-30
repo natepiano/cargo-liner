@@ -576,8 +576,9 @@ impl TileCells<InvocationId> for Cells<'_> {
                 let Some(group) = self.roster.groups().iter().find(|group| &group.id == id) else {
                     return CellReadoutFade::Unfaded;
                 };
+                let group = group.for_painting();
                 let rows: Vec<_> = group.rows().collect();
-                group_fade(group, &rows)
+                group_fade(&group, &rows)
             },
             TileContent::Empty(_) => return CellReadoutFade::Unfaded,
         };
@@ -1706,6 +1707,8 @@ fn frame_draw_group(
         return;
     };
 
+    let group = group.for_painting();
+    let group = group.as_ref();
     let rows: Vec<&TrackedRow> = group.rows().collect();
     let ancestry = drawn_ancestry(group, &grid.view);
     // The chain and table fade together when their command finishes.
@@ -6093,6 +6096,113 @@ pub(crate) fn summary_cpu_for_test(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    mod entry_ink_tests {
+        use tui_pane::Theme;
+
+        use super::*;
+
+        struct EntryTestTheme(Arc<Theme>);
+
+        impl EntryTestTheme {
+            fn install() -> Self {
+                let previous = tui_pane::theme();
+                let mut theme = (*previous).clone();
+                theme.text.default.color = Color::Rgb(220, 200, 180);
+                tui_pane::set_active_theme(Arc::new(theme));
+                Self(previous)
+            }
+        }
+
+        impl Drop for EntryTestTheme {
+            fn drop(&mut self) { tui_pane::set_active_theme(Arc::clone(&self.0)); }
+        }
+
+        fn entry_roster(now: Instant) -> Roster {
+            let mut roster = Roster::new();
+            roster.observe(vec![cargo_group(invocation(382_001, &["check"]))], now);
+            roster
+        }
+
+        fn drawn_entry_ink(roster: &Roster) -> Result<Color, &'static str> {
+            let area = Rect::new(0, 0, 200, 12);
+            let mut buffer = Buffer::empty(area);
+            draw_group(
+                &mut buffer,
+                roster,
+                &roster.groups()[0].id,
+                area,
+                Color::Rgb(20, 40, 60),
+                &[],
+                CommandView::long(),
+            );
+            for y in 0..area.height {
+                let line = buffer_line(&buffer, y);
+                if let Some(x) = line.find("382001") {
+                    let x = u16::try_from(x).map_err(|_| "pid outside terminal")?;
+                    return Ok(buffer[(x, y)].fg);
+                }
+            }
+            Err("new command must draw its pid")
+        }
+
+        #[test]
+        fn a_new_live_cell_starts_at_its_final_text_ink() -> Result<(), &'static str> {
+            let _theme = EntryTestTheme::install();
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(220, 200, 180));
+            roster.advance(now + Duration::from_secs(1), Duration::from_secs(3));
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(220, 200, 180));
+            Ok(())
+        }
+
+        #[test]
+        fn a_short_lived_cells_first_text_starts_readable() -> Result<(), &'static str> {
+            let _theme = EntryTestTheme::install();
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            // The command ends while its cell is still waiting to be painted.
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            roster.advance(now + Duration::from_millis(2600), Duration::from_secs(3));
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(220, 200, 180));
+            roster.advance(now + Duration::from_millis(2850), Duration::from_secs(3));
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(220, 200, 180));
+            roster.advance(now + Duration::from_millis(3099), Duration::from_secs(3));
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(220, 200, 180));
+            roster.advance(now + Duration::from_millis(3100), Duration::from_secs(3));
+            assert_eq!(roster.groups().len(), 0, "main's deadline is unchanged");
+            Ok(())
+        }
+
+        #[test]
+        fn a_delayed_cells_ink_meets_the_floor_on_fractional_channels() -> Result<(), &'static str>
+        {
+            let _theme = EntryTestTheme::install();
+            let mut theme = (*tui_pane::theme()).clone();
+            theme.text.default.color = Color::Rgb(219, 200, 180);
+            tui_pane::set_active_theme(Arc::new(theme));
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            roster.advance(now + Duration::from_millis(2600), Duration::from_secs(3));
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(219, 200, 180));
+            roster.advance(now + Duration::from_millis(3099), Duration::from_secs(3));
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(219, 200, 180));
+            Ok(())
+        }
+
+        #[test]
+        fn an_already_drawn_cells_finished_ink_keeps_mains_fade() -> Result<(), &'static str> {
+            let _theme = EntryTestTheme::install();
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(220, 200, 180));
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            roster.advance(now + Duration::from_millis(2600), Duration::from_secs(3));
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(81, 89, 97));
+            Ok(())
+        }
+    }
     use tui_pane::TILE_ROWS_CONTENT_LABEL;
     std::thread_local! {
         /// Intrinsic demand queries made by the live frame on this thread.
