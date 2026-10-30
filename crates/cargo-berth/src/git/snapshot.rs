@@ -19,7 +19,7 @@ use super::error::GitError;
 use super::object::CommitAvailability;
 use super::object::CommitObjectResolution;
 use super::object::OperationObjectReader;
-use super::reachability;
+use super::reachability::BranchMergeSession;
 use super::reachability::ResolvedTrunkAncestry;
 use super::read;
 use super::refs::HeadAttachment;
@@ -77,6 +77,7 @@ pub(crate) struct RepositorySnapshot {
     other_checkout_status: Arc<Mutex<CheckoutStatusFacts>>,
     branch_paths:          Arc<Mutex<BranchPathFacts>>,
     trunk_ancestry:        Arc<Mutex<TrunkAncestryFacts>>,
+    merge_sessions:        Arc<Mutex<HashMap<PathBuf, Arc<Mutex<BranchMergeSession>>>>>,
     head:                  Arc<RepositoryFact<GitObjectId>>,
     attachment:            Arc<RepositoryFact<HeadAttachment>>,
     objects:               OperationObjectReader,
@@ -98,6 +99,7 @@ impl RepositorySnapshot {
             other_checkout_status: Arc::new(Mutex::new(HashMap::new())),
             branch_paths: Arc::new(Mutex::new(HashMap::new())),
             trunk_ancestry: Arc::new(Mutex::new(HashMap::new())),
+            merge_sessions: Arc::new(Mutex::new(HashMap::new())),
             head: Arc::new(RepositoryFact::unread()),
             attachment: Arc::new(RepositoryFact::unread()),
         }
@@ -113,6 +115,7 @@ impl RepositorySnapshot {
             other_checkout_status: Arc::new(Mutex::new(HashMap::new())),
             branch_paths:          Arc::clone(&self.branch_paths),
             trunk_ancestry:        Arc::clone(&self.trunk_ancestry),
+            merge_sessions:        Arc::clone(&self.merge_sessions),
             head:                  Arc::new(RepositoryFact::unread()),
             attachment:            Arc::new(RepositoryFact::unread()),
             objects:               self.objects.clone(),
@@ -201,6 +204,9 @@ impl RepositorySnapshot {
         trunk: &GitObjectId,
         head: &GitObjectId,
     ) -> Result<(Vec<ReservationScopePath>, u64), GitError> {
+        if trunk == head {
+            return Ok((Vec::new(), 0));
+        }
         let key = BranchPathKey {
             checkout: std::fs::canonicalize(checkout)?,
             trunk:    trunk.clone(),
@@ -215,9 +221,6 @@ impl RepositorySnapshot {
             .clone();
         let mut queries = 0;
         let paths = fact.read(|| {
-            if trunk == head {
-                return Ok(Vec::new());
-            }
             let ancestry_key = TrunkAncestryKey {
                 checkout: std::fs::canonicalize(checkout)?,
                 trunk:    trunk.clone(),
@@ -230,14 +233,43 @@ impl RepositorySnapshot {
                 .or_insert_with(|| Arc::new(RepositoryFact::unread()))
                 .clone();
             let ancestry =
-                ancestry.read(|| reachability::ResolvedTrunkAncestry::read(checkout, trunk))?;
-            let observation = reachability::observe_unmerged_branch_paths_with_ancestry(
-                checkout, trunk, head, ancestry,
-            )?;
+                ancestry.read(|| ResolvedTrunkAncestry::read(checkout, trunk))?;
+            if matches!(ancestry, ResolvedTrunkAncestry::Reachable(ancestors) if ancestors.contains(head)) {
+                return Ok(Vec::new());
+            }
+            let session = self.merge_sessions.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(std::fs::canonicalize(checkout)?)
+                .or_default()
+                .clone();
+            let observation = session.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .paths(checkout, trunk, head)?;
             queries = observation.git_queries;
             Ok(observation.paths)
         })?;
         Ok((paths.clone(), queries))
+    }
+
+    /// Inspect pair evaluation independently of process reuse in candidate-pruning tests.
+    #[cfg(test)]
+    pub(crate) fn merge_pair_was_observed(
+        &self,
+        checkout: &Path,
+        trunk: &GitObjectId,
+        head: &GitObjectId,
+    ) -> Result<bool, GitError> {
+        let key = BranchPathKey {
+            checkout: std::fs::canonicalize(checkout)?,
+            trunk:    trunk.clone(),
+            head:     head.clone(),
+        };
+        Ok(self
+            .branch_paths
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .is_some_and(|fact| fact.0.get().is_some()))
     }
 
     pub(crate) fn head_object_id(&self) -> Result<&GitObjectId, GitError> {
@@ -315,6 +347,85 @@ mod tests {
     use crate::git::HeadAttachment;
     use crate::git::fixture::FixtureResult;
     use crate::git::fixture::PatchEquivalenceFixture;
+
+    #[test]
+    fn one_merge_tree_process_answers_distinct_pairs_and_conflicts() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let base = fixture.phase_start_head.clone();
+        fixture.write("branch.txt", "branch")?;
+        let first = fixture.commit("first branch")?;
+        fixture.reset_to(&base)?;
+        fixture.write("other.txt", "other")?;
+        let second = fixture.commit("second branch")?;
+        fixture.reset_to(&base)?;
+        fixture.write("src/primary.rs", "branch version")?;
+        let conflict = fixture.commit("conflicting branch")?;
+        fixture.reset_to(&base)?;
+        fixture.write("src/primary.rs", "trunk version")?;
+        let trunk = fixture.commit("trunk")?;
+        let snapshot = RepositorySnapshot::discover(fixture.root())?;
+        let mut starts = 0;
+        for (head, expected) in [
+            (&first, "branch.txt"),
+            (&conflict, "src/primary.rs"),
+            (&second, "other.txt"),
+        ] {
+            let (paths, queries) = snapshot.unmerged_branch_paths(fixture.root(), &trunk, head)?;
+            assert_eq!(paths, vec![expected.parse()?]);
+            starts += queries;
+        }
+        assert_eq!(
+            starts, 1,
+            "three distinct pairs, including a conflict, share one Git process"
+        );
+        let fresh = snapshot.fresh_observation();
+        let (_, starts) = fresh.unmerged_branch_paths(fixture.root(), &first, &second)?;
+        assert_eq!(
+            starts, 0,
+            "a new pair after a decision retry uses the same process"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn merge_tree_batch_fatal_pairs_keep_errors_and_later_valid_pairs() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let base = fixture.phase_start_head.clone();
+        fixture.write("branch.txt", "branch")?;
+        let head = fixture.commit("branch")?;
+        fixture.write("second.txt", "second")?;
+        let second = fixture.commit("second branch")?;
+        fixture.git(&["checkout", "--orphan", "unrelated"])?;
+        let unrelated = fixture.commit("unrelated")?;
+        let snapshot = RepositorySnapshot::discover(fixture.root())?;
+        for (invalid, valid, expected) in [
+            (
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?,
+                &head,
+                vec!["branch.txt".parse()?],
+            ),
+            (
+                unrelated,
+                &second,
+                vec!["branch.txt".parse()?, "second.txt".parse()?],
+            ),
+        ] {
+            let error = snapshot
+                .unmerged_branch_paths(fixture.root(), &base, &invalid)
+                .err()
+                .ok_or("invalid pair must fail")?;
+            assert!(error.to_string().contains("merge-tree"), "{error}");
+            // A fatal Git error must not become an empty extent or poison an independent pair.
+            let (paths, _) = snapshot.unmerged_branch_paths(fixture.root(), &base, valid)?;
+            assert_eq!(paths, expected);
+        }
+        let (_, starts) = snapshot.unmerged_branch_paths(fixture.root(), &head, &base)?;
+        assert_eq!(
+            starts, 0,
+            "an already integrated head needs no merge process"
+        );
+        Ok(())
+    }
 
     #[test]
     fn check_trunk_ancestry_is_read_once_for_distinct_heads() -> FixtureResult {

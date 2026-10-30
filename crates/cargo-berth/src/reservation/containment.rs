@@ -690,20 +690,29 @@ mod tests {
                 .len(),
             0
         );
+        let mut process_starts = 0;
         for holder in reservations.iter() {
             let MergeExtent::Protected { key, .. } = holder.merge_extent() else {
                 return Err("protected fixture".into());
             };
-            let (_, queries) = repository.unmerged_branch_paths(
+            // A new pair can reuse an existing process; inspect the pair cache separately.
+            let queries = u64::from(!repository.merge_pair_was_observed(
+                root.path(),
+                repository.head_object_id()?,
+                &key.head,
+            )?);
+            let (_, starts) = repository.unmerged_branch_paths(
                 root.path(),
                 repository.head_object_id()?,
                 &key.head,
             )?;
+            process_starts += starts;
             assert_eq!(
                 queries, 1,
                 "disjoint check must leave each merge pair unqueried"
             );
         }
+        assert_eq!(process_starts, 1, "unqueried pairs share one process");
         Ok(())
     }
 
@@ -749,11 +758,21 @@ mod tests {
             let MergeExtent::Protected { key, .. } = holder.merge_extent() else {
                 return Err("protected fixture".into());
             };
-            let (_, queries) = repository.unmerged_branch_paths(
+            // A new pair can reuse an existing process; inspect the pair cache separately.
+            let queries = u64::from(!repository.merge_pair_was_observed(
+                root.path(),
+                repository.head_object_id()?,
+                &key.head,
+            )?);
+            let (_, starts) = repository.unmerged_branch_paths(
                 root.path(),
                 repository.head_object_id()?,
                 &key.head,
             )?;
+            assert_eq!(
+                starts, 0,
+                "the existing merge session serves every follow-up pair"
+            );
             assert_eq!(
                 queries, expected_queries,
                 "only the overlapping holder's merge pair was observed"

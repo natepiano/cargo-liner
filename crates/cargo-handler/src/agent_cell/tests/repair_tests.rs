@@ -156,7 +156,7 @@ fn unassigned_sessions_without_a_role_draw_no_role_column() {
 }
 
 #[test]
-fn older_tiles_keep_only_their_own_age_units_beside_younger_tiles() {
+fn older_tiles_measure_their_own_age_labels_beside_younger_tiles() {
     let mut old = agent(10, "old-owner", 30 * 24 * HOUR, None);
     old.children = vec![
         child(
@@ -195,12 +195,8 @@ fn older_tiles_keep_only_their_own_age_units_beside_younger_tiles() {
         };
     }
     for (index, labels, expected) in [
-        (0, ["week-old", "twenty-days"], [" 7d 21h", "20d    "]),
-        (
-            1,
-            ["minutes-old", "hours-old"],
-            ["    2m 49s", "5h 16m    "],
-        ),
+        (0, ["week-old", "twenty-days"], [" 7:21:00", "20:00:00"]),
+        (1, ["minutes-old", "hours-old"], ["   2", "5:16"]),
     ] {
         let rect = area(220, 20);
         let mut buffer = Buffer::empty(rect);
@@ -219,10 +215,7 @@ fn older_tiles_keep_only_their_own_age_units_beside_younger_tiles() {
             let (_, y) = find(&buffer, label).expect("age row");
             let start = end - summary::cell_width(expected);
             let actual: String = (start..end).map(|x| buffer[(x, y)].symbol()).collect();
-            assert_eq!(
-                actual, expected,
-                "{label}: header ends at the last used unit"
-            );
+            assert_eq!(actual, expected, "{label}: header ends at the last digit");
             assert_eq!(buffer[(start - 1, y)].symbol(), " ", "age has a column gap");
         }
     }
