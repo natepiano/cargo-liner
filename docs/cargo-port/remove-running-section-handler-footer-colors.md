@@ -1337,7 +1337,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Phase 47 checkpoints its measured gain (showrunner ruling, 2026-10-30: the branch is below the installed binary in a paired Phase 40 measurement). The under-1 % gate (0.60 own CPU-s per minute) moves to Phase 54. The checkpoint adds a Change-Review line.
 
-### Phase 48 — The focus tint fills the whole tile  · status: todo
+### Phase 48 — The focus tint fills the whole tile  · status: done
 
 **Depends on:** none
 
@@ -1404,6 +1404,44 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-handler`, `verify.sh test cargo-tile` and `verify.sh lint tui_pane` clean; no test takes a second. Final CPU gate (moved from Phase 47): own CPU under 0.60 CPU-s per minute in the Phase 40 paired method, measured in cargo-handler and in cargo-tile. The checkpoint adds a Change-Review line.
 
+### Phase 57 — The mouse wheel scrolls the shortcuts overlay in every host  · status: todo
+
+**Depends on:** Phase 54
+
+#### Work Order
+
+**Goal:** the mouse wheel scrolls the `?` global shortcuts overlay, and the other framework overlays, in cargo-tile and cargo-handler, from one shared tui_pane path.
+
+**Source:** the user (via the showrunner), 2026-10-30, on change review row C119 (Phase 18, merge 2a881055), returned: "it does split but what doesn't work is mouse scrolling on either one - it does work on cargo port - this needs to be shared code". Showrunner: put overlay wheel scrolling in tui_pane so every host gets it from one place, with a test per host; CPU work runs first. When this lands, port-unit moves cargo-port to the shared path and removes its own; the showrunner tells port-unit. The fix returns as a new change review row.
+
+**Constraints from prior phases:**
+- The runner gives every wheel step to `TerminalApp::scroll` (`crates/tui_pane/src/runner/event_loop.rs` ≈214, `handle_mouse`). The trait default does nothing (`crates/tui_pane/src/runner/app.rs` ≈56).
+- cargo-handler's `scroll` (`crates/cargo-handler/src/app.rs` ≈390) calls `tui_pane::handle_tile_scroll` (`crates/tui_pane/src/tiles/host.rs` ≈164). That function scrolls only a `TilePick::Cell` hit; a `TilePick::OverlayRow` hit does nothing. The click path already handles `TilePick::OverlayRow` through `select_framework_overlay_row` (≈157).
+- cargo-tile does not implement `scroll` (`crates/cargo-tile/src/app.rs`), so its wheel steps do nothing.
+- cargo-port's working path is `scroll_modal_overlay_at` (`crates/cargo-port/src/tui/input/dispatch.rs` ≈705). For the framework overlays it does: `Settings` moves the selection (`NavAction::Up`/`Down`) when the pointer is inside the settings content area; `Keymap` and `GlobalShortcuts` call `viewport_mut().scroll_if_contains(pos, direction)`. It applies cargo-port's own `invert_scroll` before that call (≈651).
+- The framework holds the open overlay (`Framework::overlay`, `crates/tui_pane/src/framework/mod.rs` ≈379) and the panes (`global_shortcuts_pane` ≈101, `keymap_pane`, `settings_pane`).
+- Phase 56 also edits `tiles/host.rs` (`content_click`); this phase runs first.
+
+**Spec:**
+1. One tui_pane function scrolls the open framework overlay under the pointer, moved from cargo-port's framework arms: `Settings`, `Keymap` and `GlobalShortcuts`. It returns an enum that says whether an overlay took the step (for example `OverlayScroll::{Scrolled, NoOverlay}`), so a host knows not to scroll the tiles behind it.
+2. `handle_tile_scroll` calls it first. A wheel step over an open overlay never scrolls a tile behind it.
+3. cargo-tile implements `scroll` through `handle_tile_scroll`, as cargo-handler does.
+4. The function is public in tui_pane so that cargo-port can call it after its own `invert_scroll`; this phase does not change cargo-port.
+5. Red-first tests, each under 1 s: in cargo-tile and in cargo-handler, with the global shortcuts overlay open and taller than its viewport, a wheel step down moves the overlay viewport and a step up moves it back; a step outside the overlay does not scroll a tile; the keymap and settings overlays scroll in one host.
+
+**Files:**
+- `crates/tui_pane/src/tiles/host.rs` — `handle_tile_scroll` calls the overlay scroll first
+- `crates/tui_pane/src/overlays/mod.rs` — the shared overlay scroll function and its result enum
+- `crates/tui_pane/src/lib.rs` — the public export
+- `crates/cargo-tile/src/app.rs` — `scroll` through `handle_tile_scroll`
+- `crates/cargo-tile/src/` — one wheel test in a cargo-tile test module
+- `crates/cargo-handler/src/` — one wheel test in a cargo-handler test module
+- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: in cargo-tile and cargo-handler, press `?` and scroll the overlay with the wheel. The checkpoint adds a Change-Review line.
+
 ### Phase 55 — Narrow tiles keep tree guides, readable names and one header inset  · status: todo
 
 **Depends on:** Phase 48
@@ -1439,7 +1477,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 56 — The rows readout is off by default  · status: todo
 
-**Depends on:** Phase 48, Phase 54
+**Depends on:** Phase 48, Phase 54, Phase 57
 
 #### Work Order
 

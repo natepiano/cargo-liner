@@ -14,6 +14,9 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `ThemeSource` names built-in-only and directory theme sources at the parser boundary.
 - Shared `Viewport::navigate`, `Viewport::scroll_if_contains` and `table_row_at` support list navigation and table clicks. `TerminalApp::scroll` and `TileGridHost::cell_scrolled` forward wheel input to the tile under the pointer without moving focus.
 
+### Changed
+- On an opaque screen, the focus tint fills the whole interior of a focused tile, empty rows and the foot included. On a transparent screen, a tile paints no ground and focus shows only as the lit border.
+
 ### Fixed
 - Tile growth, floor and area changes rebuild cached motion endpoints before reusing their bands and row measurements; unchanged frames reuse endpoint admission.
 - Resizing during queued tile removals returns focus from a removed command to the summary, keeping Tab and arrow navigation active.
