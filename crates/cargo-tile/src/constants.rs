@@ -13,8 +13,6 @@ use crate::render::TableWidthReduction;
 pub(crate) const ACCOUNT_HEADING_CLOSE: &str = "] ";
 /// Open the account qualifier once per working-directory heading.
 pub(crate) const ACCOUNT_HEADING_OPEN: &str = "[";
-/// Fewest cells retained from a shortened directory's last component.
-pub(crate) const HEADING_MIN_TAIL: u16 = 8;
 
 // configuration
 /// Argument names shown before the full-arguments key is enabled.

@@ -205,7 +205,14 @@ fn a_shell_execing_cargo_enters_the_retained_discoverys_census()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let executable = directory.path().join("cargo");
-    std::fs::copy("/bin/cat", &executable)?;
+    // Python keeps its copied name; multicall coreutils cannot run as cargo.
+    let python = std::process::Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()?;
+    if !python.status.success() {
+        return Err("locating the cargo exec fixture's Python executable failed".into());
+    }
+    std::fs::copy(String::from_utf8(python.stdout)?.trim(), &executable)?;
     // A relocated Apple platform binary needs a local signature before exec.
     #[cfg(target_os = "macos")]
     if !std::process::Command::new("/usr/bin/codesign")
@@ -219,10 +226,15 @@ fn a_shell_execing_cargo_enters_the_retained_discoverys_census()
     let mut child = std::process::Command::new("/bin/sh")
         .args([
             "-c",
-            "printf 'shell\\n'; read value; exec \"$1\"",
+            "printf 'shell\\n'; read value; exec \"$@\"",
             "refresh-exec",
         ])
         .arg(&executable)
+        .args([
+            "-u",
+            "-c",
+            "import sys; print(sys.stdin.readline(), end='', flush=True); sys.stdin.read()",
+        ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()?;

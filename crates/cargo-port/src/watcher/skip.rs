@@ -42,5 +42,5 @@ impl WatchSkipSet {
 }
 
 #[cfg(test)]
-#[path = "skip_repair_tests.rs"]
-mod repair_tests;
+#[path = "skip_alias_tests.rs"]
+mod alias_tests;

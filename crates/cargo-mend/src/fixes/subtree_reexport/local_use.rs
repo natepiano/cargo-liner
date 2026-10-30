@@ -8,6 +8,7 @@ use syn::ext::IdentExt;
 
 use super::crate_files::OwnerCrate;
 use crate::fixes::facade_redirect;
+use crate::fixes::facade_redirect::IdentifierUse;
 use crate::fixes::facade_redirect::SourceLines;
 use crate::rust_syntax;
 
@@ -31,6 +32,14 @@ pub(super) enum LocalUse {
 pub(super) struct GlobReach<'a> {
     pub(super) owner: &'a [String],
     pub(super) name:  &'a str,
+}
+
+/// Whether a descendant glob needs the owner's name to remain available.
+/// A glob names no caller path to rewrite, and unparseable text conservatively keeps the name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GlobNameReach {
+    Unreached,
+    Reached,
 }
 
 impl GlobReach<'_> {
@@ -74,8 +83,9 @@ impl GlobReach<'_> {
             child.push(item_mod.ident.unraw().to_string());
             let (start, end) =
                 lines.span_range(brace.span.open().end(), brace.span.close().start())?;
-            if self.module_reaches(&source[start..end], content, &child) {
-                reach = reach.max(gate);
+            match self.module_reaches(&source[start..end], content, &child) {
+                GlobNameReach::Unreached => {},
+                GlobNameReach::Reached => reach = reach.max(gate),
             }
             reach = reach.max(self.items_reach_gated(source, lines, content, &child, gate)?);
             if reach == LocalUse::Always {
@@ -116,8 +126,9 @@ impl GlobReach<'_> {
                 .with_context(|| format!("failed to parse {}", file.display()))?;
             let text = source.text();
             let lines = SourceLines::new(text);
-            if self.module_reaches(text, &syntax.items, module) {
-                reach = reach.max(gate);
+            match self.module_reaches(text, &syntax.items, module) {
+                GlobNameReach::Unreached => {},
+                GlobNameReach::Reached => reach = reach.max(gate),
             }
             reach = reach.max(self.items_reach_gated(text, &lines, &syntax.items, module, gate)?);
             if reach == LocalUse::Always {
@@ -129,9 +140,9 @@ impl GlobReach<'_> {
 
     /// Whether `module`, strictly below the owner module, holds a glob `use`
     /// of the owner module among `items` and mentions the name in `text`.
-    fn module_reaches(&self, text: &str, items: &[Item], module: &[String]) -> bool {
+    fn module_reaches(&self, text: &str, items: &[Item], module: &[String]) -> GlobNameReach {
         if module.len() <= self.owner.len() || !module.starts_with(self.owner) {
-            return false;
+            return GlobNameReach::Unreached;
         }
         let globs_owner = items.iter().any(|item| {
             let Item::Use(item_use) = item else {
@@ -145,7 +156,13 @@ impl GlobReach<'_> {
                         == Some(self.owner)
                 })
         });
-        globs_owner && facade_redirect::word_occurs_outside(text, [], self.name)
+        if !globs_owner {
+            return GlobNameReach::Unreached;
+        }
+        match facade_redirect::word_occurs_outside(text, [], self.name) {
+            IdentifierUse::Absent => GlobNameReach::Unreached,
+            IdentifierUse::Present | IdentifierUse::Unparseable => GlobNameReach::Reached,
+        }
     }
 }
 
@@ -179,6 +196,7 @@ mod tests {
     use syn::parse_file;
     use tempfile::tempdir;
 
+    use super::GlobNameReach;
     use super::GlobReach;
     use super::LocalUse;
     use crate::fixes::facade_redirect::SourceLines;
@@ -197,6 +215,35 @@ mod tests {
         reach
             .items_reach(source, &SourceLines::new(source), &syntax.items, &owner)
             .expect("valid module spans")
+    }
+
+    #[test]
+    fn glob_name_reach_preserves_each_identifier_outcome_and_early_exit() {
+        let syntax = parse_file("use super::*;").expect("parse glob");
+        let owner = vec!["owner".to_string()];
+        let child = vec!["owner".to_string(), "child".to_string()];
+        let sibling = vec!["sibling".to_string(), "child".to_string()];
+        let reach = GlobReach {
+            owner: &owner,
+            name:  "Widget",
+        };
+        for (text, expected) in [
+            ("fn f() {}", GlobNameReach::Unreached),
+            ("fn f(_: Widget) {}", GlobNameReach::Reached),
+            ("\"unterminated", GlobNameReach::Reached),
+        ] {
+            assert_eq!(reach.module_reaches(text, &syntax.items, &child), expected);
+        }
+        for module in [&owner, &sibling] {
+            assert_eq!(
+                reach.module_reaches("Widget", &syntax.items, module),
+                GlobNameReach::Unreached
+            );
+        }
+        assert_eq!(
+            reach.module_reaches("Widget", &[], &child),
+            GlobNameReach::Unreached
+        );
     }
 
     #[test]

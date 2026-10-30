@@ -18,8 +18,10 @@ use tui_pane::PERF_LOG_TARGET;
 use super::events;
 use super::events::WatcherBackgroundSinks;
 use super::probe;
+use super::probe::FolderProbeOutcome;
 use super::refresh;
 use super::roots;
+use super::roots::CandidateProbeResult;
 use super::roots::RegisteredRoots;
 use super::roots::WatchRegistration;
 use super::skip::WatchSkipSet;
@@ -46,6 +48,10 @@ use crate::scan::BackgroundMsg;
 use crate::scan::ExcludeDirs;
 use crate::scan::MetadataDispatchContext;
 
+#[cfg(test)]
+#[path = "discovery_event_tests.rs"]
+mod discovery_event_tests;
+
 /// Request to register an already-known project with the watcher.
 pub(crate) struct WatchRequest {
     /// Display path (e.g. `~/foo/bar`).
@@ -64,17 +70,6 @@ pub(crate) enum WatcherMsg {
 /// Spawn a unified background watcher thread. Watches the include
 /// directories with filtered folder watches and handles disk-usage updates,
 /// new-project detection, and deleted-project detection.
-// Ancestor `.cargo/` watch-set subsystem is not yet implemented.
-// Today we only refresh cargo metadata when a `Cargo.toml` /
-// `Cargo.lock` / `rust-toolchain[.toml]` / `.cargo/config[.toml]`
-// edit fires inside an already-registered project tree. Edits to
-// an out-of-tree ancestor `.cargo/config.toml` (e.g.
-// `~/.cargo/config.toml` when the project is elsewhere) will go
-// undetected until the subsystem lands.
-// The missing piece is: walk each project root → CARGO_HOME at
-// register time, collect the ancestor `.cargo/` dirs, diff the union
-// across projects on add/remove, and register notify watches on the
-// diff. Tracked for Step 1b follow-up.
 pub(crate) struct WatcherSpawn<'a> {
     pub watch_roots:    &'a [AbsolutePath],
     pub background_tx:  Sender<BackgroundMsg>,
@@ -169,12 +164,17 @@ impl WatcherLoopStartup {
     fn register(self, watcher: &mut impl Watcher) -> WatcherLoopContext {
         let started = Instant::now();
         let skips = known_target_skips(&self.metadata_dispatch, self.watch_roots.iter());
-        let (mut registered_roots, failures) = roots::register_watch_roots_with_skips(
-            watcher,
-            &self.watch_roots,
-            skips,
-            self.registration,
-        );
+        let (mut registered_roots, failures) = match self.registration {
+            WatchRegistration::RecursiveRoot => roots::register_watch_roots_with_skips(
+                watcher,
+                &self.watch_roots,
+                skips,
+                self.registration,
+            ),
+            WatchRegistration::PerFolder => {
+                roots::register_discovery_roots(watcher, &self.watch_roots, skips)
+            },
+        };
         for failure in &failures {
             tracing::error!(
                 dir = %failure.dir.display(),
@@ -288,11 +288,15 @@ pub struct WatcherLoopState {
 pub enum WatcherRegistrationPhase {
     #[default]
     Initializing,
+    Reconciling,
+    Replaying,
     Ready,
 }
 
 impl WatcherRegistrationPhase {
-    pub const fn is_initializing(self) -> bool { matches!(self, Self::Initializing) }
+    pub const fn is_initializing(self) -> bool {
+        matches!(self, Self::Initializing | Self::Reconciling)
+    }
 }
 
 impl WatcherLoopState {
@@ -318,9 +322,6 @@ fn watcher_loop<W: Watcher + Send + 'static>(
 ) {
     let WatcherLoopContext {
         background_tx,
-        ci_run_count,
-        non_rust,
-        exclude_dirs,
         client,
         lint_runtime: _,
         metadata_dispatch,
@@ -350,28 +351,20 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             known_target_skips(metadata_dispatch, state.projects.keys()),
         );
         let notify_events = events::drain_notify_events(notify_rx);
-        for event in &notify_events {
-            roots::update_directory_watches(&mut watcher, &mut registered_roots, event);
+        if state.registration.is_initializing() {
+            state.buffered_events.extend(notify_events);
+            if watch_drain.registration_progress.is_completed() {
+                complete_startup_registration(ctx, &mut state, &mut watcher, &mut registered_roots);
+            }
+        } else {
+            dispatch_registered_events(
+                ctx,
+                &mut state,
+                &mut watcher,
+                &mut registered_roots,
+                notify_events,
+            );
         }
-        let notify_events = notify_events
-            .into_iter()
-            .filter_map(|mut event| {
-                roots::filter_event_paths(&registered_roots, &mut event);
-                (!event.paths.is_empty()).then_some(event)
-            })
-            .collect();
-        events::process_notify_events(
-            tick,
-            &watch_drain,
-            notify_events,
-            registered_roots.dirs(),
-            &WatcherBackgroundSinks {
-                background_tx,
-                lint_runtime: ctx.lint_runtime.as_ref(),
-                metadata_dispatch: Some(metadata_dispatch),
-            },
-            &mut state,
-        );
         events::drain_completed_refreshes(
             &disk_done_rx,
             &git_done_rx,
@@ -409,19 +402,118 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             metadata_dispatch,
         );
 
-        // `probe::probe_new_projects` probes `state.pending_new` candidates whose debounce has
-        // expired.
-        probe::probe_new_projects(
-            background_tx,
-            &mut state.pending_new,
-            &mut state.discovered,
-            *ci_run_count,
-            *non_rust,
-            exclude_dirs,
-            client,
-        );
+        apply_probe_outcomes(ctx, &mut state, &mut watcher, &mut registered_roots);
 
         thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn complete_startup_registration(
+    ctx: &WatcherLoopContext,
+    state: &mut WatcherLoopState,
+    watcher: &mut impl Watcher,
+    registered_roots: &mut RegisteredRoots,
+) {
+    let scan_projects: Vec<_> = state.projects.keys().cloned().collect();
+    for path in roots::startup_reconciliation(registered_roots, &scan_projects) {
+        if !state.discovered.contains(&path) || !path.is_dir() {
+            state.pending_new.insert(path, Instant::now());
+        }
+    }
+    apply_probe_outcomes(ctx, state, watcher, registered_roots);
+    let buffered = std::mem::take(&mut state.buffered_events);
+    state.registration = WatcherRegistrationPhase::Replaying;
+    dispatch_registered_events(ctx, state, watcher, registered_roots, buffered);
+    state.registration = WatcherRegistrationPhase::Ready;
+}
+
+fn dispatch_registered_events(
+    ctx: &WatcherLoopContext,
+    state: &mut WatcherLoopState,
+    watcher: &mut impl Watcher,
+    registered: &mut RegisteredRoots,
+    events: Vec<Event>,
+) {
+    let sinks = WatcherBackgroundSinks {
+        background_tx:     &ctx.background_tx,
+        lint_runtime:      ctx.lint_runtime.as_ref(),
+        metadata_dispatch: Some(&ctx.metadata_dispatch),
+    };
+    for mut event in events {
+        roots::filter_event_paths(registered, &mut event);
+        let project_events = match registered.registration() {
+            WatchRegistration::RecursiveRoot => vec![event],
+            WatchRegistration::PerFolder => {
+                events::route_folder_event(watcher, registered, &event, state, &ctx.background_tx)
+            },
+        };
+        events::process_notify_events(
+            0,
+            &WatchDrainResult {
+                channel_state:         WatchChannelState::Connected,
+                registration_progress: WatchRegistrationProgress::Pending,
+            },
+            project_events,
+            registered.dirs(),
+            &sinks,
+            state,
+        );
+    }
+}
+
+fn apply_probe_outcomes(
+    ctx: &WatcherLoopContext,
+    state: &mut WatcherLoopState,
+    watcher: &mut impl Watcher,
+    registered: &mut RegisteredRoots,
+) {
+    let outcomes = probe::probe_new_projects(
+        &ctx.background_tx,
+        &mut state.pending_new,
+        &mut state.discovered,
+        ctx.ci_run_count,
+        ctx.non_rust,
+        &ctx.exclude_dirs,
+        &ctx.client,
+    );
+    for outcome in outcomes {
+        apply_folder_probe(watcher, registered, state, &ctx.background_tx, outcome);
+    }
+}
+
+/// Apply the same probe decision in startup, discovery, and synchronous tests.
+pub(super) fn apply_folder_probe(
+    watcher: &mut impl Watcher,
+    registered: &mut RegisteredRoots,
+    state: &mut WatcherLoopState,
+    background_tx: &Sender<BackgroundMsg>,
+    outcome: FolderProbeOutcome,
+) {
+    match outcome {
+        FolderProbeOutcome::Project(req) => {
+            roots::finish_candidate_probe(
+                watcher,
+                registered,
+                &req.abs_path,
+                CandidateProbeResult::Project,
+            );
+            apply_watch_request(req, state, watcher, registered);
+        },
+        FolderProbeOutcome::NotProject(path) => {
+            if !path.is_dir() {
+                state.discovered.remove(&path);
+                let _ = background_tx.send(BackgroundMsg::DiskUsage {
+                    path:  path.clone(),
+                    bytes: 0,
+                });
+            }
+            roots::finish_candidate_probe(
+                watcher,
+                registered,
+                &path,
+                CandidateProbeResult::NotProject,
+            );
+        },
     }
 }
 
@@ -468,7 +560,7 @@ fn drain_watch_messages(
                 apply_watch_request(req, state, watcher, registered_roots);
             },
             Ok(WatcherMsg::InitialRegistrationComplete) => {
-                state.registration = WatcherRegistrationPhase::Ready;
+                state.registration = WatcherRegistrationPhase::Reconciling;
                 result.registration_progress = WatchRegistrationProgress::Completed;
             },
             Err(TryRecvError::Empty) => return result,
@@ -495,16 +587,16 @@ fn apply_watch_request(
         .repo_root
         .as_deref()
         .and_then(project::resolve_common_git_dir);
-    state.projects.insert(
-        req.abs_path.clone(),
-        ProjectEntry {
-            label: req.project_label,
-            abs_path: req.abs_path.clone(),
-            repo_root: req.repo_root,
-            git_dir,
-            common_git_dir,
-        },
-    );
+    state.discovered.insert(req.abs_path.clone());
+    let entry = ProjectEntry {
+        label: req.project_label,
+        abs_path: req.abs_path.clone(),
+        repo_root: req.repo_root,
+        git_dir,
+        common_git_dir,
+    };
+    roots::register_project_sources(watcher, registered_roots, &entry);
+    state.projects.insert(req.abs_path, entry);
 }
 
 fn register_project_watch_if_needed(
@@ -512,7 +604,7 @@ fn register_project_watch_if_needed(
     watcher: &mut impl Watcher,
     registered_roots: &mut RegisteredRoots,
 ) {
-    if registered_roots.covers(req.abs_path.as_path()) {
+    if registered_roots.covers(&req.abs_path) {
         return;
     }
     for failure in roots::register_project_root(watcher, registered_roots, &req.abs_path) {
@@ -1145,7 +1237,7 @@ mod tests {
             drain_watch_messages(&watch_rx, &mut state, &mut watcher, &mut registered_roots);
 
         assert!(drained.registration_progress.is_completed());
-        assert!(!state.registration.is_initializing());
+        assert_eq!(state.registration, WatcherRegistrationPhase::Reconciling);
     }
 
     #[test]
@@ -1172,6 +1264,24 @@ mod tests {
             let mut registered_roots = RegisteredRoots::default();
             let drained =
                 drain_watch_messages(&watch_rx, &mut state, &mut watcher, &mut registered_roots);
+            assert_eq!(state.registration, WatcherRegistrationPhase::Reconciling);
+            let client = HttpClient::new_without_github_auth_for_test(
+                test_support::test_runtime().handle().clone(),
+            )
+            .expect("http client");
+            let (background_tx, _) = channel::unbounded();
+            let ctx = WatcherLoopContext {
+                watch_roots: registered_roots.clone(),
+                background_tx,
+                ci_run_count: 0,
+                non_rust: NonRustInclusion::Exclude,
+                exclude_dirs: ExcludeDirs::default(),
+                metadata_dispatch: test_metadata_dispatch(&client),
+                client,
+                lint_runtime: None,
+            };
+            complete_startup_registration(&ctx, &mut state, &mut watcher, &mut registered_roots);
+            assert_eq!(state.registration, WatcherRegistrationPhase::Ready);
             let _ = result_tx.send((drained, state.registration.is_initializing()));
         });
 
@@ -1450,11 +1560,11 @@ mod tests {
                 expected:    Some("/home/user/rust/cargo-port_wt"),
             },
             Case {
-                name:        "event at scan root returns none",
+                name:        "event at scan root probes the root",
                 watch_roots: &["/home/user"],
                 parents:     &["/home/user/rust"],
                 event:       "/home/user",
-                expected:    None,
+                expected:    Some("/home/user"),
             },
             Case {
                 name:        "event outside scan root returns none",
