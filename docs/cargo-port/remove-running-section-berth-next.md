@@ -982,7 +982,29 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 ### Phase 47 — cargo-berth keeps its ledger and indexes in memory between requests  · status: todo
 
-**Depends on:** 42, 45
+**Depends on:** 42. It runs beside phase 45 (user, 2026-10-30): 45 changes only how drift reads a merge in `src/drift/`, and 47 keeps out of `src/drift/`. 47's same-answer A/B uses one base for its before and after.
+
+**State model** (written before code, lifecycle rule 2026-10-20). One resident process per canonical common git directory. It only reads: today's CLI and hook writers stay the only journal writers, under today's mutation lock, and every claim and other mutation keeps today's local path. The resident answers read queries (check, hook decisions) from a view derived from the journal. The journal stays the source of truth.
+
+| State | Entered when | A request sees |
+|---|---|---|
+| Absent | no live owner (never started, stopped, or crashed; a crash leaves a stale socket the next starter removes) | today's local path; the client starts one resident (an election lock admits one starter) |
+| Loading(cause) | startup, or a journal replacement, truncation, reinitialization or path-case change | today's local path, with no wait |
+| Serving(position) | the view is built and validated at a complete-record journal position | answers from the view after it checks the journal identity and length; an append moves it to Behind, a replacement to Loading |
+| Behind(position) | another process appended | the resident folds the new complete records, updates only the affected indexes and publishes at once, or the request takes the local path |
+| Failed(error) | the journal cannot be read or validated | today's local path with today's error or answer; a transport or cache failure never becomes an edit permission |
+| Stopping | idle 10 minutes, a binary upgrade, or shutdown | today's local path |
+
+- The position names the journal file identity (device, inode, repository incarnation) and the complete-record offset; a projection generation alone is not enough. An incomplete final record stays unapplied.
+- One tagged lifecycle enum holds these states. Only Serving holds a usable view; Behind holds an unpublished replay that queries cannot read. No ready or stale flags, and no `Option` of a view.
+- The indexes (interned path ids, path to holders, a component trie with descendant summaries) refer to folded facts by id. They never copy a reservation, and the resident and the local path run the same query code.
+- Session mappings, markers, configuration and live git facts stay request-scoped and are read fresh each time.
+- The handshake binds the common directory, repository instance, protocol and fold versions and the exact executable digest. A different binary is refused, retires the old owner and uses the local path until a new owner serves.
+- The client starts the resident detached, in its own process group, with stdin, stdout and stderr closed, so it never holds a caller's pipe. The socket is under the user runtime directory, named by a short hash of the common directory to stay within the macOS socket path limit.
+- Production counters count checkpoint bytes decoded and complete holder-index builds at their real entry points; tests read them through a diagnostics query. They never feed a decision.
+- Each lifecycle test (warm reuse, append, replacement, crash, upgrade, nested hook) runs in under 1 s.
+- (showrunner, 2026-10-30, CPU first) An idle resident uses zero CPU: no poll loop and no timer except the one idle-exit deadline. It checks freshness (journal end position) and a binary change (executable identity) on each query, never on a clock.
+- (showrunner) The checkpoint states the resident's memory on the real ledger and its gain against today's local path on the real ledger (check at 0.4 s wall on 2026-10-30) for check and the hook decision. The build goes past this state model only if a measured split of today's time shows that the resident clearly beats the local path.
 
 **Why:** (user, 2026-10-29; showrunner approved) every check, claim and hook rebuilds its view: it decodes the replay checkpoint (24 MB) and builds holder indexes on each call. Second Astra review: /tmp/claude/astra/20261030T012333Z-1840552/review.md, cut A.
 

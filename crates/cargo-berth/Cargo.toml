@@ -19,7 +19,7 @@ clap          = { workspace = true }
 crossterm     = { workspace = true }
 gix           = { workspace = true, features = ["sha1", "status"] }
 ratatui       = { workspace = true }
-rustix        = { workspace = true, features = ["process"] }
+rustix        = { workspace = true, features = ["event", "process"] }
 schemars      = { workspace = true }
 serde         = { workspace = true, features = ["derive"] }
 serde_json    = { workspace = true }

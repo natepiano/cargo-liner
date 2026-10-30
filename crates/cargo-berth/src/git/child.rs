@@ -1,14 +1,11 @@
 //! Deadlines and process-group ownership shared by Git and fixture commands.
 
-use std::ffi::c_int;
-use std::ffi::c_short;
 use std::io;
 use std::io::Error;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
 use std::os::fd::AsFd;
-use std::os::fd::AsRawFd;
 use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt;
 use std::process::Child;
@@ -23,6 +20,10 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+
+use rustix::event::PollFd;
+use rustix::event::PollFlags;
+use rustix::event::Timespec;
 
 /// Repository history walks and hooks may need seconds on a loaded host.
 pub(super) const GIT_COMMAND_DEADLINE: Duration = Duration::from_secs(30);
@@ -341,64 +342,21 @@ fn signal_group(group: u32) {
 }
 
 /// Inspect pipe EOF without reading bytes or waiting for a drain to be scheduled.
-#[allow(
-    unsafe_code,
-    reason = "POSIX poll has no safe interface in the enabled dependency features; the descriptor storage and count are owned here"
-)]
 fn output_writers_remain(pipes: &[OwnedFd]) -> io::Result<bool> {
-    #[repr(C)]
-    struct PollDescriptor {
-        fd:      c_int,
-        events:  c_short,
-        revents: c_short,
-    }
-
-    #[cfg(any(
-        target_vendor = "apple",
-        target_os = "android",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    type DescriptorCount = std::ffi::c_uint;
-    #[cfg(not(any(
-        target_vendor = "apple",
-        target_os = "android",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    )))]
-    type DescriptorCount = std::ffi::c_ulong;
-
-    unsafe extern "C" {
-        fn poll(fds: *mut PollDescriptor, count: DescriptorCount, timeout: c_int) -> c_int;
-    }
-
-    const READABLE: c_short = 0x0001;
-    const HANGUP: c_short = 0x0010;
+    // Darwin registers the EOF filter only when input is requested.
     let mut descriptors: Vec<_> = pipes
         .iter()
-        .map(|pipe| PollDescriptor {
-            fd:      pipe.as_raw_fd(),
-            // Darwin registers the EOF filter only when input is requested.
-            events:  READABLE,
-            revents: 0,
-        })
+        .map(|pipe| PollFd::new(pipe, PollFlags::IN))
         .collect();
-    let count = DescriptorCount::try_from(descriptors.len()).map_err(io::Error::other)?;
     loop {
-        // SAFETY: These are live read descriptors with the POSIX pollfd layout;
-        // count matches the writable array and the zero timeout never blocks.
-        if unsafe { poll(descriptors.as_mut_ptr(), count, 0) } >= 0 {
-            return Ok(descriptors
-                .iter()
-                .any(|descriptor| descriptor.revents & HANGUP == 0));
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != ErrorKind::Interrupted {
-            return Err(error);
+        match rustix::event::poll(&mut descriptors, Some(&Timespec::default())) {
+            Ok(_) => {
+                return Ok(descriptors
+                    .iter()
+                    .any(|descriptor| !descriptor.revents().contains(PollFlags::HUP)));
+            },
+            Err(rustix::io::Errno::INTR) => {},
+            Err(error) => return Err(error.into()),
         }
     }
 }
