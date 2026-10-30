@@ -27,6 +27,8 @@ use super::account::Program;
 use super::classify::ProcessEntry;
 use crate::constants::CODEX_DIRNAME;
 use crate::constants::CODEX_LAST_THREAD_QUERY;
+use crate::constants::CODEX_LEGACY_THREADS_QUERY;
+use crate::constants::CODEX_LEGACY_TUI_ORIGINATOR;
 use crate::constants::CODEX_PROMPT_LABEL_MAX;
 use crate::constants::CODEX_RESUME_LAST_ARGUMENT;
 use crate::constants::CODEX_RESUME_SUBCOMMAND;
@@ -35,7 +37,6 @@ use crate::constants::CODEX_STATE_EXTENSION;
 use crate::constants::CODEX_STATE_PREFIX;
 use crate::constants::CODEX_THREAD_BY_ID_QUERY;
 use crate::constants::CODEX_THREADS_QUERY;
-use crate::constants::CODEX_TUI_ORIGINATOR;
 #[cfg(test)]
 use crate::constants::TRUNCATION_MARK;
 use crate::constants::UUID_TEXT_LENGTH;
@@ -243,15 +244,45 @@ fn state_database(codex_dir: &Path) -> Option<PathBuf> {
         .map(|(_, path)| path)
 }
 
-/// The rows [`CODEX_THREADS_QUERY`] finds in the database at `path`,
+/// Which columns identify interactive threads in a database.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ThreadsLayout {
+    WithThreadSource,
+    OriginatorOnly,
+}
+
+impl ThreadsLayout {
+    fn read(connection: &Connection) -> rusqlite::Result<Self> {
+        connection.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('threads') WHERE name IN ('source', 'thread_source')",
+            [],
+            |row| {
+                Ok(match row.get::<_, i64>(0)? {
+                    2 => Self::WithThreadSource,
+                    _ => Self::OriginatorOnly,
+                })
+            },
+        )
+    }
+
+    const fn query(self) -> &'static str {
+        match self {
+            Self::WithThreadSource => CODEX_THREADS_QUERY,
+            Self::OriginatorOnly => CODEX_LEGACY_THREADS_QUERY,
+        }
+    }
+}
+
+/// The interactive threads in the database at `path`,
 /// opened read-only.
 fn query_threads(path: &Path, created: &RangeInclusive<u64>) -> rusqlite::Result<Vec<CodexThread>> {
     let connection = open_read_only(path)?;
-    let mut statement = connection.prepare(CODEX_THREADS_QUERY)?;
+    let layout = ThreadsLayout::read(&connection)?;
+    let mut statement = connection.prepare(layout.query())?;
     let from = i64::try_from(*created.start()).unwrap_or(i64::MAX);
     let until = i64::try_from(*created.end()).unwrap_or(i64::MAX);
     statement
-        .query_map(params![CODEX_TUI_ORIGINATOR, from, until], |row| {
+        .query_map(params![CODEX_LEGACY_TUI_ORIGINATOR, from, until], |row| {
             Ok(CodexThread {
                 cwd:          PathBuf::from(row.get::<_, String>(0)?),
                 created_ms:   u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default(),
@@ -360,7 +391,7 @@ mod tests {
             "state_4.sqlite",
             &[StoredThread {
                 id:         "old",
-                originator: CODEX_TUI_ORIGINATOR,
+                originator: CODEX_LEGACY_TUI_ORIGINATOR,
                 thread:     thread(1_500, Some("from the old layout"), ""),
             }],
         );
@@ -370,12 +401,12 @@ mod tests {
             &[
                 StoredThread {
                     id:         "named",
-                    originator: CODEX_TUI_ORIGINATOR,
+                    originator: CODEX_LEGACY_TUI_ORIGINATOR,
                     thread:     thread(1_500, Some("codex test"), ""),
                 },
                 StoredThread {
                     id:         "typed",
-                    originator: CODEX_TUI_ORIGINATOR,
+                    originator: CODEX_LEGACY_TUI_ORIGINATOR,
                     thread:     other(thread(2_000, None, "fix the build")),
                 },
                 StoredThread {
@@ -385,12 +416,12 @@ mod tests {
                 },
                 StoredThread {
                     id:         "early",
-                    originator: CODEX_TUI_ORIGINATOR,
+                    originator: CODEX_LEGACY_TUI_ORIGINATOR,
                     thread:     thread(999, Some("before"), ""),
                 },
                 StoredThread {
                     id:         "late",
-                    originator: CODEX_TUI_ORIGINATOR,
+                    originator: CODEX_LEGACY_TUI_ORIGINATOR,
                     thread:     thread(2_001, Some("after"), ""),
                 },
             ],
@@ -436,6 +467,65 @@ mod tests {
         );
     }
 
+    #[test]
+    fn codex_interactive_threads_accept_user_sources_and_exclude_workers_and_exec() {
+        let directory = TempDir::new().expect("fixture directory");
+        write_database(directory.path(), "state_5.sqlite", &[]);
+        let connection =
+            Connection::open(directory.path().join("state_5.sqlite")).expect("fixture database");
+        connection.execute_batch("ALTER TABLE threads ADD COLUMN source TEXT;
+            ALTER TABLE threads ADD COLUMN thread_source TEXT;
+            INSERT INTO threads (id, cwd, originator, created_at_ms, name, rollout_path, source, thread_source, title) VALUES
+            ('user', '/work', 'roster', 1500, 'test-codex', '/user', 'vscode', 'user', ''),
+            ('null-source', '/work', 'other', 1500, 'null-source', '/null', NULL, 'user', ''),
+            ('worker', '/work', 'roster', 1500, 'worker', '/worker', 'vscode', NULL, ''),
+            ('exec', '/work', 'roster', 1500, 'exec', '/exec', 'exec', 'user', ''),
+            ('legacy', '/work', 'codex-tui', 1500, 'legacy', '/legacy', NULL, NULL, ''),
+            ('legacy-exec', '/work', 'codex-tui', 1500, 'legacy-exec', '/legacy-exec', 'exec', NULL, ''),
+            ('early', '/work', 'roster', 999, 'early', '/early', 'vscode', 'user', ''),
+            ('late', '/work', 'roster', 2001, 'late', '/late', 'vscode', 'user', '');")
+            .expect("modern thread fixtures");
+        let mut names = read_threads(directory.path(), &(1000..=2000))
+            .into_iter()
+            .map(|thread| thread.name.expect("fixture name"))
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, ["legacy", "null-source", "test-codex"]);
+    }
+
+    #[test]
+    fn codex_interactive_threads_keep_originator_only_layouts() {
+        for extra_column in [
+            "",
+            "ALTER TABLE threads ADD COLUMN source TEXT;",
+            "ALTER TABLE threads ADD COLUMN thread_source TEXT;",
+        ] {
+            let directory = TempDir::new().expect("fixture directory");
+            let expected = thread(1500, Some("legacy"), "");
+            write_database(
+                directory.path(),
+                "state_5.sqlite",
+                &[
+                    StoredThread {
+                        id:         "legacy",
+                        originator: CODEX_LEGACY_TUI_ORIGINATOR,
+                        thread:     expected.clone(),
+                    },
+                    StoredThread {
+                        id:         "worker",
+                        originator: "roster",
+                        thread:     thread(1500, Some("worker"), ""),
+                    },
+                ],
+            );
+            Connection::open(directory.path().join("state_5.sqlite"))
+                .expect("fixture database")
+                .execute_batch(extra_column)
+                .expect("older layout");
+            assert_eq!(read_threads(directory.path(), &(1000..=2000)), [expected]);
+        }
+    }
+
     /// Threads are read by id from the newest database whoever started
     /// them, a mesh's included; an id with no row is left out, and no
     /// ids, no database or a changed one read nothing.
@@ -447,7 +537,7 @@ mod tests {
             "state_4.sqlite",
             &[StoredThread {
                 id:         "0199-named",
-                originator: CODEX_TUI_ORIGINATOR,
+                originator: CODEX_LEGACY_TUI_ORIGINATOR,
                 thread:     thread(1_500, Some("from the old layout"), ""),
             }],
         );
@@ -457,7 +547,7 @@ mod tests {
             &[
                 StoredThread {
                     id:         "0199-named",
-                    originator: CODEX_TUI_ORIGINATOR,
+                    originator: CODEX_LEGACY_TUI_ORIGINATOR,
                     thread:     thread(1_500, Some("codex test"), ""),
                 },
                 StoredThread {
@@ -467,7 +557,7 @@ mod tests {
                 },
                 StoredThread {
                     id:         "0199-other",
-                    originator: CODEX_TUI_ORIGINATOR,
+                    originator: CODEX_LEGACY_TUI_ORIGINATOR,
                     thread:     thread(2_500, Some("not asked for"), ""),
                 },
             ],

@@ -1,5 +1,8 @@
 //! Bounded hierarchy commands and their per-session-set cache, run off the UI thread.
 
+#[path = "command_inputs.rs"]
+mod command_inputs;
+
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -14,6 +17,7 @@ use std::path::PathBuf;
 use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::RecvTimeoutError;
 use std::thread;
@@ -21,6 +25,8 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
+pub(super) use command_inputs::FileRevision;
+pub(super) use command_inputs::InputDrivenCommand;
 use serde::Deserialize;
 use serde::Serialize;
 use sysinfo::Pid;
@@ -189,6 +195,7 @@ struct ReviewerPoolDocument {
 #[derive(Debug, Default)]
 pub(super) struct ReviewerPools {
     documents: BTreeMap<PathBuf, (SystemTime, ReviewerPoolDocument)>,
+    processes: Mutex<System>,
 }
 
 impl ReviewerPools {
@@ -289,7 +296,15 @@ impl ReviewerPools {
                 ReviewerProcessClaim::Unclaimed => None,
             })
             .collect();
-        let mut system = System::new();
+        let mut system = self
+            .processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // sysinfo exposes no removal API. Rebuild only when a claim is retired,
+        // refreshing the current claims rather than the whole process table.
+        if system.processes().keys().any(|pid| !pids.contains(pid)) {
+            *system = System::new();
+        }
         system.refresh_processes_specifics(
             ProcessesToUpdate::Some(&pids),
             true,
@@ -319,6 +334,7 @@ impl ReviewerPools {
                 edge.reviewer = ReviewerState::Idle;
             }
         }
+        drop(system);
     }
 
     /// Current source outcomes replace stale reviewer state on retained links.
@@ -465,6 +481,30 @@ pub(crate) struct CommandRunner;
 impl HierarchyRunner for CommandRunner {
     fn run(&self, command: &str, timeout: Duration) -> Result<HierarchyEdges, HierarchyError> {
         parse(&run_output(command, timeout)?)
+    }
+}
+
+/// Production hierarchy reads retain an answer while known script inputs stay unchanged.
+#[derive(Default)]
+pub(super) struct InputDrivenHierarchyRunner(
+    Mutex<BTreeMap<String, InputDrivenCommand<Result<HierarchyEdges, HierarchyError>>>>,
+);
+
+impl HierarchyRunner for InputDrivenHierarchyRunner {
+    fn run(&self, command: &str, timeout: Duration) -> Result<HierarchyEdges, HierarchyError> {
+        let mut readings = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inputs = readings.entry(command.to_owned()).or_insert_with(|| {
+            InputDrivenCommand::for_command(command, HIERARCHY_REFRESH_INTERVAL)
+        });
+        let answer = inputs.read(Instant::now(), || CommandRunner.run(command, timeout));
+        if answer.is_err() {
+            inputs.invalidate();
+        }
+        drop(readings);
+        answer
     }
 }
 
@@ -1079,6 +1119,39 @@ mod tests {
             pools.outcomes().len(),
             0,
             "missing home cannot retain a discovered pool"
+        );
+    }
+
+    #[test]
+    fn idle_reviewer_processes_drop_pids_no_pool_claims() {
+        let pools = ReviewerPools::default();
+        let pid = Pid::from_u32(std::process::id());
+        pools
+            .processes
+            .lock()
+            .expect("process table")
+            .refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[pid]),
+                true,
+                ProcessRefreshKind::nothing().without_tasks(),
+            );
+        assert!(
+            pools
+                .processes
+                .lock()
+                .expect("process table")
+                .process(pid)
+                .is_some()
+        );
+        pools.refresh(&mut HierarchyEdges(Vec::new()));
+        assert!(
+            pools
+                .processes
+                .lock()
+                .expect("process table")
+                .processes()
+                .is_empty(),
+            "processes outside the current reviewer claims release their entries"
         );
     }
 
