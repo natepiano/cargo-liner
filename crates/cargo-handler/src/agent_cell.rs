@@ -60,6 +60,7 @@ use crate::constants::NOTHING_RUNNING_NOTE;
 use crate::constants::PID_LABEL;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
+use crate::constants::TIMER_ROLE;
 use crate::constants::TREE_ACCOUNT_HEADER;
 use crate::constants::TREE_AGE_HEADER;
 use crate::constants::TREE_BRANCH;
@@ -213,9 +214,34 @@ impl Branch {
 /// The three kinds of work retained as tree lines.
 #[derive(Clone, Copy, Debug)]
 enum WorkKind<'a> {
-    Shell,
+    Shell(ShellPurpose),
     Subagent(&'a SubagentRole),
     Thread,
+}
+
+/// The shell's role, resolved from its census timer observation.
+#[derive(Clone, Copy, Debug)]
+enum ShellPurpose {
+    Timer,
+    Command,
+}
+
+impl From<&ShellTimerObservation> for ShellPurpose {
+    fn from(observation: &ShellTimerObservation) -> Self {
+        match observation {
+            ShellTimerObservation::ObservedCountdown(_) => Self::Timer,
+            ShellTimerObservation::Untimed => Self::Command,
+        }
+    }
+}
+
+impl ShellPurpose {
+    const fn role_text(self) -> &'static str {
+        match self {
+            Self::Timer => TIMER_ROLE,
+            Self::Command => "",
+        }
+    }
 }
 
 /// A positive countdown resolved at the frame's clock boundary.
@@ -276,7 +302,7 @@ impl<'a> Work<'a> {
     const fn account(self, parent: &'a Account) -> &'a Account {
         match (self.kind, &self.child.account) {
             (WorkKind::Thread, _) | (_, Account::Home(_)) => &self.child.account,
-            (WorkKind::Shell | WorkKind::Subagent(_), Account::Unrecorded) => parent,
+            (WorkKind::Shell(_) | WorkKind::Subagent(_), Account::Unrecorded) => parent,
         }
     }
 }
@@ -288,10 +314,12 @@ enum ChildLine<'a> {
     Session,
 }
 
-impl<'a> From<&'a ChildKind> for ChildLine<'a> {
-    fn from(kind: &'a ChildKind) -> Self {
-        match kind {
-            ChildKind::Shell(_) => Self::Work(WorkKind::Shell),
+impl<'a> From<&'a ChildRow> for ChildLine<'a> {
+    fn from(child: &'a ChildRow) -> Self {
+        match &child.kind {
+            ChildKind::Shell(observation) => {
+                Self::Work(WorkKind::Shell(ShellPurpose::from(observation)))
+            },
             ChildKind::Subagent(role) => Self::Work(WorkKind::Subagent(role)),
             ChildKind::Thread => Self::Work(WorkKind::Thread),
             ChildKind::Direct(_) | ChildKind::UnderShell(_) | ChildKind::Detached(_) => {
@@ -410,8 +438,8 @@ enum LineKind<'a> {
     Session(RoleLabel),
     /// A Codex worker resolved from hierarchy, roster, then seat tokens.
     Worker(WorkerRoleSource),
-    /// An ordinary shell keeps plain text and a missing role.
-    Shell,
+    /// A shell keeps its text style and shows its command's purpose.
+    Shell(ShellPurpose),
     /// A subagent carries its own semantic responsibility.
     Subagent(&'a SubagentRole),
 }
@@ -1149,7 +1177,7 @@ impl TreeLine<'_> {
             LineSubject::Agent(_)
             | LineSubject::UnassignedSession
             | LineSubject::Work(Work {
-                kind: WorkKind::Shell | WorkKind::Subagent(_),
+                kind: WorkKind::Shell(_) | WorkKind::Subagent(_),
                 ..
             }) => self.row.agent,
             LineSubject::ManagedThread(_, _)
@@ -1196,9 +1224,9 @@ impl TreeLine<'_> {
                 self.dispatch_label,
             ))),
             LineSubject::Work(Work {
-                kind: WorkKind::Shell,
+                kind: WorkKind::Shell(purpose),
                 ..
-            }) => LineKind::Shell,
+            }) => LineKind::Shell(purpose),
             LineSubject::Work(Work {
                 kind: WorkKind::Subagent(role),
                 ..
@@ -1210,7 +1238,8 @@ impl TreeLine<'_> {
     fn role_text(&self) -> &str {
         match self.kind() {
             LineKind::Worker(source) => source.text(),
-            LineKind::UnassignedSession | LineKind::Shell => "",
+            LineKind::UnassignedSession => "",
+            LineKind::Shell(purpose) => purpose.role_text(),
             LineKind::Session(role) => role.column_text(),
             LineKind::Subagent(role) => role.text(),
         }
@@ -1219,7 +1248,7 @@ impl TreeLine<'_> {
     /// Every Codex worker inherits its parent session's hue.
     fn name_style(&self) -> Style {
         match self.kind() {
-            LineKind::Shell | LineKind::Subagent(_) => Style::default().fg(text_default()),
+            LineKind::Shell(_) | LineKind::Subagent(_) => Style::default().fg(text_default()),
             LineKind::UnassignedSession | LineKind::Session(_) | LineKind::Worker(_) => {
                 Role::Session(self.hue).style()
             },
@@ -1261,7 +1290,7 @@ impl TreeLine<'_> {
             TreeColumn::Role => self.role_text().to_string(),
             TreeColumn::Type => match self.subject {
                 LineSubject::Work(Work {
-                    kind: WorkKind::Shell,
+                    kind: WorkKind::Shell(_),
                     ..
                 }) => "shell",
                 LineSubject::Work(Work {
@@ -1331,7 +1360,7 @@ impl TreeLine<'_> {
             ),
             LineSubject::Work(Work {
                 child,
-                kind: WorkKind::Shell,
+                kind: WorkKind::Shell(_),
             }) => {
                 let state = ShellState::resolve(
                     match child.kind {
@@ -1364,7 +1393,7 @@ impl TreeLine<'_> {
             LineKind::UnassignedSession
             | LineKind::Session(RoleLabel::Unlabeled | RoleLabel::ReviewFallback)
             | LineKind::Worker(_)
-            | LineKind::Shell => FooterTint::Plain,
+            | LineKind::Shell(_) => FooterTint::Plain,
             LineKind::Subagent(role) => colors.named_role(role.text()),
         }
     }
@@ -1396,7 +1425,7 @@ fn work_branches<'a>(
             .find(|&next| children[next].depth <= child.depth)
             .unwrap_or(children.len());
         let descendants = || work_branches(&children[index + 1..end], claimed, offset + index + 1);
-        match ChildLine::from(&child.kind) {
+        match ChildLine::from(child) {
             ChildLine::Session => {},
             ChildLine::Carrier => branches.extend(descendants()),
             ChildLine::Work(kind) => {
