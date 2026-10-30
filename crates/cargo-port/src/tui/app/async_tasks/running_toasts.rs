@@ -12,22 +12,24 @@ use crate::tui::integration;
 
 impl App {
     pub(in crate::tui::app) fn sync_running_clean_toast(&mut self) {
-        let (toast_slot, items) = self.inflight.clean().items_for_toast(
+        let (toast_slot, tracked_items) = self.inflight.clean().items_for_toast(
             |p| project::home_relative_path(p.as_path()),
             integration::path_key,
         );
-        let next = self.sync_running_toast(toast_slot, "cargo clean", &items[..]);
-        self.inflight.clean_mut().toast = next;
+        let next_toast_task_id =
+            self.sync_running_toast(toast_slot, "cargo clean", &tracked_items[..]);
+        self.inflight.clean_mut().toast = next_toast_task_id;
     }
     pub(super) fn sync_running_lint_toast(&mut self) {
         self.sync_running_lint_toast_for_origin(LintRunOrigin::CatchUp);
         self.sync_running_lint_toast_for_origin(LintRunOrigin::Normal);
     }
-    fn sync_running_lint_toast_for_origin(&mut self, origin: LintRunOrigin) {
-        let (toast_slot, items) = self.lint.toast_items_for_origin(origin);
-        let title = crate::tui::state::Lint::running_toast_title(origin);
-        let next = self.sync_running_toast(toast_slot, title, &items);
-        self.lint.set_running_toast_for_origin(origin, next);
+    fn sync_running_lint_toast_for_origin(&mut self, lint_run_origin: LintRunOrigin) {
+        let (toast_slot, tracked_items) = self.lint.toast_items_for_origin(lint_run_origin);
+        let title = crate::tui::state::Lint::running_toast_title(lint_run_origin);
+        let next_toast_task_id = self.sync_running_toast(toast_slot, title, &tracked_items);
+        self.lint
+            .set_running_toast_for_origin(lint_run_origin, next_toast_task_id);
     }
     /// Keep a single "Retrieving GitHub repo details" toast in sync with the
     /// live in-flight repo fetches. The toast slot lives only in the
@@ -35,16 +37,21 @@ impl App {
     /// GitHub row, `Net::network_toasts` returns `None`, so there is nowhere
     /// to store a toast id and this no-ops.
     pub(super) fn sync_running_repo_fetch_toast(&mut self) {
-        let Some(toast_slot) = self.net.network_toasts().map(|toasts| toasts.github) else {
+        let Some(toast_slot) = self
+            .net
+            .network_toasts()
+            .map(|network_running_toasts| network_running_toasts.github)
+        else {
             return;
         };
-        let (_, items) = self
+        let (_, tracked_items) = self
             .net
             .github_running()
             .items_for_toast(ToString::to_string, integration::owner_repo_key);
-        let next = self.sync_running_toast(toast_slot, "Retrieving GitHub repo details", &items);
+        let next_toast_task_id =
+            self.sync_running_toast(toast_slot, "Retrieving GitHub repo details", &tracked_items);
         if let Some(toasts) = self.net.network_toasts_mut() {
-            toasts.github = next;
+            toasts.github = next_toast_task_id;
         }
     }
     /// Keep a single "Fetching crates.io info" toast in sync with the live
@@ -52,16 +59,21 @@ impl App {
     /// slot exists only in steady state, so while the startup panel owns the
     /// crates.io row this no-ops and no standalone toast can be created.
     pub(super) fn sync_running_crates_io_toast(&mut self) {
-        let Some(toast_slot) = self.net.network_toasts().map(|toasts| toasts.crates_io) else {
+        let Some(toast_slot) = self
+            .net
+            .network_toasts()
+            .map(|network_running_toasts| network_running_toasts.crates_io)
+        else {
             return;
         };
-        let (_, items) = self
+        let (_, tracked_items) = self
             .net
             .crates_io_running()
             .items_for_toast(String::clone, |name| TrackedItemKey::from(name.as_str()));
-        let next = self.sync_running_toast(toast_slot, "Fetching crates.io info", &items);
+        let next_toast_task_id =
+            self.sync_running_toast(toast_slot, "Fetching crates.io info", &tracked_items);
         if let Some(toasts) = self.net.network_toasts_mut() {
-            toasts.crates_io = next;
+            toasts.crates_io = next_toast_task_id;
         }
     }
     /// Return the network-toast stage to `StartupOwned`: finish any live
@@ -70,11 +82,16 @@ impl App {
     /// Called when a rescan re-opens the consolidated panel, which takes back
     /// ownership of those rows.
     pub(super) fn enter_startup_owned_network_stage(&mut self) {
-        if let Some(slots) = self.net.network_toasts().map(|t| [t.crates_io, t.github]) {
-            for task_id in slots.into_iter().flatten() {
+        if let Some(slots) = self.net.network_toasts().map(|network_running_toasts| {
+            [
+                network_running_toasts.crates_io,
+                network_running_toasts.github,
+            ]
+        }) {
+            for toast_task_id in slots.into_iter().flatten() {
                 self.framework
                     .toasts
-                    .complete_missing_items(task_id, &HashSet::new());
+                    .complete_missing_items(toast_task_id, &HashSet::new());
             }
         }
         self.net.set_network_toasts_startup_owned();
