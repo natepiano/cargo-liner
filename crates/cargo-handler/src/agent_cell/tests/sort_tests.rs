@@ -144,18 +144,18 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
     for (name, expected) in [
         (
             "zeta",
-            "├─ zeta fix idle z-account z-branch /z-directory 8h",
+            "├─ zeta fix idle z-account z-branch /z-directory 8:00",
         ),
         (
             "nested",
-            "│ └─ nested session thinking — — ~/rust/nested 5h",
+            "│ └─ nested session thinking — — ~/rust/nested 5:00",
         ),
-        ("z-thread", "│ └─ z-thread worker idle — — — 3h"),
+        ("z-thread", "│ └─ z-thread worker idle — — — 3:00"),
         (
             "alpha",
-            "└─ alpha impl thinking a-account a-branch /a-directory 4h",
+            "└─ alpha impl thinking a-account a-branch /a-directory 4:00",
         ),
-        ("a-shell", "└─ a-shell shell running a-account — — 2h"),
+        ("a-shell", "└─ a-shell shell running a-account — — 2:00"),
     ] {
         let y = usize::from(find(&buffer, name).expect("default row").1);
         assert_eq!(

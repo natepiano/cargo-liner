@@ -249,11 +249,11 @@ fn shared_age_slots_keep_all_headers_aligned_at_the_right_edge() {
                 "{header}: width={width}"
             );
         }
-        for (buffer, age) in buffers.iter().zip(["6d 17h", "1d  5h"]) {
+        for (buffer, age) in buffers.iter().zip(["6:17:00", "1:05:00"]) {
             let edge = header_indented(buffer.area).right();
             assert_eq!(find(buffer, "age").expect("age header").0 + 3, edge);
             assert_eq!(
-                find(buffer, age).expect("age with shared unit slots").0 + summary::cell_width(age),
+                find(buffer, age).expect("age label").0 + summary::cell_width(age),
                 edge
             );
         }
@@ -562,7 +562,7 @@ fn role_columns_fit_visible_roles_without_hidden_or_other_screen_column_roles() 
 }
 
 #[test]
-fn converging_column_groups_share_every_drawn_header_and_age_unit_slot() {
+fn converging_column_groups_share_every_drawn_header_and_age_right_edge() {
     let mut first = agent(10, "first-owner", HOUR, None);
     first.children.push(child(
         0,
@@ -624,15 +624,15 @@ fn converging_column_groups_share_every_drawn_header_and_age_unit_slot() {
         ["first-member", "second-member"].map(|name| find(&buffer, name).expect("member row").1);
     let edge = header_indented(upper).right();
     let age_text = |y| {
-        (edge - 15..edge)
+        (edge - 8..edge)
             .map(|x| buffer[(x, y)].symbol())
             .collect::<String>()
     };
-    assert_eq!(age_text(member_y[0]), " 8d 20h        ");
-    assert_eq!(age_text(member_y[1]), "     5h 16m    ");
+    assert_eq!(age_text(member_y[0]), " 8:20:00");
+    assert_eq!(age_text(member_y[1]), "    5:16");
     assert_eq!(
         age_text(find(&buffer, "build").expect("old shell").1),
-        "14d            "
+        "14:00:00"
     );
     assert_eq!(
         age_text(
@@ -640,17 +640,18 @@ fn converging_column_groups_share_every_drawn_header_and_age_unit_slot() {
                 .expect("young shell")
                 .1
         ),
-        "         2m 49s"
+        "       2"
     );
-    let hour_x = member_y.map(|y| {
-        (0..90)
+
+    let minute_colon_x = member_y.map(|y| {
+        (0..edge)
             .rev()
-            .find(|&x| buffer[(x, y)].symbol() == "h")
-            .expect("drawn hour unit")
+            .find(|&x| buffer[(x, y)].symbol() == ":")
+            .expect("drawn minute separator")
     });
     assert_eq!(
-        hour_x[0], hour_x[1],
-        "hours share a slot across formerly separate groups"
+        minute_colon_x[0], minute_colon_x[1],
+        "minutes align across formerly separate groups"
     );
 }
 

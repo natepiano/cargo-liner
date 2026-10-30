@@ -1252,7 +1252,7 @@ An interactive Codex session that the user renamed shows its name in its tile an
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of a director tile during a `follow` dispatch to a worker whose app-server an earlier dispatch started shows only the worker row with its job. The checkpoint adds one Change-Review line for C86 and C87.
 
-### Phase 43 — Ages read d:hh:mm, right-aligned  · status: todo
+### Phase 43 — Ages read d:hh:mm, right-aligned  · status: done
 
 **Depends on:** Phase 46
 
@@ -1283,6 +1283,8 @@ An interactive Codex session that the user renamed shows its name in its tile an
 - `crates/cargo-handler/src/summary/mod.rs` — the summary age column alignment
 - `crates/cargo-handler/src/summary/age_layout_tests.rs`, `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/repair_tests.rs` — expected text
 - `crates/cargo-handler/src/agent_cell.rs` — layout users and fixture text
+- `crates/cargo-handler/src/agent_cell/tests/{sort_tests,tree_tests,unassigned_tests}.rs`, `crates/cargo-handler/src/summary/{sort_tests,unassigned_summary_tests}.rs`, `crates/cargo-handler/src/render/selection_tests.rs` — expected text
+- `crates/cargo-handler/src/render/mod.rs` — the `ONE_AGENT_CELL` age fixture only (Phase 47 owns its status-draw line; 43 lands first)
 - `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer (`review` seat, in role `impl`); one format rule with fixture updates.
@@ -1345,8 +1347,9 @@ An interactive Codex session that the user renamed shows its name in its tile an
 - `crates/cargo-handler/src/app.rs` — draw only on change
 - `crates/cargo-handler/CHANGELOG.md`
 - `crates/cargo-handler/src/terminal.rs` — the redraw decision, the display-time state and their inline tests
-- `crates/cargo-handler/src/render/mod.rs` — the status draw, reachable in the crate so a clock-only frame redraws only the status line
+- `crates/cargo-handler/src/render/mod.rs` — the status draw, reachable in the crate so a clock-only frame redraws only the status line (one line; Phase 43 holds the file until its checkpoint and lands first)
 - `crates/cargo-handler/Cargo.toml`, `Cargo.lock` — the workspace `notify` dependency for the watched run records
+- `crates/cargo-handler/src/census/transcript.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — running subagents and worker prompts read once per change, in their owning readers
 
 **Workers:** 1 writer (`test` seat, which wrote Phase 40).
 
@@ -1368,7 +1371,8 @@ An interactive Codex session that the user renamed shows its name in its tile an
 
 **Spec:**
 1. Paint the focus tint on every interior cell of the focused tile, content rows and empty rows alike, and on its foot readout row; an unfocused tile paints no tint.
-2. Red-first test: a focused tile with fewer content rows than its height has the tint on the empty rows below the content and on the cells right of short content rows; an unfocused tile has none. Under 1 s.
+1a. Transparent screen (showrunner ruling 2026-10-29, review F001): the focused tile paints no ground at all, content rows included; focus shows only as the lit border. One owner (`tint_painted()`) decides the ground for the fill, the content and the readout fading.
+2. Red-first test: a focused tile with fewer content rows than its height has the tint on the empty rows below the content and on the cells right of short content rows; an unfocused tile has none; on a transparent screen the focused tile paints no ground on content, empty or readout rows. Under 1 s.
 3. CHANGELOG: one line under Changed in tui_pane.
 
 **Files:**
@@ -1450,15 +1454,15 @@ An interactive Codex session that the user renamed shows its name in its tile an
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of a tile with Claude and Codex rows shows both columns. The checkpoint adds a Change-Review line.
 
-### Phase 50 — Three slow cargo-handler tests run under a second  · status: todo
+### Phase 50 — Slow cargo-handler tests run under a second  · status: todo
 
-**Depends on:** Phase 41
+**Depends on:** Phase 41, Phase 43, Phase 47, Phase 48
 
 #### Work Order
 
-**Goal:** the three cargo-handler tests that take over one second run under one second each.
+**Goal:** every cargo-handler test that takes over one second runs under one second.
 
-**Source:** Phase 40's full test run, 2026-10-29: three existing tests took 1.46 s (gradient), 1.27 s (busy ink) and 1.04 s (codex tier). Standing rule: no test takes a second; a slow test is a defect to fix, never to rerun.
+**Source:** Phase 40's full test run, 2026-10-29: three existing tests took 1.46 s (gradient), 1.27 s (busy ink) and 1.04 s (codex tier). Phase 43's full run, 2026-10-29: five more took 1.0–1.6 s (`render::selected_ink_tests::selected_row_inks_keep_glyph_contrast_for_sessions_roles_accounts_and_both_timer_states`, `…_in_default_light`, `…every_default_dark_roles_ink_keeps_coverage_and_hue_on_tinted_remembered_selection`, `…every_default_dark_sessions_ink_keeps_coverage_and_hue_on_tinted_remembered_selection`, `agent_cell::tests::design_ink_tests::tree_role_and_account_words_meet_contrast_on_every_tile_ground`); showrunner put them here, after 47, 48 and 43: cause found first, no rerun, no load blame. Standing rule: no test takes a second; a slow test is a defect to fix, never to rerun.
 
 **Constraints from prior phases:**
 - The three tests: `reset_shades_keep_saturated_chroma_and_separation_from_plain_text` (`summary/accounts_gradient_tests.rs` ≈532), `busy_status_words_share_one_drawn_ink_across_row_kinds_and_frame_changes` (`agent_cell/tests/design_ink_tests.rs` ≈99), `codex_session_fast_tier_draws_on_summary_tree_and_unassigned_accounts` (`census/codex_session_tests.rs` ≈291), all under `crates/cargo-handler/src/`. `codex_session_tests.rs` is Phase 41's until its checkpoint.
@@ -1471,14 +1475,97 @@ An interactive Codex session that the user renamed shows its name in its tile an
 
 **Files:**
 - `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the gradient test
-- `crates/cargo-handler/src/agent_cell/tests/design_ink_tests.rs` — the busy ink test
+- `crates/cargo-handler/src/agent_cell/tests/design_ink_tests.rs` — the busy ink and tree contrast tests
+- `crates/cargo-handler/src/render/selected_ink_tests.rs` — the four selected-row ink tests
 - `crates/cargo-handler/src/census/codex_session_tests.rs` — the Codex tier test
 
 **Workers:** 2 writers.
-- `palette` — the gradient and busy-ink test files.
+- `palette` — the gradient, design-ink and selected-ink test files.
 - `census` — `census/codex_session_tests.rs`, after Phase 41's checkpoint.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean with no test over one second; lint clean. Change-Review: none (test time only).
+
+### Phase 51 — Design check follow-ups: the timer shot and a stale unassigned row  · status: todo
+
+**Depends on:** Phase 47
+
+#### Work Order
+
+**Goal:** the `timer` role is proved in a live shot with its row in view, and the unassigned pane never draws more rows than it counts.
+
+**Source:** showrunner design check of the Phase 46 and 41 shots, 2026-10-29 ≈16:25 EDT. Unit session `phases/51/source.md`; shots `phases/46/live/handler-timer.png`, `phases/41/live/handler_named.png`.
+
+**Constraints from prior phases:**
+- Phase 46: the role comes from `ShellTimerObservation::ObservedCountdown`; the shot showed only the first rows of each pane, so the sleep shell was out of view.
+- Phase 41's shot: the unassigned pane says "content rows: 2 of 2" and draws 3 rows; the third, `phase41-check`, has the same status, account, branch and age as `cargo-liner-handler-c6`, with only its session cell lit.
+
+**Spec:**
+1. Retake the live capture with a sleep shell's row in view showing `timer`; send the path.
+2. Find out whether `phase41-check` is a real second session or a row left from an earlier frame. Stale: the pane clears every row it no longer draws. Real: the count includes it. Red test first for whichever it is, under 1 s.
+3. CHANGELOG: one Fixed line when code changes.
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs` — the unassigned pane rows and count (the writer names any other file in a blocked post)
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: both shots. The checkpoint adds a Change-Review line when code changes.
+
+### Phase 52 — No child stderr reaches the terminal  · status: todo
+
+**Depends on:** Phase 47
+
+#### Work Order
+
+**Goal:** no command that cargo-handler starts can write to the terminal it draws on.
+
+**Source:** user, 2026-10-29 (image 7): raw lines `~/.claudeN: mcpServers: - brp` (N = 1..4) appear at column 0 under the summary accounts table, over the tile border. The accounts script writes an MCP-server note to its stderr, and the handler's accounts command spawn lets the child's stderr reach the terminal.
+
+**Constraints from prior phases:**
+- `census/remote.rs` ≈159, `census/scan.rs` ≈1822, `census/hierarchy.rs` ≈519/580/1236 and `census/schedule.rs` ≈1283 already set `stderr(Stdio::null())`; the `InputDrivenCommand` path in `census/command_inputs.rs` (Phase 47's file) and the accounts command do not show it.
+
+**Spec:**
+1. One owner builds every child command: stdin, stdout and stderr are set there, stderr piped or null, never inherited. No call site sets them by hand.
+2. Red-first test: a child that writes to stderr leaves the drawn buffer and the terminal unchanged. Under 1 s.
+3. CHANGELOG: one Fixed line.
+
+**Files:**
+- `crates/cargo-handler/src/census/command_inputs.rs`, `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/census/schedule.rs` — the child command owner and its users (the writer names any other spawn site in a blocked post)
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: a shot of the summary with no stray text under the accounts table. The checkpoint adds a Change-Review line.
+
+### Phase 53 — Reset times step plainly from soonest to latest  · status: todo
+
+**Depends on:** Phase 52
+
+#### Work Order
+
+**Goal:** the color of an account's reset time tells at a glance which account resets soonest, in dark and light themes.
+
+**Source:** change review C113 returned (user, 2026-10-29): "the colors are what you say they are but the color gradient is so subtle in the terminal that i don't get the affrodance value". C115 folds into C113 (user): one judgement. Showrunner ruling: plainly different ends and steps (3 or 4 distinct hues or lightness steps, soonest the strongest), each step readable on its ground in both themes, still no red; no reset color matches any session name color. Unit session `phases/53/source.md`.
+
+**Constraints from prior phases:**
+- C113 (merge 1bc31a60): reset times never red; dark ramp light green → sea green, light ramp violet → dark indigo. `reset_colors` (`summary/accounts.rs` ≈145).
+- Red stays for a failed reading's dot.
+- C115 kept the darkest violet off session name colors on light themes.
+- `summary/accounts_gradient_tests.rs` is also in Phase 50's **Files** (its slow gradient test); they run one after the other, never together.
+
+**Spec:**
+1. A stepped ramp of 3 or 4 distinct steps per theme, soonest the strongest, each step meeting text contrast on its ground; no red; no step equal to a session name color.
+2. Tests: step order by reset time, distinct steps, contrast on ground in dark and light, no step equals a session color, no red. Each under 1 s.
+3. CHANGELOG: one Changed line.
+
+**Files:**
+- `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the ramp and its tests
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: captures in a dark and a light theme. The checkpoint adds ONE Change-Review line covering C113 and C115: the ramp reads at a glance, no red, no reset color matches a session color, dark and light themes.
 
 ### Phase 44 — The accounts summary shows a session count per account  · status: todo
 
