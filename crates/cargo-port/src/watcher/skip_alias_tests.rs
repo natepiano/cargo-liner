@@ -9,9 +9,9 @@ use notify::event::CreateKind;
 
 use super::WatchSkipSet;
 use crate::project::AbsolutePath;
-use crate::watcher::repair_test_support::RecordedFolderWatches;
 use crate::watcher::roots;
 use crate::watcher::roots::WatchRegistration;
+use crate::watcher::watch_test_support::RecordedFolderWatches;
 
 #[test]
 fn custom_target_symlink_skips_real_tree_at_registration_and_creation() -> Result<(), Box<dyn Error>>
