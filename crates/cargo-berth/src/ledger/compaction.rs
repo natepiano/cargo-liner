@@ -13,6 +13,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fs;
+use std::fs::File;
 use std::fs::Metadata;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
@@ -246,6 +247,7 @@ struct PreparedJournalCompaction {
     source_changes:  CompactionSourceChanges,
     journal_path:    PathBuf,
     checkpoint_path: PathBuf,
+    temporary_file:  File,
     replay:          JournalReplay,
     result:          JournalCompaction,
 }
@@ -384,22 +386,35 @@ impl Ledger {
             .paths
             .directory
             .join(HISTORY_COMPACTION_CHECK_FILE_NAME);
-        if fs::metadata(&checked)
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-            .is_some_and(|elapsed| elapsed < HISTORY_COMPACTION_CHECK_INTERVAL)
+        let Ok(mut marker) = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(checked)
+        else {
+            return;
+        };
+        // The descriptor excludes concurrent expensive history plans. Stamp the attempt before
+        // starting it: a lost publication race or an interrupted process must also be throttled.
+        if marker.try_lock().is_err() {
+            return;
+        }
+        let Ok(metadata) = marker.metadata() else {
+            return;
+        };
+        if metadata.len() != 0
+            && metadata
+                .modified()
+                .ok()
+                .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+                .is_some_and(|elapsed| elapsed < HISTORY_COMPACTION_CHECK_INTERVAL)
         {
             return;
         }
-        if self
-            .attempt_due_compaction(self.compaction_threshold_bytes, replays_agree)
-            .is_ok_and(|attempt| attempt.is_some())
-        {
-            // Live dependencies can retain expired history. Reconsider them at most once
-            // per minute rather than replaying the entire journal after every hook.
-            std::mem::drop(fs::write(checked, b"checked"));
+        if marker.write_all(b"checked").is_err() {
+            return;
         }
+        std::mem::drop(self.attempt_due_compaction(self.compaction_threshold_bytes, replays_agree));
     }
 
     /// [`Self::compact_if_due`], keeping a compacted journal only when `agree` holds of the
@@ -434,7 +449,7 @@ impl Ledger {
         {
             return Ok(None);
         }
-        let CompactionPreparation::Ready(prepared) =
+        let CompactionPreparation::Ready(mut prepared) =
             self.prepare_compaction(repo_instance_id, agree)?
         else {
             return Ok(Some(JournalCompaction::NothingToCompact));
@@ -444,7 +459,7 @@ impl Ledger {
             Err(MutationLockError::AcquisitionTimedOut) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        if !prepared.still_current(&self.paths.journal)? {
+        if !prepared.include_committed_tail(&self.paths.journal)? {
             return Ok(None);
         }
         let result = self.publish_compacted(&prepared, repo_instance_id, &mut |_| {});
@@ -484,12 +499,60 @@ impl Ledger {
         fs::write(&self.paths.compaction_refusal, serde_json::to_vec(&marker)?)
     }
 
+    /// Reclaim old interrupted rewrites while preserving every descriptor-held preparation.
+    fn remove_abandoned_compaction_files(&self) -> std::io::Result<()> {
+        let prefix = format!("{JOURNAL_COMPACTION_TEMPORARY_FILE_NAME}.");
+        for entry in fs::read_dir(&self.paths.directory)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(suffix) = name.to_str().and_then(|name| name.strip_prefix(&prefix)) else {
+                continue;
+            };
+            if Uuid::parse_str(suffix).is_err() || !entry.file_type()?.is_file() {
+                continue;
+            }
+            // The grace period also protects a creator between create_new and locking its file.
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            let Ok(age) = metadata.modified()?.elapsed() else {
+                continue;
+            };
+            if age < Duration::from_hours(24) {
+                continue;
+            }
+            let path = entry.path();
+            let file = match OpenOptions::new().write(true).open(&path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            if file.try_lock().is_err() {
+                continue;
+            }
+            match fs::remove_file(&path) {
+                Ok(()) => {},
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            }
+            match fs::remove_file(path.with_added_extension("checkpoint")) {
+                Ok(()) => {},
+                Err(error) if error.kind() == ErrorKind::NotFound => {},
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
     /// Read, prune, write and verify a rewrite without owning the mutation lock.
     fn prepare_compaction(
         &self,
         repo_instance_id: RepoInstanceId,
         agree: fn(&JournalReplay, &JournalReplay) -> bool,
     ) -> Result<CompactionPreparation, JournalCompactionError> {
+        self.remove_abandoned_compaction_files()?;
         let source = fs::metadata(&self.paths.journal)?;
         let Some(plan) = CompactionPlan::of(&fs::read(&self.paths.journal)?, repo_instance_id)?
         else {
@@ -500,19 +563,22 @@ impl Ledger {
             Uuid::now_v7()
         ));
         let checkpoint_path = journal_path.with_added_extension("checkpoint");
+        let temporary_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&journal_path)?;
         let mut prepared = PreparedJournalCompaction {
             source,
             source_end: plan.original.bytes,
             source_changes: plan.source_changes,
             journal_path,
             checkpoint_path,
+            temporary_file,
             replay: JournalReplay::empty(),
             result: JournalCompaction::NothingToCompact,
         };
-        let mut temporary_file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&prepared.journal_path)?;
+        prepared.temporary_file.lock()?;
+        let mut temporary_file = &prepared.temporary_file;
         temporary_file.write_all(&plan.kept)?;
         temporary_file.sync_all()?;
         let compacted = Journal::replay_read_only(&prepared.journal_path)?;
@@ -699,6 +765,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::error::Error;
     use std::fs;
+    use std::io::Write;
     use std::num::TryFromIntError;
     use std::ops::RangeInclusive;
     use std::os::unix::fs::MetadataExt;
@@ -1341,6 +1408,115 @@ mod tests {
         let whole = Journal::replay_read_only(&fixture.ledger.paths.journal)?;
         assert!(replays_agree(&whole, &resumed));
         assert_eq!(whole.end_offset, resumed.end_offset);
+        Ok(())
+    }
+
+    #[test]
+    fn history_compaction_throttles_an_unpublished_attempt() -> Result<(), Box<dyn Error>> {
+        let (events, rejected) = recent_round_trip_events()?;
+        let fixture = CompactionFixture::holding(events[..rejected].to_vec())?;
+        fixture.ledger.compact_expired_history();
+        let marker = fixture
+            .ledger
+            .paths
+            .directory
+            .join(super::HISTORY_COMPACTION_CHECK_FILE_NAME);
+        assert!(
+            marker.is_file(),
+            "even a skipped history plan must start the cooldown"
+        );
+        let checked = fs::metadata(&marker)?.modified()?;
+        fixture.ledger.compact_expired_history();
+        assert_eq!(fs::metadata(marker)?.modified()?, checked);
+        Ok(())
+    }
+
+    #[test]
+    fn compaction_reclaims_abandoned_temporary_journals() -> Result<(), Box<dyn Error>> {
+        let (events, rejected) = recent_round_trip_events()?;
+        let fixture = CompactionFixture::holding(events[..rejected].to_vec())?;
+        let stale = fixture.ledger.paths.directory.join(format!(
+            "{JOURNAL_COMPACTION_TEMPORARY_FILE_NAME}.{}",
+            uuid::Uuid::now_v7()
+        ));
+        fs::write(&stale, b"interrupted rewrite")?;
+        let checkpoint = stale.with_added_extension("checkpoint");
+        fs::write(&checkpoint, b"interrupted checkpoint")?;
+        let old = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        fs::File::options()
+            .write(true)
+            .open(&stale)?
+            .set_times(fs::FileTimes::new().set_modified(old))?;
+        let active = fixture.ledger.paths.directory.join(format!(
+            "{JOURNAL_COMPACTION_TEMPORARY_FILE_NAME}.{}",
+            uuid::Uuid::now_v7()
+        ));
+        let active_file = fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&active)?;
+        active_file.set_times(fs::FileTimes::new().set_modified(old))?;
+        active_file.lock()?;
+        fixture.ledger.compact_journal()?;
+        assert!(
+            active.exists(),
+            "a descriptor-held preparation must survive cleanup"
+        );
+        assert!(
+            !stale.exists(),
+            "a later compaction must reclaim interrupted rewrites"
+        );
+        assert!(
+            !checkpoint.exists(),
+            "the abandoned checkpoint belongs to the same rewrite"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn automatic_compaction_includes_an_append_during_verification() -> Result<(), Box<dyn Error>> {
+        thread_local! {
+            static APPEND: std::cell::RefCell<(std::path::PathBuf, Vec<u8>)> =
+                const { std::cell::RefCell::new((std::path::PathBuf::new(), Vec::new())) };
+        }
+        fn agree_and_append(original: &JournalReplay, compacted: &JournalReplay) -> bool {
+            APPEND.with(|append| {
+                let append = append.borrow();
+                let result = fs::OpenOptions::new()
+                    .append(true)
+                    .open(&append.0)
+                    .and_then(|mut file| file.write_all(&append.1));
+                assert!(result.is_ok(), "racing append: {result:?}");
+            });
+            replays_agree(original, compacted)
+        }
+        let (events, rejected) = recent_round_trip_events()?;
+        let (renewal, observation) = renewal_and_observation(&events[..rejected])?;
+        let mut fixture = CompactionFixture::holding(events[..rejected].to_vec())?;
+        append(&fixture.ledger, &observation)?;
+        append(&fixture.ledger, &observation)?;
+        let mut event = events[0].clone();
+        event.actor.repository = fixture.repo_instance_id;
+        event.event_id = EventId::new();
+        event.operation = renewal;
+        let replay = Journal::replay_read_only(&fixture.ledger.paths.journal)?;
+        event.projection_generation = ProjectionGeneration::from(u64::from(replay.generation) + 1);
+        let mut bytes = serde_json::to_vec(&event)?;
+        bytes.push(b'\n');
+        APPEND.with(|append| *append.borrow_mut() = (fixture.ledger.paths.journal.clone(), bytes));
+        fixture.ledger.compaction_threshold_bytes = 1;
+        let result = fixture.ledger.prepare_due_compaction(agree_and_append)?;
+        assert!(
+            matches!(result, Some(JournalCompaction::Compacted { .. })),
+            "append must not starve automatic compaction: {result:?}"
+        );
+        let replay = Journal::replay_read_only(&fixture.ledger.paths.journal)?;
+        assert!(replay.reservations.is_ok());
+        assert!(
+            journal::complete_record_events(&fixture.journal()?)?
+                .iter()
+                .any(|kept| kept.event_id == event.event_id)
+        );
         Ok(())
     }
 

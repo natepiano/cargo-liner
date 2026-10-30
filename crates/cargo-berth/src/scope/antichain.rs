@@ -53,7 +53,7 @@ pub(super) fn component_keys(scope: &ReservationScope, path_case: PathCase) -> V
     test_work::record(Work::ScopeKey);
     scope
         .path
-        .to_string()
+        .as_str()
         .split('/')
         .map(|component| path_case.component_key(component))
         .collect()
@@ -72,7 +72,7 @@ pub(super) fn contains(
     candidate: &ReservationScope,
     path_case: PathCase,
 ) -> bool {
-    let candidate_path = candidate.path.to_string();
+    let candidate_path = candidate.path.as_str();
     (holder.kind == ScopeKind::Tree || candidate.kind == ScopeKind::File)
         && holder.covers_path_by(
             candidate_path.as_bytes(),

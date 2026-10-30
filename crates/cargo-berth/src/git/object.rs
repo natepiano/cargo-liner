@@ -18,7 +18,6 @@ use std::sync::OnceLock;
 use std::sync::mpsc::Receiver;
 
 use super::child;
-use super::child::ChildDeadline;
 use super::child::ChildProcess;
 use super::command;
 use super::constants::GIT_AMBIGUOUS_OBJECT_SUFFIX;
@@ -144,13 +143,10 @@ impl CommitObjectProcess {
     }
 
     fn ended_reader(&mut self) -> Result<CommitObjectResolution, GitError> {
-        let status = self.child.wait(child::PIPE_EOF_DEADLINE)?;
-        let stderr = ChildDeadline::new(
-            self.child.command(),
-            "object reader diagnostics EOF",
-            child::PIPE_EOF_DEADLINE,
-        )
-        .receive(&self.diagnostics)?;
+        let status = self.child.wait(child::GIT_COMMAND_DEADLINE)?;
+        let completion = self.child.finish_output()?;
+        let stderr = completion.receive(self.child.command(), &self.diagnostics)?;
+        completion.check(self.child.command())?;
         Err(GitError::CommandFailed {
             command: GIT_CAT_FILE_COMMAND,
             stderr:  if stderr.is_empty() {

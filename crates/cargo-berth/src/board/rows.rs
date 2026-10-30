@@ -673,6 +673,10 @@ impl BoardModel {
             reservations,
             &report.repository_snapshot,
             &observed_at,
+            AheadBehindWorktrees::for_occasion(
+                EngineAnswerOccasion::current(),
+                report.invoking_worktree(),
+            ),
         )?;
         let BoardCoordinationProjection { ordering, answers } =
             BoardCoordinationProjection::from_report(report)?;
@@ -1074,9 +1078,10 @@ fn board_reservation_snapshots(
     reservations: &RetainedReservationSet,
     snapshot: &RepositorySnapshot,
     observed_at: &RecordedAt,
+    worktrees: AheadBehindWorktrees,
 ) -> Result<(Vec<BoardReservationSnapshot>, u64), BoardError> {
     let (ahead_by_worktree, ahead_behind_computations) =
-        ahead_behind_by_worktree(repository_root, reservations, snapshot)?;
+        ahead_behind_by_worktree(repository_root, reservations, snapshot, worktrees)?;
     let mut sessions = board_reservation_sessions(repository_root, reservations);
     let mut reservation_snapshots = Vec::new();
     for reservation in reservations.iter() {
@@ -1172,16 +1177,39 @@ fn board_reservation_sessions(
     sessions
 }
 
+/// History counts needed by this response's audience.
+#[derive(Clone, Copy)]
+enum AheadBehindWorktrees {
+    EveryWorktree,
+    InvokingWorktree(WorktreeId),
+}
+
+impl AheadBehindWorktrees {
+    const fn for_occasion(occasion: EngineAnswerOccasion, invoking: WorktreeId) -> Self {
+        match occasion {
+            EngineAnswerOccasion::DirectInvocation => Self::EveryWorktree,
+            EngineAnswerOccasion::CompletedBashCall | EngineAnswerOccasion::OpeningSession => {
+                Self::InvokingWorktree(invoking)
+            },
+        }
+    }
+}
+
 fn ahead_behind_by_worktree(
     repository_root: &Path,
     reservations: &RetainedReservationSet,
     snapshot: &RepositorySnapshot,
+    worktrees: AheadBehindWorktrees,
 ) -> Result<(HashMap<WorktreeId, AheadBehind>, u64), BoardError> {
     let JudgedTargetTip::Resolved(trunk) = snapshot.repository_trunk() else {
         return Ok((HashMap::new(), 0));
     };
     let mut head_by_worktree = HashMap::new();
     for reservation in reservations.iter() {
+        if matches!(worktrees, AheadBehindWorktrees::InvokingWorktree(invoking) if invoking != reservation.actor().worktree)
+        {
+            continue;
+        }
         let repository_reservation = snapshot.reservation(reservation.id())?;
         if let WorktreeHead::Resolved(head) = &repository_reservation.worktree_head {
             head_by_worktree
@@ -1301,6 +1329,9 @@ mod tests {
     use crate::board::test_support::TestActor;
     use crate::config::Enrollment;
     use crate::edge::DeferralOrigin;
+    use crate::edge::RepositoryReservationEvidence;
+    use crate::edge::RepositoryReservationSnapshot;
+    use crate::edge::TargetObservation;
     use crate::ids::GitObjectId;
     use crate::ids::ReservationId;
     use crate::ledger::JournalOperation;
@@ -1319,10 +1350,70 @@ mod tests {
     use crate::reservation::ReleaseDisposition;
     use crate::reservation::ReservationLifecycle;
     use crate::reservation::RewrittenIntegrationTrunkCommit;
+    use crate::worktree::WorktreeHead;
+    use crate::worktree::WorktreeLiveness;
 
     const PENDING_BYPASS_NAME: &str =
         "cargo-berth-pending-bypass-01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a99.json";
     const UNKNOWN_OBJECT_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[test]
+    fn hook_counts_history_only_for_the_invoking_worktree() -> FixtureResult<()> {
+        let fixture = BoardFixture::new()?;
+        let actor = fixture.main_actor();
+        let other = fixture.linked_actor("other")?;
+        fixture.claim(&actor, "caller.rs", ConflictAuthorization::NoConflict)?;
+        fixture.claim(&other, "foreign.rs", ConflictAuthorization::NoConflict)?;
+        let reservations = crate::ledger::Ledger::open(fixture.repository.path())?
+            .read_validated_journal()?
+            .into_reservations()?;
+        let invoking = reservations
+            .iter()
+            .next()
+            .ok_or("caller reservation")?
+            .actor()
+            .worktree;
+        let trunk = fixture.trunk()?;
+        let target = crate::ledger::IntegrationTarget::from_branch_argument("main")?;
+        let snapshot = crate::edge::RepositorySnapshot::new(
+            target.clone(),
+            std::collections::BTreeMap::from([(
+                target,
+                TargetObservation::Resolved(trunk.clone()),
+            )]),
+            std::collections::HashMap::new(),
+            reservations
+                .iter()
+                .map(|reservation| RepositoryReservationSnapshot {
+                    reservation_id:    reservation.id(),
+                    worktree_liveness: WorktreeLiveness::Live,
+                    worktree_head:     WorktreeHead::Resolved(trunk.clone()),
+                    evidence:          RepositoryReservationEvidence::Active,
+                })
+                .collect(),
+            Vec::new(),
+            crate::edge::CrossTargetPredecessorEvidence::default(),
+        );
+        let (counts, _) = super::ahead_behind_by_worktree(
+            fixture.repository.path(),
+            &reservations,
+            &snapshot,
+            super::AheadBehindWorktrees::InvokingWorktree(invoking),
+        )?;
+        assert_eq!(
+            counts.len(),
+            1,
+            "foreign history must not be counted by a hook"
+        );
+        assert_eq!(
+            counts.get(&invoking),
+            Some(&crate::git::AheadBehind::Counts {
+                ahead:  0,
+                behind: 0,
+            })
+        );
+        Ok(())
+    }
 
     #[test]
     fn both_released_deferral_endpoints_leave_no_live_reservation_answers() -> FixtureResult<()> {

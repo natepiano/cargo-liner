@@ -2633,6 +2633,47 @@ mod merge_extent {
     }
 
     #[test]
+    fn a_newer_trunk_does_not_enter_an_untouched_lanes_merge_extent() {
+        let repo = IntegrationRepository::from_recorded_template(super::INITIAL_INTEGRATION_PAIR);
+        let lane = repo.lane("older-lane", "integration");
+        let holder = repo.lane("foreign-holder", "main");
+        let own = repo.claim(&lane, "file:own.txt", FIRST_RUN, None);
+        let foreign = repo.claim(&holder, "file:foreign.txt", SECOND_RUN, None);
+        assert_success(&own);
+        assert_success(&foreign);
+        let id = json(&own)["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("lane reservation")
+            .to_owned();
+        repo.commit_file(&lane, "own.txt", "own work\n", "unit work");
+        repo.commit_file(
+            &repo.integration,
+            "foreign.txt",
+            "other unit's landed work\n",
+            "newer trunk",
+        );
+
+        let observed = repo.board();
+        let extent = &snapshot(&observed, &id)["merge_extent"];
+        assert_eq!(
+            scope_paths(&extent["scopes"]),
+            BTreeSet::from(["own.txt".to_owned()]),
+            "{observed}"
+        );
+        assert_eq!(
+            extent["key"]["working_tree"]["tracked_paths"],
+            serde_json::json!([]),
+            "{observed}"
+        );
+        assert!(
+            repo.journal()
+                .iter()
+                .all(|event| event["op"] != "incursion"),
+            "{observed}"
+        );
+    }
+
+    #[test]
     fn an_unlanded_missing_target_alerts_and_shows_an_unresolved_commit() {
         let repo = IntegrationRepository::from_recorded_template(super::INITIAL_INTEGRATION_PAIR);
         let lane = repo.lane("missing-target-lane", "integration");
