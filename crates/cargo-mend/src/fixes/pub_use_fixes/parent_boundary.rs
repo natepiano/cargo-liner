@@ -11,6 +11,8 @@ use syn::Visibility;
 use syn::spanned::Spanned;
 
 use crate::fixes::facade_redirect;
+use crate::fixes::facade_redirect::IdentifierUse;
+use crate::fixes::facade_redirect::LeafRetention;
 use crate::fixes::facade_redirect::SourceLines;
 use crate::fixes::imports::UseFix;
 use crate::rust_syntax;
@@ -170,10 +172,15 @@ fn rewrite_parent_pub_use_item_for_exports(
     if let Some(rewritten_tree) =
         facade_redirect::remove_use_leaves(Vec::new(), &item_use.tree, &|prefix, name| {
             let normalized = rust_syntax::trim_leading_self(prefix);
-            normalized.len() == 1
+            if normalized.len() == 1
                 && exports.iter().any(|(child_module_name, item_name)| {
                     normalized[0] == *child_module_name && name == item_name
                 })
+            {
+                LeafRetention::Remove
+            } else {
+                LeafRetention::Keep
+            }
         })
     {
         lines.extend(facade_redirect::render_use_lines(
@@ -219,8 +226,11 @@ fn locally_used_exports(
     let (start, end) = item_use_range;
     let mut locally_used = Vec::new();
     for (child_module, item_name) in exports {
-        if facade_redirect::word_occurs_outside(source, iter::once(start..end), item_name) {
-            locally_used.push((child_module.clone(), item_name.clone()));
+        match facade_redirect::word_occurs_outside(source, iter::once(start..end), item_name) {
+            IdentifierUse::Present | IdentifierUse::Unparseable => {
+                locally_used.push((child_module.clone(), item_name.clone()));
+            },
+            IdentifierUse::Absent => {},
         }
     }
     locally_used
