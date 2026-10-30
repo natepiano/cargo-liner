@@ -189,6 +189,9 @@ pub(crate) struct ReconciliationReport {
 }
 
 impl ReconciliationReport {
+    /// The worktree whose hooks consume this report.
+    pub(crate) const fn invoking_worktree(&self) -> WorktreeId { self.invoking_worktree }
+
     /// Carry both durable alerts and deferred maintenance across command boundaries.
     pub(crate) fn into_output(self, output: OutputEnvelope) -> OutputEnvelope {
         output
@@ -510,6 +513,48 @@ impl<'candidates> TrunkEdgeCandidates<'candidates> {
     }
 }
 
+/// Released audit history is revalidated on demand; live ordering proofs remain current.
+#[derive(Clone, Copy)]
+enum ReservationEvidenceRead {
+    AllRetained,
+    LiveConstraints { invoking_worktree: WorktreeId },
+}
+
+impl ReservationEvidenceRead {
+    fn for_repository(repository: &git::RepositorySnapshot) -> Self {
+        match EngineAnswerOccasion::current() {
+            EngineAnswerOccasion::CompletedBashCall => {
+                ledger::read_worktree_identity(repository.context().administrative_directory())
+                    .map_or(Self::AllRetained, |invoking_worktree| {
+                        Self::LiveConstraints { invoking_worktree }
+                    })
+            },
+            EngineAnswerOccasion::DirectInvocation | EngineAnswerOccasion::OpeningSession => {
+                Self::AllRetained
+            },
+        }
+    }
+
+    fn includes(
+        self,
+        reservation: &Reservation,
+        reservations: &RetainedReservationSet,
+        ordering: &OrderingGraph,
+    ) -> Result<bool, ReservationReplayError> {
+        if matches!(self, Self::AllRetained)
+            || matches!(self, Self::LiveConstraints { invoking_worktree }
+                if reservation.actor().worktree == invoking_worktree)
+            || !matches!(
+                reservation.lifecycle(),
+                ReservationLifecycle::Released { .. }
+            )
+        {
+            return Ok(true);
+        }
+        ordering.has_nonterminal_dependent(reservation.id(), reservations)
+    }
+}
+
 impl TargetIntegrationReachability {
     fn observe_configured_trunk(
         repository: &git::RepositorySnapshot,
@@ -524,6 +569,7 @@ impl TargetIntegrationReachability {
             ordering_graph,
             selected_reservations,
             edge_candidates,
+            ReservationEvidenceRead::for_repository(repository),
         )?;
         let observation =
             git::branch_commit_reachability(repository, trunk_branch, &candidate_ancestors);
@@ -609,6 +655,7 @@ impl TargetIntegrationReachability {
             ordering_graph,
             selected_reservations,
             edge_candidates,
+            ReservationEvidenceRead::for_repository(repository),
         )?;
         let reachability = git::reachability_to_target(repository, &candidate_ancestors, target)
             .unwrap_or_else(|_| vec![Reachability::ObjectUnknown; candidate_ancestors.len()]);
@@ -624,12 +671,16 @@ impl TargetIntegrationReachability {
         ordering_graph: &OrderingGraph,
         selected_reservations: &HashSet<ReservationId>,
         edge_candidates: TrunkEdgeCandidates<'_>,
+        evidence_read: ReservationEvidenceRead,
     ) -> Result<Vec<GitObjectId>, ReservationReplayError> {
         let mut candidate_ancestors = HashSet::new();
         for reservation in reservations
             .iter()
             .filter(|reservation| selected_reservations.contains(&reservation.id()))
         {
+            if !evidence_read.includes(reservation, reservations, ordering_graph)? {
+                continue;
+            }
             match reservation.evidence_state()? {
                 ReservationEvidenceState::Outstanding {
                     protected_tip,
@@ -2604,21 +2655,21 @@ fn reservation_merge_extent(
         return extent.clone();
     };
     let siblings = holder_group(reservation, reservations, snapshot);
-    let covers = |candidate: &Reservation, path: &ReservationScope| {
-        candidate
-            .scopes()
-            .as_slice()
+    if siblings.len() == 1 {
+        return extent.clone();
+    }
+    let own = crate::scope::ScopeContainmentIndex::new(reservation.scopes().as_slice().iter());
+    let shared = crate::scope::ScopeContainmentIndex::new(
+        siblings
             .iter()
-            .any(|scope| scope.contains(path, PathCase::Sensitive))
-    };
+            .flat_map(|sibling| sibling.scopes().as_slice().iter()),
+    );
     MergeExtent::derived(
         key.clone(),
         scopes
             .as_slice()
             .iter()
-            .filter(|path| {
-                covers(reservation, path) || !siblings.iter().any(|sibling| covers(sibling, path))
-            })
+            .filter(|path| own.contains(path) || !shared.contains(path))
             .cloned()
             .collect(),
     )
@@ -3335,6 +3386,17 @@ fn group_reservations_by_target(
     })
 }
 
+fn configured_repository_trunk(
+    config: &BerthConfig,
+) -> Result<IntegrationTarget, ReconciliationBuildError> {
+    config.repository_trunk().map_err(|_| {
+        ReconciliationBuildError::Config(ConfigError::InvalidValue {
+            key:   "trunk".to_owned(),
+            value: config.trunk.clone(),
+        })
+    })
+}
+
 /// Read branch reachability and reservation evidence for one repository observation.
 fn observe_repository_facts(
     reservations: &RetainedReservationSet,
@@ -3347,15 +3409,8 @@ fn observe_repository_facts(
     let repository = reconciliation_evidence_context.repository;
     thread::scope(|scope| {
         let worktree_registry = scope.spawn(|| WorktreeRegistry::read(repository));
-        let repository_trunk = reconciliation_evidence_context
-            .berth_config
-            .repository_trunk()
-            .map_err(|_| {
-                ReconciliationBuildError::Config(ConfigError::InvalidValue {
-                    key:   "trunk".to_owned(),
-                    value: reconciliation_evidence_context.berth_config.trunk.clone(),
-                })
-            })?;
+        let repository_trunk =
+            configured_repository_trunk(reconciliation_evidence_context.berth_config)?;
         let TargetReservationGroups {
             mut groups,
             recorded_targets: reservation_targets,
@@ -3421,10 +3476,14 @@ fn observe_repository_facts(
         reachabilities.insert(repository_trunk.clone(), trunk_reachability);
         let repository_evidence_observations = observe_target_group_evidence(
             reservations,
+            ordering_graph,
             &groups,
-            &repository_trunk,
-            &observations,
-            &reachabilities,
+            JudgedTargetObservations {
+                repository_trunk: &repository_trunk,
+                targets:          &observations,
+                reachabilities:   &reachabilities,
+                evidence_read:    ReservationEvidenceRead::for_repository(repository),
+            },
             repository_root,
             reconciliation_evidence_context.scoped_patch_evaluation_budget,
         )?;
@@ -3445,16 +3504,30 @@ fn observe_repository_facts(
     })
 }
 
+/// Branch tips and ancestry that judge one pass of reservation evidence.
+#[derive(Clone, Copy)]
+struct JudgedTargetObservations<'observation> {
+    repository_trunk: &'observation IntegrationTarget,
+    targets:          &'observation BTreeMap<IntegrationTarget, TargetObservation>,
+    reachabilities:   &'observation BTreeMap<IntegrationTarget, TargetIntegrationReachability>,
+    evidence_read:    ReservationEvidenceRead,
+}
+
 /// Evaluate each reservation once in the context of the branch that judges it this pass.
 fn observe_target_group_evidence(
     reservations: &RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
     groups: &BTreeMap<IntegrationTarget, HashSet<ReservationId>>,
-    repository_trunk: &IntegrationTarget,
-    observations: &BTreeMap<IntegrationTarget, TargetObservation>,
-    reachabilities: &BTreeMap<IntegrationTarget, TargetIntegrationReachability>,
+    targets: JudgedTargetObservations<'_>,
     repository_root: &Path,
     budget: &mut ReconciliationScopedPatchEvaluationBudget,
 ) -> Result<Vec<RepositoryEvidenceObservation>, ReservationReplayError> {
+    let JudgedTargetObservations {
+        repository_trunk,
+        targets: observations,
+        reachabilities,
+        evidence_read,
+    } = targets;
     let mut indexed_evidence = Vec::new();
     let unavailable_reachability = TargetIntegrationReachability::default();
     for (target, selected) in groups {
@@ -3496,8 +3569,13 @@ fn observe_target_group_evidence(
                 .into_iter()
                 .filter(|(_, reservation)| selected.contains(&reservation.id()))
                 .map(|(index, reservation)| {
-                    repository_evidence(reservation, &mut context)
-                        .map(|observation| (index, observation))
+                    let observation =
+                        if evidence_read.includes(reservation, reservations, ordering_graph)? {
+                            repository_evidence(reservation, &mut context)?
+                        } else {
+                            retained_released_evidence(reservation, &mut context)?
+                        };
+                    Ok((index, observation))
                 })
                 .collect::<Result<Vec<_>, ReservationReplayError>>()?,
         );
@@ -4092,6 +4170,34 @@ fn repository_evidence(
             })
         },
     }
+}
+
+/// Carry released audit state through a hook without opening its historical Git objects.
+fn retained_released_evidence(
+    reservation: &Reservation,
+    context: &mut TargetIntegrationEvidenceContext<'_>,
+) -> Result<RepositoryEvidenceObservation, ReservationReplayError> {
+    let evidence = match reservation.evidence_state()? {
+        ReservationEvidenceState::Released {
+            protected_tip,
+            disposition,
+            integration_status,
+            ..
+        } => RepositoryReservationEvidence::Released {
+            protected_tip,
+            disposition,
+            integration_status,
+        },
+        ReservationEvidenceState::ReleasedWithoutCheckpoint { disposition } => {
+            RepositoryReservationEvidence::ReleasedWithoutCheckpoint { disposition }
+        },
+        _ => return repository_evidence(reservation, context),
+    };
+    Ok(RepositoryEvidenceObservation {
+        evidence,
+        revalidation: EvidenceRevalidationObservation::PreserveMaterialized,
+        scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
+    })
 }
 
 fn observe_outstanding_repository_evidence(
@@ -5931,6 +6037,105 @@ mod tests {
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
     const TRUNK: &str = "1111111111111111111111111111111111111111";
     const TIP: &str = "2222222222222222222222222222222222222222";
+
+    #[test]
+    fn post_tool_use_does_not_walk_released_audit_history() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let [claim, checkpoint] = checkpoint_events()?;
+        let evidence = journal_event(
+            3,
+            &json!({"op":"evidence_revalidated", "reservation_id":RESERVATION_ID,
+            "status":{"status":"integrated","trunk_oid":TRUNK}, "edit_blocking_status":"clear"}),
+        )?;
+        let release = journal_event(
+            4,
+            &json!({"op":"release", "reservation_id":RESERVATION_ID,
+            "disposition":{"kind":"integrated"}}),
+        )?;
+        let reservations = RetainedReservationSet::replay(&[claim, checkpoint, evidence, release])?;
+        let ordering = crate::edge::OrderingGraph::replay(&[])?;
+        let selected = reservations.iter().map(Reservation::id).collect();
+        let candidates = super::TargetIntegrationReachability::candidate_ancestors(
+            &reservations,
+            &ordering,
+            &selected,
+            super::TrunkEdgeCandidates::Excluded,
+            super::ReservationEvidenceRead::LiveConstraints {
+                invoking_worktree: crate::ids::WorktreeId::new(),
+            },
+        )?;
+        assert_eq!(
+            candidates,
+            Vec::new(),
+            "unrelated released audit history must not seed a hook history walk"
+        );
+        let released = reservations.iter().next().ok_or("released reservation")?;
+        assert!(
+            super::ReservationEvidenceRead::LiveConstraints {
+                invoking_worktree: released.actor().worktree,
+            }
+            .includes(released, &reservations, &ordering)?,
+            "the caller's released proof must stay current for lost-evidence alerts"
+        );
+        assert!(
+            !super::TargetIntegrationReachability::candidate_ancestors(
+                &reservations,
+                &ordering,
+                &selected,
+                super::TrunkEdgeCandidates::Excluded,
+                super::ReservationEvidenceRead::AllRetained,
+            )?
+            .is_empty(),
+            "direct reads still revalidate released history"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn merge_partition_indexes_unrelated_first_components() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let [claim, _] = checkpoint_events()?;
+        let mut claim = serde_json::to_value(claim)?;
+        claim["scopes"] = json!(
+            (0..128)
+                .map(|index| json!({"path":format!("module_{index}/held.rs"), "kind":"file"}))
+                .collect::<Vec<_>>()
+        );
+        let mut sibling = claim.clone();
+        sibling["reservation_id"] = json!(ReservationId::new());
+        sibling["projection_generation"] = json!(2);
+        sibling["scopes"] = json!([{"path":"sibling/held.rs","kind":"file"}]);
+        let reservations = RetainedReservationSet::replay(&[
+            serde_json::from_value(claim)?,
+            serde_json::from_value(sibling)?,
+        ])?;
+        let reservation = reservations.iter().next().ok_or("claim")?;
+        let snapshot = RepositorySnapshot::new(
+            IntegrationTarget::from_branch_argument("main")?,
+            BTreeMap::new(),
+            HashMap::new(),
+            Vec::new(),
+            Vec::new(),
+            crate::edge::CrossTargetPredecessorEvidence::default(),
+        );
+        let mut extent = serde_json::to_value(later_work_extent()?)?;
+        extent["scopes"] = json!(
+            (0..128)
+                .map(|index| json!({"path":format!("other_{index}/changed.rs"), "kind":"file"}))
+                .collect::<Vec<_>>()
+        );
+        let extent: MergeExtent = serde_json::from_value(extent)?;
+        let counter = crate::test_work::WorkCounter::start();
+        let partition =
+            super::reservation_merge_extent(reservation, &reservations, &snapshot, &extent);
+        let counts = counter.finish();
+        assert_eq!(partition, extent, "unclaimed work remains protected");
+        assert!(
+            counts.scope_comparisons <= 256,
+            "unrelated roots must not be compared: {counts:?}"
+        );
+        Ok(())
+    }
 
     #[test]
     fn merge_extent_observations_run_concurrently_in_holder_order()

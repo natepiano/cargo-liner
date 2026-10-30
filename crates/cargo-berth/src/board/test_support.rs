@@ -171,7 +171,7 @@ impl BoardFixture {
 
     pub(super) fn main_actor(&self) -> TestActor { self.main_actor.clone() }
 
-    fn linked_actor(&self, branch: &str) -> FixtureResult<TestActor> {
+    pub(super) fn linked_actor(&self, branch: &str) -> FixtureResult<TestActor> {
         let root = self.linked_worktree_directory.path().join(branch);
         let root_text = root
             .to_str()
