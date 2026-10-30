@@ -1,15 +1,19 @@
 //! Semantic activity resolved while scanning, shared by agents and workers.
 
 use std::borrow::Borrow;
+use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 
 use super::classify::ProcessEntry;
+use super::hierarchy::FileRevision;
 use super::transcript;
 use super::transcript::JsonlCursor;
 use super::transcript::RecordKind;
@@ -630,15 +634,113 @@ pub(super) fn run_activity(
         })
 }
 
-/// Read records in the discovered session only, converting at the JSON boundary.
-pub(super) fn read_runs(session: &Path) -> Vec<RunRecord> {
-    fs::read_dir(session.join("mesh_runs"))
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-        .filter_map(|entry| serde_json::from_slice(&fs::read(entry.path()).ok()?).ok())
-        .collect()
+/// Parsed detached-run records retained by one local census scanner.
+#[derive(Debug, Default)]
+pub(super) struct RunRecords {
+    sessions: HashMap<PathBuf, HashMap<OsString, RunFile>>,
+}
+
+/// A file revision and its decoded outcome, including a malformed partial write.
+#[derive(Debug)]
+struct RunFile {
+    revision: FileRevision,
+    content:  RunFileContent,
+}
+
+#[derive(Debug)]
+enum RunFileContent {
+    Parsed(RunRecord),
+    MalformedJson,
+    ReadFailed,
+}
+
+impl RunRecords {
+    pub(super) fn read_for_processes(
+        &mut self,
+        session: &Path,
+        live: &HashSet<u32>,
+    ) -> Vec<RunRecord> {
+        self.read_matching(
+            session,
+            |bytes| serde_json::from_slice(bytes).ok(),
+            |path| fs::read(path),
+            |record| matches!(record, RunRecord::Verify(run) if live.contains(&run.pid)),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn read(&mut self, session: &Path) -> Vec<RunRecord> {
+        self.read_with(session, |bytes| serde_json::from_slice(bytes).ok())
+    }
+
+    /// Retire sessions no current worker refers to.
+    pub(super) fn retain_sessions(&mut self, seen: &HashSet<PathBuf>) {
+        self.sessions.retain(|path, _| seen.contains(path));
+    }
+
+    #[cfg(test)]
+    fn read_with(
+        &mut self,
+        session: &Path,
+        mut parse: impl FnMut(&[u8]) -> Option<RunRecord>,
+    ) -> Vec<RunRecord> {
+        self.read_with_io(session, &mut parse, |path| fs::read(path))
+    }
+
+    #[cfg(test)]
+    fn read_with_io(
+        &mut self,
+        session: &Path,
+        parse: impl FnMut(&[u8]) -> Option<RunRecord>,
+        read: impl FnMut(&Path) -> std::io::Result<Vec<u8>>,
+    ) -> Vec<RunRecord> {
+        self.read_matching(session, parse, read, |_| true)
+    }
+
+    fn read_matching(
+        &mut self,
+        session: &Path,
+        mut parse: impl FnMut(&[u8]) -> Option<RunRecord>,
+        mut read: impl FnMut(&Path) -> std::io::Result<Vec<u8>>,
+        accept: impl Fn(&RunRecord) -> bool,
+    ) -> Vec<RunRecord> {
+        let records = self.sessions.entry(session.to_owned()).or_default();
+        let mut seen = HashSet::new();
+        for entry in fs::read_dir(session.join("mesh_runs"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = entry.file_name();
+            if Path::new(&name).extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let revision = super::hierarchy::FileRevision::of(&metadata);
+            seen.insert(name.clone());
+            if records.get(&name).is_some_and(|record| {
+                record.revision == revision && !matches!(record.content, RunFileContent::ReadFailed)
+            }) {
+                continue;
+            }
+            let content = read(&entry.path()).map_or(RunFileContent::ReadFailed, |bytes| {
+                parse(&bytes).map_or(RunFileContent::MalformedJson, RunFileContent::Parsed)
+            });
+            records.insert(name, RunFile { revision, content });
+        }
+        records.retain(|path, _| seen.contains(path));
+        records
+            .values()
+            .filter_map(|record| match &record.content {
+                RunFileContent::Parsed(record) if accept(record) => Some(record.clone()),
+                RunFileContent::Parsed(_)
+                | RunFileContent::MalformedJson
+                | RunFileContent::ReadFailed => None,
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

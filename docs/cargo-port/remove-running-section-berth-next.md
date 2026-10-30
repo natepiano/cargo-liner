@@ -940,7 +940,9 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
 
-### Phase 44 — A rebuilt cargo-mend runs its own driver, not an earlier copy  · status: todo
+### Phase 44 — A rebuilt cargo-mend runs its own driver, not an earlier copy  · status: done
+
+**Depends on:** 38b
 
 **Why:** (phase 38b review, 2026-10-28) phase 38b made the wrapper alias an independent copy under `mend-wrapper/<fingerprint>/independent-copy-v1/`, and reuses any regular file with one link there. The fingerprint is version + `MEND_GIT_HASH` + `MEND_BUILD_ID`, and `build.rs` renews those only when HEAD or a branch ref changes. A development rebuild with an uncommitted change keeps the same fingerprint, so `cargo mend` runs the copy of the earlier build as its rustc driver. The hard-link version replaced the alias when its inode differed from the running binary.
 
@@ -949,3 +951,31 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 **Verification:** the new test, under 1 s; `cargo-mend` Mac suite and lint pass.
 
 **Files:** `crates/cargo-mend/src/compiler/build/execute.rs`
+
+### Phase 45 — Paths that a merge of the merge branch brings in are not incursions  · status: todo
+
+**Depends on:** 42 (cut 2c lands first)
+
+**Why:** (hana's showrunner via the cargo-liner showrunner, 2026-10-29) a wrong result. build-speed merged the landed merge branch `init/catalyst` at 2bbd4c1fba (merge commit 466e6aae05). Its next commit d5436ae86f changed only its plan doc, but berth raised 13 incursions on reservation 01a18271 for paths that only the merge brought in (assembly P2 wrote them). hana's checkout shows the same defect. Phase 34 covers a fast-forward onto an integration target; this is a true merge commit of the production's merge branch.
+
+**Work Order:**
+1. Find where committed drift takes the paths of a merge commit from the merge branch as the unit's own writes (`src/drift/selection.rs`, `src/drift/writes.rs`), and why phase 34's received-commit filter does not remove them: the merge branch not recorded as an integration target, or the merge commit's diff read against its first parent only.
+2. Paths that come only from the merge branch's side of a merge are not unit writes. The unit's own commits after the merge, a conflict resolution the unit wrote in the merge commit, and staged, unstaged and untracked changes stay unit writes.
+
+**Verification:** a red-first test (under 1 s): a unit branch merges a merge branch that brings in file F, then commits only its plan doc; no incursion on a holder of F and no widening onto F. Companion test: a path the unit changes in the merge commit itself (a conflict resolution) still counts. `cargo-berth` lint and related tests pass.
+
+**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+
+### Phase 46 — Trunk may move to a commit its upstream already contains  · status: todo
+
+**Depends on:** 42 (cut 2c lands first; this phase runs before phase 45)
+
+**Why:** (hana's showrunner via the cargo-liner showrunner, 2026-10-29) a wrong refusal. hana's trunk is the local `init/catalyst` at ab40610ebf; the merge gate pushed `origin/init/catalyst` 2bbd4c1fba from another checkout. `git merge --ff-only origin/init/catalyst` wrote the tree, but the reference-transaction hook refused the ref move (`gate/decision.rs` `decide_hook`: entering reservations with ordering holds, no permit). `resolve --integrated-as 2bbd4c1fba` then refuses ("must be reachable from trunk"), nothing landed since ab40610 can release, and hana's ledger filled (128/128). `integrate --force` cannot help: it forces one reservation, and any other entering hold still blocks. The integration already happened upstream, so a local refusal only splits berth's trunk from the truth.
+
+**Work Order:**
+1. When the proposed trunk tip is reachable from the trunk's upstream proof ref (phase 33's `IntegrationProofRef::Upstream`), the gate clears the move and reports the holds as observed. It does not block, and it needs no permit.
+2. A move to a commit the upstream does not contain keeps today's decision. A trunk with no upstream keeps today's decision.
+
+**Verification:** a red-first test (under 1 s): trunk with an upstream that is one commit ahead, and an entering reservation with an ordering hold; a fast-forward of trunk to the upstream tip is not refused, and the hold shows as observed. A companion test: a move to a commit the upstream does not contain is still refused. `cargo-berth` lint and related tests pass.
+
+**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`

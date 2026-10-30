@@ -380,10 +380,12 @@ fn decide(
     let resolved_edit_authorization =
         ledger::resolve_identity(&worktree_context).map_err(CheckDecisionError::Ledger)?;
     let repository = check_repository_observation(repository);
-    let acting_head_containment = ActingHeadContainment::observe_for_actor(
+    let acting_head_containment = ActingHeadContainment::observe_for_edit(
         &reservations,
         &repository,
         resolved_edit_authorization,
+        &scopes,
+        path_case,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);
     let identity_validation = CoordinationIdentityValidationContext::for_user_command(

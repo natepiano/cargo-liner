@@ -70,8 +70,8 @@ impl Overlays {
 
     pub(super) const fn close_sccache(&mut self) { self.sccache = SccacheMode::Hidden; }
 
-    pub(super) const fn set_finder_return(&mut self, focus: FocusedPane<AppPaneId>) {
-        self.finder_return = Some(focus);
+    pub(super) const fn set_finder_return(&mut self, focused_pane: FocusedPane<AppPaneId>) {
+        self.finder_return = Some(focused_pane);
     }
 
     pub(super) const fn finder_return(&self) -> Option<FocusedPane<AppPaneId>> {
