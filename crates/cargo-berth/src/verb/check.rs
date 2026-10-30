@@ -21,6 +21,7 @@ use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
 use crate::coordination_identity::PresentedCoordinationRun;
 use crate::coordination_identity::RecoveryCommandLine;
+use crate::git::RepositorySnapshot;
 use crate::ledger;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
@@ -32,7 +33,6 @@ use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::reconcile;
-use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::ActingHeadContainment;
 use crate::reservation::ReservationConflict;
 use crate::reservation::ReservationReplayError;
@@ -136,8 +136,13 @@ fn execute_with_capacity_recovery(
             return OutputEnvelope::ledger_unreadable(CommandVerb::Check, &error.to_string());
         },
     };
+    let repository = match crate::git::RepositorySnapshot::discover(&invocation_directory) {
+        Ok(repository) => repository,
+        Err(error) => return OutputEnvelope::ledger_error(CommandVerb::Check, &error),
+    };
     let first_decision = match decide(
         &invocation_directory,
+        &repository,
         check_request.declared_scopes.clone(),
         check_request.reservation_selection,
         recovery_command_line,
@@ -163,6 +168,7 @@ fn execute_with_capacity_recovery(
     ) {
         return reconcile_and_retry(
             &invocation_directory,
+            &repository,
             check_request.declared_scopes,
             check_request.reservation_selection,
             recovery_command_line,
@@ -171,6 +177,7 @@ fn execute_with_capacity_recovery(
     }
     if first_decision.conflicts.is_empty() {
         return match acquire_first_touch(
+            &repository,
             check_request.declared_scopes.clone(),
             check_request.reservation_selection,
             recovery_command_line,
@@ -179,6 +186,7 @@ fn execute_with_capacity_recovery(
             Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Blocked { .. })) => {
                 reconcile_and_retry(
                     &invocation_directory,
+                    &repository,
                     check_request.declared_scopes,
                     check_request.reservation_selection,
                     recovery_command_line,
@@ -195,6 +203,7 @@ fn execute_with_capacity_recovery(
     }
     reconcile_and_retry(
         &invocation_directory,
+        &repository,
         check_request.declared_scopes,
         check_request.reservation_selection,
         recovery_command_line,
@@ -205,26 +214,24 @@ fn execute_with_capacity_recovery(
 /// Reconcile, then decide again; report reconciliation failures directly.
 fn reconcile_and_retry(
     invocation_directory: &Path,
+    repository: &RepositorySnapshot,
     declared_scopes: DeclaredReservationScopeSet,
     reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
     capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> OutputEnvelope {
-    let reconciliation_report =
-        match reconcile::reconcile(invocation_directory, RecoveredBypassReporting::Defer) {
-            Ok(Enrollment::Enrolled(reconciliation_report)) => reconciliation_report,
-            Ok(Enrollment::Unconfigured {
-                expected_configuration_path,
-            }) => {
-                return OutputEnvelope::unconfigured(
-                    CommandVerb::Check,
-                    &expected_configuration_path,
-                );
-            },
-            Err(error) => return error.into_output(CommandVerb::Check),
-        };
+    let reconciliation_report = match reconcile::reconcile_for_check(repository) {
+        Ok(Enrollment::Enrolled(reconciliation_report)) => reconciliation_report,
+        Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }) => {
+            return OutputEnvelope::unconfigured(CommandVerb::Check, &expected_configuration_path);
+        },
+        Err(error) => return error.into_output(CommandVerb::Check),
+    };
     let retried_decision = match decide(
         invocation_directory,
+        repository,
         declared_scopes.clone(),
         reservation_selection,
         recovery_command_line,
@@ -250,6 +257,7 @@ fn reconcile_and_retry(
     if retried_decision.conflicts.is_empty() || retried_decision.default_answer.is_some() {
         render_acquisition(
             acquire_first_touch(
+                repository,
                 declared_scopes,
                 reservation_selection,
                 recovery_command_line,
@@ -282,6 +290,7 @@ fn reconcile_and_retry(
 }
 
 fn acquire_first_touch(
+    repository: &RepositorySnapshot,
     declared_scopes: DeclaredReservationScopeSet,
     reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
@@ -293,6 +302,7 @@ fn acquire_first_touch(
             conflict_handling: FirstTouchConflictHandling::RefuseRequest,
         },
         reservation_selection,
+        repository,
         recovery_command_line,
         capacity_recovery,
     )
@@ -342,6 +352,7 @@ fn render_acquisition(
 
 fn decide(
     invocation_directory: &Path,
+    repository: &RepositorySnapshot,
     declared_scopes: DeclaredReservationScopeSet,
     reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
@@ -368,11 +379,13 @@ fn decide(
     let reservations = reservations.map_err(CheckDecisionError::ReservationReplay)?;
     let resolved_edit_authorization =
         ledger::resolve_identity(&worktree_context).map_err(CheckDecisionError::Ledger)?;
-    let repository = crate::git::RepositorySnapshot::new(worktree_context.clone());
-    let acting_head_containment = ActingHeadContainment::observe_for_actor(
+    let repository = check_repository_observation(repository);
+    let acting_head_containment = ActingHeadContainment::observe_for_edit(
         &reservations,
         &repository,
         resolved_edit_authorization,
+        &scopes,
+        path_case,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);
     let identity_validation = CoordinationIdentityValidationContext::for_user_command(
@@ -458,4 +471,71 @@ fn validate_edit_worktree_occupancy(
         resolved_edit_authorization.worktree_id,
         acting_run,
     )
+}
+
+/// Refresh mutable checkout facts while retaining this check's immutable evidence.
+fn check_repository_observation(repository: &RepositorySnapshot) -> RepositorySnapshot {
+    repository.fresh_observation()
+}
+
+#[cfg(test)]
+mod cost_tests {
+    use cargo_berth_test_support::CommandDeadlineExt as _;
+
+    use super::check_repository_observation;
+    use crate::git::RepositorySnapshot;
+
+    #[test]
+    fn check_reuses_merge_pairs_across_decision_passes() -> Result<(), Box<dyn std::error::Error>> {
+        let root = cargo_berth_test_support::copy_git_repository_seed("check-pair-cache", |root| {
+            for args in [
+                vec!["init", "--quiet"],
+                vec![
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "--quiet",
+                    "--allow-empty",
+                    "-m",
+                    "base",
+                ],
+            ] {
+                let status = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(root)
+                    .args(args)
+                    .bounded_status()?;
+                assert!(status.success());
+            }
+            Ok::<(), Box<dyn std::error::Error>>(())
+        });
+        let repository = RepositorySnapshot::discover(root.path())?;
+        let trunk = repository.head_object_id()?.clone();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root.path())
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "head",
+            ])
+            .bounded_status()?;
+        assert!(status.success());
+        let head = repository.fresh_observation().head_object_id()?.clone();
+        let (expected, queries) = repository.unmerged_branch_paths(root.path(), &trunk, &head)?;
+        assert_eq!(queries, 1);
+        let next_pass = check_repository_observation(&repository);
+        let (observed, queries) = next_pass.unmerged_branch_paths(root.path(), &trunk, &head)?;
+        assert_eq!(observed, expected);
+        assert_eq!(queries, 0, "one merge-tree per pair for the entire check");
+        Ok(())
+    }
 }

@@ -1,5 +1,7 @@
 use std::ffi::OsStr;
 
+pub(super) use tui_pane::glob_segment_matches;
+
 /// Directory-name glob patterns from `tui.exclude_dirs`.
 ///
 /// A directory whose name matches any pattern is skipped by `phase1_discover`
@@ -36,27 +38,6 @@ impl From<&[String]> for ExcludeDirs {
                 .collect(),
         }
     }
-}
-
-/// Match one path segment against a glob pattern supporting `*` (any run of
-/// characters, including empty) and `?` (exactly one character). Shared with
-/// `workspace_pattern_matches_segments`, which applies it per `/`-delimited
-/// segment of a `[workspace] members` pattern.
-pub(super) fn glob_segment_matches(pattern: &str, value: &str) -> bool {
-    fn matches(pattern: &[u8], value: &[u8]) -> bool {
-        match pattern.split_first() {
-            None => value.is_empty(),
-            Some((b'*', rest)) => {
-                matches(rest, value) || (!value.is_empty() && matches(pattern, &value[1..]))
-            },
-            Some((b'?', rest)) => !value.is_empty() && matches(rest, &value[1..]),
-            Some((head, rest)) => {
-                !value.is_empty() && *head == value[0] && matches(rest, &value[1..])
-            },
-        }
-    }
-
-    matches(pattern.as_bytes(), value.as_bytes())
 }
 
 #[cfg(test)]

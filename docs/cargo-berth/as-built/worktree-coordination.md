@@ -299,7 +299,7 @@ Two dispositions rest on a decision rather than on a checkpoint's protected tip,
 
 `RetainedReservationSet::apply` (`reservation/retention.rs`) folds one record into live reservation state, and the journal replay is its only production caller. Every consumer — board, gate, drift, integration — reads the set that replay folded rather than maintaining a parallel view. `RetainedReservationSet::replay`, the fold over a whole event list, is `#[cfg(test)]`: it is the reference the replay fold is tested against, and production code cannot call it.
 
-Integration evidence is git, not a flag. A reservation's protected tip is pinned by a retention ref at `refs/cargo-berth/reservations/<id>`, so the commit survives branch deletion and `git gc --prune=now`. `git/` wraps `std::process::Command`; there is no git library dependency and no libgit2.
+Integration evidence is git, not a flag. A reservation's protected tip is pinned by a retention ref at `refs/cargo-berth/reservations/<id>`, so the commit survives branch deletion and `git gc --prune=now`. `git/` runs Git commands through `std::process::Command` and reads repository state through `gix`; there is no libgit2.
 
 ### Integration proof
 
@@ -556,7 +556,7 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 - Exit codes are stable and each names one condition. Reusing a code for a new condition is not allowed; `TerminalViewFailed` stays distinct from `LedgerUnreadable`.
 - The six frozen envelope fields and the `kind`/`data` tagging of `OutputFacts` are wire contract.
 - `Enrollment` keeps "not configured" as a reported state, never an error.
-- Git is reached only through `git/`, as `std::process::Command`. No git library is introduced.
+- Git is reached only through `git/`: commands through `std::process::Command`, reads through `gix`.
 - The session identity mapping moves through `apply_journal_event` — `Claim` and `Widen` publish, `Checkpoint`, `Release` and an ended empty merge extent retire — and through two direct publications of an invocation's explicit choice: an explicit or mapped `check` that reports `already_held`, and a named `claim --reservation` that records `Answer`, for which `apply_journal_event` publishes nothing. An enrolled or cover `Claim` publishes no mapping, and a fresh session reporting `left_unmapped` writes none.
 - A coordination-run marker belonging to a different run, or one that cannot be parsed, is preserved rather than removed.
 - The engine writes every byte of a harness hook response. A front end may decide whether the engine can be reached; it may not rebuild, reformat, or supplement what the engine said.

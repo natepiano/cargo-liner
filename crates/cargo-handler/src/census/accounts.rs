@@ -9,6 +9,7 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 
 use chrono::DateTime;
 use chrono::Utc;
@@ -306,8 +307,13 @@ impl AccountsMonitor {
         let (sender, readings) = mpsc::channel();
         let (stop, shutdown) = mpsc::channel();
         thread::spawn(move || {
+            let mut inputs = hierarchy::InputDrivenCommand::for_command(&command, cadence);
             loop {
-                if sender.send(runner(&command)).is_err() {
+                let answer = inputs.read(Instant::now(), || runner(&command));
+                if answer.is_err() {
+                    inputs.invalidate();
+                }
+                if sender.send(answer).is_err() {
                     return;
                 }
                 if shutdown.recv_timeout(cadence) != Err(RecvTimeoutError::Timeout) {

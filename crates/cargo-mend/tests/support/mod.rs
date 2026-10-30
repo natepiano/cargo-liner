@@ -39,6 +39,7 @@ pub(super) use self::diagnostics::member_report;
 pub(super) use self::mend_json::fix_support_for;
 pub(super) use self::mend_json::mend_command;
 pub(super) use self::mend_json::parse_mend_json_output;
+pub(super) use self::mend_json::report_from_mend_output;
 pub(super) use self::report::ExpectedFinding;
 pub(super) use self::report::Finding;
 pub(super) use self::report::Report;

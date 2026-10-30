@@ -3,6 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::process::Output;
 
 use regex::Regex;
 use serde_json::Value;
@@ -199,11 +200,23 @@ pub(super) fn run_mend_json(manifest_path: &Path) -> Report {
         .arg("--json")
         .output()
         .expect("run cargo-mend --json");
+    report_from_mend_output(&output)
+}
+
+/// Keep the process failure beside the JSON failure. Exit code 2 can mean a
+/// diagnostic or a failed build, and a signal has no exit code at all.
+pub(crate) fn report_from_mend_output(output: &Output) -> Report {
+    let complete = output.stdout.split(|&byte| byte == b'\n').any(|line| {
+        serde_json::from_slice::<Value>(line).is_ok_and(|message| {
+            message.get("reason").and_then(Value::as_str) == Some("build-finished")
+        })
+    });
     assert!(
-        matches!(output.status.code(), Some(0..=2)),
-        "cargo-mend returned unexpected status {:?}: {}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stderr)
+        matches!(output.status.code(), Some(0..=2)) && complete,
+        "cargo-mend did not finish its JSON report: status {}; stdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
     parse_mend_json_output(&output.stdout)
 }

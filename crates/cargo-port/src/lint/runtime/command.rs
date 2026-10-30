@@ -811,10 +811,10 @@ fn run_command(
         ),
     };
 
-    let old_size = cache_size_index::file_size_or_zero(&log_path);
+    let old_size = tui_pane::file_size_or_zero(&log_path);
     std::fs::write(&tmp_path, bytes)?;
     std::fs::rename(tmp_path, &log_path)?;
-    let new_size = cache_size_index::file_size_or_zero(&log_path);
+    let new_size = tui_pane::file_size_or_zero(&log_path);
     cache_size_index::apply_write_delta(context.cache_root, old_size, new_size);
     Ok(CommandExecution {
         outcome,

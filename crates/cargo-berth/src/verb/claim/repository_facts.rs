@@ -61,7 +61,18 @@ impl ClaimRepositoryFacts {
         worktree_context: &WorktreeContext,
         run_validation: ClaimRunValidation,
     ) -> Result<Self, ClaimError> {
-        let repository = Arc::new(git::RepositorySnapshot::new(worktree_context.clone()));
+        Self::read_from_repository(
+            git::RepositorySnapshot::new(worktree_context.clone()),
+            run_validation,
+        )
+    }
+
+    pub(super) fn read_from_repository(
+        repository: RepositorySnapshot,
+        run_validation: ClaimRunValidation,
+    ) -> Result<Self, ClaimError> {
+        let repository = Arc::new(repository);
+        let worktree_context = repository.context();
         let (current_head, head_snapshot) = if run_validation.requires_live_head_revalidation() {
             read_live_head_snapshot(&repository)?
         } else {

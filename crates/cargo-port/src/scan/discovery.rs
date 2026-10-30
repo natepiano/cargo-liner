@@ -35,7 +35,7 @@ use crate::project::RootItem;
 /// manifests under the root and runs them through `build_tree()`, so a newly
 /// discovered workspace arrives with its member groups already populated.
 pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
-    let mut items = Vec::new();
+    let mut root_items = Vec::new();
     let mut iter = WalkDir::new(root_dir).into_iter();
     while let Some(Ok(entry)) = iter.next() {
         if entry.file_type().is_dir() {
@@ -53,15 +53,15 @@ pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
             )
         {
             let parsed = project::from_cargo_toml(entry.path()).ok()?;
-            items.push(tree::cargo_parse_result_to_item(parsed));
+            root_items.push(tree::cargo_parse_result_to_item(parsed));
         }
     }
 
-    if items.is_empty() {
+    if root_items.is_empty() {
         return None;
     }
 
-    tree::build_tree(&items, &[])
+    tree::build_tree(&root_items, &[])
         .into_iter()
         .find(|item| item.path() == root_dir)
 }
@@ -255,16 +255,16 @@ pub(super) struct Phase1DiscoverResult {
 
 fn discover_non_rust_project(
     entry_path: &Path,
-    items: &mut Vec<RootItem>,
+    root_items: &mut Vec<RootItem>,
     disk_entries: &mut Vec<(String, AbsolutePath)>,
-    stats: &mut Phase1DiscoverStats,
+    phase1_discover_stats: &mut Phase1DiscoverStats,
 ) {
     let project = project::from_git_dir(entry_path);
     let abs_path = project.path().clone();
-    stats.projects += 1;
-    stats.non_rust_projects += 1;
+    phase1_discover_stats.projects += 1;
+    phase1_discover_stats.non_rust_projects += 1;
 
-    items.push(RootItem::NonRust(project));
+    root_items.push(RootItem::NonRust(project));
     let disk_path = abs_path.to_string_lossy().into_owned();
     disk_entries.push((disk_path, abs_path));
 }
@@ -274,7 +274,7 @@ pub(super) fn phase1_discover(
     non_rust: NonRustInclusion,
     exclude_dirs: &ExcludeDirs,
 ) -> Phase1DiscoverResult {
-    let mut items = Vec::new();
+    let mut root_items = Vec::new();
     let mut disk_entries = Vec::new();
     let mut stats = Phase1DiscoverStats {
         visited_dirs:      0,
@@ -282,11 +282,11 @@ pub(super) fn phase1_discover(
         projects:          0,
         non_rust_projects: 0,
     };
-    for dir in scan_dirs {
-        if !dir.is_dir() {
+    for scan_absolute_path in scan_dirs {
+        if !scan_absolute_path.is_dir() {
             continue;
         }
-        let mut iter = WalkDir::new(dir).into_iter();
+        let mut iter = WalkDir::new(scan_absolute_path).into_iter();
         while let Some(Ok(entry)) = iter.next() {
             if entry.file_type().is_dir() {
                 stats.visited_dirs += 1;
@@ -303,7 +303,7 @@ pub(super) fn phase1_discover(
                     iter.skip_current_dir();
                     discover_non_rust_project(
                         entry.path(),
-                        &mut items,
+                        &mut root_items,
                         &mut disk_entries,
                         &mut stats,
                     );
@@ -345,13 +345,13 @@ pub(super) fn phase1_discover(
                     "phase1_repo_presence"
                 );
 
-                items.push(item);
+                root_items.push(item);
                 disk_entries.push((abs_path.to_string_lossy().into_owned(), abs_path));
             }
         }
     }
     Phase1DiscoverResult {
-        items,
+        items: root_items,
         disk_entries,
         stats,
     }

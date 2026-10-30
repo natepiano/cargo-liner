@@ -186,6 +186,8 @@ pub(crate) const CODEX_ROLE: &str = "codex";
 pub(crate) const BUSY_ROLE: &str = "busy";
 /// `[variants.roles]` key for a `shell` status.
 pub(crate) const SHELL_ROLE: &str = "shell";
+/// Role column text for a shell whose program is `sleep`.
+pub(crate) const TIMER_ROLE: &str = "timer";
 /// `[variants.roles]` key for an `idle` status, a status the summary
 /// does not know, and a missing one.
 pub(crate) const IDLE_ROLE: &str = "idle";
@@ -386,16 +388,19 @@ pub(crate) const CODEX_STATE_EXTENSION: &str = "sqlite";
 /// giving up on the scan's names.
 pub(crate) const CODEX_STATE_BUSY_TIMEOUT: Duration = Duration::from_millis(200);
 /// The threads an interactive Codex created within a span of creation
-/// times: `?1` is [`CODEX_TUI_ORIGINATOR`], `?2` and `?3` the span's
+/// times: `?1` is [`CODEX_LEGACY_TUI_ORIGINATOR`], `?2` and `?3` the span's
 /// ends in unix milliseconds.
 pub(crate) const CODEX_THREADS_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, \
+     rollout_path FROM threads WHERE (thread_source = 'user' OR \
+     (thread_source IS NULL AND originator = ?1)) AND (source IS NULL OR source <> 'exec') \
+     AND created_at_ms BETWEEN ?2 AND ?3";
+/// Interactive threads in older databases without both source columns.
+pub(crate) const CODEX_LEGACY_THREADS_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, \
      rollout_path FROM threads WHERE originator = ?1 AND created_at_ms BETWEEN ?2 AND ?3";
 /// The newest thread in one directory, including threads older than process startup.
 pub(crate) const CODEX_LAST_THREAD_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, rollout_path FROM threads WHERE cwd = ?1 ORDER BY created_at_ms DESC, id DESC LIMIT 1";
-/// The `originator` Codex records on a thread the interactive `codex`
-/// started, as against `codex exec`, an app server's client, or the
-/// desktop app.
-pub(crate) const CODEX_TUI_ORIGINATOR: &str = "codex-tui";
+/// The interactive originator used by older rows without a thread source.
+pub(crate) const CODEX_LEGACY_TUI_ORIGINATOR: &str = "codex-tui";
 /// How long after an interactive Codex starts the thread it starts with
 /// may be created. Codex creates it during startup, after any question
 /// about trusting the directory.

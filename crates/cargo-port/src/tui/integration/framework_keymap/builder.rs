@@ -65,16 +65,18 @@ pub fn build_framework_keymap(
 }
 
 fn dismiss_fallback(app: &mut App) -> bool {
-    let Some(target) = app.focused_dismiss_target() else {
+    let Some(dismiss_target) = app.focused_dismiss_target() else {
         return false;
     };
-    app.dismiss(target);
+    app.dismiss(dismiss_target);
     true
 }
 
 pub fn path_key(path: &AbsolutePath) -> TrackedItemKey { TrackedItemKey::new(path.to_string()) }
 
-pub fn owner_repo_key(repo: &OwnerRepo) -> TrackedItemKey { TrackedItemKey::new(repo.to_string()) }
+pub fn owner_repo_key(owner_repo: &OwnerRepo) -> TrackedItemKey {
+    TrackedItemKey::new(owner_repo.to_string())
+}
 
 #[cfg(test)]
 mod tests {
@@ -99,9 +101,9 @@ mod tests {
 
     #[test]
     fn owner_repo_key_uses_cargo_port_owner_repo_string() {
-        let repo = OwnerRepo::new("natepiano", "cargo-port");
+        let owner_repo = OwnerRepo::new("natepiano", "cargo-port");
 
-        assert_eq!(owner_repo_key(&repo).as_str(), "natepiano/cargo-port");
+        assert_eq!(owner_repo_key(&owner_repo).as_str(), "natepiano/cargo-port");
     }
     #[test]
     #[expect(

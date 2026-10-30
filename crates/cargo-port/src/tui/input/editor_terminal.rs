@@ -1,6 +1,5 @@
 use std::io::Result;
 use std::path::Path;
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use tui_pane::AppContext;
@@ -9,6 +8,7 @@ use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::KeyBind;
 
+use super::open_paths_in_editor;
 use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
@@ -69,41 +69,6 @@ pub(super) fn framework_overlay_editor_target_path(
         FrameworkOverlayId::Keymap => keymap_path.map(AbsolutePath::from),
         FrameworkOverlayId::GlobalShortcuts => None,
     }
-}
-
-pub(in crate::tui) fn open_paths_in_editor<P>(
-    editor: &str,
-    paths: impl IntoIterator<Item = P>,
-) -> Result<()>
-where
-    P: AsRef<Path>,
-{
-    let owned_paths: Vec<PathBuf> = paths
-        .into_iter()
-        .map(|path| path.as_ref().to_path_buf())
-        .collect();
-    let paths: Vec<&Path> = owned_paths
-        .iter()
-        .map(std::path::PathBuf::as_path)
-        .collect();
-    open_paths_via_editor_command(editor, &paths)
-}
-
-fn open_paths_via_editor_command(editor: &str, paths: &[&Path]) -> Result<()> {
-    let mut command = std::process::Command::new(editor);
-    if let Some(path) = paths.first()
-        && let Some(parent) = path.parent()
-    {
-        command.current_dir(parent);
-    }
-    for path in paths {
-        command.arg(path);
-    }
-    command
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
 }
 
 pub(super) fn handle_framework_overlay_editor_key(
@@ -169,24 +134,6 @@ fn open_settings_to_terminal_command(app: &mut App) {
     settings::focus_terminal_command(app);
 }
 
-fn spawn_terminal_command(command: &str, cwd: &Path) -> Result<()> {
-    let mut process = if cfg!(windows) {
-        let mut process = std::process::Command::new("cmd");
-        process.arg("/C").arg(command);
-        process
-    } else {
-        let mut process = std::process::Command::new("sh");
-        process.arg("-c").arg(command);
-        process
-    };
-    process
-        .current_dir(cwd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
-}
-
 pub(in crate::tui) fn open_terminal(app: &mut App) {
     if app.project_list.selected_project_is_deleted() {
         let name = selected_project_display_name(app);
@@ -212,7 +159,7 @@ pub(in crate::tui) fn open_terminal(app: &mut App) {
     };
 
     let command = terminal_shell_command(command, &selected_path);
-    if let Err(err) = spawn_terminal_command(&command, &selected_path) {
+    if let Err(err) = tui_pane::spawn_shell_command(&command, &selected_path) {
         app.show_timed_toast("Terminal failed", err.to_string());
     }
 }

@@ -205,6 +205,28 @@ impl AliasCollector {
 mod tests {
     use super::ModuleAliases;
 
+    const APP_CAPTURE_FRAME_PATH: &str = "app::screen::capture::Frame";
+    const APP_SCREEN_MODULE_PATH: &str = "app::screen";
+    const CYCLE_FIRST_MODULE_PATH: &str = "a::b";
+    const CYCLE_ITEM_NAME: &str = "Item";
+    const CYCLE_ITEM_PATH: &str = "a::b::Item";
+    const CYCLE_SECOND_MODULE_PATH: &str = "c::d";
+    const PLATFORM_STREAM_FRAME_PATH: &str = "platform::stream::Frame";
+    const PLATFORM_STREAM_MODULE_PATH: &str = "platform::stream";
+    const READINESS_MODULE_PATH: &str = "readiness";
+    const READINESS_TESTS_MODULE_PATH: &str = "readiness::tests";
+    const READINESS_TOOL_ALIAS_PATH: &str = "readiness::tool";
+    const RECIPE_MODULE_PATH: &str = "readiness::tests::recipe";
+    const RECIPE_TOOL_BUILD_PATH: &str = "readiness::tests::recipe::tool::staging::build";
+    const SCREEN_CAPTURE_FRAME_PATH: &str = "screen::capture::Frame";
+    const SCREEN_CAPTURE_MODULE_PATH: &str = "screen::capture";
+    const SHADOWING_TOOL_ITEM_PATH: &str = "readiness::tests::tool::Item";
+    const SHADOWING_TOOL_MODULE_PATH: &str = "readiness::tests::tool";
+    const TOOL_BUILD_PATH: &str = "tool::staging::build";
+    const TOOL_MODULE_PATH: &str = "tool";
+    const VIDEO_CAPTURE_MODULE_PATH: &str = "video::screen::capture";
+    const VIDEO_SCREEN_MODULE_PATH: &str = "video::screen";
+
     fn path(text: &str) -> Vec<String> { text.split("::").map(str::to_string).collect() }
 
     fn aliases(entries: &[(&str, &str)]) -> ModuleAliases {
@@ -219,76 +241,81 @@ mod tests {
 
     #[test]
     fn a_path_through_a_module_binding_resolves_to_the_bound_module() {
-        let aliases = aliases(&[("screen::capture", "platform::stream")]);
+        let aliases = aliases(&[(SCREEN_CAPTURE_MODULE_PATH, PLATFORM_STREAM_MODULE_PATH)]);
         assert_eq!(
-            aliases.resolve(path("screen::capture::Frame")),
-            path("platform::stream::Frame")
+            aliases.resolve(path(SCREEN_CAPTURE_FRAME_PATH)),
+            path(PLATFORM_STREAM_FRAME_PATH)
         );
     }
 
     #[test]
     fn a_chain_of_bindings_resolves_to_the_last_module() {
         let aliases = aliases(&[
-            ("app::screen", "video::screen"),
-            ("video::screen::capture", "platform::stream"),
+            (APP_SCREEN_MODULE_PATH, VIDEO_SCREEN_MODULE_PATH),
+            (VIDEO_CAPTURE_MODULE_PATH, PLATFORM_STREAM_MODULE_PATH),
         ]);
         assert_eq!(
-            aliases.resolve(path("app::screen::capture::Frame")),
-            path("platform::stream::Frame")
+            aliases.resolve(path(APP_CAPTURE_FRAME_PATH)),
+            path(PLATFORM_STREAM_FRAME_PATH)
         );
     }
 
     #[test]
     fn the_last_segment_is_never_replaced() {
-        let aliases = aliases(&[("screen::capture", "platform::stream")]);
+        let aliases = aliases(&[(SCREEN_CAPTURE_MODULE_PATH, PLATFORM_STREAM_MODULE_PATH)]);
         assert_eq!(
-            aliases.resolve(path("screen::capture")),
-            path("screen::capture")
+            aliases.resolve(path(SCREEN_CAPTURE_MODULE_PATH)),
+            path(SCREEN_CAPTURE_MODULE_PATH)
         );
     }
 
     #[test]
     fn a_module_path_resolves_its_last_segment() {
-        let aliases = aliases(&[("screen::capture", "platform::stream")]);
+        let aliases = aliases(&[(SCREEN_CAPTURE_MODULE_PATH, PLATFORM_STREAM_MODULE_PATH)]);
         assert_eq!(
-            aliases.resolve_module(path("screen::capture")),
-            path("platform::stream")
+            aliases.resolve_module(path(SCREEN_CAPTURE_MODULE_PATH)),
+            path(PLATFORM_STREAM_MODULE_PATH)
         );
     }
 
     #[test]
     fn a_binding_reached_through_a_glob_of_the_parent_resolves() {
-        let mut aliases = aliases(&[("readiness::tool", "tool")]);
-        aliases
-            .globs
-            .insert(path("readiness::tests"), vec![path("readiness")]);
+        let mut aliases = aliases(&[(READINESS_TOOL_ALIAS_PATH, TOOL_MODULE_PATH)]);
         aliases.globs.insert(
-            path("readiness::tests::recipe"),
-            vec![path("readiness::tests")],
+            path(READINESS_TESTS_MODULE_PATH),
+            vec![path(READINESS_MODULE_PATH)],
+        );
+        aliases.globs.insert(
+            path(RECIPE_MODULE_PATH),
+            vec![path(READINESS_TESTS_MODULE_PATH)],
         );
         assert_eq!(
-            aliases.resolve(path("readiness::tests::recipe::tool::staging::build")),
-            path("tool::staging::build")
+            aliases.resolve(path(RECIPE_TOOL_BUILD_PATH)),
+            path(TOOL_BUILD_PATH)
         );
     }
 
     #[test]
     fn a_module_of_the_crate_shadows_a_glob() {
-        let mut aliases = aliases(&[("readiness::tool", "tool")]);
-        aliases
-            .globs
-            .insert(path("readiness::tests"), vec![path("readiness")]);
-        aliases.modules.insert(path("readiness::tests::tool"));
+        let mut aliases = aliases(&[(READINESS_TOOL_ALIAS_PATH, TOOL_MODULE_PATH)]);
+        aliases.globs.insert(
+            path(READINESS_TESTS_MODULE_PATH),
+            vec![path(READINESS_MODULE_PATH)],
+        );
+        aliases.modules.insert(path(SHADOWING_TOOL_MODULE_PATH));
         assert_eq!(
-            aliases.resolve(path("readiness::tests::tool::Item")),
-            path("readiness::tests::tool::Item")
+            aliases.resolve(path(SHADOWING_TOOL_ITEM_PATH)),
+            path(SHADOWING_TOOL_ITEM_PATH)
         );
     }
 
     #[test]
     fn a_cycle_of_bindings_stops() {
-        let aliases = aliases(&[("a::b", "c::d"), ("c::d", "a::b")]);
-        let resolved = aliases.resolve(path("a::b::Item"));
-        assert_eq!(resolved.last(), Some(&"Item".to_string()));
+        let aliases = aliases(&[
+            (CYCLE_FIRST_MODULE_PATH, CYCLE_SECOND_MODULE_PATH),
+            (CYCLE_SECOND_MODULE_PATH, CYCLE_FIRST_MODULE_PATH),
+        ]);
+        let resolved = aliases.resolve(path(CYCLE_ITEM_PATH));
+        assert_eq!(resolved.last(), Some(&CYCLE_ITEM_NAME.to_string()));
     }
 }

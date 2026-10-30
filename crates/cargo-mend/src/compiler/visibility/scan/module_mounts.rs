@@ -42,8 +42,9 @@ pub(super) fn collect_module_mounts(
             .iter()
             .map(|item_id| tcx.hir_item(*item_id))
         {
-            if !is_written_or_included(item.span) {
-                continue;
+            match item_source_origin(item.span) {
+                ItemSourceOrigin::WrittenOrIncluded => {},
+                ItemSourceOrigin::OtherExpansion => continue,
             }
             if let Some(item_file) = source::real_file_path(tcx, item.span)
                 && item_file != module_file
@@ -65,8 +66,69 @@ pub(super) fn collect_module_mounts(
         .collect()
 }
 
-/// Items written in a source file, or placed in the module by `include!`.
-fn is_written_or_included(span: Span) -> bool {
-    !span.from_expansion()
-        || span.ctxt().outer_expn_data().kind == ExpnKind::Macro(MacroKind::Bang, sym::include)
+/// Only written items and `include!` items have source files to record as module mounts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ItemSourceOrigin {
+    WrittenOrIncluded,
+    OtherExpansion,
+}
+
+impl ItemSourceOrigin {
+    fn for_expansion(kind: &ExpnKind) -> Self {
+        if *kind == ExpnKind::Macro(MacroKind::Bang, sym::include) {
+            Self::WrittenOrIncluded
+        } else {
+            Self::OtherExpansion
+        }
+    }
+}
+
+fn item_source_origin(span: Span) -> ItemSourceOrigin {
+    if span.from_expansion() {
+        ItemSourceOrigin::for_expansion(&span.ctxt().outer_expn_data().kind)
+    } else {
+        ItemSourceOrigin::WrittenOrIncluded
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rustc_span::DUMMY_SP;
+    use rustc_span::ExpnKind;
+    use rustc_span::MacroKind;
+    use rustc_span::create_default_session_globals_then;
+    use rustc_span::sym;
+
+    use super::ItemSourceOrigin;
+    use super::item_source_origin;
+
+    #[test]
+    fn module_mounts_keep_written_and_included_items_only() {
+        create_default_session_globals_then(|| {
+            assert_eq!(
+                item_source_origin(DUMMY_SP),
+                ItemSourceOrigin::WrittenOrIncluded
+            );
+            for (kind, expected) in [
+                (
+                    ExpnKind::Macro(MacroKind::Bang, sym::include),
+                    ItemSourceOrigin::WrittenOrIncluded,
+                ),
+                (
+                    ExpnKind::Macro(MacroKind::Bang, sym::stringify),
+                    ItemSourceOrigin::OtherExpansion,
+                ),
+                (
+                    ExpnKind::Macro(MacroKind::Attr, sym::include),
+                    ItemSourceOrigin::OtherExpansion,
+                ),
+                (
+                    ExpnKind::Macro(MacroKind::Derive, sym::include),
+                    ItemSourceOrigin::OtherExpansion,
+                ),
+            ] {
+                assert_eq!(ItemSourceOrigin::for_expansion(&kind), expected);
+            }
+        });
+    }
 }

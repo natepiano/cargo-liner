@@ -725,12 +725,26 @@ fn prepare_fresh_cache_units(root: &Path) -> Vec<PathBuf> {
         option_env!("MEND_BUILD_ID").unwrap_or("nobuild"),
     );
     let binary = Path::new(env!("CARGO_BIN_EXE_cargo-mend"));
-    let alias_dir = root.join("target/mend-wrapper").join(fingerprint);
+    let metadata = fs::metadata(binary).expect("read mend executable metadata");
+    let modified = metadata
+        .modified()
+        .expect("read mend executable modification time");
+    let (era, timestamp) = match modified.duration_since(std::time::UNIX_EPOCH) {
+        Ok(timestamp) => ("after", timestamp),
+        Err(error) => ("before", error.duration()),
+    };
+    let revision = format!("{}-{era}-{}", metadata.len(), timestamp.as_nanos());
+    let alias_dir = root
+        .join("target/mend-wrapper")
+        .join(fingerprint)
+        .join("independent-copy-v1")
+        .join(revision);
     fs::create_dir_all(&alias_dir).expect("create wrapper directory");
     let alias = alias_dir.join(binary.file_name().expect("binary name"));
-    fs::hard_link(binary, &alias)
-        .or_else(|_| fs::copy(binary, &alias).map(drop))
-        .expect("retain wrapper executable");
+    // Match the independent-copy protocol used by mend. A hard link here
+    // would both share writes with the build output and force alias replacement,
+    // changing Cargo's unit identity instead of exercising cache repair.
+    fs::copy(binary, &alias).expect("retain independent wrapper executable");
     let output = cargo_command()
         .args(["check", "--all-targets", "--message-format=json"])
         .arg("--manifest-path")

@@ -65,6 +65,14 @@ mod tests {
     use crate::reporting::Severity;
 
     const CONFIG_FINGERPRINT: &str = "config-fingerprint";
+    const CRATE_ROOT_FILE: &str = "/package/src/lib.rs";
+    const FINDING_HIGHLIGHT_LEN: usize = 3;
+    const FINDING_LINE: usize = 7;
+    const ITEM_NAME: &str = "item";
+    const ITEM_SOURCE_LINE: &str = "pub fn item() {}";
+    const NARROWER_VISIBILITY_SUGGESTION: &str = "use narrower visibility";
+    const PACKAGE_ROOT: &str = "/package";
+    const SCOPE_FINGERPRINT: &str = "scope";
 
     #[test]
     fn visibility_priority_prefers_unused_pub_for_same_item() {
@@ -72,15 +80,15 @@ mod tests {
             findings: vec![
                 stored_finding(
                     DiagnosticCode::UnusedPub,
-                    Path::new("/package/src/lib.rs"),
-                    "item",
-                    7,
+                    Path::new(CRATE_ROOT_FILE),
+                    ITEM_NAME,
+                    FINDING_LINE,
                 ),
                 stored_finding(
                     DiagnosticCode::NarrowToPubCrate,
-                    Path::new("/package/src/lib.rs"),
-                    "item",
-                    7,
+                    Path::new(CRATE_ROOT_FILE),
+                    ITEM_NAME,
+                    FINDING_LINE,
                 ),
             ],
             ..report_for_test()
@@ -107,11 +115,11 @@ mod tests {
             path: path.to_string_lossy().into_owned(),
             line,
             column: 1,
-            highlight_len: 3,
-            source_line: "pub fn item() {}".to_string(),
+            highlight_len: FINDING_HIGHLIGHT_LEN,
+            source_line: ITEM_SOURCE_LINE.to_string(),
             item: Some(item.to_string()),
             message: format!("{item} should change visibility"),
-            suggestion: Some("use narrower visibility".to_string()),
+            suggestion: Some(NARROWER_VISIBILITY_SUGGESTION.to_string()),
             fix_support: FixSupport::None,
             related: None,
             visibility_annotation: None,
@@ -125,9 +133,9 @@ mod tests {
         StoredReport {
             version:                    FINDINGS_SCHEMA_VERSION,
             analysis_fingerprint:       settings::current_analysis_fingerprint(),
-            scope_fingerprint:          "scope".to_string(),
-            package_root:               "/package".to_string(),
-            crate_root_file:            "/package/src/lib.rs".to_string(),
+            scope_fingerprint:          SCOPE_FINGERPRINT.to_string(),
+            package_root:               PACKAGE_ROOT.to_string(),
+            crate_root_file:            CRATE_ROOT_FILE.to_string(),
             config_fingerprint:         CONFIG_FINGERPRINT.to_string(),
             source_files:               Vec::new(),
             findings:                   Vec::new(),

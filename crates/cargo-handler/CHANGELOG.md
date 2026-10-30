@@ -8,9 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Shell rows for sleep commands show timer in the role column.
+- A tile with a selected row shows it and the total in its foot, `content rows: 3 of 12`; the number follows every selection move and scroll.
 - Select rows with Up, Down, PageUp, PageDown, Home and End, click a row, or scroll the tile under the pointer. Selection follows sessions and worker seats as their work changes. Role and status widths follow the painted rows while age units remain aligned through scrolling.
 
 ### Changed
+- Idle census scans retain parsed run records and process tables; stored account and hierarchy commands run when their inputs change.
 - Narrow terminals show fewer agent tiles in a row so each keeps its session, role and status whole; cut text ends with “…” and uses complete graphemes.
 - Accounts headings and column headers stay in view while account rows scroll; the summary receives its measured rows before agent tiles.
 - The accounts table drops optional columns before it wraps, keeps account and error lines in view, and marks cut summary titles with “…”.
@@ -41,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agent tiles draw one tree under a header row with `session`, `role`, `status`, `account` and `age` columns, plus `branch` and `directory` in the full view. Shell commands and subagents are tree lines; the list below the tree is gone. When two accounts of one program are running, the account column appears, and the header line and summary's `agent` column show account labels. Configure home-to-label pairs in the optional `[accounts]` table.
 
 ### Fixed
+- Show renamed interactive Codex sessions from newer thread sources in tiles and the summary.
 - The Default Dark bar accent and Default Light gray bar keep text readable; glyph contrast keeps fractional coverage, and rejected theme files stay visible in settings after appearance changes.
 - Settings: a key pressed before the first settings draw moves the selection, and a row change ends an open edit.
 - Hierarchy refresh commands run on their own workers. Remote probes and settled local rows continue while a follow-up answer is pending; linked rows wait together, and checked session ids stay checked across catch-up answers.

@@ -934,6 +934,28 @@ fn normalized_claim_scopes(
     }
 }
 
+/// Whether first touch starts an operation or continues check's immutable object evidence.
+enum FirstTouchRepositoryObservation<'check> {
+    NewOperation,
+    WithinCheck(&'check RepositorySnapshot),
+}
+
+impl FirstTouchRepositoryObservation<'_> {
+    fn read_facts(
+        &self,
+        worktree_context: &WorktreeContext,
+        run_validation: ClaimRunValidation,
+    ) -> Result<ClaimRepositoryFacts, ClaimError> {
+        match self {
+            Self::NewOperation => ClaimRepositoryFacts::read(worktree_context, run_validation),
+            Self::WithinCheck(repository) => ClaimRepositoryFacts::read_from_repository(
+                repository.fresh_observation(),
+                run_validation,
+            ),
+        }
+    }
+}
+
 /// Acquire, widen, or reuse the acting run's one first-touch reservation.
 pub(crate) fn acquire_first_touch(
     request: FirstTouchClaimRequest,
@@ -943,6 +965,7 @@ pub(crate) fn acquire_first_touch(
     acquire_first_touch_with_reservation_selection(
         request,
         CheckReservationSelection::SessionMappingOrSingleActive,
+        &FirstTouchRepositoryObservation::NewOperation,
         recovery_command_line,
         capacity_recovery,
     )
@@ -952,12 +975,14 @@ pub(crate) fn acquire_first_touch(
 pub(in crate::verb) fn acquire_first_touch_for_check(
     request: FirstTouchClaimRequest,
     reservation_selection: CheckReservationSelection,
+    repository: &RepositorySnapshot,
     recovery_command_line: &RecoveryCommandLine,
     capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
     acquire_first_touch_with_reservation_selection(
         request,
         reservation_selection,
+        &FirstTouchRepositoryObservation::WithinCheck(repository),
         recovery_command_line,
         capacity_recovery,
     )
@@ -966,6 +991,7 @@ pub(in crate::verb) fn acquire_first_touch_for_check(
 fn acquire_first_touch_with_reservation_selection(
     request: FirstTouchClaimRequest,
     reservation_selection: CheckReservationSelection,
+    repository_observation: &FirstTouchRepositoryObservation<'_>,
     recovery_command_line: &RecoveryCommandLine,
     capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
@@ -985,7 +1011,7 @@ fn acquire_first_touch_with_reservation_selection(
     let edit_scopes = declared_scopes.clone().into_minimal_antichain(path_case);
     let scopes = declared_scopes.into_exact_file_antichain(path_case);
     let source = ClaimSource::FirstTouch;
-    let repository_facts = ClaimRepositoryFacts::read(&worktree_context, run_validation)?;
+    let repository_facts = repository_observation.read_facts(&worktree_context, run_validation)?;
     let phase_start_head = ProtectedPhaseStartHead::from(repository_facts.current_head.clone());
     let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
@@ -1159,8 +1185,12 @@ fn record_first_touch_default_answer(
                 &validation_context.repository,
                 validation_context.worktree_id,
                 &validation_context.recovery_command_line,
-                target,
-                &validation_context.repository_trunk,
+                ClaimContainmentRequest {
+                    target,
+                    repository_trunk: &validation_context.repository_trunk,
+                    scopes: &validation_context.edit_scopes,
+                    path_case: validation_context.path_case,
+                },
             ) {
                 Ok(reservations) => reservations,
                 Err(rejection) => return TransactionValidation::Reject(rejection),
@@ -1471,8 +1501,12 @@ fn validate_claim_transaction(
         &repository,
         worktree_id,
         &recovery_command_line,
-        &prepared_claim.target.target,
-        &repository_trunk,
+        ClaimContainmentRequest {
+            target: &prepared_claim.target.target,
+            repository_trunk: &repository_trunk,
+            scopes: &prepared_claim.scopes,
+            path_case,
+        },
     ) {
         Ok(reservations) => reservations,
         Err(rejection) => return TransactionValidation::Reject(rejection),
@@ -1542,6 +1576,15 @@ fn validate_claim_transaction(
     }
 }
 
+/// Complete scope inspected by one locked claim decision, before containment narrows it.
+#[derive(Clone, Copy)]
+struct ClaimContainmentRequest<'a> {
+    target:           &'a IntegrationTarget,
+    repository_trunk: &'a IntegrationTarget,
+    scopes:           &'a ReservationScopeSet,
+    path_case:        PathCase,
+}
+
 /// Read the prepared reservations, observe the acting head, and validate the acting run.
 fn locked_claim_reservations(
     state: &ReplayedLedgerState<'_>,
@@ -1549,20 +1592,21 @@ fn locked_claim_reservations(
     repository: &RepositorySnapshot,
     worktree_id: WorktreeId,
     recovery_command_line: &RecoveryCommandLine,
-    target: &IntegrationTarget,
-    repository_trunk: &IntegrationTarget,
+    request: ClaimContainmentRequest<'_>,
 ) -> Result<RetainedReservationSet, ClaimRejection> {
     let worktree_context = repository.context();
     let reservations = state
         .reservations()
         .map_err(ClaimRejection::Replay)?
         .clone();
-    let acting_head_containment = ActingHeadContainment::observe(
+    let acting_head_containment = ActingHeadContainment::observe_for_claim(
         &reservations,
         repository,
         worktree_id,
-        target,
-        repository_trunk,
+        request.target,
+        request.repository_trunk,
+        request.scopes,
+        request.path_case,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);
     run_validation
@@ -1601,12 +1645,14 @@ fn validate_first_touch_transaction(
             return CommittedActionValidation::Reject(FirstTouchClaimRejection::Replay(error));
         },
     };
-    let acting_head_containment = ActingHeadContainment::observe(
+    let acting_head_containment = ActingHeadContainment::observe_for_claim(
         &reservations,
         &repository,
         worktree_id,
         &prepared_claim.target.target,
         &repository_trunk,
+        &edit_scopes,
+        path_case,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);
     if let Err(rejection) = validate_first_touch_run(
@@ -2468,7 +2514,7 @@ fn validate_named(
     CommittedActionValidation<ClaimRejection, CommittedReservationAcquisition>,
     ClaimRejection,
 > {
-    let reservations = locked_reservations(state, id, context)?;
+    let reservations = locked_reservations(state, id, &scopes, context)?;
     let FirstTouchReservationSelection::ExplicitReservation(selected) =
         FirstTouchReservationSelection::from_explicit_selection(
             &reservations,
@@ -2658,6 +2704,7 @@ fn coverage(
 fn locked_reservations(
     state: &ReplayedLedgerState<'_>,
     id: ReservationId,
+    requested: &ReservationScopeSet,
     context: &ClaimValidationContext,
 ) -> Result<RetainedReservationSet, ClaimRejection> {
     let recorded = state.reservations().map_err(ClaimRejection::Replay)?;
@@ -2675,14 +2722,28 @@ fn locked_reservations(
         RecordedTarget::Recorded { target, .. } => target,
         RecordedTarget::Unrecorded => &context.repository_trunk,
     };
+    let scopes = ReservationScopeSet::try_from(
+        selected
+            .declared_race_scopes()
+            .as_slice()
+            .iter()
+            .chain(requested.as_slice())
+            .cloned()
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|_| ClaimRejection::IneligibleExplicitReservation(id))?;
     locked_claim_reservations(
         state,
         context.run_validation,
         &context.repository,
         context.worktree_id,
         &context.recovery_command_line,
-        target,
-        &context.repository_trunk,
+        ClaimContainmentRequest {
+            target,
+            repository_trunk: &context.repository_trunk,
+            scopes: &scopes,
+            path_case: context.path_case,
+        },
     )
 }
 

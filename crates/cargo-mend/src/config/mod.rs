@@ -26,5 +26,6 @@ pub(crate) use loaded::load_config;
 pub(crate) use prelude_pub_mod::PreludePubMod;
 pub(crate) use pub_in_path::PubInPath;
 pub(crate) use run_mode::FixKind;
+pub(crate) use run_mode::FixKindSelection;
 pub(crate) use run_mode::OperationIntent;
 pub(crate) use run_mode::OperationMode;
