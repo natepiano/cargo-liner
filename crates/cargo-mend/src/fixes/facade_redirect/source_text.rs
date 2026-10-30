@@ -181,6 +181,46 @@ pub(in crate::fixes) fn item_use_byte_range(
     lines.span_range(item_use.span().start(), item_use.semi_token.span.end())
 }
 
+/// A deletion may take whole lines only when no code shares them with the item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeletionExtent {
+    WholeLines,
+    ItemOnly,
+}
+
+impl DeletionExtent {
+    fn at(source: &str, range: &Range<usize>, line_start: usize, line_end: usize) -> Self {
+        if source[line_start..range.start].trim().is_empty()
+            && source[range.end..line_end].trim().is_empty()
+        {
+            Self::WholeLines
+        } else {
+            Self::ItemOnly
+        }
+    }
+}
+
+/// A neighboring physical line classified together with its byte range.
+/// Blank neighbors may be consumed to avoid leaving duplicate or edge blank lines.
+#[derive(Debug, PartialEq, Eq)]
+enum NeighborLine {
+    Missing,
+    Blank { range: Range<usize> },
+    Occupied { range: Range<usize> },
+}
+
+impl NeighborLine {
+    fn at(source: &str, range: Option<Range<usize>>) -> Self {
+        range.map_or(Self::Missing, |range| {
+            if source[range.clone()].trim().is_empty() {
+                Self::Blank { range }
+            } else {
+                Self::Occupied { range }
+            }
+        })
+    }
+}
+
 /// A fix removing `range`, widened to whole lines when nothing else shares them.
 pub(in crate::fixes) fn line_deletion(file: &Path, source: &str, range: Range<usize>) -> UseFix {
     let line_start = source[..range.start]
@@ -189,12 +229,9 @@ pub(in crate::fixes) fn line_deletion(file: &Path, source: &str, range: Range<us
     let line_end = source[range.end..]
         .find('\n')
         .map_or(source.len(), |index| range.end + index + 1);
-    let alone = source[line_start..range.start].trim().is_empty()
-        && source[range.end..line_end].trim().is_empty();
-    let (start, end) = if alone {
-        with_neighboring_blank_line(source, line_start, line_end)
-    } else {
-        (range.start, range.end)
+    let (start, end) = match DeletionExtent::at(source, &range, line_start, line_end) {
+        DeletionExtent::WholeLines => with_neighboring_blank_line(source, line_start, line_end),
+        DeletionExtent::ItemOnly => (range.start, range.end),
     };
     UseFix {
         path: file.to_path_buf(),
@@ -215,23 +252,53 @@ fn with_neighboring_blank_line(source: &str, line_start: usize, line_end: usize)
     let previous_line = before
         .strip_suffix('\n')
         .map(|text| text.rfind('\n').map_or(0, |index| index + 1)..line_start);
-    let previous_is_blank = previous_line
-        .clone()
-        .is_some_and(|range| source[range].trim().is_empty());
     let next_line = source[line_end..]
         .find('\n')
         .map(|index| line_end..line_end + index + 1);
-    let next_is_blank = next_line
-        .clone()
-        .is_some_and(|range| source[range].trim().is_empty());
-    match (previous_line, next_line) {
-        (None, Some(next)) if next_is_blank => (line_start, next.end),
-        (Some(_), Some(next)) if previous_is_blank && next_is_blank => (line_start, next.end),
-        (Some(previous), None) if previous_is_blank && line_end == source.len() => {
-            (previous.start, line_end)
+    match (
+        NeighborLine::at(source, previous_line),
+        NeighborLine::at(source, next_line),
+    ) {
+        (NeighborLine::Missing | NeighborLine::Blank { .. }, NeighborLine::Blank { range }) => {
+            (line_start, range.end)
         },
-        _ => (line_start, line_end),
+        (NeighborLine::Blank { range }, NeighborLine::Missing) => {
+            if line_end == source.len() {
+                (range.start, line_end)
+            } else {
+                (line_start, line_end)
+            }
+        },
+        (NeighborLine::Missing, NeighborLine::Missing | NeighborLine::Occupied { .. })
+        | (NeighborLine::Blank { .. }, NeighborLine::Occupied { .. })
+        | (
+            NeighborLine::Occupied { .. },
+            NeighborLine::Missing | NeighborLine::Blank { .. } | NeighborLine::Occupied { .. },
+        ) => (line_start, line_end),
     }
+}
+
+/// Identifier use outside excluded ranges. Unparseable text conservatively keeps the name,
+/// just like an observed identifier, so a failed lex never removes a needed import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::fixes) enum IdentifierUse {
+    Absent,
+    Present,
+    Unparseable,
+}
+
+/// Identifier or inline-format-argument presence, excluding documentation attribute bodies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdentifierPresence {
+    Absent,
+    Present,
+}
+
+/// Documentation bodies lex as bracketed groups starting with `doc`; skip their contents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttributeGroupKind {
+    Documentation,
+    Traversable,
 }
 
 /// Whether `word` occurs as an identifier in `text` once every `excluded`
@@ -243,7 +310,7 @@ pub(in crate::fixes) fn word_occurs_outside(
     text: &str,
     excluded: impl IntoIterator<Item = Range<usize>>,
     word: &str,
-) -> bool {
+) -> IdentifierUse {
     let mut blanked = text.to_string();
     for range in excluded {
         let blank = " ".repeat(range.len());
@@ -251,31 +318,68 @@ pub(in crate::fixes) fn word_occurs_outside(
     }
     blanked
         .parse::<TokenStream>()
-        .map_or(true, |tokens| tokens_name(tokens, word))
+        .map_or(IdentifierUse::Unparseable, |tokens| {
+            match tokens_name(tokens, word) {
+                IdentifierPresence::Absent => IdentifierUse::Absent,
+                IdentifierPresence::Present => IdentifierUse::Present,
+            }
+        })
 }
 
 /// Whether `tokens` hold `word` as an identifier or as an inline format
 /// argument, skipping `#[doc = ...]` attribute bodies.
-fn tokens_name(tokens: TokenStream, word: &str) -> bool {
-    tokens.into_iter().any(|token| match token {
-        TokenTree::Ident(ident) => ident.unraw() == word,
-        TokenTree::Group(group) => !is_doc_attribute(&group) && tokens_name(group.stream(), word),
-        TokenTree::Literal(literal) => {
-            let text = literal.to_string();
-            text.contains(&format!("{{{word}}}")) || text.contains(&format!("{{{word}:"))
-        },
-        TokenTree::Punct(_) => false,
-    })
+fn tokens_name(tokens: TokenStream, word: &str) -> IdentifierPresence {
+    for token in tokens {
+        let presence = match token {
+            TokenTree::Ident(ident) => {
+                if ident.unraw() == word {
+                    IdentifierPresence::Present
+                } else {
+                    IdentifierPresence::Absent
+                }
+            },
+            TokenTree::Group(group) => match is_doc_attribute(&group) {
+                AttributeGroupKind::Documentation => IdentifierPresence::Absent,
+                AttributeGroupKind::Traversable => tokens_name(group.stream(), word),
+            },
+            TokenTree::Literal(literal) => {
+                let text = literal.to_string();
+                if text.contains(&format!("{{{word}}}")) || text.contains(&format!("{{{word}:")) {
+                    IdentifierPresence::Present
+                } else {
+                    IdentifierPresence::Absent
+                }
+            },
+            TokenTree::Punct(_) => IdentifierPresence::Absent,
+        };
+        match presence {
+            IdentifierPresence::Present => return presence,
+            IdentifierPresence::Absent => {},
+        }
+    }
+    IdentifierPresence::Absent
 }
 
 /// Whether `group` is the bracketed body of a `#[doc = ...]` attribute, which
 /// is how a doc comment lexes.
-fn is_doc_attribute(group: &Group) -> bool {
-    group.delimiter() == Delimiter::Bracket
-        && matches!(
-            group.stream().into_iter().next(),
-            Some(TokenTree::Ident(ident)) if ident == "doc"
-        )
+fn is_doc_attribute(group: &Group) -> AttributeGroupKind {
+    match group.delimiter() {
+        Delimiter::Bracket => match group.stream().into_iter().next() {
+            Some(TokenTree::Ident(ident)) => {
+                if ident == "doc" {
+                    AttributeGroupKind::Documentation
+                } else {
+                    AttributeGroupKind::Traversable
+                }
+            },
+            Some(TokenTree::Group(_) | TokenTree::Literal(_) | TokenTree::Punct(_)) | None => {
+                AttributeGroupKind::Traversable
+            },
+        },
+        Delimiter::Parenthesis | Delimiter::Brace | Delimiter::None => {
+            AttributeGroupKind::Traversable
+        },
+    }
 }
 
 pub(in crate::fixes) fn find_source_root(path: &Path) -> Option<PathBuf> {
@@ -305,14 +409,23 @@ mod tests {
     use std::iter;
     use std::path::Path;
 
+    use proc_macro2::Delimiter;
+    use proc_macro2::Group;
     use proc_macro2::LineColumn;
     use syn::Item;
     use syn::parse_file;
 
+    use super::AttributeGroupKind;
+    use super::DeletionExtent;
+    use super::IdentifierPresence;
+    use super::IdentifierUse;
+    use super::NeighborLine;
     use super::SourceLines;
     use super::SourcePositionError;
+    use super::is_doc_attribute;
     use super::item_use_byte_range;
     use super::line_deletion;
+    use super::tokens_name;
     use super::word_occurs_outside;
 
     /// The text left after `line_deletion` removes the first occurrence of
@@ -433,35 +546,49 @@ mod tests {
     #[test]
     fn a_blanked_range_hides_its_words() {
         let text = "use a::Name;\nfn f() {}\n";
-        assert!(!word_occurs_outside(text, iter::once(0..12), "Name"));
-        assert!(word_occurs_outside(text, iter::empty(), "Name"));
+        assert_eq!(
+            word_occurs_outside(text, iter::once(0..12), "Name"),
+            IdentifierUse::Absent
+        );
+        assert_eq!(
+            word_occurs_outside(text, iter::empty(), "Name"),
+            IdentifierUse::Present
+        );
     }
 
     #[test]
     fn comments_and_string_literals_do_not_name_the_word() {
         let text = "//! Builds a [`Name`].\n/// A `Name`.\nfn f() -> &'static str {\n    // Name\n    \"Name\"\n}\n";
-        assert!(!word_occurs_outside(text, iter::empty(), "Name"));
+        assert_eq!(
+            word_occurs_outside(text, iter::empty(), "Name"),
+            IdentifierUse::Absent
+        );
     }
 
     #[test]
     fn an_inline_format_argument_or_raw_identifier_names_the_word() {
         // Split `format_call` so the test's own literal holds no format argument.
         let format_call = ["fn f() -> String { format!(\"{", "Name:?}\") }\n"].concat();
-        assert!(word_occurs_outside(&format_call, iter::empty(), "Name"));
-        assert!(word_occurs_outside(
-            "fn f() { r#Name(); }\n",
-            iter::empty(),
-            "Name"
-        ));
+        assert_eq!(
+            word_occurs_outside(&format_call, iter::empty(), "Name"),
+            IdentifierUse::Present
+        );
+        assert_eq!(
+            word_occurs_outside(concat!("\"{", "Name}\""), iter::empty(), "Name"),
+            IdentifierUse::Present
+        );
+        assert_eq!(
+            word_occurs_outside("fn f() { r#Name(); }\n", iter::empty(), "Name"),
+            IdentifierUse::Present
+        );
     }
 
     #[test]
     fn text_that_does_not_lex_names_the_word() {
-        assert!(word_occurs_outside(
-            "fn f() { \"open\n",
-            iter::empty(),
-            "Name"
-        ));
+        assert_eq!(
+            word_occurs_outside("fn f() { \"open\n", iter::empty(), "Name"),
+            IdentifierUse::Unparseable
+        );
     }
 
     #[test]
@@ -472,5 +599,87 @@ mod tests {
         let inline = source.find("use c").expect("inline use");
         assert_eq!(lines.indent_before(inner), "    ");
         assert_eq!(lines.indent_before(inline), "");
+    }
+    #[test]
+    fn deletion_extent_keeps_code_sharing_either_side_of_the_item() {
+        for (source, expected) in [
+            ("  use a::b;  ", DeletionExtent::WholeLines),
+            ("mod m {} use a::b;", DeletionExtent::ItemOnly),
+            ("use a::b; fn f() {}", DeletionExtent::ItemOnly),
+        ] {
+            let start = source.find("use").expect("use start");
+            let end = source.find(';').expect("use end") + 1;
+            assert_eq!(
+                DeletionExtent::at(source, &(start..end), 0, source.len()),
+                expected
+            );
+        }
+        assert_eq!(
+            after_line_deletion("use a::b; fn f() {}", "use a::b;"),
+            " fn f() {}"
+        );
+    }
+
+    #[test]
+    fn neighboring_line_classification_retains_its_range() {
+        assert_eq!(NeighborLine::at(" \nx\n", None), NeighborLine::Missing);
+        assert_eq!(
+            NeighborLine::at(" \nx\n", Some(0..2)),
+            NeighborLine::Blank { range: 0..2 }
+        );
+        assert_eq!(
+            NeighborLine::at(" \nx\n", Some(2..4)),
+            NeighborLine::Occupied { range: 2..4 }
+        );
+        for (source, expected) in [
+            ("mod a;\nuse a::b;\nmod b;\n", "mod a;\nmod b;\n"),
+            ("mod a;\nuse a::b;", "mod a;\n"),
+        ] {
+            assert_eq!(after_line_deletion(source, "use a::b;"), expected);
+        }
+        assert_eq!(after_line_deletion("use a::b;\n\n", "use a::b;"), "");
+        assert_eq!(after_line_deletion("\nuse a::b;", "use a::b;"), "");
+        assert_eq!(
+            after_line_deletion("use a::b;\ntrailing", "use a::b;"),
+            "trailing"
+        );
+        assert_eq!(
+            after_line_deletion("\nuse a::b;\ntrailing", "use a::b;"),
+            "\ntrailing"
+        );
+    }
+    #[test]
+    fn recursive_identifier_presence_keeps_later_leaves_and_skips_doc_bodies() {
+        for (text, expected) in [
+            ("", IdentifierPresence::Absent),
+            ("{ () [] } Name", IdentifierPresence::Present),
+            ("{ (r#Name) }", IdentifierPresence::Present),
+            ("#[doc = Name]", IdentifierPresence::Absent),
+            ("#[doc = Name] unrelated Name", IdentifierPresence::Present),
+            ("#[cfg(Name)]", IdentifierPresence::Present),
+            ("NameSuffix", IdentifierPresence::Absent),
+        ] {
+            assert_eq!(tokens_name(text.parse().expect("tokens"), "Name"), expected);
+        }
+    }
+
+    #[test]
+    fn attribute_group_kind_requires_brackets_and_a_leading_doc_identifier() {
+        for delimiter in [
+            Delimiter::Bracket,
+            Delimiter::Brace,
+            Delimiter::Parenthesis,
+            Delimiter::None,
+        ] {
+            for body in ["", "doc = Name", "cfg(Name)", "[doc]", "1", "::"] {
+                let group = Group::new(delimiter, body.parse().expect("group body"));
+                let expected = if delimiter == Delimiter::Bracket && body == "doc = Name" {
+                    AttributeGroupKind::Documentation
+                } else {
+                    AttributeGroupKind::Traversable
+                };
+                assert_eq!(is_doc_attribute(&group), expected);
+            }
+        }
     }
 }

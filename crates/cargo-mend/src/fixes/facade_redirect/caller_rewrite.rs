@@ -156,15 +156,116 @@ struct OwnerImport {
     item_start: usize,
     leaf:       NamedUseLeaf,
     module:     Vec<String>,
-    public:     bool,
-    redirected: bool,
-    kept:       bool,
+    visibility: OwnerImportVisibility,
+    redirected: RedirectedPathPresence,
+    kept:       RetainedPathPresence,
+}
+
+/// Every non-inherited visibility is a re-export and keeps its owner import.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OwnerImportVisibility {
+    Private,
+    Reexport,
+}
+
+impl From<&Visibility> for OwnerImportVisibility {
+    fn from(visibility: &Visibility) -> Self {
+        match visibility {
+            Visibility::Inherited => Self::Private,
+            Visibility::Public(_) | Visibility::Restricted(_) => Self::Reexport,
+        }
+    }
+}
+
+/// Whether any path through an owner binding has been redirected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RedirectedPathPresence {
+    Absent,
+    Present,
+}
+
+/// A retained path keeps an owner import, even when other paths were redirected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RetainedPathPresence {
+    Absent,
+    Present,
+}
+
+/// A private import whose every path was redirected is removed; re-exports stay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImportRetention {
+    Remove,
+    Keep,
+}
+
+/// Which owner-import history a caller path contributes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CallerPathDisposition {
+    Redirected,
+    Retained,
 }
 
 impl OwnerImport {
-    /// A private import whose every path was redirected is left unused, so
-    /// its leaf is removed. A public one is a re-export and always stays.
-    const fn is_unused(&self) -> bool { !self.public && self.redirected && !self.kept }
+    const fn retention(&self) -> ImportRetention {
+        match (self.visibility, self.redirected, self.kept) {
+            (
+                OwnerImportVisibility::Private,
+                RedirectedPathPresence::Present,
+                RetainedPathPresence::Absent,
+            ) => ImportRetention::Remove,
+            (
+                OwnerImportVisibility::Reexport,
+                RedirectedPathPresence::Absent | RedirectedPathPresence::Present,
+                RetainedPathPresence::Absent | RetainedPathPresence::Present,
+            )
+            | (
+                OwnerImportVisibility::Private,
+                RedirectedPathPresence::Absent,
+                RetainedPathPresence::Absent | RetainedPathPresence::Present,
+            )
+            | (
+                OwnerImportVisibility::Private,
+                RedirectedPathPresence::Present,
+                RetainedPathPresence::Present,
+            ) => ImportRetention::Keep,
+        }
+    }
+
+    const fn observe(&mut self, disposition: CallerPathDisposition) {
+        match disposition {
+            CallerPathDisposition::Redirected => self.redirected = RedirectedPathPresence::Present,
+            CallerPathDisposition::Retained => self.kept = RetainedPathPresence::Present,
+        }
+    }
+}
+
+/// Whether an unused owner import leaf was left out of a use item.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum OwnerLeafRemoval {
+    #[default]
+    Unchanged,
+    Removed,
+}
+
+/// Whether a resolved module is an owner a redirect leaves unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OwnerModuleMembership {
+    UnchangedOwner,
+    Unrelated,
+}
+
+/// A glob keeps its unchanged owner module and is never redirected as a named leaf.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImportLeafKind {
+    Named,
+    Glob,
+}
+
+/// Whether a use subtree has a leaf to redirect or remove.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TreeRewrite {
+    Unchanged,
+    Required,
 }
 
 /// A `use` leaf by its written path (a `self` leaf's is its prefix) and the
@@ -183,7 +284,7 @@ struct UseItemLines {
     kept:       Vec<String>,
     redirected: BTreeMap<Vec<String>, Vec<String>>,
     /// Whether an unused owner import leaf was left out.
-    removed:    bool,
+    removed:    OwnerLeafRemoval,
 }
 
 /// The completed edit for a use item, before source text is emitted.
@@ -195,7 +296,7 @@ enum UseRewritePlan {
 
 impl From<UseItemLines> for UseRewritePlan {
     fn from(lines: UseItemLines) -> Self {
-        if lines.redirected.is_empty() && !lines.removed {
+        if lines.redirected.is_empty() && lines.removed == OwnerLeafRemoval::Unchanged {
             return Self::Unchanged;
         }
         if lines.kept.is_empty() && lines.redirected.is_empty() {
@@ -372,9 +473,9 @@ impl<'a> CallerRewriter<'a> {
                         item_start,
                         leaf,
                         module,
-                        public: !matches!(item_use.vis, Visibility::Inherited),
-                        redirected: false,
-                        kept: false,
+                        visibility: OwnerImportVisibility::from(&item_use.vis),
+                        redirected: RedirectedPathPresence::Absent,
+                        kept: RetainedPathPresence::Absent,
                     };
                     owner_imports.insert(name.clone(), import);
                 }
@@ -389,10 +490,16 @@ impl<'a> CallerRewriter<'a> {
         }
     }
 
-    fn is_unchanged_module(&self, path: &[String]) -> bool {
-        self.redirects
+    fn owner_module_membership(&self, path: &[String]) -> OwnerModuleMembership {
+        if self
+            .redirects
             .iter()
             .any(|redirect| redirect.unchanged_module.as_deref() == Some(path))
+        {
+            OwnerModuleMembership::UnchangedOwner
+        } else {
+            OwnerModuleMembership::Unrelated
+        }
     }
 
     /// Runs inside a new active scope while retaining every enclosing binding.
@@ -411,10 +518,11 @@ impl<'a> CallerRewriter<'a> {
         let deferred = mem::take(&mut self.scope.deferred);
         let mut unused = Vec::new();
         for import in self.scope.owner_imports.values() {
-            if import.is_unused() {
-                unused.push((import.item_start, import.leaf.clone()));
-            } else {
-                self.named_owner_modules.insert(import.module.clone());
+            match import.retention() {
+                ImportRetention::Remove => unused.push((import.item_start, import.leaf.clone())),
+                ImportRetention::Keep => {
+                    self.named_owner_modules.insert(import.module.clone());
+                },
             }
         }
         for item_use in &deferred {
@@ -472,25 +580,36 @@ impl<'a> CallerRewriter<'a> {
     /// that module.
     fn record_use_tree_paths(&mut self, tree: &UseTree) {
         for binding in imports::collect_use_bindings(tree) {
-            let (path, glob) = match binding {
-                UseBinding::Named { path, .. } => (path, false),
-                UseBinding::Glob { path } => (path, true),
+            let (path, kind) = match binding {
+                UseBinding::Named { path, .. } => (path, ImportLeafKind::Named),
+                UseBinding::Glob { path } => (path, ImportLeafKind::Glob),
             };
             let segments = split_path(&path);
-            if glob
-                && let Some(module) = self.resolved(&segments)
-                && self.is_unchanged_module(&module)
-            {
-                self.named_owner_modules.insert(module);
-            }
-            let redirected = !glob && self.redirect_lookup(&segments).is_some();
-            self.record_owner_import_path(&segments, redirected);
+            let disposition = match kind {
+                ImportLeafKind::Glob => {
+                    if let Some(module) = self.resolved(&segments)
+                        && self.owner_module_membership(&module)
+                            == OwnerModuleMembership::UnchangedOwner
+                    {
+                        self.named_owner_modules.insert(module);
+                    }
+                    CallerPathDisposition::Retained
+                },
+                ImportLeafKind::Named => {
+                    if self.redirect_lookup(&segments).is_some() {
+                        CallerPathDisposition::Redirected
+                    } else {
+                        CallerPathDisposition::Retained
+                    }
+                },
+            };
+            self.record_owner_import_path(&segments, disposition);
         }
     }
 
     /// Marks the owner import `written` starts with, if any, as having a
     /// redirected path or a kept one.
-    fn record_owner_import_path(&mut self, written: &[String], redirected: bool) {
+    fn record_owner_import_path(&mut self, written: &[String], disposition: CallerPathDisposition) {
         let Some(first) = written.first() else {
             return;
         };
@@ -498,11 +617,7 @@ impl<'a> CallerRewriter<'a> {
             return;
         };
         if let Some(import) = self.scope_mut(index).owner_imports.get_mut(first) {
-            if redirected {
-                import.redirected = true;
-            } else {
-                import.kept = true;
-            }
+            import.observe(disposition);
         }
     }
 
@@ -606,7 +721,7 @@ impl<'a> CallerRewriter<'a> {
             UseTree::Path(path) => {
                 let mut next = written.to_vec();
                 next.push(path.ident.to_string());
-                if self.tree_changes(&next, &path.tree, removed) {
+                if self.tree_rewrite(&next, &path.tree, removed) == TreeRewrite::Required {
                     self.plan_use_tree(&next, &path.tree, removed, lines);
                 } else {
                     lines.kept.push(self.render_kept_subtree(written, tree));
@@ -638,7 +753,7 @@ impl<'a> CallerRewriter<'a> {
     ) {
         let leaf = leaf_path(written, ident);
         match self.use_leaf_disposition(leaf, alias, removed) {
-            UseLeafDisposition::Removed => lines.removed = true,
+            UseLeafDisposition::Removed => lines.removed = OwnerLeafRemoval::Removed,
             UseLeafDisposition::Redirected { target } => {
                 lines
                     .redirected
@@ -672,27 +787,42 @@ impl<'a> CallerRewriter<'a> {
     }
 
     /// Whether a leaf of `tree` is redirected or in `removed`.
-    fn tree_changes(&self, written: &[String], tree: &UseTree, removed: &[NamedUseLeaf]) -> bool {
-        let leaf_changes = |ident: &Ident, alias: Option<&str>| {
+    fn tree_rewrite(
+        &self,
+        written: &[String],
+        tree: &UseTree,
+        removed: &[NamedUseLeaf],
+    ) -> TreeRewrite {
+        let leaf_rewrite = |ident: &Ident, alias: Option<&str>| {
             let leaf = leaf_path(written, ident);
-            self.redirect_lookup(&leaf).is_some()
+            if self.redirect_lookup(&leaf).is_some()
                 || bound_leaf(leaf, alias).is_some_and(|leaf| removed.contains(&leaf))
+            {
+                TreeRewrite::Required
+            } else {
+                TreeRewrite::Unchanged
+            }
         };
         match tree {
             UseTree::Path(path) => {
                 let mut next = written.to_vec();
                 next.push(path.ident.to_string());
-                self.tree_changes(&next, &path.tree, removed)
+                self.tree_rewrite(&next, &path.tree, removed)
             },
-            UseTree::Name(name) => leaf_changes(&name.ident, None),
+            UseTree::Name(name) => leaf_rewrite(&name.ident, None),
             UseTree::Rename(rename) => {
-                leaf_changes(&rename.ident, Some(&rename.rename.to_string()))
+                leaf_rewrite(&rename.ident, Some(&rename.rename.to_string()))
             },
-            UseTree::Glob(_) => false,
-            UseTree::Group(group) => group
-                .items
-                .iter()
-                .any(|item| self.tree_changes(written, item, removed)),
+            UseTree::Glob(_) => TreeRewrite::Unchanged,
+            UseTree::Group(group) => {
+                for item in &group.items {
+                    match self.tree_rewrite(written, item, removed) {
+                        TreeRewrite::Required => return TreeRewrite::Required,
+                        TreeRewrite::Unchanged => {},
+                    }
+                }
+                TreeRewrite::Unchanged
+            },
         }
     }
 
@@ -725,7 +855,12 @@ impl<'a> CallerRewriter<'a> {
         // module import is only ever their first segment; a path still written through it
         // keeps it used.
         if segments.len() > 1 {
-            self.record_owner_import_path(&segments, found.is_some() && anchored.is_none());
+            let disposition = if found.is_some() && anchored.is_none() {
+                CallerPathDisposition::Redirected
+            } else {
+                CallerPathDisposition::Retained
+            };
+            self.record_owner_import_path(&segments, disposition);
         }
         let Some((length, target)) = found else {
             return;
@@ -773,17 +908,20 @@ impl<'a> CallerRewriter<'a> {
                     self.rewrite_token_paths(group.stream());
                     index += 1;
                 },
-                TokenTree::Ident(first) if !follows_path_separator(&trees, index) => {
-                    let mut idents = vec![first.clone()];
-                    let mut cursor = index + 1;
-                    while let Some(next) = ident_after_path_separator(&trees, cursor) {
-                        idents.push(next);
-                        cursor += 3;
-                    }
-                    self.rewrite_path_prefix(&idents);
-                    index = cursor;
+                TokenTree::Ident(first) => match path_position(&trees, index) {
+                    PathPosition::Continuation => index += 1,
+                    PathPosition::Start => {
+                        let mut idents = vec![first.clone()];
+                        let mut cursor = index + 1;
+                        while let Some(next) = ident_after_path_separator(&trees, cursor) {
+                            idents.push(next);
+                            cursor += 3;
+                        }
+                        self.rewrite_path_prefix(&idents);
+                        index = cursor;
+                    },
                 },
-                _ => index += 1,
+                TokenTree::Literal(_) | TokenTree::Punct(_) => index += 1,
             }
         }
     }
@@ -828,29 +966,57 @@ fn render_written(written: &[String], alias: Option<&str>) -> String {
     }
 }
 
-fn is_colon(tree: Option<&TokenTree>, spacing: Spacing) -> bool {
-    matches!(tree, Some(TokenTree::Punct(punct))
-        if punct.as_char() == ':' && punct.spacing() == spacing)
+/// Whether punctuation is the colon with the spacing needed for a path separator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PathColonMatch {
+    Matches,
+    Rejected,
 }
 
-/// Whether `trees[index]` is preceded by `::`, so it continues a path (or
-/// starts one anchored at the extern prelude) rather than starting one.
-fn follows_path_separator(trees: &[TokenTree], index: usize) -> bool {
-    index >= 2
-        && is_colon(trees.get(index - 2), Spacing::Joint)
-        && is_colon(trees.get(index - 1), Spacing::Alone)
+fn path_colon_match(tree: Option<&TokenTree>, spacing: Spacing) -> PathColonMatch {
+    match tree {
+        Some(TokenTree::Punct(punct)) => {
+            if punct.as_char() == ':' && punct.spacing() == spacing {
+                PathColonMatch::Matches
+            } else {
+                PathColonMatch::Rejected
+            }
+        },
+        Some(TokenTree::Group(_) | TokenTree::Ident(_) | TokenTree::Literal(_)) | None => {
+            PathColonMatch::Rejected
+        },
+    }
+}
+
+/// A preceding `::` continues a path or anchors it at the extern prelude.
+/// Only a start position may begin a caller path to rewrite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PathPosition {
+    Continuation,
+    Start,
+}
+
+fn path_position(trees: &[TokenTree], index: usize) -> PathPosition {
+    if index >= 2
+        && path_colon_match(trees.get(index - 2), Spacing::Joint) == PathColonMatch::Matches
+        && path_colon_match(trees.get(index - 1), Spacing::Alone) == PathColonMatch::Matches
+    {
+        PathPosition::Continuation
+    } else {
+        PathPosition::Start
+    }
 }
 
 /// The identifier after a `::` starting at `trees[index]`.
 fn ident_after_path_separator(trees: &[TokenTree], index: usize) -> Option<Ident> {
-    if !is_colon(trees.get(index), Spacing::Joint)
-        || !is_colon(trees.get(index + 1), Spacing::Alone)
+    if path_colon_match(trees.get(index), Spacing::Joint) == PathColonMatch::Rejected
+        || path_colon_match(trees.get(index + 1), Spacing::Alone) == PathColonMatch::Rejected
     {
         return None;
     }
     match trees.get(index + 2) {
         Some(TokenTree::Ident(ident)) => Some(ident.clone()),
-        _ => None,
+        Some(TokenTree::Group(_) | TokenTree::Literal(_) | TokenTree::Punct(_)) | None => None,
     }
 }
 
@@ -865,10 +1031,27 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::Path;
 
+    use proc_macro2::Spacing;
+    use proc_macro2::TokenStream;
+    use proc_macro2::TokenTree;
     use syn::Ident;
+    use syn::ItemUse;
 
     use super::CallerBuilds;
+    use super::CallerPathDisposition;
     use super::FileRedirects;
+    use super::ImportRetention;
+    use super::OwnerImport;
+    use super::OwnerImportVisibility;
+    use super::OwnerLeafRemoval;
+    use super::OwnerModuleMembership;
+    use super::PathColonMatch;
+    use super::PathPosition;
+    use super::RedirectedPathPresence;
+    use super::RetainedPathPresence;
+    use super::TreeRewrite;
+    use super::UseItemLines;
+    use super::UseRewritePlan;
     use super::redirect_callers_in_syntax;
     use crate::fixes::facade_redirect::FacadeRedirect;
     use crate::fixes::facade_redirect::ModuleAliases;
@@ -1190,29 +1373,36 @@ mod tests {
             vec![path("tool::tool_staging")]
         );
     }
-    #[test]
-    fn removing_a_leaf_precedes_redirect_and_outside_use_accounting() {
-        let redirects = [scoped_redirect()];
-        let aliases = ModuleAliases::default();
-        let mut rewriter = super::CallerRewriter {
-            file:                Path::new("caller.rs"),
-            source:              "",
-            lines:               super::SourceLines::new(""),
-            module_path:         path("app"),
-            scope:               super::ActiveBindingScope {
+    fn rewriter<'a>(
+        redirects: &'a [FacadeRedirect],
+        aliases: &'a ModuleAliases,
+    ) -> super::CallerRewriter<'a> {
+        super::CallerRewriter {
+            file: Path::new("caller.rs"),
+            source: "",
+            lines: super::SourceLines::new(""),
+            module_path: path("app"),
+            scope: super::ActiveBindingScope {
                 kind:          super::ScopeKind::Module,
                 bindings:      super::FxHashMap::default(),
                 owner_imports: super::FxHashMap::default(),
                 deferred:      Vec::new(),
             },
-            outer_scopes:        Vec::new(),
-            redirects:           &redirects,
-            module_aliases:      &aliases,
-            fixes:               Vec::new(),
-            outside_used:        BTreeMap::default(),
+            outer_scopes: Vec::new(),
+            redirects,
+            module_aliases: aliases,
+            fixes: Vec::new(),
+            outside_used: BTreeMap::default(),
             named_owner_modules: BTreeSet::default(),
-            cfg_test_depth:      0,
-        };
+            cfg_test_depth: 0,
+        }
+    }
+
+    #[test]
+    fn removing_a_leaf_precedes_redirect_and_outside_use_accounting() {
+        let redirects = [scoped_redirect()];
+        let aliases = ModuleAliases::default();
+        let mut rewriter = rewriter(&redirects, &aliases);
         let ident: Ident = syn::parse_str("stage").expect("parse name");
         let removed = [
             super::bound_leaf(path("crate::tool::tool_staging::stage"), Some("alias"))
@@ -1226,7 +1416,7 @@ mod tests {
             &removed,
             &mut lines,
         );
-        assert!(lines.removed);
+        assert_eq!(lines.removed, super::OwnerLeafRemoval::Removed);
         assert!(lines.redirected.is_empty());
         assert!(rewriter.outside_used.is_empty());
         rewriter.plan_use_leaf(
@@ -1278,5 +1468,205 @@ mod tests {
     fn an_untouched_group_retains_its_original_spelling() {
         let source = "use crate::other::{Second, First as Alias};\n";
         assert_eq!(rewritten(source, "app", &[scoped_redirect()]), source);
+    }
+    #[test]
+    fn owner_import_retention_preserves_every_history_and_visibility() {
+        for (visibility, redirected, kept, expected) in [
+            (
+                OwnerImportVisibility::Private,
+                RedirectedPathPresence::Absent,
+                RetainedPathPresence::Absent,
+                ImportRetention::Keep,
+            ),
+            (
+                OwnerImportVisibility::Private,
+                RedirectedPathPresence::Absent,
+                RetainedPathPresence::Present,
+                ImportRetention::Keep,
+            ),
+            (
+                OwnerImportVisibility::Private,
+                RedirectedPathPresence::Present,
+                RetainedPathPresence::Absent,
+                ImportRetention::Remove,
+            ),
+            (
+                OwnerImportVisibility::Private,
+                RedirectedPathPresence::Present,
+                RetainedPathPresence::Present,
+                ImportRetention::Keep,
+            ),
+            (
+                OwnerImportVisibility::Reexport,
+                RedirectedPathPresence::Absent,
+                RetainedPathPresence::Absent,
+                ImportRetention::Keep,
+            ),
+            (
+                OwnerImportVisibility::Reexport,
+                RedirectedPathPresence::Absent,
+                RetainedPathPresence::Present,
+                ImportRetention::Keep,
+            ),
+            (
+                OwnerImportVisibility::Reexport,
+                RedirectedPathPresence::Present,
+                RetainedPathPresence::Absent,
+                ImportRetention::Keep,
+            ),
+            (
+                OwnerImportVisibility::Reexport,
+                RedirectedPathPresence::Present,
+                RetainedPathPresence::Present,
+                ImportRetention::Keep,
+            ),
+        ] {
+            let mut import = OwnerImport {
+                item_start: 0,
+                leaf: super::bound_leaf(path("owner"), None).expect("owner leaf"),
+                module: path("owner"),
+                visibility,
+                redirected,
+                kept,
+            };
+            assert_eq!(import.retention(), expected);
+            import.observe(CallerPathDisposition::Redirected);
+            assert_eq!(import.redirected, RedirectedPathPresence::Present);
+            import.observe(CallerPathDisposition::Retained);
+            assert_eq!(import.kept, RetainedPathPresence::Present);
+            assert_eq!(import.retention(), ImportRetention::Keep);
+        }
+        for (source, expected) in [
+            ("use owner;", OwnerImportVisibility::Private),
+            ("pub use owner;", OwnerImportVisibility::Reexport),
+            ("pub(crate) use owner;", OwnerImportVisibility::Reexport),
+            ("pub(self) use owner;", OwnerImportVisibility::Reexport),
+        ] {
+            let item: ItemUse = syn::parse_str(source).expect("use item");
+            assert_eq!(OwnerImportVisibility::from(&item.vis), expected);
+        }
+    }
+
+    #[test]
+    fn owner_leaf_removal_distinguishes_untouched_deleted_and_remaining_lines() {
+        assert!(matches!(
+            UseRewritePlan::from(UseItemLines::default()),
+            UseRewritePlan::Unchanged
+        ));
+        let mut lines = UseItemLines {
+            removed: OwnerLeafRemoval::Removed,
+            ..UseItemLines::default()
+        };
+        assert!(matches!(
+            UseRewritePlan::from(UseItemLines {
+                removed: OwnerLeafRemoval::Removed,
+                ..UseItemLines::default()
+            }),
+            UseRewritePlan::Delete
+        ));
+        lines.kept.push("owner::Kept".to_string());
+        assert!(
+            matches!(UseRewritePlan::from(lines), UseRewritePlan::Replace { lines }
+            if lines == ["owner::Kept"])
+        );
+    }
+
+    #[test]
+    fn owner_membership_and_recursive_tree_rewrites_preserve_leaf_decisions() {
+        let redirects = [scoped_redirect()];
+        let aliases = ModuleAliases::default();
+        let rewriter = rewriter(&redirects, &aliases);
+        assert_eq!(
+            rewriter.owner_module_membership(&path("tool::tool_staging")),
+            OwnerModuleMembership::UnchangedOwner
+        );
+        assert_eq!(
+            rewriter.owner_module_membership(&path("tool::stager")),
+            OwnerModuleMembership::Unrelated
+        );
+        let removed = [super::bound_leaf(path("gone"), None).expect("leaf")];
+        for (source, expected) in [
+            (
+                "use crate::tool::{tool_staging::{stage, keep}, untouched};",
+                TreeRewrite::Required,
+            ),
+            (
+                "use crate::tool::tool_staging::stage as alias;",
+                TreeRewrite::Required,
+            ),
+            ("use gone;", TreeRewrite::Required),
+            ("use gone as alias;", TreeRewrite::Unchanged),
+            ("use crate::tool::tool_staging::*;", TreeRewrite::Unchanged),
+            ("use {untouched, {}};", TreeRewrite::Unchanged),
+            (
+                "use {{}, crate::tool::tool_staging::stage};",
+                TreeRewrite::Required,
+            ),
+        ] {
+            let item: ItemUse = syn::parse_str(source).expect("use tree");
+            assert_eq!(
+                rewriter.tree_rewrite(&[], &item.tree, &removed),
+                expected,
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_glob_keeps_its_owner_while_a_named_leaf_redirects() {
+        let source = concat!(
+            "use crate::tool::tool_staging;\n",
+            "use tool_staging::{*, stage};\n",
+        );
+        assert_eq!(
+            rewritten(source, "app", &[scoped_redirect()]),
+            concat!(
+                "use crate::tool::tool_staging;\n",
+                "use crate::tool::tool_staging::*;\nuse crate::tool::stage;\n",
+            )
+        );
+        assert_eq!(
+            named_owner_modules(source),
+            vec![path("tool::tool_staging")]
+        );
+    }
+
+    #[test]
+    fn macro_path_positions_require_both_colons_and_their_spacing() {
+        let tokens: TokenStream = "a::b".parse().expect("tokens");
+        let trees = tokens.into_iter().collect::<Vec<_>>();
+        assert_eq!(super::path_position(&trees, 0), PathPosition::Start);
+        assert_eq!(super::path_position(&trees, 3), PathPosition::Continuation);
+        let rejected: TokenStream = "() 1 +".parse().expect("non-colon tokens");
+        let rejected = rejected.into_iter().collect::<Vec<_>>();
+        for (token, spacing, expected) in [
+            (rejected.first(), Spacing::Alone, PathColonMatch::Rejected),
+            (rejected.get(1), Spacing::Alone, PathColonMatch::Rejected),
+            (rejected.get(2), Spacing::Alone, PathColonMatch::Rejected),
+            (trees.get(1), Spacing::Joint, PathColonMatch::Matches),
+            (trees.get(2), Spacing::Alone, PathColonMatch::Matches),
+            (trees.get(1), Spacing::Alone, PathColonMatch::Rejected),
+            (trees.first(), Spacing::Joint, PathColonMatch::Rejected),
+            (None, Spacing::Joint, PathColonMatch::Rejected),
+        ] {
+            assert_eq!(super::path_colon_match(token, spacing), expected);
+        }
+        for source in ["a : b", "a + b", "a : : b"] {
+            let tokens: TokenStream = source.parse().expect("tokens");
+            let trees = tokens.into_iter().collect::<Vec<TokenTree>>();
+            assert_eq!(
+                super::path_position(&trees, trees.len() - 1),
+                PathPosition::Start
+            );
+        }
+    }
+
+    #[test]
+    fn path_separator_without_a_following_identifier_is_rejected() {
+        for source in ["::", "::()", "::1", "::+"] {
+            let tokens: TokenStream = source.parse().expect("separator tokens");
+            let trees = tokens.into_iter().collect::<Vec<_>>();
+            assert!(super::ident_after_path_separator(&trees, 0).is_none());
+        }
     }
 }
