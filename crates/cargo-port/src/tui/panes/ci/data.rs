@@ -52,15 +52,15 @@ pub fn build_ci_data(app: &App) -> CiData {
     // `ci_branch_owner_path` resolves `ci_owner` for branch, toggle and display-mode lookups, so
     // workspace members read their owning checkout's values.
     let ci_owner = selected_path.map(|path| app.project_list.ci_branch_owner_path(path));
-    let git_info = ci_owner
+    let checkout_info = ci_owner
         .as_ref()
         .and_then(|owner| app.project_list.git_info_for(owner.as_path()));
     let repo_info = selected_path.and_then(|path| app.project_list.repo_info_for(path));
-    let ci_info = selected_path.and_then(|path| app.project_list.ci_info_for(path));
+    let project_ci_info = selected_path.and_then(|path| app.project_list.ci_info_for(path));
     let current_branch = selected_path
         .and_then(|path| app.project_list.current_branch_for(path))
         .map(str::to_string);
-    let runs = app
+    let ci_runs = app
         .project_list
         .selected_project_path()
         .map_or_else(Vec::new, |path| {
@@ -72,15 +72,15 @@ pub fn build_ci_data(app: &App) -> CiData {
             && ci_owner
                 .as_ref()
                 .is_some_and(|owner| app.ci.display_mode_label_for(owner.as_path()) == "branch")
-    }) && ci_info.is_some_and(|info| !info.runs.is_empty())
-        && runs.is_empty();
+    }) && project_ci_info.is_some_and(|info| !info.runs.is_empty())
+        && ci_runs.is_empty();
     // `CiRemoteAccess::of(repo_info)` checks GitHub remote access independently of branch upstream
     // tracking, since a branch without upstream still belongs to that repository.
-    let remote_access = CiRemoteAccess::of(repo_info);
+    let ci_remote_access = CiRemoteAccess::of(repo_info);
     let applicability = selected_path.map_or(CiApplicability::Applies, |path| {
         app.project_list.ci_applicability(path)
     });
-    let runs = match (remote_access, applicability) {
+    let runs = match (ci_remote_access, applicability) {
         (
             CiRemoteAccess::Unreadable,
             CiApplicability::Applies
@@ -94,19 +94,19 @@ pub fn build_ci_data(app: &App) -> CiData {
         (
             CiRemoteAccess::Awaiting | CiRemoteAccess::Github | CiRemoteAccess::Other,
             CiApplicability::Applies | CiApplicability::Unpublished,
-        ) => runs,
+        ) => ci_runs,
     };
     let empty_state = if selected_path.is_some() && !has_ci_owner {
         CiEmptyState::BranchScopedOnly
-    } else if git_info.is_none() {
+    } else if checkout_info.is_none() {
         CiEmptyState::NotGitRepo
-    } else if matches!(remote_access, CiRemoteAccess::Unreadable)
+    } else if matches!(ci_remote_access, CiRemoteAccess::Unreadable)
         || applicability == CiApplicability::UnreadableEvidence
     {
         CiEmptyState::Unreadable
     } else if has_ci_owner
         && matches!(
-            remote_access,
+            ci_remote_access,
             CiRemoteAccess::Awaiting | CiRemoteAccess::Other
         )
     {
@@ -115,7 +115,7 @@ pub fn build_ci_data(app: &App) -> CiData {
         CiEmptyState::NoWorkflowConfigured
     } else if is_fetching {
         CiEmptyState::Fetching
-    } else if ci_info.is_none() || !app.scan.is_complete() {
+    } else if project_ci_info.is_none() || !app.scan.is_complete() {
         CiEmptyState::Loading
     } else if branch_filtered_empty {
         CiEmptyState::NoRunsForBranch(

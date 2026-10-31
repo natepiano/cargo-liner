@@ -161,16 +161,16 @@ impl AppBuilder<Channeled> {
         startup_services.install_active_config(&inputs.cargo_port_config);
         let themes_dir_resolution = startup_services.themes_dir();
         let themes_dir = themes_dir_resolution.clone().into_external_path();
-        let mut registry = tui_pane::ThemeRegistry::from_dir_with_builtins(
+        let mut theme_registry = tui_pane::ThemeRegistry::from_dir_with_builtins(
             themes_dir.as_deref(),
             crate::themes::builtins(),
         );
-        theme_roles::apply_role_defaults_to_registry(&mut registry);
+        theme_roles::apply_role_defaults_to_registry(&mut theme_registry);
         // `registry.resolve_active` resolves `inputs.cargo_port_config.appearance` into `resolved`
         // and `initial_theme`. A miss silently falls back to the app's appearance-matched variant
         // because toasts are not yet available during startup; the settings UI badge later surfaces
         // the miss.
-        let resolved = registry.resolve_active(
+        let resolved = theme_registry.resolve_active(
             &inputs.cargo_port_config.appearance.mode,
             &inputs.cargo_port_config.appearance.light_theme,
             &inputs.cargo_port_config.appearance.dark_theme,
@@ -179,7 +179,7 @@ impl AppBuilder<Channeled> {
         let mut initial_theme = (*resolved.theme).clone();
         theme_roles::apply_role_defaults_to_theme(&mut initial_theme, None, resolved.appearance);
         startup_services.install_theme_state(
-            registry,
+            theme_registry,
             initial_theme,
             inputs
                 .cargo_port_config
