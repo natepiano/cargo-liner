@@ -24,7 +24,6 @@ impl App {
         let new_watcher = self.startup_services.spawn_watcher(WatcherStartup {
             watch_roots:    &watch_roots,
             background_tx:  self.background.background_sender(),
-            ci_run_count:   self.config.ci_run_count(),
             non_rust:       self.config.include_non_rust(),
             exclude_dirs:   self.config.exclude_dirs(),
             client:         self.net.http_client(),

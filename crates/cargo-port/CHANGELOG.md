@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Add file-only `[scan]`, `[watcher]`, `[http]` and `[lint]` operational timing, concurrency and storage thresholds; edit config and restart without rebuilding.
+
 ### Changed
 
 - The settings, keymap and global shortcuts overlays scroll by the mouse wheel through `tui_pane`; modal capture and scroll inversion stay the same.

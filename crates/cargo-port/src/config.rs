@@ -2,10 +2,13 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::ffi::OsString;
+use std::num::NonZeroU64;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::RwLock;
+use std::time::Duration;
 
 use confique::Config as _;
 use serde::Deserialize;
@@ -24,13 +27,11 @@ use crate::constants::BYTES_PER_GIB;
 use crate::constants::BYTES_PER_KIB;
 use crate::constants::BYTES_PER_MIB;
 use crate::constants::DEFAULT_APPEARANCE_MODE;
-use crate::constants::DEFAULT_CACHE_SIZE;
 use crate::constants::DEFAULT_CI_RUN_COUNT;
 use crate::constants::DEFAULT_CPU_POLL_MS;
 use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_DISCOVERY_SHIMMER_SECS;
 use crate::constants::DEFAULT_EDITOR;
-use crate::constants::DEFAULT_IDLE_BEFORE_LINT_SECS;
 use crate::constants::DEFAULT_INLINE_DIR;
 use crate::constants::DEFAULT_LIGHT_THEME;
 use crate::constants::DEFAULT_LOW_CPU_UTILIZATION_MAX_PERCENT;
@@ -474,23 +475,25 @@ pub struct LintConfig {
     /// instead.
     #[config(default = 120)]
     pub idle_before_lint_secs: u64,
+
+    /// A running lint older than this many minutes is considered stale.
+    #[config(default = 30)]
+    pub(crate) stale_timeout_mins: NonZeroU64,
 }
 
 impl Default for LintConfig {
-    fn default() -> Self {
-        Self {
-            enabled:               LintIndicator::Disabled,
-            include:               Vec::new(),
-            exclude:               Vec::new(),
-            commands:              Vec::new(),
-            cache_size:            DEFAULT_CACHE_SIZE.to_string(),
-            on_discovery:          DiscoveryLint::Deferred,
-            idle_before_lint_secs: DEFAULT_IDLE_BEFORE_LINT_SECS,
-        }
-    }
+    fn default() -> Self { configuration_defaults() }
 }
 
 impl LintConfig {
+    pub(crate) const fn stale_timeout(&self) -> Duration {
+        Duration::from_secs(
+            self.stale_timeout_mins
+                .get()
+                .saturating_mul(crate::constants::SECONDS_PER_MINUTE),
+        )
+    }
+
     pub(crate) fn resolved_commands(&self) -> Vec<LintCommandConfig> {
         let commands = normalize_lint_commands(&self.commands);
         if commands.is_empty() {
@@ -717,6 +720,11 @@ pub(crate) fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
 }
 
 fn normalize_config(mut cargo_port_config: CargoPortConfig) -> Result<CargoPortConfig, String> {
+    if cargo_port_config.scan.storage_low_free.bytes
+        >= cargo_port_config.scan.storage_ample_free.bytes
+    {
+        return Err("scan.storage_low_free must be below scan.storage_ample_free".to_string());
+    }
     normalize_crates_io_release_groups(&mut cargo_port_config.crates_io.release_groups)?;
     cargo_port_config.lint.commands = normalize_lint_commands(&cargo_port_config.lint.commands);
     cargo_port_config.lint.cache_size = cargo_port_config.lint.normalized_cache_size()?;
@@ -882,25 +890,177 @@ fn normalize_non_negative_secs(secs: f64) -> f64 {
     }
 }
 
+/// Load Rust defaults from the same declarations used by config files and templates.
+#[expect(
+    clippy::expect_used,
+    reason = "all fields have valid confique defaults; a missing default is a programming error"
+)]
+fn configuration_defaults<T: confique::Config>() -> T {
+    T::builder()
+        .load()
+        .expect("complete built-in configuration defaults")
+}
+
+/// A finite storage threshold, parsed with the shared cache-size grammar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StorageFreeSpaceThreshold {
+    bytes:      u64,
+    normalized: String,
+}
+
+impl StorageFreeSpaceThreshold {
+    pub(crate) const fn bytes(&self) -> u64 { self.bytes }
+}
+
+impl<'de> Deserialize<'de> for StorageFreeSpaceThreshold {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        let parsed = parse_cache_size(&value).map_err(serde::de::Error::custom)?;
+        let bytes = parsed.bytes.ok_or_else(|| {
+            serde::de::Error::custom(
+                "storage free-space thresholds must be finite sizes with units",
+            )
+        })?;
+        Ok(Self {
+            bytes,
+            normalized: parsed.normalized,
+        })
+    }
+}
+
+impl Serialize for StorageFreeSpaceThreshold {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.normalized)
+    }
+}
+
+/// Scan worker limits, metadata timing and storage headroom policy.
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
+pub(super) struct ScanConfig {
+    /// Maximum simultaneous scan disk walks. Must be positive.
+    #[config(default = 6)]
+    pub(crate) disk_concurrency:     NonZeroUsize,
+    /// Maximum simultaneous cargo metadata jobs. Must be positive.
+    #[config(default = 4)]
+    pub(crate) metadata_concurrency: NonZeroUsize,
+    /// Wall-clock timeout for cargo metadata, in seconds. Must be positive.
+    #[config(default = 10)]
+    metadata_timeout_secs:           NonZeroU64,
+    /// Free space above which storage headroom is ample. Finite size with units.
+    #[config(default = "100 GiB")]
+    pub(crate) storage_ample_free:   StorageFreeSpaceThreshold,
+    /// Free space below which storage headroom is critical. Must be below `storage_ample_free`.
+    #[config(default = "50 GiB")]
+    pub(crate) storage_low_free:     StorageFreeSpaceThreshold,
+}
+
+impl Default for ScanConfig {
+    fn default() -> Self { configuration_defaults() }
+}
+
+impl ScanConfig {
+    pub(crate) const fn metadata_timeout(&self) -> Duration {
+        Duration::from_secs(self.metadata_timeout_secs.get())
+    }
+}
+
+/// File watcher scheduling and worker limits. All values must be positive.
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
+pub(super) struct WatcherConfig {
+    /// Quiet time before recalculating after filesystem changes, in milliseconds.
+    #[config(default = 500)]
+    pub(crate) debounce_ms:      NonZeroU64,
+    /// Maximum delay before recalculating during continuous changes, in milliseconds.
+    #[config(default = 1000)]
+    pub(crate) max_wait_ms:      NonZeroU64,
+    /// Settling time for new project directories, in milliseconds.
+    #[config(default = 2000)]
+    new_project_debounce_ms:     NonZeroU64,
+    /// Interval between watcher timer checks, in milliseconds.
+    #[config(default = 500)]
+    poll_interval_ms:            NonZeroU64,
+    /// Maximum simultaneous watcher disk walks.
+    #[config(default = 2)]
+    pub(crate) disk_concurrency: NonZeroUsize,
+    /// Maximum simultaneous watcher Git probes.
+    #[config(default = 2)]
+    pub(crate) git_concurrency:  NonZeroUsize,
+}
+
+impl Default for WatcherConfig {
+    fn default() -> Self { configuration_defaults() }
+}
+
+impl WatcherConfig {
+    pub(crate) const fn debounce(&self) -> Duration {
+        Duration::from_millis(self.debounce_ms.get())
+    }
+    pub(crate) const fn max_wait(&self) -> Duration {
+        Duration::from_millis(self.max_wait_ms.get())
+    }
+    pub(crate) const fn new_project_debounce(&self) -> Duration {
+        Duration::from_millis(self.new_project_debounce_ms.get())
+    }
+    pub(crate) const fn poll_interval(&self) -> Duration {
+        Duration::from_millis(self.poll_interval_ms.get())
+    }
+}
+
+/// HTTP request timing and recovery probes. All values must be positive.
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "raw numeric unit suffixes mirror stable file keys (avoid-repeated-field-affixes exceptions)"
+)]
+pub(super) struct HttpConfig {
+    /// Request timeout, in seconds.
+    #[config(default = 5)]
+    timeout_secs:           NonZeroU64,
+    /// Recovery probe timeout and interval between retries, in seconds.
+    #[config(default = 1)]
+    retry_secs:             NonZeroU64,
+    /// Delay before confirming an unreachable service, in seconds.
+    #[config(default = 3)]
+    unavailable_grace_secs: NonZeroU64,
+}
+
+impl Default for HttpConfig {
+    fn default() -> Self { configuration_defaults() }
+}
+
+impl HttpConfig {
+    pub(crate) const fn timeout(&self) -> Duration { Duration::from_secs(self.timeout_secs.get()) }
+    pub(crate) const fn retry(&self) -> Duration { Duration::from_secs(self.retry_secs.get()) }
+    pub(crate) const fn unavailable_grace(&self) -> Duration {
+        Duration::from_secs(self.unavailable_grace_secs.get())
+    }
+}
+
 /// Top-level application configuration.
 #[derive(Clone, Debug, Default, PartialEq, confique::Config, Serialize)]
 pub struct CargoPortConfig {
     #[config(nested)]
-    pub cache:      CacheConfig,
+    pub(crate) scan:    ScanConfig,
     #[config(nested)]
-    pub crates_io:  CratesIoConfig,
+    pub(crate) watcher: WatcherConfig,
     #[config(nested)]
-    pub cpu:        CpuConfig,
+    pub(crate) http:    HttpConfig,
     #[config(nested)]
-    pub mouse:      MouseConfig,
+    pub cache:          CacheConfig,
     #[config(nested)]
-    pub tui:        TuiConfig,
+    pub crates_io:      CratesIoConfig,
     #[config(nested)]
-    pub lint:       LintConfig,
+    pub cpu:            CpuConfig,
     #[config(nested)]
-    pub debug:      DebugConfig,
+    pub mouse:          MouseConfig,
     #[config(nested)]
-    pub appearance: AppearanceConfig,
+    pub tui:            TuiConfig,
+    #[config(nested)]
+    pub lint:           LintConfig,
+    #[config(nested)]
+    pub debug:          DebugConfig,
+    #[config(nested)]
+    pub appearance:     AppearanceConfig,
 }
 
 /// Theme selection and OS appearance tracking.
@@ -1278,6 +1438,24 @@ mod tests {
         );
     }
 
+    // Keep the historical assertions pinned to the checked-in public template,
+    // independently of the Rust Default implementation and without duplicate literals.
+    fn lint_defaults_from_golden_file() -> LintConfig {
+        let explicit_defaults = include_str!("../tests/assets/default-config.toml")
+            .lines()
+            .map(|line| {
+                line.strip_prefix('#')
+                    .filter(|value| !value.starts_with(' '))
+                    .unwrap_or(line)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let table = toml::from_str(&explicit_defaults).expect("explicit golden defaults");
+        CargoPortConfig::from_table(&table)
+            .expect("valid golden defaults")
+            .lint
+    }
+
     fn assert_default_config_subset(
         cargo_port_config: &CargoPortConfig,
         expected_ci_run_count: u32,
@@ -1329,10 +1507,13 @@ mod tests {
             cargo_port_config.lint.commands,
             [] as [LintCommandConfig; 0]
         );
-        assert_eq!(cargo_port_config.lint.cache_size, DEFAULT_CACHE_SIZE);
+        assert_eq!(
+            cargo_port_config.lint.cache_size,
+            lint_defaults_from_golden_file().cache_size
+        );
         assert_eq!(
             cargo_port_config.lint.idle_before_lint_secs,
-            DEFAULT_IDLE_BEFORE_LINT_SECS
+            lint_defaults_from_golden_file().idle_before_lint_secs
         );
     }
 
@@ -1391,7 +1572,7 @@ mod tests {
             .expect("lint config without the idle key should load");
         assert_eq!(
             cargo_port_config.lint.idle_before_lint_secs,
-            DEFAULT_IDLE_BEFORE_LINT_SECS
+            lint_defaults_from_golden_file().idle_before_lint_secs
         );
 
         cargo_port_config.lint.idle_before_lint_secs = 45;
@@ -1536,7 +1717,10 @@ mod tests {
         assert_eq!(reloaded.lint.include, [] as [String; 0]);
         assert_eq!(reloaded.lint.exclude, [] as [String; 0]);
         assert_eq!(reloaded.lint.enabled, LintIndicator::Disabled);
-        assert_eq!(reloaded.lint.cache_size, DEFAULT_CACHE_SIZE);
+        assert_eq!(
+            reloaded.lint.cache_size,
+            lint_defaults_from_golden_file().cache_size
+        );
     }
 
     #[test]
@@ -1776,6 +1960,189 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn operational_config_file_overrides_every_tunable() {
+        let defaults = CargoPortConfig::default();
+        let mut table: Table =
+            toml::from_str(&toml::to_string(&defaults).expect("serialize defaults"))
+                .expect("default table");
+        let timing_keys = [
+            ("scan", "disk_concurrency"),
+            ("scan", "metadata_concurrency"),
+            ("scan", "metadata_timeout_secs"),
+            ("watcher", "debounce_ms"),
+            ("watcher", "max_wait_ms"),
+            ("watcher", "new_project_debounce_ms"),
+            ("watcher", "poll_interval_ms"),
+            ("watcher", "disk_concurrency"),
+            ("watcher", "git_concurrency"),
+            ("http", "timeout_secs"),
+            ("http", "retry_secs"),
+            ("http", "unavailable_grace_secs"),
+            ("lint", "stale_timeout_mins"),
+        ];
+        for (section, key) in timing_keys {
+            let value = table[section][key]
+                .as_integer()
+                .expect("positive integer default");
+            table[section][key] = Value::Integer(value + 1);
+        }
+        let ample = defaults.scan.storage_ample_free.bytes() * 2;
+        let low = defaults.scan.storage_low_free.bytes() / 2;
+        table["scan"]["storage_ample_free"] = Value::String(format!("{ample} B"));
+        table["scan"]["storage_low_free"] = Value::String(format!("{low} B"));
+        let dir = tempfile::tempdir().expect("config directory");
+        let path = dir.path().join(CONFIG_FILE);
+        std::fs::write(&path, toml::to_string(&table).expect("override TOML"))
+            .expect("write config");
+        let loaded = normalize_config(
+            CargoPortConfig::builder()
+                .file(&path)
+                .load()
+                .expect("load overrides"),
+        )
+        .expect("normalize overrides");
+        let seconds = |section: &str, key: &str| {
+            Duration::from_secs(
+                u64::try_from(table[section][key].as_integer().expect("seconds"))
+                    .expect("positive seconds"),
+            )
+        };
+        let millis = |key: &str| {
+            Duration::from_millis(
+                u64::try_from(table["watcher"][key].as_integer().expect("milliseconds"))
+                    .expect("positive milliseconds"),
+            )
+        };
+        let workers = |section: &str, key: &str| {
+            usize::try_from(table[section][key].as_integer().expect("workers"))
+                .expect("positive workers")
+        };
+        assert_eq!(
+            loaded.scan.disk_concurrency.get(),
+            workers("scan", "disk_concurrency")
+        );
+        assert_eq!(
+            loaded.scan.metadata_concurrency.get(),
+            workers("scan", "metadata_concurrency")
+        );
+        assert_eq!(
+            loaded.scan.metadata_timeout(),
+            seconds("scan", "metadata_timeout_secs")
+        );
+        assert_eq!(loaded.scan.storage_ample_free.bytes(), ample);
+        assert_eq!(loaded.scan.storage_low_free.bytes(), low);
+        assert_eq!(loaded.watcher.debounce(), millis("debounce_ms"));
+        assert_eq!(loaded.watcher.max_wait(), millis("max_wait_ms"));
+        assert_eq!(
+            loaded.watcher.new_project_debounce(),
+            millis("new_project_debounce_ms")
+        );
+        assert_eq!(loaded.watcher.poll_interval(), millis("poll_interval_ms"));
+        assert_eq!(
+            loaded.watcher.disk_concurrency.get(),
+            workers("watcher", "disk_concurrency")
+        );
+        assert_eq!(
+            loaded.watcher.git_concurrency.get(),
+            workers("watcher", "git_concurrency")
+        );
+        assert_eq!(loaded.http.timeout(), seconds("http", "timeout_secs"));
+        assert_eq!(loaded.http.retry(), seconds("http", "retry_secs"));
+        assert_eq!(
+            loaded.http.unavailable_grace(),
+            seconds("http", "unavailable_grace_secs")
+        );
+        assert_eq!(
+            loaded.lint.stale_timeout(),
+            seconds("lint", "stale_timeout_mins")
+                * u32::try_from(crate::constants::SECONDS_PER_MINUTE).expect("seconds per minute")
+        );
+    }
+
+    #[test]
+    fn operational_config_rejects_zero_workers_and_timing() {
+        for (section, keys) in [
+            (
+                "scan",
+                &[
+                    "disk_concurrency",
+                    "metadata_concurrency",
+                    "metadata_timeout_secs",
+                ][..],
+            ),
+            (
+                "watcher",
+                &[
+                    "debounce_ms",
+                    "max_wait_ms",
+                    "new_project_debounce_ms",
+                    "poll_interval_ms",
+                    "disk_concurrency",
+                    "git_concurrency",
+                ][..],
+            ),
+            (
+                "http",
+                &["timeout_secs", "retry_secs", "unavailable_grace_secs"][..],
+            ),
+            ("lint", &["stale_timeout_mins"][..]),
+        ] {
+            for key in keys {
+                let table: Table =
+                    toml::from_str(&format!("[{section}]\n{key} = 0")).expect("zero fixture");
+                assert!(
+                    CargoPortConfig::from_table(&table).is_err(),
+                    "{section}.{key} must reject zero"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn operational_config_rejects_inverted_storage_thresholds() {
+        let defaults = ScanConfig::default();
+        let ample = defaults.storage_ample_free.bytes();
+        for low in [ample, ample + 1] {
+            let table: Table = toml::from_str(&format!(
+                "[scan]\nstorage_ample_free = \"{ample} B\"\nstorage_low_free = \"{low} B\""
+            ))
+            .expect("threshold fixture");
+            let error = CargoPortConfig::from_table(&table).expect_err("inverted thresholds");
+            assert!(error.contains("scan.storage_low_free"), "{error}");
+            assert!(error.contains("scan.storage_ample_free"), "{error}");
+        }
+    }
+
+    #[test]
+    fn operational_config_sizes_reuse_cache_units_and_reject_unbounded_values() {
+        let defaults = CargoPortConfig::default();
+        let mut table: Table =
+            toml::from_str(&toml::to_string(&defaults).expect("defaults")).expect("table");
+        let configured = format!(
+            "{} mib",
+            defaults.scan.storage_ample_free.bytes() / crate::constants::BYTES_PER_MIB
+        );
+        table["scan"]["storage_ample_free"] = Value::String(configured.clone());
+        let loaded = CargoPortConfig::from_table(&table).expect("shared unit grammar");
+        assert_eq!(
+            loaded.scan.storage_ample_free.bytes(),
+            parse_cache_size(&configured)
+                .expect("cache grammar")
+                .bytes
+                .expect("finite")
+        );
+        assert_eq!(
+            toml::Value::try_from(&loaded.scan).expect("serialize scan")["storage_ample_free"]
+                .as_str(),
+            Some(configured.replace("mib", "MiB").as_str())
+        );
+        for invalid in ["unlimited", "0", "not a size"] {
+            table["scan"]["storage_ample_free"] = Value::String(invalid.to_string());
+            assert!(CargoPortConfig::from_table(&table).is_err(), "{invalid}");
+        }
     }
 
     #[test]

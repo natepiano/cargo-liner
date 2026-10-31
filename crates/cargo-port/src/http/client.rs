@@ -22,12 +22,12 @@ use super::rate_limit::GitHubRateLimit;
 use super::rate_limit::RateLimitBucket;
 use super::rate_limit::RateLimitDisposition;
 use super::rate_limit::RateLimitQuota;
+use crate::config;
+use crate::config::HttpConfig;
 use crate::constants::APP_NAME;
 use crate::constants::CRATES_IO_API_BASE;
-use crate::constants::GH_TIMEOUT;
 use crate::constants::GITHUB_API_BASE;
 use crate::constants::GITHUB_GRAPHQL_URL;
-use crate::constants::SERVICE_RETRY_SECS;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum ServiceKind {
@@ -86,6 +86,7 @@ pub(crate) struct HttpClient {
     /// rebased when enabled so the countdown starts at `00:59:59`.
     github_quota_mode:              Arc<Mutex<GithubQuotaMode>>,
     pub(crate) handle:              Handle,
+    retry_timeout:                  Duration,
 }
 
 impl HttpClient {
@@ -93,7 +94,8 @@ impl HttpClient {
     /// token` (single subprocess call). If `gh` is unavailable or not
     /// authenticated, GitHub API methods degrade gracefully.
     pub(crate) fn new(handle: Handle) -> Option<Self> {
-        let client = build_client(ProxyPolicy::System).ok()?;
+        let http_config = config::active_config().http;
+        let client = build_client(ProxyPolicy::System, &http_config).ok()?;
         let github_auth = GithubAuth::classify(Command::new("gh").args(["auth", "token"]).output());
         Some(Self {
             client,
@@ -102,12 +104,14 @@ impl HttpClient {
             rate_limit: Arc::new(Mutex::new(GitHubRateLimit::default())),
             github_quota_mode: Arc::new(Mutex::new(GithubQuotaMode::Real)),
             handle,
+            retry_timeout: http_config.retry(),
         })
     }
 
     #[cfg(test)]
     pub(crate) fn new_without_github_auth_for_test(handle: Handle) -> Option<Self> {
-        let client = build_client(ProxyPolicy::Disabled).ok()?;
+        let http_config = config::active_config().http;
+        let client = build_client(ProxyPolicy::Disabled, &http_config).ok()?;
         Some(Self {
             client,
             github_auth: GithubAuth::Unauthenticated,
@@ -115,6 +119,7 @@ impl HttpClient {
             rate_limit: Arc::new(Mutex::new(GitHubRateLimit::default())),
             github_quota_mode: Arc::new(Mutex::new(GithubQuotaMode::Real)),
             handle,
+            retry_timeout: http_config.retry(),
         })
     }
 
@@ -385,7 +390,7 @@ impl HttpClient {
             ServiceKind::CratesIo => self
                 .client
                 .head(service.probe_url())
-                .timeout(Duration::from_secs(SERVICE_RETRY_SECS))
+                .timeout(self.retry_timeout)
                 .send()
                 .await
                 .is_ok(),
@@ -408,7 +413,7 @@ impl HttpClient {
             None => self
                 .client
                 .head(ServiceKind::GitHub.probe_url())
-                .timeout(Duration::from_secs(SERVICE_RETRY_SECS))
+                .timeout(self.retry_timeout)
                 .send()
                 .await
                 .is_ok(),
@@ -435,8 +440,10 @@ enum ProxyPolicy {
     Disabled,
 }
 
-fn build_client(proxy_policy: ProxyPolicy) -> Result<Client, Error> {
-    let builder = Client::builder().timeout(GH_TIMEOUT).user_agent(APP_NAME);
+fn build_client(proxy_policy: ProxyPolicy, http_config: &HttpConfig) -> Result<Client, Error> {
+    let builder = Client::builder()
+        .timeout(http_config.timeout())
+        .user_agent(APP_NAME);
     let builder = match proxy_policy {
         ProxyPolicy::System => builder,
         #[cfg(test)]
@@ -670,12 +677,17 @@ mod tests {
 
     fn test_client(handle: &Handle) -> HttpClient {
         HttpClient {
-            client:              build_client(ProxyPolicy::Disabled).expect("build http client"),
+            client:              build_client(
+                ProxyPolicy::Disabled,
+                &crate::config::HttpConfig::default(),
+            )
+            .expect("build http client"),
             github_auth:         GithubAuth::Unauthenticated,
             github_viewer_login: Arc::new(Mutex::new(None)),
             rate_limit:          Arc::new(Mutex::new(GitHubRateLimit::default())),
             github_quota_mode:   Arc::new(Mutex::new(GithubQuotaMode::Real)),
             handle:              handle.clone(),
+            retry_timeout:       crate::config::HttpConfig::default().retry(),
         }
     }
 
@@ -881,7 +893,8 @@ mod tests {
         });
 
         let runtime = test_support::test_runtime();
-        let client = build_client(ProxyPolicy::Disabled).expect("build http client");
+        let client = build_client(ProxyPolicy::Disabled, &crate::config::HttpConfig::default())
+            .expect("build http client");
         let url = format!("http://{addr}/");
         let response = runtime
             .block_on(async { client.get(url).send().await })

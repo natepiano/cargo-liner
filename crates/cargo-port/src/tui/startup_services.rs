@@ -5,7 +5,6 @@ use std::sync::Mutex;
 use std::thread;
 #[cfg(test)]
 use std::thread::JoinHandle;
-use std::time::Duration;
 use std::time::Instant;
 
 #[cfg(test)]
@@ -21,8 +20,6 @@ use crate::channel::Sender;
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::config::NonRustInclusion;
-use crate::constants::SERVICE_RETRY_SECS;
-use crate::constants::SERVICE_UNAVAILABLE_GRACE;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::lint;
@@ -268,7 +265,6 @@ impl StartupServices {
             WatcherHandle::active(watcher::spawn_watcher(WatcherSpawn {
                 watch_roots:    startup.watch_roots,
                 background_tx:  startup.background_tx,
-                ci_run_count:   startup.ci_run_count,
                 non_rust:       startup.non_rust,
                 exclude_dirs:   startup.exclude_dirs,
                 client:         startup.client,
@@ -338,8 +334,9 @@ impl StartupServices {
             return;
         }
         self.record_real(StartupEffectKind::ServiceRetryProbes);
+        let http_config = config::active_config().http;
         thread::spawn(move || {
-            thread::sleep(SERVICE_UNAVAILABLE_GRACE);
+            thread::sleep(http_config.unavailable_grace());
             if client.probe_service(service) {
                 scan::emit_service_recovered(&sender, service);
                 return;
@@ -350,7 +347,7 @@ impl StartupServices {
                     scan::emit_service_recovered(&sender, service);
                     break;
                 }
-                thread::sleep(Duration::from_secs(SERVICE_RETRY_SECS));
+                thread::sleep(http_config.retry());
             }
         });
     }
@@ -601,7 +598,6 @@ impl StartupEnvironment {
 pub(super) struct WatcherStartup<'a> {
     pub(super) watch_roots:    &'a [AbsolutePath],
     pub(super) background_tx:  Sender<BackgroundMsg>,
-    pub(super) ci_run_count:   u32,
     pub(super) non_rust:       NonRustInclusion,
     pub(super) exclude_dirs:   ExcludeDirs,
     pub(super) client:         HttpClient,

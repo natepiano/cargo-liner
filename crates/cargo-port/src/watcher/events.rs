@@ -18,8 +18,8 @@ use super::roots::RegisteredRoots;
 use super::roots::Subscription;
 use super::roots::WatchedFolderRole;
 use crate::channel::Sender;
+use crate::config::WatcherConfig;
 use crate::constants::GIT_DIR;
-use crate::constants::NEW_PROJECT_DEBOUNCE;
 use crate::lint;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
@@ -33,13 +33,52 @@ pub(super) struct WatcherBackgroundSinks<'a> {
     pub(super) metadata_dispatch: Option<&'a MetadataDispatchContext>,
 }
 
-/// Route with the subscription role before running project-specific handlers.
+/// Default-policy routing for existing watcher test harnesses.
+#[cfg(test)]
 pub(super) fn route_folder_event(
     watcher: &mut impl notify::Watcher,
     registered: &mut RegisteredRoots,
     event: &Event,
     state: &mut WatcherLoopState,
     background_tx: &Sender<BackgroundMsg>,
+) -> Vec<Event> {
+    route_folder_event_with_config(
+        watcher,
+        registered,
+        event,
+        state,
+        background_tx,
+        &WatcherConfig::default(),
+    )
+}
+
+/// Default-policy replay for existing watcher test harnesses.
+#[cfg(test)]
+pub(super) fn replay_buffered_events(
+    events: &[Event],
+    ctx: &WatcherDispatchContext<'_>,
+    pending_disk: &mut HashMap<String, WatchState>,
+    pending_git: &mut HashMap<AbsolutePath, WatchState>,
+    pending_new: &mut HashMap<AbsolutePath, Instant>,
+) {
+    replay_buffered_events_with_config(
+        events,
+        ctx,
+        pending_disk,
+        pending_git,
+        pending_new,
+        &WatcherConfig::default(),
+    );
+}
+
+/// Route with the subscription role before running project-specific handlers.
+pub(super) fn route_folder_event_with_config(
+    watcher: &mut impl notify::Watcher,
+    registered: &mut RegisteredRoots,
+    event: &Event,
+    state: &mut WatcherLoopState,
+    background_tx: &Sender<BackgroundMsg>,
+    watcher_config: &WatcherConfig,
 ) -> Vec<Event> {
     let roles: Vec<_> = event
         .paths
@@ -103,7 +142,7 @@ pub(super) fn route_folder_event(
                 ) || path.parent().is_some_and(|parent| {
                     registered.role(parent) == Subscription::Watched(WatchedFolderRole::Discovery)
                 }) {
-                    let deadline = Instant::now() + NEW_PROJECT_DEBOUNCE;
+                    let deadline = Instant::now() + watcher_config.new_project_debounce();
                     state
                         .pending_new
                         .entry(AbsolutePath::from(candidate))
@@ -136,6 +175,7 @@ pub(super) fn process_notify_events(
     watch_roots: &[AbsolutePath],
     sinks: &WatcherBackgroundSinks<'_>,
     state: &mut WatcherLoopState,
+    watcher_config: &WatcherConfig,
 ) {
     let notify_count = notify_events.len();
     if watch_drain.registration_progress.is_completed() {
@@ -159,12 +199,13 @@ pub(super) fn process_notify_events(
             lint_runtime:      sinks.lint_runtime,
             metadata_dispatch: sinks.metadata_dispatch,
         };
-        replay_buffered_events(
+        replay_buffered_events_with_config(
             &state.buffered_events,
             &dispatch,
             &mut state.pending_disk,
             &mut state.pending_git,
             &mut state.pending_new,
+            watcher_config,
         );
         state.buffered_events.clear();
     }
@@ -199,12 +240,13 @@ pub(super) fn process_notify_events(
             lint_runtime:      sinks.lint_runtime,
             metadata_dispatch: sinks.metadata_dispatch,
         };
-        replay_buffered_events(
+        replay_buffered_events_with_config(
             &notify_events,
             &dispatch,
             &mut state.pending_disk,
             &mut state.pending_git,
             &mut state.pending_new,
+            watcher_config,
         );
     }
 }
@@ -222,12 +264,13 @@ pub(super) fn drain_notify_events(notify_rx: &StdReceiver<notify::Result<Event>>
     events
 }
 
-pub(super) fn replay_buffered_events(
+fn replay_buffered_events_with_config(
     events: &[Event],
     ctx: &WatcherDispatchContext<'_>,
     pending_disk: &mut HashMap<String, WatchState>,
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
+    watcher_config: &WatcherConfig,
 ) {
     for event in events {
         for event_path in &event.paths {
@@ -241,6 +284,7 @@ pub(super) fn replay_buffered_events(
                 pending_disk,
                 pending_git,
                 pending_new,
+                watcher_config,
             );
         }
     }
@@ -251,13 +295,14 @@ pub(super) fn drain_completed_refreshes(
     git_done_rx: &StdReceiver<AbsolutePath>,
     pending_disk: &mut HashMap<String, WatchState>,
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
+    watcher_config: &WatcherConfig,
 ) {
     while let Ok(project_path) = disk_done_rx.try_recv() {
-        refresh::handle_disk_completion(pending_disk, &project_path);
+        refresh::handle_disk_completion(pending_disk, &project_path, watcher_config);
     }
 
     while let Ok(repo_root) = git_done_rx.try_recv() {
-        refresh::handle_git_completion(pending_git, &repo_root);
+        refresh::handle_git_completion(pending_git, &repo_root, watcher_config);
     }
 }
 
@@ -292,6 +337,7 @@ pub(super) fn handle_notify_event(
     pending_disk: &mut HashMap<String, WatchState>,
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
+    watcher_config: &WatcherConfig,
 ) {
     let now = Instant::now();
 
@@ -317,7 +363,14 @@ pub(super) fn handle_notify_event(
                 refresh::emit_root_git_info_refresh(background_tx, entry);
             }
             let cause = if fast_git { "fast_git" } else { "git_internal" };
-            refresh::enqueue_git_refresh(pending_git, refresh_key, now, false, cause);
+            refresh::enqueue_git_refresh(
+                pending_git,
+                refresh_key,
+                now,
+                false,
+                cause,
+                watcher_config,
+            );
         }
     }
     if matched_git {
@@ -375,14 +428,21 @@ pub(super) fn handle_notify_event(
             entry.abs_path.as_path(),
             resolved_target.as_deref(),
         );
-        refresh::schedule_disk_refresh(pending_disk, &entry.label, now);
+        refresh::schedule_disk_refresh(pending_disk, &entry.label, now, watcher_config);
         if !is_target_event && let Some(refresh_key) = refresh::git_refresh_key(entry) {
-            refresh::enqueue_git_refresh(pending_git, refresh_key, now, false, "project_event");
+            refresh::enqueue_git_refresh(
+                pending_git,
+                refresh_key,
+                now,
+                false,
+                "project_event",
+                watcher_config,
+            );
         }
         return;
     }
 
-    schedule_discovery_probe(event_path, ctx, pending_new, now);
+    schedule_discovery_probe(event_path, ctx, pending_new, now, watcher_config);
 }
 
 fn schedule_discovery_probe(
@@ -390,6 +450,7 @@ fn schedule_discovery_probe(
     ctx: &EventContext<'_>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
     now: Instant,
+    watcher_config: &WatcherConfig,
 ) {
     if ctx
         .projects
@@ -423,7 +484,7 @@ fn schedule_discovery_probe(
     if !candidate.is_dir() || !ctx.discovered.contains(&candidate) {
         pending_new
             .entry(candidate)
-            .or_insert_with(|| now + NEW_PROJECT_DEBOUNCE);
+            .or_insert_with(|| now + watcher_config.new_project_debounce());
     }
 }
 
@@ -448,5 +509,6 @@ pub(super) fn handle_event(
         pending_disk,
         pending_git,
         pending_new,
+        &WatcherConfig::default(),
     );
 }

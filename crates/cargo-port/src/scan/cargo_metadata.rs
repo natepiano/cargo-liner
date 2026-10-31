@@ -26,11 +26,9 @@ use super::tree;
 use crate::channel;
 use crate::channel::Receiver;
 use crate::channel::Sender;
+use crate::config;
 use crate::config::NonRustInclusion;
-use crate::constants::CARGO_METADATA_TIMEOUT;
 use crate::constants::CARGO_TOML;
-use crate::constants::SCAN_DISK_CONCURRENCY;
-use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::http::HttpClient;
 use crate::project::AbsolutePath;
 use crate::project::FileStamp;
@@ -124,9 +122,13 @@ pub(crate) fn spawn_streaming_scan(
         let scan_context = StreamingScanContext {
             client,
             sender: scan_sender.clone(),
-            disk_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_DISK_CONCURRENCY)),
+            disk_limit: Arc::new(tokio::sync::Semaphore::new(
+                config::active_config().scan.disk_concurrency.get(),
+            )),
             metadata_store,
-            metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
+            metadata_limit: Arc::new(tokio::sync::Semaphore::new(
+                config::active_config().scan.metadata_concurrency.get(),
+            )),
         };
 
         let phase1_started = std::time::Instant::now();
@@ -250,6 +252,7 @@ pub(crate) fn spawn_cargo_metadata_refresh(
         metadata_limit: limit,
     } = dispatch;
 
+    let metadata_timeout = config::active_config().scan.metadata_timeout();
     handle.spawn(async move {
         let Ok(_permit) = limit.acquire_owned().await else {
             return;
@@ -259,7 +262,7 @@ pub(crate) fn spawn_cargo_metadata_refresh(
         let blocking = tokio::task::spawn_blocking(move || {
             run_cargo_metadata_for_root(&workspace_root_for_task, &store)
         });
-        let task_result = match tokio::time::timeout(CARGO_METADATA_TIMEOUT, blocking).await {
+        let task_result = match tokio::time::timeout(metadata_timeout, blocking).await {
             Ok(Ok(output)) => output,
             Ok(Err(_)) => {
                 tracing::warn!(
@@ -276,7 +279,7 @@ pub(crate) fn spawn_cargo_metadata_refresh(
                     fingerprint,
                     result: Err(CargoMetadataError::Other(format!(
                         "cargo metadata timed out after {}s",
-                        CARGO_METADATA_TIMEOUT.as_secs()
+                        metadata_timeout.as_secs()
                     ))),
                 }
             },

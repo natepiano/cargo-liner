@@ -7,9 +7,9 @@ use std::time::Instant;
 use super::runtime::WatchRequest;
 use crate::channel::Sender;
 use crate::config::NonRustInclusion;
+use crate::config::WatcherConfig;
 use crate::constants::CARGO_TOML;
 use crate::constants::GIT_DIR;
-use crate::constants::NEW_PROJECT_DEBOUNCE;
 use crate::enrichment;
 use crate::http::HttpClient;
 use crate::project;
@@ -86,7 +86,7 @@ pub(super) fn probe_new_projects(
     background_tx: &Sender<BackgroundMsg>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
     discovered: &mut HashSet<AbsolutePath>,
-    _: u32,
+    watcher_config: &WatcherConfig,
     non_rust: NonRustInclusion,
     exclude_dirs: &ExcludeDirs,
     client: &HttpClient,
@@ -140,13 +140,14 @@ pub(super) fn probe_new_projects(
                 entries:   disk_entries,
             });
             if abs_path.join(CARGO_TOML).exists() {
-                // `spawn_project_refresh_after` normalizes `abs_path` after `NEW_PROJECT_DEBOUNCE`:
-                // new Rust worktrees may be discovered before nested workspace members are visible,
-                // so the delayed refresh repairs partial state once the checkout settles.
+                // `spawn_project_refresh_after` normalizes `abs_path` after the configured
+                // new-project settling time: new Rust worktrees may be discovered
+                // before nested workspace members are visible, so the delayed
+                // refresh repairs partial state once the checkout settles.
                 spawn_project_refresh_after(
                     background_tx.clone(),
                     abs_path.clone(),
-                    NEW_PROJECT_DEBOUNCE,
+                    watcher_config.new_project_debounce(),
                 );
             }
             let sender = background_tx.clone();
