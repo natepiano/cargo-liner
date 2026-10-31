@@ -1585,7 +1585,7 @@ fn process_children(pid: Pid) -> Vec<Pid> {
 
 /// New macOS descendants are recovered with the bounded full discovery scan.
 #[cfg(not(target_os = "linux"))]
-fn process_children(_: Pid) -> Vec<Pid> { Vec::new() }
+const fn process_children(_: Pid) -> Vec<Pid> { Vec::new() }
 
 #[cfg(target_os = "linux")]
 fn process_revision(pid: Pid) -> ProcessRevision {
