@@ -33,6 +33,13 @@ pub(super) enum RateLimitBucket {
     GraphQl,
 }
 
+/// Whether HTTP policy reports a rate-limit refusal or continues processing the response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RateLimitDisposition {
+    ReportRefusal,
+    ProcessResponse,
+}
+
 /// a single rate-limit bucket. `reset_at` is a Unix epoch
 /// timestamp; `None` means the response did not include a reset header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,29 +109,36 @@ pub(super) fn parse_rate_limit_response(value: &Value) -> GitHubRateLimit {
     }
 }
 
-/// True for the two REST forms GitHub uses for rate-limit refusals:
+/// Classify the two REST forms GitHub uses for rate-limit refusals:
 /// `429 Too Many Requests`, or `403 Forbidden` with
 /// `X-RateLimit-Remaining: 0` (the secondary-rate-limit / abuse-detection
 /// form). A bare 403 is auth-related and not rate-limit.
-pub(super) fn github_is_rate_limited(status: StatusCode, header_map: &HeaderMap) -> bool {
+pub(super) fn github_is_rate_limited(
+    status: StatusCode,
+    header_map: &HeaderMap,
+) -> RateLimitDisposition {
     if status == StatusCode::TOO_MANY_REQUESTS {
-        return true;
+        return RateLimitDisposition::ReportRefusal;
     }
-    if status == StatusCode::FORBIDDEN {
-        return header_map
+    if status == StatusCode::FORBIDDEN
+        && header_map
             .get(RATE_LIMIT_REMAINING_HEADER)
             .and_then(|value| value.to_str().ok())
             .and_then(|text| text.parse::<u64>().ok())
-            .is_some_and(|remaining| remaining == 0);
+            .is_some_and(|remaining| remaining == 0)
+    {
+        RateLimitDisposition::ReportRefusal
+    } else {
+        RateLimitDisposition::ProcessResponse
     }
-    false
 }
 
-/// True when a GraphQL response body carries an `errors[].type` of
+/// Classify a GraphQL rate-limit refusal when the body carries an `errors[].type` of
 /// `RATE_LIMITED`. GraphQL returns HTTP 200 on rate-limit, so
 /// status-based detection alone is not enough for that endpoint.
-pub(super) fn graphql_body_is_rate_limited(body: &Value) -> bool {
-    body.get(GRAPHQL_RESPONSE_ERRORS_KEY)
+pub(super) fn graphql_body_is_rate_limited(body: &Value) -> RateLimitDisposition {
+    if body
+        .get(GRAPHQL_RESPONSE_ERRORS_KEY)
         .and_then(serde_json::Value::as_array)
         .is_some_and(|errors| {
             errors.iter().any(|err| {
@@ -133,6 +147,11 @@ pub(super) fn graphql_body_is_rate_limited(body: &Value) -> bool {
                     .is_some_and(|t| t == GRAPHQL_RATE_LIMITED_ERROR_TYPE)
             })
         })
+    {
+        RateLimitDisposition::ReportRefusal
+    } else {
+        RateLimitDisposition::ProcessResponse
+    }
 }
 
 pub(super) fn classify_network_error(
