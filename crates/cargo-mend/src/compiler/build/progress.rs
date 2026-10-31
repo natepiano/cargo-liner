@@ -30,9 +30,11 @@ pub(super) trait ProgressDisplay {
 
     fn record_unit_counter(&mut self, unit_counter: UnitCounter);
 
-    fn write_status_notice(&mut self, notice: &str);
+    fn write_status_notice(&mut self, notice: &str) {
+        self.write_forwarded_output(&format!("{notice}\n"));
+    }
 
-    fn stop_for_forwarded_output(&mut self);
+    fn write_forwarded_output(&mut self, output: &str);
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -183,15 +185,13 @@ impl ProgressDisplay for CargoProgress {
         }
     }
 
-    fn write_status_notice(&mut self, notice: &str) {
+    fn write_forwarded_output(&mut self, output: &str) {
         if let Some(state) = self.state.as_ref() {
-            state.write_status_notice(notice);
+            state.write_forwarded_output(output);
         } else {
-            eprintln!("{notice}");
+            eprint!("{output}");
         }
     }
-
-    fn stop_for_forwarded_output(&mut self) { self.stop(); }
 }
 
 impl CargoProgressState {
@@ -202,10 +202,17 @@ impl CargoProgressState {
         }
     }
 
-    fn write_status_notice(&self, notice: &str) {
+    fn write_forwarded_output(&self, output: &str) {
         if let Ok(mut status_line) = self.status_line.lock() {
+            let status = status_line.drawn.clone();
             status_line.erase();
-            eprintln!("{notice}");
+            eprint!("{output}");
+            if !output.ends_with('\n') {
+                eprintln!();
+            }
+            if let Some(status) = status {
+                status_line.draw(status, 0);
+            }
             let _ = io::stderr().flush();
         }
     }
@@ -336,7 +343,14 @@ fn clear_progress_line(width: usize) -> String { format!("\r{}\r", " ".repeat(wi
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::process::Command;
+    use std::process::Stdio;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+
     use super::CargoProgress;
+    use super::CargoProgressState;
     use super::FrameUpdate;
     use super::ProgressActivity;
     use super::ProgressDisplay;
@@ -349,6 +363,7 @@ mod tests {
     use super::progress_line_width;
     use super::progress_message_for;
     use crate::compiler::build::BuildOutputMode;
+    use crate::compiler::build::stderr;
     use crate::compiler::constants::PROGRESS_BAR_FILL;
     use crate::compiler::constants::PROGRESS_BAR_HEAD;
     use crate::compiler::constants::PROGRESS_BAR_WIDTH;
@@ -382,6 +397,71 @@ mod tests {
         assert_eq!(progress.activity(), ProgressActivity::Inactive);
         progress.stop();
         assert_eq!(progress.activity(), ProgressActivity::Inactive);
+    }
+
+    #[test]
+    fn unterminated_eof_diagnostic_survives_progress_redraw_and_cleanup() {
+        const CHILD_ENV: &str = "CARGO_MEND_EOF_DIAGNOSTIC_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let mut line = StatusLine::default();
+            line.draw(
+                progress_message_for(BuildOutputMode::Full)
+                    .expect("Full mode has progress")
+                    .to_string(),
+                0,
+            );
+            // Draw synchronously so the test exercises an active line without
+            // depending on the spinner thread's scheduling.
+            let progress = CargoProgress {
+                state: Some(CargoProgressState {
+                    active:      Arc::new(AtomicBool::new(true)),
+                    status_line: Arc::new(Mutex::new(line)),
+                    handle:      None,
+                }),
+            };
+            assert_eq!(progress.activity(), ProgressActivity::Active);
+            let mut cargo = Command::new("sh")
+                .args(["-c", "printf 'error: expected item' >&2"])
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("diagnostic producer");
+            stderr::stream_cargo_stderr(
+                cargo.stderr.take().expect("captured stderr"),
+                BuildOutputMode::Full,
+                progress,
+            )
+            .expect("forward EOF diagnostic and clean up progress");
+            assert!(cargo.wait().expect("diagnostic producer exit").success());
+            return;
+        }
+
+        // A subprocess captures the real stderr writer, including redraw and
+        // Drop cleanup, rather than a recorder that only retains raw blocks.
+        let output = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "compiler::build::progress::tests::unterminated_eof_diagnostic_survives_progress_redraw_and_cleanup",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("capture progress output");
+        assert!(output.status.success(), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("UTF-8 terminal output");
+        assert!(
+            stderr.contains("error: expected item\n\rmend:"),
+            "diagnostic occupies its own line before redraw: {stderr:?}"
+        );
+        let mut lines = stderr.split('\n');
+        assert_eq!(
+            lines.next().expect("diagnostic line").rsplit('\r').next(),
+            Some("error: expected item"),
+            "diagnostic stays visible after redraw and cleanup"
+        );
+        let progress_line = lines.next().expect("redrawn progress line");
+        assert!(progress_line.contains("mend:"));
+        assert!(progress_line.ends_with(&clear_progress_line(progress_line_width("analyzing"))));
+        assert!(lines.next().is_none(), "no extra diagnostic newline");
     }
 
     #[test]

@@ -399,7 +399,7 @@ fn flush_diagnostic_block(
         return;
     }
 
-    match classify_diagnostic_block(block) {
+    let forward = match classify_diagnostic_block(block) {
         DiagnosticBlockKind::SuppressedUnusedImport => {
             *compiler_warnings = CompilerWarningFacts::UnusedImportWarnings;
             match output_mode {
@@ -411,15 +411,12 @@ fn flush_diagnostic_block(
                          discovery",
                     );
                     *suppression_notice = SuppressionNotice::Printed;
+                    false
                 },
-                BuildOutputMode::Full => {
-                    for line in block.iter() {
-                        eprint!("{line}");
-                    }
-                },
+                BuildOutputMode::Full => true,
                 BuildOutputMode::Json
                 | BuildOutputMode::SuppressUnusedImportWarnings
-                | BuildOutputMode::Validation => {},
+                | BuildOutputMode::Validation => false,
             }
         },
         DiagnosticBlockKind::CompilerWarningSummary {
@@ -428,15 +425,12 @@ fn flush_diagnostic_block(
         } => {
             *compiler_warning_count += warning_count;
             *compiler_fixable_count += fixable_count;
+            false
         },
-        DiagnosticBlockKind::Forwarded => {
-            if !matches!(output_mode, BuildOutputMode::Json) {
-                progress.stop_for_forwarded_output();
-                for line in block.iter() {
-                    eprint!("{line}");
-                }
-            }
-        },
+        DiagnosticBlockKind::Forwarded => !matches!(output_mode, BuildOutputMode::Json),
+    };
+    if forward {
+        progress.write_forwarded_output(&block.concat());
     }
 
     block.clear();
@@ -472,7 +466,6 @@ mod tests {
     use crate::compiler::constants::CARGO_WARNING_SUMMARY_PREFIX;
     use crate::compiler::constants::CARGO_WARNING_SUMMARY_TOKEN_GENERATED;
     use crate::compiler::constants::CARGO_WARNING_SUMMARY_TOKEN_TO_APPLY;
-    use crate::compiler::constants::DIAGNOSTIC_SEVERITY_ERROR_PREFIX;
     use crate::reporting::CompilerWarningFacts;
 
     fn styled_building_prefix() -> String {
@@ -526,7 +519,7 @@ mod tests {
     struct ProgressRecorder {
         progress_status: ProgressActivity,
         notices:         Vec<String>,
-        stops:           usize,
+        output:          Vec<String>,
         unit_counters:   Vec<UnitCounter>,
     }
 
@@ -535,7 +528,7 @@ mod tests {
             Self {
                 progress_status: ProgressActivity::Active,
                 notices:         Vec::new(),
-                stops:           0,
+                output:          Vec::new(),
                 unit_counters:   Vec::new(),
             }
         }
@@ -550,10 +543,7 @@ mod tests {
 
         fn write_status_notice(&mut self, notice: &str) { self.notices.push(notice.to_string()); }
 
-        fn stop_for_forwarded_output(&mut self) {
-            self.stops += 1;
-            self.progress_status = ProgressActivity::Inactive;
-        }
+        fn write_forwarded_output(&mut self, output: &str) { self.output.push(output.to_string()); }
     }
 
     #[test]
@@ -673,30 +663,45 @@ mod tests {
     }
 
     #[test]
-    fn forwarded_diagnostic_stops_progress_before_printing() {
-        let mut block = vec![
-            format!("{DIAGNOSTIC_SEVERITY_ERROR_PREFIX} expected item\n"),
-            "\n".to_string(),
-        ];
-        let mut suppression_notice = SuppressionNotice::Pending;
-        let mut compiler_warning_facts = CompilerWarningFacts::None;
-        let mut compiler_warning_count = 0;
-        let mut compiler_fixable_count = 0;
-        let mut progress = ProgressRecorder::active();
+    fn forwarded_diagnostic_keeps_progress_and_later_counter() {
+        for (mode, diagnostic) in [
+            (BuildOutputMode::Full, "error: expected item"),
+            (BuildOutputMode::Validation, "error: expected item"),
+            (BuildOutputMode::Full, "warning: unused import: `unused`"),
+        ] {
+            let mut block = vec![format!("{diagnostic}\n"), "\n".to_string()];
+            let mut suppression_notice = SuppressionNotice::Pending;
+            let mut compiler_warning_facts = CompilerWarningFacts::None;
+            let mut compiler_warning_count = 0;
+            let mut compiler_fixable_count = 0;
+            let mut progress = ProgressRecorder::active();
 
-        flush_diagnostic_block(
-            &mut block,
-            &mut suppression_notice,
-            &mut compiler_warning_facts,
-            &mut compiler_warning_count,
-            &mut compiler_fixable_count,
-            BuildOutputMode::Validation,
-            &mut progress,
-        );
+            flush_diagnostic_block(
+                &mut block,
+                &mut suppression_notice,
+                &mut compiler_warning_facts,
+                &mut compiler_warning_count,
+                &mut compiler_fixable_count,
+                mode,
+                &mut progress,
+            );
 
-        assert_eq!(progress.stops, 1);
-        assert_eq!(progress.notices, [] as [String; 0]);
-        assert_eq!(progress.progress_status, ProgressActivity::Inactive);
+            assert_eq!(progress.progress_status, ProgressActivity::Active);
+            assert_eq!(progress.output, vec![format!("{diagnostic}\n\n")]);
+            assert_eq!(block, [] as [std::string::String; 0]);
+            assert_eq!(progress.notices, [] as [String; 0]);
+
+            let frame = captured_frame();
+            let mut reader = StderrReader::from(frame.as_bytes());
+            assert_eq!(
+                reader.next_line(&mut progress).expect("read later frame"),
+                Some(frame)
+            );
+            assert_eq!(
+                progress.unit_counters.last().copied(),
+                UnitCounter::new(149, 403)
+            );
+        }
     }
 
     #[test]
@@ -728,7 +733,7 @@ mod tests {
                     .to_string()
             ]
         );
-        assert_eq!(progress.stops, 0);
+        assert_eq!(progress.output, [] as [std::string::String; 0]);
         assert_eq!(progress.progress_status, ProgressActivity::Active);
     }
 

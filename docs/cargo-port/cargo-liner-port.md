@@ -194,7 +194,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; the in-repo `mend --fix` step reports no new error.
 
-### Phase 2j — a mend cell keeps its progress bar after a diagnostic  · status: todo
+### Phase 2j — a mend cell keeps its progress bar after a diagnostic  · status: done
 
 **Why:** showrunner 2026-10-31; the user asked why a cargo-tile mend cell shows no progress bar. Claim from the tile unit, not yet confirmed live: in Full mode the first forwarded diagnostic calls `progress.stop_for_forwarded_output()` (`src/compiler/build/stderr.rs:434`). That ends the progress state for the pass, so no counter reaches the capture log after it.
 
