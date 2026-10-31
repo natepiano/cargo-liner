@@ -339,8 +339,6 @@ fn git_lock_holders(path: &Path) -> GitLockHolders {
 /// An incomplete inspection of a lock-owner process cannot establish absence.
 #[cfg(target_os = "linux")]
 fn inspect_git_lock_holders(process_root: &Path, path: &Path, lock_owner: u32) -> GitLockHolders {
-    use std::os::unix::fs::MetadataExt as _;
-
     let Ok(processes) = std::fs::read_dir(process_root) else {
         return GitLockHolders::Unavailable;
     };

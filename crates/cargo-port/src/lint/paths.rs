@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::path::Path;
 
 use sha2::Digest as _;
@@ -44,7 +45,6 @@ pub fn project_key(project_root: &Path) -> String {
         .iter()
         .take(8)
         .fold(String::with_capacity(16), |mut acc, b| {
-            use std::fmt::Write as _;
             let _ = write!(acc, "{b:02x}");
             acc
         });

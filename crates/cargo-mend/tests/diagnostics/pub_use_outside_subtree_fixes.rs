@@ -4,13 +4,14 @@
 //! that still builds.
 
 use std::collections::BTreeMap;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 
 use walkdir::WalkDir;
 
-use super::pub_use_outside_subtree::write;
-use super::pub_use_outside_subtree::write_manifest;
+use super::pub_use_outside_subtree;
 use crate::support::*;
 
 /// Codes a fixed crate must no longer report: the finding itself, and the
@@ -125,30 +126,30 @@ fn fixed_check_stderr_after(
 fn sibling_function_reexport_moves_to_the_parent_and_callers_follow() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod camera;\nmod tool;\n\npub fn touch() -> u32 {\n    \
          tool::tool_staging::build_device_recipe() + camera::run()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/camera.rs",
         "use crate::tool::tool_staging::build_device_recipe;\n\npub(crate) fn run() -> u32 {\n    \
          build_device_recipe() + crate::tool::tool_staging::stage_all()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/mod.rs",
         "mod reset_scene;\npub(crate) mod tool_staging;\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/reset_scene.rs",
         "pub(crate) fn build_device_recipe() -> u32 {\n    1\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/tool_staging/mod.rs",
         "pub(crate) use super::reset_scene::build_device_recipe;\n\npub(crate) fn stage_all() -> \
@@ -187,25 +188,25 @@ fn sibling_function_reexport_moves_to_the_parent_and_callers_follow() {
 fn child_reexport_behind_a_parent_facade_moves_to_the_parent() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod cascade;\n\npub fn touch() -> i32 {\n    cascade::run()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/cascade/mod.rs",
         "mod attributes;\nmod resolved;\n\npub(crate) use attributes::FontUnit;\n\npub(crate) fn \
          run() -> i32 {\n    FontUnit::default().0 + attributes::alpha()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/cascade/attributes.rs",
         "pub(crate) use super::resolved::FontUnit;\n\npub(super) fn alpha() -> i32 {\n    \
          FontUnit(5).0\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/cascade/resolved.rs",
         "#[derive(Default)]\npub(crate) struct FontUnit(pub(crate) i32);\n",
@@ -240,20 +241,20 @@ fn child_reexport_behind_a_parent_facade_moves_to_the_parent() {
 fn crate_hub_reexport_moves_to_the_crate_root() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod free_cam;\nmod input;\nmod stage;\n\npub use input::Orbit;\n\npub fn touch() -> u32 \
          {\n    stage::run()\n}\n",
     );
-    write(root, "src/free_cam.rs", "pub struct Orbit;\n");
-    write(
+    pub_use_outside_subtree::write(root, "src/free_cam.rs", "pub struct Orbit;\n");
+    pub_use_outside_subtree::write(
         root,
         "src/input/mod.rs",
         "pub use crate::free_cam::Orbit;\n\npub(crate) fn poll() -> u32 {\n    3\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/stage.rs",
         "use crate::input;\nuse crate::input::Orbit;\n\npub(crate) fn run() -> u32 {\n    let \
@@ -286,19 +287,19 @@ fn crate_hub_reexport_moves_to_the_crate_root() {
 fn unused_reexport_is_deleted() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod camera;\nmod platform;\n\npub fn touch() -> i32 {\n    camera::run() + \
          platform::discover()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/camera.rs",
         "pub(crate) use crate::platform::discover;\n\npub(crate) fn run() -> i32 {\n    1\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/platform.rs",
         "pub(crate) fn discover() -> i32 {\n    4\n}\n",
@@ -316,25 +317,25 @@ fn unused_reexport_is_deleted() {
 fn grouped_reexport_loses_only_the_flagged_name() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod camera;\nmod platform;\n\npub fn touch() -> i32 {\n    camera::run() + \
          camera::discover()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/camera.rs",
         "mod lens;\n\npub(crate) use crate::{camera::lens::focus, platform::discover};\n\n\
          pub(crate) fn run() -> i32 {\n    focus()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/camera/lens.rs",
         "pub(crate) fn focus() -> i32 {\n    2\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/platform.rs",
         "pub(crate) fn discover() -> i32 {\n    4\n}\n",
@@ -363,27 +364,27 @@ fn grouped_reexport_loses_only_the_flagged_name() {
 fn cfg_reexport_carries_its_cfg_to_the_new_reexport() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod tool;\n\n#[cfg(unix)]\npub fn touch() -> u32 {\n    \
          tool::tool_staging::build_device_recipe() + tool::tool_staging::stage_all() + \
          tool::run()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/mod.rs",
         "mod reset_scene;\npub(crate) mod tool_staging;\n\nuse reset_scene::reset_all;\n\n\
          pub(super) fn run() -> u32 {\n    reset_all()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/reset_scene.rs",
         "pub(crate) fn build_device_recipe() -> u32 {\n    1\n}\n\npub(super) fn reset_all() -> \
          u32 {\n    0\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/tool_staging/mod.rs",
         "#[cfg(unix)]\npub(crate) use super::reset_scene::build_device_recipe;\n\npub(crate) fn \
@@ -418,37 +419,37 @@ fn cfg_reexport_carries_its_cfg_to_the_new_reexport() {
 fn callers_in_path_mounted_and_included_files_are_rewritten() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod tool;\n#[path = \"../extra/probe.rs\"]\nmod probe;\n\n\
          include!(\"../extra/included.rs\");\n\npub fn touch() -> u32 {\n    probe::run() + \
          included() + tool::tool_staging::stage_all()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "extra/probe.rs",
         "use crate::tool::tool_staging::Recipe;\n\npub(crate) fn run() -> u32 {\n    Recipe(1).0\n\
          }\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "extra/included.rs",
         "fn included() -> u32 {\n    let tool::tool_staging::Recipe(value) = \
          tool::tool_staging::Recipe(3);\n    value\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/mod.rs",
         "mod reset_scene;\npub(crate) mod tool_staging;\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/reset_scene.rs",
         "pub(crate) struct Recipe(pub(crate) u32);\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/tool_staging/mod.rs",
         "pub(crate) use super::reset_scene::Recipe;\n\npub(crate) fn stage_all() -> u32 {\n    2\n\
@@ -486,8 +487,8 @@ fn callers_in_path_mounted_and_included_files_are_rewritten() {
 fn included_import_refusal_keeps_its_reexport_and_applies_independent_fact() {
     let temp = tempdir().expect("create included import fixture");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         concat!(
@@ -499,13 +500,13 @@ fn included_import_refusal_keeps_its_reexport_and_applies_independent_fact() {
         "use crate::tool::tool_staging::Recipe;\n",
         "fn included() -> u32 { Recipe(3).0 }\n",
     );
-    write(root, "extra/included.rs", included);
-    write(
+    pub_use_outside_subtree::write(root, "extra/included.rs", included);
+    pub_use_outside_subtree::write(
         root,
         "src/tool/mod.rs",
         "mod reset_scene;\npub(crate) mod tool_staging;\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/reset_scene.rs",
         concat!(
@@ -513,7 +514,7 @@ fn included_import_refusal_keeps_its_reexport_and_applies_independent_fact() {
             "pub(crate) fn independent() -> u32 { 7 }\n",
         ),
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/tool_staging/mod.rs",
         "pub(crate) use super::reset_scene::{Recipe, independent};\n",
@@ -566,21 +567,21 @@ fn included_import_refusal_keeps_its_reexport_and_applies_independent_fact() {
 fn emptied_inline_owner_module_is_deleted() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod tool;\n\npub fn touch() -> u32 {\n    tool::staging::build_device_recipe() + \
          tool::run()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/mod.rs",
         "mod reset_scene;\n\n/// Hands staging callers the scene recipe.\npub(crate) mod staging \
          {\n    pub(crate) use super::reset_scene::build_device_recipe;\n}\n\npub(crate) fn run() \
          -> u32 {\n    staging::build_device_recipe()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/reset_scene.rs",
         "pub(crate) fn build_device_recipe() -> u32 {\n    1\n}\n",
@@ -609,7 +610,7 @@ fn emptied_inline_owner_module_is_deleted() {
 fn emptied_inline_owner_module_stays_while_a_pub_use_names_it() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
+    pub_use_outside_subtree::write_manifest(root);
     let config_path = root.join("mend.toml");
     let config = fs::read_to_string(&config_path).expect("read fixture mend.toml");
     fs::write(
@@ -617,19 +618,19 @@ fn emptied_inline_owner_module_stays_while_a_pub_use_names_it() {
         format!("{config}allow_pub_mod = [\"src/tool/mod.rs\"]\n"),
     )
     .expect("write fixture mend.toml");
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod tool;\n\npub(crate) use tool::staging;\n\npub fn touch() -> u32 {\n    \
          staging::build_device_recipe()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/mod.rs",
         "mod reset_scene;\n\npub(crate) mod staging {\n    pub(crate) use \
          super::reset_scene::build_device_recipe;\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/reset_scene.rs",
         "pub(crate) fn build_device_recipe() -> u32 {\n    1\n}\n",
@@ -658,29 +659,29 @@ fn emptied_inline_owner_module_stays_while_a_pub_use_names_it() {
 fn module_import_of_the_owner_is_removed_once_its_callers_move() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod camera;\nmod tool;\n\npub fn touch() -> u32 {\n    camera::run()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/camera.rs",
         "use crate::tool::tool_staging;\n\npub(crate) fn run() -> u32 {\n    \
          tool_staging::build_device_recipe()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/mod.rs",
         "mod reset_scene;\npub(crate) mod tool_staging;\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/reset_scene.rs",
         "pub(crate) fn build_device_recipe() -> u32 {\n    1\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/tool_staging/mod.rs",
         "pub(crate) use super::reset_scene::build_device_recipe;\n",
@@ -711,24 +712,24 @@ fn module_import_of_the_owner_is_removed_once_its_callers_move() {
 fn caller_inside_a_macro_call_is_rewritten() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod tool;\n\npub fn touch() {\n    assert_eq!(tool::tool_staging::build_device_recipe(), \
          1);\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/mod.rs",
         "mod reset_scene;\npub(crate) mod tool_staging;\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/reset_scene.rs",
         "pub(crate) fn build_device_recipe() -> u32 {\n    1\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/tool_staging/mod.rs",
         "pub(crate) use super::reset_scene::build_device_recipe;\n",
@@ -760,26 +761,26 @@ fn caller_inside_a_macro_call_is_rewritten() {
 fn reexport_of_another_owner_module_is_fixed_on_a_later_pass() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod camera;\nmod tool;\n\npub fn touch() -> u32 {\n    camera::run() + \
          camera::staging::build_device_recipe()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/camera.rs",
         "pub(super) use crate::tool::staging;\n\npub(super) fn run() -> u32 {\n    \
          staging::build_device_recipe()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/mod.rs",
         "mod reset_scene;\n\npub(crate) mod staging {\n    pub(crate) use \
          super::reset_scene::build_device_recipe;\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/reset_scene.rs",
         "pub(crate) fn build_device_recipe() -> u32 {\n    1\n}\n",
@@ -813,29 +814,29 @@ fn reexport_of_another_owner_module_is_fixed_on_a_later_pass() {
 fn reexport_chain_collapses_in_one_run() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod input;\nmod orbit_cam;\n\npub use orbit_cam::Gain;\n",
     );
-    write(root, "src/input.rs", "pub struct Gain(pub u32);\n");
-    write(
+    pub_use_outside_subtree::write(root, "src/input.rs", "pub struct Gain(pub u32);\n");
+    pub_use_outside_subtree::write(
         root,
         "src/orbit_cam/mod.rs",
         "mod controls;\n\npub use controls::Gain;\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/orbit_cam/controls/mod.rs",
         "mod bindings;\n\npub use bindings::Gain;\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/orbit_cam/controls/bindings/mod.rs",
         "mod preset;\n\npub use preset::Gain;\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/orbit_cam/controls/bindings/preset.rs",
         "pub use crate::input::Gain;\n",
@@ -865,8 +866,6 @@ fn fix_chain_with_check_budget(root: &Path) -> String {
     command.arg("--fix");
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-
         let tools = tempdir().expect("create check counter directory");
         let cargo = tools.path().join("cargo");
         let count = tools.path().join("checks");
@@ -904,36 +903,36 @@ fn fix_chain_with_check_budget(root: &Path) -> String {
 fn caller_through_a_module_alias_in_another_file_is_rewritten() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod frames;\nmod platform;\nmod screen;\n\npub fn touch() -> u32 {\n    \
          screen::show()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/frames.rs",
         "pub(crate) struct ScreenFrame(pub(crate) u32);\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/platform/mod.rs",
         "pub(crate) mod screen_capture_stream;\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/platform/screen_capture_stream.rs",
         "pub(crate) use crate::frames::ScreenFrame;\n\npub(crate) fn open() -> u32 {\n    \
          ScreenFrame(1).0\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/screen/mod.rs",
         "use crate::platform::screen_capture_stream as capture_stream;\n\nmod view;\n\n\
          pub(crate) fn show() -> u32 {\n    view::render() + capture_stream::open()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/screen/view.rs",
         "use crate::screen::capture_stream::ScreenFrame;\n\npub(super) fn render() -> u32 {\n    \
@@ -965,32 +964,32 @@ fn caller_through_a_module_alias_in_another_file_is_rewritten() {
 fn test_module_caller_through_a_glob_of_a_module_import_is_rewritten() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod application_readiness;\nmod tool;\n\npub fn touch() -> u32 {\n    \
          application_readiness::ready()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/application_readiness.rs",
         "use crate::tool;\n\npub(crate) fn ready() -> u32 {\n    tool::stage()\n}\n\n\
          #[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn builds_the_recipe() \
          {\n        assert_eq!(tool::tool_staging::build_device_recipe() + ready(), 4);\n    }\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/mod.rs",
         "mod reset_scene;\npub(crate) mod tool_staging;\n\npub(crate) fn stage() -> u32 {\n    \
          tool_staging::stage_all() + tool_staging::build_device_recipe()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/reset_scene.rs",
         "pub(crate) fn build_device_recipe() -> u32 {\n    1\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/tool_staging/mod.rs",
         "pub(crate) use super::reset_scene::build_device_recipe;\n\npub(crate) fn stage_all() -> \
@@ -1028,32 +1027,32 @@ fn test_module_caller_through_a_glob_of_a_module_import_is_rewritten() {
 fn test_module_caller_keeps_its_glob_used() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod application_readiness;\nmod tool;\n\npub fn touch() -> u32 {\n    \
          application_readiness::ready() + tool::tool_staging::build_device_recipe()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/application_readiness.rs",
         "use crate::tool;\n\npub(crate) fn ready() -> u32 {\n    tool::stage()\n}\n\n\
          #[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn builds_the_recipe() \
          {\n        assert_eq!(tool::tool_staging::build_device_recipe(), 1);\n    }\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/mod.rs",
         "mod reset_scene;\npub(crate) mod tool_staging;\n\npub(crate) fn stage() -> u32 {\n    \
          tool_staging::stage_all() + tool_staging::build_device_recipe()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/reset_scene.rs",
         "pub(crate) fn build_device_recipe() -> u32 {\n    1\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/tool_staging/mod.rs",
         "pub(crate) use super::reset_scene::build_device_recipe;\n\npub(crate) fn stage_all() -> \
@@ -1098,31 +1097,31 @@ fn test_module_caller_keeps_its_glob_used() {
 fn file_test_module_reaching_the_name_through_a_glob_keeps_a_cfg_test_use() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod tool;\n\nuse tool::tool_staging::DeviceRecipe;\n\npub fn touch() -> u32 {\n    \
          DeviceRecipe(1).0 + tool::tool_staging::build_device_recipe()\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/mod.rs",
         "mod reset_scene;\npub(crate) mod tool_staging;\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/reset_scene.rs",
         "pub(crate) struct DeviceRecipe(pub(crate) u32);\n\npub(crate) fn build_device_recipe() \
          -> u32 {\n    1\n}\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/tool_staging/mod.rs",
         "pub(crate) use super::reset_scene::DeviceRecipe;\npub(crate) use \
          super::reset_scene::build_device_recipe;\n\n#[cfg(test)]\nmod tests;\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/tool/tool_staging/tests.rs",
         "use super::*;\n\n#[test]\nfn builds_the_recipe() {\n    \
@@ -1158,27 +1157,27 @@ fn file_test_module_reaching_the_name_through_a_glob_keeps_a_cfg_test_use() {
 fn unrewritable_findings_are_counted_in_the_skipped_notice() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
-    write_manifest(root);
-    write(
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
         "mod first;\nmod platform;\nmod second;\n\npub fn touch() -> i32 {\n    first::run() + \
          second::run()\n}\n",
     );
     for parent in ["src/first.rs", "src/second.rs"] {
-        write(
+        pub_use_outside_subtree::write(
             root,
             parent,
             "#[path = \"shared.rs\"]\nmod shared;\n\npub(super) fn run() -> i32 {\n    \
              shared::discover()\n}\n",
         );
     }
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/shared.rs",
         "pub(super) use crate::platform::discover;\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "src/platform.rs",
         "pub(crate) fn discover() -> i32 {\n    4\n}\n",
@@ -1213,31 +1212,31 @@ fn shared_reexport_needed_by_another_package_stays_manual() {
     let root = temp.path();
     // The second package intentionally exposes its platform module. Review it
     // here so this fixture isolates preservation of the shared re-export.
-    write(
+    pub_use_outside_subtree::write(
         root,
         "mend.toml",
         "[visibility]\npub_in_path = \"permitted\"\nallow_pub_mod = [\"b/src/lib.rs\"]\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "Cargo.toml",
         "[workspace]\nmembers = [\"a\", \"b\"]\nresolver = \"2\"\n",
     );
     for name in ["a", "b"] {
-        write(
+        pub_use_outside_subtree::write(
             root,
             &format!("{name}/Cargo.toml"),
             &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
         );
-        write(
+        pub_use_outside_subtree::write(
             root,
             &format!("{name}/src/platform.rs"),
             "pub fn discover() -> u8 { 7 }\n",
         );
     }
     let shared = "pub use crate::platform::discover;\n";
-    write(root, "shared.rs", shared);
-    write(
+    pub_use_outside_subtree::write(root, "shared.rs", shared);
+    pub_use_outside_subtree::write(
         root,
         "a/src/lib.rs",
         concat!(
@@ -1245,7 +1244,7 @@ fn shared_reexport_needed_by_another_package_stays_manual() {
             "pub fn run() -> u8 { bridge::discover() }\n",
         ),
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "b/src/lib.rs",
         concat!(
@@ -1294,23 +1293,23 @@ enum SharedReexportUse {
 fn shared_reexport_workspace(callers: SharedReexportUse) -> tempfile::TempDir {
     let temp = tempdir().expect("create two-package re-export workspace");
     let root = temp.path();
-    write(
+    pub_use_outside_subtree::write(
         root,
         "mend.toml",
         "[visibility]\npub_in_path = \"permitted\"\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "Cargo.toml",
         "[workspace]\nmembers = [\"a\", \"b\"]\nresolver = \"2\"\n",
     );
     for (package, owner) in [("a", "bridge"), ("b", "gateway")] {
-        write(
+        pub_use_outside_subtree::write(
             root,
             &format!("{package}/Cargo.toml"),
             &format!("[package]\nname = \"{package}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
         );
-        write(
+        pub_use_outside_subtree::write(
             root,
             &format!("{package}/src/platform.rs"),
             "pub fn discover() -> u8 { 7 }\n",
@@ -1329,7 +1328,7 @@ fn shared_reexport_workspace(callers: SharedReexportUse) -> tempfile::TempDir {
                 } else {
                     ""
                 };
-                write(
+                pub_use_outside_subtree::write(
                     root,
                     &format!("{package}/src/{owner}.rs"),
                     &format!("include!(\"../../shared.rs\");\n{local}"),
@@ -1342,7 +1341,7 @@ fn shared_reexport_workspace(callers: SharedReexportUse) -> tempfile::TempDir {
                 (format!("mod {owner};"), call)
             },
         };
-        write(
+        pub_use_outside_subtree::write(
             root,
             &format!("{package}/src/lib.rs"),
             &format!(
@@ -1350,7 +1349,7 @@ fn shared_reexport_workspace(callers: SharedReexportUse) -> tempfile::TempDir {
             ),
         );
     }
-    write(root, "shared.rs", "pub use crate::platform::discover;\n");
+    pub_use_outside_subtree::write(root, "shared.rs", "pub use crate::platform::discover;\n");
     temp
 }
 
@@ -1372,35 +1371,35 @@ fn assert_workspace_builds(root: &Path) {
 fn package_filtered_local_reexport_is_rewritten() {
     let temp = tempdir().expect("create package-local re-export workspace");
     let root = temp.path();
-    write(
+    pub_use_outside_subtree::write(
         root,
         "Cargo.toml",
         "[workspace]\nmembers = [\"a\", \"b\"]\nresolver = \"2\"\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "mend.toml",
         "[visibility]\npub_in_path = \"permitted\"\n",
     );
     for package in ["a", "b"] {
-        write(
+        pub_use_outside_subtree::write(
             root,
             &format!("{package}/Cargo.toml"),
             &format!("[package]\nname = \"{package}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
         );
     }
-    write(
+    pub_use_outside_subtree::write(
         root,
         "a/src/lib.rs",
         "mod platform;\nmod bridge;\npub fn run() -> u8 { bridge::discover() }\n",
     );
-    write(root, "a/src/platform.rs", "pub fn discover() -> u8 { 7 }\n");
-    write(
+    pub_use_outside_subtree::write(root, "a/src/platform.rs", "pub fn discover() -> u8 { 7 }\n");
+    pub_use_outside_subtree::write(
         root,
         "a/src/bridge.rs",
         "pub use crate::platform::discover;\n",
     );
-    write(root, "b/src/lib.rs", "pub fn independent() -> u8 { 9 }\n");
+    pub_use_outside_subtree::write(root, "b/src/lib.rs", "pub fn independent() -> u8 { 9 }\n");
     let stderr =
         run_fix_command(mend_command_for(&root.join("Cargo.toml")).args(["-p", "a", "--fix"]));
     assert_eq!(
@@ -1441,7 +1440,7 @@ fn package_filtered_shared_reexport_stays_manual() {
 fn package_filtered_reexport_used_through_qualified_include_stays_manual() {
     let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
     let root = temp.path();
-    write(
+    pub_use_outside_subtree::write(
         root,
         "b/src/lib.rs",
         concat!(
@@ -1457,7 +1456,7 @@ fn package_filtered_reexport_used_through_raw_include_stays_manual() {
     for include in ["r#include", "std::r#include"] {
         let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
         let root = temp.path();
-        write(
+        pub_use_outside_subtree::write(
             root,
             "b/src/lib.rs",
             &format!(
@@ -1473,7 +1472,7 @@ fn package_filtered_reexport_used_through_raw_include_stays_manual() {
 fn package_filtered_reexport_used_through_raw_path_stays_manual() {
     let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
     let root = temp.path();
-    write(
+    pub_use_outside_subtree::write(
         root,
         "b/src/lib.rs",
         concat!(
@@ -1488,7 +1487,7 @@ fn package_filtered_reexport_used_through_raw_path_stays_manual() {
 fn package_filtered_reexport_used_through_raw_cfg_attr_path_stays_manual() {
     let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
     let root = temp.path();
-    write(
+    pub_use_outside_subtree::write(
         root,
         "b/src/lib.rs",
         concat!(
@@ -1503,7 +1502,7 @@ fn package_filtered_reexport_used_through_raw_cfg_attr_path_stays_manual() {
 fn package_filtered_reexport_with_nonliteral_raw_include_stays_manual() {
     let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
     let root = temp.path();
-    write(
+    pub_use_outside_subtree::write(
         root,
         "b/src/lib.rs",
         concat!(
@@ -1520,7 +1519,7 @@ fn package_filtered_reexport_with_nonliteral_raw_include_stays_manual() {
 fn package_filtered_reexport_used_by_block_local_module_stays_manual() {
     let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
     let root = temp.path();
-    write(
+    pub_use_outside_subtree::write(
         root,
         "b/src/lib.rs",
         &format!(
@@ -1554,7 +1553,7 @@ fn assert_filtered_reexport_stays_manual(root: &Path) {
 fn package_filtered_nested_member_local_reexport_is_rewritten() {
     let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
     let root = temp.path();
-    write(
+    pub_use_outside_subtree::write(
         root,
         "Cargo.toml",
         concat!(
@@ -1562,13 +1561,13 @@ fn package_filtered_nested_member_local_reexport_is_rewritten() {
             "[workspace]\nmembers = [\"a\"]\nresolver = \"2\"\n",
         ),
     );
-    write(root, "src/lib.rs", "pub fn independent() -> u8 { 9 }\n");
-    write(
+    pub_use_outside_subtree::write(root, "src/lib.rs", "pub fn independent() -> u8 { 9 }\n");
+    pub_use_outside_subtree::write(
         root,
         "a/src/lib.rs",
         "mod platform;\nmod bridge;\npub fn run() -> u8 { bridge::discover() }\n",
     );
-    write(
+    pub_use_outside_subtree::write(
         root,
         "a/src/bridge.rs",
         "pub use crate::platform::discover;\n",
