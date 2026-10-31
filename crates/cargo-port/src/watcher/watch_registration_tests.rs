@@ -4,6 +4,7 @@
     reason = "tests should panic on unexpected values"
 )]
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -18,6 +19,7 @@ use notify::event::RemoveKind;
 use tempfile::TempDir;
 
 use super::roots;
+use super::roots::CargoHome;
 use super::roots::WatchRegistration;
 use super::skip::WatchSkipSet;
 use crate::project::AbsolutePath;
@@ -27,6 +29,7 @@ use crate::project::AbsolutePath;
 struct RegistrationCalls {
     added:   Vec<(PathBuf, RecursiveMode)>,
     removed: Vec<PathBuf>,
+    fail_on: HashSet<PathBuf>,
 }
 
 impl Watcher for RegistrationCalls {
@@ -34,6 +37,9 @@ impl Watcher for RegistrationCalls {
 
     fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
         self.added.push((path.to_path_buf(), mode));
+        if self.fail_on.contains(path) {
+            return Err(notify::Error::generic("injected registration failure"));
+        }
         Ok(())
     }
 
@@ -56,6 +62,80 @@ fn fixture() -> TempDir {
         std::fs::create_dir_all(scratch.path().join(directory)).expect("fixture directory");
     }
     scratch
+}
+
+#[test]
+fn recursive_root_overlaps_keep_boundaries_with_one_watch_in_both_orders() {
+    let scratch = fixture();
+    let parent = AbsolutePath::from(scratch.path());
+    let child = AbsolutePath::from(scratch.path().join("src"));
+    for configured in [
+        [parent.clone(), child.clone()],
+        [child.clone(), parent.clone()],
+    ] {
+        let mut calls = RegistrationCalls::default();
+        let (mut registered, failures) = roots::register_watch_roots_with_skips(
+            &mut calls,
+            &configured,
+            WatchSkipSet::default(),
+            WatchRegistration::RecursiveRoot,
+        );
+
+        assert!(failures.is_empty());
+        assert_eq!(registered.dirs(), &configured);
+        assert_eq!(
+            calls.added,
+            vec![(parent.to_path_buf(), RecursiveMode::Recursive)]
+        );
+        assert!(registered.covers(&child.join("nested/lib.rs")));
+        assert_eq!(calls.removed, [] as [std::path::PathBuf; 0]);
+
+        // A discovered project already covered by the root must not add a watch either.
+        let failures = roots::register_project_root(&mut calls, &mut registered, &child);
+        assert!(failures.is_empty());
+        assert_eq!(calls.added.len(), 1);
+        assert_eq!(registered.dirs(), &configured);
+    }
+}
+
+#[test]
+fn recursive_root_failed_parent_still_watches_child_in_both_orders() {
+    let scratch = fixture();
+    let parent = AbsolutePath::from(scratch.path());
+    let child = AbsolutePath::from(scratch.path().join("src"));
+    for configured in [
+        [parent.clone(), child.clone()],
+        [child.clone(), parent.clone()],
+    ] {
+        let mut calls = RegistrationCalls {
+            fail_on: HashSet::from([parent.to_path_buf()]),
+            ..RegistrationCalls::default()
+        };
+        let (registered, failures) = roots::register_watch_roots_with_skips(
+            &mut calls,
+            &configured,
+            WatchSkipSet::default(),
+            WatchRegistration::RecursiveRoot,
+        );
+
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].dir, parent);
+        assert!(matches!(
+            failures[0].reason,
+            roots::WatchRootRegistrationFailureReason::Notify(_)
+        ));
+        assert_eq!(registered.dirs(), std::slice::from_ref(&child));
+        assert_eq!(
+            calls.added,
+            vec![
+                (parent.to_path_buf(), RecursiveMode::Recursive),
+                (child.to_path_buf(), RecursiveMode::Recursive),
+            ]
+        );
+        assert!(registered.covers(&child.join("nested/lib.rs")));
+        assert!(!registered.covers(&parent.join("elsewhere/lib.rs")));
+        assert_eq!(calls.removed, [] as [std::path::PathBuf; 0]);
+    }
 }
 
 #[test]
@@ -159,7 +239,7 @@ fn recursive_root_target_change_updates_filter_without_changing_watches() {
     let mut skips = WatchSkipSet::default();
     skips.add_target_directory(target.clone());
 
-    roots::replace_skip_set(&mut calls, &mut registered, skips);
+    roots::replace_skip_set(&mut calls, &mut registered, skips, &CargoHome::Unavailable);
 
     assert!(registered.skips(&target.join("debug/deps/output")));
     assert!(

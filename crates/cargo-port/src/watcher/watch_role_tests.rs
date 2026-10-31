@@ -27,6 +27,7 @@ use super::events::EventContext;
 use super::events::WatcherDispatchContext;
 use super::probe;
 use super::roots;
+use super::roots::CargoHome;
 use super::roots::RegisteredRoots;
 use super::roots::Subscription;
 use super::roots::WatchedFolderRole;
@@ -337,7 +338,12 @@ fn late_target_change_prunes_project_output_without_walking_siblings() {
     let mut skips = WatchSkipSet::default();
     skips.add_target_directory(target.clone());
 
-    roots::replace_skip_set(&mut watcher, &mut registered, skips);
+    roots::replace_skip_set(
+        &mut watcher,
+        &mut registered,
+        skips,
+        &CargoHome::Unavailable,
+    );
 
     assert!(!watcher.active.iter().any(|path| path.starts_with(&target)));
     assert!(

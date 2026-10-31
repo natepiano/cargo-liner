@@ -10,6 +10,7 @@ use notify::event::CreateKind;
 use super::WatchSkipSet;
 use crate::project::AbsolutePath;
 use crate::watcher::roots;
+use crate::watcher::roots::CargoHome;
 use crate::watcher::roots::WatchRegistration;
 use crate::watcher::watch_test_support::RecordedFolderWatches;
 
@@ -66,7 +67,12 @@ fn late_custom_target_symlink_prunes_real_tree_watches() -> Result<(), Box<dyn E
     assert!(watcher.watched.contains(&real_target));
     let mut skips = WatchSkipSet::default();
     skips.add_target_directory(AbsolutePath::from(alias));
-    roots::replace_skip_set(&mut watcher, &mut registered, skips);
+    roots::replace_skip_set(
+        &mut watcher,
+        &mut registered,
+        skips,
+        &CargoHome::Unavailable,
+    );
     assert!(watcher.unwatched.contains(&real_target));
     assert!(watcher.unwatched.contains(&real_target.join("debug")));
     Ok(())
