@@ -480,6 +480,86 @@ fn callers_in_path_mounted_and_included_files_are_rewritten() {
     );
 }
 
+/// A refused caller import keeps its whole fact while another fact sharing
+/// the same owner region still moves and compiles.
+#[test]
+fn included_import_refusal_keeps_its_reexport_and_applies_independent_fact() {
+    let temp = tempdir().expect("create included import fixture");
+    let root = temp.path();
+    write_manifest(root);
+    write(
+        root,
+        "src/lib.rs",
+        concat!(
+            "mod tool;\ninclude!(\"../extra/included.rs\");\n",
+            "pub fn touch() -> u32 { included() + tool::tool_staging::independent() }\n",
+        ),
+    );
+    let included = concat!(
+        "use crate::tool::tool_staging::Recipe;\n",
+        "fn included() -> u32 { Recipe(3).0 }\n",
+    );
+    write(root, "extra/included.rs", included);
+    write(
+        root,
+        "src/tool/mod.rs",
+        "mod reset_scene;\npub(crate) mod tool_staging;\n",
+    );
+    write(
+        root,
+        "src/tool/reset_scene.rs",
+        concat!(
+            "pub(crate) struct Recipe(pub(crate) u32);\n",
+            "pub(crate) fn independent() -> u32 { 7 }\n",
+        ),
+    );
+    write(
+        root,
+        "src/tool/tool_staging/mod.rs",
+        "pub(crate) use super::reset_scene::{Recipe, independent};\n",
+    );
+
+    let before = rust_sources(root);
+    let preview =
+        run_fix_command(mend_command_for(&root.join("Cargo.toml")).args(["--fix", "--dry-run"]));
+    assert_eq!(rust_sources(root), before, "dry run changed the fixture");
+    assert_eq!(
+        preview
+            .matches("skipped 1 `pub_use_outside_subtree`")
+            .count(),
+        1,
+        "{preview}",
+    );
+    assert!(preview.contains("would apply"), "{preview}");
+    let stderr = run_fix(root);
+    assert_eq!(
+        stderr
+            .matches("skipped 1 `pub_use_outside_subtree`")
+            .count(),
+        1,
+        "{stderr}",
+    );
+    assert!(!stderr.contains("rolled back"), "{stderr}");
+    assert_eq!(
+        fs::read_to_string(root.join("extra/included.rs")).expect("read kept caller"),
+        included,
+    );
+    let owner = fs::read_to_string(root.join("src/tool/tool_staging/mod.rs"))
+        .expect("read partially rewritten shared owner");
+    assert!(owner.contains("Recipe"), "{owner}");
+    assert!(!owner.contains("independent"), "{owner}");
+    let ancestor = fs::read_to_string(root.join("src/tool/mod.rs")).expect("read ancestor");
+    assert!(
+        ancestor.contains("use reset_scene::independent;"),
+        "{ancestor}"
+    );
+    assert!(!ancestor.contains("Recipe"), "{ancestor}");
+    let caller = fs::read_to_string(root.join("src/lib.rs")).expect("read accepted caller");
+    assert!(caller.contains("tool::independent()"), "{caller}");
+    assert!(!caller.contains("tool_staging::independent"), "{caller}");
+    assert_workspace_builds(root);
+}
+
 /// An inline module left with nothing once its re-export moves is deleted
 /// with its doc comment, and a caller inside the parent names the sibling.
 #[test]
@@ -1366,6 +1446,68 @@ fn package_filtered_reexport_used_through_qualified_include_stays_manual() {
         "b/src/lib.rs",
         concat!(
             "mod platform;\nmod gateway { std::include!(\"../../shared.rs\"); }\n",
+            "pub fn run() -> u8 { gateway::discover() }\n",
+        ),
+    );
+    assert_filtered_reexport_stays_manual(root);
+}
+
+#[test]
+fn package_filtered_reexport_used_through_raw_include_stays_manual() {
+    for include in ["r#include", "std::r#include"] {
+        let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
+        let root = temp.path();
+        write(
+            root,
+            "b/src/lib.rs",
+            &format!(
+                "mod platform;\nmod gateway {{ {include}!(\"../../shared.rs\"); }}\n\
+                 pub fn run() -> u8 {{ gateway::discover() }}\n"
+            ),
+        );
+        assert_filtered_reexport_stays_manual(root);
+    }
+}
+
+#[test]
+fn package_filtered_reexport_used_through_raw_path_stays_manual() {
+    let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
+    let root = temp.path();
+    write(
+        root,
+        "b/src/lib.rs",
+        concat!(
+            "mod platform;\n#[r#path = \"../../shared.rs\"] mod gateway;\n",
+            "pub fn run() -> u8 { gateway::discover() }\n",
+        ),
+    );
+    assert_filtered_reexport_stays_manual(root);
+}
+
+#[test]
+fn package_filtered_reexport_used_through_raw_cfg_attr_path_stays_manual() {
+    let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
+    let root = temp.path();
+    write(
+        root,
+        "b/src/lib.rs",
+        concat!(
+            "mod platform;\n#[r#cfg_attr(all(), r#path = \"../../shared.rs\")] mod gateway;\n",
+            "pub fn run() -> u8 { gateway::discover() }\n",
+        ),
+    );
+    assert_filtered_reexport_stays_manual(root);
+}
+
+#[test]
+fn package_filtered_reexport_with_nonliteral_raw_include_stays_manual() {
+    let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
+    let root = temp.path();
+    write(
+        root,
+        "b/src/lib.rs",
+        concat!(
+            "mod platform;\nmod gateway { r#include!(concat!(\"../../\", \"shared.rs\")); }\n",
             "pub fn run() -> u8 { gateway::discover() }\n",
         ),
     );

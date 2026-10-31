@@ -24,6 +24,7 @@ use crate::reporting::ExecutionOutcome;
 use crate::reporting::MendFailure;
 use crate::reporting::OutputFormat;
 use crate::reporting::Report;
+use crate::rust_syntax::ParsedSources;
 use crate::selection::CargoCheckPlan;
 use crate::selection::Selection;
 
@@ -89,6 +90,9 @@ impl<'a> MendRunner<'a> {
 }
 
 pub(super) struct RunPlan {
+    /// The checked selection's source and Cargo module context, reused until
+    /// all selected edits have been combined, before any source is written.
+    pub(super) sources:                    ParsedSources,
     pub(super) operation_mode:             OperationMode,
     pub(super) report:                     Report,
     pub(super) import_scan:                Option<ImportScan>,

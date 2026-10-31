@@ -34,6 +34,7 @@ use super::source_text;
 use super::source_text::SourceLines;
 use super::use_tree;
 use crate::fixes::imports;
+use crate::fixes::imports::OwnedFix;
 use crate::fixes::imports::UseBinding;
 use crate::fixes::imports::UseFix;
 use crate::rust_syntax;
@@ -52,7 +53,7 @@ pub(in crate::fixes) enum CallerBuilds {
 /// The caller edits in one file, which redirects sent a caller to their
 /// `outside` path, and which unchanged modules the file still names.
 pub(in crate::fixes) struct FileRedirects {
-    pub(in crate::fixes) fixes:               Vec<UseFix>,
+    pub(in crate::fixes) fixes:               Vec<OwnedFix>,
     /// Indexes into the `redirects` slice the file was rewritten with, each
     /// with the widest builds among the callers that received its `outside`
     /// path.
@@ -115,6 +116,7 @@ fn redirect_callers_in_syntax(
         redirects,
         module_aliases,
         fixes: Vec::new(),
+        edit_facts: BTreeSet::new(),
         outside_used: BTreeMap::new(),
         named_owner_modules: BTreeSet::new(),
         cfg_test_depth: 0,
@@ -328,7 +330,9 @@ struct CallerRewriter<'a> {
     outer_scopes:        Vec<ActiveBindingScope>,
     redirects:           &'a [FacadeRedirect],
     module_aliases:      &'a ModuleAliases,
-    fixes:               Vec<UseFix>,
+    fixes:               Vec<OwnedFix>,
+    /// Redirect indexes contributing to the edit currently being produced.
+    edit_facts:          BTreeSet<usize>,
     outside_used:        BTreeMap<usize, CallerBuilds>,
     named_owner_modules: BTreeSet<Vec<String>>,
     /// How many enclosing inline modules carry `#[cfg(test)]`.
@@ -541,6 +545,7 @@ impl<'a> CallerRewriter<'a> {
     /// Rewrites one `use` item: redirected leaves repointed, `removed` leaves
     /// dropped, and the whole item deleted when nothing is left.
     fn rewrite_use_item(&mut self, node: &ItemUse, removed: &[NamedUseLeaf]) {
+        self.edit_facts.clear();
         let mut lines = UseItemLines::default();
         self.plan_use_tree(&[], &node.tree, removed, &mut lines);
         match UseRewritePlan::from(lines) {
@@ -549,11 +554,11 @@ impl<'a> CallerRewriter<'a> {
                 let Ok((start, end)) = source_text::item_use_byte_range(&self.lines, node) else {
                     return;
                 };
-                self.fixes.push(source_text::line_deletion(
-                    self.file,
-                    self.source,
-                    start..end,
-                ));
+                let fix = source_text::line_deletion(self.file, self.source, start..end);
+                self.fixes.push(OwnedFix {
+                    fix,
+                    facts: mem::take(&mut self.edit_facts).into_iter().collect(),
+                });
             },
             UseRewritePlan::Replace { lines } => {
                 let Ok((start, end)) = source_text::item_use_byte_range(&self.lines, node) else {
@@ -698,6 +703,7 @@ impl<'a> CallerRewriter<'a> {
     /// receives its `outside` path.
     fn redirect_target(&mut self, written: &[String]) -> Option<&'a [String]> {
         let (index, target, side) = self.redirect_lookup(written)?;
+        self.edit_facts.insert(index);
         if side == TargetSide::Outside {
             let builds = if self.cfg_test_depth > 0 {
                 CallerBuilds::TestOnly
@@ -778,6 +784,18 @@ impl<'a> CallerRewriter<'a> {
         removed: &[NamedUseLeaf],
     ) -> UseLeafDisposition<'a> {
         if bound_leaf(leaf.clone(), alias).is_some_and(|leaf| removed.contains(&leaf)) {
+            if let Some(module) = self.resolved(&leaf) {
+                self.edit_facts
+                    .extend(
+                        self.redirects
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(index, redirect)| {
+                                (redirect.unchanged_module.as_ref() == Some(&module))
+                                    .then_some(index)
+                            }),
+                    );
+            }
             return UseLeafDisposition::Removed;
         }
         self.redirect_target(&leaf)
@@ -845,6 +863,7 @@ impl<'a> CallerRewriter<'a> {
     /// path is skipped: that name came from a `use`, and `visit_item_use`
     /// repoints the `use` instead.
     fn rewrite_path_prefix(&mut self, idents: &[Ident]) {
+        self.edit_facts.clear();
         let segments = idents.iter().map(ToString::to_string).collect::<Vec<_>>();
         let found = (2..=segments.len()).find_map(|length| {
             self.redirect_target(&segments[..length])
@@ -927,12 +946,15 @@ impl<'a> CallerRewriter<'a> {
     }
 
     fn push_fix(&mut self, start: usize, end: usize, replacement: String) {
-        self.fixes.push(UseFix {
-            path: self.file.to_path_buf(),
-            start,
-            end,
-            replacement,
-            import_group: None,
+        self.fixes.push(OwnedFix {
+            fix:   UseFix {
+                path: self.file.to_path_buf(),
+                start,
+                end,
+                replacement,
+                import_group: None,
+            },
+            facts: mem::take(&mut self.edit_facts).into_iter().collect(),
         });
     }
 }
@@ -1090,6 +1112,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn caller_edits_keep_each_redirect_owner_until_subtree_composition() {
+        let redirects = [redirect("a::One", "b::One"), redirect("a::Two", "b::Two")];
+        let result = redirect_callers_in_source(
+            Path::new("caller.rs"),
+            "use crate::a::{One, Two};\nfn run() { crate::a::One(); crate::a::Two(); }\n",
+            Vec::new(),
+            &redirects,
+            &ModuleAliases::default(),
+        )
+        .expect("rewrite two independent callers and their shared import");
+        let edits = result
+            .fixes
+            .into_iter()
+            .map(|owned| (owned.fix.replacement, owned.facts))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            edits,
+            [
+                ("use b::One;\nuse b::Two;".to_string(), vec![0, 1]),
+                ("b::One".to_string(), vec![0]),
+                ("b::Two".to_string(), vec![1]),
+            ]
+        );
+    }
+
     /// `source` in module `module` after every fix is applied.
     fn rewritten(source: &str, module: &str, redirects: &[FacadeRedirect]) -> String {
         let mut fixes = redirect_callers_in_source(
@@ -1100,7 +1148,10 @@ mod tests {
             &ModuleAliases::default(),
         )
         .expect("rewrite callers")
-        .fixes;
+        .fixes
+        .into_iter()
+        .map(|owned| owned.fix)
+        .collect::<Vec<_>>();
         fixes.sort_by_key(|fix| Reverse(fix.start));
         let mut text = source.to_string();
         for fix in fixes {
@@ -1392,6 +1443,7 @@ mod tests {
             redirects,
             module_aliases: aliases,
             fixes: Vec::new(),
+            edit_facts: BTreeSet::new(),
             outside_used: BTreeMap::default(),
             named_owner_modules: BTreeSet::default(),
             cfg_test_depth: 0,

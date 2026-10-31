@@ -31,6 +31,17 @@ pub(in crate::fixes) struct ImportGroup {
     pub full_path: String,
 }
 
+impl ImportGroup {
+    /// Scans describe crate-relative targets both with an explicit `crate::`
+    /// anchor and without it. Group comparisons use one spelling so a move
+    /// and a function rewrite targeting the same module do not conflict.
+    pub(in crate::fixes) fn target_path(&self) -> &str {
+        self.full_path
+            .strip_prefix("crate::")
+            .unwrap_or(&self.full_path)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::fixes) struct UseFix {
     pub path:         PathBuf,
@@ -40,6 +51,14 @@ pub(in crate::fixes) struct UseFix {
     /// When set, this fix is part of a larger group that must be kept or
     /// dropped together. See `ImportGroup`.
     pub import_group: Option<ImportGroup>,
+}
+
+/// An edit and the facts that require it. Redirect production uses indexes
+/// into its redirect slice; the subtree scanner translates them to finding
+/// indexes before composing owner, caller, and ancestor edits in a round.
+pub(in crate::fixes) struct OwnedFix {
+    pub fix:   UseFix,
+    pub facts: Vec<usize>,
 }
 
 /// A fix paired with the notice kind it reports under once it is written.
@@ -102,34 +121,8 @@ impl TryFrom<Vec<UseFix>> for ValidatedFixSet {
 impl TryFrom<Vec<TaggedFix>> for ValidatedFixSet {
     type Error = Error;
 
-    fn try_from(mut fixes: Vec<TaggedFix>) -> Result<Self> {
-        for tagged in &mut fixes {
-            tagged.fix.path =
-                fs::canonicalize(&tagged.fix.path).unwrap_or_else(|_| tagged.fix.path.clone());
-        }
-        fixes.sort_by(|left, right| {
-            (
-                &left.fix.path,
-                left.fix.start,
-                left.fix.end,
-                &left.fix.replacement,
-            )
-                .cmp(&(
-                    &right.fix.path,
-                    right.fix.start,
-                    right.fix.end,
-                    &right.fix.replacement,
-                ))
-        });
-        // `ValidatedFixSet::try_from` collapses two passes' byte-identical edits to one. The sort
-        // is stable, so the survivor — and the kind credited with it — is the one
-        // `runner::combine` collected first.
-        fixes.dedup_by(|left, right| {
-            left.fix.path == right.fix.path
-                && left.fix.start == right.fix.start
-                && left.fix.end == right.fix.end
-                && left.fix.replacement == right.fix.replacement
-        });
+    fn try_from(fixes: Vec<TaggedFix>) -> Result<Self> {
+        let fixes = canonical_fixes(fixes);
 
         let mut by_file: BTreeMap<&Path, Vec<&UseFix>> = BTreeMap::new();
         for tagged in &fixes {
@@ -171,6 +164,38 @@ impl TryFrom<Vec<TaggedFix>> for ValidatedFixSet {
 
         Ok(Self { fixes })
     }
+}
+
+/// Normalizes physical file identity and collapses byte-identical proposals before planning.
+pub(super) fn canonical_fixes(mut fixes: Vec<TaggedFix>) -> Vec<TaggedFix> {
+    for tagged in &mut fixes {
+        tagged.fix.path =
+            fs::canonicalize(&tagged.fix.path).unwrap_or_else(|_| tagged.fix.path.clone());
+    }
+    fixes.sort_by(|left, right| {
+        (
+            &left.fix.path,
+            left.fix.start,
+            left.fix.end,
+            &left.fix.replacement,
+        )
+            .cmp(&(
+                &right.fix.path,
+                right.fix.start,
+                right.fix.end,
+                &right.fix.replacement,
+            ))
+    });
+    // `ValidatedFixSet::try_from` collapses two passes' byte-identical edits to one. The sort
+    // is stable, so the survivor — and the kind credited with it — is the one
+    // `runner::combine` collected first.
+    fixes.dedup_by(|left, right| {
+        left.fix.path == right.fix.path
+            && left.fix.start == right.fix.start
+            && left.fix.end == right.fix.end
+            && left.fix.replacement == right.fix.replacement
+    });
+    fixes
 }
 
 /// Writes every fix in `fixes` and returns the edits that actually landed, per

@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Context;
@@ -23,76 +22,14 @@ use crate::fixes::constants::IMPORTS_AT_TOP_SUGGESTION;
 use crate::fixes::imports;
 use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::ImportGroup;
+use crate::fixes::imports::ImportMove;
 use crate::fixes::imports::ImportSource;
+use crate::fixes::imports::ModuleImports;
 use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
 use crate::reporting::FixSupport;
 use crate::reporting::ItemVisibility;
 use crate::reporting::Severity;
-
-/// What the scope already exposes under a given bare name. Use-imports
-/// track the resolved path so a same-path move dedupes cleanly, plus whether
-/// they are `#[cfg]`-gated — a conditional import must never dedup against or
-/// be added next to an unconditional one of the same name (both active at
-/// once is a duplicate-import error). Other items (structs, fns, mods,
-/// consts, …) carry no path — any move that would reintroduce their name at
-/// this scope is treated as a hard collision and the in-body `use` is left
-/// alone.
-enum ExistingBinding {
-    Use { full: String, gate: ImportGate },
-    Item,
-}
-
-/// The collision and duplicate policy carried by an import's compile gate.
-#[derive(Clone, Copy)]
-enum ImportGate {
-    Conditional,
-    Unconditional,
-}
-
-impl From<&ConditionalAttributes> for ImportGate {
-    fn from(attributes: &ConditionalAttributes) -> Self {
-        if attributes.is_empty() {
-            Self::Unconditional
-        } else {
-            Self::Conditional
-        }
-    }
-}
-
-impl From<&[Attribute]> for ImportGate {
-    fn from(attributes: &[Attribute]) -> Self {
-        if ConditionalAttributes::contains(attributes) {
-            Self::Conditional
-        } else {
-            Self::Unconditional
-        }
-    }
-}
-
-impl ImportGate {
-    fn blocks(self, existing: Option<&ExistingBinding>, full: &str) -> bool {
-        match self {
-            Self::Conditional => existing.is_some(),
-            Self::Unconditional => unconditional_collision(existing, full),
-        }
-    }
-
-    fn all_duplicates(self, scope: &ScopedUseFinder, bare_paths: &[NamedImport]) -> bool {
-        match self {
-            Self::Conditional => false,
-            Self::Unconditional => bare_paths.iter().all(|binding| {
-                let NamedImport {
-                    name: bare,
-                    path: full,
-                } = binding;
-                matches!(scope.existing.get(bare),
-                    Some(ExistingBinding::Use { full: existing, gate: Self::Unconditional })
-                        if existing == full)
-            }),
-        }
-    }
-}
 
 /// An active module scope required by every import move and insertion.
 /// The file scan installs the root scope, and entering a module replaces it
@@ -104,9 +41,6 @@ struct ScopedUseFinder {
     insertion_offset: usize,
     /// Indent (spaces and/or tabs) to prepend to inserted `use` lines.
     indent:           String,
-    /// `bare_name -> what's already in scope under that name`. Used to
-    /// detect collisions and duplicates before moving an in-body `use`.
-    existing:         BTreeMap<String, ExistingBinding>,
 }
 
 struct InBodyUseFinder<'a> {
@@ -115,6 +49,7 @@ struct InBodyUseFinder<'a> {
     path:                   &'a Path,
     display_path:           &'a str,
     scope:                  ScopedUseFinder,
+    imports:                ModuleImports,
     /// Source text of the `#[cfg]`/`#[cfg_attr]` attributes on every enclosing
     /// construct the visitor is currently inside, outermost first. A nested
     /// `use` that moves to the module scope carries these attributes with it so
@@ -159,46 +94,27 @@ impl InBodyUseFinder<'_> {
         // conditionally compiled and the attributes travel with it to the top.
         let mut conditional_attributes = self.conditional_attributes.clone();
         conditional_attributes.extend(self.attributes(&use_item.attrs));
-        let gate = ImportGate::from(&conditional_attributes);
-
-        let scope = &self.scope;
-
-        // `blocked` rejects a gated `use` with any `scope.existing` binding of the
-        // same name (even the same path double-imports when both are active),
-        // so skip when the name is taken. An unconditional `use` skips only on
-        // a real collision. Leaving it in place is safe on every target.
-        let blocked = bare_paths
-            .iter()
-            .any(|binding| gate.blocks(scope.existing.get(&binding.name), &binding.path));
-        if blocked {
-            return Ok(());
-        }
-
-        // `all_duplicates` means every bare name is already imported unconditionally with the
-        // same full path. The fix collapses to a pure deletion (no insertion).
-        // A gated use is never a plain duplicate — its gate must be preserved.
-        let all_duplicates = gate.all_duplicates(scope, &bare_paths);
-
-        self.emit_move(
+        let insert = match self.imports.move_import(
+            self.scope.insertion_offset,
             use_item,
-            &bare_paths,
             &conditional_attributes,
-            gate,
-            all_duplicates,
-        )
+        ) {
+            ImportMove::Blocked => return Ok(()),
+            ImportMove::Delete => false,
+            ImportMove::Insert => true,
+        };
+        self.emit_move(use_item, &bare_paths, &conditional_attributes, insert)
     }
 
     /// Push the finding and the insertion/deletion fixes for a movable `use`.
-    /// `gate_attrs` are prepended to the inserted line so the import stays
-    /// conditionally compiled; `all_duplicates` skips the insertion (the names
-    /// are already imported at the scope top, so the fix is a pure deletion).
+    /// Carried gates keep the import conditionally compiled. The shared owner
+    /// chooses whether the move needs an insertion or only a deletion.
     fn emit_move(
         &mut self,
         use_item: &ItemUse,
         bare_paths: &[NamedImport],
         conditional_attributes: &ConditionalAttributes,
-        gate: ImportGate,
-        all_duplicates: bool,
+        insert: bool,
     ) -> anyhow::Result<()> {
         let use_span = use_item.span();
         // `use_span` includes the first attribute. Build the moved text from
@@ -248,11 +164,9 @@ impl InBodyUseFinder<'_> {
             item_visibility: ItemVisibility::default(),
         });
 
-        if !all_duplicates {
+        if insert {
             self.emit_insertion(
-                bare_paths,
                 conditional_attributes,
-                gate,
                 use_kw_start,
                 use_end,
                 group.as_ref(),
@@ -269,15 +183,10 @@ impl InBodyUseFinder<'_> {
         Ok(())
     }
 
-    /// Insert the moved `use` (with its carried gate) at the scope top and
-    /// record the newly imported names so later in-body uses in this pass see
-    /// them as already imported. The `gate` stays with the binding so a
-    /// conditional move never dedups against an unconditional import of the same name.
+    /// Insert the proposal chosen by the shared scope import owner.
     fn emit_insertion(
         &mut self,
-        bare_paths: &[NamedImport],
         conditional_attributes: &ConditionalAttributes,
-        gate: ImportGate,
         use_kw_start: usize,
         use_end: usize,
         group: Option<&ImportGroup>,
@@ -297,16 +206,6 @@ impl InBodyUseFinder<'_> {
             replacement:  insertion,
             import_group: group.cloned(),
         });
-
-        for binding in bare_paths {
-            self.scope.existing.insert(
-                binding.name.clone(),
-                ExistingBinding::Use {
-                    full: binding.path.clone(),
-                    gate,
-                },
-            );
-        }
     }
 }
 
@@ -395,11 +294,22 @@ impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn scan(
     syntax: &File,
     text: &str,
     path: &Path,
     display_path: &str,
+) -> anyhow::Result<(Vec<Finding>, Vec<UseFix>)> {
+    scan_at_module(syntax, text, path, display_path, &[])
+}
+
+pub(super) fn scan_at_module(
+    syntax: &File,
+    text: &str,
+    path: &Path,
+    display_path: &str,
+    module: &[String],
 ) -> anyhow::Result<(Vec<Finding>, Vec<UseFix>)> {
     let indexed = ImportSource::new(text);
     let root_scope = compute_scope_for_items(&syntax.items, text, &indexed, "", 0)?;
@@ -409,6 +319,7 @@ pub(super) fn scan(
         path,
         display_path,
         scope: root_scope,
+        imports: ModuleImports::from_syntax(syntax, &indexed, module)?,
         conditional_attributes: ConditionalAttributes::default(),
         result: Ok(()),
         findings: Vec::new(),
@@ -428,7 +339,6 @@ fn compute_scope_for_items(
     default_indent: &str,
     empty_offset: usize,
 ) -> anyhow::Result<ScopedUseFinder> {
-    let mut existing: BTreeMap<String, ExistingBinding> = BTreeMap::new();
     let mut insertion = ScopeInsertion::EmptyModule(empty_offset);
     let mut detected_indent: Option<String> = None;
 
@@ -441,33 +351,14 @@ fn compute_scope_for_items(
         if detected_indent.is_none() {
             detected_indent = Some(indent_for_offset(text, item_start));
         }
-        match item {
-            Item::Use(item_use) => {
-                let gate = ImportGate::from(item_use.attrs.as_slice());
-                for leaf in flatten_use_to_bare_paths(&item_use.tree) {
-                    if let ImportLeaf::Named(binding) = leaf {
-                        existing.insert(
-                            binding.name,
-                            ExistingBinding::Use {
-                                full: binding.path,
-                                gate,
-                            },
-                        );
-                    }
-                }
-                let end = SourcePosition::new(source, item_use.span().end())?.offset;
-                let end = if text.as_bytes().get(end) == Some(&b'\n') {
-                    end + 1
-                } else {
-                    end
-                };
-                insertion = ScopeInsertion::AfterUse(end);
-            },
-            other => {
-                for name in item_defined_names(other) {
-                    existing.entry(name).or_insert(ExistingBinding::Item);
-                }
-            },
+        if let Item::Use(item_use) = item {
+            let end = SourcePosition::new(source, item_use.span().end())?.offset;
+            let end = if text.as_bytes().get(end) == Some(&b'\n') {
+                end + 1
+            } else {
+                end
+            };
+            insertion = ScopeInsertion::AfterUse(end);
         }
     }
 
@@ -476,32 +367,7 @@ fn compute_scope_for_items(
     Ok(ScopedUseFinder {
         insertion_offset,
         indent,
-        existing,
     })
-}
-
-/// Bare identifiers that an item introduces at its containing module's
-/// scope. Returns an empty vector for items that don't bind a name at
-/// module level (`Item::Impl`, `Item::ExternCrate`, `Item::Use`,
-/// `Item::Macro`, etc.).
-fn item_defined_names(item: &Item) -> Vec<String> {
-    match item {
-        Item::Struct(item) => vec![item.ident.to_string()],
-        Item::Enum(item) => vec![item.ident.to_string()],
-        Item::Union(item) => vec![item.ident.to_string()],
-        Item::Fn(item) => vec![item.sig.ident.to_string()],
-        Item::Const(item) => vec![item.ident.to_string()],
-        Item::Static(item) => vec![item.ident.to_string()],
-        Item::Mod(item) => vec![item.ident.to_string()],
-        Item::Trait(item) => vec![item.ident.to_string()],
-        Item::TraitAlias(item) => vec![item.ident.to_string()],
-        Item::Type(item) => vec![item.ident.to_string()],
-        Item::ExternCrate(item) => item.rename.as_ref().map_or_else(
-            || vec![item.ident.to_string()],
-            |(_, rename)| vec![rename.to_string()],
-        ),
-        _ => Vec::new(),
-    }
 }
 
 fn indent_for_offset(text: &str, offset: usize) -> String {
@@ -622,27 +488,6 @@ fn item_gate_attrs(item: &Item) -> &[Attribute] {
         Item::Const(item) => &item.attrs,
         Item::Static(item) => &item.attrs,
         _ => &[],
-    }
-}
-
-/// Whether moving an unconditional `use` of `full` would collide with what
-/// the scope already exposes under that bare name: an item, a gated use of any
-/// path (an unconditional sibling would double-import when the gate holds), or
-/// an unconditional use of a different path.
-fn unconditional_collision(existing: Option<&ExistingBinding>, full: &str) -> bool {
-    match existing {
-        Some(
-            ExistingBinding::Item
-            | ExistingBinding::Use {
-                gate: ImportGate::Conditional,
-                ..
-            },
-        ) => true,
-        Some(ExistingBinding::Use {
-            full: existing_full,
-            gate: ImportGate::Unconditional,
-        }) => existing_full != full,
-        None => false,
     }
 }
 
