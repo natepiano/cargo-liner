@@ -66,6 +66,8 @@ impl Globals<App> for AppGlobalAction {
             '-' => Self::RemoveTile,
             KeyCode::Left => Self::FocusLeft,
             KeyCode::Right => Self::FocusRight,
+            KeyBind::shift(KeyCode::Up) => Self::FocusUp,
+            KeyBind::shift(KeyCode::Down) => Self::FocusDown,
             KeyCode::Up => Self::RowUp,
             KeyCode::Down => Self::RowDown,
             KeyCode::PageUp => Self::RowPageUp,
@@ -133,6 +135,8 @@ mod tests {
             (KeyBind::from('-'), AppGlobalAction::RemoveTile),
             (KeyBind::from(KeyCode::Left), AppGlobalAction::FocusLeft),
             (KeyBind::from(KeyCode::Right), AppGlobalAction::FocusRight),
+            (KeyBind::shift(KeyCode::Up), AppGlobalAction::FocusUp),
+            (KeyBind::shift(KeyCode::Down), AppGlobalAction::FocusDown),
             (KeyBind::from(KeyCode::Up), AppGlobalAction::RowUp),
             (KeyBind::from(KeyCode::Down), AppGlobalAction::RowDown),
             (KeyBind::from(KeyCode::PageUp), AppGlobalAction::RowPageUp),
@@ -154,7 +158,7 @@ mod tests {
             assert_eq!(scope.action_for(&bind), Some(action), "{bind:?}");
         }
         assert_eq!(
-            expected.len() + 2,
+            expected.len(),
             <AppGlobalAction as tui_pane::Action>::ALL.len()
         );
     }
