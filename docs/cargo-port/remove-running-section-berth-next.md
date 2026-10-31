@@ -980,7 +980,9 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
 
-### Phase 47 — cargo-berth keeps its ledger and indexes in memory between requests  · status: todo
+### Phase 47 — cargo-berth keeps its ledger and indexes in memory between requests  · status: dropped
+
+**Dropped** (showrunner, 2026-10-30): measured on the real cargo-liner ledger (5.6 MB, checkpoint 0.87 MB), release build of 04ec519b, 3 interleaved pairs: a held check takes 18.5 ms wall and 8.1 ms CPU, the pre-tool-use hook decision 23.5 ms wall and 8.7 ms CPU, with 0 git children. A resident would remove about 5.3 ms CPU per request (checkpoint load; index builds are under 0.2 ms), which does not pay for a resident process. The 0.4 s the showrunner timed was an acquire on an unused path under high load; acquire is rare. The design below stays as the record.
 
 **Depends on:** 42. It runs beside phase 45 (user, 2026-10-30): 45 changes only how drift reads a merge in `src/drift/`, and 47 keeps out of `src/drift/`. 47's same-answer A/B uses one base for its before and after.
 
@@ -1018,7 +1020,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 ### Phase 48 — An unchanged request runs no status scan, hash, history walk or merge  · status: todo
 
-**Depends on:** 47
+**Depends on:** 42 (47 dropped). It runs beside phase 45 and keeps out of `src/drift/` until 45 is committed.
 
 **Why:** the post-tool-use hook costs about 24 CPU-s, 68% SHA-1 from repeated status reads of foreign worktrees; every read starts from nothing. Second Astra review, cut B.
 
@@ -1035,6 +1037,36 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 Step C's spec, when it is written, carries these two states and a test for each (showrunner, 2026-10-29):
 - **Bounded wait.** A request on a path that another worktree changed and the updater has not yet indexed waits a bounded few milliseconds for that update, then answers from the index. Test (under 1 s): change a file in a foreign worktree and check that path at once; the answer names the change, and the wait stays under its bound.
 - **Refresh required after lost events.** When the watcher loses events (restart, overflow, missing worktree), coverage for that worktree is unknown. A request that depends on it answers "refresh required" (a blocking result, never the "ledger unreadable" result that lets an edit through) until the updater takes a new baseline. Test (under 1 s): simulate an overflow, then check a path in that worktree; the answer is "refresh required", and after the rebaseline it is the normal answer.
+
+### Phase 51 — Main's CI passes the renamed-trunk refresh test on Linux  · status: done
+
+**Depends on:** 41
+
+**Why:** (showrunner, 2026-10-30) main's CI run 41138166229 on 55cd6b5c fails `renamed_trunk_refreshes_dispatch_before_next_prepared_update` (tests/gate.rs:3270) in the Linux Test Suite: "hook did not refresh after branch rename" with an empty hook context.
+
+**Work Order:** find the cause from the run's log and how long the test has failed; fix the cause without loosening an assert.
+
+**Cause:** phase 41 (04ec519b) gave the detached hook-context refresh a null stderr and its own process group. Before that, git's captured output waited for the inherited stderr to close, which made the refresh finish before `git branch -m` returned by accident. The test read the context at once, so it raced the refresh. The 19 main CI runs before 55cd6b5c passed it. The refresh stays detached: that is the product behavior.
+
+**Fix:** the test polls the hook context at the file's `POLL_INTERVAL` until it names the new trunk or `SCHEDULING_ALLOWANCE` ends. Every assertion stays, and the failure message now prints the context.
+
+**Verification:** the test passes on Linux in 0.13 s; the Mac was held by another unit, so the Mac CI job is its Mac check. `cargo-berth` lint passes.
+
+**Files:** `crates/cargo-berth/tests/gate.rs`
+
+### Phase 50 — A merged phase's reservations are released, so the reservation cap is never reached  · status: todo
+
+**Depends on:** 48
+
+**Why:** (showrunner, 2026-10-30) 100 of hana's 128 live reservations were stale phase reservations that were never released (Codex worker phases). At the 128 cap no new reservation can open.
+
+**Work Order:**
+1. When a phase's commit is integrated into its trunk, release that phase's reservations automatically; or give one command that releases every stale reservation whose work is integrated. Prefer the automatic path if it needs no new state.
+2. A reservation with unintegrated work is never released by this path.
+
+**Verification:** a red-first test (under 1 s): a phase reservation whose commit is merged into trunk is released without a release call; a stale reservation with unmerged work stays. `cargo-berth` lint and the related tests pass.
+
+**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
 
 ### Phase 49 — Four slow lifecycle and drift tests run in under a second each  · status: todo
 
