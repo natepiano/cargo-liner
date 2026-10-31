@@ -132,36 +132,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 ### Phase 2c — On macOS overlapping roots get one recursive watch  · status: done
 
-**Depends on:** Phase 2b
-
-#### Work Order
-
-**Goal:** with the `RecursiveRoot` backend (macOS), a configured root that another configured root covers gets no second recursive watch.
-
-**Source:** phase 2m contract review, finding F001 (minor). The showrunner moved it out of 2m on 2026-10-29: overlapping roots are a rare setup, and two recursive watches still cost far less than per-folder watches.
-
-**Constraints:**
-- Coverage follows successful subscriptions: `RegisteredRoots::covers()` (`roots.rs` ≈109) reads `dirs`, and recursive registration adds only paths it watched. Keep every configured root as a discovery boundary while removing duplicate watches, and add tests for both root orders that check the configured boundaries stay and that a failed parent registration still leaves the covered root watched.
-- From phase 2b: `RegisteredRoots` keeps a role map; `role()` and `event_role()` return `Subscription::{Unwatched, Watched(WatchedFolderRole)}`.
-- The invariant at `watcher/runtime.rs` ≈989 (its tests ≈1071) holds by construction: one notify watch per path; no `watch()` call lands on a path a recursive root covers.
-- Under `RecursiveRoot`, register a recursive watch only for each root that no other configured root covers, in any root order (`/r` then `/r/project`, and `/r/project` then `/r`, both give one watch on `/r`). Each configured root stays its own discovery root (`RegisteredRoots.dirs` unchanged); only the watch set changes.
-- `PerFolder` behaviour is unchanged.
-
-**Spec:**
-1. Covered-root removal in the `RecursiveRoot` registration plan (`roots.rs`, `registration_plan` / `register_watch_roots_with_skips`).
-2. **Tests, red first, each under one second:** both root orders give one registered path; the invariant test at `runtime.rs` ≈1071 also runs with `RecursiveRoot`.
-3. CHANGELOG: one line.
-
-**Files:**
-- `crates/cargo-port/src/watcher/roots.rs`
-- `crates/cargo-port/src/watcher/runtime.rs` — the invariant test; the cargo home resolved once and passed to registration (showrunner, 2026-10-31: the Mac tests read the real `~/.cargo`)
-- `crates/cargo-port/src/watcher/watch_registration_tests.rs`
-- `crates/cargo-port/src/watcher/cargo_home_watch_tests.rs`, `skip_alias_tests.rs`, `watch_role_tests.rs` — a test cargo home
-- `crates/cargo-port/CHANGELOG.md`
-
-**Workers:** 1 writer (`impl`), who also writes the tests.
-
-**Acceptance gate:** `verify.sh test cargo-port` (Mac) and `verify.sh lint cargo-port` clean; no test takes a second.
+**As-built:** under `RecursiveRoot` (macOS) the registration plan in `crates/cargo-port/src/watcher/roots.rs` adds a recursive watch only for a configured root that no other configured root covers, in either root order (checkpoint 95138542). Each configured root stays a discovery boundary (`record_recursive_boundary`); coverage reads only paths that were watched (`recursively_watches`), so a failed parent registration still leaves the covered root watched. `PerFolder` is unchanged. The watcher resolves the cargo home once (`resolve_cargo_home` → `CargoHome::{Directory, Unavailable}`) and passes it to registration, so the registration tests use a test home and do not read the developer's `~/.cargo`. The one-watch-per-path invariant test in `runtime.rs` runs for both backends.
 
 ### Phase 2h — mend keeps a re-export another package uses  · status: todo
 
