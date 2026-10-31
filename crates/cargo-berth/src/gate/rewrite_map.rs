@@ -35,7 +35,7 @@ impl RewriteCreatedCommits {
     pub(crate) fn branch_pairs(&self, pairs: &[RewriteMapPair]) -> Vec<RewriteMapPair> {
         pairs
             .iter()
-            .filter(|pair| self.contains(&pair.new))
+            .filter(|rewrite_map_pair| self.contains(&rewrite_map_pair.new))
             .cloned()
             .collect()
     }
@@ -78,7 +78,10 @@ pub(crate) fn map_phase_interval(
     created: &RewriteCreatedCommits,
 ) -> PhaseRewriteMapping {
     let phase_commits = old_phase_commits.iter().collect::<HashSet<_>>();
-    if !pairs.iter().any(|pair| phase_commits.contains(&pair.old)) {
+    if !pairs
+        .iter()
+        .any(|rewrite_map_pair| phase_commits.contains(&rewrite_map_pair.old))
+    {
         return PhaseRewriteMapping::Refused;
     }
     let mut destinations = HashSet::new();
@@ -105,7 +108,10 @@ pub(crate) fn map_phase_interval(
     let Some(mut base_index) = first_index.checked_sub(1) else {
         return PhaseRewriteMapping::Refused;
     };
-    let pair_destinations = pairs.iter().map(|pair| &pair.new).collect::<HashSet<_>>();
+    let pair_destinations = pairs
+        .iter()
+        .map(|rewrite_map_pair| &rewrite_map_pair.new)
+        .collect::<HashSet<_>>();
     while created.contains(&new_history[base_index])
         && !pair_destinations.contains(&new_history[base_index])
     {
@@ -294,7 +300,7 @@ mod tests {
                 })
             })
             .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
-        let actual = map_phase_interval(
+        let actual_phase_rewrite_mapping = map_phase_interval(
             &pairs,
             &commits(old)?,
             &commits(new)?,
@@ -309,7 +315,7 @@ mod tests {
             }),
             _ => PhaseRewriteMapping::Refused,
         };
-        assert_eq!(actual, expected, "{name}");
+        assert_eq!(actual_phase_rewrite_mapping, expected, "{name}");
         Ok(())
     }
 }

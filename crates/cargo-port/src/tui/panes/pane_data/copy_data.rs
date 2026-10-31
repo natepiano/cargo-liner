@@ -1,5 +1,4 @@
 pub(super) use tui_pane::sanitize_ansi_for_output;
-pub(super) use tui_pane::strip_ansi;
 
 use super::CiData;
 use super::CopyLabel;

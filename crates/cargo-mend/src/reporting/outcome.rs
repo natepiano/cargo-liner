@@ -19,25 +19,34 @@ pub(crate) enum PassEdits {
     Unchanged,
 }
 
+/// Whether this pass wrote `pub_use_outside_subtree` edits. Removing one link of a
+/// re-export chain turns the next link into a new finding, so a pass can make
+/// progress while the fixable count stays level.
+///
+/// `fix_scans.subtree_reexports` wins every overlap in `MendRunner::combined_fixes`,
+/// so its scanned fixes are the ones written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubtreeReexportEdits {
+    Written,
+    Unchanged,
+}
+
 #[derive(Debug)]
 pub(crate) struct ExecutionOutcome {
-    pub report:                   Report,
-    pub notice:                   Option<ExecutionNotice>,
-    pub check_duration:           Duration,
-    pub compiler_warnings:        usize,
-    pub compiler_fixable:         usize,
+    pub report:                 Report,
+    pub notice:                 Option<ExecutionNotice>,
+    pub check_duration:         Duration,
+    pub compiler_warnings:      usize,
+    pub compiler_fixable:       usize,
     /// Count of `pub use` fixes actually applied (zero in dry-run / read-only).
-    pub applied_pub_use:          usize,
-    /// Whether this pass wrote `pub_use_outside_subtree` edits. Removing one
-    /// link of a re-export chain turns the next link into a new finding, so a
-    /// pass can make progress while the fixable count stays level.
-    pub applied_subtree_reexport: bool,
+    pub applied_pub_use:        usize,
+    pub subtree_reexport_edits: SubtreeReexportEdits,
     /// Whether this pass wrote mend edits; a pass that wrote none leaves the
     /// tree the next pass would plan against unchanged.
-    pub pass_edits:               PassEdits,
+    pub pass_edits:             PassEdits,
     /// Post-apply validation's compiler-warning summary — `UnusedImportWarnings`
     /// signals that `cargo fix` should be chained to clean up the cascade.
-    pub compiler_warning_facts:   CompilerWarningFacts,
+    pub compiler_warning_facts: CompilerWarningFacts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
