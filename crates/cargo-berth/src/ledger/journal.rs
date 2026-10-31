@@ -1242,26 +1242,17 @@ impl ReservationScope {
         repository_path: &[u8],
         components_equal: impl Fn(&[u8], &[u8]) -> bool,
     ) -> bool {
-        let scope_path = self.path.to_string();
-        let scope_components = scope_path
-            .as_bytes()
-            .split(|byte| *byte == b'/')
-            .collect::<Vec<_>>();
-        let repository_components = repository_path
-            .split(|byte| *byte == b'/')
-            .collect::<Vec<_>>();
-        let prefix_matches = scope_components.len() <= repository_components.len()
-            && scope_components.iter().zip(&repository_components).all(
-                |(scope_component, repository_component)| {
-                    components_equal(scope_component, repository_component)
-                },
-            );
-        match self.kind {
-            ScopeKind::File => {
-                scope_components.len() == repository_components.len() && prefix_matches
-            },
-            ScopeKind::Tree => prefix_matches,
+        let mut scope_components = self.path.as_str().as_bytes().split(|byte| *byte == b'/');
+        let mut repository_components = repository_path.split(|byte| *byte == b'/');
+        for scope_component in &mut scope_components {
+            let Some(repository_component) = repository_components.next() else {
+                return false;
+            };
+            if !components_equal(scope_component, repository_component) {
+                return false;
+            }
         }
+        self.kind == ScopeKind::Tree || repository_components.next().is_none()
     }
 }
 

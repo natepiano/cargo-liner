@@ -2017,9 +2017,47 @@ impl RetainedReservationSet {
     }
 }
 
+/// Intersect holders through component keys, preserving the original overlap order.
+fn conflicts_overlapping_holders<'reservations>(
+    holders: &[ProtectedConflictHolder<'reservations>],
+    candidate: &ReservationScopeSet,
+    path_case: PathCase,
+    observed_at: &RecordedAt,
+) -> Vec<(&'reservations Reservation, ReservationConflict)> {
+    let candidate_keys = candidate
+        .as_slice()
+        .iter()
+        .map(|scope| scope.component_keys(path_case))
+        .collect::<Vec<_>>();
+    holders
+        .iter()
+        .filter_map(|holder| {
+            let protected = KeyedConflictProtection::new(
+                ProtectedConflictHolder {
+                    representative: holder.representative,
+                    scopes:         holder.scopes.clone(),
+                },
+                path_case,
+            );
+            let scopes = protected.overlapping_scopes(candidate, &candidate_keys);
+            let scopes = ReservationScopeSet::try_from(scopes).ok()?;
+            Some((
+                holder.representative,
+                ReservationConflict::for_overlap(
+                    holder.representative,
+                    protected.overlap_scope_revision,
+                    scopes.minimal_antichain(path_case),
+                    observed_at,
+                ),
+            ))
+        })
+        .collect()
+}
+
 /// Intersect each `ProtectedConflictHolder` from `protected_conflict_holders` with one candidate
 /// by comparing every held scope with every candidate scope.
-fn conflicts_overlapping_holders<'reservations>(
+#[cfg(test)]
+fn conflicts_overlapping_holders_by_scan<'reservations>(
     holders: &[ProtectedConflictHolder<'reservations>],
     candidate: &ReservationScopeSet,
     path_case: PathCase,
@@ -2101,10 +2139,12 @@ mod tests {
     use super::RetainedReservationSet;
     use super::WorktreeOccupancy;
     use super::conflicts_overlapping_holders;
+    use super::conflicts_overlapping_holders_by_scan;
     use crate::coordination_identity::CoordinationIdentityProvenance;
     use crate::coordination_identity::PresentedCoordinationRun;
     use crate::ids::CoordinationRunId;
     use crate::ids::GitObjectId;
+    use crate::ids::InvalidReservationScopePath;
     use crate::ids::ProjectionGeneration;
     use crate::ids::RecordedAt;
     use crate::ids::ReservationId;
@@ -2975,6 +3015,51 @@ mod tests {
     }
 
     #[test]
+    fn first_touch_overlap_indexes_unrelated_scope_paths() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let reservations =
+            RetainedReservationSet::replay(&[claim_event_for(RESERVATION_ID, "presented")?])?;
+        let held = ReservationScopeSet::try_from(
+            (0..128)
+                .map(|index| {
+                    Ok(ReservationScope {
+                        path: format!("held_{index}/file.rs").parse()?,
+                        kind: ScopeKind::File,
+                    })
+                })
+                .collect::<Result<Vec<_>, InvalidReservationScopePath>>()?,
+        )?;
+        let candidate = ReservationScopeSet::try_from(
+            (0..128)
+                .map(|index| {
+                    Ok(ReservationScope {
+                        path: format!("candidate_{index}/file.rs").parse()?,
+                        kind: ScopeKind::File,
+                    })
+                })
+                .collect::<Result<Vec<_>, InvalidReservationScopePath>>()?,
+        )?;
+        let holders = [ProtectedConflictHolder {
+            representative: reservations.reservation(RESERVATION_ID.parse()?)?,
+            scopes:         held,
+        }];
+        let work = crate::test_work::WorkCounter::start();
+        let conflicts = conflicts_overlapping_holders(
+            &holders,
+            &candidate,
+            PathCase::Sensitive,
+            &RecordedAt::now(),
+        );
+        let counts = work.finish();
+        assert_eq!(conflicts, Vec::new());
+        assert!(
+            counts.scope_comparisons <= 256,
+            "unrelated roots must not be compared: {counts:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn keyed_drift_coverage_matches_the_scope_scan() -> Result<(), Box<dyn std::error::Error>> {
         let mut events = Vec::new();
         for (index, id) in [
@@ -3103,13 +3188,13 @@ mod tests {
         holders: &[ProtectedConflictHolder<'_>],
         candidate: &ReservationScopeSet,
     ) {
-        let standing = conflicts_overlapping_holders(
+        let standing = conflicts_overlapping_holders_by_scan(
             &holders[2..],
             candidate,
             drift_coverage_probe.path_case,
             &drift_coverage_probe.observed_at,
         );
-        let foreign = conflicts_overlapping_holders(
+        let foreign = conflicts_overlapping_holders_by_scan(
             &holders[..2],
             candidate,
             drift_coverage_probe.path_case,

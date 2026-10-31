@@ -29,6 +29,7 @@ clipboard = ["crossterm/osc52"]
 default = ["clipboard"]
 
 [dependencies]
+ansi-to-tui = { workspace = true }
 # Save times on the attract favorites `backdrop` keeps in `favorites.toml`, and the time on each
 # entry `run_terminal` appends to an app's panic log.
 chrono             = { workspace = true }

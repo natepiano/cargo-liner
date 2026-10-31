@@ -90,19 +90,6 @@ fn resolve_package_title_for_package(app: &App, pkg: &Package) -> String {
     }
 }
 
-/// Format a download count with comma-separated thousands (e.g. `1,234,567`).
-fn format_downloads(count: u64) -> String {
-    let digits = count.to_string();
-    let mut result = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, ch) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            result.push(',');
-        }
-        result.push(ch);
-    }
-    result
-}
-
 /// Inner height (excluding the pane border) the Details and Git top row must
 /// reserve to show every project's content without clipping, measured across
 /// all projects. Sizing to the tallest project keeps the row height stable as
@@ -853,7 +840,7 @@ pub(super) fn build_crates_io_rows(section: &CratesIoSection) -> Vec<(&'static s
             if let Some(prerelease) = &release.prerelease {
                 rows.push((prerelease_label(prerelease), prerelease.clone()));
             }
-            rows.push(("downloads", format_downloads(release.downloads)));
+            rows.push(("downloads", tui_pane::format_number(release.downloads)));
             rows
         },
     }

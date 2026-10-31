@@ -49,24 +49,29 @@ pub(super) fn read(
             GitReadRequirement::HistoryOverrides,
         ));
     }
+    let object_id = gix::ObjectId::from_hex(target.to_string().as_bytes())
+        .map_err(|error| read::failure("read history object id", error))?;
+    let walk = repository
+        .rev_walk([object_id])
+        .all()
+        .map_err(|error| read::failure("prepare history walk", error))?;
     let mut parents = HashMap::new();
-    let mut pending = vec![target.clone()];
-    while let Some(id) = pending.pop() {
-        if parents.contains_key(&id) {
-            continue;
+    for commit in walk {
+        let commit = commit.map_err(|error| read::failure("read history parents", error))?;
+        #[cfg(test)]
+        if commit.generation.is_none() {
+            test_work::record(Work::HistoryObjectDecode);
         }
-        let object_id = gix::ObjectId::from_hex(id.to_string().as_bytes())
-            .map_err(|error| read::failure("read history object id", error))?;
-        let commit = repository
-            .find_commit(object_id)
-            .map_err(|error| read::failure("read history commit", error))?;
+        let id = commit
+            .id
+            .to_string()
+            .parse()
+            .map_err(GitError::InvalidObjectId)?;
         let links = commit
-            .decode()
-            .map_err(|error| read::failure("decode history commit", error))?
-            .parents()
+            .parent_ids
+            .iter()
             .map(|id| id.to_string().parse().map_err(GitError::InvalidObjectId))
             .collect::<Result<Vec<GitObjectId>, _>>()?;
-        pending.extend(links.iter().cloned());
         parents.insert(id, links);
     }
     Ok(RepositoryRead::InProcess(CommitHistory { target, parents }))
@@ -80,6 +85,26 @@ mod tests {
     use crate::git::fixture::PatchEquivalenceFixture;
     use crate::git::read::GitReadRequirement;
     use crate::git::read::RepositoryRead;
+
+    #[test]
+    fn history_walk_uses_existing_commit_graph_parent_links() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        fixture.write("second", "second commit\n")?;
+        fixture.commit("second")?;
+        fixture.git(&["commit-graph", "write", "--reachable"])?;
+        let work = crate::test_work::WorkCounter::start();
+        let RepositoryRead::InProcess(history) = read(fixture.root(), "HEAD")? else {
+            return Err("ordinary commit history should use the in-process walk".into());
+        };
+        let counts = work.finish();
+        assert!(history.parents.len() >= 2);
+        assert_eq!(
+            counts.history_object_decodes, 0,
+            "a stored commit graph already contains every parent link"
+        );
+        assert_git_history(&fixture)?;
+        Ok(())
+    }
 
     #[test]
     fn object_history_preserves_merge_parent_order_and_replacement_links() -> FixtureResult {

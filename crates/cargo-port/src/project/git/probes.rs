@@ -28,12 +28,15 @@ pub(super) fn finish_probe<T>(scoped_join_handle: ScopedJoinHandle<'_, T>) -> T 
 mod tests {
     use super::run_independent_probes;
 
+    const TEST_CALLER_POOL_THREADS: usize = 1;
+    const TEST_CALLER_POOL_CREATION_FAILURE: &str = "create probe caller pool";
+
     #[test]
     fn independent_git_probes_run_outside_the_callers_rayon_pool() {
         let thread_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(1)
+            .num_threads(TEST_CALLER_POOL_THREADS)
             .build()
-            .expect("create probe caller pool");
+            .expect(TEST_CALLER_POOL_CREATION_FAILURE);
         thread_pool.install(|| {
             assert!(rayon::current_thread_index().is_some());
             let (left, right) =

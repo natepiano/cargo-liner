@@ -4,10 +4,6 @@ pub(crate) enum ColorMode {
     Disabled,
 }
 
-impl ColorMode {
-    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutputFormat {
     Human,
