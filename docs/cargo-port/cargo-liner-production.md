@@ -33,7 +33,7 @@
 | handler-unit | docs/cargo-port/remove-running-section-handler-footer-colors.md | /home/natepiano/rust/cargo-liner-handler | remove-running-section-handler | — | crates/cargo-handler/, crates/tui_pane/ (pane/frame.rs, tiles/draw.rs, CHANGELOG; --before tile-fixes) |
 | berth-unit | docs/cargo-port/remove-running-section-berth-open.md (phases 49 and 50 not built; as-built folded) | /home/natepiano/rust/cargo-liner-berth | remove-running-section-berth | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
 | review-unit | (retired 2026-10-19, worktree removed) docs/cargo-port/remove-running-section-review.md | /home/natepiano/rust/cargo-liner-review | remove-running-section-review | — | — |
-| experiments-unit | `docs/experiments/as-built/framework-design.md` (as-built; plan done) | /home/natepiano/rust/cargo-liner-experiments | remove-running-section-experiments | — | docs/experiments/ |
+| experiments-unit | (retired 2026-10-31, worktree removed, session 64f6f84f-dd2f-45ea-b053-4d099680f45d) `docs/experiments/as-built/framework-design.md` (as-built; plan done) | /home/natepiano/rust/cargo-liner-experiments | remove-running-section-experiments | — | docs/experiments/ |
 | port-unit | docs/cargo-port/cargo-liner-port.md | /home/natepiano/rust/cargo-liner-port | cargo-liner-port | — | crates/cargo-port/, docs/cargo-port/ (port plans) |
 
 ## Hub files
