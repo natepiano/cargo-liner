@@ -130,7 +130,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **As-built:** `tui_pane` owns the mouse wheel over its framework overlays (checkpoint 27059d4c). `wheel_framework_overlay` (`crates/tui_pane/src/framework/wheel.rs`) scrolls the Settings, Keymap or GlobalShortcuts overlay under the pointer and returns `OverlayWheel`. Settings movement is one crate-private function in `app_settings/navigation.rs` that key navigation and the wheel both call; a host clears its own state first through `SettingsHost::before_settings_navigation`. cargo-port (`tui/input/dispatch.rs`) deleted its three overlay scroll arms and calls the function after it inverts the scroll; its remaining `FrameworkOverlayId` arms are close and key routing. Handler Phase 57 wires cargo-tile and cargo-handler to the function.
 
-### Phase 2c — On macOS overlapping roots get one recursive watch  · status: todo
+### Phase 2c — On macOS overlapping roots get one recursive watch  · status: done
 
 **Depends on:** Phase 2b
 
@@ -154,13 +154,104 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Files:**
 - `crates/cargo-port/src/watcher/roots.rs`
-- `crates/cargo-port/src/watcher/runtime.rs` — the invariant test only
+- `crates/cargo-port/src/watcher/runtime.rs` — the invariant test; the cargo home resolved once and passed to registration (showrunner, 2026-10-31: the Mac tests read the real `~/.cargo`)
 - `crates/cargo-port/src/watcher/watch_registration_tests.rs`
+- `crates/cargo-port/src/watcher/cargo_home_watch_tests.rs`, `skip_alias_tests.rs`, `watch_role_tests.rs` — a test cargo home
 - `crates/cargo-port/CHANGELOG.md`
 
 **Workers:** 1 writer (`impl`), who also writes the tests.
 
 **Acceptance gate:** `verify.sh test cargo-port` (Mac) and `verify.sh lint cargo-port` clean; no test takes a second.
+
+### Phase 2h — mend keeps a re-export another package uses  · status: todo
+
+**Why:** showrunner 2026-10-31, found during 2g. The subtree re-export planner groups facts and module mounts by crate root (`crates/cargo-mend/src/fixes/subtree_reexport/scan.rs` `resolved_crate_facts` ≈150, mount filter ≈165). When two packages mount one source with `#[path]` and both use a `pub use` in it, a fix planned for one package can delete the export that the other package still names. Same phase: two style nits left open in 2g.
+
+**Depends on:** Phase 2g (mount identity `SourceModuleMount`).
+
+#### Work Order
+
+**Goal:** a subtree re-export fix changes a shared source only when no other package's mount still needs the re-export it removes.
+
+**Constraints:**
+- Fix at the cause: the planner sees every mount of a physical source, across packages, before it removes or moves a re-export. Use 2g's `SourceModuleMount` as the one mount identity; no second mount type.
+- A source with one mount keeps today's behavior and output.
+- No new flag or option.
+
+**Spec:**
+1. For a source mounted by several packages, a re-export edit lands only when every mount that uses the re-export gets the same edit; otherwise mend keeps the re-export and reports it once as manual.
+2. F005: replace the bool accumulator `agreeing` in `resolve_visibility_proposals` (`compiler/persistence/visibility_constraint.rs`) with an enum that names the state.
+3. F006: import `PubUseNarrowingSite` in `visibility_edit_sources` instead of the full `super::schema::PubUseNarrowingSite` path.
+4. **Tests, red on main first, each under one second:** a fixture with two packages that `#[path]`-mount one source holding a `pub use`, where only one package's callers could be redirected; `mend --fix` keeps the re-export and both packages build.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/subtree_reexport/scan.rs`, `crate_files.rs`, `mod.rs` — mount grouping
+- `crates/cargo-mend/src/compiler/persistence/visibility_constraint.rs` — F005, F006
+- `crates/cargo-mend/tests/` — the fixture test
+- `crates/cargo-mend/CHANGELOG.md`
+
+**Workers:** 1 writer (`review` slot, the 2g writer), who also writes the tests.
+
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; the in-repo `mend --fix` step reports no new error.
+
+### Phase 2i — mend never writes the same import twice  · status: todo
+
+**Why:** showrunner 2026-10-31. `mend --fix` on hana's `crates/hana_metrics/src/reading/tests.rs`, which has many `use crate::test_support::<item>;` imports, wrote both `use crate::test_support;` and `use crate::test_support::{self};`. The compile failed with E0252 and mend rolled the fix back. Log: `/tmp/claude-1000/-home-natepiano-worktrees-claude-natedev-builds/51505394-82db-43d3-a528-136f4ee38d7a/scratchpad/mend_dup_import.log`. Cost: one lint wait per hit; nothing is blocked.
+
+**Depends on:** Phase 2g.
+
+#### Work Order
+
+**Goal:** the fixer cannot write an import that names something the module already imports.
+
+**Constraints:**
+- Fix at the cause, by type: the import edits for one module go through one owner that holds the module's import set, so a second spelling of the same name (`use a::b;`, `use a::b::{self};`) is one entry, not two lines. No text check after the fact.
+- Find which fix (or which pair of fixes) writes each line, and name it in the report.
+- Output for every other import shape stays the same.
+
+**Spec:**
+1. Any set of fixes that adds or rewrites imports in one module writes each imported name once.
+2. **Tests, red on main first, each under one second where rustc allows:** a fixture module with several `use crate::m::<item>;` imports that mend rewrites; `mend --fix` leaves exactly one import of `m` and the crate builds.
+3. CHANGELOG: one line.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/` — the import edit owner (the writer names the files)
+- `crates/cargo-mend/tests/` — the fixture test
+- `crates/cargo-mend/CHANGELOG.md`
+
+**Workers:** 1 writer (`review` slot, the mend writer), who also writes the tests.
+
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; the in-repo `mend --fix` step reports no new error.
+
+### Phase 2j — a mend cell keeps its progress bar after a diagnostic  · status: todo
+
+**Why:** showrunner 2026-10-31; the user asked why a cargo-tile mend cell shows no progress bar. Claim from the tile unit, not yet confirmed live: in Full mode the first forwarded diagnostic calls `progress.stop_for_forwarded_output()` (`src/compiler/build/stderr.rs:434`). That ends the progress state for the pass, so no counter reaches the capture log after it.
+
+**Depends on:** none (runs beside 2h and 2i; separate files).
+
+#### Work Order
+
+**Goal:** a forwarded diagnostic block prints between progress updates; the progress counter continues to the end of the pass.
+
+**Constraints:**
+- Confirm the cause with a live run first, before any edit: a real `cargo mend` pass on a crate that forwards at least one diagnostic, with stderr captured through a pseudo-terminal, and show where the counter stops. If the cause is a different one, report it and fix that one.
+- One owner writes to the progress line. A forwarded block goes through it like `write_status_notice` does: erase the line, print the block, redraw the spinner. Do not add a second writer of the terminal line.
+- No hard-coded configuration value.
+
+**Spec:**
+1. In Full mode, after a forwarded diagnostic, the counter continues; at the end of the pass the line is cleared once.
+2. **Tests, red on main first, each under one second:** change `forwarded_diagnostic_stops_progress_before_printing` to assert the new contract (the block prints, progress continues, a later counter update arrives). Name it in the commit message as an Assertion-Change.
+3. Live proof: a captured run shows counter updates after a forwarded diagnostic; the director proves it in a cargo-tile mend cell.
+4. CHANGELOG: one line.
+
+**Files:**
+- `crates/cargo-mend/src/compiler/build/progress.rs`
+- `crates/cargo-mend/src/compiler/build/stderr.rs`
+- `crates/cargo-mend/CHANGELOG.md` (phase 2h holds it; the director adds this line)
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; live counter after a diagnostic in a cargo-tile mend cell.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 

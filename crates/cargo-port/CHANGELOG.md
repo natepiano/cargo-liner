@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The settings, keymap and global shortcuts overlays scroll by the mouse wheel through `tui_pane`; modal capture and scroll inversion stay the same.
+- On macOS, reuse recursive watches for overlapping roots while preserving discovery boundaries and failed-parent fallback; resolve watcher Cargo home once and isolate registration tests from the developer's home.
 
 ### Fixed
 
