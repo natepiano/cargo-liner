@@ -57,7 +57,7 @@ impl App {
         origin: LintRunOrigin,
     ) {
         let status_kind = status.kind();
-        let Some(owner_path) = self.project_list.lint_owner_path(path) else {
+        let Some(owner_absolute_path) = self.project_list.lint_owner_path(path) else {
             tracing::warn!(
                 path = %path.display(),
                 status = ?status_kind,
@@ -70,7 +70,7 @@ impl App {
             self.sync_running_lint_toast();
             return;
         };
-        let owner_abs = owner_path;
+        let owner_abs = owner_absolute_path;
         // Include `LintStatus::Waiting` in `status_is_terminal`, so
         // `App::reload_lint_history` replaces the deferred run's `lint::LintRunStatus::Running`
         // history entry with its restored prior result.

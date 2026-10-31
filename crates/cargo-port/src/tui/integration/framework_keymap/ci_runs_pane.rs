@@ -38,8 +38,8 @@ impl Shortcuts<App> for CiRunsPane {
         }
     }
 
-    fn visibility(&self, action: CiRunsAction, ctx: &App) -> Visibility {
-        match action {
+    fn visibility(&self, ci_runs_action: CiRunsAction, ctx: &App) -> Visibility {
+        match ci_runs_action {
             CiRunsAction::Activate => ci_runs_activate_visibility(ctx),
             CiRunsAction::ShowBranch => ci_runs_show_branch_visibility(ctx),
             CiRunsAction::ShowAll => ci_runs_show_all_visibility(ctx),
@@ -51,11 +51,11 @@ impl Shortcuts<App> for CiRunsPane {
 }
 
 impl CopySelection<App> for CiRunsPane {
-    fn copy_selection(ctx: &App) -> CopySelectionResult {
-        let Some(ci) = ctx.ci.content() else {
+    fn copy_selection(app: &App) -> CopySelectionResult {
+        let Some(ci_data) = app.ci.content() else {
             return CopySelectionResult::Nothing;
         };
-        panes::copy_payload_for_ci(ci, ctx.ci.viewport.pos())
+        panes::copy_payload_for_ci(ci_data, app.ci.viewport.pos())
     }
 }
 
@@ -64,9 +64,9 @@ impl CopySelection<App> for CiRunsPane {
 /// `handle_ci_enter` path indexes `ci.content().runs.get(pos)`; an
 /// out-of-range cursor is a no-op. Hiding the slot (rather than
 /// disabling it) drops it from the bar entirely.
-pub(super) fn ci_runs_activate_visibility(ctx: &App) -> Visibility {
-    let run_count = ctx.ci.content().map_or(0, |data| data.runs.len());
-    if ctx.ci.viewport.pos() >= run_count {
+pub(super) fn ci_runs_activate_visibility(app: &App) -> Visibility {
+    let run_count = app.ci.content().map_or(0, |ci_data| ci_data.runs.len());
+    if app.ci.viewport.pos() >= run_count {
         Visibility::Hidden
     } else {
         Visibility::Visible
@@ -75,14 +75,14 @@ pub(super) fn ci_runs_activate_visibility(ctx: &App) -> Visibility {
 
 /// `ShowBranch` is visible only when the current project is in `All`
 /// mode (i.e., pressing it switches to the destination, `BranchOnly`).
-pub(super) fn ci_runs_show_branch_visibility(ctx: &App) -> Visibility {
-    ci_runs_destination_visibility(ctx, CiRunDisplayMode::All)
+pub(super) fn ci_runs_show_branch_visibility(app: &App) -> Visibility {
+    ci_runs_destination_visibility(app, CiRunDisplayMode::All)
 }
 
 /// `ShowAll` is visible only when the current project is in
 /// `BranchOnly` mode (i.e., pressing it switches to `All`).
-pub(super) fn ci_runs_show_all_visibility(ctx: &App) -> Visibility {
-    ci_runs_destination_visibility(ctx, CiRunDisplayMode::BranchOnly)
+pub(super) fn ci_runs_show_all_visibility(app: &App) -> Visibility {
+    ci_runs_destination_visibility(app, CiRunDisplayMode::BranchOnly)
 }
 
 /// Visible when the selected project's current mode is `current_mode`
@@ -92,17 +92,17 @@ pub(super) fn ci_runs_show_all_visibility(ctx: &App) -> Visibility {
 /// upstream, not the default): there's no branch-scoped run set to
 /// filter to, so the all/branch toggle doesn't apply.
 pub(super) fn ci_runs_destination_visibility(
-    ctx: &App,
+    app: &App,
     current_mode: CiRunDisplayMode,
 ) -> Visibility {
-    let Some(path) = ctx.project_list.selected_project_path() else {
+    let Some(path) = app.project_list.selected_project_path() else {
         return Visibility::Hidden;
     };
-    if !ctx.ci_toggle_available_for(path) {
+    if !app.ci_toggle_available_for(path) {
         return Visibility::Hidden;
     }
-    let owner = ctx.project_list.ci_branch_owner_path(path);
-    if ctx.ci.display_mode_for(owner.as_path()) == current_mode {
+    let absolute_path = app.project_list.ci_branch_owner_path(path);
+    if app.ci.display_mode_for(absolute_path.as_path()) == current_mode {
         Visibility::Visible
     } else {
         Visibility::Hidden

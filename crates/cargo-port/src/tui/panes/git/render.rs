@@ -14,6 +14,7 @@ use tui_pane::PaneSelectionState;
 use tui_pane::PaneTitleCount;
 use tui_pane::RuleTitle;
 use tui_pane::Viewport;
+use tui_pane::VisualRowSpan;
 use tui_pane::accent_color;
 use tui_pane::error_color;
 use tui_pane::inactive_border_color;
@@ -156,13 +157,7 @@ struct SectionRule {
 /// hitboxes at the correct screen rows after rendering.
 struct GitRenderLayout {
     scroll_offset: usize,
-    row_spans:     Vec<GitVisualRowSpan>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct GitVisualRowSpan {
-    pub start_y: usize,
-    pub height:  usize,
+    row_spans:     Vec<VisualRowSpan>,
 }
 
 /// Mutable accumulators threaded through the per-section builders.
@@ -170,7 +165,7 @@ struct SectionAccum<'a> {
     lines:               &'a mut Vec<Line<'static>>,
     focused_output_line: &'a mut usize,
     section_rules:       &'a mut Vec<SectionRule>,
-    row_spans:           &'a mut Vec<GitVisualRowSpan>,
+    row_spans:           &'a mut Vec<VisualRowSpan>,
 }
 
 fn render_git_column_inner(
@@ -195,7 +190,7 @@ fn render_git_column_inner(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut focused_output_line: usize = 0;
     let mut section_rules: Vec<SectionRule> = Vec::new();
-    let mut row_spans: Vec<GitVisualRowSpan> =
+    let mut row_spans: Vec<VisualRowSpan> =
         Vec::with_capacity(flat_len + pull_requests_len + remotes_len + worktrees_len);
 
     let mut accum = SectionAccum {
@@ -288,7 +283,7 @@ fn append_remotes_section(
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, remote) in ctx.data.remotes.listed().iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + pull_requests_len + i;
-        accum.row_spans.push(GitVisualRowSpan {
+        accum.row_spans.push(VisualRowSpan {
             start_y: accum.lines.len(),
             height:  1,
         });
@@ -357,9 +352,7 @@ fn append_pull_requests_section(
             selection,
             ctx.animation_elapsed,
         ));
-        accum
-            .row_spans
-            .push(GitVisualRowSpan { start_y, height: 1 });
+        accum.row_spans.push(VisualRowSpan { start_y, height: 1 });
     }
     if matches!(
         section.completeness,
@@ -595,7 +588,7 @@ fn append_worktrees_section(
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, wt) in ctx.data.worktrees.iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + pull_requests_len + remotes_len + i;
-        accum.row_spans.push(GitVisualRowSpan {
+        accum.row_spans.push(VisualRowSpan {
             start_y: accum.lines.len(),
             height:  1,
         });
@@ -835,7 +828,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
     } = *args;
     for (i, field) in fields.iter().enumerate() {
         let row_index = row_offset + i;
-        accum.row_spans.push(GitVisualRowSpan {
+        accum.row_spans.push(VisualRowSpan {
             start_y: accum.lines.len(),
             height:  1,
         });

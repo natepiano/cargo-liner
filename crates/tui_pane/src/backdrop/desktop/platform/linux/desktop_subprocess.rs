@@ -140,6 +140,13 @@ impl DesktopProcess for DesktopSubprocess {
 mod tests {
     use super::*;
 
+    const TEST_READ_FAILURE: &str = "read failed";
+    const TEST_TERMINAL_STDOUT: &[u8] = b"{terminal-uuid}\n";
+    const TEST_ALREADY_EXITED_FAILURE: &str = "already exited";
+    const TEST_PROCESS_POLL: &str = "poll";
+    const TEST_PROCESS_KILL: &str = "kill";
+    const TEST_PROCESS_REAP: &str = "reap";
+
     /// A subprocess whose completion, read error, and cleanup can be checked without spawning.
     struct ScriptedDesktopProcess {
         completion:  io::Result<ControlFlow<Vec<u8>>>,
@@ -149,24 +156,24 @@ mod tests {
 
     impl DesktopProcess for ScriptedDesktopProcess {
         fn try_read(&mut self) -> io::Result<ControlFlow<Vec<u8>>> {
-            self.calls.push("poll");
+            self.calls.push(TEST_PROCESS_POLL);
             std::mem::replace(&mut self.completion, Ok(ControlFlow::Continue(())))
         }
 
         fn kill(&mut self) -> io::Result<()> {
-            self.calls.push("kill");
+            self.calls.push(TEST_PROCESS_KILL);
             std::mem::replace(&mut self.kill_result, Ok(()))
         }
 
         fn reap(&mut self) -> io::Result<()> {
-            self.calls.push("reap");
+            self.calls.push(TEST_PROCESS_REAP);
             Ok(())
         }
     }
 
     #[test]
     fn desktop_deadline_kills_and_reaps_even_when_kill_fails() {
-        for kill_result in [Ok(()), Err(io::Error::other("already exited"))] {
+        for kill_result in [Ok(()), Err(io::Error::other(TEST_ALREADY_EXITED_FAILURE))] {
             let mut process = ScriptedDesktopProcess {
                 completion: Ok(ControlFlow::Continue(())),
                 calls: Vec::new(),
@@ -178,34 +185,40 @@ mod tests {
                 wait_for_desktop_read(deadline, delay)
             });
             assert_eq!(result, Err(DesktopReadFailure::Expired));
-            assert_eq!(process.calls, vec!["poll", "kill", "reap"]);
+            assert_eq!(
+                process.calls,
+                vec![TEST_PROCESS_POLL, TEST_PROCESS_KILL, TEST_PROCESS_REAP]
+            );
         }
     }
 
     #[test]
     fn failed_desktop_read_kills_and_reaps_before_returning() {
         let mut process = ScriptedDesktopProcess {
-            completion:  Err(io::Error::other("read failed")),
+            completion:  Err(io::Error::other(TEST_READ_FAILURE)),
             calls:       Vec::new(),
             kill_result: Ok(()),
         };
         let result = read_desktop_process(&mut process, |_| ControlFlow::Break(()));
         assert_eq!(
             result,
-            Err(DesktopReadFailure::Failed("read failed".to_owned()))
+            Err(DesktopReadFailure::Failed(TEST_READ_FAILURE.to_owned()))
         );
-        assert_eq!(process.calls, vec!["poll", "kill", "reap"]);
+        assert_eq!(
+            process.calls,
+            vec![TEST_PROCESS_POLL, TEST_PROCESS_KILL, TEST_PROCESS_REAP]
+        );
     }
 
     #[test]
     fn completed_desktop_read_returns_stdout_without_termination() {
         let mut process = ScriptedDesktopProcess {
-            completion:  Ok(ControlFlow::Break(b"{terminal-uuid}\n".to_vec())),
+            completion:  Ok(ControlFlow::Break(TEST_TERMINAL_STDOUT.to_vec())),
             calls:       Vec::new(),
             kill_result: Ok(()),
         };
         let result = read_desktop_process(&mut process, |_| ControlFlow::Break(()));
-        assert_eq!(result, Ok(b"{terminal-uuid}\n".to_vec()));
-        assert_eq!(process.calls, vec!["poll"]);
+        assert_eq!(result, Ok(TEST_TERMINAL_STDOUT.to_vec()));
+        assert_eq!(process.calls, vec![TEST_PROCESS_POLL]);
     }
 }

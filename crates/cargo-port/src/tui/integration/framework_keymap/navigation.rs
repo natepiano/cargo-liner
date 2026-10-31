@@ -48,8 +48,8 @@ impl Globals<App> for AppGlobalAction {
     fn dispatcher() -> fn(Self::Actions, &mut App) { dispatch_app_global }
 }
 
-pub(super) fn dispatch_app_global(action: AppGlobalAction, app: &mut App) {
-    match action {
+pub(super) fn dispatch_app_global(app_global_action: AppGlobalAction, app: &mut App) {
+    match app_global_action {
         AppGlobalAction::Copy => app.copy_focused_selection(),
         AppGlobalAction::Find => input::open_finder(app),
         AppGlobalAction::OpenEditor => input::open_in_editor(app),

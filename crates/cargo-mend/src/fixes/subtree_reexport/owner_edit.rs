@@ -20,6 +20,8 @@ use super::local_use::GlobReach;
 use super::local_use::LocalUse;
 use crate::fixes::constants::CFG_TEST_ATTRIBUTE;
 use crate::fixes::facade_redirect;
+use crate::fixes::facade_redirect::IdentifierUse;
+use crate::fixes::facade_redirect::LeafRetention;
 use crate::fixes::facade_redirect::SourceLines;
 use crate::fixes::imports::UseFix;
 use crate::fixes::visibility_annotation_site;
@@ -254,10 +256,13 @@ fn edit_region(
         let mut used_leaves = Vec::new();
         for found in group.facts() {
             let name = &found.fact.exported_name;
-            let local_use =
-                if facade_redirect::word_occurs_outside(source, excluded.iter().cloned(), name) {
-                    LocalUse::Always
-                } else {
+            let local_use = match facade_redirect::word_occurs_outside(
+                source,
+                excluded.iter().cloned(),
+                name,
+            ) {
+                IdentifierUse::Present | IdentifierUse::Unparseable => LocalUse::Always,
+                IdentifierUse::Absent => {
                     let reach = GlobReach { owner, name };
                     let inline = reach.items_reach(source, lines, region_items, owner)?;
                     if inline == LocalUse::Always {
@@ -265,7 +270,8 @@ fn edit_region(
                     } else {
                         inline.max(reach.files_reach(owner_crate, file)?)
                     }
-                };
+                },
+            };
             let local_use = match local_use {
                 LocalUse::Unused => continue,
                 LocalUse::TestOnly => RequiredLocalUse::TestOnly,
@@ -295,25 +301,34 @@ fn edit_region(
     }
     Ok(rewrites
         .into_iter()
-        .map(|rewrite| match rewrite {
-            ItemRewrite::Delete { range } => facade_redirect::line_deletion(file, source, range),
-            ItemRewrite::Replace { range, first, rest } => {
-                let separator = format!("\n{}", lines.indent_before(range.start));
-                let mut replacement = first;
-                for piece in rest {
-                    replacement.push_str(&separator);
-                    replacement.push_str(&piece);
-                }
-                UseFix {
-                    path: file.to_path_buf(),
-                    start: range.start,
-                    end: range.end,
-                    replacement,
-                    import_group: None,
-                }
-            },
-        })
+        .map(|rewrite| fix_for_rewrite(file, source, lines, rewrite))
         .collect())
+}
+
+fn fix_for_rewrite(
+    file: &Path,
+    source: &str,
+    lines: &SourceLines<'_>,
+    rewrite: ItemRewrite,
+) -> UseFix {
+    match rewrite {
+        ItemRewrite::Delete { range } => facade_redirect::line_deletion(file, source, range),
+        ItemRewrite::Replace { range, first, rest } => {
+            let separator = format!("\n{}", lines.indent_before(range.start));
+            let mut replacement = first;
+            for piece in rest {
+                replacement.push_str(&separator);
+                replacement.push_str(&piece);
+            }
+            UseFix {
+                path: file.to_path_buf(),
+                start: range.start,
+                end: range.end,
+                replacement,
+                import_group: None,
+            }
+        },
+    }
 }
 
 /// The `use` item without the facts' leaves, followed by a private `use` of
@@ -332,7 +347,11 @@ fn rewrite_item(
         .map(|found| written_segments(&found.fact.written_path))
         .collect::<Vec<_>>();
     let kept = facade_redirect::remove_use_leaves(Vec::new(), &item_use.tree, &|prefix, ident| {
-        removed.contains(&leaf_segments(prefix, ident))
+        if removed.contains(&leaf_segments(prefix, ident)) {
+            LeafRetention::Remove
+        } else {
+            LeafRetention::Keep
+        }
     });
     let tree_start = SourceLines::offset(lines.position(item_use.tree.span().start())?);
     let attributes_position = match &item_use.vis {

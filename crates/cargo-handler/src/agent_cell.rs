@@ -60,6 +60,7 @@ use crate::constants::NOTHING_RUNNING_NOTE;
 use crate::constants::PID_LABEL;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
+use crate::constants::TIMER_ROLE;
 use crate::constants::TREE_ACCOUNT_HEADER;
 use crate::constants::TREE_AGE_HEADER;
 use crate::constants::TREE_BRANCH;
@@ -213,9 +214,34 @@ impl Branch {
 /// The three kinds of work retained as tree lines.
 #[derive(Clone, Copy, Debug)]
 enum WorkKind<'a> {
-    Shell,
+    Shell(ShellPurpose),
     Subagent(&'a SubagentRole),
     Thread,
+}
+
+/// The shell's role, resolved from its census timer observation.
+#[derive(Clone, Copy, Debug)]
+enum ShellPurpose {
+    Timer,
+    Command,
+}
+
+impl From<&ShellTimerObservation> for ShellPurpose {
+    fn from(observation: &ShellTimerObservation) -> Self {
+        match observation {
+            ShellTimerObservation::ObservedCountdown(_) => Self::Timer,
+            ShellTimerObservation::Untimed => Self::Command,
+        }
+    }
+}
+
+impl ShellPurpose {
+    const fn role_text(self) -> &'static str {
+        match self {
+            Self::Timer => TIMER_ROLE,
+            Self::Command => "",
+        }
+    }
 }
 
 /// A positive countdown resolved at the frame's clock boundary.
@@ -276,7 +302,7 @@ impl<'a> Work<'a> {
     const fn account(self, parent: &'a Account) -> &'a Account {
         match (self.kind, &self.child.account) {
             (WorkKind::Thread, _) | (_, Account::Home(_)) => &self.child.account,
-            (WorkKind::Shell | WorkKind::Subagent(_), Account::Unrecorded) => parent,
+            (WorkKind::Shell(_) | WorkKind::Subagent(_), Account::Unrecorded) => parent,
         }
     }
 }
@@ -288,10 +314,12 @@ enum ChildLine<'a> {
     Session,
 }
 
-impl<'a> From<&'a ChildKind> for ChildLine<'a> {
-    fn from(kind: &'a ChildKind) -> Self {
-        match kind {
-            ChildKind::Shell(_) => Self::Work(WorkKind::Shell),
+impl<'a> From<&'a ChildRow> for ChildLine<'a> {
+    fn from(child: &'a ChildRow) -> Self {
+        match &child.kind {
+            ChildKind::Shell(observation) => {
+                Self::Work(WorkKind::Shell(ShellPurpose::from(observation)))
+            },
             ChildKind::Subagent(role) => Self::Work(WorkKind::Subagent(role)),
             ChildKind::Thread => Self::Work(WorkKind::Thread),
             ChildKind::Direct(_) | ChildKind::UnderShell(_) | ChildKind::Detached(_) => {
@@ -410,8 +438,8 @@ enum LineKind<'a> {
     Session(RoleLabel),
     /// A Codex worker resolved from hierarchy, roster, then seat tokens.
     Worker(WorkerRoleSource),
-    /// An ordinary shell keeps plain text and a missing role.
-    Shell,
+    /// A shell keeps its text style and shows its command's purpose.
+    Shell(ShellPurpose),
     /// A subagent carries its own semantic responsibility.
     Subagent(&'a SubagentRole),
 }
@@ -1149,7 +1177,7 @@ impl TreeLine<'_> {
             LineSubject::Agent(_)
             | LineSubject::UnassignedSession
             | LineSubject::Work(Work {
-                kind: WorkKind::Shell | WorkKind::Subagent(_),
+                kind: WorkKind::Shell(_) | WorkKind::Subagent(_),
                 ..
             }) => self.row.agent,
             LineSubject::ManagedThread(_, _)
@@ -1196,9 +1224,9 @@ impl TreeLine<'_> {
                 self.dispatch_label,
             ))),
             LineSubject::Work(Work {
-                kind: WorkKind::Shell,
+                kind: WorkKind::Shell(purpose),
                 ..
-            }) => LineKind::Shell,
+            }) => LineKind::Shell(purpose),
             LineSubject::Work(Work {
                 kind: WorkKind::Subagent(role),
                 ..
@@ -1210,7 +1238,8 @@ impl TreeLine<'_> {
     fn role_text(&self) -> &str {
         match self.kind() {
             LineKind::Worker(source) => source.text(),
-            LineKind::UnassignedSession | LineKind::Shell => "",
+            LineKind::UnassignedSession => "",
+            LineKind::Shell(purpose) => purpose.role_text(),
             LineKind::Session(role) => role.column_text(),
             LineKind::Subagent(role) => role.text(),
         }
@@ -1219,7 +1248,7 @@ impl TreeLine<'_> {
     /// Every Codex worker inherits its parent session's hue.
     fn name_style(&self) -> Style {
         match self.kind() {
-            LineKind::Shell | LineKind::Subagent(_) => Style::default().fg(text_default()),
+            LineKind::Shell(_) | LineKind::Subagent(_) => Style::default().fg(text_default()),
             LineKind::UnassignedSession | LineKind::Session(_) | LineKind::Worker(_) => {
                 Role::Session(self.hue).style()
             },
@@ -1261,7 +1290,7 @@ impl TreeLine<'_> {
             TreeColumn::Role => self.role_text().to_string(),
             TreeColumn::Type => match self.subject {
                 LineSubject::Work(Work {
-                    kind: WorkKind::Shell,
+                    kind: WorkKind::Shell(_),
                     ..
                 }) => "shell",
                 LineSubject::Work(Work {
@@ -1300,7 +1329,7 @@ impl TreeLine<'_> {
         }
     }
 
-    /// Text written into a tree cell, including the shared unit slots.
+    /// Text written into a tree cell, with the shared age width.
     fn cell_text(&self, column: TreeColumn, now: u64, ages: &AgeLayout) -> String {
         match column {
             TreeColumn::Age => ages.format(now.saturating_sub(self.started())),
@@ -1331,7 +1360,7 @@ impl TreeLine<'_> {
             ),
             LineSubject::Work(Work {
                 child,
-                kind: WorkKind::Shell,
+                kind: WorkKind::Shell(_),
             }) => {
                 let state = ShellState::resolve(
                     match child.kind {
@@ -1364,7 +1393,7 @@ impl TreeLine<'_> {
             LineKind::UnassignedSession
             | LineKind::Session(RoleLabel::Unlabeled | RoleLabel::ReviewFallback)
             | LineKind::Worker(_)
-            | LineKind::Shell => FooterTint::Plain,
+            | LineKind::Shell(_) => FooterTint::Plain,
             LineKind::Subagent(role) => colors.named_role(role.text()),
         }
     }
@@ -1396,7 +1425,7 @@ fn work_branches<'a>(
             .find(|&next| children[next].depth <= child.depth)
             .unwrap_or(children.len());
         let descendants = || work_branches(&children[index + 1..end], claimed, offset + index + 1);
-        match ChildLine::from(&child.kind) {
+        match ChildLine::from(child) {
             ChildLine::Session => {},
             ChildLine::Carrier => branches.extend(descendants()),
             ChildLine::Work(kind) => {
@@ -3250,17 +3279,17 @@ mod tests {
         assert_eq!(
             lines(&buffer),
             [
-                " pid 3266367 · claude · thinking · 23h · natedev · berth_fix",
+                " pid 3266367 · claude · thinking · 23:00 · natedev · berth_fix",
                 " ~/rust/tool-based-ui-trunk",
                 " launched by boss of bosses",
-                "    session                                                                                                                                      type      role    status     age ▼",
-                " ├─ Launch the Phase 1 implementation seat                                                                                                       shell             running  12m",
-                " │  └─ tool-based-ui-trunk-impl                                                                                                                            worker  idle     11m",
-                " └─ Review the permission queue                                                                                                                  subagent          idle      5m  3s",
-                "    └─ cargo nextest run -p hana_video --no-fail-fast -- permission_queue                                                                        shell             running      45s",
+                "    session                                                                                                                                        type      role    status   age ▼",
+                " ├─ Launch the Phase 1 implementation seat                                                                                                         shell             running     12",
+                " │  └─ tool-based-ui-trunk-impl                                                                                                                              worker  idle        11",
+                " └─ Review the permission queue                                                                                                                    subagent          idle         5",
+                "    └─ cargo nextest run -p hana_video --no-fail-fast -- permission_queue                                                                          shell             running      0",
             ]
         );
-        let heading = " pid 3266367 · claude · thinking · 23h · natedev · berth_fix";
+        let heading = " pid 3266367 · claude · thinking · 23:00 · natedev · berth_fix";
         for (index, character) in heading.chars().enumerate() {
             if character == '·' {
                 assert_eq!(
@@ -3312,7 +3341,7 @@ mod tests {
         assert_eq!(
             lines(&drawn(&arrange, None, WIDE)),
             [
-                " pid 3337048 · claude · thinking · 2h · natedev · —",
+                " pid 3337048 · claude · thinking · 2:00 · natedev · —",
                 " ~/rust/tool-based-ui-arrange",
                 " launched by pid 1579022",
                 " nothing running",
@@ -3360,7 +3389,7 @@ mod tests {
         assert_eq!(
             lines(&whole),
             [
-                " pid 1579022 · claude · thinking · 2d · natedev · —",
+                " pid 1579022 · claude · thinking · 2:00:00 · natedev · —",
                 " ~/rust/boss of bosses",
                 " nothing running",
             ]
@@ -3869,7 +3898,7 @@ mod tests {
     /// A narrow cell, where its header's line would be cut, draws its
     /// compressed view even given every row its full view takes at a
     /// wide width. It keeps whole role and status words, drops age when its
-    /// shared unit slots do not fit, and restores age as soon as they fit.
+    /// age labels do not fit, and restores age as soon as they fit.
     #[test]
     fn a_narrow_cell_compresses_however_many_rows_it_has() {
         let state = boss_group();
@@ -3878,14 +3907,14 @@ mod tests {
         let buffer = drawn_into(
             boss,
             &cells,
-            NARROW,
+            34,
             height(boss, 160, NOW, AccountColumn::Hidden),
         );
         let rendered = lines(&buffer);
         assert!(find(&buffer, "directory").is_none());
         assert!(!rendered[0].contains("pid"));
-        // The 36-cell table needs 38 cells for session (7), role (7),
-        // thinking (8), shared age slots (10) and three two-cell gaps.
+        // The table needs 33 cells for session (7), role (7),
+        // thinking (8), age (5) and three two-cell gaps.
         assert!(!rendered[0].contains("age"), "{rendered:?}");
         assert!(rendered[0].contains("session"), "{rendered:?}");
         assert!(rendered[0].contains("role"), "{rendered:?}");
@@ -3897,7 +3926,7 @@ mod tests {
         let restored = lines(&drawn_into(
             boss,
             &cells,
-            NARROW + 2,
+            35,
             usize::from(buffer.area.height),
         ));
         assert!(restored[0].contains("age"), "{restored:?}");
@@ -3988,21 +4017,21 @@ mod tests {
         assert_eq!(
             CellView::at_width(
                 &entry(&trunk, Some("boss of bosses")),
-                NARROW,
+                NARROW + 2,
                 NOW,
                 AccountColumn::Hidden
             ),
             CellView::Compressed
         );
 
-        let buffer = drawn(&trunk, Some("boss of bosses"), NARROW);
+        let buffer = drawn(&trunk, Some("boss of bosses"), NARROW + 2);
 
         let mark = TRUNCATION_MARK;
         assert_eq!(
             lines(&buffer)[..3],
             [
-                " pid 3266367 · claude · thinking · 23h".to_string(),
-                format!(" ~/rust/tool-based-ui-geometry-materi{mark}"),
+                " pid 3266367 · claude · thinking · 23:00".to_string(),
+                format!(" ~/rust/tool-based-ui-geometry-material{mark}"),
                 " launched by boss of bosses".to_string(),
             ]
         );
@@ -4014,9 +4043,9 @@ mod tests {
     fn launched_heading_keeps_partial_location_and_omits_a_location_without_text() {
         let trunk = trunk();
         for (width, expected) in [
-            (NARROW, " pid 3266367 · claude · thinking · 23h"),
-            (42, " pid 3266367 · claude · thinking · 23h"),
-            (43, " pid 3266367 · claude · thinking · 23h · n…"),
+            (NARROW + 2, " pid 3266367 · claude · thinking · 23:00"),
+            (44, " pid 3266367 · claude · thinking · 23:00"),
+            (45, " pid 3266367 · claude · thinking · 23:00 · n…"),
         ] {
             let buffer = drawn(&trunk, Some("boss of bosses"), width);
             assert_eq!(lines(&buffer)[0], expected, "heading at {width} cells");

@@ -17,7 +17,7 @@ use crate::project::AbsolutePath;
 use crate::scan::BackgroundMsg;
 use crate::test_support;
 use crate::watcher::ProjectEntry;
-use crate::watcher::repair_test_support;
+use crate::watcher::watch_test_support;
 
 #[test]
 fn target_symlink_artifacts_reach_polled_project_size() -> Result<(), Box<dyn Error>> {
@@ -31,7 +31,7 @@ fn target_symlink_artifacts_reach_polled_project_size() -> Result<(), Box<dyn Er
     let target = AbsolutePath::from(project.join("target"));
     symlink(&artifacts, &target)?;
     let (sender, receiver) = channel::unbounded();
-    let dispatch = repair_test_support::target_metadata(sender.clone(), project.clone(), target);
+    let dispatch = watch_test_support::target_metadata(sender.clone(), project.clone(), target);
     let projects = HashMap::from([(
         project.clone(),
         ProjectEntry {
@@ -76,7 +76,7 @@ fn target_symlink_to_in_tree_artifacts_is_counted_once() -> Result<(), Box<dyn E
     symlink(&artifacts, &target)?;
     let (sender, receiver) = channel::unbounded();
     drop(receiver);
-    let dispatch = repair_test_support::target_metadata(sender, project.clone(), target);
+    let dispatch = watch_test_support::target_metadata(sender, project.clone(), target);
     assert_eq!(
         project_disk_bytes(&project, &disk_probe_scope(&dispatch, &project)),
         4096

@@ -1367,13 +1367,113 @@ Port of the approved capture shim cost work (one process per call apart from car
 
 Port of the summary-arguments rule and the nextest header ANSI handling onto main. Work order: phases/35m/implementation_prompt.md.
 
-### Phase 36m — Directory header rule on main  · status: todo
+### Phase 36m — Directory header rule on main  · status: done
 
 Port of the directory header rule (whole path; GUID middle cut; middle cut; last folder whole) onto main's render.rs. Work order: phases/36m/implementation_prompt.md.
 
-### Phase 38 — A new cell's text starts near its final color  · status: todo
+### Phase 41 — The exec census test finds its program on PATH  · status: done
+
+Showrunner request (2026-10-29): the 36m merge tree fails `census::scan::refresh_worker_tests::a_shell_execing_cargo_enters_the_retained_discoverys_census` on natedev with ENOENT, because the test copies `/bin/cat` and NixOS has no `/bin/cat`. The test finds its program on PATH, with no absolute tool path, and passes on natedev and on the Mac. Work order: phases/41/implementation_prompt.md.
+
+### Phase 43 — The reader uses less CPU under load  · status: todo
+
+**Depends on:** Phase 32m
+
+Showrunner request (2026-10-29): the installed reader (main 043dc8c6, phase 32m's CPU fix) uses 63.2% of one core on natedev at load 124 in a 393×89 pty (15 s warmup, then 60 s). The reader before 32m used 59.7%. A restart does not help. This phase profiles the reader under load, then cuts the largest costs. It goes ahead of phases 30m, 35m and 39.
+
+#### Work Order
+
+**Goal:** the reader's CPU under load is at most half of today's number, with the same screen.
+
+**Spec:**
+1. **Profile first.** Run the reader built from the base commit under load on natedev with the session's pty probe (phases/43/cpu_probe.py: 393×89, 15 s warmup, then 60 s) and a sampling profiler (`perf record -g` or `samply`). Write the top costs, each with its share of the reader's CPU and its call path, to phases/43/profile_base.md before any code change.
+2. **Cut the largest costs.** Remove work that repeats with no change in its inputs: for example, a full redraw, layout or census pass when nothing changed since the last frame, or a refresh that reads data the screen does not show. Each cut keeps its rule in the types (a frame or scan that knows it has no new input cannot do the work), never a procedural flag check scattered over call sites.
+3. **Same screen.** The drawn frames do not change: main's layout, colors, fades and deadlines stay as they are.
+4. Profile again after the cuts with the same probe and profiler. Write phases/43/profile_cut.md with the same table.
+
+**Files:** decided by the profile. The likely set is in the reader's frame and census paths: `crates/cargo-tile/src/render.rs`, `roster.rs`, `terminal.rs`, `main.rs`, `census/scan.rs`, `census/cpu_observation.rs`. Name the final set in the done post.
+
+**Seats:** 1 writer (`impl`).
+
+**Constraints from prior phases:** work in the isolated copy /tmp/claude/scratch/phase-tile-unit-43-5qlvls/src (git; base commit 2e0cc5a = branch commit 1e066ba6). Every assertion on main stays. No test of 1 s or more. No new allow or expect.
+
+**Acceptance gate:**
+- On natedev, the probe run back to back with the base build, under the same load: the cut build's CPU is at most half of the base build's.
+- New logic has tests, red on the base first, each under 1 s.
+- `cargo nextest run -p cargo-tile -p tui_pane`, workspace clippy with `-D warnings`, and `cargo +nightly fmt --check` green (natedev, `verify.sh` with `--local` while the Mac is blocked; the Mac after 00:05).
+- A live capture against main shows the same layout.
+
+### Phase 38 — A new cell's text starts near its final color  · status: done
 
 User report (2026-10-29, via the showrunner): a new cell's text fades in from black and then goes away so fast that it cannot be read. The first frame of a new cell's text is drawn near its final color, not near the ground. Exact-color test red on main first. Work order: phases/38/implementation_prompt.md.
+
+### Phase 39 — The mem value counts every compile's memory  · status: todo
+
+User (2026-10-29, via builds and the showrunner): "yes cargo-tile should strive to be more accurate for us". Showrunner Work Order: cargo-tile's mem value counts a compile's memory in every case. Today `detached_compilers` (census/scan.rs:1899-1935) drops a rustc under sccache in four cases, and never counts the sccache server.
+
+**Spec:**
+1. Two live cargos share one target directory: the rustc goes to the cargo whose invocation owns it (its parent chain or its sccache client), never dropped as `Ambiguous`.
+2. No target directory known yet, 3. no `--out-dir`, 4. no uid: each gets a defined owner rule or a shown "unattributed" share, never a silent loss.
+5. The sccache server's own memory is counted once, as a shared row.
+6. Types make each owner state explicit (an enum, no fallthrough).
+
+**Acceptance:** tests red on main first, each under 1 s; a live check on natedev with two cargos on one target directory, where each cargo's mem includes its own rustc memory and the totals match the processes' RSS.
+
+**Files:** `crates/cargo-tile/src/census/scan.rs`, `crates/cargo-tile/src/census/invocation_cpu_accounting.rs`, the census memory tests, and `render.rs` only if a shared or unattributed row needs drawing.
+
+#### Work Order
+
+**Goal:** every byte of resident memory that a compile uses is counted in exactly one place on screen: the cargo that asked for it, a shared compiler-cache row, or a shown unattributed share. Nothing is dropped silently.
+
+**Spec:**
+
+1. **Owner by request, not by directory.** A rustc that the sccache server runs is detached from its cargo's process tree. Its owner is the cargo whose tree holds the sccache client that asked for this compile: the client's arguments carry the rustc command line, so the rustc's arguments (without the program) equal the client's arguments after its rustc path. Exactly one matching client gives the owner, also when two live cargos share one target directory. The `--out-dir` under a target directory rule stays only as the second rule, when no client matches.
+2. **One enum for the result**, with no fallthrough arm: for example `CompileMemoryOwner::{Requesting(Pid), ByTargetDirectory(Pid), Unattributed(UnattributedCause)}`, where `UnattributedCause` names why: `SharedTargetDirectory`, `NoTargetDirectory`, `NoOutDir`, `NoUid`, `NoRequest`. Each of spec items 2–4 in the section above reaches a named variant, never `None`.
+3. **Unattributed memory is shown, not lost.** Its RSS goes into one "unattributed" share beside the cargos, counted once.
+4. **The sccache server counts once.** The server process's own RSS (not its rustc children, which items 1–3 assign) is one shared compiler-cache share, counted once per scan, never added to a cargo.
+5. **Totals add up.** For each scan, the sum of every cargo's mem plus the shared and unattributed shares equals the RSS sum of the processes the census assigned, with no process counted twice.
+6. Display: keep main's layout. If the shared and unattributed shares need a place on screen, they use the existing summary line form (one short row each, shown only when not zero). Any `render.rs` change bases on the phase 38 + 35m render.rs and gets a live capture vs main.
+
+**Files:**
+- `crates/cargo-tile/src/census/scan.rs`, `crates/cargo-tile/src/census/invocation_cpu_accounting.rs` — owner rules, enum, shares.
+- `crates/cargo-tile/src/census/compile_memory_tests.rs` — new: the red-on-main tests, with one `#[cfg(test)] mod` line in the census module that `impl` adds.
+- `crates/cargo-tile/src/render.rs` — only under Spec item 6.
+- `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/roster.rs` — carry the shares from each scan to the summary (added at impl's request).
+
+**Seats:** 1 writer + 1 tester.
+- `impl` — owns `scan.rs`, `invocation_cpu_accounting.rs`, the `mod` line, `terminal.rs` and `roster.rs` share transport, and `render.rs` if needed.
+- `test` — owns `compile_memory_tests.rs`: one test per case (two cargos on one target directory; no target directory; no `--out-dir`; no uid; no request; sccache server counted once; totals add up), each with exact RSS values and red on main first. Then the live check below.
+
+**Constraints from prior phases:** stack on phase 38 and phase 30m (30m changes `scan.rs`): work in an isolated copy made from commit 1e066ba6 plus the phase 38 and 30m files the director names. Every assertion on main stays. No test of 1 s or more. No new allow or expect.
+
+**Acceptance gate:**
+- Each new test red on main, then green; each under 1 s.
+- `cargo nextest run -p cargo-tile -p tui_pane`, workspace clippy with `-D warnings`, and `cargo +nightly fmt --check` green on the Mac on the stacked tree.
+- Live on natedev: two cargos build on one target directory under sccache; a capture shows each cargo's mem includes its own rustc memory, and the cargo mems plus the shared and unattributed shares match the processes' RSS sum from `ps` within one scan interval.
+
+### Phase 40 — Capture falls back to plain cargo when its stderr mirror cannot run  · status: todo
+
+**Depends on:** Phase 30m
+
+From phase 30m review 3 (routed at repair round 4). When `sh` runs but `tee` is missing or fails, the capture mirror signals ready before `exec tee` (hook.rs, `ReadyCaptureMirror::start`), so cargo starts with a stderr pipe nobody reads: cargo loses its stderr bytes and can get SIGPIPE. Main's shim has the same defect (`exec tee` in `run_captured`, cargo-capture-shim.sh), so phase 30m did not cause it.
+
+**Spec:** replace the shell/tee mirror with a native stderr pump made by a fallible constructor before cargo spawns. If the constructor fails: close what it opened, remove the capture publication, and exec the original cargo with its own arguments, streams and status. Keep helper diagnostics private until the capture commits. The guarantee is bounded: an exec acknowledgement followed by EOF is uncertain, and cargo never runs twice. (Astra review, phase 30m F001.)
+
+**Acceptance:** a regression with `sh` present and `tee` absent gives exact cargo status, stdout, stderr and arguments, and leaves no capture artifacts; red on main first, under 1 s; the per-call process count does not grow.
+
+**Files:** `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/cargo-capture-shim.sh`, `crates/cargo-tile/tests/shim_modes.rs`.
+
+### Phase 42 — A delayed cell decides its entry on the frame its text first shows  · status: todo
+
+**Depends on:** Phase 38
+
+From phase 38's live check (routed at repair round 4; phase 38 landed because it beats main on every live count: delayed cells readable 3 of 6 on the branch against 0 of 8 on main, fades and deadlines as main). A cell that opens from the foot of its column first paints only its column-header row. Phase 38 decides the cell's entry on that frame, so when the alpha there is 60–63 the cell takes main's fade, and its command text appears 1–2 frames later below 75% and fades out (live b1, cells s3–s5, first text frame 0.731).
+
+**Spec (Astra review, phase 38 F003):** the entry decision is made only by consuming a private `VisibleCommandText` value, which only the layout and pane visibility mapping can construct when a nonempty command fragment survives the pane's clipping (`tui_pane` frame.rs scratch-buffer copy). Each tracked row has its own state `AwaitingText`, `MainFade` or `HoldFinalInk`; a child's entry is not consumed by its lead. Ink reads (`for_painting`, the readout) are pure: while entry is pending they preview the candidate ink and commit nothing. Classification uses the row's original fade, not the painted copy. Expiry stays where it is.
+
+**Acceptance:** a staged-reveal test (headers at alpha 62, command text first shown at alpha 68) gives exact final RGB on the first text frame, later frames and just before the unchanged deadline; a clipped-in-scratch case, a hidden child and text first shown below the threshold keep their own rules; red on main first, each under 1 s; live capture vs main: every delayed-entry cell at or above 75% until main's deadline.
+
+**Files:** `crates/cargo-tile/src/roster.rs`, `crates/cargo-tile/src/render.rs`, `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/tiles/draw.rs`.
 
 ### Phase 30 — The capture shim costs one process per cargo call  · status: todo
 

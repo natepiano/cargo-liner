@@ -13,8 +13,6 @@ use crate::render::TableWidthReduction;
 pub(crate) const ACCOUNT_HEADING_CLOSE: &str = "] ";
 /// Open the account qualifier once per working-directory heading.
 pub(crate) const ACCOUNT_HEADING_OPEN: &str = "[";
-/// Fewest cells retained from a shortened directory's last component.
-pub(crate) const HEADING_MIN_TAIL: u16 = 8;
 
 // configuration
 /// Argument names shown before the full-arguments key is enabled.
@@ -176,6 +174,10 @@ pub(crate) const SUMMARY_WITHOUT_ROWS_READOUT_WIDTH: u16 = 28;
 pub(crate) const DEFAULT_FADE_SECONDS: u64 = 3;
 /// Distance between fade alpha levels that keep built-in ink contrast monotone.
 pub(crate) const FADE_ALPHA_STEP: u8 = 2;
+/// First-paint fade beyond which a delayed cell holds final ink until expiry.
+/// Full ink meets the three-quarter readability floor on every channel without
+/// truncating blends; cells already readable on entry keep their ordinary fade.
+pub(crate) const CELL_ENTRY_FADE_LIMIT: u8 = 63;
 /// Contrast floor for a finished row through the first half of its fade.
 #[cfg(test)]
 pub(crate) const MIN_FINISHED_ROW_CONTRAST: f64 = 3.0;

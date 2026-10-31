@@ -14,8 +14,8 @@ impl App {
     /// user-visible recovery), so background fetches that failed
     /// during the outage are retried without waiting for an
     /// unrelated trigger.
-    pub(super) fn refetch_missing_after_recovery(&mut self, service: ServiceKind) {
-        match service {
+    pub(super) fn refetch_missing_after_recovery(&mut self, service_kind: ServiceKind) {
+        match service_kind {
             ServiceKind::CratesIo => self.refetch_missing_crates_io_targets(),
             ServiceKind::GitHub => self.refetch_missing_github_repos(),
         }
@@ -43,13 +43,13 @@ impl App {
         let to_invalidate: Vec<OwnerRepo> = match self.net.github.fetch_cache.lock() {
             Ok(cache) => cache
                 .iter()
-                .filter(|(_, data)| data.meta.is_none())
-                .map(|(repo, _)| repo.clone())
+                .filter(|(_, cached_repo_data)| cached_repo_data.meta.is_none())
+                .map(|(owner_repo, _)| owner_repo.clone())
                 .collect(),
             Err(_) => return,
         };
-        for repo in &to_invalidate {
-            scan::invalidate_cached_repo_data(&self.net.github.fetch_cache, repo);
+        for owner_repo in &to_invalidate {
+            scan::invalidate_cached_repo_data(&self.net.github.fetch_cache, owner_repo);
         }
     }
     /// Collect `(path, url)` pairs for every leaf in the tree that
@@ -64,10 +64,10 @@ impl App {
             let Some(url) = self.project_list.fetch_url_for(path) else {
                 return;
             };
-            let Some(repo) = ci::parse_owner_repo(&url) else {
+            let Some(owner_repo) = ci::parse_owner_repo(&url) else {
                 return;
             };
-            if seen.insert(repo) {
+            if seen.insert(owner_repo) {
                 out.push((path.to_path_buf(), url));
             }
         });

@@ -1,8 +1,6 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use crossterm::event::KeyCode;
-use crossterm::event::KeyModifiers;
 use tui_pane::KeyBind;
 use tui_pane::KeySequence;
 use tui_pane::KeymapEditContext;
@@ -208,10 +206,12 @@ impl KeymapEditContext for App {
     /// Vim mode turns h/j/k/l into motion keys, so binding one to an
     /// action would shadow the motion for as long as vim mode is on.
     fn keymap_reserved_bind(&self, bind: KeyBind) -> Option<String> {
-        (self.config.navigation_keys().uses_vim()
-            && bind.mods == KeyModifiers::NONE
-            && matches!(bind.code, KeyCode::Char('h' | 'j' | 'k' | 'l')))
-        .then(|| format!("\"{}\" reserved for vim navigation", bind.display()))
+        tui_pane::validate_vim_motion_bind(
+            vim_mode_from_config(self.config.navigation_keys()),
+            bind,
+        )
+        .err()
+        .map(|error| error.to_string())
     }
 
     fn keymap_generated_bind(&self, scope: &str, action_key: &str, bind: &KeySequence) -> bool {

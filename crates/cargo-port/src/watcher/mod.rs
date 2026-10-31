@@ -1,19 +1,23 @@
-//! Uses recursive root watches on macOS and individual folder watches elsewhere.
-//! Build trees and Git objects are filtered from events and per-folder watches.
-//! Disk polling covers build sizes; events drive Git and source updates.
+//! Uses recursive roots on macOS and project/discovery folder watches elsewhere.
+//! New discovery folders receive temporary candidate watches. Build trees and Git
+//! objects are skipped; disk polling supplies build sizes on both backends.
 
 mod events;
 mod probe;
 mod refresh;
-#[cfg(test)]
-mod repair_test_support;
 mod roots;
 mod runtime;
 mod skip;
 #[cfg(test)]
 mod skip_tests;
 #[cfg(test)]
+mod subscription_recovery_tests;
+#[cfg(test)]
 mod watch_registration_tests;
+#[cfg(test)]
+mod watch_role_tests;
+#[cfg(test)]
+mod watch_test_support;
 
 use runtime::ProjectEntry;
 use runtime::WatchDrainResult;

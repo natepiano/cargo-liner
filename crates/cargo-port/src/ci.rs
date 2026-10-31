@@ -264,11 +264,11 @@ fn parse_iso8601(s: &str) -> Result<u64, ()> {
 const fn days_from_civil(year: u64, month: u64, day: u64) -> u64 {
     let y = if month <= 2 { year - 1 } else { year };
     let era = y / 400;
-    let yoe = y - era * 400;
+    let year_of_era = y - era * 400;
     let m = if month > 2 { month - 3 } else { month + 9 };
-    let doy = (153 * m + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days_since_epoch_0 = era * 146_097 + doe;
+    let day_of_year = (153 * m + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days_since_epoch_0 = era * 146_097 + day_of_era;
     // Shift: civil day 0 is 0000-03-01, Unix epoch is 1970-01-01 = day 719468
     days_since_epoch_0 - 719_468
 }

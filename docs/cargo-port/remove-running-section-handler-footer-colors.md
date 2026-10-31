@@ -2,7 +2,7 @@
 
 > **Status: IMPLEMENTATION PLAN — phased, delegate-ready.** cargo-handler colors roles and accounts with the colors the Claude Code footer uses, read from the footer's own color file, and the summary's machine headings count "top-level agents". Later phases sort any tile's tree or the summary by a clicked column header, make clicks land on what is drawn while tiles move, and teach the census two Claude cases.
 
-> **Production: remove-running-section** — unit `handler-enh-unit`; production doc `docs/cargo-port/remove-running-section-production.md`
+> **Production: cargo-liner** — unit `handler-enh-unit`; production doc `docs/cargo-port/cargo-liner-production.md`
 
 ## Source
 
@@ -279,7 +279,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 24 motion: tui_pane `TileCells::prepare_moving_frame(destination, motion_bounds)` (`tiles/draw.rs`; the default calls `prepare_frame`) and `TileGrid::motion_preparation_allocations` (`tiles/grid.rs`) give destination positions and widths with the taller of the source and destination heights; cargo-handler `Cells::prepare_moving_frame` (`crates/cargo-handler/src/render/mod.rs` ≈697) passes those motion bounds to `prepare_frame` to measure role widths, and cargo-tile keeps the default. Keep these preparation bounds for measurement; record hit regions and header spans from the pieces actually painted, not from preparation allocations. Test: a shrinking tile clicked during motion selects the header drawn under the pointer, and the existing moving-role tests (`render/moving_role_tests.rs`) stay green.
 - Phase 4's narrow headings fit through `HeadingLocation::{Shown,Cut,Omitted}` (`agent_cell.rs`); test clicks against the fitted heading actually drawn, not the full one.
 - After phase 5 the summary's demand changes with each accounts reading.
-- Phase 28 (a35577ad) supplies the painted record: `PaintedCells::{Undrawn, Drawn}`, a stable `CellIdentity` per painted piece, `CellHit::{Missed, Retired, Current}` (`tiles/grid.rs` ≈3292 `record_painted_cells`, ≈3306 `cell_hit`, reverse paint order) and `content_click` (`tiles/host.rs` ≈176), which maps a painted frame back to source coordinates for presses and wheel steps. `handle_tile_click` absorbs `TilePick::RetiredCell` before focus or row selection. `cell_content_at` is gone. Extend this record; do not create another painted-geometry record.
+- Phase 28 (a35577ad) supplies the painted record: `PaintedCells::{Undrawn, Drawn}`, a stable `CellIdentity` per painted piece, `CellHit::{Missed, Retired, Current}` (`tiles/grid.rs` ≈3292 `record_painted_cells`, ≈3306 `cell_hit`, reverse paint order) and `content_click` (`tiles/host.rs` ≈176), which maps a painted frame back to source coordinates for presses and wheel steps. `handle_tile_click` absorbs `TilePick::RetiredCell` before focus or row selection. `cell_content_at` is gone. Extend this record; do not create another painted-geometry record. The content geometry in the record comes from Phase 56's one visibility-aware content allocation (`content_area`, `tiles/draw.rs` ≈928), the same one that drawing and `content_click` read; do not compute a second content rect.
 - Phase 2's header click in cargo-handler (`render::cell_clicked`) rebuilds header spans from the current census and clock, so a changed name, activity, age width or Full/Compressed choice can move columns after the frame was drawn. The drawn header mapping must be kept with the frame.
 - Phase 2's attract-screen exclusion (clicks ignored while the attract screen replaces the grid) and its regression stay as they are.
 - Phase 3's tile identity is `tiles::TileKey::{Agent(AgentCell), Unassigned { machine }}` (sorts in `App::tree_sorts: HashMap<TileKey, TreeSort>`, pruned by `agent_cell::tile_keys`), and header layout carries `agent_cell::SessionHeaderLead::{OverBranch, Flush}` (the pool's session header sits over flush names). Drawn header spans are kept per `TileKey`, with the lead they were drawn with (`render/mod.rs` ≈443 `Cells::tile`, ≈448 `Cells::header_spans`; `agent_cell.rs` ≈2401 `header_spans`, ≈2164 `unassigned_header_spans`).
@@ -637,7 +637,6 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 9. One shared helper formats the sccache hit-rate percent: one decimal, no space before the sign ("85.4%"). It lives in `crates/tui_pane/src/format.rs`, exported as `tui_pane::format_hit_rate(raw: &str) -> Result<String, MalformedRate>` beside `format_progressive` (`lib.rs` ≈292). Both parsers call it: cargo-port `src/sccache.rs` `summary_from_lines` (≈38; it keeps the raw string today) and cargo-tile `src/sccache.rs` `closed_percent` (≈368; it removes spaces with no rounding). Malformed input (no finite number) gives `MalformedRate`, and each parser treats it as a missing rate field (`SccacheSummary::Unavailable`). Tests: "85.40 %" gives "85.4%", "4.90 %" gives "4.9%", "100 %" gives "100.0%", and "n/a" gives `MalformedRate`. The cargo-port selected-ink repair (item 10) is owned by `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs` (the selected row style ≈1229), with the phase 16 lift moved from cargo-handler `footer_colors/mod.rs` (`SelectedGroundInk` ≈410) into tui_pane so both apps use one method.
 10. cargo-port's selected pane row is readable on the Default Dark selection ground rgb 86,86,86 (showrunner, 2026-10-23). Live at phase 18: CI circle green (5,197,5) 2.55:1, Og glyph gray (162,162,162) 2.42:1, Main ☑ green (21,175,21) 2.10:1, disk text (255,212,212) 4.25:1. Use the phase 16 method: an OKLCH lightness-only lift of each ink until it reaches 4.5:1 at 208/255 coverage on the selection ground, with its hue kept and no colour-distance rule on selection grounds. Emoji glyphs (the Git crab) are exempt, because their colour is not ours to set. Shared lift boundary: the shared implementation is `crates/tui_pane/src/theme/selected_ink.rs`, exported from `theme/mod.rs` and `lib.rs`. Move only the selected-ground colour calculation into it: the OKLCH lightness search for one selection ground, the hue and chroma path it follows, the OKLCH conversion it uses (`Oklch::from_color` and `SelectedHueChroma`, exported as the one measurement API; cargo-handler's `render/selected_ink_tests.rs` and `footer_colors::tests::oklch_ink` move to it, and no second conversion stays in cargo-handler), and the two-way 208/255 covered contrast it measures with (the lower of the unrounded and the byte-rounded blend, as phase 18 built). It is a pure function of the ink and the ground, with no cache and no theme state. cargo-handler's `InkCoverage::Antialiased` calls the same covered-contrast function, so there is one covered-contrast calculation. The resolver names its outcome by type: a lifted ink that reaches 4.5:1, or an unreachable target that carries the best ink it found (the search end with the higher two-way contrast). It never returns an unmeasured first candidate. Callers draw the carried best ink for an unreachable target; no built-in theme ground is unreachable today, and a test proves that for every built-in selection ground. Cache invalidation stays with each app: cargo-handler keeps `SelectedGroundInk` as a wrapper over the shared function, with its `PALETTE` cache and the theme-identity and ground checks in `ReadablePalette::current`; cargo-port calls the shared function and owns any cache it adds. Keep `SessionRowInk`, the footer assignments (`FooterColors`), the pane lightness (`ReadableInk`) and the reset ranking (`ResetRank`) in cargo-handler. Unselected session inks do not change.
 11. Tests, each red before its fix: a rendered overlay has a full-width selection bar, sentence-case title and headings without colons, no repeated title heading, a blank row before each later heading (fit and paging heights counted), and no row without a key; the rendered cargo-handler bar and overlay say "tile" and never "pane"; every key name drawn on a bar or the overlay is lower case; the cargo-port bar draws "move" and the expand/collapse verbs; the sccache helper formats 85.40 as "85.4%". A rendered cargo-port pane with a selected row reads every non-emoji ink on that row at 4.5:1 or more with its own literal 208/255 coverage, in all four themes (named test `selected_project_row_inks_read_at_4_5_in_every_theme` in `crates/cargo-port/src/tui/panes/project_list/selected_row_ink_tests.rs`). The shared resolver has its own tests in `crates/tui_pane/src/theme/selected_ink_tests.rs`: an ink under 4.5:1 lifts to 4.5:1 with its hue kept, an ink already at 4.5:1 stays unchanged, and on ground rgb 127,127,127 the resolver gives the unreachable outcome with the end of higher two-way contrast. cargo-handler's `render/selected_ink_tests.rs` passes unchanged, and an unselected session row draws the same inks as before.
-12. Slow test (showrunner, 2026-10-24): `census::scan::codex_session_tests::codex_resume_last_uses_the_newest_older_thread_in_its_home_and_directory` (`crates/cargo-handler/src/census/codex_session_tests.rs` ≈409) took 1.510 s in the phase 30 full cargo-handler suite at high machine load. Time it alone first. If it is over a second alone, find the cause and fix it so it runs under a second; write the measured times and the cause in the summary. If it is under a second alone, write the times and make no change.
 
 **Files:**
 - `crates/tui_pane/src/overlays/global_shortcuts.rs`, `crates/tui_pane/src/overlays/global_shortcuts_tests.rs`, `crates/tui_pane/src/keymap/mod.rs`, `crates/tui_pane/src/keymap/key_bind.rs`, `crates/tui_pane/src/bar/nav_region.rs`, `crates/tui_pane/CHANGELOG.md`
@@ -648,12 +647,11 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/tui_pane/src/theme/selected_ink_tests.rs` — new resolver tests, registered in `theme/selected_ink.rs`
 - `crates/cargo-handler/src/render/selected_ink_tests.rs` — the handler selected-ink tests, unchanged expectations
 - `crates/cargo-port/src/tui/panes/project_list/selected_row_ink_tests.rs` — new cargo-port selected-row render test, registered in `tree_rows.rs`
-- `crates/cargo-handler/src/census/codex_session_tests.rs` — the census slow test (spec 12)
 - `crates/cargo-handler/src/footer_colors/tests.rs` — `oklch_ink` moves to the shared measurement API
 
 **Workers:** 1 writer + 1 tester.
 - `impl` — overlay, keymap, bar, the shared formatter, both sccache callers, the shared resolver module (`theme/selected_ink.rs`) and its exports, the application callers (cargo-handler `SelectedGroundInk`, cargo-port `tree_rows.rs`), the cache integration in `footer_colors/mod.rs`, the registrations and the CHANGELOGs; hub: `crates/tui_pane/src/lib.rs` and `crates/tui_pane/src/theme/mod.rs` (exports).
-- `test` — the external rendered tests, the separate resolver tests (`theme/selected_ink_tests.rs`), the handler selected-ink tests (`render/selected_ink_tests.rs`), the named cargo-port selected-row render test (`selected_row_ink_tests.rs`), the move of `footer_colors::tests::oklch_ink` and the selected-ink tests to the shared measurement API, and sole owner of `crates/cargo-handler/src/census/codex_session_tests.rs` for the census slow test.
+- `test` — the external rendered tests, the separate resolver tests (`theme/selected_ink_tests.rs`), the handler selected-ink tests (`render/selected_ink_tests.rs`), the named cargo-port selected-row render test (`selected_row_ink_tests.rs`), and the move of `footer_colors::tests::oklch_ink` and the selected-ink tests to the shared measurement API.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test cargo-port`, `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` and `bash ~/.claude/scripts/direct/verify.sh lint tui_pane` clean. No test takes a second. Live: framed shots of the overlay in cargo-handler and cargo-tile, and of the cargo-handler and cargo-port bars, in a dark and a light theme. The checkpoint carries `Change-Review: the shortcuts overlay and the status bars use sentence case, lower-case key names, one word for tiles in cargo-handler and one sccache percent format | open the global shortcuts overlay in cargo-handler and cargo-tile, and read the cargo-handler and cargo-port bars`.
 
@@ -885,33 +883,23 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** a clamp guard, bound swap or lower floor at `band_piece_dividers`; revalidating each endpoint on every frame (the admission cache replaces it).
 
-### Phase 40 — cargo-handler idles under 1 % of one core  · status: todo
+### Phase 40 — cargo-handler idles under 1 % of one core  · status: done (landed at 9.7 % against 13.2 % installed; the under-1 % target moved to Phase 47)
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
-
-**Goal:** an idle cargo-handler uses under 1 % of one core (today about 7 % per instance, two instances on natedev).
-
-**Source:** showrunner, 2026-10-28, from the CPU measurement report (`/tmp/claude-1000/-home-natepiano-rust-cargo-liner/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/scratchpad/cpu_investigation.md`, section "cargo-handler"). The user said on 2026-10-28 that CPU optimization comes first in all work.
-
-**Constraints:** every 2 s (`LOCAL_SCAN_INTERVAL`, `constants.rs:458`) `activity::read_runs` (`census/activity.rs:634-642`) reads and parses every `*.json` in each Codex worker's `mesh_runs` directory (1,000–2,800 files, 15.6 MB/s of reads); only records whose pid is live matter (`activity.rs:615-618`). Each scan makes a new sysinfo `System` and refreshes all processes (`census/scan.rs:1135-1141`); `hierarchy.rs:292` does the same each 30 s. `production_tree.py` runs each 30 s (`HIERARCHY_REFRESH_INTERVAL`) and `accounts.py` each 60 s (`ACCOUNTS_REFRESH_INTERVAL`). Census behaviour and every displayed row stay the same.
-
-**Spec:**
-1. Parse each run record once: keep the parsed records keyed by path and mtime, and read only new or changed files. A removed file leaves the cache.
-2. Keep one sysinfo `System` for the scan and one for the hierarchy, and refresh each in place.
-3. Run `production_tree.py` and `accounts.py` only when their input changes (find the files each one reads); keep a slow fallback only if an input cannot be watched, and name it.
-4. Red-first tests: a second scan over unchanged records parses none of them (counted, not timed); a changed or new record is parsed again; a removed record leaves the cache; the scripts do not run again while their inputs are unchanged and run once after a change. Each test under 1 s.
-5. Live measurement: CPU-s over 60 s with the installed binary and with the branch binary, both idle on natedev against the real `/tmp/claude` tree (check the build hold first). Target under 1 % of one core.
+- One sysinfo `System` serves each census scan and one serves the hierarchy. Each refreshes in place. A same-pid exec shows through `CurrentProcessNames`.
+- Parsed Codex run records stay in a cache keyed by file revision (path and mtime). A scan reads only new or changed files. A removed file leaves the cache.
+- `accounts.py` and `production_tree.py` run only when their inputs change (`CommandInputs`). Output rows are unchanged.
+- Idle release CPU is 5.81 CPU-s/min (9.7 % of one core) against 7.91 (13.2 %) installed. The under-1 % target is not met.
 
 **Files:**
-- `crates/cargo-handler/src/census/{mod.rs,activity.rs,scan.rs,hierarchy.rs,accounts.rs,schedule.rs,command_inputs.rs,activity_regression_tests.rs}` — the retained records, process tables, input-driven commands and their regression tests
-- `crates/cargo-handler/src/{constants.rs,app.rs}` — intervals and wiring
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/{activity,scan,hierarchy,accounts,schedule}.rs` — run record cache, per-scan `System`, input-driven commands
+- `crates/cargo-handler/src/census/command_inputs.rs` — `CommandInputs`; a `#[path]` child of `hierarchy.rs`
+- `crates/cargo-handler/src/census/activity_regression_tests.rs` — parse-count and preservation tests
 
-**Workers:** 1 writer (`test` seat; the `impl` seat is on Phase 39).
+**Binds later work:** the under-1 % idle target is open. The ancestry `System` refresh costs 1.14 CPU-s/min (budget 0.60). Run directory listing costs 1.20. On macOS, `CurrentProcessNames::read` runs `/bin/ps -axo pid=,ucomm=` on every scan. Model and effort display must read through the revision-keyed run records, with no per-scan read.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean, in either order; no test takes a second; the live measurement meets the target. The checkpoint adds a Change-Review line.
+**Gotchas:** three existing tests run over 1 s: gradient (1.46), busy ink (1.27), codex tier (1.04).
 
 ### Phase 39 — A project whose parent is deleted shows as deleted  · status: done (not reproduced, no code change)
 
@@ -944,26 +932,25 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** the hidden-readout design (no readout, a reclaimed last content row); public fields on `Selected` (safe code could break `row <= rows`); `From<usize> for RowsReadout` (no consumer).
 
-### Phase 35 — Subagent role words and an even reset ramp  · status: todo
+### Phase 35 — Subagent role words  · status: todo
 
 **Depends on:** Phase 27, Phase 36
 
 #### Work Order
 
-**Goal:** a Claude subagent row shows only its role word ("writer", "reviewer"), from a closed set, never the agent's own name with its number or phase prefix. In the Accounts table, each reset time's colour is clearly different from its neighbours.
+**Goal:** a Claude subagent row shows only its role word ("writer", "reviewer"), from a closed set, never the agent's own name with its number or phase prefix.
 
-**Source:** change review C67 (showrunner, 2026-10-27). User: "under the berth unit - i see p36-reviewer - it should just say reviewer" and "these two subagents should just say writer not writer77 and writer78". Showrunner rule: the role comes from a closed set at the type level, never by trimming name strings. Change review C71 (showrunner, 2026-10-27): "it works but the gradient on reset colors is not sufficiently distributed"; the reset colours spread evenly over the whole ramp by rank; C113 (no red at the end) and C115 (no reset colour looks like a session colour) still hold.
+**Source:** change review C67 (showrunner, 2026-10-27). User: "under the berth unit - i see p36-reviewer - it should just say reviewer" and "these two subagents should just say writer not writer77 and writer78". Showrunner rule: the role comes from a closed set at the type level, never by trimming name strings. The reset colour work of change review C71 moved to Phase 53 on 2026-10-30.
 
 **Constraints from prior phases:**
+- `census/scan.rs` belongs to Phase 47 until its checkpoint; keep Phase 47's CPU acceptance test green.
 - A named teammate's meta file has `agentType` equal to its `name` (for example `{"agentType":"writer77","name":"writer77","spawnedAgentType":"general-purpose","taskKind":"in_process_teammate"}`); for a plain Agent call, `agentType` is the subagent type ("general-purpose", "Plan", "Explore"). Names are free-form: writerN, reviewN, shotsN, uxN, implN, fixN, p36-reviewer, judge.
 - `census/transcript.rs`: `SubagentMeta` (≈591) reads only `description`, `agent_type` and `parent_agent_id`. `SubagentRole` (≈500) is `{Capture, Review, Lint, Test, Survey, Specialist(SpecialistRole), Unrecorded}`; `SpecialistRole(String)` (≈514) stores the name, which is the defect. `from_record` (≈534) and `word` (≈546) parse it; `text` (≈557) returns the stored string.
 - `census/tree.rs` `subagent_node` (≈657) puts the role in `ChildKind::Subagent(SubagentRole)` (`census/mod.rs` ≈388) and the description in the session column.
 - `census/probe.rs` `ProbeChildWork.subagent_role` (≈96) serializes the enum across machines; `{"Specialist":"showrunner"}` and `"Review"` are on the wire today.
 - `ProbeChildWork` (`census/probe.rs` ≈96) serializes `SubagentRole` directly. The checkpoint enum (`census/transcript.rs` ≈500) accepts `Review` and `Specialist`. It does not accept `Reviewer`, `Writer` or the other new variants.
 - `render/narrow_width_tests.rs` (≈360) and its `growth_app` (≈430) use a fifty-character specialist role, so that restored or newly visible rows change the width requirement (checked at ≈488 and ≈534). A change of that fixture to `Agent` removes the tested condition. Use supported role words and fixture widths that still test off-window width growth, End/Home/cursor restoration and the first enlarged frame. Keep the whole-core and below-core compression checks, the longer Astra labels included.
-- Before you choose the ramp ends, the measurement handoff names the numeric dark session/reset floors and the neighbour floors for two to eight reset times. Keep the light floors of 14.7 and 15.3 until Phase 31 replaces them explicitly. Phase 31 owns any later replacement by another visual channel.
 - `agent_cell.rs`: `role_text` (≈1192) draws `role.text()`; the role ink comes from `colors.named_role(role.text())` (≈1349, `footer_colors/mod.rs` ≈839).
-- Reset ramp (measured on the C71 shot, Default Dark, 6 accounts): neighbours step dE 2.3–2.7, about the threshold of a just-noticeable difference. The position is already rank/(n-1) (`ResetRank::color`, `theme/mod.rs` ≈128; rank from `reset_colors`, `summary/accounts.rs` ≈145), but the ramp ends are only about dE 12 apart in every theme (dark (125,191,110) → (69,196,153), same lightness, only hue moves; light ends as in phase 29), and the blend is plain sRGB (`tui_pane::blend_color`). `readable_status_style` does not change these inks. `accounts_gradient_tests.rs` holds the C113 floors (≈389: dE >= 20 from error red, warning and alarm; hue gap >= 30° from account inks; contrast >= 4.5), the ends floor (≈501, dE >= 12), chroma and plain-text floors (≈532), and the sRGB formula (≈185, ≈232, ≈266). C115 is `SessionResetFloor` (`render/role_title_tests.rs` ≈715): dark is `DarkNotMeasured`. A rough search found the widest dark ramp under these rules near dE 21 end to end (about 4 per step at 6 accounts), before the account hue rule.
 - Session-row plan reviewers show "review" through `RoleLabel::ReviewFallback` (`census/placement.rs` ≈86), and Codex seats through `WorkerRole::text` (`census/worker_dispatch/mod.rs` ≈100); `WorkerRole::text` also feeds role matching, so the parsed words stay.
 
 **Spec:**
@@ -972,9 +959,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 2. The role is decided once, at the meta file boundary (`running_subagents`). `SubagentMeta` reads `name` and `spawnedAgentType` too. Source order: the name, then `agentType`, then `spawnedAgentType`, then the description words. A name splits on non-letters into whole tokens, and a token matches a role word exactly (case-insensitive, with the listed synonyms: "review" → Reviewer, "impl" → Impl). "p36-reviewer" is Reviewer, "writer77" is Writer, "judge" is Agent. A general type ("general-purpose") gives no role.
 3. The role ink comes from a typed method on `SubagentRole`, not from looking up the drawn text.
 4. Wire: decode the old role forms (`{"Specialist":"<word>"}`, `"Review"`) into the closed domain enum: the closed role for that word, else Agent. Encode new roles through a wire form that older builds accept, or through a defaulted extension. Keep any string payload inside the wire adapter, so the domain model gets no `SpecialistRole(String)` back. No string role is stored after deserialization.
-5a. Even reset ramp (C71): the position stays rank/(n-1). The blend runs in OKLab, not sRGB. Widen the ramp ends in all four themes (`theme/mod.rs` and the theme TOML files) to the widest pair that keeps C113, C115 (dark measured too), the 30° account hue gap, contrast >= 4.5, chroma >= 0.10 and dE >= 15 from plain text; use lightness as well as hue. Measure before production code, and send the showrunner the measured neighbour steps for 6 accounts in each theme, with Accounts shots in a dark and a light theme, before the palette lands. If no pair beats today's steps, report the values and stop.
-5. Tests, red first: rendered subagent rows for writer77, writer78, p36-reviewer, review3, judge and a plain "Plan" subagent show "writer", "writer", "reviewer", "reviewer", "agent" and "plan"; a plan-mode reviewer session row and a Codex review seat row show "reviewer"; an old report on the new receiver, and a new report on the checkpoint receiver; callers that built a role from a free string build a variant. Reset ramp: the drawn neighbour dE (after `readable_status_style`, pane tint on and off, the selected row included) for 2 to 8 distinct reset times in every theme is at least the measured floor; the ends floor rises to match; dark `SessionResetFloor` becomes a measured floor; the sRGB formula tests follow the OKLab blend. Every test under one second.
-6. CHANGELOG: one line that subagent rows show their role word, not the agent's name, and one that reset colours step clearly by rank.
+5. Tests, red first: rendered subagent rows for writer77, writer78, p36-reviewer, review3, judge and a plain "Plan" subagent show "writer", "writer", "reviewer", "reviewer", "agent" and "plan"; a plan-mode reviewer session row and a Codex review seat row show "reviewer"; an old report on the new receiver, and a new report on the checkpoint receiver; callers that built a role from a free string build a variant. Every test under one second.
+6. CHANGELOG: one line that subagent rows show their role word, not the agent's name.
 
 **Files:**
 - `crates/cargo-handler/src/census/transcript.rs` — closed `SubagentRole`, meta fields, role source order
@@ -985,29 +971,27 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/cargo-handler/src/census/reviewer_tests.rs`, `crates/cargo-handler/src/census/claude_seat_tests.rs` — the drawn reviewer word
 - `crates/cargo-handler/src/census/subagent_activity_tests.rs`, `crates/cargo-handler/src/census/probe_role_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/subagent_row_tests.rs` — spec 5 tests
 - `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/repair_tests.rs`, `crates/cargo-handler/src/render/moving_role_tests.rs`, `crates/cargo-handler/src/render/selected_ink_tests.rs`, `crates/cargo-handler/src/render/selection_tests.rs`, `crates/cargo-handler/src/render/narrow_width_tests.rs` — callers build variants
-- `crates/cargo-handler/src/theme/mod.rs`, `crates/cargo-handler/themes/` — OKLab blend and wider reset ramp ends
-- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs`, `crates/cargo-handler/src/render/role_title_tests.rs` — reset ramp floors
 - `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer + 1 tester.
-- `impl` — spec 1, 1a, 2–4, 5a and 6: production files, registrations and inline test migrations in production modules; hub: `crates/cargo-handler/src/census/transcript.rs`.
+- `impl` — spec 1, 1a, 2–4 and 6: production files, registrations and inline test migrations in production modules; hub: `crates/cargo-handler/src/census/transcript.rs`.
 - `test` — spec 5: the listed separate test modules, including `narrow_width_tests.rs` and `moving_role_tests.rs`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. Live: a shot of a tile with named writer and reviewer subagents shows "writer" and "reviewer" in the role column; Accounts shots with 6 reset times in a dark and a light theme, each colour read from the shot. The checkpoint adds a Change-Review line.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. Live: a shot of a tile with named writer and reviewer subagents shows "writer" and "reviewer" in the role column. The checkpoint adds a Change-Review line.
 
 ### Phase 31 — Session colours stay apart  · status: todo
 
-**Depends on:** Phase 18, Phase 27, Phase 30, Phase 35
+**Depends on:** Phase 18, Phase 27, Phase 30, Phase 35, Phase 53
 
 #### Work Order
 
 **Goal:** in all four themes, the five session inks read as five different colours, and no session ink, role ink or reset shade on a row looks like another.
 
-**Source:** next item "Session colours stay apart" (phase 26, approved by the showrunner 2026-10-23 19:30 AST), widened by phases 29 and 30. Showrunner ruling, 2026-10-24: the root cause is too many inks on one row. Run after Phases 36 and 35, beginning with options and shots for the showrunner.
+**Source:** next item "Session colours stay apart" (phase 26, approved by the showrunner 2026-10-23 19:30 AST), widened by phases 29 and 30. Showrunner ruling, 2026-10-24: the root cause is too many inks on one row. Run after Phases 36, 35 and 53, beginning with options and shots for the showrunner.
 
 **Constraints from prior phases:**
 - Phase 26 (dark): the valid hue domain is about 92.5°, and at most 2–3 inks can be CIEDE2000 >= 20 apart; steps of 45°, OKLCH C >= 0.10, and both together also fail.
-- Subagent role words and an even reset ramp (phase 35) widens the reset ramp ends and blends in OKLab; read the drawn ends from `theme/mod.rs` at start. The values below are from before it. Phase 35 names numeric dark session/reset floors and neighbour floors for two to eight reset times, and keeps the light floors of 14.7 and 15.3. This phase owns any later replacement of those floors, by new floors or by another visual channel.
+- Phase 53 replaces the reset blend with 3 or 4 stepped reset colours per theme, soonest the strongest, in the one reset source `ResetRank::color` (`theme/mod.rs` ≈128). Read the drawn steps from `theme/mod.rs` and the theme files at start, and assess those steps, not the old ramp. The reset values below are from before Phase 53. This phase owns any later replacement of the session/reset floors, by new floors or by another visual channel.
 - Phase 29 (light): light reset ends Default Light (115,0,235) → (73,0,158) and High Contrast Light (115,0,235) → (82,55,154) hold session-vs-reset dE 14.7 and 15.3 (`render/role_title_tests.rs`, `SessionResetFloor::HeldLight`). The drawn reset shades fall in one violet band (OKLCH h 291–294°).
 - Phase 30 (light): no five-ink light session set exists under the current row floors, even with any one floor relaxed; the light defects are near-black session inks in two hue groups, the `showrunners` role ink #7732FF dE 5.3 from the nearest reset end, and reset steps of dE 2.7–3.4. `summary/accounts_gradient_tests.rs` holds the reset time order.
 - Session rows draw only through `SessionRowInk::style()` (`theme/mod.rs` ≈58). `SessionRowInk::fixed_fields()` and `FooterColors::session_row_inks()` list every ink a row can draw. Root i takes entry i (mod 5) of `session_hues`, and each tile title keeps its summary row's ink.
@@ -1017,8 +1001,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 27's column drops and truncation keep the style of each span they cut.
 
 **Spec:**
-1. Options first (showrunner, 2026-10-24): list what else can separate sessions. At least: fewer fixed inks on a session row (for example role, account or status drawn in the plain text ink), and a second visual channel the style guide allows (for example bold, a glyph or a background tint). For each option, give the inks a row draws, the measured smallest session-pair dE, session-vs-fixed dE and session-vs-reset dE in all four themes, and what the row loses. Include the accounts table: its role inks in the fresh and the subdued (stale or unread) style, against the drawn reset shades, with pane tint on and off. Each option also says how a user tells reset ranks apart with six or more reset times (today neighbouring light shades step only dE 2.7–3.4): a larger colour step, a second channel, or the time text alone, measured. Each option also says how its separating channel survives the selected row band and the phase 20 word-match background (one background colour for every match, drawn over the selection), for example a glyph or bold that a background does not erase. Send the showrunner the options with shots of the summary agents table and the accounts table in a dark and a light theme, before any palette code. The showrunner's choice settles the rest of this spec. The unit director then adds the files the chosen option needs to **Files**.
-2. The showrunner's choice sets the final floors and the tests that hold them. A second visual channel separates by something other than colour, so the choice names which colour floor it replaces and the test that proves the channel instead. Measure the chosen option before production code. If no palette meets the chosen floors, report the measured values to the unit director and stop; never land a palette from an empty feasible set (phase 30's first fallback collapsed five inks to one). Without a replacement named by the choice, the completion condition holds: in all four themes, every session ink has CIEDE2000 >= 15 from each fixed ink that can share its row, every pair of session inks has CIEDE2000 >= 20, and covered contrast is >= 4.5:1 with the two-way oracle (the lower of the unrounded and the byte-rounded 208/255 blend). In both light themes, session-vs-reset CIEDE2000 is >= 20 within 45° of hue. Reset shades keep dE >= 15 from every role ink, in the fresh and the subdued style, and the light ramp ends are as far apart as that allows.
+1. Options first (showrunner, 2026-10-24): list what else can separate sessions. At least: fewer fixed inks on a session row (for example role, account or status drawn in the plain text ink), and a second visual channel the style guide allows (for example bold, a glyph or a background tint). For each option, give the inks a row draws, the measured smallest session-pair dE, session-vs-fixed dE and session-vs-reset dE in all four themes, and what the row loses. Include the accounts table: its role inks in the fresh and the subdued (stale or unread) style, against the drawn reset shades, with pane tint on and off. Each option also says how a user tells reset ranks apart with six or more reset times, where Phase 53's 3 or 4 steps make several ranks share a step: the stepped colours alone, a second channel, or the time text, measured. Each option also says how its separating channel survives the selected row band and the phase 20 word-match background (one background colour for every match, drawn over the selection), for example a glyph or bold that a background does not erase. Send the showrunner the options with shots of the summary agents table and the accounts table in a dark and a light theme, before any palette code. The showrunner's choice settles the rest of this spec. The unit director then adds the files the chosen option needs to **Files**.
+2. The showrunner's choice sets the final floors and the tests that hold them. A second visual channel separates by something other than colour, so the choice names which colour floor it replaces and the test that proves the channel instead. Measure the chosen option before production code. If no palette meets the chosen floors, report the measured values to the unit director and stop; never land a palette from an empty feasible set (phase 30's first fallback collapsed five inks to one). Without a replacement named by the choice, the completion condition holds: in all four themes, every session ink has CIEDE2000 >= 15 from each fixed ink that can share its row, every pair of session inks has CIEDE2000 >= 20, and covered contrast is >= 4.5:1 with the two-way oracle (the lower of the unrounded and the byte-rounded 208/255 blend). In both light themes, session-vs-reset CIEDE2000 is >= 20 within 45° of hue. Phase 53's reset steps keep dE >= 15 from every role ink, in the fresh and the subdued style.
 3. Root i keeps entry i of the list, and each tile title keeps its summary row's ink.
 4. Tests, red first: the spec 2 floors in all four themes replace the held phase 26 and 29 limits. Rendered accounts tests compare role inks (fresh and subdued) with the drawn reset shades, pane tint on and off. A rendered test with six or more reset times proves the chosen way to tell reset ranks apart.
 5. CHANGELOG: one line for the visible change.
@@ -1045,6 +1029,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 **Source:** showrunner add-ons, 2026-10-26: the theme-note tests leave /tmp/.tmpXXXXXX folders that hold broken-default-dark.toml; and `census::schedule::tests::unsuccessful_commands_publish_no_edges_and_timeout_reaps_the_child` failed on the Mac under load (0.76 s, "the script should have recorded its pid", NotFound). Run order (showrunner): after phase 31.
 
 **Constraints from prior phases:**
+- `census/hierarchy.rs` belongs to Phase 47 until its checkpoint.
 - Phase 18: `crates/cargo-handler/src/terminal/theme_note_tests.rs` builds the app through `terminal::startup_theme_notes` (`terminal.rs` ≈79) and `App::new_for_test_with_startup` (`app.rs` ≈246). Its `theme_directory()` keeps the theme folder in a `static DIRECTORY: OnceLock<TempDir>`, which is never dropped, so the folder stays after the run. The fixture function that gives the folder path takes no `self`.
 - The census test is in `crates/cargo-handler/src/census/schedule.rs` (≈1278). It already waits for a completion signal before it reads the pid file. The race is elsewhere: `ShortDeadlineRunner` allows 120 ms, and `census/hierarchy.rs` (≈476) starts that deadline before it spawns the child, so the child can be killed before it writes its pid. The failure is expiry before child readiness, not a fixed sleep before the read.
 
@@ -1108,7 +1093,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `content_click` excludes tile frames, titles and readouts. Word clicks also work on tile titles, so tui_pane `tiles/host.rs` forwards a title press to the host; the word logic stays in cargo-handler. The status bar, the readouts and the overlays are out of scope (showrunner, 2026-10-23).
 - An open modal overlay takes a click first. Esc clears the highlight only when no overlay is open.
 - Phase 27: `summary::truncated_line` (`summary/mod.rs` ≈846) cuts styled text by terminal cells and grapheme clusters, and `SummarySessionTable::OmittedForWidth` (≈226) removes session lines fully. The omitted state is already visible to the user and its 34x50 regression is green.
-- Phase 36: cargo-handler tiles keep their foot readout row, and the content area does not change; no content row is reclaimed. The readout text comes from `TileCells::rows_readout` (`tui_pane/src/tiles/draw.rs`): `RowsReadout::Selected` draws `content rows: 3 of 12` for a surface with a selected row, `RowsReadout::Count` draws `content rows: 12`. The readout is chrome, so a press on it is not a word target.
+- Phase 56: the readout is hidden by default (`RowsReadoutVisibility::{Hidden, Shown}`), and a hidden readout gives its row back to content when the host has no foot content. Drawing and `content_click` read Phase 56's one visibility-aware content allocation (`content_area`, `tui_pane/src/tiles/draw.rs` ≈928). Word targets and the empty-space clear map through that same allocation in both readout states.
+- Phase 36: the readout text comes from `TileCells::rows_readout` (`tui_pane/src/tiles/draw.rs`): `RowsReadout::Selected` draws `content rows: 3 of 12` for a surface with a selected row, `RowsReadout::Count` draws `content rows: 12`. The readout is chrome, so a press on it is not a word target.
 - The content, title and chrome outcomes cross the public host boundary. The pointer payload is exported in `tiles/mod.rs` (≈48) and `lib.rs` (≈502).
 - Theme roles live in `theme/mod.rs` (`Role` ≈91) and the built-in theme files in `crates/cargo-handler/themes/`; text colors stay as they are drawn.
 - Phase 15 CIEDE2000 12 measures distinction from header ink, not readability. `ReadableInk` measures against `theme.text.bg_focus`. Use the luminance contrast oracle (4.5:1) against the real match background in all four themes, for subdued role and account ink and for selection overlap; foreground colors do not change.
@@ -1150,6 +1136,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 **Showrunner note (2026-10-21, revised guild design):** there are four guilds: `designers`, `reviewers`, `showrunners` and `units`. Workers have no guild. Each head is a unit director whose unit name is its guild ID, under a new top-level production `guilds` (herdr space `guilds` on natedev: the guilds showrunner in tab 1, then the four heads). In the census the heads are ordinary unit edges under the guilds showrunner, and each member keeps its real manager: an Astra designer stays under the unit director or showrunner that holds it, never under the `designers` head. `astra-designer` and `astra-reviewer` edges and colors do not change. Lasting roles will come only from sdlc phase 6 `scripts/guilds/roles.py list --json`; parse no other file for them. That file is not on `~/.claude` main, and this phase does not need it: reading it is a later phase. Tips are files in `~/rust/nate_style/guilds/<guild>/`; there is no guild message group and no publication record, so cargo-handler draws nothing for them. Design doc: `docs/plans/sdlc-guilds-design.md` on `~/.claude` branch `sdlc-guild-process` (dadb482b), sections "Guilds and heads" and "Data for cargo-handler".
 
 **Constraints from prior phases:**
+- Phase 41 changed the Codex startup query: it accepts user threads with a non-exec source (`constants.rs` ≈387) and keeps an older-schema query (≈392), chosen by `ThreadsLayout::{WithThreadSource, OriginatorOnly}` (`census/codex.rs` ≈249). The separate lookup for Astra exec threads stays required.
+- `census/scan.rs` belongs to Phase 47 until its checkpoint.
 - Phase 16: a selected row draws on the selection ground (`InkGrounds` in `footer_colors/mod.rs`). Rendered tests also draw both Astra roles on a selected row in a focused and an unfocused tile and require 4.5:1.
 - natedev adds to `production_tree.py --json` one edge per Astra session while it holds the role: `{"manager": <Claude session id of the unit director or showrunner>, "member": <Codex thread id>, "role": "astra-designer" | "astra-reviewer", "codex_home": <CODEX_HOME>, "state": "busy" | "idle"}`, and the `statusline.conf` keys `role.astra-designer=pink` and `role.astra-reviewer=bright-green`. Do not edit `~/.claude`.
 - Today `census/hierarchy.rs` drops an edge whose role it does not know (`HierarchyWireRole` `#[serde(other)] Unknown`); `HierarchyRole` is in `census/mod.rs`; `RoleLabel` is in `census/placement.rs`; `FooterRole` and its `role.*` keys are in `footer_colors/mod.rs`. Since phase 17 there is no `From<HierarchyRole> for FooterRole` and no `FooterRole::Worker`: management roles map in `FooterColors::hierarchy_role` (`footer_colors/mod.rs` ≈827), specialist role words in `FooterColors::named_role` (≈818), and worker rows draw plain.
@@ -1162,10 +1150,10 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
   - Final targets, separate from those floors: row-fixed dE >= 15, session dE >= 20, covered contrast >= 4.5:1. Phase 31's final floors or named replacement channels apply in all themes; this phase restores no earlier dark exemption. Covered contrast >= 4.5:1 applies now, in all four themes.
   - Consecutive session hue spacing applies only to the session inks, not to role inks.
 - Keep the wire-boundary rejection rules below. Phase 16 selection: an Astra row keeps its stable thread identity and the selected band through busy/idle updates and manager placement. Contrast tests compute the expected ratio with their own literal 208/255 glyph coverage, not by reading `ANTIALIASED_GLYPH_COVERAGE`.
-- The Codex thread lookup in `constants.rs` reads only `originator = 'codex-tui'` threads; `astra_review.py` runs `codex exec` (`originator` `codex_exec`).
+- The Codex startup lookup reads through the typed layouts Phase 41 shipped. `ThreadsLayout::WithThreadSource` runs `CODEX_THREADS_QUERY` (`constants.rs` ≈387: `thread_source = 'user'` with `source` not `'exec'`, or `codex-tui` rows with no `thread_source`). `ThreadsLayout::OriginatorOnly` runs `CODEX_LEGACY_THREADS_QUERY` (≈392: `codex-tui` only). Both leave out exec threads and worker threads at startup. `astra_review.py` runs `codex exec` (`originator` `codex_exec`), so its thread is not in the startup result.
 - The wire and lease token `review` stays accepted; displayed reviewer words follow Phase 35.
 - `render/narrow_width_tests.rs` (≈360) and its `growth_app` (≈430) use a long role so that restored or newly visible rows change the width requirement (checked at ≈488 and ≈534). Use supported role words and fixture widths that still test off-window width growth, End/Home/cursor restoration and the first enlarged frame. Keep the whole-core and below-core compression checks, the longer Astra labels included.
-- `codex::read_threads_by_id` already accepts any originator (`CODEX_THREAD_BY_ID_QUERY`); only the startup-window query limits originator to `codex-tui`. Do an edge-named lookup in the named Codex home; do not widen the startup query. Reuse `SessionNames` for renamed sessions; keep the phase 15 home and resume checks (`thread_matches_home`, `ResumeRequest`) and the no-dispatch regression.
+- `codex::read_threads_by_id` (`census/codex.rs` ≈175) already accepts any originator (`CODEX_THREAD_BY_ID_QUERY`). Keep the startup exclusion of exec and worker threads. Do a separate edge-named lookup for Astra exec threads in the named Codex home; do not widen the startup queries. Reuse `SessionNames` for renamed sessions; keep the phase 15 home and resume checks (`thread_matches_home`, `ResumeRequest`) and the no-dispatch regression.
 - The scanner gets no hierarchy snapshot today, and app-server discovery needs Linux open file descriptors under the default sessions directory. Hand accepted edges from the scheduler to the scanner; keep database and rollout reads off the scheduler thread and outside the publication lock.
 - `hierarchy.rs:641` turns any wire `state: busy|idle` into `ReviewerState`; pool validation makes an edge without a lease idle and `is_drawn` hides it. Astra sessions get their own semantic state, outside the reviewer-pool state machine.
 - `HierarchyEdge` today joins a role with `ReviewerState` and has no Codex home field. An Astra edge is one typed payload that requires its Codex home and its busy or idle state (for example `AstraSeat { role: AstraRole, codex_home: CodexHome, state: AstraState }`); the optional wire fields convert into it at the input boundary, and an edge without them is refused there. Do not add separate domain `Option` fields that permit an Astra member without its address.
@@ -1202,38 +1190,24 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Astra rows keep their stable thread identity and the selected band through busy/idle updates and manager placement. The session palette checks in `render/role_title_tests.rs` measure both Astra inks, the Astra word-match tests in `render/word_contrast_tests.rs` pass, and the Astra-vs-reset test in `summary/accounts_gradient_tests.rs` passes (with the floor or channel phase 31 chose). Live: framed shots, in a dark and a light theme, of an Astra designer under a unit director and an Astra reviewer under a showrunner, with the real config. The checkpoint carries `Change-Review: cargo-handler shows Astra designer and Astra reviewer sessions under the unit director or showrunner that runs them, with their own role words and colors | open cargo-handler while an Astra review runs and find its row under its parent`.
 
-### Phase 41 — Renamed Codex sessions show in cargo-handler  · status: todo
+### Phase 41 — Renamed Codex sessions show in cargo-handler  · status: done
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
+An interactive Codex session that the user renamed shows its name in its tile and the summary, not `pid N`.
 
-**Goal:** an interactive Codex session that the user renamed shows its name in its tile and the summary, not `pid N`, when Codex stores the thread with an originator other than `codex-tui`.
-
-**Source:** change review C85 back (showrunner, 2026-10-28). Live case on natedev: process 607499 (codex 0.163.0, `CODEX_HOME=~/.codex1`, cwd `~/rust/cargo-liner`) named "test-codex" shows as "pid 607499". Diagnosis: unit session `phases/41/diagnosis.md`.
-
-**Constraints from prior phases:**
-- The name is stored in `~/.codex1/session_index.jsonl` (`thread_name`) and in `~/.codex1/state_5.sqlite` `threads` with `name='test-codex'`, `originator='roster'`, `source='vscode'`, `thread_source='user'`, `cli_version='0.165.0'`, created 6 s after the process start. Worker threads have `thread_source` NULL; `codex exec` threads have `source='exec'`. The last `codex-tui` thread is from 2026-10-16 (`.codex1`) and 2026-10-20 (`.codex2`), so no new interactive session has had its name since then.
-- Cause: `CODEX_THREADS_QUERY` (`constants.rs` ≈391) selects `WHERE originator = ?1` with `CODEX_TUI_ORIGINATOR = "codex-tui"` (≈398), bound in `query_threads` (`census/codex.rs` ≈248). The thread is dropped, so `classify::codex_startup_threads` finds none, and the name pass in `census/scan.rs` (≈474) leaves `row.name = "pid {pid}"` and goes on before `SessionNames` (`census/codex_names.rs`) is read.
-- `CODEX_THREAD_BY_ID_QUERY` (≈411) and `CODEX_LAST_THREAD_QUERY` already accept any originator; do not change them. The match by cwd and start window (`CODEX_THREAD_START_WINDOW`, 60 s) stays.
-- `constants.rs` is also in Phase 40's **Files** (intervals only; its working-tree diff does not touch the Codex constants). Claim it after Phase 40's reservation or `--before` it; change only the Codex thread query lines.
-- The `codex.rs` test fixture table (`THREADS_TABLE`, `mod tests` ≈271) has no `source` or `thread_source` column today.
-
-**Spec:**
-1. Select interactive threads by what they are, not by one originator: `thread_source = 'user' AND (source IS NULL OR source <> 'exec')`, or `originator = 'codex-tui'` for older rows that have no `thread_source`. Keep the creation window bounds. Rename `CODEX_TUI_ORIGINATOR` or its doc comment so the name states its role as the older-row alternative.
-2. A database without the `thread_source` or `source` column (an older Codex) still reads through the `codex-tui` alternative; the query must not fail on it. If one query cannot cover both layouts, check the columns once per database open and pick the query by a typed layout (`enum ThreadsLayout { WithThreadSource, OriginatorOnly }`), never a string switch at the call site.
-3. Tests, red first: in `census/codex.rs` tests, a thread with `originator='roster'`, `source='vscode'`, `thread_source='user'` inside the window is returned by `read_threads`; a worker thread (`thread_source` NULL, originator not `codex-tui`) and an exec thread (`source='exec'`) are not; an `OriginatorOnly` fixture table still returns its `codex-tui` thread. In `census/codex_session_tests.rs`, the same `roster` row plus a `session_index.jsonl` record with `thread_name` "test-codex" names the row "test-codex", not "pid N". Each test under one second.
-4. CHANGELOG: one line under Fixed.
+- `CODEX_THREADS_QUERY` selects an interactive thread by what it is: `thread_source = 'user'` with `source` not `'exec'`, or `originator = 'codex-tui'` on older rows that have no `thread_source`. Newer Codex writes originator `roster` on interactive threads, so the originator alone no longer finds them.
+- `CODEX_LEGACY_THREADS_QUERY` serves a database that has no `source` or `thread_source` column. It reads through the `codex-tui` originator only.
+- `enum ThreadsLayout { WithThreadSource, OriginatorOnly }` picks the query. The layout is checked once per database open, never per call.
+- The match by cwd and the 60 s start window are unchanged. `CODEX_THREAD_BY_ID_QUERY` and `CODEX_LAST_THREAD_QUERY` still accept any originator.
+- Tests cover a `roster` thread (returned), a worker thread with NULL `thread_source` (not returned), an exec thread (not returned), an `OriginatorOnly` table (still returns its `codex-tui` thread), and a `session_index.jsonl` name that replaces `pid N` on the row.
 
 **Files:**
-- `crates/cargo-handler/src/constants.rs` — the threads query and the originator constant only
-- `crates/cargo-handler/src/census/codex.rs` — the query parameters, the layout check if needed, and the fixture table tests
-- `crates/cargo-handler/src/census/codex_session_tests.rs` — the named-row test
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/constants.rs` — `CODEX_THREADS_QUERY` and `CODEX_LEGACY_THREADS_QUERY`
+- `crates/cargo-handler/src/census/codex.rs` — `ThreadsLayout`, the layout check at database open, and the thread-row fixture tests
+- `crates/cargo-handler/src/census/codex_session_tests.rs` — the named-row test and the `ThreadsLayout` cases; `ThreadsLayout` is an implementation detail owned here
 
-**Workers:** 1 writer (`impl`); the census has no `tests/` lane and the change is small.
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: on natedev, start an interactive `codex` under `~/.codex1`, rename it, and a shot of cargo-handler shows its name in the tile and the summary. The checkpoint adds a Change-Review line.
+**Binds later work:** the work that reads Codex model and effort beside these thread rows keeps the once-per-open `ThreadsLayout` choice.
 
 ### Phase 42 — A dispatch shell folds into its Codex worker row  · status: todo
 
@@ -1246,6 +1220,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 **Source:** change reviews C86 and C87 back (showrunner, 2026-10-28 ≈20:00 EDT). User: "there is no point to seeing the thing that dispatched the codex work for me - there is always one". One new Change-Review line covers both. Unit session `phases/42/source.md`.
 
 **Constraints from prior phases:**
+- `census/scan.rs` belongs to Phase 47 until its checkpoint; keep Phase 47's CPU acceptance test green.
 - Live case on natedev (cables unit, claude2): the director's Bash call zsh 3399214 → `implement.sh` 3399229 → `codex_mesh.py follow` 3576715 draws a shell row "Dispatch the drag seat to run the Phase 54b tes…" beside its worker row "drag · Phase 33" (codex1). The follow process has no app-server child: that worker's app-server has systemd as its parent, because an earlier dispatch that has ended started it. A case that folds: zsh 2700456 → `implement.sh` 2700461 → `codex_mesh.py follow` 2949144 → `codex app-server` 1570363.
 - Scan time: `worker_dispatches` (`census/scan.rs` ≈840) parses each launcher (`ParsedDispatch`, `census/worker_dispatch/mod.rs` ≈874), takes the seat from a `codex_mesh.py` process below it (`MESH_SEAT_FLAGS`, `process_is_below`), and resolves it through `mesh_roster.json` (`ParsedDispatch::resolve` ≈1117: `--to` seat, else the entry whose `launcher_pid` is the dispatch's pid) into `WorkerDispatch::Worker(ResolvedWorkerDispatch)` with `identity: WorkerIdentity::CodexThread(thread id)`.
 - Draw time: `AgentPlacement::resolve_dispatches` (`census/placement.rs` ≈265) collects the children of each final tile; a `CodexThreadHost` row's child joins only when the hierarchy moved it (`moved`), else it is skipped. `tree::join_dispatches` (`census/tree.rs` ≈344) folds a shell only into a `ChildKind::Thread` row in the same tile whose `CodexThreadId::Recorded` equals the dispatch identity. `folds_dispatch` (≈307) hides the shell; `dispatch_label` (≈328) gives the worker row the job. Claude seats fold through `ClaudeDispatchFold` and `fold_claude_dispatches` (`scan.rs` ≈929).
@@ -1271,37 +1246,440 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of a director tile during a `follow` dispatch to a worker whose app-server an earlier dispatch started shows only the worker row with its job. The checkpoint adds one Change-Review line for C86 and C87.
 
-### Phase 43 — Ages drop the seconds field  · status: todo
+### Phase 43 — Ages read d:hh:mm, right-aligned  · status: done
+
+#### As-built
+
+Every session age in the summary and in every tile reads `d:hh:mm` with only the fields that exist. The values and the `age` header align to the right edge of the column.
+
+- `summary::age::age_label(seconds: u64) -> String` writes whole minutes: `0` under one minute, `10`, `1:10`, `10:10`, `1:02:10`, `110:00:00`. The leading field has no zero pad. Each later field has two digits. There are no unit letters and no seconds.
+- `AgeLayout { width }` keeps one measured width per drawn group: the widest label over every row of the group, offscreen rows included. Its API is `from_ages`, `const fn width` and `format`, which right-pads a label to the width. The summary builds one layout over all listed ages (`age_layout`). A tile group uses its local layout or the shared `TreeSizing::Shared` metrics.
+- `SummaryColumn::Age` and the tile `TreeColumn::Age` use `Alignment::Right` for the header and the values.
+- `AgeParts`, `AgeSlot`, `AGE_UNITS` and `AGE_DETAIL_BELOW` do not exist. The accounts table `read` column (`read_age`) keeps its own form.
+
+**Files:**
+- `crates/cargo-handler/src/summary/age.rs` — `age_label`, `AgeLayout`, and the label test `ages_read_in_their_largest_unit`
+- `crates/cargo-handler/src/summary/mod.rs` — the summary age column and `age_layout`
+- `crates/cargo-handler/src/agent_cell.rs` — tile age cells (`cell_text`) and the `AgeLayout` of each group
+- `crates/cargo-handler/src/summary/age_layout_tests.rs` — the right edge of values and header in the summary and in a tile
+- `crates/cargo-handler/CHANGELOG.md` — one Changed line for the new age form
+
+**Binds later work:** the redraw deadline work ("Tile hosts draw only frames that change", "cargo-handler idles under 1 % of one core, second cut") treats age text as a value that changes once a minute for each session. "Narrow tiles keep tree guides, readable names and one header inset" owns the rule that a column empty on most rows gives its width to session names. "Agent tiles show model and effort columns" follows the same rule.
+
+**Gotchas:**
+- Each age changes at the elapsed-minute boundary of its own session, not at one shared wall-clock minute.
+- In a narrow tile, the narrower age frees width. That width can admit a type column that is empty on most rows, and session names then lose letters.
+- Age alignment tests compare exact labels at the right edge of the `age` header. There are no per-unit slots to compare.
+
+**Ruled out:** unit letters and a seconds field in the age (user ruling 2026-10-29).
+
+### Phase 46 — A sleep shell shows the role `timer`  · status: done
+
+#### As-built
+
+- A shell row whose census observation is a countdown (`ShellTimerObservation::ObservedCountdown`) shows `timer` in the role column. Every other shell keeps an empty role cell.
+- `ShellPurpose { Timer, Command }` is built `From<&ShellTimerObservation>`: `ObservedCountdown` is `Timer`, `Untimed` is `Command`. `TreeLine::role_text` returns `TIMER_ROLE` for `Timer` and `""` for `Command`.
+- The role never comes from the row's display text. A tool call's description replaces the command as the row name, so the name cannot decide. A described countdown shell (name `Wait for completion`) shows `timer`. An untimed shell named `sleep 300` shows no role.
+- `sleep infinity` has no countdown, so it shows no role.
+- Sort and column width use the same role text, so `timer` sorts and fits like any role.
+- `ChildKind` is unchanged.
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs` — `ShellPurpose` and the shell role text in `TreeLine::role_text`
+- `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` — role tests for observed countdown, described countdown, untimed `cargo`, and untimed `sleep 300`
+- `crates/cargo-handler/src/constants.rs` — `TIMER_ROLE`, next to `SHELL_ROLE`
+
+**Binds later work:** fixture updates for tile-tree tests keep the `timer` role and the countdown text on countdown shell rows.
+
+**Gotchas:** the shell purpose comes from the census observation only. Reading it from the display description or the command text gives wrong roles.
+
+**Ruled out:** a `ChildKind` variant for timers (it touches about 20 sites in `census/mod.rs`).
+
+### Phase 47 — cargo-handler idles under 1 % of one core, second cut  · status: todo
+
+**Depends on:** Phase 40
+
+#### Work Order
+
+**Goal:** an idle cargo-handler uses less own CPU than the installed binary, as the second cut toward under 1 % of one core (0.60 own CPU-s per minute at most). Phase 54 holds the under-1 % gate.
+
+**Source:** showrunner ruling, 2026-10-29: Phase 40 landed at 9.7 % of one core (5.81 own CPU-s per minute; installed 13.2 %), and the under-1 % target moved here. CPU work ranks first after Phases 41 and 46. Remaining-cost table: unit session `phases/47/source.md`.
+
+**Constraints from prior phases:**
+- Keep the Phase 40 preservation tests green: parsed, malformed and failed run reads (`census/activity_regression_tests.rs` ≈225–375) and retained command answers, clock expiry, retry, replacement and directory removal (`census/command_inputs.rs` ≈453–628). Cache states stay implementation-only; activity, account readings (failure surface `census/accounts.rs` ≈214) and hierarchy membership and notices must still reach the display.
+- Shared files after this phase: `census/scan.rs` (also Phases 49a, 42, 35, 21) and `census/hierarchy.rs` (also Phase 34) belong to this phase until its checkpoint; later phases keep this phase's CPU acceptance test green.
+- Phase 40 keeps one `System` per scan and per hierarchy, refreshes in place, reads no executable paths, detects a same-pid exec through `CurrentProcessNames` (`census/scan.rs`), keeps parsed run records keyed by file revision (`census/activity.rs`), and runs the account and hierarchy scripts only when their inputs change (`census/command_inputs.rs`). Keep each of these behaviours and their regression tests.
+- Remaining cost per minute, largest first (release profile): run directory listing and file stats 1.20 CPU-s, ancestry `System` refresh 1.14, frame draw 0.84, process commands and directories 0.76, transcript subagents 0.27, agent environments 0.27, worker dispatches 0.23, process names 0.23, app server thread data 0.19; each other step is under 0.06.
+- The `System` refresh alone is over the budget, so a full process enumeration every 2 s cannot stay.
+- On macOS, `CurrentProcessNames::read` (`census/scan.rs`) runs `/bin/ps -axo pid=,ucomm=` on every scan; cut that cost too, and measure the Mac build as well as Linux.
+- Since main 655c7948, `census/hierarchy.rs` holds its snapshot tests inline (`mod tests { mod snapshot }`), and `command_inputs.rs` is a `#[path]` child module of `hierarchy.rs`.
+- Measure with the Phase 40 method: the release branch binary and the installed binary idle in the same 60 s window against the real `/tmp/claude` tree, own CPU and child CPU apart.
+
+**Spec:**
+1. Measure first: profile each step on the release build, then fix the largest costs at their cause.
+2. Run directories: list and stat a directory only when it changes (a file change watch, with a named recovery scan for the cases a watch cannot see).
+3. Processes: refresh only the rows whose process changed (new pid/start time, exec, or a directory change); never enumerate every process field on a routine tick.
+4. Frame draw: draw a frame only when its content, geometry or a time-dependent text changes. The redraw decision is in `terminal.rs` (≈168, ≈184; `app.rs` ≈337 gives only the favorites deadline). Replace `Ticker::shown_second: Option<u64>` (`terminal.rs` ≈100) with a named display-time state that asks each time-dependent text for its next change: shell countdowns, account reading ages, notices, motion, Uptime and the `age` column (per second now; per minute after Phase 43). Test that an unchanged frame is skipped and that each of these time changes draws.
+5. Recovery: each removed scan keeps a named recovery path. Name and test the behaviour for an unavailable watch, lost events, a replaced or removed directory, a new session, process exit, pid reuse, same-pid exec and a cwd change, with a bounded recovery interval on Linux and macOS. Counted tests prove that recovery updates the displayed activity and membership, and that an unchanged tick does less work.
+6. Counted, red-first regression tests for each cut, each under 1 s.
+7. Live measurement as in Phase 40: state the own CPU of the branch and of the installed binary in one paired window.
+
+**Files:**
+- `crates/cargo-handler/src/census/{activity.rs,scan.rs,hierarchy.rs,command_inputs.rs,activity_regression_tests.rs}` — the watched run records and the changed-row process refresh
+- `crates/cargo-handler/src/app.rs` — draw only on change
+- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/terminal.rs` — the redraw decision, the display-time state and their inline tests
+- `crates/cargo-handler/src/render/mod.rs` — the status draw, reachable in the crate so a clock-only frame redraws only the status line (one line; Phase 43 holds the file until its checkpoint and lands first)
+- `crates/cargo-handler/Cargo.toml`, `Cargo.lock` — the workspace `notify` dependency for the watched run records
+- `crates/cargo-handler/src/census/transcript.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — running subagents and worker prompts read once per change, in their owning readers
+
+**Workers:** 1 writer (`test` seat, which wrote Phase 40).
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Phase 47 checkpoints its measured gain (showrunner ruling, 2026-10-30: the branch is below the installed binary in a paired Phase 40 measurement). The under-1 % gate (0.60 own CPU-s per minute) moves to Phase 54. The checkpoint adds a Change-Review line.
+
+### Phase 48 — The focus tint fills the whole tile  · status: todo
 
 **Depends on:** none
 
 #### Work Order
 
-**Goal:** the `age` column in the summary and in every tile shows days, hours and minutes only; units stay aligned in their slots.
+**Goal:** a focused tile's tint covers its whole interior, edge to edge, from the row below its top border to its foot readout, as one uniform tint, in cargo-handler and cargo-tile.
 
-**Source:** change review C88 follow-up (user via the showrunner, 2026-10-28): "yes ages line up - but have handler remove the seconds column - it's not useful". Comes back as a Change-Review line. Unit session `phases/43/source.md`.
+**Source:** user, 2026-10-29, after enabling Ghostty `background-opacity-cells`: the focused summary tile is tinted only under its two tables, and the empty rows below stay clear ("i'm not sure i appreciate the esthetic"). Showrunner approved the whole-interior tint. Unit session `phases/48/source.md`.
 
 **Constraints from prior phases:**
-- `AGE_UNITS` (`constants.rs` ≈172) is `[(86_400, "d"), (3_600, "h"), (60, "m"), (1, "s")]`; `AGE_DETAIL_BELOW` (≈175) is 10. `summary/age.rs` builds `AgeParts` (one slot per unit), `age_label` and `AgeLayout::{from_ages, width, format}`; each drawn group shares one `AgeLayout` (phase 23). Users: `agent_cell.rs` (≈708, ≈959, ≈1299, ≈2314, ≈2490, ≈2847) and `summary/mod.rs` (≈913, ≈964).
-- The accounts table `read` column (`read_age`, `summary/accounts.rs` ≈346) is a reading age, not an `age` column; it keeps its seconds (unit director's scope call).
-- `constants.rs` is also in Phase 40's and Phase 41's **Files**; change only `AGE_UNITS` and its doc comment, and claim the file after their reservations or `--before` them.
+- `tiles/draw.rs` ≈486-489 takes the ground from `pane_background(placement.frame.is_focused())`; ≈566 says focus is the background tint under a tile's contents and lights the border only where the screen is transparent and no tint is painted.
+- `tiles/draw.rs` is also in tile-unit's fill-fix work: claim it through berth; whoever lands second merges main and resolves.
 
 **Spec:**
-1. Minutes are the smallest age unit. An age under one minute draws `0m` (unit director's call: it keeps the minute slot and the column width; a one-line revert if the showrunner wants another word). `5m 3s` becomes `5m`; `2h 29m` and `3d 4h` stay.
-2. `AgeLayout` measures and aligns only the d, h and m slots; no blank seconds slot keeps width.
-3. Tests, red first: `ages_read_in_their_largest_unit` (`summary/age.rs`) has the new cases (0 and 45 s → `0m`, 5 min 3 s → `5m`); `summary/age_layout_tests.rs` aligns d/h/m with no seconds slot in the summary and a tile; fixtures that show seconds (`agent_cell.rs` ≈3259, `agent_cell/tests/column_visibility_tests.rs` ≈643, `agent_cell/tests/repair_tests.rs` ≈202, and any other the suite names) change to the new text. Each test under one second.
-4. CHANGELOG: one line under Changed.
+1. Paint the focus tint on every interior cell of the focused tile, content rows and empty rows alike, and on its foot readout row; an unfocused tile paints no tint.
+1a. Transparent screen (showrunner ruling 2026-10-29, review F001): the focused tile paints no ground at all, content rows included; focus shows only as the lit border. One owner (`tint_painted()`) decides the ground for the fill, the content and the readout fading.
+2. Red-first test: a focused tile with fewer content rows than its height has the tint on the empty rows below the content and on the cells right of short content rows; an unfocused tile has none; on a transparent screen the focused tile paints no ground on content, empty or readout rows. Under 1 s.
+3. CHANGELOG: one line under Changed in tui_pane.
 
 **Files:**
-- `crates/cargo-handler/src/constants.rs` — `AGE_UNITS` only
-- `crates/cargo-handler/src/summary/age.rs` — slots, label and tests
-- `crates/cargo-handler/src/summary/age_layout_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/repair_tests.rs` — expected text
-- `crates/cargo-handler/src/agent_cell.rs` — fixture text only
+- `crates/tui_pane/src/tiles/draw.rs` — the tint fill and its test
+- `crates/tui_pane/CHANGELOG.md`
+
+**Workers:** 1 writer (`impl`).
+
+**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-handler` and `verify.sh lint tui_pane` clean; no test takes a second. Live: a shot of cargo-handler with the summary focused shows one uniform tint over the whole tile. The checkpoint adds a Change-Review line.
+
+### Phase 54 — Tile hosts draw only frames that change  · status: todo
+
+**Depends on:** Phase 48, Phase 47
+
+#### Work Order
+
+**Goal:** an idle cargo-handler and an idle cargo-tile draw a frame only when something visible changes, so each idles under 1 % of one core (0.60 own CPU-s per minute at most).
+
+**Source:** showrunner ruling, 2026-10-30, on Phase 47's next cut: the tui_pane grid gives one "visual state changed" answer (motion, column bands, titles), a host skips equal frames, and cargo-tile uses it in the same phase so both hosts gain. Unit session `phases/47/impl_summary_test.txt`.
+
+**Constraints from prior phases:**
+- Phase 47 release profile, cargo-handler idle, per minute: 1043 body frames cost 1.28 own CPU-s; `TileGrid::tick` (`tiles/grid.rs` ≈2160) asked for 936 of the repaints, one on every tick while `GridMotion` is not `Settled`.
+- The public placements give cell content and `PaneFrame` only; column bands, title ownership and motion heights live in `TileDrawing` and `tiles/draw.rs`, so a host cannot prove from placements alone that a frame is unchanged.
+- Hosts: cargo-handler `terminal.rs` ≈326 (`app.tiles.tick()`, Phase 47's display-time state); cargo-tile `terminal.rs` ≈227 and `render.rs` ≈8682.
+- `tiles/draw.rs` is Phase 48's until its checkpoint; cargo-tile's files may be held by tile-unit: claim through berth (the showrunner tells tile-unit).
+- `draw_tile_grid` (`tiles/draw.rs` ≈384) prepares the measurements before it paints, and records the painted geometry after it paints (`record_painted_cells`, `record_painted_summary_frames`). Phase 9 reads that last painted record for clicks; keep that use.
+- `age_label` (`crates/cargo-handler/src/summary/age.rs` ≈4) writes elapsed whole minutes from each session's own start. So each session's age text changes at its own elapsed-minute boundary, not at one shared wall-clock minute. A label that gains a digit or a `:` part also widens the shared age column (`AgeLayout`, same file). Neither change comes with a census revision.
+
+**Spec:**
+1. One owner in `tiles/` gives the visual state of the grid (motion step, column bands, titles, motion heights) and answers whether it changed since the last drawn frame. No host compares parts of it by hand.
+2. `TileGrid::tick` asks for a repaint only when that answer is yes.
+3. cargo-handler and cargo-tile each skip a frame whose visual state and content are equal to the last drawn one.
+4. The comparison state changes only after a body frame is painted. Hold it in an explicit enum, for example `LastPainted::{NeverPainted, Painted(..)}`. A poll that draws no body, and a status-only draw, leave it unchanged.
+5. The display-time state asks each session's age for its own next change: the next elapsed-minute boundary of that session, and the next width growth of the shared age column. No census revision is needed for either draw.
+6. Red-first counted tests in tui_pane and in each host: an unchanged settled grid asks for no frame; each motion step, band change and title change asks for one; several polls with no body draw keep the comparison state; status-only draws keep it; fading content with settled geometry still draws each fade step; motion completes after skipped equal frames; age deadlines for sessions with offset starts each draw at their own minute; an age width growth draws with no census revision. Each under 1 s.
+7. Live measurement in both hosts, before and after, with the Phase 40 paired method: own CPU under 1 % of one core, and no worse than the installed binary.
+8. CHANGELOG: one Changed line in tui_pane, cargo-handler and cargo-tile.
+
+**Files:**
+- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs` — the visual state owner, the last painted state and their tests
+- `crates/tui_pane/CHANGELOG.md`
+- `crates/cargo-handler/src/terminal.rs`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/summary/age.rs` — each session's next age change
+- `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/CHANGELOG.md`
+
+**Workers:** 1 writer (`test` seat, which wrote Phase 47).
+
+**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-handler`, `verify.sh test cargo-tile` and `verify.sh lint tui_pane` clean; no test takes a second. Final CPU gate (moved from Phase 47): own CPU under 0.60 CPU-s per minute in the Phase 40 paired method, measured in cargo-handler and in cargo-tile. The checkpoint adds a Change-Review line.
+
+### Phase 55 — Narrow tiles keep tree guides, readable names and one header inset  · status: todo
+
+**Depends on:** Phase 48
+
+#### Work Order
+
+**Goal:** at every tile width, each row keeps its tree guides, session names stay readable, and every tile header sits over the names.
+
+**Source:** Phase 43 design check, 2026-10-30, on `phases/43/shots/ages_120x40.png` and `ages_200x50.png` (routed from Phase 43, items F002–F005). Showrunner, 2026-10-30, on main-binary reruns: one came from the age change. In the 120×40 natedev tile the narrower age frees room that admits the type column, empty on most rows, and session names lose one more letter than on main.
+
+**Constraints from prior phases:**
+- Phase 27 keeps the core columns on narrow tiles; `TreeColumns::for_lines` (`agent_cell.rs` ≈453) keeps a column only when a drawn row has a value. Phase 49b adds model and effort columns in the same file and runs after this phase.
+- `tree_header` (`agent_cell.rs` ≈2459) removes the header inset under compression: when the session budget is below the session header width, it sets `SessionHeaderLead::Flush`.
+- `tree_cell_line` (`agent_cell.rs` ≈2602) drops the whole guide prefix when fewer than two name cells remain after it.
+- Both width paths drop Directory, Branch, Type, Age and Account in that order: local fitting through `ColumnDrop::ORDER` (`agent_cell.rs` ≈504) and shared-column fitting through `GroupFitStep::ORDER` (≈936). Age is in both orders today.
+- cargo-handler gives the grid its minimum tile width through `Cells::measure_trees` (`crates/cargo-handler/src/render/mod.rs` ≈459, from `TreeMeasurement::minimum_tile_width`, `agent_cell.rs` ≈817) and `set_min_tile_width` (≈175). It also sets `TileWidthFloor::CompressSingleColumn` (≈177), which lets one column go below that minimum.
+
+**Spec:**
+1. At 120×40 the natedev tile drew two depth-3 rows ("ws-impl…", "Dispatch…") at the tile's left edge with no guides. Draw every row's guides at its own depth at every width; cut the name after the guides, never the guides.
+2. The same tile cut session names to two letters ("re…" for both "report" and "resources") beside a type column empty in 17 of 19 rows. Give an empty column's space to the session column, as the hana tile does. A column that is empty on most rows never takes room from session names.
+3. Its header "session ▲" started flush at the guides; the other tiles' headers sit 3 cells in, over the names. One header inset for every tile.
+4. Minimum agent tile width (showrunner ruling, 2026-10-30). An agent tile's minimum width is its deepest drawn guide prefix plus a minimum readable name plus the age column. The grid never gives an agent tile less than that. Optional columns drop first. A tile that cannot get its minimum goes to overflow and counts in `+n unseen`; the handler overflow work draws that count.
+5. Red-first buffer tests for 1–3 at the widths that failed. Tests for 4 at the minimum-width boundary, in local fitting and in shared-column fitting: at the minimum, every row keeps its guides, a readable name and its age; one cell less does not give the tile that width. Each test under 1 s.
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/agent_cell/tests/` — tree guides, column space, header inset, the minimum width
+- `crates/cargo-handler/src/render/mod.rs` — the minimum width that reaches the grid
 - `crates/cargo-handler/CHANGELOG.md`
 
-**Workers:** 1 writer (`impl`); one small rule change with fixture updates.
+**Workers:** 1 writer (handler tree).
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of the summary and one tile shows ages with no seconds and aligned d/h/m slots. The checkpoint adds a Change-Review line.
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: shots at 200×50 and 120×40 pass a fresh design check. The checkpoint adds a Change-Review line.
+
+### Phase 56 — The rows readout is off by default  · status: todo
+
+**Depends on:** Phase 48, Phase 54
+
+#### Work Order
+
+**Goal:** the tile rows readout is hidden by default in cargo-tile and cargo-handler, and one key shows and hides it for the session.
+
+**Source:** showrunner ruling, 2026-10-30, copied from the tile-fixes plan, Phase 32 Work Order. The ruling moved out of Phase 55 into this phase on 2026-10-30.
+
+**Constraints from prior phases:**
+- Showrunner ruling, 2026-10-30: handler-unit owns tui_pane `tiles/draw.rs` and `tiles/grid.rs` for this work. Phase 48 edits `tiles/draw.rs`, and Phase 54 edits `tiles/draw.rs` and `tiles/grid.rs`; this phase starts after both checkpoints.
+- Phase 36: `RowsReadout` (`crates/tui_pane/src/tiles/draw.rs` ≈99) is `Count(usize)` or `Selected(SelectedRow)`, a selection checked by `RowsReadout::selected`. It keeps its name, its checked selection value and its visible text. Phase 36 ruled out a hidden readout in its own scope; the 2026-10-30 ruling replaces that here.
+- The demand adds the readout row in `add_readout_rows` (`tiles/draw.rs` ≈711) through `rows_readout_height` (≈939). The draw is `draw_rows_readout` (≈767), called after the cell paints from `draw_cell_with_rows_readout` (≈677).
+- `content_area` (`tiles/draw.rs` ≈928) gives the cell interior above the readout row. `tiles/grid.rs` calls `draw::content_area` in its allocation, motion and fit paths. `content_click` (`crates/tui_pane/src/tiles/host.rs` ≈176) maps a press through `content_area` too.
+- The tile foot row also holds host foot content: tui_pane `SummaryFoot` (`tiles/draw.rs` ≈238). cargo-tile's `foot` (`crates/cargo-tile/src/render.rs` ≈283) gives `SummaryFoot::Text` with its memory total, drawn on the same foot row as the readout.
+- The `+n unseen` count comes from `UnseenTiles` (`crates/tui_pane/src/tiles/flow_layout.rs` ≈151). It is private packer output and nothing draws it yet. The handler overflow work draws it.
+- cargo-port draws through `tui_pane::render_panes` (`crates/cargo-port/src/tui/render.rs` ≈156). It has no tile grid and no rows readout, so the readout is already absent there. This phase does not touch cargo-port.
+
+**Spec:**
+1. The tui_pane tile rows readout (`content rows: N  r/c: R/C`, `draw_rows_readout`) is a layout aid. It is off by default in cargo-tile and cargo-handler.
+2. The visibility is one enum, `RowsReadoutVisibility::{Hidden, Shown}`, default `Hidden`. The demand path (`add_readout_rows`, `rows_readout_height`) and the draw path (`draw_rows_readout`) read it. When it is `Hidden`, the demand adds no readout row. When it is `Shown`, the readout text does not change.
+3. One key turns the readout on and off for the session, with no settings entry. tui_pane defines the action in its shared keymap and shows it in the keys bar. cargo-tile and cargo-handler bind it. Use a key that is free in both keymaps, and record the key in this Work Order.
+4. One content allocation (showrunner ruling, 2026-10-30). `content_area` becomes visibility-aware. Drawing (`content_area`) and clicks (`content_click`) read that one allocation, so they cannot disagree. When the readout is hidden, a tile whose host has foot content keeps the foot row for that content. A tile with no foot content gives the row back to content.
+5. Handoff to the handler overflow work: it draws `+n unseen` with no dependency on the readout state. A clipped piece's red shortfall count draws only while the readout is `Shown`. The overflow work adds the `+n unseen` test in both readout states. Tell the showrunner when this phase lands.
+6. Red-first tests, each under 1 s: by default no tile draws or demands a readout row; the key shows the readout with unchanged text and hides it again; hiding the readout leaves the foot's other content drawn (the cargo-tile memory total); a tile with no foot content draws content on the reclaimed last row; a press on the reclaimed last row maps to the content row drawn there while the key toggles and during motion; a host with foot content keeps its foot row in both states.
+7. CHANGELOG: one Changed line in tui_pane.
+
+**Files:**
+- `crates/tui_pane/src/tiles/draw.rs` — `RowsReadoutVisibility`, the demand, the draw, `content_area` and their tests
+- `crates/tui_pane/src/tiles/grid.rs` — the visibility state and the callers of `draw::content_area`
+- `crates/tui_pane/src/tiles/host.rs` — `content_click` reads the one allocation
+- `crates/tui_pane/src/keymap/` — the shared action and its keys bar entry
+- `crates/cargo-tile/src/keymap.rs`, `crates/cargo-handler/src/keymap.rs` — the key's binding in each host
+- `crates/tui_pane/CHANGELOG.md`
+
+**Workers:** 1 writer (tui_pane and hosts).
+
+**Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: shots of cargo-handler and cargo-tile with the readout hidden and shown. The checkpoint adds a Change-Review line.
+
+### Phase 49a — The census reads each agent's model and effort  · status: todo
+
+**Depends on:** Phase 40, Phase 41, Phase 47
+
+#### Work Order
+
+**Goal:** every Claude and Codex agent row, and each subagent row whose record names one, carries its model's short name and its reasoning effort as typed values, read once when the row appears or its record changes.
+
+**Source:** user, 2026-10-29: "handler - in the cells needs a column for the short model name - like opus, astra, sol - and the effort also". Showrunner approved, with a CPU condition: read model and effort once, when an agent appears or its record changes, never per frame or per poll; state the added cost at the checkpoint. Unit session `phases/49/source.md`. Phase 49b draws the columns.
+
+**Constraints from prior phases:**
+- `AgentRow` (`census/mod.rs` ≈312) holds `agent`, `service_tier`, `account`, `name`, `activity`, `started`; rows also cross the probe wire from other machines ("missing from a probe printed before it existed"), so a new field needs a wire default for an older probe.
+- No model or effort reads exist yet. Candidate sources: the Claude transcript's assistant records (`message.model`, `census/transcript.rs`) and the session's effort setting; the Codex rollout's `turn_context` (`model`, `effort`) and the Codex thread records `census/codex.rs` reads (Phase 41 changed its thread queries: `ThreadsLayout::{WithThreadSource, OriginatorOnly}`); a worker dispatch line such as `codex/gpt-6.1-sol:high` (`census/worker_dispatch`).
+- Read model and effort by extending the existing transcript and rollout readers: Codex conversation data flows through `Rollouts` (`census/tier.rs` ≈401) and its calls in `census/scan.rs` (≈406, ≈486, ≈628); keep their revision and append checks. (`RunRecords::read_for_processes`, `census/activity.rs` ≈658, reads verification records and is not the path.)
+- `Rollouts::thread` returns `Option<&RolloutRead>` (`census/tier.rs` ≈425). Give it a named result such as `ThreadRollout::{NotRetained, Retained(..)}`, and keep a retained record with unrecorded model or effort distinct from a missing rollout; add no domain-owned `Option` fields.
+- Rows are built in `census/tree.rs` (subagents ≈657, flattened children ≈740) and `census/classify.rs`.
+- Phase 47 owns `census/{activity.rs,scan.rs,hierarchy.rs,command_inputs.rs,activity_regression_tests.rs}` and `app.rs`; claim a shared file through berth, or keep the read in `transcript.rs`, `codex.rs` and a new `census/model.rs`.
+
+**Spec:**
+1. One typed model name: `ModelName` with a short form from one table (`opus`, `sonnet`, `haiku`, `fable`, and the Codex names such as `astra`, `sol`), and `ModelName::Unrecorded` where no record names one. An unknown full id keeps a short form cut by one rule (the last word of the id with no version digits), never a placeholder string.
+2. One typed effort: `ReasoningEffort::{Low, Medium, High, XHigh, Max, Unrecorded}` from the record's word.
+3. Read each value from the agent's own record when the row first appears and again only when that record's revision changes. Subagents take theirs from their own record when it names one, else `Unrecorded`. Shells carry `Unrecorded`.
+4. `AgentRow` and `ChildRow` (`census/mod.rs` ≈437) carry both. Subagents use `ChildRow`, and managed and unassigned Codex threads also use `ChildRow`. Each thread carries its own model and effort through its child row and the probe wire, never the values of the process that hosts it. The probe wire carries them with an `Unrecorded` default for an older probe.
+5. Red-first tests, each under 1 s: an unchanged record is not read again, appended settings are read, a replaced record is read anew; a Claude transcript fixture gives `opus` + its effort; a Codex rollout or thread fixture gives `sol` + `high`; a thread fixture whose model and effort differ from its hosting process's values keeps its own values on its child row and across the probe wire; an unchanged record is not read again (a counted read); an older probe line parses with `Unrecorded`; the short-name table covers each listed name.
+6. Measure the added cost on the release build in the Phase 40 way and state it at the checkpoint.
+
+**Files:**
+- `crates/cargo-handler/src/census/model.rs` — `ModelName`, `ReasoningEffort`, the short-name table and their tests
+- `crates/cargo-handler/src/census/transcript.rs` — the Claude read
+- `crates/cargo-handler/src/census/codex.rs` — the Codex read
+- `crates/cargo-handler/src/census/mod.rs` — the row fields
+- `crates/cargo-handler/src/census/probe.rs` — the wire fields and their default
+- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/tier.rs` — `Rollouts` and the `ThreadRollout` result
+- `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/classify.rs` — carry the values to the rows (after Phase 47 hands off `scan.rs`)
+
+**Workers:** 1 writer (a new role-named seat `model` when every open seat is busy).
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. The checkpoint states the measured added CPU cost. Change-Review: none (the columns arrive in Phase 49b).
+
+### Phase 49b — Agent tiles show model and effort columns  · status: todo
+
+**Depends on:** Phase 49a, Phase 43, Phase 55
+
+#### Work Order
+
+**Goal:** agent tile rows show the model's short name and the reasoning effort in their own columns.
+
+**Source:** as Phase 49a. Unit session `phases/49/source.md`.
+
+**Constraints from prior phases:**
+- Two width paths: local fitting uses `ColumnDrop::ORDER` (`agent_cell.rs` ≈503); tiles that share a screen column use `GroupFitStep::ORDER` (≈935). Both drop effort before model; test both.
+- A click on the `model` or `effort` header sorts by the drawn value through `TreeLine::compare` (≈1260), `Unrecorded` included.
+- `TreeColumn` (`agent_cell.rs` ≈341) is `Session, Type, Role, Status, Account, Branch, Directory, Age`; `alignment` (≈357) and the header text (≈380) are per column. Phase 55 replaces the rule of `TreeColumns::for_lines` (≈453), which kept a column when some drawn row had a value: a column that is empty on most rows never takes room from session names. Phase 27 keeps the core columns on narrow tiles; Phase 43 changes the age text in the same file.
+- Phase 49a gives each row `ModelName` and `ReasoningEffort`, both with an `Unrecorded` case.
+
+**Spec:**
+1. `TreeColumn::Model` (header `model`) and `TreeColumn::Effort` (header `effort`), after `Role`, left-aligned; `Unrecorded` draws nothing. Phase 55's rule applies to both columns: a column that is empty on most rows never takes room from session names.
+2. On a narrow tile the two columns drop before `Branch` and `Directory` keep their place (effort first, then model).
+3. Red-first tests, each under 1 s: a tile with a Claude and a Codex row shows `opus`/`sol` and their efforts; a tile of shells drops both columns; a narrow tile drops effort, then model, before the core columns. Sparse values: a tile where model and effort are recorded on few rows gives their space to session names, in local fitting and in shared-column fitting. Update fixture text the suite names.
+4. CHANGELOG: one line under Added.
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs` — the columns
+- `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs` — tests
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer (`impl`).
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of a tile with Claude and Codex rows shows both columns. The checkpoint adds a Change-Review line.
+
+### Phase 50 — Slow cargo-handler tests run under a second  · status: todo
+
+**Depends on:** Phase 41, Phase 43, Phase 47, Phase 48
+
+#### Work Order
+
+**Goal:** every cargo-handler test that takes over one second runs under one second.
+
+**Source:** Phase 40's full test run, 2026-10-29: three existing tests took 1.46 s (gradient), 1.27 s (busy ink) and 1.04 s (codex tier). Phase 43's full run, 2026-10-29: five more took 1.0–1.6 s (`render::selected_ink_tests::selected_row_inks_keep_glyph_contrast_for_sessions_roles_accounts_and_both_timer_states`, `…_in_default_light`, `…every_default_dark_roles_ink_keeps_coverage_and_hue_on_tinted_remembered_selection`, `…every_default_dark_sessions_ink_keeps_coverage_and_hue_on_tinted_remembered_selection`, `agent_cell::tests::design_ink_tests::tree_role_and_account_words_meet_contrast_on_every_tile_ground`); showrunner put them here, after 47, 48 and 43: cause found first, no rerun, no load blame. Phase 25's Codex slow test (showrunner, 2026-10-24: 1.510 s in the phase 30 full suite at high machine load) moved here on 2026-10-30. Standing rule: no test takes a second; a slow test is a defect to fix, never to rerun.
+
+**Constraints from prior phases:**
+- The nine tests, all under `crates/cargo-handler/src/`:
+  - `reset_shades_keep_saturated_chroma_and_separation_from_plain_text` (`summary/accounts_gradient_tests.rs` ≈532)
+  - `busy_status_words_share_one_drawn_ink_across_row_kinds_and_frame_changes` (`agent_cell/tests/design_ink_tests.rs` ≈99)
+  - `tree_role_and_account_words_meet_contrast_on_every_tile_ground` (`agent_cell/tests/design_ink_tests.rs` ≈336)
+  - `selected_row_inks_keep_glyph_contrast_for_sessions_roles_accounts_and_both_timer_states` (`render/selected_ink_tests.rs` ≈133)
+  - `selected_row_inks_keep_glyph_contrast_in_default_light` (`render/selected_ink_tests.rs` ≈138)
+  - `every_default_dark_roles_ink_keeps_coverage_and_hue_on_tinted_remembered_selection` (`render/selected_ink_tests.rs` ≈944)
+  - `every_default_dark_sessions_ink_keeps_coverage_and_hue_on_tinted_remembered_selection` (`render/selected_ink_tests.rs` ≈984)
+  - `codex_session_fast_tier_draws_on_summary_tree_and_unassigned_accounts` (`census/codex_session_tests.rs` ≈291)
+  - `codex_resume_last_uses_the_newest_older_thread_in_its_home_and_directory` (`census/codex_session_tests.rs` ≈447, module `census::scan::codex_session_tests`)
+- Find each by name in a `verify.sh test cargo-handler` run's timing output. Fix each at its cause (the work it repeats, a real sleep, a fixture built per case), never by weakening an assert.
+- A test that runs under a second alone but over a second in the full suite is still a defect. There is no exemption for a test that is fast alone.
+
+**Spec:**
+1. Run the suite, name all nine tests and measure each alone and in the full suite.
+2. Cut each at its cause; keep every assert.
+3. Show each test's time before and after, alone and in the full suite.
+
+**Files:**
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the gradient test
+- `crates/cargo-handler/src/agent_cell/tests/design_ink_tests.rs` — the busy ink and tree contrast tests
+- `crates/cargo-handler/src/render/selected_ink_tests.rs` — the four selected-row ink tests
+- `crates/cargo-handler/src/census/codex_session_tests.rs` — the Codex tier test
+
+**Workers:** 2 writers.
+- `palette` — the gradient, design-ink and selected-ink test files.
+- `census` — `census/codex_session_tests.rs`, both Codex tests.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean with no test over one second; lint clean. Change-Review: none (test time only).
+
+### Phase 51 — Design check follow-ups: the timer shot and a stale unassigned row  · status: todo
+
+**Depends on:** Phase 47
+
+#### Work Order
+
+**Goal:** the `timer` role is proved in a live shot with its row in view, and the unassigned pane never draws more rows than it counts.
+
+**Source:** showrunner design check of the Phase 46 and 41 shots, 2026-10-29 ≈16:25 EDT. Unit session `phases/51/source.md`; shots `phases/46/live/handler-timer.png`, `phases/41/live/handler_named.png`.
+
+**Constraints from prior phases:**
+- Phase 46: the role comes from `ShellTimerObservation::ObservedCountdown`; the shot showed only the first rows of each pane, so the sleep shell was out of view.
+- Phase 41's shot: the unassigned pane says "content rows: 2 of 2" and draws 3 rows; the third, `phase41-check`, has the same status, account, branch and age as `cargo-liner-handler-c6`, with only its session cell lit.
+- `SurfaceSelection::rows_readout` (`crates/cargo-handler/src/interaction.rs` ≈361) counts selectable identities. An unassigned table also draws its header line, which the count does not include.
+- Phase 56 hides the rows readout by default; its key shows it.
+
+**Spec:**
+1. Retake the live capture with a sleep shell's row in view showing `timer`; send the path.
+2. Find out whether `phase41-check` is a real second session or a row left from an earlier frame. Stale: the pane clears every row it no longer draws. Real: the count includes it. Red test first for whichever it is, under 1 s.
+3. CHANGELOG: one Fixed line when code changes.
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs` — the unassigned pane rows and count (the writer names any other file in a blocked post)
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Spec 2 holds only with a reproduction of the extra session identity or of stale cells across consecutive frames. Equality of the drawn line count and the readout count is not the rule. Live: both shots; captures taken after Phase 56 turn the readout on with its key. The checkpoint adds a Change-Review line when code changes.
+
+### Phase 52 — No child stderr reaches the terminal  · status: todo
+
+**Depends on:** Phase 47
+
+#### Work Order
+
+**Goal:** no command that cargo-handler starts can write to the terminal it draws on.
+
+**Source:** user, 2026-10-29 (image 7): raw lines `~/.claudeN: mcpServers: - brp` (N = 1..4) appear at column 0 under the summary accounts table, over the tile border. The accounts script writes an MCP-server note to its stderr. The process and output path that put it on the terminal are not yet known.
+
+**Constraints from prior phases:**
+- `read_accounts` (`census/accounts.rs` ≈259) calls `hierarchy::run_output` (`census/hierarchy.rs` ≈512), which already sets null stdin, null stderr and piped stdout. `census/command_inputs.rs` caches commands and spawns none.
+
+**Spec:**
+1. Reproduce the stray text first. Identify the process that wrote it and the output path that took it to the terminal, and write both in the summary.
+2. Fix that path at its cause.
+3. Make one owner build every child command (stdin, stdout and stderr set there, stderr piped or null, never inherited) only if the diagnosis shows that this is needed.
+4. Red-first test: the diagnosed writer leaves the drawn buffer and the terminal unchanged. Under 1 s.
+5. CHANGELOG: one Fixed line.
+
+**Files:**
+- `crates/cargo-handler/src/census/command_inputs.rs`, `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/census/schedule.rs`, `crates/cargo-handler/src/census/hierarchy.rs` — the diagnosed output path and, if needed, the child command owner (the writer names any other file in a blocked post)
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: a shot of the summary with no stray text under the accounts table. The checkpoint adds a Change-Review line.
+
+### Phase 53 — Reset times step plainly from soonest to latest  · status: todo
+
+**Depends on:** Phase 52
+
+#### Work Order
+
+**Goal:** the color of an account's reset time tells at a glance which account resets soonest, in dark and light themes.
+
+**Source:** change review C113 returned (user, 2026-10-29): "the colors are what you say they are but the color gradient is so subtle in the terminal that i don't get the affrodance value". C115 folds into C113 (user): one judgement. Showrunner ruling: plainly different ends and steps (3 or 4 distinct hues or lightness steps, soonest the strongest), each step readable on its ground in both themes, still no red; no reset color matches any session name color. Unit session `phases/53/source.md`.
+
+**Constraints from prior phases:**
+- C113 (merge 1bc31a60): reset times never red; dark ramp light green → sea green, light ramp violet → dark indigo. `reset_colors` (`summary/accounts.rs` ≈145).
+- Red stays for a failed reading's dot.
+- C115 kept the darkest violet off session name colors on light themes.
+- `summary/accounts_gradient_tests.rs` is also in Phase 50's **Files** (its slow gradient test); they run one after the other, never together.
+- `theme::ResetRank::color` (`crates/cargo-handler/src/theme/mod.rs` ≈128) is the one reset source. Today it blends the `reset_nearest` to the `reset_farthest` theme role at rank/(n-1) in plain sRGB (`tui_pane::blend_color`); the rank comes from `reset_colors` (`summary/accounts.rs` ≈145). The stepped colours replace that blend in this one owner. Do not add a second reset source. The readability correction (`footer_colors::readable_status_style`) applies after it.
+- Measured on the C71 shot (Default Dark, 6 accounts): neighbouring reset colours step only dE 2.3–2.7, and the ramp ends are about dE 12 apart in every theme. `accounts_gradient_tests.rs` holds the C113 floors (`check_rendered_reset_ramp` ≈389), the ends floor (≈501) and the chroma and plain-text floors (≈532), and its formula tests (≈185, ≈232, ≈266) follow the sRGB blend. C115 is `SessionResetFloor` (`render/role_title_tests.rs` ≈715); dark is `DarkNotMeasured`.
+- The reset colour work of Phase 35 (C71) moved here on 2026-10-30. Phase 31 runs after this phase and assesses these stepped colours.
+
+**Spec:**
+1. A stepped ramp of 3 or 4 distinct steps per theme, soonest the strongest, each step meeting text contrast on its ground; no red; no step equal to a session name color. It applies in all four themes.
+2. Tests: step order by reset time, distinct steps, contrast on ground, no step equals a session color, no red. Measure each step on the drawn ink, after `readable_status_style`, with the pane tint on and off and on the selected row. Run each check in all four themes. The formula tests follow the stepped colours. Each under 1 s.
+3. CHANGELOG: one Changed line.
+
+**Files:**
+- `crates/cargo-handler/src/theme/mod.rs` — `ResetRank::color`, the one reset source
+- `crates/cargo-handler/themes/` — the reset roles of each built-in theme
+- `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the ramp and its tests
+- `crates/cargo-handler/src/render/role_title_tests.rs` — `SessionResetFloor` for the stepped colours
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: captures in a dark and a light theme. The checkpoint adds ONE Change-Review line covering C113 and C115: the ramp reads at a glance, no red, no reset color matches a session color, dark and light themes.
 
 ### Phase 44 — The accounts summary shows a session count per account  · status: todo
 
@@ -1314,16 +1692,18 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 **Source:** the user, direct to the handler unit, 2026-10-28 ≈23:40 EDT: "need to add an enhancement to show the count of sessions for each account in the accounts summary table". Unit session `phases/44/source.md`.
 
 **Constraints from prior phases:**
+- `render/mod.rs` ≈595 can build more than one `SummaryLayout` in a frame, and ≈665 builds a new `SummaryFrame` per request: compute `AccountSessionCounts` once per frame with the frame's placement and pass it to every summary allocation. Count logical rows by the membership rules at `agent_cell.rs` ≈1428, ≈1935, not painted rows.
 - Columns: `AccountsColumn` (`sort.rs` ≈172) with `ALL`, `index` and `header` (`"account", "role", "left", "resets", "credits", "enabled", "in use", "read"`). `summary/accounts.rs`: `compare_accounts` (≈99) sorts by each column, `values` (≈371) builds the cell text, `AccountsFit::for_width` (≈431) fits widths, the always-kept columns are Account, Roles and WeeklyLeft (≈468), and `AccountsColumnDrop::ORDER` (≈487) is InUse, Enabled, Read, Credits. Phase 28 pins the heading and column headers; phase 32 keeps main's table height.
 - `AccountUsage` (`census/accounts.rs` ≈86) comes from `accounts.py`; Rust does not infer its roles or filter its rows. The count comes from the census, not from `accounts.py`.
 - `SummaryFrame` (`summary/mod.rs` ≈213) holds `machines`, `placement` and `accounts`; `SummaryLayout::new` (≈438) calls `accounts::build_lines`. A row's account is `AgentRow.account` / `ChildRow.account` (`census/mod.rs` ≈323, ≈459), an `Account` whose label (`AccountHome::label`) is the label the tiles show; shells and subagents are `Account::Unrecorded`.
+- Do not count through `TreeLine::account` (`agent_cell.rs` ≈1153). It gives the parent's account to unrecorded shell and subagent rows, for display only.
 - Phase 43 changes age text in summary fixtures; this phase runs after it so the summary fixture text changes once each.
 
 **Spec:**
-1. A session is a drawn agent row or child row whose `Account` is a home with that label, on any shown machine: Claude sessions and Codex sessions and threads; shells and subagents carry no account and do not count (unit director's call; a one-line revert if the showrunner counts only top-level agents). Count once per drawn row from the `AgentPlacement`, so a folded or hidden row does not count.
+1. A session is a logical member: an eligible session identity after placement, folding and hiding, on any shown machine. Claude sessions, Codex sessions and Codex threads are eligible; shells and subagents are not and do not count (unit director's call; a one-line revert if the showrunner counts only top-level agents). Count each identity once, by its own recorded `Account` home with that label. A folded or hidden identity does not count.
 2. `AccountsColumn::Sessions`, header `sessions`, drawn after `role`; the value is the count, `0` for an account with none. Header click sorts by it like the other number columns. It drops for width after Credits (`AccountsColumnDrop` gains `Sessions` as the last entry).
 3. The count is computed once per frame into a typed map (for example `AccountSessionCounts`) passed to `build_lines`; no census walk inside a cell draw.
-4. Tests, red first, in `summary/accounts_tests.rs`: two accounts with 3 and 0 drawn sessions show `3` and `0`; a shell or subagent child adds nothing; a folded dispatch shell adds nothing; in `summary/accounts_header_sort_tests.rs` a click on `sessions` sorts by count; a narrow width drops `sessions` after `credits`. Update accounts fixtures whose text changes (`render/accounts_grid_tests.rs`, `render/pinned_accounts_tests.rs` and any other the suite names). Each test under one second.
+4. Tests, red first, in `summary/accounts_tests.rs`: a census-only count change while the account reading is cached; one managed thread shown by more than one source row counts once; counts stay the same across scrolling and width changes; two accounts with 3 and 0 drawn sessions show `3` and `0`; a shell or subagent child adds nothing; a folded dispatch shell adds nothing; in `summary/accounts_header_sort_tests.rs` a click on `sessions` sorts by count; a narrow width drops `sessions` after `credits`. Update accounts fixtures whose text changes (`render/accounts_grid_tests.rs`, `render/pinned_accounts_tests.rs` and any other the suite names). Each test under one second.
 5. CHANGELOG: one line under Added.
 
 **Files:**
@@ -1332,6 +1712,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/cargo-handler/src/summary/mod.rs` — the per-frame counts
 - `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`, `crates/cargo-handler/src/render/accounts_grid_tests.rs`, `crates/cargo-handler/src/render/pinned_accounts_tests.rs` — tests and fixture text
 - `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/render/mod.rs` — one count snapshot per frame (impl slot)
 
 **Workers:** 1 writer + 1 tester.
 - `impl` — `sort.rs`, `summary/accounts.rs`, `summary/mod.rs`, fixture updates in `render/` and the CHANGELOG; hub: `crates/cargo-handler/src/summary/accounts.rs`.

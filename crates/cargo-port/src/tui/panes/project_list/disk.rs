@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 
-use ratatui::style::Color;
 use ratatui::style::Style;
 use tui_pane::error_color;
 use tui_pane::hover_focus_color;
@@ -81,11 +80,6 @@ pub(super) fn disk_percentile(bytes: Option<u64>, sorted_values: &[u64]) -> Opti
 /// Compute a color for a disk value by interpolating the active
 /// theme's three `disk_usage` stops: low (smallest) → mid → high
 /// (largest). Modifiers on the theme stops are ignored.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "values are clamped to 0.0..=255.0 before cast"
-)]
 pub(super) fn disk_color(percentile: Option<f64>) -> Style {
     let Some(pos) = percentile else {
         return Style::default().fg(label_color());
@@ -98,41 +92,7 @@ pub(super) fn disk_color(percentile: Option<f64>) -> Style {
     } else {
         (stops.mid.color, stops.high.color, (pos - 0.5) * 2.0)
     };
-    let (sr, sg, sb) = rgb_channels(start);
-    let (er, eg, eb) = rgb_channels(end);
-    let lerp = |a: u8, b: u8| -> u8 {
-        let af = f64::from(a);
-        let bf = f64::from(b);
-        (bf - af).mul_add(t, af).clamp(0.0, 255.0) as u8
-    };
-
-    Style::default().fg(Color::Rgb(lerp(sr, er), lerp(sg, eg), lerp(sb, eb)))
-}
-
-/// Extract RGB channels from a [`Color`], converting named/indexed
-/// colors into their nearest ANSI 24-bit equivalents. Used by
-/// [`disk_color`] so a theme can supply a named color (e.g. `Green`)
-/// as a gradient stop and still interpolate smoothly.
-const fn rgb_channels(color: Color) -> (u8, u8, u8) {
-    match color {
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Reset | Color::Black => (0, 0, 0),
-        Color::Red => (170, 0, 0),
-        Color::Green => (0, 170, 0),
-        Color::Yellow => (170, 85, 0),
-        Color::Blue => (0, 0, 170),
-        Color::Magenta => (170, 0, 170),
-        Color::Cyan => (0, 170, 170),
-        Color::Gray | Color::Indexed(_) => (170, 170, 170),
-        Color::DarkGray => (85, 85, 85),
-        Color::LightRed => (255, 85, 85),
-        Color::LightGreen => (85, 255, 85),
-        Color::LightYellow => (255, 255, 85),
-        Color::LightBlue => (85, 85, 255),
-        Color::LightMagenta => (255, 85, 255),
-        Color::LightCyan => (85, 255, 255),
-        Color::White => (255, 255, 255),
-    }
+    Style::default().fg(tui_pane::interpolate_terminal_color(start, end, t))
 }
 
 /// Style for the Available row under the Σ disk total, banded by how much
