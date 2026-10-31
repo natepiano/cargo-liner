@@ -1522,30 +1522,22 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 57b — The reset-shade test runs in under a second  · status: done
 
-**Depends on:** none.
+#### As-built
 
-#### Work Order
-
-**Goal:** the cargo-handler test `reset_shades_keep_saturated_chroma_and_separation_from_plain_text` runs in less than one second on the Mac, and keeps every check it makes now.
-
-**Source:** the showrunner, 2026-10-31: the test took 1.008 s on the Mac at the Phase 57 checkpoint (1.28 s in a later Phase 57a run). No test may take one second or more.
-
-**Constraints from prior phases:**
-- The test is in `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` (≈532).
-- Find the cost with evidence (time each part on the Mac) before a change. Do not weaken an assertion or drop a case to make it fast; if the cost is in product code the test calls, fix it there.
-
-**Spec:**
-1. Measure where the test spends its time.
-2. Remove that cost: share work the test repeats, or make the product code it calls cheaper. Every assertion and case stays.
-3. The test runs under 1 s on the Mac in a full `verify.sh test cargo-handler` run.
+- `reset_shades_keep_saturated_chroma_and_separation_from_plain_text` reuses each draw within one theme when both pane backgrounds match. The cache is local to the test's theme loop.
+- Every theme, tint case, reset rank and assertion stays. Each case still checks all 256 ranks. Product code is unchanged.
+- The Mac test took 0.375 s, down from 1.0–1.28 s. The full Mac suite passed 775 of 775 tests.
+- Both reviews approved with no findings. Commit: `5c5ddaad`. `Change-Review: none — test speed only`.
 
 **Files:**
-- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the test
-- `crates/cargo-handler/src/summary/` — product code the test calls, only if the cost is there
 
-**Workers:** 1 writer.
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — reuses draws by the pair of pane backgrounds within each theme.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean on the Mac; no test takes a second. The checkpoint adds `Change-Review: none — test speed only` unless product code changes.
+**Binds later work:** Keep every case and assertion when reducing test time. If frame size, app data or time varies between cases, include that input in draw reuse or make a separate draw.
+
+**Gotchas:**
+
+- Tint on and off can produce the same pane backgrounds on a transparent screen. A tint flag alone does not identify a distinct draw.
 
 ### Phase 57c — cargo-handler reads its staff from the staff list  · status: todo
 
