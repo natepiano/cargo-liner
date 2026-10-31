@@ -21,6 +21,7 @@ use tui_pane::KeySequence;
 use tui_pane::Mode;
 use tui_pane::Navigation;
 use tui_pane::OverlayAction;
+use tui_pane::OverlayWheel;
 use tui_pane::PERF_LOG_TARGET;
 use tui_pane::Pane;
 use tui_pane::SLOW_INPUT_EVENT_MS;
@@ -718,41 +719,10 @@ fn scroll_modal_overlay_at(app: &mut App, pos: Position, direction: ScrollDirect
         return true;
     }
 
-    match app.framework.overlay() {
-        Some(FrameworkOverlayId::Settings) => {
-            if app
-                .framework
-                .settings_pane
-                .viewport()
-                .content_area()
-                .contains(pos)
-            {
-                settings::navigate_settings(
-                    app,
-                    match direction {
-                        ScrollDirection::Up => NavAction::Up,
-                        ScrollDirection::Down => NavAction::Down,
-                    },
-                );
-            }
-            true
-        },
-        Some(FrameworkOverlayId::Keymap) => {
-            app.framework
-                .keymap_pane
-                .viewport_mut()
-                .scroll_if_contains(pos, direction);
-            true
-        },
-        Some(FrameworkOverlayId::GlobalShortcuts) => {
-            app.framework
-                .global_shortcuts_pane
-                .viewport_mut()
-                .scroll_if_contains(pos, direction);
-            true
-        },
-        None => false,
-    }
+    matches!(
+        tui_pane::wheel_framework_overlay(app, pos, direction),
+        OverlayWheel::Consumed
+    )
 }
 
 const fn pane_label(pane: PaneId) -> &'static str {
@@ -870,5 +840,113 @@ fn cancel_owned_output(app: &mut App) {
     ) {
         app.inflight.clear_owned_run_output();
         app.set_focus(FocusedPane::App(AppPaneId::Targets));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::layout::Rect;
+    use tui_pane::GlobalAction;
+    use tui_pane::ResolvedPane;
+    use tui_pane::ResolvedPaneLayout;
+
+    use super::*;
+    use crate::config;
+    use crate::tui::test_support;
+
+    fn overlay_selections(app: &App) -> [usize; 3] {
+        [
+            app.framework.settings_pane.viewport().pos(),
+            app.framework.keymap_pane.viewport().pos(),
+            app.framework.global_shortcuts_pane.viewport().pos(),
+        ]
+    }
+
+    fn check_framework_overlay_wheel(action: GlobalAction, selection_index: usize) {
+        for inversion in [
+            config::ScrollDirection::Normal,
+            config::ScrollDirection::Inverted,
+        ] {
+            let mut config = config::CargoPortConfig::default();
+            config.mouse.invert_scroll = inversion;
+            let mut app = test_support::make_app_with_config(&[], &config);
+            let overlay_area = Rect::new(4, 4, 8, 2);
+            app.framework.settings_pane.set_content_area(overlay_area);
+            for viewport in [
+                app.framework.keymap_pane.viewport_mut(),
+                app.framework.global_shortcuts_pane.viewport_mut(),
+            ] {
+                viewport.set_content_area(overlay_area);
+                viewport.set_len(3);
+            }
+            app.panes.tiled_layout = ResolvedPaneLayout::new(vec![ResolvedPane {
+                pane: PaneId::Output,
+                area: Rect::new(0, 0, 20, 20),
+            }]);
+            app.panes.output.viewport.set_len(3);
+            let keymap = Rc::clone(&app.framework_keymap);
+            keymap.dispatch_framework_global(action, &mut app);
+            app.overlays.set_inline_error("previous settings error");
+
+            let down = if inversion.is_inverted() {
+                MouseEventKind::ScrollUp
+            } else {
+                MouseEventKind::ScrollDown
+            };
+            let up = if inversion.is_inverted() {
+                MouseEventKind::ScrollDown
+            } else {
+                MouseEventKind::ScrollUp
+            };
+            // The pointer is over Output, just outside the overlay's content.
+            handle_mouse_event(&mut app, down, 3, 5);
+            assert_eq!(overlay_selections(&app), [0, 0, 0]);
+            assert_eq!(app.panes.output.viewport.pos(), 0);
+            assert!(app.overlays.inline_error().is_some());
+
+            handle_mouse_event(&mut app, down, 5, 5);
+            let mut expected = [0, 0, 0];
+            expected[selection_index] = 1;
+            assert_eq!(
+                overlay_selections(&app),
+                expected,
+                "{action:?}, {inversion:?}"
+            );
+            assert_eq!(app.panes.output.viewport.pos(), 0);
+            if action == GlobalAction::OpenSettings {
+                assert!(app.overlays.inline_error().is_none());
+            } else {
+                assert!(app.overlays.inline_error().is_some());
+            }
+            handle_mouse_event(&mut app, down, 3, 5);
+            assert_eq!(overlay_selections(&app), expected);
+            assert_eq!(app.panes.output.viewport.pos(), 0);
+
+            handle_mouse_event(&mut app, up, 5, 5);
+            assert_eq!(overlay_selections(&app), [0, 0, 0]);
+            handle_mouse_event(&mut app, up, 5, 5);
+            assert_eq!(overlay_selections(&app), [0, 0, 0]);
+            assert_eq!(app.panes.output.viewport.pos(), 0);
+
+            // Prove the underlying pane can move once the modal closes.
+            keymap.dispatch_framework_global(GlobalAction::Dismiss, &mut app);
+            handle_mouse_event(&mut app, down, 3, 5);
+            assert_eq!(app.panes.output.viewport.pos(), 1);
+        }
+    }
+
+    #[test]
+    fn framework_overlay_wheel_settings_moves_selection_and_blocks_output() {
+        check_framework_overlay_wheel(GlobalAction::OpenSettings, 0);
+    }
+
+    #[test]
+    fn framework_overlay_wheel_keymap_moves_selection_and_blocks_output() {
+        check_framework_overlay_wheel(GlobalAction::OpenKeymap, 1);
+    }
+
+    #[test]
+    fn framework_overlay_wheel_global_shortcuts_moves_selection_and_blocks_output() {
+        check_framework_overlay_wheel(GlobalAction::OpenGlobalShortcuts, 2);
     }
 }
