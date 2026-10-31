@@ -6,18 +6,34 @@ use std::path::PathBuf;
 use super::FixScans;
 use super::MendRunner;
 use crate::fixes::imports;
+use crate::fixes::imports::ImportPlan;
 use crate::fixes::imports::TaggedFix;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::fixes::prefer_module_import::PreferModuleImportScan;
 use crate::reporting::FixKind;
 use crate::reporting::MendFailure;
+use crate::rust_syntax::ParsedSources;
 
 /// A fix's byte range within one file: `(path, start, end)`.
 type FileRange<'a> = (&'a Path, usize, usize);
 
 impl MendRunner<'_> {
-    pub(super) fn combined_fixes(fix_scans: FixScans<'_>) -> Result<ValidatedFixSet, MendFailure> {
+    pub(super) fn combined_fixes(
+        fix_scans: FixScans<'_>,
+        sources: &ParsedSources,
+        package_roots: &[PathBuf],
+    ) -> Result<ValidatedFixSet, MendFailure> {
+        let plan = Self::combined_import_plan(fix_scans, sources, package_roots)
+            .map_err(MendFailure::Unexpected)?;
+        ValidatedFixSet::try_from(plan.fixes).map_err(MendFailure::Unexpected)
+    }
+
+    pub(super) fn combined_import_plan(
+        fix_scans: FixScans<'_>,
+        sources: &ParsedSources,
+        package_roots: &[PathBuf],
+    ) -> anyhow::Result<ImportPlan> {
         let prefer_ranges: Vec<FileRange<'_>> = fix_scans
             .module_imports
             .iter()
@@ -90,8 +106,7 @@ impl MendRunner<'_> {
         }
 
         let fixes = drop_conflicting_import_groups(fixes);
-
-        imports::ValidatedFixSet::try_from(fixes).map_err(MendFailure::Unexpected)
+        imports::plan_module_imports(fixes, sources, package_roots)
     }
 }
 
@@ -175,7 +190,7 @@ fn fixes_clear_of_ranges(fixes: Vec<TaggedFix>, ranges: &[FileRange<'_>]) -> Vec
                 (
                     tagged.fix.path.clone(),
                     group.bare_name.clone(),
-                    group.full_path.clone(),
+                    group.target_path().to_string(),
                 )
             })
         })
@@ -189,7 +204,7 @@ fn fixes_clear_of_ranges(fixes: Vec<TaggedFix>, ranges: &[FileRange<'_>]) -> Vec
                     !overlapped_groups.contains(&(
                         tagged.fix.path.clone(),
                         group.bare_name.clone(),
-                        group.full_path.clone(),
+                        group.target_path().to_string(),
                     ))
                 });
                 group_clear.then_some(tagged)
@@ -250,7 +265,7 @@ fn module_import_fixes_outside_moved_uses<'a>(
                 (
                     fix.path.as_path(),
                     group.bare_name.as_str(),
-                    group.full_path.as_str(),
+                    group.target_path(),
                 )
             })
         })
@@ -264,7 +279,7 @@ fn module_import_fixes_outside_moved_uses<'a>(
                     !moved_groups.contains(&(
                         fix.path.as_path(),
                         group.bare_name.as_str(),
-                        group.full_path.as_str(),
+                        group.target_path(),
                     ))
                 });
                 group_clear.then_some(fix)
@@ -282,7 +297,7 @@ fn drop_conflicting_import_groups(fixes: Vec<TaggedFix>) -> Vec<TaggedFix> {
             bare_name_to_paths
                 .entry((tagged.fix.path.clone(), group.bare_name.clone()))
                 .or_default()
-                .insert(group.full_path.clone());
+                .insert(group.target_path().to_string());
         }
     }
 
@@ -494,7 +509,12 @@ mod tests {
     }
 
     fn combined_fix_set(fix_scans: FixScans<'_>) -> anyhow::Result<ValidatedFixSet> {
-        MendRunner::combined_fixes(fix_scans).map_err(|err| anyhow::anyhow!("{err:?}"))
+        MendRunner::combined_fixes(
+            fix_scans,
+            &crate::rust_syntax::ParsedSources::default(),
+            &[],
+        )
+        .map_err(|err| anyhow::anyhow!("{err:?}"))
     }
 
     fn replacements(fixes: &ValidatedFixSet) -> Vec<&str> {
@@ -715,6 +735,26 @@ mod tests {
         assert!(
             result.is_empty(),
             "conflicting-group fixes should all be dropped, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn crate_anchor_does_not_make_same_target_groups_conflict() {
+        let fixes = vec![
+            tagged("src/a.rs", 0, "use crate::helper;\n", "helper", "helper"),
+            tagged(
+                "src/a.rs",
+                50,
+                "use crate::helper::{self};\n",
+                "helper",
+                "crate::helper",
+            ),
+        ];
+        let remaining = drop_conflicts(fixes);
+        assert_eq!(
+            remaining.len(),
+            2,
+            "both proposals must reach the shared import owner"
         );
     }
 

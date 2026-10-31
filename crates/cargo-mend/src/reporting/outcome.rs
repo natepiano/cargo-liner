@@ -379,8 +379,8 @@ impl From<Vec<NoticeKind>> for ExecutionNotice {
 impl NoticeKind {
     fn render_part(&self) -> Option<String> {
         match self {
-            Self::Fixes(notice) => Some(notice.render()),
-            Self::PubUseFixes(notice) => Some(notice.render()),
+            Self::Fixes(fix_notice) => Some(fix_notice.render()),
+            Self::PubUseFixes(pub_use_notice) => Some(pub_use_notice.render()),
             Self::SubtreeReexportSkipped(0) => None,
             Self::SubtreeReexportSkipped(skipped) => Some(format!(
                 "skipped {skipped} `pub_use_outside_subtree` finding(s) `--fix` could not rewrite"
@@ -449,11 +449,11 @@ impl FixNotice {
     }
 
     pub(crate) const fn from_intent(
-        intent: OperationIntent,
+        operation_intent: OperationIntent,
         fix_kind: FixKind,
         count: usize,
     ) -> Self {
-        let outcome = match (intent, NonZeroUsize::new(count)) {
+        let outcome = match (operation_intent, NonZeroUsize::new(count)) {
             (OperationIntent::ReadOnly, None | Some(_))
             | (OperationIntent::DryRun | OperationIntent::Apply, None) => FixOutcome::NoneAvailable,
             (OperationIntent::DryRun, Some(count)) => FixOutcome::PreviewApplied(count),
@@ -556,11 +556,11 @@ impl PubUseNotice {
     }
 
     pub(crate) const fn from_intent(
-        intent: OperationIntent,
+        operation_intent: OperationIntent,
         applied: usize,
         skipped_unsupported: usize,
     ) -> Self {
-        match (intent, NonZeroUsize::new(applied)) {
+        match (operation_intent, NonZeroUsize::new(applied)) {
             (OperationIntent::ReadOnly, None | Some(_))
             | (OperationIntent::DryRun | OperationIntent::Apply, None) => Self::NoneAvailable {
                 skipped_unsupported,
@@ -703,34 +703,34 @@ mod tests {
 
     #[test]
     fn analysis_failure_message_uses_typed_collection_wording() {
-        let failure = AnalysisFailure {
+        let analysis_failure = AnalysisFailure {
             cause: CompilerFailureCause::CargoCheck,
         };
         assert_eq!(
-            failure.to_string(),
+            analysis_failure.to_string(),
             "compiler failed while validating this crate\n\nmend: did not run due to compiler errors"
         );
     }
 
     #[test]
     fn no_analysis_failure_message_tells_the_user_to_force_a_rebuild() {
-        let failure = AnalysisFailure {
+        let analysis_failure = AnalysisFailure {
             cause: CompilerFailureCause::NoAnalysisProduced,
         };
-        let message = failure.to_string();
+        let message = analysis_failure.to_string();
         assert!(message.starts_with("no analysis was produced for this crate"));
         assert!(message.contains("force a rebuild"));
     }
 
     #[test]
     fn fix_validation_failure_reports_rollback_success() {
-        let failure = FixValidationFailure {
+        let fix_validation_failure = FixValidationFailure {
             rollback_status: RollbackStatus::Restored,
             cause:           CompilerFailureCause::Unexpected(anyhow!("boom")),
             applied_fixes:   AppliedFixes::Mend,
         };
         assert!(
-            failure
+            fix_validation_failure
                 .to_string()
                 .contains("compiler failed after applying mend fixes; changes were rolled back")
         );
@@ -738,13 +738,13 @@ mod tests {
 
     #[test]
     fn fix_validation_failure_reports_rollback_failure() {
-        let failure = FixValidationFailure {
+        let fix_validation_failure = FixValidationFailure {
             rollback_status: RollbackStatus::RestoreFailed,
             cause:           CompilerFailureCause::Unexpected(anyhow!("boom")),
             applied_fixes:   AppliedFixes::Mend,
         };
         assert!(
-            failure
+            fix_validation_failure
                 .to_string()
                 .contains("compiler failed after applying mend fixes, and rollback also failed")
         );
@@ -752,8 +752,12 @@ mod tests {
 
     #[test]
     fn import_fix_notice_respects_operation_intent() {
-        let preview = FixNotice::from_intent(OperationIntent::DryRun, FixKind::Import, 2);
-        assert_eq!(preview.render(), "would apply 2 import fix(es) in dry run");
+        let preview_fix_notice =
+            FixNotice::from_intent(OperationIntent::DryRun, FixKind::Import, 2);
+        assert_eq!(
+            preview_fix_notice.render(),
+            "would apply 2 import fix(es) in dry run"
+        );
     }
 
     #[test]
@@ -841,28 +845,41 @@ mod tests {
         let applied = FixNotice::from_intent(OperationIntent::Apply, FixKind::Annotation, 3);
         assert_eq!(applied.render(), "applied 3 annotation rewrite(s)");
 
-        let none = FixNotice::from_intent(OperationIntent::Apply, FixKind::Annotation, 0);
-        assert_eq!(none.render(), "no annotation rewrites available");
+        let unavailable_fix_notice =
+            FixNotice::from_intent(OperationIntent::Apply, FixKind::Annotation, 0);
+        assert_eq!(
+            unavailable_fix_notice.render(),
+            "no annotation rewrites available"
+        );
     }
 
     #[test]
     fn visibility_fix_notices_name_their_own_edit() {
-        let removals = FixNotice::from_intent(OperationIntent::Apply, FixKind::PubRemoval, 2);
-        assert_eq!(removals.render(), "applied 2 `pub` removal(s)");
-
-        let narrowings = FixNotice::from_intent(OperationIntent::DryRun, FixKind::Narrowing, 1);
+        let pub_removal_fix_notice =
+            FixNotice::from_intent(OperationIntent::Apply, FixKind::PubRemoval, 2);
         assert_eq!(
-            narrowings.render(),
+            pub_removal_fix_notice.render(),
+            "applied 2 `pub` removal(s)"
+        );
+
+        let narrowing_fix_notice =
+            FixNotice::from_intent(OperationIntent::DryRun, FixKind::Narrowing, 1);
+        assert_eq!(
+            narrowing_fix_notice.render(),
             "would apply 1 visibility narrowing(s) in dry run"
         );
 
-        let fields = FixNotice::from_intent(OperationIntent::Apply, FixKind::FieldVisibility, 0);
-        assert_eq!(fields.render(), "no field visibility rewrites available");
+        let field_visibility_fix_notice =
+            FixNotice::from_intent(OperationIntent::Apply, FixKind::FieldVisibility, 0);
+        assert_eq!(
+            field_visibility_fix_notice.render(),
+            "no field visibility rewrites available"
+        );
     }
 
     #[test]
     fn combined_notice_renders_all_parts() {
-        let notice = ExecutionNotice::from(vec![
+        let execution_notice = ExecutionNotice::from(vec![
             NoticeKind::Fixes(FixNotice::from_intent(
                 OperationIntent::Apply,
                 FixKind::Import,
@@ -876,14 +893,14 @@ mod tests {
             NoticeKind::PubUseFixes(PubUseNotice::from_intent(OperationIntent::Apply, 1, 0)),
         ]);
         assert_eq!(
-            notice.render(),
+            execution_notice.render(),
             "mend: applied 2 import fix(es); applied 1 annotation rewrite(s); applied 1 `pub use` fix(es)"
         );
     }
 
     #[test]
     fn merged_notice_accumulates_edits_and_discards_later_empty_passes() {
-        let mut notice = ExecutionNotice::from(vec![
+        let mut execution_notice = ExecutionNotice::from(vec![
             NoticeKind::Fixes(FixNotice::from_intent(
                 OperationIntent::Apply,
                 FixKind::Annotation,
@@ -891,7 +908,7 @@ mod tests {
             )),
             NoticeKind::PubUseFixes(PubUseNotice::from_intent(OperationIntent::Apply, 1, 0)),
         ]);
-        notice.merge(ExecutionNotice::from(vec![
+        execution_notice.merge(ExecutionNotice::from(vec![
             NoticeKind::Fixes(FixNotice::from_intent(
                 OperationIntent::Apply,
                 FixKind::Annotation,
@@ -908,14 +925,14 @@ mod tests {
         ]));
 
         assert_eq!(
-            notice.render(),
+            execution_notice.render(),
             "mend: applied 3 annotation rewrite(s); applied 1 `pub use` fix(es)"
         );
     }
 
     #[test]
     fn subtree_reexport_skips_keep_the_latest_pass_count() {
-        let mut notice = ExecutionNotice::from(vec![
+        let mut execution_notice = ExecutionNotice::from(vec![
             NoticeKind::Fixes(FixNotice::from_intent(
                 OperationIntent::Apply,
                 FixKind::Import,
@@ -923,7 +940,7 @@ mod tests {
             )),
             NoticeKind::SubtreeReexportSkipped(2),
         ]);
-        notice.merge(ExecutionNotice::from(vec![
+        execution_notice.merge(ExecutionNotice::from(vec![
             NoticeKind::Fixes(FixNotice::from_intent(
                 OperationIntent::Apply,
                 FixKind::Import,
@@ -932,14 +949,14 @@ mod tests {
             NoticeKind::SubtreeReexportSkipped(1),
         ]));
         assert_eq!(
-            notice.render(),
+            execution_notice.render(),
             "mend: applied 3 import fix(es); skipped 1 `pub_use_outside_subtree` finding(s) \
              `--fix` could not rewrite"
         );
 
-        notice.merge(ExecutionNotice::from(vec![
+        execution_notice.merge(ExecutionNotice::from(vec![
             NoticeKind::SubtreeReexportSkipped(0),
         ]));
-        assert_eq!(notice.render(), "mend: applied 3 import fix(es)");
+        assert_eq!(execution_notice.render(), "mend: applied 3 import fix(es)");
     }
 }

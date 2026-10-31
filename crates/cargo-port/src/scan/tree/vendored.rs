@@ -49,7 +49,7 @@ pub(super) fn extract_vendored_new(items: &mut Vec<RootItem>) {
 
     // Convert vendored items to `VendoredPackage`
     let mut vendored_projects: Vec<(VendoredDestination, VendoredPackage)> = Vec::new();
-    for &(vi, destination) in &vendored_map {
+    for &(vi, vendored_destination) in &vendored_map {
         let vendored = match &items[vi] {
             RootItem::Rust(RustProject::Package(p)) => VendoredPackage {
                 path:            p.path.clone(),
@@ -73,19 +73,23 @@ pub(super) fn extract_vendored_new(items: &mut Vec<RootItem>) {
             },
             _ => continue,
         };
-        vendored_projects.push((destination, vendored));
+        vendored_projects.push((vendored_destination, vendored));
     }
 
     for &idx in remove_indices.iter().rev() {
         items.remove(idx);
     }
 
-    for (destination, vendored) in vendored_projects {
-        push_vendored_item(items, destination.adjusted(&remove_indices), vendored);
+    for (vendored_destination, vendored) in vendored_projects {
+        push_vendored_item(
+            items,
+            vendored_destination.adjusted(&remove_indices),
+            vendored,
+        );
     }
 
-    for item in items {
-        sort_vendored_lists(item);
+    for root_item in items {
+        sort_vendored_lists(root_item);
     }
 }
 
@@ -134,8 +138,8 @@ fn dependency_vendored_destination(
     let vendored_path = items[vendored_index].path();
     let mut consumers = Vec::new();
 
-    for (node_index, item) in items.iter().enumerate() {
-        let RootItem::Rust(RustProject::Workspace(ws)) = item else {
+    for (node_index, root_item) in items.iter().enumerate() {
+        let RootItem::Rust(RustProject::Workspace(ws)) = root_item else {
             continue;
         };
         if !vendored_path.starts_with(ws.path().as_path()) {
@@ -143,10 +147,10 @@ fn dependency_vendored_destination(
         }
 
         let workspace_dependencies = workspace_path_dependencies(ws.path().as_path());
-        for (group_index, group) in ws.groups().iter().enumerate() {
-            for (member_index, member) in group.members().iter().enumerate() {
+        for (group_index, member_group) in ws.groups().iter().enumerate() {
+            for (member_index, package) in member_group.members().iter().enumerate() {
                 let dependencies =
-                    package_path_dependencies(member.path().as_path(), &workspace_dependencies);
+                    package_path_dependencies(package.path().as_path(), &workspace_dependencies);
                 if dependencies.contains(vendored_path) {
                     consumers.push(VendoredDestination::WorkspaceMember {
                         node_index,
@@ -159,13 +163,13 @@ fn dependency_vendored_destination(
     }
 
     match consumers.as_slice() {
-        [destination] => Some(*destination),
+        [vendored_destination] => Some(*vendored_destination),
         _ => None,
     }
 }
 
 fn contained_vendored_destination(
-    vitem: &RootItem,
+    vendored_root_item: &RootItem,
     vendored_index: usize,
     parent_paths: &[(usize, AbsolutePath)],
 ) -> Option<VendoredDestination> {
@@ -173,8 +177,8 @@ fn contained_vendored_destination(
         .iter()
         .find_map(|&(node_index, ref parent_path)| {
             if node_index != vendored_index
-                && vitem.path().starts_with(parent_path)
-                && vitem.path() != parent_path
+                && vendored_root_item.path().starts_with(parent_path)
+                && vendored_root_item.path() != parent_path
             {
                 Some(VendoredDestination::Root { node_index })
             } else {
@@ -184,19 +188,19 @@ fn contained_vendored_destination(
 }
 fn push_vendored_item(
     items: &mut [RootItem],
-    destination: VendoredDestination,
-    vendored: VendoredPackage,
+    vendored_destination: VendoredDestination,
+    vendored_package: VendoredPackage,
 ) {
-    let Some(item) = items.get_mut(match destination {
+    let Some(item) = items.get_mut(match vendored_destination {
         VendoredDestination::Root { node_index }
         | VendoredDestination::WorkspaceMember { node_index, .. } => node_index,
     }) else {
         return;
     };
 
-    match (item, destination) {
+    match (item, vendored_destination) {
         (RootItem::Rust(RustProject::Workspace(ws)), VendoredDestination::Root { .. }) => {
-            ws.vendored_mut().push(vendored);
+            ws.vendored_mut().push(vendored_package);
         },
         (
             RootItem::Rust(RustProject::Workspace(ws)),
@@ -206,33 +210,38 @@ fn push_vendored_item(
                 ..
             },
         ) => {
-            if let Some(member) = ws
+            if let Some(package) = ws
                 .groups_mut()
                 .get_mut(group_index)
-                .and_then(|group| group.members_mut().get_mut(member_index))
+                .and_then(|member_group| member_group.members_mut().get_mut(member_index))
             {
-                member.vendored_mut().push(vendored);
+                package.vendored_mut().push(vendored_package);
             }
         },
-        (RootItem::Rust(RustProject::Package(pkg)), VendoredDestination::Root { .. }) => {
-            pkg.vendored_mut().push(vendored);
+        (RootItem::Rust(RustProject::Package(package)), VendoredDestination::Root { .. }) => {
+            package.vendored_mut().push(vendored_package);
         },
         _ => {},
     }
 }
 
-fn sort_vendored_lists(item: &mut RootItem) {
-    match item {
+fn sort_vendored_lists(root_item: &mut RootItem) {
+    match root_item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
-            ws.vendored_mut().sort_by(|a, b| a.path().cmp(b.path()));
-            for group in ws.groups_mut() {
-                for member in group.members_mut() {
-                    member.vendored_mut().sort_by(|a, b| a.path().cmp(b.path()));
+            ws.vendored_mut()
+                .sort_by(|left_vendored_package, b| left_vendored_package.path().cmp(b.path()));
+            for member_group in ws.groups_mut() {
+                for package in member_group.members_mut() {
+                    package.vendored_mut().sort_by(|left_vendored_package, b| {
+                        left_vendored_package.path().cmp(b.path())
+                    });
                 }
             }
         },
-        RootItem::Rust(RustProject::Package(pkg)) => {
-            pkg.vendored_mut().sort_by(|a, b| a.path().cmp(b.path()));
+        RootItem::Rust(RustProject::Package(package)) => {
+            package
+                .vendored_mut()
+                .sort_by(|left_vendored_package, b| left_vendored_package.path().cmp(b.path()));
         },
         _ => {},
     }

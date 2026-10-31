@@ -16,6 +16,8 @@ use std::io::ErrorKind;
 use std::io::Write as _;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
@@ -60,6 +62,7 @@ use super::read::RepositoryRead;
 use super::refs::IntegrationProofRef;
 use super::refs::LocalTargetUpstream;
 use super::snapshot::RepositorySnapshot;
+use super::work;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 #[cfg(test)]
@@ -262,7 +265,9 @@ impl PhaseStartTargetFirstParentHistories {
 }
 
 /// The parent links needed to compare multiple worktree histories with one revision walk.
+#[derive(Default)]
 struct CommitAncestryGraph {
+    ancestors_by_tip:  Mutex<HashMap<GitObjectId, Arc<HashSet<GitObjectId>>>>,
     parents_by_commit: HashMap<GitObjectId, Vec<GitObjectId>>,
 }
 
@@ -289,7 +294,7 @@ impl CommitAncestryGraph {
             return TargetMergeContributions::NotAMerge;
         };
         let previous = self.ancestors_including(first);
-        let mut entering = self.ancestors_including(target);
+        let mut entering = self.ancestors_including(target).as_ref().clone();
         entering.retain(|commit| commit != target && !previous.contains(commit));
         TargetMergeContributions::Entering(entering)
     }
@@ -414,7 +419,20 @@ impl CommitAncestryGraph {
         boundaries[candidate]
     }
 
-    fn ancestors_including(&self, tip: &GitObjectId) -> HashSet<GitObjectId> {
+    fn ancestors_including(&self, tip: &GitObjectId) -> Arc<HashSet<GitObjectId>> {
+        let mut cached = self
+            .ancestors_by_tip
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(
+            cached
+                .entry(tip.clone())
+                .or_insert_with(|| Arc::new(self.compute_ancestors(tip))),
+        )
+    }
+
+    fn compute_ancestors(&self, tip: &GitObjectId) -> HashSet<GitObjectId> {
+        work::record_ancestor_set();
         let mut ancestors = HashSet::new();
         let mut pending = vec![tip.clone()];
         while let Some(commit) = pending.pop() {
@@ -472,7 +490,10 @@ impl TryFrom<&str> for CommitAncestryGraph {
                 .map_err(GitError::InvalidObjectId)?;
             parents_by_commit.insert(commit, parents);
         }
-        Ok(Self { parents_by_commit })
+        Ok(Self {
+            parents_by_commit,
+            ..Self::default()
+        })
     }
 }
 
@@ -1216,6 +1237,7 @@ fn target_commit_history(
                 target: history.target,
                 graph:  CommitAncestryGraph {
                     parents_by_commit: history.parents,
+                    ..CommitAncestryGraph::default()
                 },
             });
         },
@@ -1547,6 +1569,102 @@ mod tests {
     const CRISS_CROSS_LANE: &str = "lane";
 
     #[test]
+    fn request_batches_open_each_worker_once_and_compute_each_distinct_ancestry_once()
+    -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let base = fixture.phase_start_head.clone();
+        fixture.write(PRIMARY_PATH, "middle\n")?;
+        let middle = fixture.commit("middle")?;
+        fixture.write(PRIMARY_PATH, "tip\n")?;
+        let tip = fixture.commit("tip")?;
+        let candidates = [
+            base.clone(),
+            middle.clone(),
+            tip.clone(),
+            middle.clone(),
+            tip.clone(),
+        ];
+        let expressions = candidates
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let objects = crate::git::OperationObjectReader::new(fixture.root());
+        // These are the native history and object-resolution workers of one graph request.
+        let (history, resolved) = std::thread::scope(|scope| {
+            let history_worker = scope.spawn(|| {
+                let before = crate::git::work::counts();
+                let result = super::history::read(fixture.root(), &tip.to_string());
+                let after = crate::git::work::counts();
+                assert_eq!(after.repository_opens - before.repository_opens, 1);
+                result
+            });
+            let object_worker = scope.spawn(|| {
+                let before = crate::git::work::counts();
+                let result = objects.resolve(&expressions);
+                let after = crate::git::work::counts();
+                assert_eq!(after.repository_opens - before.repository_opens, 1);
+                result
+            });
+            (history_worker.join(), object_worker.join())
+        });
+        let history = history.map_err(|_| "history worker panicked")??;
+        let resolved = resolved.map_err(|_| "object worker panicked")??;
+        assert_eq!(
+            resolved,
+            candidates
+                .iter()
+                .cloned()
+                .map(super::CommitObjectResolution::Resolved)
+                .collect::<Vec<_>>()
+        );
+        let super::RepositoryRead::InProcess(history) = history else {
+            return Err("ordinary commit history should stay native".into());
+        };
+        assert!(history.parents.contains_key(&base));
+        let before = crate::git::work::counts();
+        let successors = [tip.clone(), middle.clone(), tip.clone()];
+        let classified = descendant_commits(
+            fixture.root(),
+            &[
+                ProtectedTipSuccessorHeads::new(&base, &successors),
+                ProtectedTipSuccessorHeads::new(&middle, &successors),
+                ProtectedTipSuccessorHeads::new(&base, &successors),
+            ],
+        )?;
+        let after = crate::git::work::counts();
+        assert_eq!(after.ancestor_sets - before.ancestor_sets, 3);
+        for (classification, predecessor) in classified.iter().zip([&base, &middle, &base]) {
+            let ProtectedTipSuccessorHeadClassification::Classified(answers) = classification
+            else {
+                return Err("existing predecessor should be classified".into());
+            };
+            for (answer, successor) in answers.iter().zip(&successors) {
+                let CandidateHeadReachability::Descendant {
+                    head,
+                    first_parent_commits_after_ancestor,
+                } = answer
+                else {
+                    return Err("successor should contain its predecessor".into());
+                };
+                assert_eq!(head, successor);
+                let expected = if predecessor == &middle {
+                    if successor == &tip {
+                        vec![tip.clone()]
+                    } else {
+                        Vec::new()
+                    }
+                } else if successor == &tip {
+                    vec![tip.clone(), middle.clone()]
+                } else {
+                    vec![middle.clone()]
+                };
+                assert_eq!(first_parent_commits_after_ancestor, &expected);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn identical_reachability_candidates_still_require_an_available_target() -> FixtureResult {
         let fixture = PatchEquivalenceFixture::new()?;
         let repository = crate::git::RepositorySnapshot::discover(fixture.root())?;
@@ -1597,6 +1715,7 @@ mod tests {
                     )
                 })
                 .collect(),
+            ..super::CommitAncestryGraph::default()
         };
         for target in [&ids[8], &ids[10], &ids[0]] {
             let mut candidates = ids.clone();
@@ -1627,6 +1746,7 @@ mod tests {
                 target,
                 super::CommitAncestryGraph {
                     parents_by_commit: graph.parents_by_commit.clone(),
+                    ..super::CommitAncestryGraph::default()
                 },
                 resolutions,
             );
@@ -1673,6 +1793,7 @@ mod tests {
                     (commit.clone(), parents)
                 })
                 .collect(),
+            ..super::CommitAncestryGraph::default()
         };
         let target_index = 5997;
         let candidates = (0..60)

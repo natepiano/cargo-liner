@@ -652,6 +652,12 @@ pub(crate) const CARGO_NAME: &str = "cargo";
 /// is the real binary, whatever else it may be, and is moved aside
 /// rather than overwritten.
 pub(crate) const SHIM_MARKER: &str = "cargo-tile-capture-shim";
+/// Native runner executable shared by the entry protocol and census recognition.
+pub(crate) const CAPTURE_RUNNER_NAME: &str = "cargo-tile-capture";
+/// Entry argument that selects native output capture.
+pub(crate) const CAPTURE_SHIM_ARGUMENT: &str = "--capture-shim";
+/// Entry argument that runs cargo without opening another capture.
+pub(crate) const CAPTURE_SHIM_PASSTHROUGH_ARGUMENT: &str = "--capture-shim-passthrough";
 /// Permissions the shim is written with: readable and executable by
 /// all, writable by its owner.
 pub(crate) const SHIM_MODE: u32 = 0o755;

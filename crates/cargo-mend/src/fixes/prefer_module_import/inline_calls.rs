@@ -23,6 +23,7 @@ use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::GateSource;
 use crate::fixes::imports::GateTracking;
 use crate::fixes::imports::ImportGroup;
+use crate::fixes::imports::ImportReservation;
 use crate::fixes::imports::ImportSource;
 use crate::fixes::imports::UseFix;
 use crate::reporting::Finding;
@@ -180,13 +181,12 @@ impl<'a> InlineCallLocation<'a> {
 
 pub(super) fn build_inline_call_findings_and_fixes(
     file_context: &ScanFileContext<'_>,
-    inline_inputs: &InlineCallFindingInputs<'_>,
+    inline_inputs: &mut InlineCallFindingInputs<'_>,
 ) -> Result<(Vec<Finding>, Vec<UseFix>)> {
     let display_path = file_context.display_path();
 
     let mut findings = Vec::new();
     let mut fixes = Vec::new();
-    let mut inserted_modules: BTreeSet<Vec<String>> = BTreeSet::new();
     // `insertions` stores indexes into `fixes` of the file-level `use` insertions.
     let mut insertions = Vec::new();
     let covering_gates = covering_gates(inline_inputs.candidates);
@@ -249,13 +249,14 @@ pub(super) fn build_inline_call_findings_and_fixes(
             InlineCallRewrite::Parent => continue,
             InlineCallRewrite::Module { attributes, .. } => attributes,
         };
-        if inline_inputs
-            .will_import_modules
-            .contains(&candidate.absolute_module)
-        {
-            continue;
-        }
-        if !inserted_modules.insert(candidate.absolute_module.clone()) {
+        if !matches!(
+            inline_inputs.imports.reserve_module(
+                inline_inputs.file_insertion.offset,
+                &candidate.module_path,
+                import_attributes
+            ),
+            ImportReservation::Added
+        ) {
             continue;
         }
         let offset = inline_inputs.file_insertion.offset;
@@ -416,7 +417,6 @@ fn analyze_inline_call(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
     use std::path::Path;
 
     use proc_macro2::LineColumn;
@@ -424,6 +424,8 @@ mod tests {
     use super::InlineCallCandidate;
     use super::build_inline_call_findings_and_fixes;
     use crate::fixes::imports::ConditionalAttributes;
+    use crate::fixes::imports::ImportSource;
+    use crate::fixes::imports::ModuleImports;
     use crate::fixes::prefer_module_import::function_imports::ImportTarget;
     use crate::fixes::prefer_module_import::scan::FileInsertion;
     use crate::fixes::prefer_module_import::scan::InlineCallFindingInputs;
@@ -463,21 +465,18 @@ mod tests {
         });
         let context = ScanFileContext::new(Path::new("."), Path::new("src/lib.rs"), text);
         for (planned, expected) in [
-            (
-                BTreeSet::new(),
-                vec!["super::", "util::", "use crate::util;\n\n"],
-            ),
-            (
-                BTreeSet::from([vec!["util".to_string()]]),
-                vec!["super::", "util::"],
-            ),
+            ("", vec!["super::", "util::", "use crate::util;\n\n"]),
+            ("use crate::util;", vec!["super::", "util::"]),
         ] {
+            let syntax = syn::parse_file(planned)?;
+            let indexed = ImportSource::new(planned);
+            let mut imports = ModuleImports::from_syntax(&syntax, &indexed, &[])?;
             let (findings, fixes) = build_inline_call_findings_and_fixes(
                 &context,
-                &InlineCallFindingInputs {
-                    candidates:          &candidates,
-                    will_import_modules: &planned,
-                    file_insertion:      FileInsertion {
+                &mut InlineCallFindingInputs {
+                    candidates:     &candidates,
+                    imports:        &mut imports,
+                    file_insertion: FileInsertion {
                         offset:            0,
                         before_first_item: true,
                     },

@@ -7,12 +7,25 @@
 
 use std::env;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::symlink;
+use std::os::unix::process::ExitStatusExt as _;
 use std::panic;
+use std::path::Path;
+use std::process::Stdio;
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 
 use cargo_berth_test_support::CommandDeadlineExt as _;
 use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::FixtureCommand as Command;
 use cargo_berth_test_support::IntegrationRepository;
+use cargo_berth_test_support::TestProcessGroup;
+use cargo_berth_test_support::copy_git_repository_seed;
+use cargo_berth_test_support::fixture_git_command;
 
 const FIXTURE_EXIT_ENVIRONMENT: &str = "CARGO_BERTH_TEMPORARY_FIXTURE_EXIT";
 const FIXTURE_PANIC: &str = "exercise repository cleanup while unwinding";
@@ -21,9 +34,6 @@ const TEST_NAME: &str = "repository_builders_leave_no_temporary_directory_after_
 #[test]
 fn scratch_wrapper_names_leaks_and_preserves_clean_panics() -> Result<(), Box<dyn std::error::Error>>
 {
-    use std::os::unix::fs::symlink;
-    use std::os::unix::process::ExitStatusExt as _;
-
     const CHILD_MODE: &str = "CARGO_BERTH_SCRATCH_PROOF";
     const NAME: &str = "scratch_wrapper_names_leaks_and_preserves_clean_panics";
     if let Ok(mode) = env::var(CHILD_MODE) {
@@ -120,8 +130,6 @@ fn scratch_wrapper_names_leaks_and_preserves_clean_panics() -> Result<(), Box<dy
 
 #[test]
 fn shared_shell_scripts_use_the_repository_fixture_cache_root() {
-    use std::os::unix::fs::MetadataExt;
-
     let temporary = cargo_berth_test_support::fixture_tempdir("shared-script-");
     let script = temporary.path().join("script");
     DirectorySnapshot::write_shared_shell_script(&script, "#!/bin/sh\nprintf cache-root\n");
@@ -156,7 +164,6 @@ fn shared_shell_scripts_use_the_repository_fixture_cache_root() {
 #[test]
 fn shared_shell_scripts_restore_across_filesystems() {
     use std::os::unix::fs::MetadataExt;
-    use std::os::unix::fs::PermissionsExt;
 
     let temporary = tempfile::tempdir_in("/dev/shm")
         .expect("a private directory on the shared-memory filesystem should exist");
@@ -258,13 +265,6 @@ fn repository_builders_leave_no_temporary_directory_after_return_or_panic() {
 
 #[test]
 fn dropping_a_paused_test_process_ends_its_entire_process_group() {
-    use std::process::Stdio;
-    use std::thread;
-    use std::time::Duration;
-    use std::time::Instant;
-
-    use cargo_berth_test_support::TestProcessGroup;
-
     let directory = tempfile::tempdir().expect("pause directory should exist");
     let fifo = directory.path().join("continue");
     let ready = directory.path().join("ready");
@@ -370,11 +370,6 @@ fn process_group_members(group: u32) -> Vec<String> {
 #[test]
 fn copied_git_seeds_keep_staged_changes_and_refs_private() -> Result<(), Box<dyn std::error::Error>>
 {
-    use std::path::Path;
-
-    use cargo_berth_test_support::copy_git_repository_seed;
-    use cargo_berth_test_support::fixture_git_command;
-
     fn git(root: &Path, arguments: &[&str]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let output = fixture_git_command()
             .args(arguments)
@@ -426,13 +421,6 @@ fn copied_git_seeds_keep_staged_changes_and_refs_private() -> Result<(), Box<dyn
 
 #[test]
 fn collecting_test_process_output_drains_both_pipes_and_ends_descendants() {
-    use std::process::Stdio;
-    use std::thread;
-    use std::time::Duration;
-    use std::time::Instant;
-
-    use cargo_berth_test_support::TestProcessGroup;
-
     let directory = tempfile::tempdir().expect("output fixture should exist");
     let payload = vec![b'x'; 1024 * 1024];
     let payload_path = directory.path().join("payload");

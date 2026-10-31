@@ -1,11 +1,13 @@
 //! Repository reads whose supported forms need no Git child. Unsupported semantics
 //! retain a named subprocess route; an unsuccessful read is never a missing fact.
 
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::env::VarError;
 use std::io::ErrorKind;
 use std::ops::ControlFlow;
 use std::path::Path;
+use std::sync::Arc;
 
 use gix::Repository;
 use gix::config::File;
@@ -51,6 +53,7 @@ use super::object::CommitObjectResolution;
 use super::refs::HeadAttachment;
 use super::refs::ReferenceLookup;
 use super::refs::RetentionRefMutation;
+use super::work;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 
@@ -210,6 +213,7 @@ pub(super) fn open(root: &Path) -> Result<RepositoryRead<Repository>, GitError> 
     let options = installation::open_options()?;
     // Preserve phase 24's spawn boundary even though installation discovery now has
     // an explicit, bounded command and gix receives the discovered file directly.
+    work::record_repository_open();
     match command::with_spawn_lock(|| gix::open_opts(root, options))? {
         Ok(repository) => match repository_format(repository.config_snapshot().plumbing()) {
             RepositoryRead::InProcess(()) => {
@@ -567,95 +571,118 @@ pub(super) fn reference(
     }
 }
 
-/// Read exact object IDs, full refs and HEAD. Other expressions keep the shared Git batch.
-pub(super) fn commit(
-    root: &Path,
-    expression: &str,
-) -> Result<RepositoryRead<CommitObjectResolution>, GitError> {
-    let reference_name = expression
-        .strip_suffix(GIT_COMMIT_PEEL_SUFFIX)
-        .unwrap_or(expression);
-    let exact_object = reference_name.parse::<GitObjectId>().ok();
-    if exact_object.is_none()
-        && reference_name != GIT_HEAD_REVISION
-        && !reference_name.starts_with("refs/")
-    {
-        return Ok(RepositoryRead::GitRequired(
-            GitReadRequirement::RevisionExpression,
-        ));
-    }
-    if reference_name
-        .bytes()
-        .any(|byte| matches!(byte, b'^' | b'~' | b'@' | b':' | b'*' | b'?'))
-    {
-        return Ok(RepositoryRead::GitRequired(
-            GitReadRequirement::RevisionExpression,
-        ));
-    }
-    let repository = match open(root)? {
-        RepositoryRead::InProcess(repository) => repository,
-        RepositoryRead::GitRequired(reason) => return Ok(RepositoryRead::GitRequired(reason)),
-    };
-    let id = if let Some(id) = exact_object {
-        Some(
-            gix::ObjectId::from_hex(id.to_string().as_bytes())
-                .map_err(|error| failure("read exact object id", error))?,
-        )
-    } else if reference_name == GIT_HEAD_REVISION {
-        let head = repository
-            .head()
-            .map_err(|error| failure("read HEAD", error))?;
-        if matches!(&head.kind, gix::head::Kind::Symbolic(reference) if reference.target.try_id().is_none())
-        {
-            return Ok(RepositoryRead::GitRequired(
-                GitReadRequirement::SymbolicReference,
-            ));
+/// One worker's lazy native repository, dropped with its batch. Unsupported expressions
+/// retain Git's existing protocol without opening a native reader.
+pub(super) struct CommitRepositoryReader<'root> {
+    root:       &'root Path,
+    repository: OnceCell<Result<RepositoryRead<Repository>, Arc<GitError>>>,
+}
+
+impl<'root> CommitRepositoryReader<'root> {
+    pub(super) const fn new(root: &'root Path) -> Self {
+        Self {
+            root,
+            repository: OnceCell::new(),
         }
-        head.id().map(gix::Id::detach)
-    } else {
-        match repository
-            .try_find_reference(reference_name)
-            .map_err(|error| failure("read commit reference", error))?
+    }
+
+    pub(super) fn repository(&self) -> Result<&RepositoryRead<Repository>, GitError> {
+        self.repository
+            .get_or_init(|| open(self.root).map_err(Arc::new))
+            .as_ref()
+            .map_err(|error| GitError::SnapshotReadFailed(Arc::clone(error)))
+    }
+
+    /// Read exact object IDs, full refs and HEAD. Other expressions keep the shared Git batch.
+    pub(super) fn commit(
+        &self,
+        expression: &str,
+    ) -> Result<RepositoryRead<CommitObjectResolution>, GitError> {
+        let reference_name = expression
+            .strip_suffix(GIT_COMMIT_PEEL_SUFFIX)
+            .unwrap_or(expression);
+        let exact_object = reference_name.parse::<GitObjectId>().ok();
+        if exact_object.is_none()
+            && reference_name != GIT_HEAD_REVISION
+            && !reference_name.starts_with("refs/")
         {
-            Some(reference) => match reference.try_id() {
-                Some(id) => Some(id.detach()),
-                None => {
-                    return Ok(RepositoryRead::GitRequired(
-                        GitReadRequirement::SymbolicReference,
-                    ));
-                },
-            },
-            None => None,
-        }
-    };
-    let Some(id) = id else {
-        return Ok(RepositoryRead::InProcess(CommitObjectResolution::Missing));
-    };
-    let Some(object) = repository
-        .try_find_object(id)
-        .map_err(|error| failure("read referenced object", error))?
-    else {
-        return Ok(RepositoryRead::InProcess(CommitObjectResolution::Missing));
-    };
-    let resolution = match object.kind {
-        Kind::Commit => CommitObjectResolution::Resolved(
-            id.to_string().parse().map_err(GitError::InvalidObjectId)?,
-        ),
-        Kind::Tag => {
-            return Ok(RepositoryRead::GitRequired(
-                GitReadRequirement::AnnotatedTag,
-            ));
-        },
-        _ if reference_name != expression => {
             return Ok(RepositoryRead::GitRequired(
                 GitReadRequirement::RevisionExpression,
             ));
-        },
-        kind => CommitObjectResolution::WrongType {
-            object_type: kind.to_string(),
-        },
-    };
-    Ok(RepositoryRead::InProcess(resolution))
+        }
+        if reference_name
+            .bytes()
+            .any(|byte| matches!(byte, b'^' | b'~' | b'@' | b':' | b'*' | b'?'))
+        {
+            return Ok(RepositoryRead::GitRequired(
+                GitReadRequirement::RevisionExpression,
+            ));
+        }
+        let repository = match self.repository()? {
+            RepositoryRead::InProcess(repository) => repository,
+            RepositoryRead::GitRequired(reason) => return Ok(RepositoryRead::GitRequired(*reason)),
+        };
+        let id = if let Some(id) = exact_object {
+            Some(
+                gix::ObjectId::from_hex(id.to_string().as_bytes())
+                    .map_err(|error| failure("read exact object id", error))?,
+            )
+        } else if reference_name == GIT_HEAD_REVISION {
+            let head = repository
+                .head()
+                .map_err(|error| failure("read HEAD", error))?;
+            if matches!(&head.kind, gix::head::Kind::Symbolic(reference) if reference.target.try_id().is_none())
+            {
+                return Ok(RepositoryRead::GitRequired(
+                    GitReadRequirement::SymbolicReference,
+                ));
+            }
+            head.id().map(gix::Id::detach)
+        } else {
+            match repository
+                .try_find_reference(reference_name)
+                .map_err(|error| failure("read commit reference", error))?
+            {
+                Some(reference) => match reference.try_id() {
+                    Some(id) => Some(id.detach()),
+                    None => {
+                        return Ok(RepositoryRead::GitRequired(
+                            GitReadRequirement::SymbolicReference,
+                        ));
+                    },
+                },
+                None => None,
+            }
+        };
+        let Some(id) = id else {
+            return Ok(RepositoryRead::InProcess(CommitObjectResolution::Missing));
+        };
+        let Some(object) = repository
+            .try_find_object(id)
+            .map_err(|error| failure("read referenced object", error))?
+        else {
+            return Ok(RepositoryRead::InProcess(CommitObjectResolution::Missing));
+        };
+        let resolution = match object.kind {
+            Kind::Commit => CommitObjectResolution::Resolved(
+                id.to_string().parse().map_err(GitError::InvalidObjectId)?,
+            ),
+            Kind::Tag => {
+                return Ok(RepositoryRead::GitRequired(
+                    GitReadRequirement::AnnotatedTag,
+                ));
+            },
+            _ if reference_name != expression => {
+                return Ok(RepositoryRead::GitRequired(
+                    GitReadRequirement::RevisionExpression,
+                ));
+            },
+            kind => CommitObjectResolution::WrongType {
+                object_type: kind.to_string(),
+            },
+        };
+        Ok(RepositoryRead::InProcess(resolution))
+    }
 }
 
 /// Compare a commit tree with a merge-result tree, retaining both sides of a rename.
@@ -826,6 +853,7 @@ mod tests {
     use cargo_berth_test_support::CommandDeadlineExt as _;
     use cargo_berth_test_support::TestProcessGroup;
 
+    use super::CommitRepositoryReader;
     use super::GitReadRequirement;
     use super::RepositoryRead;
     use super::status;
@@ -979,7 +1007,7 @@ mod tests {
         fixture.git(&["symbolic-ref", "refs/heads/alias", "refs/heads/main"])?;
         fixture.git(&["symbolic-ref", "HEAD", "refs/heads/alias"])?;
         assert!(matches!(
-            super::commit(fixture.root(), "HEAD")?,
+            CommitRepositoryReader::new(fixture.root()).commit("HEAD")?,
             RepositoryRead::GitRequired(GitReadRequirement::SymbolicReference)
         ));
         assert!(matches!(
@@ -1364,7 +1392,7 @@ mod tests {
         let fixture = PatchEquivalenceFixture::new()?;
         fixture.git(&["tag", "--annotate", "annotated", "--message", "tag object"])?;
         assert!(matches!(
-            super::commit(fixture.root(), "refs/tags/annotated^{commit}")?,
+            CommitRepositoryReader::new(fixture.root()).commit("refs/tags/annotated^{commit}")?,
             RepositoryRead::GitRequired(GitReadRequirement::AnnotatedTag)
         ));
         let objects = OperationObjectReader::new(fixture.root());
@@ -1383,7 +1411,7 @@ mod tests {
         let fixture = PatchEquivalenceFixture::new()?;
         fixture.git(&["commit", "--allow-empty", "-m", "next"])?;
         assert!(matches!(
-            super::commit(fixture.root(), "HEAD~1")?,
+            CommitRepositoryReader::new(fixture.root()).commit("HEAD~1")?,
             RepositoryRead::GitRequired(GitReadRequirement::RevisionExpression)
         ));
         assert_eq!(
@@ -1391,7 +1419,7 @@ mod tests {
             fixture.phase_start_head
         );
         assert_eq!(
-            in_process(super::commit(fixture.root(), "refs/heads/missing")?)?,
+            in_process(CommitRepositoryReader::new(fixture.root()).commit("refs/heads/missing")?)?,
             CommitObjectResolution::Missing
         );
         Ok(())

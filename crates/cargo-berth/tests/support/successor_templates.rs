@@ -16,8 +16,8 @@ use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::claim_id;
 use cargo_berth_test_support::write_file;
 
+use super::edges_templates;
 use super::edges_templates::RECORDED_PROJECTION;
-use super::edges_templates::commit_successor_fixture_file;
 use super::linked_checkout;
 
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -138,7 +138,7 @@ fn build_successor_population(root: &Path, successor_count: usize) {
     for successor_index in 0..successor_count {
         let branch = format!("successor-{successor_index}");
         let successor_root = add_worktree(root, &worktrees, &branch);
-        commit_successor_fixture_file(
+        edges_templates::commit_successor_fixture_file(
             &successor_root,
             "successors/protected.rs",
             protected_content,

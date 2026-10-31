@@ -65,8 +65,8 @@ impl AppPaneId {
         }
     }
 
-    pub const fn from_legacy(pane: PaneId) -> Option<Self> {
-        match pane {
+    pub const fn from_legacy(pane_id: PaneId) -> Option<Self> {
+        match pane_id {
             PaneId::ProjectList => Some(Self::ProjectList),
             PaneId::Package => Some(Self::Package),
             PaneId::Lang => Some(Self::Lang),
@@ -194,9 +194,9 @@ impl KeymapEditContext for App {
     fn clear_keymap_inline_error(&mut self) { self.overlays.clear_inline_error(); }
 
     fn reload_keymap(&mut self, content: &str) {
-        let legacy =
+        let keymap_load_result =
             keymap::load_keymap_from_str(content, self.config.current().tui.navigation_keys);
-        self.keymap.replace_current(legacy.keymap);
+        self.keymap.replace_current(keymap_load_result.keymap);
         self.keymap.sync_stamp();
         if let Err(err) = self.rebuild_framework_keymap_from_disk() {
             self.show_timed_toast("Keymap reload failed", err);
@@ -205,18 +205,23 @@ impl KeymapEditContext for App {
 
     /// Vim mode turns h/j/k/l into motion keys, so binding one to an
     /// action would shadow the motion for as long as vim mode is on.
-    fn keymap_reserved_bind(&self, bind: KeyBind) -> Option<String> {
+    fn keymap_reserved_bind(&self, key_bind: KeyBind) -> Option<String> {
         tui_pane::validate_vim_motion_bind(
             vim_mode_from_config(self.config.navigation_keys()),
-            bind,
+            key_bind,
         )
         .err()
         .map(|error| error.to_string())
     }
 
-    fn keymap_generated_bind(&self, scope: &str, action_key: &str, bind: &KeySequence) -> bool {
+    fn keymap_generated_bind(
+        &self,
+        scope: &str,
+        action_key: &str,
+        key_sequence: &KeySequence,
+    ) -> bool {
         self.config.navigation_keys().uses_vim()
-            && keymap_ui::is_generated_vim_extra(scope, action_key, bind)
+            && keymap_ui::is_generated_vim_extra(scope, action_key, key_sequence)
     }
 }
 
@@ -227,15 +232,15 @@ mod tests {
 
     #[test]
     fn app_pane_id_round_trips_to_legacy() {
-        for (app_id, legacy) in [
+        for (app_pane_id, legacy) in [
             (AppPaneId::Package, PaneId::Package),
             (AppPaneId::Git, PaneId::Git),
             (AppPaneId::Output, PaneId::Output),
             (AppPaneId::Finder, PaneId::Finder),
             (AppPaneId::Sccache, PaneId::Sccache),
         ] {
-            assert_eq!(app_id.to_legacy(), legacy);
-            assert_eq!(AppPaneId::from_legacy(legacy), Some(app_id));
+            assert_eq!(app_pane_id.to_legacy(), legacy);
+            assert_eq!(AppPaneId::from_legacy(legacy), Some(app_pane_id));
         }
     }
 }

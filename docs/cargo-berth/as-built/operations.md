@@ -69,7 +69,10 @@ work reaches the repository trunk, unless the successor has already
 incorporated it. After trunk receives the predecessor, the successor must
 still incorporate that work. In enforce mode, a proposed update to any live
 integration target that brings in a held successor is rejected by the
-reference-transaction gate.
+reference-transaction gate. One move is exempt: when the repository trunk moves
+to a commit that its upstream already contains, the gate clears the move,
+reports the entering holds as observed, and needs no permit
+([worktree-coordination.md](worktree-coordination.md) owns the gate).
 Board instructions and gate recovery name the shared target for a same-target
 edge and the repository trunk for an edge across targets.
 
@@ -80,7 +83,9 @@ Reconciliation judges each reservation at its recorded target. If an unreleased 
 
 `cargo-berth retarget <reservation> --target <local-branch>` changes an unreleased reservation's recorded target and resets its integration evidence. `init` pins old reservations that have no recorded target to the current repository trunk once; repeated `init` does not append another pin. Reconciliation and release judge each reservation at its recorded target; the reference-transaction gate judges every live target and the repository trunk. A malformed `--target` names why it is not a local branch, while a well-formed branch without a ref reports that it does not resolve.
 
-`resolve <id> --integrated-as <commit>` accepts a carrying commit only when it is reachable from that reservation's target. Drift compares committed incursion origins with the acting session reservation's target, or each reporting reservation's target when no session reservation is mapped. Commits already on that target are attributed as upstream history.
+A target branch with an upstream proves integration only through the upstream's commit. A local merge that is not pushed therefore stays `not_integrated`, and the reservation does not settle until the push. A configured upstream that cannot be read is unavailable evidence; it never falls back to the local branch. A target with no upstream keeps the local branch as its proof. No command fetches.
+
+`resolve <id> --integrated-as <commit>` accepts a carrying commit only when it is reachable from that reservation's target proof commit. Drift compares committed incursion origins with the acting session reservation's target, or each reporting reservation's target when no session reservation is mapped. Commits already on that target are attributed as upstream history.
 
 A present non-trunk target needs a cover in the worktree where it is checked out. Any live reservation there aimed at the target's parent serves as the cover; otherwise reconciliation claims the target branch's full diff and dirty paths. A lane reaches a final integrated release at that target only after the cover has a fresh extent at the target's current tip. Direct `release` at an uncovered target leaves the lane outstanding and names the target; explicit `resolve --integrated-as` remains available. If the target has no registered checkout, `target_uncovered` lists its waiting reservations. A deleted target instead raises `target_missing` and is judged at the repository trunk.
 
@@ -259,7 +264,7 @@ Upgrade `cargo-berth` for an unsupported schema version rather than
 reinitializing that journal.
 
 An outstanding reservation needs no command once its work reaches its
-recorded target: ordinary reconciliation (`board`, `check`, the post-Bash hook,
+recorded target (the target's upstream, when one is configured): ordinary reconciliation (`board`, `check`, the post-Bash hook,
 the prepared gate, or `release`) settles it when git proves the whole scoped
 phase is on that branch's current tip and the reservation's own merge extent is
 empty, including after a rebase, amend, or reset. That extent holds the dirty,
@@ -274,13 +279,35 @@ An orphan with no checkout cannot be observed, so it never settles on its own.
 Its notice names the dispositions that fit it and the observed tip of the
 branch it is judged at.
 
+A stale reservation with no change left against its target also needs no
+command. A reservation is stale after 24 hours with no owner activity. When no
+path in its scopes differs between its live holder worktree and its judged
+target, reconciliation releases it with disposition `unchanged_scopes`.
+Commits since the merge base, staged, unstaged, and untracked paths (both sides
+of a rename) count as differences. A failed Git read keeps the reservation.
+This scan runs on a hand-run `board`, and when a `claim`, `check`, or first-touch
+claim reaches `maximum_reservations`: the scan runs first, and the claim then
+retries once. Hook-driven boards do not scan. The disposition cancels the
+reservation's ordering constraints and claims no integration.
+
+`release` also records two explicit decisions for a reservation that is active
+or outstanding:
+
+- `release <id> --keep-work --why <text>` records `kept_on_branch` for work that
+  stays on its branch for a later phase. The branch and files stay unchanged.
+- `release <id> --abandon --why <text>` records `abandoned` for discarded work.
+
+Both stop blocking, free a `maximum_reservations` slot, and cancel the
+reservation's ordering constraints. Neither claims integration.
+
 `resolve` records one of these explicit decisions for what reconciliation
 cannot prove:
 
 - `--recovered` rebinds a reservation to the worktree running the command.
 - `--integrated-as <target-oid>` records a verified alternate commit already
   reachable from the reservation's target.
-- `--abandon --why <text>` is the only deliberate abandonment route.
+- `--abandon --why <text>` records deliberate abandonment, the same
+  disposition as `release --abandon`.
 - `--retire-orphan --why <text>` is the only confirmed orphan-retirement route,
   and its disposition stays distinct from abandonment after replay. On a
   released reservation whose integration evidence is lost, it replaces the
@@ -312,11 +339,13 @@ Reconciliation journals a merge extent observation whenever a reservation's
 share of its holder checkout's merge extent changes. Reservations of one holder
 whose shares are equal share one record, and each record replaces the extent
 recorded for every reservation it names. Once later observations have replaced an observation for
-every reservation it names, compaction removes it. Every other record stays,
-byte for byte and in order.
+every reservation it names, compaction removes it. Compaction also removes
+finished history older than 24 hours that no retained fact still needs. Every
+other record stays, byte for byte and in order.
 
 Compaction runs on its own after any mutating command whose replay finds 16 MiB
-or more of superseded observations. It waits for no lock: when another command
+or more of superseded observations, or finds expired finished history; the
+expiry check runs at most once per minute. It waits for no lock: when another command
 holds the ledger it skips, and the next command tries again. A failed automatic
 compaction never fails the command that triggered it, and the journal stays
 unchanged.
@@ -326,18 +355,21 @@ amount superseded. It reports envelope status `journal_compacted` (exit 0) and
 `payload.kind = "journal_compaction"`:
 
 ```text
-Compacted the journal: removed 14054 superseded merge extent observation(s) (124768811 bytes); 8052 record(s) (9130711 bytes) remain.
+Compacted the journal: removed 14054 superseded or expired record(s) (124768811 bytes); 8052 record(s) (9130711 bytes) remain.
 ```
 
-or, when nothing is superseded:
+or, when nothing can be removed:
 
 ```text
-The journal holds no superseded merge extent observation; it is unchanged.
+The journal holds no superseded observation or expired, unreferenced history; it is unchanged.
 ```
 
-Compaction writes the kept records to `journal.ndjson.compact.tmp`, replays that
-file, and replaces the journal only when both replays agree. Anything else is a
-refusal that leaves the journal unchanged:
+Compaction writes the kept records to its own `journal.ndjson.compact.tmp.<uuid>`
+file, holds a lock on it, replays it, and replaces the journal only when both
+replays agree. A compaction that does not publish deletes its file. A file left
+by an interrupted process is removed by a later compaction once it is 24 hours
+old and no process holds its lock. Anything
+other than agreement is a refusal that leaves the journal unchanged:
 
 ```text
 The reservation ledger could not be read: journal compaction refused: the compacted journal replays differently from the original journal; the journal is unchanged

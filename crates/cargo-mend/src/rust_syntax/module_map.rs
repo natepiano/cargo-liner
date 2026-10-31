@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::collections::hash_map::Entry;
 use std::ffi::OsStr;
 use std::fs;
@@ -7,14 +8,20 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::bail;
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
+use syn::Block;
 use syn::Expr;
 use syn::Item;
 use syn::ItemMod;
 use syn::Lit;
+use syn::LitStr;
+use syn::Macro;
 use syn::Meta;
 use syn::ext::IdentExt;
+use syn::visit;
+use syn::visit::Visit;
 
 use super::ParsedSources;
 use super::file_module_path;
@@ -54,14 +61,22 @@ impl From<&Meta> for ModulePathAttribute {
     fn from(meta: &Meta) -> Self {
         match meta {
             Meta::NameValue(value) => {
-                if value.path.is_ident("path") {
+                if value
+                    .path
+                    .get_ident()
+                    .is_some_and(|ident| ident.unraw() == "path")
+                {
                     path_from_meta(meta).map_or(Self::Ignored, Self::Direct)
                 } else {
                     Self::Ignored
                 }
             },
             Meta::List(list) => {
-                if list.path.is_ident("cfg_attr") {
+                if list
+                    .path
+                    .get_ident()
+                    .is_some_and(|ident| ident.unraw() == "cfg_attr")
+                {
                     parse_meta_list(list).map_or(Self::Ignored, |metas| {
                         Self::Conditional(metas.iter().skip(1).map(Self::from).collect())
                     })
@@ -246,6 +261,45 @@ pub(crate) struct ModuleMap {
 }
 
 impl ModuleMap {
+    /// Files syntax can reach from the package's targets. This owns both the
+    /// module walk and possible include edges, regardless of their macro prefix.
+    /// An unresolved include or block-local module leaves reach unknown.
+    pub(crate) fn reachable_sources(
+        roots: impl IntoIterator<Item = PathBuf>,
+        sources: &ParsedSources,
+    ) -> Result<BTreeSet<PathBuf>> {
+        let mut pending: Vec<_> = roots.into_iter().collect();
+        let mut reached = BTreeSet::new();
+        while let Some(root) = pending.pop() {
+            let modules = Self::for_crate_root(&root, sources);
+            for (file, _) in modules.declared_files() {
+                if !reached.insert(fs::canonicalize(file)?) {
+                    continue;
+                }
+                let source = sources.source(file)?;
+                let mut includes = SourceReachEdges::default();
+                includes.visit_file(source.syntax()?);
+                for include in includes.targets {
+                    let literal = match include {
+                        SourceReachEdge::LiteralInclude(literal) => literal,
+                        SourceReachEdge::Unresolved => {
+                            bail!("include target is not a literal path")
+                        },
+                        SourceReachEdge::UnplacedModule => {
+                            bail!("block-local module has no placeable mount")
+                        },
+                    };
+                    pending.push(
+                        file.parent()
+                            .context("included source has no directory")?
+                            .join(literal),
+                    );
+                }
+            }
+        }
+        Ok(reached)
+    }
+
     /// Resolve every file reachable from a crate root under `source_root`,
     /// reading each through `sources`. Callers ask
     /// [`ParsedSources::module_map`], which resolves each source root once.
@@ -503,6 +557,47 @@ impl ModuleWalk<'_> {
     }
 }
 
+enum SourceReachEdge {
+    LiteralInclude(String),
+    Unresolved,
+    UnplacedModule,
+}
+
+#[derive(Default)]
+struct SourceReachEdges {
+    targets: Vec<SourceReachEdge>,
+}
+
+impl<'ast> Visit<'ast> for SourceReachEdges {
+    fn visit_block(&mut self, node: &'ast Block) {
+        // Block-local modules have no crate module path this walk can place.
+        // Retaining Unknown protects their files without inventing a mount.
+        for statement in &node.stmts {
+            if matches!(statement, syn::Stmt::Item(Item::Mod(_))) {
+                self.targets.push(SourceReachEdge::UnplacedModule);
+            }
+        }
+        visit::visit_block(self, node);
+    }
+
+    fn visit_macro(&mut self, node: &'ast Macro) {
+        if node
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident.unraw() == "include")
+        {
+            self.targets.push(
+                syn::parse2::<LitStr>(node.tokens.clone())
+                    .map_or(SourceReachEdge::Unresolved, |literal| {
+                        SourceReachEdge::LiteralInclude(literal.value())
+                    }),
+            );
+        }
+        visit::visit_macro(self, node);
+    }
+}
+
 /// Every file cargo compiles as a crate root under `source_root`.
 fn crate_root_files(source_root: &Path) -> Vec<PathBuf> {
     let named_roots = ["lib.rs", "main.rs"]
@@ -574,6 +669,20 @@ mod tests {
     use super::ModuleDirectories;
     use super::ModuleMap;
     use crate::rust_syntax::ParsedSources;
+
+    #[test]
+    fn nonliteral_raw_includes_leave_source_reach_unresolved() {
+        for name in ["r#include", "std::r#include"] {
+            let dir = tempdir().expect("create source reach fixture");
+            let root = dir.path().join("lib.rs");
+            fs::write(&root, format!("{name}!(concat!(\"shared\", \".rs\"));\n"))
+                .expect("write nonliteral include");
+            let sources = ParsedSources::default();
+            let error = ModuleMap::reachable_sources([root], &sources)
+                .expect_err("nonliteral raw include must not claim complete source reach");
+            assert!(error.to_string().contains("not a literal path"), "{error}");
+        }
+    }
 
     #[test]
     fn declarations_keep_the_first_mount_including_the_empty_crate_root_path() {

@@ -1,12 +1,11 @@
-use std::ffi::OsStr;
 use std::path::Path;
 
 use anyhow::Context;
 use anyhow::Result;
-use walkdir::WalkDir;
 
 use super::in_body_use_finder;
-use crate::compiler::SOURCE_DIR_SRC;
+use crate::fixes::imports::ModuleContext;
+use crate::fixes::imports::ModuleImports;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::Finding;
@@ -25,21 +24,14 @@ pub(crate) fn scan_selection(
     let mut all_findings = Vec::new();
     let mut all_fixes = Vec::new();
     for package_root in &selection.package_roots {
-        let source_root = package_root.join(SOURCE_DIR_SRC);
-        if !source_root.is_dir() {
-            continue;
-        }
-        for entry in WalkDir::new(&source_root)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
-            let path = entry.path();
-            if !entry.file_type().is_file()
-                || path.extension().and_then(OsStr::to_str) != Some("rs")
-            {
+        for path in ModuleImports::source_files(sources, package_root) {
+            let ModuleContext::Known(module) =
+                ModuleImports::file_module(sources, &selection.package_roots, &path)
+            else {
                 continue;
-            }
-            let (findings, fixes) = scan_file(selection.analysis_root.as_path(), path, sources)?;
+            };
+            let (findings, fixes) =
+                scan_file(selection.analysis_root.as_path(), &path, sources, &module)?;
             all_findings.extend(findings);
             all_fixes.extend(fixes);
         }
@@ -60,6 +52,7 @@ fn scan_file(
     analysis_root: &Path,
     path: &Path,
     sources: &ParsedSources,
+    module: &[String],
 ) -> Result<(Vec<Finding>, Vec<UseFix>)> {
     let source = sources
         .source(path)
@@ -73,7 +66,7 @@ fn scan_file(
         .to_string_lossy()
         .replace('\\', "/");
 
-    in_body_use_finder::scan(syntax, source.text(), path, &display_path)
+    in_body_use_finder::scan_at_module(syntax, source.text(), path, &display_path, module)
 }
 
 #[cfg(test)]
@@ -88,7 +81,8 @@ mod tests {
         let line = "fn f() { /* é */ use crate::a::Thing; }";
         std::fs::write(&path, format!("// header\n{line}\n"))?;
         let before = ImportSource::construction_count();
-        let (findings, fixes) = super::scan_file(dir.path(), &path, &ParsedSources::default())?;
+        let (findings, fixes) =
+            super::scan_file(dir.path(), &path, &ParsedSources::default(), &[])?;
         assert_eq!(ImportSource::construction_count() - before, 1);
         assert_eq!(findings[0].source_line, line);
         assert_eq!(findings[0].path, "lib.rs");

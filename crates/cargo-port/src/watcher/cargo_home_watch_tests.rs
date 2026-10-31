@@ -1,5 +1,6 @@
 use std::error::Error;
 
+use super::CargoHome;
 use super::RegisteredRoots;
 use super::register_cargo_home_directory;
 use super::replace_skip_set;
@@ -35,9 +36,35 @@ fn cargo_home_watch_is_tracked_and_pruned_when_target_becomes_known() -> Result<
     assert!(registered.watched.contains_key(cargo_home.as_path()));
     let mut skips = WatchSkipSet::default();
     skips.add_target_directory(AbsolutePath::from(scratch.path().join("build-cache")));
-    replace_skip_set(&mut watcher, &mut registered, skips);
+    replace_skip_set(
+        &mut watcher,
+        &mut registered,
+        skips,
+        &CargoHome::Directory(cargo_home.clone()),
+    );
     assert!(watcher.unwatched.contains(&cargo_home));
     assert!(!registered.watched.contains_key(cargo_home.as_path()));
+    Ok(())
+}
+
+#[test]
+fn skip_refresh_registers_only_the_supplied_cargo_home() -> Result<(), Box<dyn Error>> {
+    let scratch = tempfile::tempdir()?;
+    let cargo_home = scratch.path().join(".cargo");
+    std::fs::create_dir_all(&cargo_home)?;
+    let mut watcher = RecordedFolderWatches::default();
+    let mut registered = RegisteredRoots::default();
+    let mut skips = WatchSkipSet::default();
+    skips.add_target_directory(AbsolutePath::from(scratch.path().join("build-cache")));
+
+    replace_skip_set(
+        &mut watcher,
+        &mut registered,
+        skips,
+        &CargoHome::Directory(cargo_home.clone()),
+    );
+
+    assert_eq!(watcher.watched, vec![cargo_home]);
     Ok(())
 }
 

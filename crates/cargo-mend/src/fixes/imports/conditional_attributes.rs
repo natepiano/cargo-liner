@@ -31,6 +31,7 @@ impl ConditionalAttributes {
         Self { source }
     }
 
+    #[cfg(test)]
     pub(in crate::fixes) fn contains(attributes: &[Attribute]) -> bool {
         attributes.iter().any(is_conditional)
     }

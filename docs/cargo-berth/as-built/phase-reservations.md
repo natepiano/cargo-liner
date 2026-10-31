@@ -53,11 +53,11 @@ A mapping that names another run falls through to the unmapped rule, so it never
 - A mapped or explicit selection whose paths are all held uses `PublishSelectedReservation`: it maps the session to the selected reservation and reports `published`.
 - When that selection needs no mapping write (an existing mapping, an explicit id equal to it, or an eligible explicit id with no harness session) and the snapshot shows no conflict, `check` answers the same `already_held` envelope before the lock, with no write. See [check-under-load.md](check-under-load.md).
 
-Opening a phase past `maximum_reservations` returns `CheckPayload::ReservationLimitReached { maximum }` through `OutputEnvelope::check_reservation_limit_reached`: status `reservation_limit_reached`, exit 1, no claim, no mapping.
+When opening a phase meets `maximum_reservations`, `ClaimCapacityRecovery` first runs one capacity reconciliation that releases stale reservations with no change left (`unchanged_scopes`, [rebase-settlement.md](rebase-settlement.md)), and the first touch retries once. If the ledger is still full, the check returns `CheckPayload::ReservationLimitReached { maximum }` through `OutputEnvelope::check_reservation_limit_reached`: status `reservation_limit_reached`, exit 1, no claim, no mapping.
 
 ### Post-tool-use drift: only the sole candidate
 
-`post_tool_use_drift_request` (`src/hook/post_tool_use.rs`) runs cheap drift as `EveryActiveForPostCommit { widening: PostCommitWideningSelection::SoleRunCandidate }`.
+`post_tool_use_drift_request` (`src/hook/post_tool_use.rs`) builds a request only for a `BashLaunch::Foreground` call. A background launch (`tool_input.run_in_background`, or a non-empty `tool_response.backgroundTaskId`) records nothing, and the next hook observes its writes. A foreground request runs cheap drift as `EveryActiveForPostCommit { widening: PostCommitWideningSelection::SoleRunCandidate }`.
 
 ```rust
 // src/drift/selection.rs
@@ -102,6 +102,7 @@ pub(crate) enum ClaimReservationSelection {
 | `--defer` or default answer | any | `Answer { reservation_id: Some(id) }` | `answered` | `answered` |
 
 - The selected reservation keeps its recorded target, phase-start head, purpose and plan/phase. Widening needs no reservation slot, so it succeeds at `maximum_reservations`.
+- The record size check counts only `CallerJournalInput` (`src/ledger/record_size.rs`), the part the caller supplied, against the 16384-byte limit. The derived holder authorizations of an `Answer` on a `tree:` scope count only against the 4 MiB derived-record limit, so a named claim in a crate with many holders is not refused for its size.
 - `consume` publishes the selected reservation to the session mapping for `already_held` and `answered` results itself, because `apply_journal_event` publishes nothing for an `Answer` event; a `Widen` publishes through the journal event as usual.
 - A repeated `--before` or `--after` reuses the existing directed edge through `SequenceWithExistingEdges`. Its holder bindings distinguish `ExistingEdge` from `NewEdge`; reused edges keep their identity, direction and original reason, and authorize the newly approved scopes. Replay adds only new edges, and only those count toward the edge limit. The board records an answer row for each holder's new scopes against its bound edge.
 - When the selected reservation already holds every requested path and recorded answers cover the overlaps under those exact edges, validation returns `CommittedActionValidation::AlreadySatisfied`; the ledger returns `LedgerCommittedActionOutcome::AlreadySatisfied` without appending. `consume` still publishes the explicit session selection. An opposite-direction answer retains the existing contradiction refusal and `--replace` behavior. The `sequence` verb still refuses duplicate endpoint pairs.

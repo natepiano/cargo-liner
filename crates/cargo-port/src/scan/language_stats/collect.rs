@@ -22,8 +22,8 @@ pub fn spawn_initial_language_stats(
     scan_context: &StreamingScanContext,
     disk_entries: &[(String, AbsolutePath)],
 ) {
-    for tree in disk_usage::group_disk_usage_trees(disk_entries) {
-        spawn_language_stats_tree(scan_context, tree);
+    for disk_usage_tree in disk_usage::group_disk_usage_trees(disk_entries) {
+        spawn_language_stats_tree(scan_context, disk_usage_tree);
     }
 }
 
@@ -43,7 +43,7 @@ fn emit_language_stats_for_tree(tree: &DiskUsageTree, sender: &Sender<Background
         hidden: Some(false),
         ..tokei::Config::default()
     };
-    let mut rust_cache = RustBreakdownCache::default();
+    let mut rust_breakdown_cache = RustBreakdownCache::default();
     send_language_progress_plan(sender, tree.entries.len());
     let languages = collect_path_languages(&tree.root_abs_path, &config);
     if tree.entries.len() == 1 {
@@ -51,7 +51,12 @@ fn emit_language_stats_for_tree(tree: &DiskUsageTree, sender: &Sender<Background
         send_language_stats_entry(
             sender,
             entry.clone(),
-            build_language_stats(entry.as_path(), &languages, &config, &mut rust_cache),
+            build_language_stats(
+                entry.as_path(),
+                &languages,
+                &config,
+                &mut rust_breakdown_cache,
+            ),
         );
         tracing::trace!(
             target: PERF_LOG_TARGET,
@@ -75,7 +80,7 @@ fn emit_language_stats_for_tree(tree: &DiskUsageTree, sender: &Sender<Background
                     entry.as_path(),
                     &languages,
                     &config,
-                    &mut rust_cache,
+                    &mut rust_breakdown_cache,
                 ),
             );
         }
@@ -89,7 +94,7 @@ fn emit_language_stats_for_tree(tree: &DiskUsageTree, sender: &Sender<Background
                 tree.root_abs_path.as_path(),
                 &languages,
                 &config,
-                &mut rust_cache,
+                &mut rust_breakdown_cache,
             ),
         );
     }
@@ -106,10 +111,10 @@ fn emit_language_stats_for_tree(tree: &DiskUsageTree, sender: &Sender<Background
 fn collect_path_language_stats(
     root: &AbsolutePath,
     config: &Config,
-    rust_cache: &mut RustBreakdownCache,
+    rust_breakdown_cache: &mut RustBreakdownCache,
 ) -> LanguageStats {
     let languages = collect_path_languages(root, config);
-    build_language_stats(root.as_path(), &languages, config, rust_cache)
+    build_language_stats(root.as_path(), &languages, config, rust_breakdown_cache)
 }
 
 fn collect_path_languages(root: &AbsolutePath, config: &Config) -> Languages {
@@ -139,32 +144,32 @@ fn build_language_stats_for_root(
     root: &Path,
     languages: &Languages,
     config: &Config,
-    rust_cache: &mut RustBreakdownCache,
+    rust_breakdown_cache: &mut RustBreakdownCache,
 ) -> LanguageStats {
-    let mut filtered = Languages::new();
+    let mut filtered_languages = Languages::new();
     for (language_type, language) in languages {
-        let mut subset = Language::new();
+        let mut filtered_language = Language::new();
         if language.inaccurate {
-            subset.mark_inaccurate();
+            filtered_language.mark_inaccurate();
         }
         for report in &language.reports {
             if report.name.starts_with(root) {
-                subset.add_report(report.clone());
+                filtered_language.add_report(report.clone());
             }
         }
-        if !subset.reports.is_empty() {
-            subset.total();
-            filtered.insert(*language_type, subset);
+        if !filtered_language.reports.is_empty() {
+            filtered_language.total();
+            filtered_languages.insert(*language_type, filtered_language);
         }
     }
-    build_language_stats(root, &filtered, config, rust_cache)
+    build_language_stats(root, &filtered_languages, config, rust_breakdown_cache)
 }
 
 fn build_language_stats(
     root: &Path,
     languages: &Languages,
     config: &Config,
-    rust_cache: &mut RustBreakdownCache,
+    rust_breakdown_cache: &mut RustBreakdownCache,
 ) -> LanguageStats {
     let mut entries: Vec<LangEntry> = languages
         .iter()
@@ -190,7 +195,7 @@ fn build_language_stats(
                 comments: lang.comments + child_comments,
                 blanks:   lang.blanks + child_blanks,
                 children: if *lang_type == LanguageType::Rust {
-                    rust_breakdown::child_entries(root, lang, config, rust_cache)
+                    rust_breakdown::child_entries(root, lang, config, rust_breakdown_cache)
                 } else {
                     Vec::new()
                 },
@@ -207,7 +212,7 @@ pub(crate) fn collect_language_stats_single(path: &Path) -> LanguageStats {
         hidden: Some(false),
         ..tokei::Config::default()
     };
-    let root = AbsolutePath::from(path);
-    let mut rust_cache = RustBreakdownCache::default();
-    collect_path_language_stats(&root, &config, &mut rust_cache)
+    let absolute_path = AbsolutePath::from(path);
+    let mut rust_breakdown_cache = RustBreakdownCache::default();
+    collect_path_language_stats(&absolute_path, &config, &mut rust_breakdown_cache)
 }

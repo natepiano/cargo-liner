@@ -9,11 +9,10 @@ use crate::rust_syntax::ModuleMap;
 use crate::rust_syntax::ParsedSources;
 
 /// The source files of one crate root, keyed by canonical path, each with the
-/// module path it occupies — `None` when `#[path]` attaches it to several
-/// parents and no single module path describes it.
+/// module path it occupies, or `SeveralParents` when no single path describes it.
 #[derive(Default)]
 pub(super) struct CrateFiles {
-    modules:   BTreeMap<PathBuf, Option<Vec<String>>>,
+    modules:   BTreeMap<PathBuf, FileModulePath>,
     /// The files that compile only under test: `#[cfg(test)]` sits on their
     /// `mod` declaration or an ancestor's.
     test_only: BTreeSet<PathBuf>,
@@ -32,28 +31,29 @@ impl CrateFiles {
         let mut modules = BTreeMap::new();
         let mut test_only = BTreeSet::new();
         for (file, module_path) in module_map.declared_files() {
-            let module_path = match module_path {
-                FileModulePath::Known(module_path) => Some(module_path),
-                FileModulePath::SeveralParents => None,
-            };
             if module_map.is_test_only(file) {
                 test_only.insert(canonical(file));
             }
             modules.insert(canonical(file), module_path);
         }
         for (file, module_path) in mounts {
-            modules.entry(canonical(&file)).or_insert(Some(module_path));
+            modules
+                .entry(canonical(&file))
+                .or_insert(FileModulePath::Known(module_path));
         }
         Self { modules, test_only }
     }
 
     /// Every file with a single module path.
     pub(super) fn scannable(&self) -> impl Iterator<Item = (&Path, &[String])> {
-        self.modules.iter().filter_map(|(file, module_path)| {
-            module_path
-                .as_deref()
-                .map(|module_path| (file.as_path(), module_path))
-        })
+        self.modules
+            .iter()
+            .filter_map(|(file, module_path)| match module_path {
+                FileModulePath::Known(module_path) => {
+                    Some((file.as_path(), module_path.as_slice()))
+                },
+                FileModulePath::SeveralParents => None,
+            })
     }
 
     /// Whether `file` (canonical) compiles only under test.
@@ -61,7 +61,7 @@ impl CrateFiles {
 
     /// Whether `file` (canonical) is attached to several parents.
     pub(super) fn has_several_parents(&self, file: &Path) -> bool {
-        matches!(self.modules.get(file), Some(None))
+        matches!(self.modules.get(file), Some(FileModulePath::SeveralParents))
     }
 }
 
@@ -78,4 +78,58 @@ pub(super) struct OwnerCrate<'a> {
 /// be resolved.
 pub(super) fn canonical(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use anyhow::Result;
+    use tempfile::tempdir;
+
+    use super::canonical;
+    use crate::rust_syntax::ModuleMap;
+    use crate::rust_syntax::ParsedSources;
+
+    #[test]
+    fn unobserved_package_reaches_includes_through_external_modules() -> Result<()> {
+        let temp = tempdir()?;
+        let root = temp.path();
+        fs::create_dir_all(root.join("b/src"))?;
+        fs::write(
+            root.join("b/src/lib.rs"),
+            "#[path = \"../../wrapper.rs\"] mod gateway;\n",
+        )?;
+        fs::write(root.join("wrapper.rs"), "include!(\"shared.rs\");\n")?;
+        fs::write(
+            root.join("shared.rs"),
+            "pub use crate::platform::discover;\n",
+        )?;
+        fs::write(root.join("unrelated.rs"), "pub fn unrelated() {}\n")?;
+
+        let reached =
+            ModuleMap::reachable_sources([root.join("b/src/lib.rs")], &ParsedSources::default())?;
+
+        assert_eq!(
+            reached,
+            ["b/src/lib.rs", "wrapper.rs", "shared.rs"]
+                .map(|file| canonical(&root.join(file)))
+                .into_iter()
+                .collect()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn computed_include_does_not_prove_source_unreachable() -> Result<()> {
+        let temp = tempdir()?;
+        let root = temp.path().join("lib.rs");
+        fs::write(
+            &root,
+            "include!(concat!(env!(\"OUT_DIR\"), \"/shared.rs\"));\n",
+        )?;
+
+        assert!(ModuleMap::reachable_sources([root], &ParsedSources::default()).is_err());
+        Ok(())
+    }
 }

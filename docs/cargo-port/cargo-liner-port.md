@@ -130,37 +130,21 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **As-built:** `tui_pane` owns the mouse wheel over its framework overlays (checkpoint 27059d4c). `wheel_framework_overlay` (`crates/tui_pane/src/framework/wheel.rs`) scrolls the Settings, Keymap or GlobalShortcuts overlay under the pointer and returns `OverlayWheel`. Settings movement is one crate-private function in `app_settings/navigation.rs` that key navigation and the wheel both call; a host clears its own state first through `SettingsHost::before_settings_navigation`. cargo-port (`tui/input/dispatch.rs`) deleted its three overlay scroll arms and calls the function after it inverts the scroll; its remaining `FrameworkOverlayId` arms are close and key routing. Handler Phase 57 wires cargo-tile and cargo-handler to the function.
 
-### Phase 2c — On macOS overlapping roots get one recursive watch  · status: todo
+### Phase 2c — On macOS overlapping roots get one recursive watch  · status: done
 
-**Depends on:** Phase 2b
+**As-built:** under `RecursiveRoot` (macOS) the registration plan in `crates/cargo-port/src/watcher/roots.rs` adds a recursive watch only for a configured root that no other configured root covers, in either root order (checkpoint 95138542). Each configured root stays a discovery boundary (`record_recursive_boundary`); coverage reads only paths that were watched (`recursively_watches`), so a failed parent registration still leaves the covered root watched. `PerFolder` is unchanged. The watcher resolves the cargo home once (`resolve_cargo_home` → `CargoHome::{Directory, Unavailable}`) and passes it to registration, so the registration tests use a test home and do not read the developer's `~/.cargo`. The one-watch-per-path invariant test in `runtime.rs` runs for both backends.
 
-#### Work Order
+### Phase 2h — mend keeps a re-export another package uses  · status: done
 
-**Goal:** with the `RecursiveRoot` backend (macOS), a configured root that another configured root covers gets no second recursive watch.
+**As-built:** the subtree re-export planner reads every mount of a physical source that mend can see by syntax, across all packages: `mod` items with or without `#[path]` (also inside function bodies) and `include!` with any path prefix and a literal path (`crates/cargo-mend/src/rust_syntax/module_map.rs`). A shared re-export changes only when every package that uses it gets the same edit (`fixes/subtree_reexport/scan.rs`); otherwise mend keeps it and reports one skipped manual rewrite. A mount mend cannot place (`UnobservedPackageReach::Unresolved`, a non-literal include) gives that package unknown reach, which keeps the re-export. Nested packages under a root package path are told apart by source membership, not a directory prefix. `resolve_visibility_proposals` holds its agreement state in an enum; tui_pane `attract::controller` names are `pub(super)` (checkpoint 44ecc942). Gotchas: a `mod x;` that a fix leaves empty stays; renamed custom macros and attribute or derive macros are outside the mount guarantee; raw identifier spellings are the next mend phase's work. Ruled out: deleting module declarations a fix leaves empty.
 
-**Source:** phase 2m contract review, finding F001 (minor). The showrunner moved it out of 2m on 2026-10-29: overlapping roots are a rare setup, and two recursive watches still cost far less than per-folder watches.
+### Phase 2i — mend never writes the same import twice  · status: done
 
-**Constraints:**
-- Coverage follows successful subscriptions: `RegisteredRoots::covers()` (`roots.rs` ≈109) reads `dirs`, and recursive registration adds only paths it watched. Keep every configured root as a discovery boundary while removing duplicate watches, and add tests for both root orders that check the configured boundaries stay and that a failed parent registration still leaves the covered root watched.
-- From phase 2b: `RegisteredRoots` keeps a role map; `role()` and `event_role()` return `Subscription::{Unwatched, Watched(WatchedFolderRole)}`.
-- The invariant at `watcher/runtime.rs` ≈989 (its tests ≈1071) holds by construction: one notify watch per path; no `watch()` call lands on a path a recursive root covers.
-- Under `RecursiveRoot`, register a recursive watch only for each root that no other configured root covers, in any root order (`/r` then `/r/project`, and `/r/project` then `/r`, both give one watch on `/r`). Each configured root stays its own discovery root (`RegisteredRoots.dirs` unchanged); only the watch set changes.
-- `PerFolder` behaviour is unchanged.
+**As-built:** every fixer that adds or rewrites a use item (PreferModuleImport, ImportsAtTop, SubtreeReexport caller rewrites, facade redirects) hands its imports to one owner, `ModuleImports` (`crates/cargo-mend/src/fixes/imports/module_imports.rs`, conditions in `import_condition.rs`). It resolves each binding from module paths seeded by Cargo target roots (`rust_syntax::ModuleMap` via `ParsedSources::for_selection`), so equal paths to one module are one binding; identity is scope + target + name, and a public or cfg-gated re-export is kept while a private import is limited to the configurations it does not cover. A file with several module paths stays unresolved and its dependent rewrites are declined. A declined import edit goes back into `subtree_reexport::scan_selection`'s fact-exclusion loop, so the whole re-export change is re-planned without that finding (re-export kept, one skipped report, independent fixes applied). Raw identifier mounts (`r#include!`, `#[r#path]`, `#[r#cfg_attr]`) count; `CrateFiles.modules` keeps the `FileModulePath` enum (checkpoint e7f314d2). Gotchas: the per-fixer `import_plan` dedup is gone; any new fixer that writes imports must go through `ModuleImports`. Ruled out: filtering finished output to drop duplicates.
 
-**Spec:**
-1. Covered-root removal in the `RecursiveRoot` registration plan (`roots.rs`, `registration_plan` / `register_watch_roots_with_skips`).
-2. **Tests, red first, each under one second:** both root orders give one registered path; the invariant test at `runtime.rs` ≈1071 also runs with `RecursiveRoot`.
-3. CHANGELOG: one line.
+### Phase 2j — a mend cell keeps its progress bar after a diagnostic  · status: done
 
-**Files:**
-- `crates/cargo-port/src/watcher/roots.rs`
-- `crates/cargo-port/src/watcher/runtime.rs` — the invariant test only
-- `crates/cargo-port/src/watcher/watch_registration_tests.rs`
-- `crates/cargo-port/CHANGELOG.md`
-
-**Workers:** 1 writer (`impl`), who also writes the tests.
-
-**Acceptance gate:** `verify.sh test cargo-port` (Mac) and `verify.sh lint cargo-port` clean; no test takes a second.
+**As-built:** a forwarded compiler diagnostic goes through the one owner of the progress line in `crates/cargo-mend/src/compiler/build/progress.rs` (`write_forwarded_output`): erase the line, print the block, add a newline only when the block lacks one, redraw (checkpoint 32316514). The counter runs to the end of the pass, and an unterminated last diagnostic survives the redraw and the cleanup. Live proof: a real cargo-tile mend cell read 85% after the forwarded warning.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 
@@ -210,7 +194,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 - `crates/cargo-port/src/tui/project_list/path_index_tests.rs` — new; tester
 - `crates/cargo-port/CHANGELOG.md`
 
-**Workers:** 1 writer + 1 tester.
+**Workers:** 1 writer (impl4) owns the implementation and every test file; the unit director owns the live CPU measurements (spec 5).
 - `impl` — specs 1–3 and 6, the frame counter, and the two slow interaction tests in `tui/app/mod.rs`; hub: `crates/cargo-port/src/tui/project_list/list.rs`. Not the tester's two files.
 - `test` — spec 4, in `tui/terminal/event_loop_tests.rs` and `tui/project_list/path_index_tests.rs`, registered by `impl`.
 
@@ -246,7 +230,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 7. CHANGELOG: one line for each of the four fixes in `crates/cargo-port/CHANGELOG.md`.
 
 **Files:**
-- `crates/cargo-port/src/tui/app/async_tasks/tree.rs` — rescan keeps Deleted entries
+- `crates/cargo-port/src/tui/app/async_tasks/tree.rs` — rescan keeps Deleted entries (entry point `prepare_rescan`)
 - `crates/cargo-port/src/tui/app/async_tasks/dispatch.rs` — the completed scan result keeps Deleted entries
 - `crates/cargo-port/src/tui/app/async_tasks/disk_handlers.rs` — late replies after dismiss
 - `crates/cargo-port/src/tui/app/async_tasks/deleted_rescan_tests.rs` — new; tester

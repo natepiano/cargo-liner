@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 
+use anyhow::Context;
 use anyhow::Result;
 
 use super::ancestor;
@@ -13,19 +14,23 @@ use super::owner_edit;
 use super::owner_edit::EmptiedOwner;
 use super::owner_edit::OwnerFact;
 use super::owner_edit::RegionEdit;
+use crate::compiler::SourceModuleMount;
 use crate::config::DiagnosticCode;
 use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::CallerBuilds;
 use crate::fixes::facade_redirect::FacadeRedirect;
 use crate::fixes::facade_redirect::ModuleAliases;
 use crate::fixes::facade_redirect::RedirectTarget;
+use crate::fixes::imports::OwnedFix;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::AncestorReexport;
 use crate::reporting::FixSupport;
 use crate::reporting::Report;
 use crate::reporting::SubtreeReexportFixFact;
+use crate::rust_syntax::ModuleMap;
 use crate::rust_syntax::ParsedSources;
+use crate::selection;
 use crate::selection::Selection;
 
 /// The `pub_use_outside_subtree` fixes of one pass.
@@ -40,16 +45,40 @@ pub(in crate::fixes) struct SubtreeReexportScan {
     pub(in crate::fixes) skipped: usize,
 }
 
-/// A fix and the facts it belongs to; a caller fix belongs to none.
-struct OwnedFix {
-    fix:   UseFix,
-    facts: Vec<usize>,
-}
-
 /// The fixes one round builds from the facts still in play.
 struct Round {
     fixes:     Vec<OwnedFix>,
     unmatched: BTreeSet<usize>,
+}
+
+impl Round {
+    /// Preserve every fact owner until composition accepts the round. Import
+    /// safety refusals rebuild original proposals rather than filtering edits
+    /// whose replacements or retained imports planning may already have changed.
+    fn planning_refusals(
+        &self,
+        plan: &mut impl FnMut(&SubtreeReexportScan) -> Result<BTreeSet<PathBuf>>,
+    ) -> Result<BTreeSet<usize>> {
+        let fixes = self
+            .fixes
+            .iter()
+            .map(|owned| owned.fix.clone())
+            .collect::<Vec<_>>();
+        let Ok(fixes) = ValidatedFixSet::try_from(fixes) else {
+            return Ok(self
+                .fixes
+                .iter()
+                .flat_map(|owned| owned.facts.iter().copied())
+                .collect());
+        };
+        let declined = plan(&SubtreeReexportScan { fixes, skipped: 0 })?;
+        Ok(self
+            .fixes
+            .iter()
+            .filter(|owned| declined.contains(&owned.fix.path))
+            .flat_map(|owned| owned.facts.iter().copied())
+            .collect())
+    }
 }
 
 /// Facts stay with the crate files resolved for them. Owner editing cannot
@@ -72,10 +101,18 @@ pub(in crate::fixes) fn scan_selection(
     selection: &Selection,
     report: &Report,
     sources: &ParsedSources,
+    mut plan: impl FnMut(&SubtreeReexportScan) -> Result<BTreeSet<PathBuf>>,
 ) -> Result<SubtreeReexportScan> {
     let root = &selection.analysis_root;
-    let (facts, mut skipped) = fixable_facts(report);
+    let (facts, mut skipped) = fixable_facts(root, report);
+    if facts.is_empty() {
+        return Ok(SubtreeReexportScan {
+            fixes: ValidatedFixSet::try_from(Vec::<UseFix>::new())?,
+            skipped,
+        });
+    }
     let crates = resolved_crate_facts(root, report, &facts, sources);
+    let mounts = ReexportMountInventory::collect(selection, report, sources)?;
     let mut excluded = crates
         .values()
         .flat_map(|resolved| {
@@ -92,24 +129,39 @@ pub(in crate::fixes) fn scan_selection(
     // `scan_selection` adds facts that `build_round` could not place or whose edits
     // overlap another fix to `excluded`, then rebuilds every edit without them.
     let fixes = loop {
-        let round = build_round(root, &crates, &excluded, sources)?;
+        let round = build_mount_rounds(root, &crates, &excluded, sources)?;
         let mut rejected = round.unmatched.clone();
         rejected.extend(overlapping_facts(&round.fixes));
+        rejected.extend(mounts.unagreed_facts(root, &facts, &round.fixes));
+        if rejected.is_empty() {
+            rejected.extend(round.planning_refusals(&mut plan)?);
+        }
         if rejected.is_empty() {
             break round.fixes;
         }
         excluded.extend(rejected);
     };
 
-    let applied = facts.len() - excluded.len();
-    skipped += excluded.len();
+    let sites = |indexes: &BTreeSet<usize>| {
+        indexes
+            .iter()
+            .map(|&index| ReexportSite::of(root, facts[index]))
+            .collect::<BTreeSet<_>>()
+            .len()
+    };
+    let applied = facts
+        .iter()
+        .map(|fact| ReexportSite::of(root, fact))
+        .collect::<BTreeSet<_>>()
+        .len()
+        - sites(&excluded);
+    skipped += sites(&excluded);
     let mut fixes = fixes.into_iter().map(|owned| owned.fix).collect::<Vec<_>>();
     facade_redirect::dedup_fixes(&mut fixes);
     match ValidatedFixSet::try_from(fixes) {
         Ok(fixes) => Ok(SubtreeReexportScan { fixes, skipped }),
-        // Two overlapping caller rewrites belong to no single fact. If they make
-        // `ValidatedFixSet::try_from` fail, the whole pass stands down and every fact
-        // counts as skipped.
+        // Defensive validation keeps the whole pass intact if its final
+        // flattened proposals cannot be represented as one validated set.
         Err(_) => Ok(SubtreeReexportScan {
             fixes:   ValidatedFixSet::try_from(Vec::<UseFix>::new())?,
             skipped: skipped + applied,
@@ -117,33 +169,205 @@ pub(in crate::fixes) fn scan_selection(
     }
 }
 
-/// The fact of every fixable finding, and the count of fixable findings with
-/// no single fact.
-fn fixable_facts(report: &Report) -> (Vec<&SubtreeReexportFixFact>, usize) {
-    let mut by_site: BTreeMap<(&str, usize, usize), Vec<&SubtreeReexportFixFact>> = BTreeMap::new();
+/// A physical re-export is reported once even when its mounts name different modules.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct ReexportSite {
+    file:   PathBuf,
+    line:   usize,
+    column: usize,
+}
+
+impl ReexportSite {
+    fn of(root: &Path, fact: &SubtreeReexportFixFact) -> Self {
+        Self {
+            file:   owner_file(root, fact),
+            line:   fact.use_line,
+            column: fact.use_column,
+        }
+    }
+}
+
+/// Keep each mount's proposal for comparison; count a site with no proposal once.
+fn fixable_facts<'a>(root: &Path, report: &'a Report) -> (Vec<&'a SubtreeReexportFixFact>, usize) {
+    let mut by_site: BTreeMap<ReexportSite, Vec<&SubtreeReexportFixFact>> = BTreeMap::new();
     for fact in report.facts.subtree_reexport_fix_facts.iter() {
         by_site
-            .entry((fact.use_path.as_str(), fact.use_line, fact.use_column))
+            .entry(ReexportSite::of(root, fact))
             .or_default()
             .push(fact);
     }
+    let sites = report
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.diagnostic_code == DiagnosticCode::PubUseOutsideSubtree
+                && finding.fix_support() == FixSupport::PubUseOutsideSubtree
+        })
+        .map(|finding| ReexportSite {
+            file:   crate_files::canonical(&root.join(&finding.path)),
+            line:   finding.line,
+            column: finding.column,
+        })
+        .collect::<BTreeSet<_>>();
     let mut facts = Vec::new();
     let mut skipped = 0;
-    for finding in &report.findings {
-        if finding.diagnostic_code != DiagnosticCode::PubUseOutsideSubtree
-            || finding.fix_support() != FixSupport::PubUseOutsideSubtree
-        {
-            continue;
-        }
-        match by_site
-            .get(&(finding.path.as_str(), finding.line, finding.column))
-            .map(Vec::as_slice)
-        {
-            Some([fact]) => facts.push(*fact),
-            _ => skipped += 1,
+    for site in sites {
+        match by_site.remove(&site) {
+            Some(proposals) => facts.extend(proposals),
+            None => skipped += 1,
         }
     }
     (facts, skipped)
+}
+
+/// Unobserved packages veto only sources they could mount. An unresolved
+/// include keeps the package's reach unknown and therefore cannot authorize edits.
+enum UnobservedPackageReach {
+    Known(BTreeSet<PathBuf>),
+    Unresolved,
+}
+
+impl UnobservedPackageReach {
+    fn may_mount(&self, source: &Path) -> bool {
+        match self {
+            Self::Known(files) => files.contains(source),
+            Self::Unresolved => true,
+        }
+    }
+}
+
+/// Complete compiler evidence, including sources in packages without a finding.
+/// Crate roots identify the evidence; `SourceModuleMount` identifies the module,
+/// so a library and its test build do not become two independent mounts.
+struct ReexportMountInventory {
+    sources:    BTreeMap<PathBuf, BTreeMap<PathBuf, BTreeSet<SourceModuleMount>>>,
+    unobserved: Vec<UnobservedPackageReach>,
+}
+
+impl ReexportMountInventory {
+    fn collect(selection: &Selection, report: &Report, parsed: &ParsedSources) -> Result<Self> {
+        let root = &selection.analysis_root;
+        let workspace =
+            selection::resolve_cargo_selection(Some(&selection.workspace_root.join("Cargo.toml")))?;
+        let packages: BTreeMap<_, _> = workspace
+            .packages
+            .iter()
+            .flat_map(|package| {
+                package.targets.iter().map(|target| {
+                    (
+                        crate_files::canonical(&target.src_path),
+                        crate_files::canonical(&package.root)
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                })
+            })
+            .collect();
+        let mut sources: BTreeMap<PathBuf, BTreeMap<PathBuf, BTreeSet<SourceModuleMount>>> =
+            BTreeMap::new();
+        for mount in report.facts.module_mount_facts.iter() {
+            let crate_root = crate_files::canonical(&root.join(&mount.crate_root_file));
+            let package = packages
+                .get(&crate_root)
+                .context("module mount belongs to no selected Cargo target")?;
+            sources
+                .entry(crate_files::canonical(&root.join(&mount.file)))
+                .or_default()
+                .entry(crate_root)
+                .or_default()
+                .insert(SourceModuleMount::new(
+                    package.clone(),
+                    mount.module_path.clone(),
+                ));
+        }
+        let observed: BTreeSet<_> = report
+            .facts
+            .module_mount_facts
+            .iter()
+            .filter_map(|mount| {
+                packages.get(&crate_files::canonical(&root.join(&mount.crate_root_file)))
+            })
+            .collect();
+        let unobserved = workspace
+            .packages
+            .iter()
+            .filter_map(|package| {
+                let root = crate_files::canonical(&package.root);
+                if observed.contains(&root.to_string_lossy().into_owned()) {
+                    return None;
+                }
+                Some(
+                    ModuleMap::reachable_sources(
+                        package.targets.iter().map(|target| target.src_path.clone()),
+                        parsed,
+                    )
+                    .map_or(
+                        UnobservedPackageReach::Unresolved,
+                        UnobservedPackageReach::Known,
+                    ),
+                )
+            })
+            .collect();
+        Ok(Self {
+            sources,
+            unobserved,
+        })
+    }
+
+    /// Compare the physical edits produced independently by each mount. A silent
+    /// mount, a differing replacement, or an unobserved package that can reach
+    /// this source vetoes them.
+    fn unagreed_facts(
+        &self,
+        root: &Path,
+        facts: &[&SubtreeReexportFixFact],
+        fixes: &[OwnedFix],
+    ) -> BTreeSet<usize> {
+        let mut rejected = BTreeSet::new();
+        for (source, crates) in &self.sources {
+            let expected = crates.values().flatten().collect::<BTreeSet<_>>();
+            let mut proposals: BTreeMap<&SourceModuleMount, BTreeSet<(usize, usize, &str)>> =
+                BTreeMap::new();
+            let mut owners = BTreeSet::new();
+            for owned in fixes.iter().filter(|owned| &owned.fix.path == source) {
+                for &index in &owned.facts {
+                    let fact = facts[index];
+                    owners.insert(index);
+                    let crate_root = crate_files::canonical(&root.join(&fact.crate_root_file));
+                    if let Some(mount) = crates.get(&crate_root).and_then(|mounts| {
+                        if mounts.len() == 1 {
+                            return mounts.iter().next();
+                        }
+                        mounts
+                            .iter()
+                            .filter(|mount| fact.owner_module.starts_with(mount.module_path()))
+                            .max_by_key(|mount| mount.module_path().len())
+                    }) {
+                        proposals.entry(mount).or_default().insert((
+                            owned.fix.start,
+                            owned.fix.end,
+                            &owned.fix.replacement,
+                        ));
+                    }
+                }
+            }
+            let mut edits = proposals.values();
+            let unanimous = edits
+                .next()
+                .is_some_and(|first| edits.all(|next| next == first));
+            if self
+                .unobserved
+                .iter()
+                .any(|package| package.may_mount(source))
+                || (expected.len() > 1
+                    && (proposals.keys().copied().collect::<BTreeSet<_>>() != expected
+                        || !unanimous))
+            {
+                rejected.extend(owners);
+            }
+        }
+        rejected
+    }
 }
 
 /// Resolve each crate once and retain the facts that required that resolution.
@@ -200,7 +424,7 @@ fn owner_file(root: &Path, fact: &SubtreeReexportFixFact) -> PathBuf {
     crate_files::canonical(&root.join(&fact.use_path))
 }
 
-fn build_round(
+fn build_mount_rounds(
     root: &Path,
     crates: &BTreeMap<String, ResolvedCrateFacts<'_>>,
     excluded: &BTreeSet<usize>,
@@ -210,13 +434,47 @@ fn build_round(
         fixes:     Vec::new(),
         unmatched: BTreeSet::new(),
     };
+    for (crate_root, resolved) in crates {
+        let scoped = BTreeMap::from([(crate_root.as_str(), resolved)]);
+        let proposed = build_resolved_round(root, &scoped, excluded, sources)?;
+        round.fixes.extend(proposed.fixes);
+        round.unmatched.extend(proposed.unmatched);
+    }
+    Ok(round)
+}
+
+#[cfg(test)]
+fn build_round(
+    root: &Path,
+    crates: &BTreeMap<String, ResolvedCrateFacts<'_>>,
+    excluded: &BTreeSet<usize>,
+    sources: &ParsedSources,
+) -> Result<Round> {
+    let crates = crates
+        .iter()
+        .map(|(name, resolved)| (name.as_str(), resolved))
+        .collect();
+    build_resolved_round(root, &crates, excluded, sources)
+}
+
+fn build_resolved_round(
+    root: &Path,
+    crates: &BTreeMap<&str, &ResolvedCrateFacts<'_>>,
+    excluded: &BTreeSet<usize>,
+    sources: &ParsedSources,
+) -> Result<Round> {
+    let mut round = Round {
+        fixes:     Vec::new(),
+        unmatched: BTreeSet::new(),
+    };
+
+    let mut named_owners = BTreeSet::new();
 
     // `facade_redirect::redirect_callers_in_file` runs first, per crate root, with that
     // root's `redirects`. It reports owner modules a caller's `use` still names,
     // which `owner_edit::edit_owner_region` must not delete, and the builds that
     // compile the callers each ancestor re-export serves.
     let mut outside_used: BTreeMap<usize, (&OwnerFact<'_>, CallerBuilds)> = BTreeMap::new();
-    let mut named_owners = BTreeSet::new();
     for (crate_root, resolved) in crates {
         let files = &resolved.files;
         let active = resolved
@@ -255,23 +513,25 @@ fn build_round(
                 result
                     .named_owner_modules
                     .into_iter()
-                    .map(|module| (crate_root.as_str(), module)),
+                    .map(|module| ((*crate_root).to_string(), module)),
             );
             round
                 .fixes
-                .extend(result.fixes.into_iter().map(|fix| OwnedFix {
-                    fix,
-                    facts: Vec::new(),
+                .extend(result.fixes.into_iter().map(|mut owned| {
+                    for index in &mut owned.facts {
+                        *index = active[*index].index;
+                    }
+                    owned
                 }));
         }
     }
 
     // `owner_edit::edit_owner_region` builds owner edits, one region per owner file and owner
     // module.
-    let regions = resolved_owner_regions(root, crates, excluded);
+    let regions = resolved_regions(root, crates, excluded);
     for ((file, owner_module), region) in &regions {
         let crate_root = region.crate_root;
-        let emptied = if named_owners.contains(&(crate_root, owner_module.to_vec())) {
+        let emptied = if named_owners.contains(&(crate_root.to_string(), owner_module.to_vec())) {
             EmptiedOwner::Keep
         } else {
             EmptiedOwner::Delete
@@ -314,9 +574,22 @@ fn build_round(
 }
 
 /// Group globally ordered facts with their resolved crate; the first selects region metadata.
+#[cfg(test)]
 fn resolved_owner_regions<'a, 'f>(
     root: &Path,
     crates: &'a BTreeMap<String, ResolvedCrateFacts<'f>>,
+    excluded: &BTreeSet<usize>,
+) -> BTreeMap<(PathBuf, &'f [String]), ResolvedOwnerFacts<'a, 'f>> {
+    let crates = crates
+        .iter()
+        .map(|(name, resolved)| (name.as_str(), resolved))
+        .collect();
+    resolved_regions(root, &crates, excluded)
+}
+
+fn resolved_regions<'a, 'f>(
+    root: &Path,
+    crates: &BTreeMap<&'a str, &'a ResolvedCrateFacts<'f>>,
     excluded: &BTreeSet<usize>,
 ) -> BTreeMap<(PathBuf, &'f [String]), ResolvedOwnerFacts<'a, 'f>> {
     let active = crates
@@ -324,7 +597,7 @@ fn resolved_owner_regions<'a, 'f>(
         .flat_map(|(crate_root, resolved)| {
             resolved.facts.iter().filter_map(move |owner| {
                 (!excluded.contains(&owner.index))
-                    .then_some((owner.index, (owner, crate_root, &resolved.files)))
+                    .then_some((owner.index, (owner, *crate_root, &resolved.files)))
             })
         })
         .collect::<BTreeMap<_, _>>();

@@ -46,6 +46,7 @@ use crate::scan::BackgroundMsg;
 use crate::scan::ExcludeDirs;
 use crate::tui::background::Background;
 use crate::tui::background::BackgroundChannels;
+use crate::tui::columns::LintColumnStatus;
 use crate::tui::integration;
 use crate::tui::integration::AppPaneId;
 use crate::tui::keymap;
@@ -239,7 +240,9 @@ impl AppBuilder<Started> {
         } = inputs.startup_environment;
         let panes = Panes::new(&inputs.cargo_port_config.cpu, startup_services.clone());
         let mut projects = started.projects;
-        projects.init_runtime_state(inputs.cargo_port_config.lint.enabled.is_enabled());
+        projects.init_runtime_state(LintColumnStatus::from(
+            inputs.cargo_port_config.lint.enabled,
+        ));
         let background = Background::new(BackgroundChannels {
             background: (inputs.background_tx, inputs.background_rx),
             ci_fetch:   (channeled.ci_fetch_tx, channeled.ci_fetch_rx),
