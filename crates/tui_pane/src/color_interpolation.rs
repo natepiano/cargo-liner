@@ -58,12 +58,7 @@ mod tests {
     use super::truncate_channel;
 
     #[test]
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the original float cast is the equivalence oracle"
-    )]
-    fn bounded_conversion_matches_the_original_cast_for_every_channel_pair() {
+    fn bounded_conversion_matches_truncation_for_every_channel_pair() {
         for start in 0..=u8::MAX {
             for end in 0..=u8::MAX {
                 for fraction in [
@@ -82,7 +77,8 @@ mod tests {
                     let value = (f64::from(end) - f64::from(start))
                         .mul_add(fraction, f64::from(start))
                         .clamp(0.0, 255.0);
-                    assert_eq!(truncate_channel(value), value as u8);
+                    let expected = if value.is_nan() { 0.0 } else { value.trunc() };
+                    assert_eq!(f64::from(truncate_channel(value)), expected);
                 }
             }
         }
