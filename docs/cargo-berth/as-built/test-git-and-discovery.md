@@ -2,7 +2,7 @@
 
 ## What it is
 
-Every git a cargo-berth test starts runs with git's auto maintenance off. Porcelain git starts a detached `git maintenance run --auto` when it finishes, and on git 2.55 that child still writes in the repository after `git commit` returns: it raced `RepositoryTemplate` copies and could delete a pack another commit was reading. Separately, worktree discovery skips a `.git` that is not a git directory and honours `GIT_CEILING_DIRECTORIES`, so a test that runs `cargo-berth` outside any repository does not depend on what sits above TMPDIR, an empty `/tmp/.git` included.
+Every git a cargo-berth test starts runs with git's auto maintenance off. Porcelain git starts a detached `git maintenance run --auto` when it finishes, and on git 2.55 that child still writes in the repository after `git commit` returns: it raced `RepositoryTemplate` copies and could delete a pack another commit was reading. Separately, worktree discovery skips a `.git` that is not a git directory and honours `GIT_CEILING_DIRECTORIES`, so a test that runs `cargo-berth` outside any repository does not depend on what sits above TMPDIR, an empty `/tmp/.git` included. Every test also runs in a private scratch root, and a test that leaves a path there fails with its own name.
 
 ## How it works
 
@@ -12,15 +12,28 @@ All of it lives in `crates/cargo-berth-test-support` (`publish = false`, a dev-d
 
 - `git_driver.rs`:
   - `AUTO_MAINTENANCE_DISABLED_CONFIGURATION` is the const table `[("maintenance.auto", "false"), ("gc.auto", "0")]`.
-  - `pub(crate) fn disable_git_auto_maintenance(&mut Command)` sets it as `GIT_CONFIG_COUNT=2` with fixed slots `GIT_CONFIG_KEY_0`/`_1` and `GIT_CONFIG_VALUE_0`/`_1`. It replaces an ambient `GIT_CONFIG_COUNT` instead of appending to it, so the test process's own overlay does not carry into test processes.
-  - `pub fn fixture_git_command() -> Command` is `Command::new("git")` with the setting applied, re-exported from `lib.rs`. It is the only `Command::new("git")` in the test tree. Every unit-test git helper in `crates/cargo-berth/src` builds on it: `git/fixture.rs` `run_git`, `board/test_support.rs` `git`, `gate/rewrite.rs` `git_output`, `worktree/liveness.rs` `run_git`, `ledger/test_support.rs` `scratch_repository`, and one-off commands in `reconcile.rs` and `git/reachability.rs`.
+  - `pub(crate) fn disable_git_auto_maintenance(&mut FixtureCommand)` sets it as `GIT_CONFIG_COUNT=2` with fixed slots `GIT_CONFIG_KEY_0`/`_1` and `GIT_CONFIG_VALUE_0`/`_1`. It replaces an ambient `GIT_CONFIG_COUNT` instead of appending to it, so the test process's own overlay does not carry into test processes.
+  - `pub fn fixture_git_command() -> FixtureCommand` is `FixtureCommand::new("git")` with the setting applied, re-exported from `lib.rs`. Every unit-test git helper in `crates/cargo-berth/src` builds on it: `git/fixture.rs` `run_git`, `board/test_support.rs` `git`, `gate/rewrite.rs` `git_output`, `worktree/liveness.rs` `run_git`, `ledger/test_support.rs` `scratch_repository`, and one-off commands in `reconcile.rs` and `git/reachability.rs`.
   - `pub fn git_command(executable)` builds on `fixture_git_command`, names the built binary in `CARGO_BERTH_EXECUTABLE` and clears `CLAUDE_CODE_SESSION_ID`. Every `GitDriver` method reaches it through `prepare`. Its doc records the detached-maintenance races.
-- `berth_command.rs`: `berth_command(executable)` applies `disable_git_auto_maintenance` to the `cargo-berth` under test.
+  - `GitDriver::stdout` answers `rev-parse` of `HEAD`, `main` or `integration` (short or full name) from the loose ref files or `packed-refs` without starting git (`fixture_reference_read`). Any other expression, or a ref it cannot read, starts git.
+- `fixture_command.rs`: `FixtureCommand` wraps a private `std::process::Command`. `spawn`, `status` and `output` take the shared spawn lock (`with_spawn_lock`, the same lock product code uses; see [check-under-load.md](check-under-load.md)), and `output` uses the bounded child runtime. Test support starts every fixture command through it, so no fixture child forks during another command's pipe setup.
+- `berth_command.rs`: `berth_command(executable) -> FixtureCommand` applies `disable_git_auto_maintenance` to the `cargo-berth` under test.
 - `repository_template.rs`: the `RepositoryTemplate::build` field doc requires the build to return with no process it started still running in the root, and names `git_command`, `GitDriver` and `berth_command` as the way to start them.
 
 The setting travels through the inherited environment. Git hands it to managed hooks. cargo-berth's own git (`git/command.rs`) strips only `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR` and `GIT_PREFIX`, and its retention-ref hook suppression appends after an inherited `GIT_CONFIG_COUNT`, so the gate merges and rebases a test's `cargo-berth` runs also start no maintenance.
 
 `commit_starts_no_background_maintenance` (the `git_driver.rs` test module) runs `git init` and an empty commit through `fixture_git_command` with `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, traces the commit under `GIT_TRACE2`, and asserts that no `child_start` line names `maintenance`.
+
+### Per-test scratch root
+
+`.config/nextest.toml` runs every `cargo-berth` and `cargo-berth-test-support` test under the wrapper script `crates/cargo-berth/tests/check-test-scratch.sh` (POSIX `sh`, nextest `wrapper-scripts`).
+
+- It makes a private root `test-XXXXXXXXXX` (`mktemp -d`, mode 0700) under `<target>/<profile>/../tmp/cargo-berth-templates/private`, on the fixture cache's filesystem.
+- It exports `TMPDIR`, `TMP`, `TEMP` and `CARGO_BERTH_TEST_SCRATCH_ROOT` as that root, and `GIT_CEILING_DIRECTORIES` as its canonical parent, so Git run in a scratch root never discovers the checkout that holds the fixture cache.
+- After the test process exits, any path left in the root fails the test, with the test name and each path on stderr. An empty root is removed. The test's own exit status is kept, and a test killed by a signal is re-raised with that signal.
+- `fixture_tempdir` (`fixture_directory.rs`) makes its `TempDir` under `CARGO_BERTH_TEST_SCRATCH_ROOT`, so hard links from the cache still work and the wrapper checks it. Outside the wrapper it uses the cache's `private` directory.
+- Fixtures make folders only as a `TempDir` under `TMPDIR` or through `fixture_tempdir`, never at a fixed path in a shared temp root.
+- `scratch_wrapper_names_leaks_and_preserves_clean_panics` (`tests/temporary_directories.rs`) runs the wrapper around subprocesses that leak through `TMPDIR` or `fixture_tempdir`, unwind cleanly, or exit with status 7.
 
 ### Worktree discovery
 
@@ -40,7 +53,7 @@ Module tests: `an_empty_git_directory_is_not_a_repository`, `discovery_stops_at_
 
 ### Integration tests outside any repository
 
-Four tests run `cargo-berth` in a temporary directory that must not resolve to a repository. Each sets `GIT_CEILING_DIRECTORIES` to that directory's parent on every `cargo-berth` it starts.
+Four tests run `cargo-berth` in a temporary directory that must not resolve to a repository. Each sets `GIT_CEILING_DIRECTORIES` to that directory's parent on every `cargo-berth` it starts. That value replaces the scratch wrapper's ceiling for the child.
 
 | Test | File | Where the ceiling is set |
 | --- | --- | --- |
@@ -53,12 +66,14 @@ Four tests run `cargo-berth` in a temporary directory that must not resolve to a
 
 ## Invariants
 
-- Every git a cargo-berth test starts, unit tests included, directly, through a hook or through `cargo-berth`, runs with auto maintenance off. Test code starts git through `fixture_git_command`, `git_command`, `GitDriver` or `ledger/test_support::scratch_repository`, and `cargo-berth` through `berth_command`; never `Command::new("git")` or `Command::new(GIT_BINARY)`.
-- Outside test code, only `git/command.rs` builds a git command.
+- Every git a cargo-berth test starts, unit tests included, directly, through a hook or through `cargo-berth`, runs with auto maintenance off. Test code starts git through `fixture_git_command`, `git_command`, `GitDriver` or `ledger/test_support::scratch_repository`, and `cargo-berth` through `berth_command`; never `Command::new("git")` or `Command::new(GIT_BINARY)`. One unit test breaks this rule (see gotchas).
+- Every fixture command starts through `FixtureCommand`, under the shared spawn lock.
+- Outside test code, only `git/command.rs` builds a git command, apart from the installation-configuration probe in `git/installation.rs`.
+- A test leaves no path in its scratch root and none at a fixed path in a shared temp root.
 - No fixture sets `maintenance.auto` or `gc.auto` per repository; the environment carries both.
 - `RepositoryTemplate::build` returns with no process it started still running in the root. Template readers copy without a lock on that basis.
 - Discovery always examines the invocation directory, a ceiling equal to it does not stop the walk, and the walk never moves up into a ceiling.
-- Unit tests pass ceilings to `discover_with_ceilings` as values (`DiscoveryCeilings::from_iter`, `DiscoveryCeilings::from(&OsStr)`), never through the process environment. Integration tests set `GIT_CEILING_DIRECTORIES` only on the child command.
+- Unit tests pass ceilings to `discover_with_ceilings` as values (`DiscoveryCeilings::from_iter`, `DiscoveryCeilings::from(&OsStr)`), never through the process environment. Integration tests set their own `GIT_CEILING_DIRECTORIES` only on the child command; the process-wide value comes from the scratch wrapper.
 - `from_registered_root` and the `.git`-file branch of discovery keep their behavior.
 
 ## Calibration / gotchas
@@ -67,6 +82,9 @@ Four tests run `cargo-berth` in a temporary directory that must not resolve to a
 - **git 2.54 hides the race.** Its forking parent deletes the lock before `commit` returns. The dev shell supplies no git, so CI runs the runner image's `/usr/bin/git`, which changes with the image. Reproduce with git 2.55 first on `PATH`.
 - **The regression test ignores machine config.** `commit_starts_no_background_maintenance` sets `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, so a developer's own `maintenance.auto=false` cannot hide a missing setting.
 - **The gate trace test is the one exception.** It starts `cargo-berth` with `Command::new(executable)` and a wrapped `PATH` in `tests/gate.rs`, so its git runs maintenance. It runs in a private copy, not a template, so no reader can see that child.
+- **One direct `git` command remains.** `check_reuses_merge_pairs_across_decision_passes` (`verb/check.rs`) calls `std::process::Command::new("git")`. It starts git with auto maintenance on and outside the spawn lock.
+- **The scratch check has a gap.** A test that nextest ends through `terminate-after` also ends the wrapper, so nothing checks that test's root.
+- **A fixture that needs no repository above it depends on the ceiling.** With `GIT_CEILING_DIRECTORIES` at the scratch root's parent, a fixture that runs git in its scratch root finds no repository. A fixture that expects the enclosing checkout must make its own repository.
 - **A fixture `.git` needs three entries.** A test that makes a bare `.git` directory must also create `HEAD`, `objects/` and `refs/`, or discovery skips it.
 - **Inlined environment policy.** `tests/board.rs`, `tests/hooks.rs` and `tests/ledger.rs` each inline a copy of their `run_berth` environment policy to add the ceiling. A change to that policy must reach the copies.
 - **Canonical ceilings.** Before an empty entry, a resolvable ceiling is canonicalized, so on macOS a `/tmp` ceiling matches a walk through `/private/tmp`. After an empty entry, ceilings stay as given and symlinks are not resolved; the invocation directory and its ancestors remain canonical.

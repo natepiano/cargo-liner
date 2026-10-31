@@ -27,10 +27,14 @@ pub(crate) fn execute(
 
 ### Data flow in `check::execute`
 
+`execute` runs `execute_with_capacity_recovery` with a `ClaimCapacityRecovery` and adds the releases it committed to the answer. The capacity scan at `maximum_reservations` is described in [worktree-coordination.md](worktree-coordination.md).
+
+`execute_with_capacity_recovery` calls `RepositorySnapshot::discover` once. Every decision pass, the reconcile and the locked acquisition take that snapshot. Each `decide` pass reads `check_repository_observation`, which is `RepositorySnapshot::fresh_observation`: it reads status, HEAD and the worktree list again, and keeps the object reader, the merge-pair cache, the trunk-ancestry cache and the `git merge-tree --stdin` sessions. So one check runs each merge pair and each trunk history read once.
+
 1. **`decide`, lock-free.**
    - `Ledger::read_for_edit_check(invocation_directory)` returns an `EditCheckLedgerSnapshot`: the replayed `RetainedReservationSet` (or its replay error), the `WorktreeContext` and the full `BerthConfig`. It is read without git, locking, repair or publication; replay goes through the checkpoint.
    - `decide` reads `PathCase` and builds two antichains: exact-file scopes for acquisition and minimal scopes for refusal.
-   - It resolves identity once through `ledger::resolve_identity` and observes `ActingHeadContainment`.
+   - It resolves identity once through `ledger::resolve_identity` and observes `ActingHeadContainment::observe_for_edit`. That observation judges only the holders whose protection touches the requested scopes. A disjoint holder costs no history read and no merge pair, because containment can only remove protection.
    - It validates the coordination identity and the worktree occupancy. A stale or released session mapping fails here with `invalid_input` / `stale_session_mapping`, exit 5, before any lock.
    - It computes `conflicts_for_edit`.
    - With no conflicts and a parseable `configuration.repository_trunk()`, it calls `claim::selected_reservation_check_acquisition`. Otherwise the acquisition is `NeedsLockedDecision`.
@@ -47,12 +51,12 @@ pub(crate) fn execute(
 4. **`NotNeeded` with no conflicts** goes to the locked `acquire_first_touch`. A `Blocked` answer there falls to `reconcile_and_retry`.
 5. **Any other case** goes to `reconcile_and_retry`.
 
-`reconcile_and_retry(invocation_directory, declared_scopes, reservation_selection, recovery_command_line)`:
+`reconcile_and_retry(invocation_directory, repository, declared_scopes, reservation_selection, recovery_command_line, capacity_recovery)`:
 
-1. Runs `reconcile::reconcile(dir, RecoveredBypassReporting::Defer)`.
+1. Runs `reconcile::reconcile_for_check(repository)`.
 2. On failure, returns `error.into_output(CommandVerb::Check)`.
 3. Otherwise calls `decide` again.
-4. With no conflicts, or a configured `default_answer`, runs the locked `acquire_first_touch`; otherwise answers `blocked_check`. Reconcile alerts are attached to either answer.
+4. With no conflicts, or a configured `default_answer`, runs the locked `acquire_first_touch`; otherwise records the refusal through `refusal::record` and answers `blocked_check`. Reconcile alerts, retention maintenance and automatic releases are attached to either answer.
 
 ### Fast-path selection (`verb/claim/acquisition.rs`)
 
@@ -132,10 +136,12 @@ The hook's contention presentation leads with "cargo-berth rejected this edit be
 
 ### Files
 
-- `crates/cargo-berth/src/verb/check.rs`: `execute`, `decide`, `CheckDecision`, `MergeObservationRequirement`, `reconcile_and_retry`, the fast return.
+- `crates/cargo-berth/src/verb/check.rs`: `execute`, `decide`, `CheckDecision`, `MergeObservationRequirement`, `reconcile_and_retry`, `check_repository_observation`, the fast return.
+- `crates/cargo-berth/src/git/snapshot.rs`: `RepositorySnapshot`, `fresh_observation`, the merge-pair and trunk-ancestry caches, and one merge-tree session per checkout.
+- `crates/cargo-berth/src/reservation/containment.rs`: `ActingHeadContainment::observe_for_edit`.
 - `crates/cargo-berth/src/verb/claim/acquisition.rs`: `CheckReservationSelection`, `CheckAcquisitionDecision`, `selected_reservation_check_acquisition`, and the shared `partition_first_touch_protected_scopes`, `already_held_acquisition` and `first_touch_acquisition`.
 - `crates/cargo-berth/src/ledger/handle.rs`: `read_for_edit_check`, `EditCheckLedgerSnapshot::into_parts`.
-- `crates/cargo-berth/src/reconcile.rs`: `derive_merge_extents[_with_observer]`, `observe_holder_merge_extents`, `MergeExtentGitCost`, `ReconcileError::into_output`.
+- `crates/cargo-berth/src/reconcile.rs`: `reconcile_for_check`, `derive_merge_extents[_with_observer]`, `observe_holder_merge_extents`, `MergeExtentGitCost`, `ReconcileError::into_output`.
 - `crates/cargo-berth/src/output.rs`: `clear_check`, `contention`.
 - `crates/cargo-berth/src/hook/pre_tool_use.rs`: the Claude Code caller and its exit-code mapping.
 
@@ -150,17 +156,23 @@ The hook's contention presentation leads with "cargo-berth rejected this edit be
 - Concurrency does not change reconcile output: the same journal operations in the same order with the same JSON, and git cost counts equal to the serial sum. Holder dedup stays keyed on `(worktree, recorded target)` in first-seen order.
 - Every observer starts before any is joined. A lazy spawn/join iterator runs them one at a time.
 - A reconcile failure in `check` answers with its own envelope, never as an overlap with no holder.
+- One check owns one `RepositorySnapshot`. Each merge pair, each trunk history read and each checkout's `git merge-tree --stdin` session start at most once in it. Later passes refresh only mutable facts: status, HEAD and the worktree list.
 - No test may take a second.
 
 ## Calibration and gotchas
 
-- **Concurrent Git pipe creation.** `git::command::PROCESS_SPAWN` covers pipe creation and child spawn, including the Git installation-configuration probe inside `gix::open_opts`. On systems where close-on-exec is set after pipe creation, a concurrent persistent `cat-file` child can otherwise inherit the probe's writer. The probe then waits for EOF even after its own Git child exits. A Mac stack capture found a holder-observation worker in that read while its config child was defunct and its persistent object reader remained alive. `installation_probe_seals_its_pipes_before_another_git_child_starts` pauses the actual probe and checks that another Git spawn cannot pass it; the test's outer process wait has a cleanup deadline. Ordinary Git command collection releases the spawn lock before waiting for output.
-- **Product-cost regressions count work.** Scope-key construction, pairwise comparisons, reservation scans and ancestry-parent reads have test-only counters at the operations themselves. The retention, antichain and batched reachability tests bound those counts rather than elapsed time. Lock-contention, concurrent-progress and process-cleanup deadlines still test their respective behavior.
-- **Fixture isolation.** Shared Git seeds are built through `prepare_fixture_build` under `target/tmp/cargo-berth-templates`; each test receives private files, index and refs. Seeds cache setup history, while commands whose behavior a test asserts still execute in that test. A seed-isolation regression changes one copy's staged content and branch tip and verifies another copy remains unchanged.
-- **Process-start measurement.** A completed cold Mac capture of all 1,268 tests and setup measured 38,741 starts: 18,815 `product_git`, 6,149 `fixture_git`, 9,171 `other`, 3,262 `berth`, 1,316 `hook_berth`, 9 `hook_git`, 1 `berth_worker`, and 18 `lock_diagnostic`. Every product and `other` start has a measured caller. The process pin uses those counts and the measured counts of its expensive tests. This lowers the total ceiling from 46,393; the `berth` count remains above the original 3,174 ceiling and below the accepted phase 22 count of 3,281. The capture ran at boundary loads 7.78 and 21.20, so its instrumented durations do not establish the quiet timing requirement.
-- **Lock diagnostics.** The 18 `/usr/sbin/lsof` scans belong to 15 tests and have their own `lock_diagnostic` origin and ceiling. Spawn-to-reap durations were 133–277 ms in that instrumented capture. Per-test acceptance requires a separate uninstrumented cold timing run; these scan measurements alone do not establish that each owning test finishes under a second.
+- **Concurrent Git pipe creation.** Holder observation runs Git on several threads at once. Close-on-exec closes a descriptor at exec, not at fork. A child forked on one thread while another thread sets up its pipes holds a copy of that pipe's writer until it runs exec, or for its whole life if it is a persistent reader such as `cat-file`. The reader of that pipe then does not see EOF after its own child exits.
+  - `git/spawn_lock.rs` owns the one process-wide spawn lock (`PROCESS_SPAWN`, `with_spawn_lock`). Every product start takes it for pipe creation and spawn: `git/command.rs`, `git/child.rs`, and the detached managed-hook refresh in `cli.rs`.
+  - `git/installation.rs` runs the installation-configuration probe as a bounded child inside the lock, once per process, and passes the file to `gix::open_opts`. `gix` starts no probe of its own. `git/read.rs` also calls `gix::open_opts` inside the lock.
+  - In unit tests, `git::command::with_spawn_lock` uses the `cargo-berth-test-support` copy of the same lock, so product reads and fixture starts in one test process share it. Test support starts every fixture command through `FixtureCommand`, which takes that lock.
+  - Collection releases the lock before it waits for output. After the child exits, `git/child.rs` stops the child's process group and polls the kept pipe read ends (`rustix::event::poll`, zero timeout). Pipe EOF is a kernel fact, so a slow drain thread loses no output. A writer that is still open fails the command with "child exited with inherited pipe writers still open"; a descendant that closed its pipes is not an error.
+  - Tests: `installation_probe_seals_its_pipes_before_another_git_child_starts` (`git/read.rs`) pauses the probe and checks that another Git spawn cannot pass it. `fixture_commands_cannot_spawn_during_another_commands_pipe_setup` (test support `berth_command.rs`) checks the same for fixture starts. `exited_child_output_survives_a_delayed_drain` and `exited_child_output_ignores_descendants_that_closed_their_pipes` (`git/child.rs`) cover the EOF check.
+- **Product-cost regressions count work.** `src/test_work.rs` has test-only, per-thread counters at the operations themselves: scope keys, pairwise comparisons, incursion reservation scans, ancestry-parent reads, history object decodes, history reads, mutation-lock attempts and mutation-lock waits. The retention, antichain, batched reachability and lock tests bound those counts, not elapsed time. `queued_writer_acquires_without_a_retry_sleep_after_release` (`ledger/lock.rs`) asserts one try-lock and one kernel-queued wait (`MutationLockRequest::{Granted, Queued}`). `check_reuses_merge_pairs_across_decision_passes` (`verb/check.rs`) asserts that a second decision pass starts no merge-tree query. Lock-contention, concurrent-progress and process-cleanup deadlines still test their own behavior.
+- **Fixture isolation.** Shared Git seeds are built through `prepare_fixture_build` under `target/tmp/cargo-berth-templates`; each test receives private files, index and refs. Recorded templates are built by the nextest setup script `tests/setup-recorded-templates.sh`. Seeds cache setup history, while commands whose behavior a test asserts still execute in that test. A seed-isolation regression changes one copy's staged content and branch tip and verifies another copy remains unchanged.
+- **Process-start pin.** `tests/process_start_budget.json` holds ceilings from a complete cold Mac capture of the suite and setup: 42,291 starts in all, 17,184 `product_git`, 6,215 `fixture_git`, 14,265 `other`, 3,341 `berth`, 1,258 `hook_berth`, 9 `hook_git`, 1 `berth_worker` and 18 `lock_diagnostic`, with at least 1,306 tests, plus a ceiling for each listed expensive test. `completed_process_report_obeys_budget` (`tests/process_start_budget.rs`) checks a reduced report only when `CARGO_BERTH_PROCESS_COUNT_REPORT` names one; it also requires zero product starts with no known caller. An ordinary test run cannot count its peer processes. A change that adds process starts updates the pin from a new complete capture. Product Git reads that `gix` can answer start no process: exact commit objects, commit history (`git/history.rs`) and merge-result tree paths. A repository with replacement refs, a shallow boundary or legacy grafts keeps the Git child (`GitReadRequirement::HistoryOverrides`), and revision expressions keep the Git batch reader.
+- **Lock diagnostics.** On macOS a lock refusal runs one `/usr/sbin/lsof` scan, with its own `lock_diagnostic` origin and ceiling of 18. Spawn-to-reap took 133–277 ms in an instrumented capture.
 - **Timings and limits.**
-  - The lock deadline is `MUTATING_VERB_CONTENTION_TOLERANCE` = 60 s, and the wait blocks in the kernel instead of polling.
+  - The lock deadline is `MUTATING_VERB_CONTENTION_TOLERANCE` = 60 s. `MutationLock::request` tries the lock once; when it is held, one helper thread queues a blocking `File::lock` in the kernel, so the wait does not poll.
   - The edit hook's limit and the seat launcher's check limit (`CHECK_TIMEOUT_SECONDS` in `phase_reservation.py`) are 25 s, so a request now reaches the caller's limit before the lock deadline.
   - At a load average near 30 each holder's `git status` costs about 10 ms, so the concurrency gain shows only under heavier load.
   - Concurrency launches up to one `git status` per live holder key at once, about 20 processes in hana.
@@ -204,11 +216,9 @@ The hook's contention presentation leads with "cargo-berth rejected this edit be
 - **Busy answers as busy.** Reporting a reconcile failure as `blocked_by_overlap` with no holder sent the caller to resolve an overlap that did not exist. `contention`, exit 6, tells it to retry.
 - **One fix point.** Both harnesses reach `check::execute`, so a change there covers Claude Code and Codex.
 
-## Phase 24: Mac measurements
+## Lock-hold measurements on the Mac
 
-The quiet lock-hold measurement is complete. It has 20 pairs for each of six paths, or 240 samples. The before tree is `0dd75d3c`. The after tree is the exact phase-start archive `bf27c025`. A resumed run recovered records saved before an SSH failure. No sample process remained alive when the run resumed.
-
-Each value is the longest lock hold in one command. The p95 is the nearest-rank percentile of 20 samples. All accepted samples have load below 10. All valid outliers are included. Reconstruction commands are excluded. Each after-change p95 is below 100 ms.
+Each value is the longest mutation-lock hold in one command, from 20 samples per path and side at load below 10. The p95 is the nearest-rank percentile. "Before" is a tree whose writes held the lock for their whole preparation. Each "after" p95 is below 100 ms. Use the same six paths and the same sample rule to measure a change to the lock path.
 
 | Path | Side | Samples | Median (ms) | p95 (ms) | Maximum (ms) | Load range | Expected decision |
 |---|---|---:|---:|---:|---:|---|---|
@@ -224,45 +234,3 @@ Each value is the longest lock hold in one command. The p95 is the nearest-rank 
 | release | after | 20 | 33.312 | 49.213 | 50.611 | 1.487–9.192 | Exit 0; success |
 | gate | before | 20 | 4119.927 | 5939.525 | 6252.985 | 3.045–7.937 | Exit 0; observe-only refusal, five held reservations |
 | gate | after | 20 | 22.741 | 35.000 | 41.006 | 1.487–9.329 | Exit 0; observe-only refusal, five held reservations |
-
-### The cold Mac runs and the hung drift test
-
-An earlier cold timing attempt on `bf27c025` did not start. The Mac coordinator refused the claim because an old phase 22 drift test was still alive after more than four days: `session_mapping_attributes_post_commit_widening_with_two_active_reservations`, its `cargo-berth drift --full --json` child and a `git cat-file --batch-check` child.
-
-A stack and pipe capture found the cause. The drift child waited in `gix::open_opts` → `gix_path::env::git::config_paths_from_executable_at` → `Command::output` for EOF from the installation-config probe. The `cat-file` child held an inherited copy of that probe's pipe writer, so EOF never came. Phase 24 removed this cause with the spawn lock around `gix::open_opts`; the hung test ran on a tree before that change. Phase 27 then put a deadline on every cargo-berth wait for a child process, so the next cause of this kind fails with a named error instead of a hang.
-
-The user removed the old scratch processes on 2026-10-27. A read-only check then found no member of process group 61414 and no entry in `~/rust/scratch`.
-
-The exact `bf27c025` archive passed all 1,258 tests. The fixture cache was empty at the start. The command was `cargo nextest run --no-fail-fast -p cargo-berth`, with the default thread count and no `TMPDIR` override. The template builder was built before timing. Load was checked before the build and before the timed run.
-
-| Run | Nextest (s) | Setup (s) | Load at start | Load range during timing | Tests at 1 s or more |
-|---|---:|---:|---:|---|---:|
-| Accepted reference | 88.730 | 8.968 | 6.293 | 6.293–10.739 | 344 |
-| Phase 22 retry | 114.970 | 10.703 | 8.534 | 8.534–16.802 | 449 |
-| Exact `bf27c025`, 2026-10-27 | 109.454 | 9.123 | 4.155 | 4.155–14.572 | 420 |
-| Exact `fde451aa`, 2026-10-27 | 104.301 | 11.743 | 6.326 | 5.667–11.725 | 402 |
-
-The `bf27c025` time is 20.724 s above the accepted reference and 5.516 s below the retry. Setup is 0.155 s above the accepted reference and 1.580 s below the retry. The load increased during the new run. These runs do not give an equal-load comparison, so they do not prove a code regression.
-
-The largest measured increases against the accepted reference are in `tests/gate.rs`: `pending_rewrite_board_shares_its_object_reader_with_reconciliation` increased from 3.961 s to 8.183 s; `prepared_gate_settles_actual_trunk_evidence_but_never_a_proposed_witness` increased from 3.753 s to 7.887 s; and `pending_rewrite_gate_shares_its_object_reader_with_preflight` increased from 4.152 s to 8.056 s. These are measured test durations. They do not isolate time in a product call or fixture step. No source change was made.
-
-The cold full run on exact `fde451aa` passed all 1,268 tests. It used the same command, default threads, cold fixture cache and no `TMPDIR` override. The build finished before timing. Load was 8.507 before the build and 6.326 before the timed run. The nextest time was 104.301 s, including 11.743 s of setup. Wall time was 104.996 s.
-
-The Mac requirement failed: 402 tests took at least 1.000 s. The longest test took 6.845 s. The table gives the ten longest tests and their source locations in exact `fde451aa`. These locations refer to that commit, not the current main branch.
-
-| Test | Source in `fde451aa` | Time (s) |
-|---|---|---:|
-| `cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations` | `tests/board.rs:5606` | 6.845 |
-| `prepared_gate_settles_actual_trunk_evidence_but_never_a_proposed_witness` | `tests/gate.rs:4672` | 5.969 |
-| `managed_hook_reports_scenario_specific_binary_invocation_counts` | `tests/gate.rs:2954` | 5.963 |
-| `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` | `tests/lifecycle.rs:1106`, `tests/support/reanchoring.rs:1091` | 5.749 |
-| `target_gate_holds_a_default_answered_requester_that_sequence_orders` | `tests/gate.rs:720` | 5.429 |
-| `checkpoint_readiness_covers_incorporation_and_missing_objects` | `tests/edges.rs:619` | 5.401 |
-| `active_lower_reservation_keeps_both_split_commits_after_update_refs` | `tests/gate.rs:1740` | 5.256 |
-| `trunk_gate_checks_successor_recorded_against_another_target` | `tests/gate.rs:407` | 5.060 |
-| `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first` | `tests/lifecycle.rs:1100`, `tests/support/reanchoring.rs:1087` | 4.999 |
-| `split_checkpoint_survives_switching_the_issuing_checkout_before_board` | `tests/lifecycle.rs:1117`, `tests/support/reanchoring.rs:1173` | 4.953 |
-
-The slowest board test builds historical integration evidence, restores repository snapshots and repeats board queries for equivalent and different target rewrites, with distinct and duplicate reservations. The gate settlement test builds two witness cases through real claims, commits, release and prepared-hook commands. Those steps are present in the measured tests. This run did not measure each step separately, so the time in fixture setup versus product work remains unknown. The full run record contains all 402 slow test names, times and source locations. These costs require a new phase; no source was changed for this measurement.
-
-Compared with `bf27c025`, `fde451aa` reduced total nextest time by 5.153 s and increased setup by 2.620 s. Load ranges differ, so these changes do not isolate the effect of the code changes. The cold natedev run on the phase 24 implementation passed all 1,269 tests in 9.239 s at load 12.68–14.32, with the slowest test at 0.667 s; it does not establish Mac performance.
