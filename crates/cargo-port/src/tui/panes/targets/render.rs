@@ -79,13 +79,13 @@ fn render_targets_with_data(
     data: &TargetsData,
 ) -> PaneFrameChrome {
     let pane_focus_state = pane.focus.pane_focus_state;
-    let entries = panes::build_target_list_from_data(data);
-    let table_len = entries.len();
+    let target_entries = panes::build_target_list_from_data(data);
+    let table_len = target_entries.len();
     pane.viewport.set_len(table_len);
     let cursor = pane.viewport.pos();
 
     let targets_title = build_targets_title(pane_focus_state, cursor, data);
-    let mut chrome = PaneFrameChrome {
+    let mut pane_frame_chrome = PaneFrameChrome {
         title: targets_title,
         focused: matches!(pane_focus_state, PaneFocusState::Active),
         ..PaneFrameChrome::default()
@@ -99,9 +99,16 @@ fn render_targets_with_data(
     pane.viewport
         .set_viewport_rows(usize::from(table_box.content.height));
 
-    let row_rects = render_targets_table(frame, pane, &entries, table_box, area, &mut chrome);
+    let row_rects = render_targets_table(
+        frame,
+        pane,
+        &target_entries,
+        table_box,
+        area,
+        &mut pane_frame_chrome,
+    );
     pane.set_row_rects(row_rects);
-    chrome
+    pane_frame_chrome
 }
 
 /// Render the targets table into its placed box: the ratatui `Table`
@@ -111,18 +118,18 @@ fn render_targets_with_data(
 fn render_targets_table(
     frame: &mut Frame,
     pane: &mut TargetsPane,
-    entries: &[TargetEntry],
+    target_entries: &[TargetEntry],
     table_box: Placed,
     pane_area: Rect,
-    chrome: &mut PaneFrameChrome,
+    pane_frame_chrome: &mut PaneFrameChrome,
 ) -> Vec<(Rect, usize)> {
     let pane_focus_state = pane.focus.pane_focus_state;
     let cursor = pane.viewport.pos();
-    let table_len = entries.len();
+    let table_len = target_entries.len();
     let table_area = table_box.chrome.union(table_box.content);
 
-    let layout = compute_layout(entries, table_area.width);
-    let rows = build_rows(entries, pane, pane_focus_state, &layout);
+    let layout = compute_layout(target_entries, table_area.width);
+    let rows = build_rows(target_entries, pane, pane_focus_state, &layout);
     let widths = build_widths(&layout);
     let table = Table::new(rows, widths)
         .column_spacing(TARGET_TABLE_COLUMN_SPACING)
@@ -152,12 +159,14 @@ fn render_targets_table(
         ));
     }
 
-    let overflow = ViewportOverflow::new(table_len, table_offset, table_visible, cursor);
-    chrome.labels.extend(tui_pane::overflow_affordance_label(
-        pane_area,
-        overflow,
-        Style::default().fg(label_color()),
-    ));
+    let viewport_overflow = ViewportOverflow::new(table_len, table_offset, table_visible, cursor);
+    pane_frame_chrome
+        .labels
+        .extend(tui_pane::overflow_affordance_label(
+            pane_area,
+            viewport_overflow,
+            Style::default().fg(label_color()),
+        ));
     row_rects
 }
 
@@ -172,34 +181,34 @@ fn build_targets_title(focus: PaneFocusState, cursor: usize, data: &TargetsData)
             .filter(|cursor| *cursor >= section_start && *cursor < section_start + section_len)
             .map(|cursor| cursor - section_start)
     };
-    let mut groups = Vec::new();
+    let mut pane_title_groups = Vec::new();
     if bin_count > 0 {
-        groups.push(PaneTitleGroup {
+        pane_title_groups.push(PaneTitleGroup {
             label:  "Binary".into(),
             len:    bin_count,
             cursor: section_cursor(0, bin_count),
         });
     }
     if ex_count > 0 {
-        groups.push(PaneTitleGroup {
+        pane_title_groups.push(PaneTitleGroup {
             label:  "Examples".into(),
             len:    ex_count,
             cursor: section_cursor(bin_count, ex_count),
         });
     }
     if bench_count > 0 {
-        groups.push(PaneTitleGroup {
+        pane_title_groups.push(PaneTitleGroup {
             label:  "Benches".into(),
             len:    bench_count,
             cursor: section_cursor(bin_count + ex_count, bench_count),
         });
     }
-    tui_pane::prefixed_pane_title("Targets", &PaneTitleCount::Grouped(groups))
+    tui_pane::prefixed_pane_title("Targets", &PaneTitleCount::Grouped(pane_title_groups))
 }
 
-fn compute_layout(entries: &[TargetEntry], content_width: u16) -> Layout {
+fn compute_layout(target_entries: &[TargetEntry], content_width: u16) -> Layout {
     let kind = panes::RunTargetKind::padded_label_width();
-    let source = source_col_width_from(entries);
+    let source = source_col_width_from(target_entries);
     let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
     let text_budget = usize::from(content_width).saturating_sub(kind + gaps);
     let source = source.min(text_budget);
@@ -233,22 +242,22 @@ fn target_row(entry: &TargetEntry, name_cell: Cell<'static>, layout: &Layout) ->
 }
 
 fn build_rows(
-    entries: &[TargetEntry],
+    target_entries: &[TargetEntry],
     pane: &TargetsPane,
     focus: PaneFocusState,
     layout: &Layout,
 ) -> Vec<Row<'static>> {
-    entries
+    target_entries
         .iter()
         .enumerate()
         .map(|(row_index, entry)| {
-            let selection = tui_pane::selection_state(&pane.viewport, row_index, focus);
+            let pane_selection_state = tui_pane::selection_state(&pane.viewport, row_index, focus);
             target_row(
                 entry,
                 name_cell(&entry.display_name, layout.name_max),
                 layout,
             )
-            .style(selection.overlay_style())
+            .style(pane_selection_state.overlay_style())
         })
         .collect()
 }
@@ -274,8 +283,8 @@ fn build_header_row() -> Row<'static> {
 /// Width of the Target column: the longest visible target label plus the
 /// leading pad, or the header if it is wider.
 #[cfg(test)]
-fn target_col_width_from(entries: &[TargetEntry]) -> usize {
-    let max_entry_width = entries
+fn target_col_width_from(target_entries: &[TargetEntry]) -> usize {
+    let max_entry_width = target_entries
         .iter()
         .map(|entry| columns::display_width(&entry.display_name))
         .max()
@@ -285,8 +294,8 @@ fn target_col_width_from(entries: &[TargetEntry]) -> usize {
 
 /// Width of the Source column: the longest label among the entries, or
 /// the header text if it is wider.
-fn source_col_width_from(entries: &[TargetEntry]) -> usize {
-    let max_entry_width = entries
+fn source_col_width_from(target_entries: &[TargetEntry]) -> usize {
+    let max_entry_width = target_entries
         .iter()
         .map(|entry| columns::display_width(entry.source.label()))
         .max()
@@ -346,18 +355,18 @@ mod tests {
 
     #[test]
     fn target_table_anchors_source_and_kind_to_right_edge_when_roomy() {
-        let entries = vec![
+        let target_entries = vec![
             entry("cascade", "bevy_hana/fake_widgets"),
             entry("two_window_panels", "bevy_hana/bevy_lagrange"),
         ];
         let content_width = 80;
         let kind = RunTargetKind::padded_label_width();
         let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
-        let source = source_col_width_from(&entries);
+        let source = source_col_width_from(&target_entries);
 
-        let layout = compute_layout(&entries, content_width);
+        let layout = compute_layout(&target_entries, content_width);
 
-        assert!(layout.target > target_col_width_from(&entries));
+        assert!(layout.target > target_col_width_from(&target_entries));
         assert_eq!(layout.source, source);
         assert_eq!(
             layout.target + layout.source + layout.kind + gaps,
@@ -372,7 +381,7 @@ mod tests {
 
     #[test]
     fn target_table_shrinks_target_before_source_when_narrow() {
-        let entries = vec![
+        let target_entries = vec![
             entry(
                 "long_target_name_that_will_not_fit",
                 "bevy_hana/fake_widgets",
@@ -381,11 +390,11 @@ mod tests {
         ];
         let kind = RunTargetKind::padded_label_width();
         let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
-        let source = source_col_width_from(&entries);
-        let target_budget = target_col_width_from(&entries).saturating_sub(6);
+        let source = source_col_width_from(&target_entries);
+        let target_budget = target_col_width_from(&target_entries).saturating_sub(6);
         let content_width = u16::try_from(kind + gaps + source + target_budget).unwrap_or(u16::MAX);
 
-        let layout = compute_layout(&entries, content_width);
+        let layout = compute_layout(&target_entries, content_width);
 
         assert_eq!(layout.source, source);
         assert_eq!(layout.target, target_budget);
