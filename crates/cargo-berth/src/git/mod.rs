@@ -50,6 +50,7 @@ pub(crate) use reachability::CandidateHeadReachability;
 pub(crate) use reachability::CommitCandidateReachability;
 pub(crate) use reachability::CommitTargetReachability;
 pub(crate) use reachability::CommitTargetReachabilityObservation;
+pub(crate) use reachability::PhaseMergeHistory;
 pub(crate) use reachability::PhaseStartTargetFirstParentHistories;
 pub(crate) use reachability::ProtectedTipSuccessorHeadClassification;
 pub(crate) use reachability::ProtectedTipSuccessorHeads;

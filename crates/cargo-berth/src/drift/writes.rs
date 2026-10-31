@@ -14,6 +14,7 @@ use crate::edge::RepositorySnapshot;
 use crate::git;
 use crate::git::HeadAttachment;
 use crate::git::LocalTargetUpstream;
+use crate::git::PhaseMergeHistory;
 use crate::git::PhaseStartTargetFirstParentHistories;
 use crate::git::ScopedPatchTargetHistory;
 use crate::ids::GitObjectId;
@@ -21,9 +22,9 @@ use crate::ids::ReservationScopePath;
 
 /// A commit's contribution to one unit phase, separate from integration-target membership.
 pub(super) enum PhaseCommitOrigin {
-    /// A first-parent commit, including paths the unit resolved in a merge itself.
+    /// A direct commit or work introduced by the merge being judged now.
     UnitWritten,
-    /// The commit entered through the other side of a merge, rather than the unit's line.
+    /// The commit entered through an earlier merge, rather than this invocation.
     ReceivedFromMergeBranch,
     /// No retained ancestry proves which side supplied the commit.
     Unclassified,
@@ -37,7 +38,7 @@ pub(super) fn phase_commit_origin(
 ) -> PhaseCommitOrigin {
     match ancestry.after_phase_start(phase_start) {
         ScopedPatchTargetHistory::ProvenFirstParentInterval { commits } => {
-            if commits.contains(commit) {
+            if commits.contains(commit) || ancestry.entered_with_target_merge(commit) {
                 PhaseCommitOrigin::UnitWritten
             } else {
                 PhaseCommitOrigin::ReceivedFromMergeBranch
@@ -70,6 +71,22 @@ impl CommittedWriteSelection {
         if tips.is_empty() {
             return Ok(Self::Unclassified);
         }
+        let no_new_target_history = ancestry.integration_tips_precede_phases(
+            &tips,
+            &anchor_states.keys().cloned().collect::<Vec<_>>(),
+        );
+        if no_new_target_history
+            && anchor_states.keys().all(|anchor| {
+                matches!(
+                    ancestry.phase_merge_history(anchor),
+                    PhaseMergeHistory::NoEarlierMerge
+                )
+            })
+        {
+            // Linear intervals need no path log. A merge at HEAD is judged at its
+            // own post-commit boundary; only earlier merges are received history.
+            return Ok(Self::Unclassified);
+        }
         let invocation = git::incursion_path_log(repository.repository_root(), target, paths);
         let output = git_output::completed_git_output(
             invocation.output_availability,
@@ -78,10 +95,7 @@ impl CommittedWriteSelection {
         // Dense combined merge diffs name only paths changed relative to every parent:
         // the resolution is the unit's write, while a path copied from a parent is not.
         let commits = git_output::parse_incursion_path_log(&output.stdout)?;
-        if ancestry.integration_tips_precede_phases(
-            &tips,
-            &anchor_states.keys().cloned().collect::<Vec<_>>(),
-        ) {
+        if no_new_target_history {
             return Ok(Self::writes_from_first_parent_intervals(
                 ancestry,
                 anchor_states,
@@ -90,7 +104,18 @@ impl CommittedWriteSelection {
                 paths,
             ));
         }
-        let mut anchors = tips.clone();
+        Self::writes_outside_targets(repository, ancestry, anchor_states, &tips, &commits, target)
+    }
+
+    fn writes_outside_targets(
+        repository: &git::RepositorySnapshot,
+        ancestry: &PhaseStartTargetFirstParentHistories,
+        anchor_states: &HashMap<GitObjectId, IncursionAttributionAnchorState>,
+        tips: &[GitObjectId],
+        commits: &[IncursionPathCommit],
+        target: &GitObjectId,
+    ) -> Result<Self, DriftFingerprintError> {
+        let mut anchors = tips.to_vec();
         anchors.extend(anchor_states.iter().filter_map(|(anchor, state)| {
             (*state != IncursionAttributionAnchorState::ObjectUnknown).then_some(anchor.clone())
         }));
@@ -134,7 +159,10 @@ impl CommittedWriteSelection {
             .collect::<HashMap<_, _>>();
         let head_paths = commits
             .iter()
-            .filter(|commit| &commit.commit == target && authored.contains(target))
+            .filter(|commit| {
+                (&commit.commit == target || ancestry.entered_with_target_merge(&commit.commit))
+                    && authored.contains(&commit.commit)
+            })
             .flat_map(|commit| commit.paths.iter().cloned())
             .collect();
         Ok(Self::UnitWrites {
@@ -179,7 +207,9 @@ impl CommittedWriteSelection {
             .collect();
         let head_paths = commits
             .iter()
-            .filter(|commit| &commit.commit == target)
+            .filter(|commit| {
+                &commit.commit == target || ancestry.entered_with_target_merge(&commit.commit)
+            })
             .flat_map(|commit| commit.paths.iter().cloned())
             .collect();
         Self::UnitWrites {
