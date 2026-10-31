@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Mark rejected Cargo manifests on their rows and show the selected error in the Package pane across rescans, without repeated error toasts; clear the diagnostic when metadata succeeds or the project is no longer Rust. Launch, I/O and timeout failures keep their error toasts.
+
 - On Linux, recreated external `.cargo` folders need a rescan to regain their config watch when their parent is unwatched; watching every ancestor would add a watch per ancestor folder.
 
 - On Linux, watch project folders and their discovery paths instead of unrelated root trees; projects added inside existing unwatched folders appear on the next full rescan.

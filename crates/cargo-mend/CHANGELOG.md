@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Re-export visibility facts now join across compilation targets even when cfg-gated imports change rustc’s anonymous use-item ordinals, avoiding false missing-facade errors.
+- `--fix` now requires every module mount of a shared source to agree on a visibility edit, including unused-public edits and mounts with no findings. Disagreement keeps the current annotation, while distinct manual diagnostics remain visible.
 - `--fix` no longer rewrites a `crate::` call to a `super::` path that does not resolve when the file is reached through an inline `#[path]` module, such as a `#[cfg(test)] #[path = "."] mod tests { #[path = "x.rs"] mod x; }` test mount. mend now resolves such a file's module from its mount chain, reads every target root Cargo declares (integration tests included), and offers a relative rewrite only when it means the same item under every mount. Before, the rewrite failed the post-fix compile and `--fix` rolled back every edit.
 
 ## [0.22.3] - 2026-10-01

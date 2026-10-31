@@ -25,6 +25,7 @@ impl App {
             .resolved_root_labels(self.config.include_non_rust().includes_non_rust());
         let widths = panes::compute_project_list_widths(
             &self.project_list,
+            &self.scan.manifest_metadata,
             &root_labels,
             self.config.lint_enabled(),
             0,

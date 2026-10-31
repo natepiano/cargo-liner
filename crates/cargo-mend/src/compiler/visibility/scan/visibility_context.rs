@@ -178,9 +178,7 @@ pub(in crate::compiler::visibility) fn collect_and_store_findings(
         visit::visit_foreign_item(&ctx, tcx.hir_foreign_item(item_id), &mut sink)?;
     }
 
-    if !sink.subtree_reexport_fix_facts.is_empty() {
-        sink.module_mount_facts = module_mounts::collect_module_mounts(tcx, &crate_root_file);
-    }
+    sink.module_mount_facts = module_mounts::collect_module_mounts(tcx, &crate_root_file);
 
     let output_path = report_path(tcx)?;
     let stored_crate_root = if crate_root_file.is_absolute() {

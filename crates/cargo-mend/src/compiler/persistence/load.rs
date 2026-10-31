@@ -8,12 +8,11 @@ use serde_json::from_str;
 
 use super::ReportCacheState;
 use super::StoredAncestorReexport;
-use super::StoredFinding;
-use super::StoredPubUseFixFact;
 use super::StoredReport;
 use super::StoredSubtreeReexportFixFact;
 use super::caller_aware;
 use super::intersection;
+use super::schema::PubUseNarrowingSite;
 use super::visibility_constraint;
 use super::visibility_priority;
 use crate::config::DiagnosticCode;
@@ -50,43 +49,6 @@ pub(in crate::compiler) enum AnalysisEvidence {
 pub(in crate::compiler) struct LoadedReport {
     pub report:            Report,
     pub analysis_evidence: AnalysisEvidence,
-}
-
-/// The child declaration a `--fix pub-use` narrowing would rewrite.
-///
-/// The driver writes a `StoredPubUseFixFact` next to the finding that
-/// authorizes it — `SuspiciousPub` on the child declaration, or
-/// `InternalParentPubUseFacade` on the parent `pub use` line. The four
-/// suppression stages inside `reconcile_cross_target_reports` can drop that
-/// finding afterwards; a fact whose site no longer appears in
-/// `StoredReport::findings` would let the fixer apply a narrowing the
-/// cross-target analysis already rejected.
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-struct PubUseNarrowingSite {
-    path:      String,
-    line:      usize,
-    item_name: String,
-}
-
-impl PubUseNarrowingSite {
-    /// The two lines a single `pub use` fix can be advertised on. One edit,
-    /// two diagnostics: `suspicious_pub` reports it on the child declaration,
-    /// `internal_parent_pub_use_facade` reports it on the parent `pub use`
-    /// line. Either surviving finding keeps the fact.
-    fn advertising_sites(fact: &StoredPubUseFixFact) -> [Self; 2] {
-        [
-            Self {
-                path:      fact.child_path.clone(),
-                line:      fact.child_line,
-                item_name: fact.child_item_name.clone(),
-            },
-            Self {
-                path:      fact.parent_path.clone(),
-                line:      fact.parent_line,
-                item_name: fact.child_item_name.clone(),
-            },
-        ]
-    }
 }
 
 /// The `pub_use_outside_subtree` finding a `StoredSubtreeReexportFixFact`
@@ -259,15 +221,7 @@ fn discard_fix_facts_for_suppressed_findings(reports: &mut [StoredReport]) {
             .findings
             .iter()
             .filter(|finding| finding.fix_support == FixSupport::PubUse)
-            .filter_map(|finding| {
-                finding.item.as_deref().map(|item| PubUseNarrowingSite {
-                    path:      finding.path.clone(),
-                    line:      finding.line,
-                    // `StoredFinding::item` is a rendering; `PubUseNarrowingSite::item_name`
-                    // stores the bare name, so recover it with `StoredFinding::item_name`.
-                    item_name: StoredFinding::item_name(item).to_string(),
-                })
-            })
+            .filter_map(PubUseNarrowingSite::for_finding)
             .collect();
         report.pub_use_fix_facts.retain(|fact| {
             PubUseNarrowingSite::advertising_sites(fact)
