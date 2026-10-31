@@ -1469,35 +1469,28 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 57a — The shortcuts overlay highlights whole rows and shows every focus key  · status: done
 
-**Depends on:** Phase 57 (both edit the shortcuts overlay's tests).
+#### As-built
 
-#### Work Order
-
-**Goal:** in the `?` global shortcuts overlay, the selected-row highlight has one width on every row, and cargo-handler shows a key for "Focus the tile above" and "Focus the tile below", as cargo-tile does.
-
-**Source:** the showrunner, 2026-10-31, from the Phase 57 design check: "the selected-row highlight ends at the key text, so its width changes per row; it should have one width" and "cargo-handler's overlay shows no key for 'Focus the tile above/below', while cargo-tile shows up/down. Fix each where it lives, in tui_pane if the cause is there."
-
-**Constraints from prior phases:**
-- `row_line` (`crates/tui_pane/src/overlays/global_shortcuts.rs` ≈267) pads the description to `SHORTCUT_DESCRIPTION_WIDTH` but adds the key text with no padding, so the selection style stops at the key's last character. `build_render_inputs` (≈225) computes `content_width` from the rows; the key column width comes from the same rows.
-- cargo-handler's `AppGlobalAction::defaults` (`crates/cargo-handler/src/globals.rs` ≈62) gives `Up`/`Down` to `RowUp`/`RowDown` (Phase 16, row selection), so `FocusUp`/`FocusDown` have no default key. cargo-tile binds them to `up`/`down` (`crates/cargo-tile/src/app_global_action.rs`).
-- `KeyBind::shift` and `KeyBind::ctrl` exist (`crates/tui_pane/src/keymap/key_bind.rs` ≈145, ≈157).
-- Showrunner, 2026-10-31: cargo-handler's focus up/down default to `shift-up` / `shift-down`, set in `AppGlobalAction::defaults` like the other actions so the user can rebind them; `up`/`down` stay on row selection. No cargo-handler or tui_pane default binds `shift-up` or `shift-down` (checked 2026-10-31).
-
-**Spec:**
-1. In tui_pane, `row_line` pads the key span to the overlay's key column width, so the selected row's style covers the same width on every row. The width has one owner: the value the layout already computes.
-2. cargo-handler binds `FocusUp` to `KeyBind::shift(KeyCode::Up)` and `FocusDown` to `KeyBind::shift(KeyCode::Down)` in `defaults`; the captured overlay rows in `crates/cargo-handler/src/keymap.rs` (≈196) show them.
-3. Red-first tests, each under 1 s: in tui_pane, the selected row's styled cells cover the same width for a row with a short key and a row with a long key; in cargo-handler, the overlay rows for focus up and focus down show a key.
+- `tui_pane` pads each shortcut key span to the widest displayed key. Selected rows have one highlight width, including rows with no key. `build_lines` computes the width and passes it to `row_line`.
+- cargo-handler defaults `FocusUp` to `shift-up` and `FocusDown` to `shift-down`. The user can rebind both. `up` and `down` still select rows.
+- `selected_shortcut_rows_cover_the_same_width_for_short_and_long_keys` checks the drawn highlight. `shortcuts_overlay_shows_vertical_focus_keys_without_replacing_row_keys` checks focus and row keys.
+- The Keymap and Global Shortcuts screen captures include the focus keys. Live checks passed in both hosts: selected rows cover 46 cells in cargo-tile and 47 cells in cargo-handler. Commit: `772d67d3`.
 
 **Files:**
-- `crates/tui_pane/src/overlays/global_shortcuts.rs` — pad the key span
-- `crates/tui_pane/src/overlays/global_shortcuts_tests.rs` — highlight-width test
-- `crates/cargo-handler/src/globals.rs` — focus up/down default keys
-- `crates/cargo-handler/src/keymap.rs` — captured overlay rows
-- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md`
 
-**Workers:** 1 writer.
+- `crates/tui_pane/src/overlays/global_shortcuts.rs` — computes the key width and pads each key span.
+- `crates/tui_pane/src/overlays/global_shortcuts_tests.rs` — checks equal selected widths for short and long keys.
+- `crates/cargo-handler/src/globals.rs` — adds the vertical focus defaults and checks them.
+- `crates/cargo-handler/src/keymap.rs` — checks focus and row keys; updates captured key rows.
+- `crates/cargo-handler/src/render/mod.rs` — updates both overlay screen captures.
+- `crates/tui_pane/CHANGELOG.md` — records the selected-row width fix.
+- `crates/cargo-handler/CHANGELOG.md` — records the vertical focus keys.
 
-**Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: press `?` in cargo-handler and cargo-tile, move the selection, and see one highlight width and a key on both focus rows. The checkpoint adds a Change-Review line.
+**Binds later work:** Keep the key width in the overlay layout. Keep focus bindings in the default keymap so users can rebind them.
+
+**Gotchas:**
+
+- Changing default keys can change overlay captures in `render/mod.rs`: `the_keymap_overlay_opens_on_its_first_screen` and `the_shortcuts_overlay_opens_on_its_first_screen`.
 
 ### Phase 57d — A Codex session resumed under a second account shows its own name  · status: todo
 
