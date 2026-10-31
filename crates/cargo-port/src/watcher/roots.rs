@@ -57,6 +57,12 @@ enum ConfigWatchScope {
     GitTree,
 }
 
+/// The Cargo home resolved by the caller before watcher registration begins.
+pub(super) enum CargoHome {
+    Unavailable,
+    Directory(PathBuf),
+}
+
 /// Configured discovery boundaries, known projects, and successful subscriptions.
 #[derive(Clone, Default)]
 pub(super) struct RegisteredRoots {
@@ -116,6 +122,16 @@ impl RegisteredRoots {
                     self.role(path) == Subscription::Watched(WatchedFolderRole::Project)
                 },
             }
+    }
+
+    fn recursively_watches(&self, path: &Path) -> bool {
+        self.watched.keys().any(|root| path.starts_with(root))
+    }
+
+    fn record_recursive_boundary(&mut self, dir: &AbsolutePath) {
+        if dir.is_dir() && self.recursively_watches(dir) && !self.dirs.contains(dir) {
+            self.dirs.push(dir.clone());
+        }
     }
 
     pub(super) fn skips(&self, path: &Path) -> bool { self.skips.skips(path) }
@@ -204,6 +220,21 @@ pub(super) fn register_watch_roots_with_skips(
         ..RegisteredRoots::default()
     };
     let mut failures = Vec::new();
+    if registration == WatchRegistration::RecursiveRoot {
+        // Try parents first, but let a child subscribe if its parent fails.
+        let mut roots: Vec<_> = watch_dirs.iter().collect();
+        roots.sort_by_key(|root| root.components().count());
+        for dir in roots {
+            failures.extend(register_recursive_root(watcher, &mut registered, dir));
+        }
+        // Discovery boundaries retain configured order, including covered roots.
+        for dir in watch_dirs {
+            if !registered.skips.skips_resolved(dir) {
+                registered.record_recursive_boundary(dir);
+            }
+        }
+        return (registered, failures);
+    }
     for dir in watch_dirs {
         failures.extend(register_project_root(watcher, &mut registered, dir));
         if registered.watched.contains_key(dir) && !registered.dirs.contains(dir) {
@@ -285,9 +316,7 @@ pub(super) fn register_project_root(
     }
     if registered.registration == WatchRegistration::RecursiveRoot {
         let failures = register_recursive_root(watcher, registered, dir);
-        if registered.watched.contains_key(dir) && !registered.dirs.contains(dir) {
-            registered.dirs.push(dir.clone());
-        }
+        registered.record_recursive_boundary(dir);
         return failures;
     }
     registered.project_roots.insert(dir.clone());
@@ -336,6 +365,9 @@ fn register_recursive_root(
     registered: &mut RegisteredRoots,
     dir: &AbsolutePath,
 ) -> Vec<WatchRootRegistrationFailure> {
+    if registered.skips.skips_resolved(dir) {
+        return Vec::new();
+    }
     if !dir.is_dir() {
         return vec![WatchRootRegistrationFailure {
             dir:    dir.clone(),
@@ -345,7 +377,7 @@ fn register_recursive_root(
     let skips = registered.skips.clone();
     let mut failures = Vec::new();
     for (folder, mode) in registration_plan(dir, &skips, WatchRegistration::RecursiveRoot) {
-        if registered.watched.contains_key(&folder) {
+        if registered.recursively_watches(&folder) {
             continue;
         }
         match watcher.watch(&folder, mode) {
@@ -548,6 +580,7 @@ pub(super) fn replace_skip_set(
     watcher: &mut impl Watcher,
     registered: &mut RegisteredRoots,
     skips: WatchSkipSet,
+    cargo_home: &CargoHome,
 ) {
     if registered.registration == WatchRegistration::RecursiveRoot {
         registered.skips = skips;
@@ -594,7 +627,7 @@ pub(super) fn replace_skip_set(
             log_failures(failures);
         }
     }
-    register_cargo_home_watch(watcher, registered);
+    register_cargo_home_watch(watcher, registered, cargo_home);
 }
 
 pub(super) fn register_project_sources(
@@ -639,13 +672,15 @@ pub(super) fn register_project_sources(
 }
 
 /// Resolve `$CARGO_HOME` (falling back to `~/.cargo`).
-fn resolve_cargo_home() -> Option<PathBuf> {
+pub(super) fn resolve_cargo_home() -> CargoHome {
     if let Ok(home) = std::env::var("CARGO_HOME")
         && !home.is_empty()
     {
-        return Some(PathBuf::from(home));
+        return CargoHome::Directory(PathBuf::from(home));
     }
-    dirs::home_dir().map(|home| home.join(DOT_CARGO_DIR))
+    dirs::home_dir().map_or(CargoHome::Unavailable, |home| {
+        CargoHome::Directory(home.join(DOT_CARGO_DIR))
+    })
 }
 
 /// Subscribe to the cargo home directory (`$CARGO_HOME` or
@@ -654,11 +689,12 @@ fn resolve_cargo_home() -> Option<PathBuf> {
 pub(super) fn register_cargo_home_watch(
     watcher: &mut impl Watcher,
     registered_roots: &mut RegisteredRoots,
+    cargo_home: &CargoHome,
 ) {
-    let Some(cargo_home) = resolve_cargo_home() else {
+    let CargoHome::Directory(cargo_home) = cargo_home else {
         return;
     };
-    register_cargo_home_directory(watcher, registered_roots, &cargo_home);
+    register_cargo_home_directory(watcher, registered_roots, cargo_home);
 }
 
 pub(super) fn register_cargo_home_directory(
@@ -669,10 +705,7 @@ pub(super) fn register_cargo_home_directory(
     if registered_roots.registration == WatchRegistration::RecursiveRoot {
         if !cargo_home.is_dir()
             || registered_roots.skips.skips_resolved(cargo_home)
-            || registered_roots
-                .watched
-                .keys()
-                .any(|root| cargo_home.starts_with(root))
+            || registered_roots.recursively_watches(cargo_home)
         {
             return;
         }

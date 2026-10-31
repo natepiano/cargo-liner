@@ -23,12 +23,22 @@ use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::ops::RangeInclusive;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use chrono::DateTime;
+use notify::Event;
+use notify::RecommendedWatcher;
+use notify::RecursiveMode;
+use notify::Watcher;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -38,6 +48,8 @@ use crate::constants::BASH_TOOL;
 use crate::constants::BASH_TOOL_MARKER;
 use crate::constants::END_TURN;
 use crate::constants::GENERAL_SUBAGENT_TYPE;
+use crate::constants::INPUT_WATCH_RECOVERY;
+use crate::constants::INPUT_WATCH_RETRY;
 use crate::constants::SUBAGENT_META_SUFFIX;
 use crate::constants::SUBAGENT_PREFIX;
 use crate::constants::SUBAGENT_QUIET_LIMIT;
@@ -588,7 +600,7 @@ pub(super) struct Subagent {
 }
 
 /// What a subagent's `.meta.json` says.
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SubagentMeta {
     /// What the subagent was asked to do.
@@ -600,6 +612,204 @@ struct SubagentMeta {
     /// The subagent that started this one.
     #[serde(default)]
     parent_agent_id: Option<String>,
+}
+
+/// The directory generation attached to an OS subscription.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) enum WatchedDirectoryIdentity {
+    #[default]
+    Unavailable,
+    #[cfg(unix)]
+    Unix { device: u64, inode: u64 },
+    #[cfg(not(unix))]
+    Modified(SystemTime),
+}
+
+impl WatchedDirectoryIdentity {
+    pub(super) fn read(directory: &Path) -> Self {
+        let Ok(metadata) = fs::metadata(directory) else {
+            return Self::Unavailable;
+        };
+        if !metadata.is_dir() {
+            return Self::Unavailable;
+        }
+        #[cfg(unix)]
+        {
+            Self::Unix {
+                device: metadata.dev(),
+                inode:  metadata.ino(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            metadata
+                .modified()
+                .map_or(Self::Unavailable, Self::Modified)
+        }
+    }
+}
+
+/// A directory watch also bounds recovery from lost events, replacement and missing paths.
+#[derive(Debug)]
+pub(super) struct InputDirectoryWatch {
+    backend:       InputWatchBackend,
+    changed:       Arc<AtomicBool>,
+    watch_lost:    Arc<AtomicBool>,
+    identity:      WatchedDirectoryIdentity,
+    recovery:      Instant,
+    #[cfg(test)]
+    installations: usize,
+}
+
+#[derive(Debug)]
+enum InputWatchBackend {
+    Watching {
+        _watcher: RecommendedWatcher,
+    },
+    Unavailable,
+    #[cfg(test)]
+    Controlled,
+}
+
+/// Consuming a watch event either keeps the cached listing or requires reconciliation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DirectoryChange {
+    Unchanged,
+    Reconcile,
+}
+
+impl InputDirectoryWatch {
+    pub(super) fn new(directory: &Path, now: Instant) -> Self {
+        let mut watch = Self {
+            backend:                    InputWatchBackend::Unavailable,
+            changed:                    Arc::new(AtomicBool::new(true)),
+            watch_lost:                 Arc::new(AtomicBool::new(false)),
+            identity:                   WatchedDirectoryIdentity::Unavailable,
+            recovery:                   now,
+            #[cfg(test)]
+            installations:              0,
+        };
+        #[cfg(test)]
+        {
+            watch.backend = InputWatchBackend::Controlled;
+        }
+        watch.rearm(directory, now);
+        watch
+    }
+
+    fn rearm(&mut self, directory: &Path, now: Instant) {
+        let identity = WatchedDirectoryIdentity::read(directory);
+        if !self.watch_lost.swap(false, Ordering::AcqRel)
+            && identity != WatchedDirectoryIdentity::Unavailable
+            && identity == self.identity
+            && !matches!(self.backend, InputWatchBackend::Unavailable)
+        {
+            self.recovery = now + INPUT_WATCH_RECOVERY;
+            return;
+        }
+        self.identity = identity;
+        #[cfg(test)]
+        {
+            self.installations += 1;
+        }
+        #[cfg(test)]
+        if matches!(self.backend, InputWatchBackend::Controlled) {
+            self.recovery = now + INPUT_WATCH_RECOVERY;
+            return;
+        }
+        let changed = Arc::clone(&self.changed);
+        let watch_lost = Arc::clone(&self.watch_lost);
+        let watched_directory = directory.to_path_buf();
+        let backend = notify::RecommendedWatcher::new(
+            move |answer: notify::Result<Event>| {
+                let relevant = if let Ok(event) = answer {
+                    event.need_rescan()
+                        || (!matches!(event.kind, notify::EventKind::Access(_))
+                            && event.paths.iter().any(|path| {
+                                path == &watched_directory
+                                    || path.parent() == Some(watched_directory.as_path())
+                            }))
+                } else {
+                    watch_lost.store(true, Ordering::Release);
+                    true
+                };
+                if relevant {
+                    changed.store(true, Ordering::Release);
+                }
+            },
+            notify::Config::default().with_event_kinds(notify::EventKindMask::CORE),
+        );
+        self.backend = backend
+            .and_then(|mut watcher| {
+                watcher.watch(directory, RecursiveMode::NonRecursive)?;
+                if let Some(parent) = directory.parent() {
+                    watcher.watch(parent, RecursiveMode::NonRecursive)?;
+                }
+                Ok(watcher)
+            })
+            .map_or_else(
+                |_| InputWatchBackend::Unavailable,
+                |watcher| InputWatchBackend::Watching { _watcher: watcher },
+            );
+        self.recovery = now
+            + if matches!(self.backend, InputWatchBackend::Unavailable) {
+                INPUT_WATCH_RETRY
+            } else {
+                INPUT_WATCH_RECOVERY
+            };
+    }
+
+    pub(super) fn take_changed(&mut self, directory: &Path, now: Instant) -> DirectoryChange {
+        if now >= self.recovery || self.watch_lost.load(Ordering::Acquire) {
+            self.rearm(directory, now);
+            self.changed.store(true, Ordering::Release);
+        }
+        if self.changed.swap(false, Ordering::AcqRel) {
+            DirectoryChange::Reconcile
+        } else {
+            DirectoryChange::Unchanged
+        }
+    }
+}
+
+/// File generations include replacement and equal-size rewrites with a restored mtime.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SubagentMetaRevision {
+    modified: SystemTime,
+    size:     u64,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64),
+}
+
+impl SubagentMetaRevision {
+    fn read(path: &Path) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::metadata(path)?;
+        Ok(Self {
+            modified:              metadata.modified()?,
+            size:                  metadata.len(),
+            #[cfg(unix)]
+            identity:              (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+            ),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct SubagentDirectory {
+    watch: InputDirectoryWatch,
+    rows:  Vec<RecentSubagent>,
+}
+
+#[derive(Debug)]
+struct RecentSubagent {
+    agent:    Subagent,
+    modified: SystemTime,
 }
 
 /// The subagents of the session whose transcript is `session_transcript`
@@ -615,10 +825,41 @@ pub(super) fn running_subagents(
     let directory = session_transcript
         .with_extension("")
         .join(SUBAGENTS_DIRNAME);
-    let Ok(entries) = fs::read_dir(&directory) else {
+    let clock = Instant::now();
+    let changed = reads
+        .directories
+        .entry(directory.clone())
+        .or_insert_with(|| SubagentDirectory {
+            watch: InputDirectoryWatch::new(&directory, clock),
+            rows:  Vec::new(),
+        })
+        .watch
+        .take_changed(&directory, clock);
+    if changed == DirectoryChange::Reconcile {
+        let rows = read_subagents(&directory, reads);
+        if let Some(cached) = reads.directories.get_mut(&directory) {
+            cached.rows = rows;
+        }
+    }
+    reads
+        .directories
+        .get(&directory)
+        .into_iter()
+        .flat_map(|cached| &cached.rows)
+        .filter(|row| now.duration_since(row.modified).unwrap_or_default() <= SUBAGENT_QUIET_LIMIT)
+        .map(|row| row.agent.clone())
+        .collect()
+}
+
+fn read_subagents(directory: &Path, reads: &mut SubagentReads) -> Vec<RecentSubagent> {
+    #[cfg(test)]
+    {
+        reads.directory_reads += 1;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
         return Vec::new();
     };
-    let mut running: Vec<Subagent> = entries
+    let mut running: Vec<_> = entries
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let file_name = entry.file_name();
@@ -630,16 +871,10 @@ pub(super) fn running_subagents(
             let transcript =
                 directory.join(format!("{SUBAGENT_PREFIX}{id}.{TRANSCRIPT_EXTENSION}"));
             let metadata = fs::metadata(&transcript).ok()?;
-            let quiet = now
-                .duration_since(metadata.modified().ok()?)
-                .unwrap_or_default();
-            if quiet > SUBAGENT_QUIET_LIMIT
-                || matches!(reads.has_finished(&transcript), SubagentTurn::Finished)
-            {
+            if matches!(reads.has_finished(&transcript), SubagentTurn::Finished) {
                 return None;
             }
-            let meta: SubagentMeta =
-                serde_json::from_str(&fs::read_to_string(entry.path()).ok()?).ok()?;
+            let meta = reads.metadata(&entry.path())?;
             let started = metadata
                 .created()
                 .or_else(|_| entry.metadata().and_then(|meta| meta.modified()))
@@ -649,22 +884,27 @@ pub(super) fn running_subagents(
             let agent_type = meta.agent_type.unwrap_or_default();
             let description = meta
                 .description
-                .filter(|description| !description.is_empty())
+                .filter(|text| !text.is_empty())
                 .unwrap_or_else(|| id.clone());
             let role = SubagentRole::from_record(&agent_type, &description);
-            Some(Subagent {
-                id,
-                parent: meta.parent_agent_id,
-                description,
-                agent_type,
-                role,
-                started,
-                transcript,
-                activity: AgentActivity::Idle,
+            Some(RecentSubagent {
+                modified: metadata.modified().ok()?,
+                agent:    Subagent {
+                    id,
+                    parent: meta.parent_agent_id,
+                    description,
+                    agent_type,
+                    role,
+                    started,
+                    transcript,
+                    activity: AgentActivity::Idle,
+                },
             })
         })
         .collect();
-    running.sort_by(|left, right| (left.started, &left.id).cmp(&(right.started, &right.id)));
+    running.sort_by(|left, right| {
+        (left.agent.started, &left.agent.id).cmp(&(right.agent.started, &right.agent.id))
+    });
     running
 }
 
@@ -692,7 +932,13 @@ struct TurnMessage {
 /// Tail positions and last turn outcomes retained for each subagent transcript.
 #[derive(Debug, Default)]
 pub(super) struct SubagentReads {
-    reads: HashMap<PathBuf, SubagentRead>,
+    reads:           HashMap<PathBuf, SubagentRead>,
+    directories:     HashMap<PathBuf, SubagentDirectory>,
+    metadata:        HashMap<PathBuf, (SubagentMetaRevision, SubagentMeta)>,
+    #[cfg(test)]
+    metadata_parses: usize,
+    #[cfg(test)]
+    directory_reads: usize,
 }
 
 #[derive(Debug, Default)]
@@ -709,6 +955,23 @@ pub(super) enum SubagentTurn {
 }
 
 impl SubagentReads {
+    fn metadata(&mut self, path: &Path) -> Option<SubagentMeta> {
+        let revision = SubagentMetaRevision::read(path).ok()?;
+        if let Some((previous, meta)) = self.metadata.get(path)
+            && previous == &revision
+        {
+            return Some(meta.clone());
+        }
+        #[cfg(test)]
+        {
+            self.metadata_parses += 1;
+        }
+        let meta: SubagentMeta = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+        self.metadata
+            .insert(path.to_path_buf(), (revision, meta.clone()));
+        Some(meta)
+    }
+
     pub(super) fn has_finished(&mut self, path: &Path) -> SubagentTurn {
         let read = self.reads.entry(path.to_path_buf()).or_default();
         if matches!(&read.cursor, JsonlCursor::Following { offset, .. }
@@ -750,6 +1013,7 @@ impl SubagentReads {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::io::Write;
     use std::time::Duration;
 
     use serde_json::Value;
@@ -916,6 +1180,134 @@ mod tests {
             ],
         );
         assert_eq!(began(&path), Some(1_790_000_000));
+    }
+
+    #[test]
+    fn idle_input_watch_recovery_reuses_its_unchanged_directory() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let watched = directory.path().join("inputs");
+        fs::create_dir(&watched)?;
+        let now = Instant::now();
+        let mut watch = InputDirectoryWatch::new(&watched, now);
+        assert!(matches!(
+            watch.take_changed(&watched, now),
+            DirectoryChange::Reconcile
+        ));
+        assert!(matches!(
+            watch.take_changed(&watched, now + Duration::from_secs(30)),
+            DirectoryChange::Reconcile
+        ));
+        assert_eq!(
+            watch.installations, 1,
+            "recovery keeps the healthy OS watch"
+        );
+        fs::rename(&watched, directory.path().join("old-inputs"))?;
+        fs::create_dir(&watched)?;
+        assert!(matches!(
+            watch.take_changed(&watched, now + Duration::from_secs(60)),
+            DirectoryChange::Reconcile
+        ));
+        assert_eq!(
+            watch.installations, 2,
+            "a replaced directory installs its new watch"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn idle_subagents_do_not_list_unchanged_inputs() {
+        let directory = TempDir::new().expect("temporary directory");
+        let session = directory.path().join("session.jsonl");
+        let subagents = session.with_extension("").join(SUBAGENTS_DIRNAME);
+        fs::create_dir_all(&subagents).expect("subagent directory");
+        let mut reads = SubagentReads::default();
+        let now = SystemTime::now();
+        running_subagents(&session, now, &mut reads);
+        running_subagents(&session, now, &mut reads);
+        assert_eq!(
+            reads.directory_reads, 1,
+            "unchanged inputs do not list subagents again"
+        );
+    }
+
+    #[test]
+    fn idle_subagents_recover_lost_events_replacement_and_new_directories() {
+        let directory = TempDir::new().expect("temporary directory");
+        let session = directory.path().join("session.jsonl");
+        let subagents = session.with_extension("").join(SUBAGENTS_DIRNAME);
+        let mut reads = SubagentReads::default();
+        let now = SystemTime::now();
+        assert_eq!(
+            running_subagents(&session, now, &mut reads),
+            [] as [Subagent; 0]
+        );
+        fs::create_dir_all(&subagents).expect("new directory");
+        fs::write(
+            subagents.join("agent-one.meta.json"),
+            r#"{"description":"First"}"#,
+        )
+        .expect("metadata");
+        let transcript = subagents.join("agent-one.jsonl");
+        fs::write(&transcript, "{\"type\":\"user\"}\n").expect("transcript");
+        reads
+            .directories
+            .get_mut(&subagents)
+            .expect("watch")
+            .watch
+            .recovery = Instant::now();
+        assert_eq!(running_subagents(&session, now, &mut reads).len(), 1);
+        assert_eq!(
+            reads.directory_reads, 2,
+            "recovery discovers a missing directory"
+        );
+        assert_eq!(reads.metadata_parses, 1);
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .expect("transcript");
+        writeln!(
+            file,
+            "{{\"type\":\"assistant\",\"message\":{{\"stop_reason\":\"end_turn\"}}}}"
+        )
+        .expect("finished turn");
+        reads
+            .directories
+            .get(&subagents)
+            .expect("watch")
+            .watch
+            .changed
+            .store(true, Ordering::Release);
+        assert_eq!(
+            running_subagents(&session, now, &mut reads),
+            [] as [Subagent; 0]
+        );
+        assert_eq!(
+            reads.metadata_parses, 1,
+            "a changed transcript does not reparse its metadata"
+        );
+        fs::remove_dir_all(&subagents).expect("remove directory");
+        fs::create_dir_all(&subagents).expect("replace directory");
+        fs::write(subagents.join("agent-two.meta.json"), "{}").expect("new metadata");
+        fs::write(subagents.join("agent-two.jsonl"), "{\"type\":\"user\"}\n")
+            .expect("new transcript");
+        reads
+            .directories
+            .get_mut(&subagents)
+            .expect("watch")
+            .watch
+            .recovery = Instant::now();
+        let rows = running_subagents(&session, now, &mut reads);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "two");
+        assert_eq!(
+            running_subagents(
+                &session,
+                now + SUBAGENT_QUIET_LIMIT + Duration::from_secs(1),
+                &mut reads
+            ),
+            [] as [Subagent; 0]
+        );
+        assert_eq!(reads.directory_reads, 4, "quiet expiry needs no file read");
     }
 
     /// A subagent is running until its transcript ends on a finished

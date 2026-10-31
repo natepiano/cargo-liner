@@ -941,7 +941,7 @@ impl TileCells<TileKey> for Cells<'_> {
 
 /// The status line: the app's name and version, `attract` while the
 /// attract screen was asked for, the uptime, and the `?` shortcut.
-fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Rect) {
+pub(crate) fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Rect) {
     let globals = [StatusLineGlobal::global_shortcuts_help()];
     let mut notes = vec![StatusLineNote {
         label: APP_NAME.to_string(),

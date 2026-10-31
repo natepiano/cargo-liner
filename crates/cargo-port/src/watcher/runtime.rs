@@ -22,6 +22,7 @@ use super::probe::FolderProbeOutcome;
 use super::refresh;
 use super::roots;
 use super::roots::CandidateProbeResult;
+use super::roots::CargoHome;
 use super::roots::RegisteredRoots;
 use super::roots::WatchRegistration;
 use super::skip::WatchSkipSet;
@@ -127,6 +128,7 @@ pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
     };
     let startup = WatcherLoopStartup {
         registration,
+        cargo_home: roots::resolve_cargo_home(),
         watch_roots: watch_roots.to_vec(),
         background_tx,
         ci_run_count,
@@ -148,6 +150,7 @@ pub(crate) fn spawn_watcher(spawn: WatcherSpawn<'_>) -> Sender<WatcherMsg> {
 /// on the watcher thread, which is what keeps registration off the caller.
 struct WatcherLoopStartup {
     registration:      WatchRegistration,
+    cargo_home:        CargoHome,
     watch_roots:       Vec<AbsolutePath>,
     background_tx:     Sender<BackgroundMsg>,
     ci_run_count:      u32,
@@ -190,9 +193,10 @@ impl WatcherLoopStartup {
             elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
             "watcher_root_registration_complete"
         );
-        roots::register_cargo_home_watch(watcher, &mut registered_roots);
+        roots::register_cargo_home_watch(watcher, &mut registered_roots, &self.cargo_home);
         WatcherLoopContext {
             watch_roots:       registered_roots,
+            cargo_home:        self.cargo_home,
             background_tx:     self.background_tx,
             ci_run_count:      self.ci_run_count,
             non_rust:          self.non_rust,
@@ -206,6 +210,7 @@ impl WatcherLoopStartup {
 
 struct WatcherLoopContext {
     watch_roots:       RegisteredRoots,
+    cargo_home:        CargoHome,
     background_tx:     Sender<BackgroundMsg>,
     ci_run_count:      u32,
     non_rust:          NonRustInclusion,
@@ -349,6 +354,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             &mut watcher,
             &mut registered_roots,
             known_target_skips(metadata_dispatch, state.projects.keys()),
+            &ctx.cargo_home,
         );
         let notify_events = events::drain_notify_events(notify_rx);
         if state.registration.is_initializing() {
@@ -867,7 +873,6 @@ mod tests {
     /// that originally killed event delivery for everything under
     /// `~/rust`.
     #[test]
-    #[allow(unsafe_code, reason = "env-var mutation is unsafe in edition 2024")]
     fn cargo_home_watch_skipped_when_covered_by_recursive_root() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let cargo_home = tmp.path().join(".cargo");
@@ -879,15 +884,11 @@ mod tests {
         let mut watcher = RecordingWatcher::new_for_test();
         let watched_handle = Arc::clone(&watcher.watched);
 
-        // SAFETY: watcher::runtime::tests run serially, so std::env::set_var("CARGO_HOME", …)
-        // cannot race with another test.
-        unsafe {
-            std::env::set_var("CARGO_HOME", cargo_home.as_os_str());
-        }
-        roots::register_cargo_home_watch(&mut watcher, &mut registered_roots);
-        // SAFETY: std::env::remove_var("CARGO_HOME") follows the same serial-test reasoning as
-        // set_var above.
-        unsafe { std::env::remove_var("CARGO_HOME") };
+        roots::register_cargo_home_watch(
+            &mut watcher,
+            &mut registered_roots,
+            &CargoHome::Directory(cargo_home),
+        );
 
         let recorded: Vec<(PathBuf, RecursiveMode)> = watched_handle
             .lock()
@@ -1067,7 +1068,6 @@ mod tests {
     /// new `watcher.watch()` call to any helper invoked here will fail
     /// this test if it overlaps an existing registration.
     #[test]
-    #[allow(unsafe_code, reason = "env-var mutation is unsafe in edition 2024")]
     fn startup_registration_introduces_no_overlapping_watches() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root_a = tmp.path().join("rust");
@@ -1077,42 +1077,45 @@ mod tests {
             std::fs::create_dir_all(dir).expect("mkdir root");
         }
         let watch_roots = [AbsolutePath::from(root_a), AbsolutePath::from(root_b)];
+        let cargo_home = CargoHome::Directory(cargo_home);
 
-        let mut guard = GuardedWatcher::wrap(RecordingWatcher::new_for_test());
+        for registration in [
+            WatchRegistration::PerFolder,
+            WatchRegistration::RecursiveRoot,
+        ] {
+            let mut guard = GuardedWatcher::wrap(RecordingWatcher::new_for_test());
 
-        let (mut registered_roots, failures) =
-            roots::register_watch_roots(&mut guard, &watch_roots);
-        assert!(
-            failures.is_empty(),
-            "register_watch_roots must not produce per-root failures for non-overlapping inputs; \
-                 got: {:?}",
-            failures
-                .iter()
-                .map(|f| (f.dir.display().to_string(), f.reason.to_string()))
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(registered_roots.dirs().len(), watch_roots.len());
+            let (mut registered_roots, failures) = roots::register_watch_roots_with_skips(
+                &mut guard,
+                &watch_roots,
+                WatchSkipSet::default(),
+                registration,
+            );
+            assert!(
+                failures.is_empty(),
+                "register_watch_roots must not produce per-root failures for non-overlapping inputs; \
+                     got: {:?}",
+                failures
+                    .iter()
+                    .map(|f| (f.dir.display().to_string(), f.reason.to_string()))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(registered_roots.dirs().len(), watch_roots.len());
 
-        // SAFETY: watcher::runtime::tests run serially, so std::env::set_var("CARGO_HOME", …)
-        // cannot race with another test reading the environment.
-        unsafe {
-            std::env::set_var("CARGO_HOME", cargo_home.as_os_str());
+            roots::register_cargo_home_watch(&mut guard, &mut registered_roots, &cargo_home);
+
+            // `guard.registered` must contain both `watch_roots` plus external `cargo_home`.
+            // Any other count means startup registration dropped a watch or added an overlapping
+            // one.
+            let expected_count = watch_roots.len() + 1;
+            assert_eq!(
+                guard.registered.len(),
+                expected_count,
+                "guard's registered set should contain exactly the recursive roots plus cargo_home; \
+                     got: {:?}",
+                guard.registered
+            );
         }
-        roots::register_cargo_home_watch(&mut guard, &mut registered_roots);
-        // SAFETY: std::env::remove_var("CARGO_HOME") follows the same serial-test reasoning as
-        // set_var above.
-        unsafe { std::env::remove_var("CARGO_HOME") };
-
-        // `guard.registered` must contain two recursive `watch_roots` plus external `cargo_home`.
-        // Any other count means startup registration dropped a watch or added an overlapping one.
-        let expected_count = watch_roots.len() + 1;
-        assert_eq!(
-            guard.registered.len(),
-            expected_count,
-            "guard's registered set should contain exactly the recursive roots plus cargo_home; \
-                 got: {:?}",
-            guard.registered
-        );
     }
 
     /// `try_dispatch_out_of_tree_cargo_config_refresh` must spawn a
@@ -1272,6 +1275,7 @@ mod tests {
             let (background_tx, _) = channel::unbounded();
             let ctx = WatcherLoopContext {
                 watch_roots: registered_roots.clone(),
+                cargo_home: CargoHome::Unavailable,
                 background_tx,
                 ci_run_count: 0,
                 non_rust: NonRustInclusion::Exclude,
@@ -1455,6 +1459,7 @@ mod tests {
         let watcher_thread = spawn_watcher_thread(
             WatcherLoopStartup {
                 registration: WatchRegistration::PerFolder,
+                cargo_home: CargoHome::Unavailable,
                 watch_roots: Vec::new(),
                 background_tx,
                 ci_run_count: 0,

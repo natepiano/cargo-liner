@@ -72,6 +72,9 @@ fn activity_scan_detached_gate_overrides_tool_then_finished_run_reveals_the_tool
     scanner.attach_activity_and_names(&processes, &HashMap::new(), &mut rows);
     assert_eq!(rows[0].children[0].activity.text(), "nextest");
     write_run("finished");
+    scanner
+        .run_records
+        .record_changed(directory.path(), "gate.json".into());
     scanner.attach_activity_and_names(&processes, &HashMap::new(), &mut rows);
     assert_eq!(rows[0].children[0].activity.text(), "writing");
     assert_eq!(rows[0].children[0].name, "worker · Write fixtures");

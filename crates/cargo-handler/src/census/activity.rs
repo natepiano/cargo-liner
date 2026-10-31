@@ -5,9 +5,19 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 
+use notify::Config;
+use notify::Event;
+use notify::RecommendedWatcher;
+use notify::Watcher;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -17,6 +27,9 @@ use super::hierarchy::FileRevision;
 use super::transcript;
 use super::transcript::JsonlCursor;
 use super::transcript::RecordKind;
+use super::transcript::WatchedDirectoryIdentity;
+use crate::constants::RUN_WATCH_RECOVERY;
+use crate::constants::RUN_WATCH_RETRY;
 use crate::constants::TRANSCRIPT_TAIL_START;
 use crate::constants::VERIFY_SCRIPT;
 use crate::theme::Role;
@@ -530,29 +543,100 @@ impl VerificationProgress {
     }
 }
 
-/// Descendants of a live root, resolved without assuming detachment ancestry.
-fn descendants(processes: &[ProcessEntry], root: u32) -> Vec<&ProcessEntry> {
-    let mut pids = HashSet::from([root]);
-    loop {
-        let before = pids.len();
-        for process in processes {
-            if process.parent.is_some_and(|pid| pids.contains(&pid)) {
-                pids.insert(process.pid);
+/// Verification progress for the process rows in one census answer.
+pub(super) struct VerificationProcesses<'a> {
+    processes:      &'a [ProcessEntry],
+    by_pid:         HashMap<u32, usize>,
+    children:       HashMap<u32, Vec<usize>>,
+    progress:       HashMap<u32, VerificationProgress>,
+    #[cfg(test)]
+    process_visits: usize,
+}
+
+impl<'a> VerificationProcesses<'a> {
+    pub(super) fn new(processes: &'a [ProcessEntry]) -> Self {
+        let mut by_pid = HashMap::new();
+        let mut children: HashMap<_, Vec<_>> = HashMap::new();
+        for (index, process) in processes.iter().enumerate() {
+            by_pid.insert(process.pid, index);
+            if let Some(parent) = process.parent {
+                children.entry(parent).or_default().push(index);
             }
         }
-        if before == pids.len() {
-            break;
+        Self {
+            processes,
+            by_pid,
+            children,
+            progress: HashMap::new(),
+            #[cfg(test)]
+            process_visits: 0,
         }
     }
-    processes
-        .iter()
-        .filter(|process| pids.contains(&process.pid))
-        .collect()
+
+    pub(super) fn progress(&mut self, root: u32) -> VerificationProgress {
+        if let Some(progress) = self.progress.get(&root) {
+            return *progress;
+        }
+        // Resolve descendants without assuming detachment ancestry.
+        let mut pending = vec![root];
+        let mut seen = HashSet::new();
+        let mut indices = Vec::new();
+        while let Some(pid) = pending.pop() {
+            if !seen.insert(pid) {
+                continue;
+            }
+            if let Some(index) = self.by_pid.get(&pid) {
+                indices.push(*index);
+            }
+            #[cfg(test)]
+            {
+                self.process_visits += 1;
+            }
+            if let Some(children) = self.children.get(&pid) {
+                pending.extend(children.iter().map(|index| self.processes[*index].pid));
+            }
+        }
+        // Keep the original table order used to select the last matching step.
+        indices.sort_unstable();
+        let tree: Vec<_> = indices
+            .into_iter()
+            .map(|index| &self.processes[index])
+            .collect();
+        let progress = verification_progress(&tree);
+        self.progress.insert(root, progress);
+        progress
+    }
+
+    /// Latest eligible live verification wins for this worker.
+    pub(super) fn run(&mut self, records: &[RunRecord], thread_id: &str) -> AgentActivity {
+        let latest = records
+            .iter()
+            .filter_map(|record| match record {
+                RunRecord::Verify(run)
+                    if run.thread_id == thread_id && self.by_pid.contains_key(&run.pid) =>
+                {
+                    Some(run)
+                },
+                _ => None,
+            })
+            .max_by(|left, right| {
+                left.started_at
+                    .total_cmp(&right.started_at)
+                    .then(left.pid.cmp(&right.pid))
+            });
+        latest.map_or(AgentActivity::Unreported, |run| {
+            self.progress(run.pid).with_requested(run.requested)
+        })
+    }
 }
 
 /// Walk once, preserving whether an unrecognized step is remote.
+#[cfg(test)]
 pub(super) fn verify_activity(processes: &[ProcessEntry], root_pid: u32) -> VerificationProgress {
-    let tree = descendants(processes, root_pid);
+    VerificationProcesses::new(processes).progress(root_pid)
+}
+
+fn verification_progress(tree: &[&ProcessEntry]) -> VerificationProgress {
     let remote = tree.iter().find(|process| {
         process.arguments.first().is_some_and(|word| {
             Path::new(word)
@@ -608,36 +692,216 @@ pub(super) fn verify_activity(processes: &[ProcessEntry], root_pid: u32) -> Veri
 }
 
 /// Latest eligible live verification wins; unrelated detached commands contribute nothing.
+#[cfg(test)]
 pub(super) fn run_activity(
     records: &[RunRecord],
     processes: &[ProcessEntry],
     thread_id: &str,
 ) -> AgentActivity {
-    records
-        .iter()
-        .filter_map(|record| match record {
-            RunRecord::Verify(run)
-                if run.thread_id == thread_id
-                    && processes.iter().any(|process| process.pid == run.pid) =>
-            {
-                Some(run)
-            },
-            _ => None,
-        })
-        .max_by(|left, right| {
-            left.started_at
-                .total_cmp(&right.started_at)
-                .then(left.pid.cmp(&right.pid))
-        })
-        .map_or(AgentActivity::Unreported, |run| {
-            verify_activity(processes, run.pid).with_requested(run.requested)
-        })
+    VerificationProcesses::new(processes).run(records, thread_id)
 }
 
 /// Parsed detached-run records retained by one local census scanner.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct RunRecords {
-    sessions: HashMap<PathBuf, HashMap<OsString, RunFile>>,
+    sessions:        HashMap<PathBuf, HashMap<OsString, RunFile>>,
+    watches:         HashMap<PathBuf, RunDirectoryWatch>,
+    install_watch:   fn(&Path, Arc<Mutex<RunChanges>>, Arc<AtomicBool>) -> RunWatchBackend,
+    #[cfg(test)]
+    directory_reads: usize,
+}
+
+#[derive(Debug)]
+enum RunWatchBackend {
+    Watching {
+        _watcher: RecommendedWatcher,
+    },
+    Unavailable,
+    #[cfg(test)]
+    Controlled,
+}
+
+/// File events name only the records to refresh; recovery requests a full listing.
+#[derive(Debug, Default)]
+enum RunChanges {
+    #[default]
+    Unchanged,
+    Records(HashSet<OsString>),
+    Reconcile,
+}
+
+impl RunChanges {
+    fn record(&mut self, name: OsString) {
+        match self {
+            Self::Unchanged => *self = Self::Records(HashSet::from([name])),
+            Self::Records(names) => {
+                names.insert(name);
+            },
+            Self::Reconcile => {},
+        }
+    }
+}
+
+/// One session's pending changes and bounded recovery deadline.
+#[derive(Debug)]
+struct RunDirectoryWatch {
+    backend:       RunWatchBackend,
+    changed:       Arc<Mutex<RunChanges>>,
+    watch_lost:    Arc<AtomicBool>,
+    identity:      WatchedDirectoryIdentity,
+    recovery:      Instant,
+    install:       fn(&Path, Arc<Mutex<RunChanges>>, Arc<AtomicBool>) -> RunWatchBackend,
+    #[cfg(test)]
+    installations: usize,
+}
+
+impl RunDirectoryWatch {
+    fn config() -> Config {
+        // Reading unchanged records must not create work in this or another handler.
+        notify::Config::default().with_event_kinds(notify::EventKindMask::CORE)
+    }
+
+    fn new(
+        session: &Path,
+        now: Instant,
+        install: fn(&Path, Arc<Mutex<RunChanges>>, Arc<AtomicBool>) -> RunWatchBackend,
+    ) -> Self {
+        let mut watch = Self {
+            backend: RunWatchBackend::Unavailable,
+            changed: Arc::new(Mutex::new(RunChanges::Reconcile)),
+            watch_lost: Arc::new(AtomicBool::new(false)),
+            identity: WatchedDirectoryIdentity::Unavailable,
+            recovery: now,
+            install,
+            #[cfg(test)]
+            installations: 0,
+        };
+        watch.rearm(session, now);
+        watch
+    }
+
+    fn install(
+        session: &Path,
+        changed: Arc<Mutex<RunChanges>>,
+        watch_lost: Arc<AtomicBool>,
+    ) -> RunWatchBackend {
+        let directory = session.join("mesh_runs");
+        let watched_directory = directory.clone();
+        let backend = RecommendedWatcher::new(
+            move |answer: notify::Result<Event>| {
+                let mut pending = changed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Ok(event) = answer {
+                    if matches!(event.kind, notify::EventKind::Access(_)) {
+                        return;
+                    }
+                    if event.need_rescan()
+                        || event.paths.iter().any(|path| path == &watched_directory)
+                    {
+                        *pending = RunChanges::Reconcile;
+                    } else {
+                        for path in event.paths {
+                            if path.parent() == Some(watched_directory.as_path())
+                                && path
+                                    .extension()
+                                    .is_some_and(|extension| extension == "json")
+                                && let Some(name) = path.file_name()
+                            {
+                                pending.record(name.to_owned());
+                            }
+                        }
+                    }
+                } else {
+                    watch_lost.store(true, Ordering::Release);
+                    *pending = RunChanges::Reconcile;
+                }
+            },
+            Self::config(),
+        );
+        backend
+            .and_then(|mut watcher| {
+                watcher
+                    .update_paths(vec![
+                        notify::PathOp::watch_non_recursive(session),
+                        notify::PathOp::watch_non_recursive(&directory),
+                    ])
+                    .map_err(|error| error.source)?;
+                Ok(watcher)
+            })
+            .map_or_else(
+                |_| RunWatchBackend::Unavailable,
+                |watcher| RunWatchBackend::Watching { _watcher: watcher },
+            )
+    }
+
+    fn rearm(&mut self, session: &Path, now: Instant) {
+        let identity = WatchedDirectoryIdentity::read(&session.join("mesh_runs"));
+        if !self.watch_lost.swap(false, Ordering::AcqRel)
+            && identity != WatchedDirectoryIdentity::Unavailable
+            && identity == self.identity
+            && !matches!(self.backend, RunWatchBackend::Unavailable)
+        {
+            self.recovery = now + RUN_WATCH_RECOVERY;
+            return;
+        }
+        self.identity = identity;
+        #[cfg(test)]
+        {
+            self.installations += 1;
+        }
+        self.backend = (self.install)(
+            session,
+            Arc::clone(&self.changed),
+            Arc::clone(&self.watch_lost),
+        );
+        self.recovery = now
+            + match self.backend {
+                RunWatchBackend::Watching { .. } => RUN_WATCH_RECOVERY,
+                RunWatchBackend::Unavailable => RUN_WATCH_RETRY,
+                #[cfg(test)]
+                RunWatchBackend::Controlled => RUN_WATCH_RECOVERY,
+            };
+    }
+
+    fn take_changes(&mut self, session: &Path, now: Instant) -> RunChanges {
+        if now >= self.recovery || self.watch_lost.load(Ordering::Acquire) {
+            self.rearm(session, now);
+            self.invalidate();
+        }
+        std::mem::take(
+            &mut *self
+                .changed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    fn invalidate(&self) {
+        *self
+            .changed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = RunChanges::Reconcile;
+    }
+
+    fn record_changed(&self, name: OsString) {
+        self.changed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record(name);
+    }
+}
+
+impl Default for RunRecords {
+    fn default() -> Self {
+        Self {
+            sessions:                     HashMap::new(),
+            watches:                      HashMap::new(),
+            install_watch:                RunDirectoryWatch::install,
+            #[cfg(test)]
+            directory_reads:              0,
+        }
+    }
 }
 
 /// A file revision and its decoded outcome, including a malformed partial write.
@@ -655,6 +919,26 @@ enum RunFileContent {
 }
 
 impl RunRecords {
+    /// Deliver a fixture's file event before the next scan.
+    #[cfg(test)]
+    pub(super) fn record_changed(&self, session: &Path, name: OsString) {
+        self.watches[session].record_changed(name);
+    }
+
+    /// Count cache work with explicit event delivery, without OS service startup time.
+    #[cfg(test)]
+    fn for_test() -> Self {
+        Self {
+            install_watch: |session, _, _| {
+                if session.join("mesh_runs").is_dir() {
+                    RunWatchBackend::Controlled
+                } else {
+                    RunWatchBackend::Unavailable
+                }
+            },
+            ..Self::default()
+        }
+    }
     pub(super) fn read_for_processes(
         &mut self,
         session: &Path,
@@ -676,6 +960,7 @@ impl RunRecords {
     /// Retire sessions no current worker refers to.
     pub(super) fn retain_sessions(&mut self, seen: &HashSet<PathBuf>) {
         self.sessions.retain(|path, _| seen.contains(path));
+        self.watches.retain(|path, _| seen.contains(path));
     }
 
     #[cfg(test)]
@@ -694,6 +979,11 @@ impl RunRecords {
         parse: impl FnMut(&[u8]) -> Option<RunRecord>,
         read: impl FnMut(&Path) -> std::io::Result<Vec<u8>>,
     ) -> Vec<RunRecord> {
+        // These fixtures supply synchronous I/O revisions; OS event delivery is
+        // exercised through read_for_processes and the watch recovery fixtures.
+        if let Some(watch) = self.watches.get(session) {
+            watch.invalidate();
+        }
         self.read_matching(session, parse, read, |_| true)
     }
 
@@ -704,33 +994,60 @@ impl RunRecords {
         mut read: impl FnMut(&Path) -> std::io::Result<Vec<u8>>,
         accept: impl Fn(&RunRecord) -> bool,
     ) -> Vec<RunRecord> {
+        let now = Instant::now();
+        let watch = self
+            .watches
+            .entry(session.to_owned())
+            .or_insert_with(|| RunDirectoryWatch::new(session, now, self.install_watch));
+        let events = watch.take_changes(session, now);
         let records = self.sessions.entry(session.to_owned()).or_default();
-        let mut seen = HashSet::new();
-        for entry in fs::read_dir(session.join("mesh_runs"))
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
-            let name = entry.file_name();
-            if Path::new(&name).extension().is_none_or(|ext| ext != "json") {
-                continue;
-            }
-            let Ok(metadata) = entry.metadata() else {
-                continue;
+        let directory = session.join("mesh_runs");
+        let changed = match events {
+            RunChanges::Unchanged => HashSet::new(),
+            RunChanges::Records(names) => names,
+            RunChanges::Reconcile => {
+                #[cfg(test)]
+                {
+                    self.directory_reads += 1;
+                }
+                let seen: HashSet<_> = fs::read_dir(&directory)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|entry| entry.file_name())
+                    .filter(|name| Path::new(name).extension().is_some_and(|ext| ext == "json"))
+                    .collect();
+                records.retain(|name, _| seen.contains(name));
+                seen
+            },
+        };
+        for name in changed {
+            let path = directory.join(&name);
+            let metadata = match fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    records.remove(&name);
+                    continue;
+                },
+                Err(_) => {
+                    watch.record_changed(name);
+                    continue;
+                },
             };
             let revision = super::hierarchy::FileRevision::of(&metadata);
-            seen.insert(name.clone());
             if records.get(&name).is_some_and(|record| {
                 record.revision == revision && !matches!(record.content, RunFileContent::ReadFailed)
             }) {
                 continue;
             }
-            let content = read(&entry.path()).map_or(RunFileContent::ReadFailed, |bytes| {
+            let content = read(&path).map_or(RunFileContent::ReadFailed, |bytes| {
                 parse(&bytes).map_or(RunFileContent::MalformedJson, RunFileContent::Parsed)
             });
+            if matches!(content, RunFileContent::ReadFailed) {
+                watch.record_changed(name.clone());
+            }
             records.insert(name, RunFile { revision, content });
         }
-        records.retain(|path, _| seen.contains(path));
         records
             .values()
             .filter_map(|record| match &record.content {

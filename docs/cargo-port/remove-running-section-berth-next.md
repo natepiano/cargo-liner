@@ -4,7 +4,7 @@
 
 > **As-built disposition: amend** — `docs/cargo-berth/as-built/worktree-enrollment.md`, `docs/cargo-berth/as-built/parallel-phases.md`, `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/json-contract.md`, `docs/cargo-berth/as-built/operations.md`, `docs/cargo-berth/as-built/rebase-settlement.md`
 
-> **Production: remove-running-section** — unit `berth-parallel-unit`; production doc `docs/cargo-port/remove-running-section-production.md`
+> **Production: remove-running-section** — unit `berth-unit`; production doc `docs/cargo-port/cargo-liner-production.md`
 
 ## Source
 
@@ -1024,7 +1024,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
 
-### Phase 48 — The post-Bash hook computes each ancestry once and opens the repository once per worker  · status: todo
+### Phase 48 — The post-Bash hook computes each ancestry once and opens the repository once per worker  · status: done
 
 **Depends on:** 42 and 52 (47 dropped).
 
@@ -1040,6 +1040,12 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 **Verification:** a test under 1 s counts repository opens and ancestor computations for one request with N candidates: 1 open per worker, and 1 ancestor set per distinct tip. The whole cargo-berth package and lint pass. Report with the checkpoint a complete-hook release A/B on the real ledger, interleaved, before and after, with system CPU shown apart from user CPU.
 
 **Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+
+**Cause:** each request computed the ancestor set of the same tips again for reachability and for first-parent exclusion, and `read::commit` opened and dropped a gix repository for each uncached candidate.
+
+**Fix:** `CommitAncestryGraph` keeps each tip's ancestor set for the life of its request. `CommitRepositoryReader` opens the repository once per worker on first use and resolves every candidate with it. Thread-local counters in `src/git/work.rs` count opens and ancestor sets; they only observe. No state lives across requests.
+
+**Result:** complete post-Bash hook, release, real cargo-liner ledger, 5 interleaved pairs on a loaded natedev, medians: wall 301 → 133 ms, user CPU 174 → 88 ms, system CPU 92 → 51 ms, CPU total 260 → 140 ms (−120 ms, 46%). Every pair fell; git children stay 3 (config, rev-list, update-ref). This is about twice the estimated 63 ms saving. Package 1333/1333 on the Mac; lint passes; the count test runs in 0.04 s. The checkpoint replay test (1.2 s alone) and other tests over 1 s on the Mac go to phase 49.
 
 **Decided for the later steps (C: background updater and short request paths; D: compact durable state), judged after phases 47 and 48 land on their measured numbers:** step C keeps today's claim rule (user, 2026-10-29, via the showrunner). Toward other worktrees, a claim protects only what changed there; the showrunner sequences overlaps. Keeping protection for narrow named-file claims is out of scope now.
 

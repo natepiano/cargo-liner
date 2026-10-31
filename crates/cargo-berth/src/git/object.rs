@@ -271,9 +271,10 @@ impl OperationObjectReader {
         &self,
         expressions: &[String],
     ) -> Result<Vec<CommitObjectResolution>, GitError> {
+        let reader = read::CommitRepositoryReader::new(&self.repository_root);
         let mut resolutions = Vec::new();
         for expression in expressions {
-            match read::commit(&self.repository_root, expression)? {
+            match reader.commit(expression)? {
                 RepositoryRead::InProcess(resolution) => resolutions.push(resolution),
                 RepositoryRead::GitRequired(requirement) => {
                     return requirement.execute(|| self.resolve_with_git(expressions));

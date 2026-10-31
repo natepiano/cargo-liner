@@ -9,6 +9,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Constraint;
+use ratatui::layout::Layout;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use tui_pane::AppContext;
@@ -33,6 +36,7 @@ use tui_pane::SettingStep;
 use tui_pane::SettingsHost;
 use tui_pane::TerminalApp;
 use tui_pane::TileGridHost;
+use tui_pane::ToastVisualDeadline;
 use tui_pane::VisualDeadline;
 
 use crate::agent_cell;
@@ -99,8 +103,31 @@ pub(crate) enum AppPaneId {
     Favorites,
 }
 
+/// Only a clock request may reuse a body from an earlier frame.
+#[derive(Clone, Copy, Default)]
+enum FrameRequest {
+    #[default]
+    Full,
+    StatusClock,
+}
+
+/// Geometry and toast timing belong to the retained body they validate.
+#[derive(Default)]
+enum PaintedFrame {
+    #[default]
+    Absent,
+    Current {
+        buffer:       Box<Buffer>,
+        toast_change: ToastVisualDeadline,
+    },
+}
+
 /// Top-level application state.
 pub(crate) struct App {
+    frame_request:                FrameRequest,
+    painted_frame:                PaintedFrame,
+    #[cfg(test)]
+    full_frames:                  usize,
     /// Framework state — overlays, panes, toasts, settings pane.
     pub(crate) framework:         Framework<Self>,
     /// Resolved bindings.
@@ -152,6 +179,23 @@ pub(crate) struct App {
 }
 
 impl App {
+    #[cfg(test)]
+    pub(crate) const fn full_frame_count(&self) -> usize { self.full_frames }
+
+    /// Request the status clock without changing the tile body.
+    pub(crate) const fn request_clock_frame(&mut self) {
+        self.frame_request = FrameRequest::StatusClock;
+    }
+
+    /// Events and changed data require a new body, including selection hit geometry.
+    pub(crate) fn invalidate_body(&mut self) {
+        self.painted_frame = PaintedFrame::Absent;
+        self.frame_request = FrameRequest::Full;
+    }
+
+    /// A repaint from the runner, rather than the status clock, paints the full frame.
+    pub(crate) const fn prepare_full_frame(&mut self) { self.frame_request = FrameRequest::Full; }
+
     /// Discard preferences for session or machine-pool tiles no longer present.
     pub(crate) fn prune_tree_sorts(&mut self) {
         let machines = self
@@ -203,6 +247,10 @@ impl App {
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         Ok(Self {
+            #[cfg(test)]
+            full_frames: 0,
+            frame_request: FrameRequest::Full,
+            painted_frame: PaintedFrame::Absent,
             framework,
             keymap: Rc::new(keymap),
             loaded_config,
@@ -314,14 +362,56 @@ impl TerminalApp for App {
     fn keymap(&self) -> Rc<Keymap<Self>> { Rc::clone(&self.keymap) }
 
     fn draw(&mut self, frame: &mut Frame, keymap: &Keymap<Self>) {
+        let now = Instant::now();
+        let toast_change = self.framework.toasts.next_visual_change_deadline(now);
+        let stable_layers = !self.attract.showing()
+            && !self.favorites_overlay.is_open()
+            && self.framework.overlay().is_none();
+        if matches!(self.frame_request, FrameRequest::StatusClock)
+            && stable_layers
+            && let PaintedFrame::Current {
+                buffer,
+                toast_change: painted_toast_change,
+            } = &self.painted_frame
+            && buffer.area == frame.area()
+            && *painted_toast_change == toast_change
+            && !matches!(toast_change, ToastVisualDeadline::At(at) if now >= at)
+        {
+            frame.buffer_mut().content.clone_from_slice(&buffer.content);
+            let [_, status] = Layout::vertical([
+                Constraint::Min(0),
+                Constraint::Length(crate::constants::STATUS_LINE_HEIGHT),
+            ])
+            .areas(frame.area());
+            render::draw_status_line(frame, self, keymap, status);
+            self.frame_request = FrameRequest::Full;
+            return;
+        }
+        #[cfg(test)]
+        {
+            self.full_frames += 1;
+        }
         render::draw(frame, self, keymap);
+        self.painted_frame = if stable_layers {
+            PaintedFrame::Current {
+                buffer: Box::new(frame.buffer_mut().clone()),
+                toast_change,
+            }
+        } else {
+            PaintedFrame::Absent
+        };
+        self.frame_request = FrameRequest::Full;
     }
 
     fn scroll(&mut self, position: Position, direction: ScrollDirection) {
+        self.invalidate_body();
         tui_pane::handle_tile_scroll(self, position, direction);
     }
 
-    fn click(&mut self, position: Position) { tui_pane::handle_tile_click(self, position); }
+    fn click(&mut self, position: Position) {
+        self.invalidate_body();
+        tui_pane::handle_tile_click(self, position);
+    }
 
     /// Settling the window costs several round trips to the window
     /// server, which is far longer than a frame, and `terminal.draw` is
@@ -342,6 +432,7 @@ impl TerminalApp for App {
     /// scope does not bind is still its own, and disarms a pending
     /// delete rather than reaching a global.
     fn modal_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
+        self.invalidate_body();
         tui_pane::dispatch_favorites_key(self, keymap, bind)
     }
 
@@ -354,7 +445,10 @@ impl TerminalApp for App {
         tui_pane::dispatch_attract_key(self, keymap, bind)
     }
 
-    fn resized(&mut self, area: Rect) { self.attract.record_terminal_resize(area); }
+    fn resized(&mut self, area: Rect) {
+        self.invalidate_body();
+        self.attract.record_terminal_resize(area);
+    }
 
     /// The attract screen reclamps its parameters to the new size, so
     /// an open favorites table re-marks which row matches them.
@@ -413,12 +507,75 @@ impl FavoritesHost for App {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    #[test]
+    fn idle_status_frames_do_not_repeat_body_layout() {
+        let mut app = App::new_for_test().expect("test app");
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("first frame");
+        let first = terminal.backend().buffer().clone();
+        app.started -= std::time::Duration::from_secs(1);
+        app.request_clock_frame();
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("clock frame");
+        assert_eq!(app.full_frames, 1, "Uptime does not lay out tiles again");
+        for y in 0..23 {
+            for x in 0..80 {
+                assert_eq!(first[(x, y)], terminal.backend().buffer()[(x, y)]);
+            }
+        }
+        assert_ne!(
+            &first.content[23 * 80..],
+            &terminal.backend().buffer().content[23 * 80..],
+            "the status clock changes"
+        );
+    }
+
+    #[test]
+    fn idle_status_frames_repaint_the_body_after_input_or_geometry_changes() {
+        let mut app = App::new_for_test().expect("test app");
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("first frame");
+        app.request_clock_frame();
+        app.scroll(Position::new(1, 1), ScrollDirection::Down);
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("input frame");
+        assert_eq!(app.full_frames, 2, "input invalidates the retained body");
+        app.request_clock_frame();
+        app.resized(Rect::new(0, 0, 100, 24));
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("resize frame");
+        assert_eq!(app.full_frames, 3, "resize invalidates the retained body");
+        app.request_clock_frame();
+        app.invalidate_body();
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("new data frame");
+        assert_eq!(
+            app.full_frames, 4,
+            "changed data invalidates the retained body"
+        );
+    }
+
     use super::*;
     use crate::agent_cell::TreeColumn;
     use crate::census::AgentRow;
     use crate::census::HierarchyEdge;
     use crate::census::HierarchyRole;
     use crate::census::SessionIdentity;
+    use crate::census::accounts::AccountsFailure;
+    use crate::census::accounts::AccountsTable;
     use crate::census::hierarchy::ReviewerState;
     use crate::census::scan::ScanStage;
     use crate::config::Config;

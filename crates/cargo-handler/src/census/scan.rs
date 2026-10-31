@@ -13,6 +13,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Instant;
 use std::time::SystemTime;
 
@@ -24,8 +25,14 @@ mod staged_tests;
 
 use std::ffi::OsStr;
 #[cfg(target_os = "linux")]
+use std::io::ErrorKind;
+#[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStringExt;
 
+#[cfg(target_os = "macos")]
+use libproc::proc_pid::PIDInfo;
+#[cfg(target_os = "macos")]
+use libproc::proc_pid::PidInfoFlavor;
 use sysinfo::Pid;
 use sysinfo::Process;
 use sysinfo::ProcessRefreshKind;
@@ -72,6 +79,7 @@ use super::tree::ShellCall;
 use super::tree::ThreadEntry;
 use super::tree::TreeSources;
 use super::unix_now;
+use super::worker_dispatch::NotWorkerDispatch;
 use super::worker_dispatch::ParsedDispatch;
 use super::worker_dispatch::SessionRoots;
 use super::worker_dispatch::WorkerDispatch;
@@ -94,6 +102,7 @@ use crate::constants::DESKTOP_QUERY_INTERVAL;
 use crate::constants::MESH_SEAT_FLAGS;
 use crate::constants::PROC_DIRNAME;
 use crate::constants::PROC_FD_DIRNAME;
+use crate::constants::PROCESS_RECOVERY_INTERVAL;
 use crate::constants::PROJECTS_DIRNAME;
 use crate::constants::SESSION_RECORD_EXTENSION;
 use crate::constants::TMUX_LIST_CLIENTS;
@@ -114,7 +123,7 @@ type ProcessKey = (u32, u64);
 #[derive(Debug)]
 pub(super) struct LocalScanner {
     reviewer_pools:      ReviewerPools,
-    processes:           System,
+    processes:           ProcessCensus,
     run_records:         RunRecords,
     /// Whether a completed answer has replaced the startup classification.
     publication:         LocalPublication,
@@ -142,6 +151,7 @@ pub(super) struct LocalScanner {
     subagent_activity:   HashMap<PathBuf, TranscriptRead>,
     subagent_reads:      SubagentReads,
     worker_names:        WorkerNames,
+    worker_commands:     WorkerCommands,
     session_roots:       SessionRoots,
     /// Where desktop information comes from for this scanner.
     desktop_source:      DesktopSource,
@@ -272,9 +282,10 @@ impl LocalScanner {
             subagent_activity: HashMap::new(),
             subagent_reads: SubagentReads::default(),
             worker_names: WorkerNames::default(),
+            worker_commands: WorkerCommands::default(),
             session_roots: SessionRoots::production(),
             reviewer_pools: ReviewerPools::default(),
-            processes: System::new(),
+            processes: ProcessCensus::default(),
             run_records: activity::RunRecords::default(),
             desktop_source: DesktopSource::System,
             desktops: None,
@@ -300,9 +311,8 @@ impl LocalScanner {
                 .map(|home| read_sessions(&home.join(CLAUDE_DIRNAME).join(CLAUDE_SESSIONS_DIRNAME)))
                 .unwrap_or_default()
         });
-        let processes = startup_log::startup_stage("process_table", || {
-            process_table(&mut self.processes, &sessions)
-        });
+        let processes =
+            startup_log::startup_stage("process_table", || self.processes.read(&sessions));
         // Codex's database is opened only while an interactive Codex runs,
         // and read only for the span its threads could have been created in.
         let codex_threads = startup_log::startup_stage("codex_sqlite", || {
@@ -414,7 +424,7 @@ impl LocalScanner {
         self.attach_codex_sessions(processes, codex_threads, home, rows);
         self.rollouts.forget_unread();
         let dispatches = startup_log::startup_stage("worker_dispatches", || {
-            worker_dispatches(processes, &mut self.worker_names)
+            worker_dispatches(processes, &mut self.worker_names, &mut self.worker_commands)
         });
         let thread_dispatches = threads
             .values()
@@ -526,6 +536,7 @@ impl LocalScanner {
         ReviewerPools::apply_outcomes(rows, &reviewer_outcomes);
         let mut seen_transcripts = HashSet::new();
         let table = classify::pid_table(processes);
+        let mut verification_activity = activity::VerificationProcesses::new(processes);
         let verifications: Vec<_> = processes
             .iter()
             .filter(|process| is_verification_process(process))
@@ -550,7 +561,7 @@ impl LocalScanner {
                 .iter()
                 .find(|process| process_is_below(process.pid, row.pid, &table))
             {
-                row.activity = activity::verify_activity(processes, verify.pid).activity();
+                row.activity = verification_activity.progress(verify.pid).activity();
             }
             for child in &mut row.children {
                 let CodexThreadId::Recorded(id) = &child.thread_id else {
@@ -564,7 +575,7 @@ impl LocalScanner {
                 let dispatch =
                     self.worker_names
                         .resolve(id, prompt, &read.worktree, &self.session_roots);
-                child.worker_task = WorkerTask::from_prompt(prompt);
+                child.worker_task = self.worker_names.task(id, prompt, &self.session_roots);
                 child.name = match &dispatch {
                     WorkerDispatch::Worker(worker) => worker.label(),
                     WorkerDispatch::Plain => child
@@ -583,7 +594,9 @@ impl LocalScanner {
                     child.dispatch = WorkerDispatch::Plain;
                 }
 
-                let records: Vec<_> = WorkerNames::session_dirs(prompt, &self.session_roots)
+                let records: Vec<_> = self
+                    .worker_names
+                    .directories(id, prompt, &self.session_roots)
                     .into_iter()
                     .flat_map(|directory| {
                         seen_run_sessions.insert(directory.clone());
@@ -595,7 +608,7 @@ impl LocalScanner {
                             .clone()
                     })
                     .collect();
-                let gate = activity::run_activity(&records, processes, id);
+                let gate = verification_activity.run(&records, id);
                 child.activity = if gate == AgentActivity::Unreported {
                     read.activity()
                 } else {
@@ -841,7 +854,11 @@ fn process_is_below(pid: u32, root: u32, table: &HashMap<u32, &ProcessEntry>) ->
 /// A launcher's actual pid is used even when a shell wrapper owns its row.
 #[cfg(test)]
 pub(super) fn find_worker_dispatches(processes: &[ProcessEntry]) -> HashMap<u32, WorkerDispatch> {
-    worker_dispatches(processes, &mut WorkerNames::default())
+    worker_dispatches(
+        processes,
+        &mut WorkerNames::default(),
+        &mut WorkerCommands::default(),
+    )
 }
 
 /// Snapshot decoding belongs to shell calls; seat identity can also come from raw argv.
@@ -852,26 +869,98 @@ fn seat_sender_command(process: &ProcessEntry) -> Option<String> {
     })
 }
 
+/// A process command can contain a literal launcher or other shell work.
+#[derive(Debug)]
+enum WorkerLauncher {
+    OtherCommand,
+    Dispatch(ParsedDispatch),
+}
+
+impl WorkerLauncher {
+    fn from_result(answer: Result<ParsedDispatch, NotWorkerDispatch>) -> Self {
+        answer.map_or(Self::OtherCommand, Self::Dispatch)
+    }
+}
+
+/// The command inputs and their two supported launcher forms belong to one process.
+#[derive(Debug)]
+struct WorkerCommand {
+    started:   u64,
+    arguments: Vec<String>,
+    directory: ProcessDirectory,
+    direct:    WorkerLauncher,
+    wrapped:   WorkerLauncher,
+}
+
+#[derive(Debug, Default)]
+struct WorkerCommands {
+    processes:     HashMap<u32, WorkerCommand>,
+    #[cfg(test)]
+    command_reads: usize,
+}
+
+impl WorkerCommands {
+    fn read(&mut self, processes: &[ProcessEntry]) -> &HashMap<u32, WorkerCommand> {
+        let live: HashSet<_> = processes.iter().map(|process| process.pid).collect();
+        self.processes.retain(|pid, _| live.contains(pid));
+        for process in processes {
+            if self.processes.get(&process.pid).is_some_and(|command| {
+                command.started == process.started
+                    && command.arguments == process.arguments
+                    && match (&command.directory, &process.directory) {
+                        (ProcessDirectory::Known(previous), Some(current)) => previous == current,
+                        (ProcessDirectory::Unreadable, None) => true,
+                        _ => false,
+                    }
+            }) {
+                continue;
+            }
+            #[cfg(test)]
+            {
+                self.command_reads += 1;
+            }
+            let wrapped =
+                seat_sender_command(process).map_or(WorkerLauncher::OtherCommand, |command| {
+                    WorkerLauncher::from_result(process.directory.as_ref().map_or_else(
+                        || ParsedDispatch::parse(&command),
+                        |directory| ParsedDispatch::parse_at(&command, directory),
+                    ))
+                });
+            self.processes.insert(
+                process.pid,
+                WorkerCommand {
+                    started: process.started,
+                    arguments: process.arguments.clone(),
+                    directory: process
+                        .directory
+                        .clone()
+                        .map_or(ProcessDirectory::Unreadable, ProcessDirectory::Known),
+                    direct: WorkerLauncher::from_result(ParsedDispatch::from_arguments(
+                        &process.arguments,
+                    )),
+                    wrapped,
+                },
+            );
+        }
+        &self.processes
+    }
+}
+
 /// Share the mtime roster cache with launcher-free naming.
 fn worker_dispatches(
     processes: &[ProcessEntry],
     names: &mut WorkerNames,
+    commands: &mut WorkerCommands,
 ) -> HashMap<u32, WorkerDispatch> {
     let table = classify::pid_table(processes);
-    let wrappers: HashMap<_, _> = processes
-        .iter()
-        .filter_map(|process| {
-            let command = seat_sender_command(process)?;
-            let dispatch = process.directory.as_ref().map_or_else(
-                || ParsedDispatch::parse(&command),
-                |directory| ParsedDispatch::parse_at(&command, directory),
-            );
-            Some((process.pid, dispatch.ok()?))
-        })
-        .collect();
+    let commands = commands.read(processes);
     let mut found = HashMap::new();
     for process in processes {
-        let Ok(dispatch) = ParsedDispatch::from_arguments(&process.arguments) else {
+        let Some(WorkerCommand {
+            direct: WorkerLauncher::Dispatch(dispatch),
+            ..
+        }) = commands.get(&process.pid)
+        else {
             continue;
         };
         let selected = processes
@@ -890,8 +979,8 @@ fn worker_dispatches(
                     .find(|pair| MESH_SEAT_FLAGS.contains(&pair[0].as_str()))
                     .map(|pair| pair[1].clone())
             });
-        let launcher = dispatch.clone();
-        let mut dispatch = dispatch;
+        let launcher = dispatch;
+        let mut dispatch = dispatch.clone();
         if let Some(seat) = selected {
             dispatch.select_seat(seat);
         }
@@ -905,14 +994,8 @@ fn worker_dispatches(
         let mut parent = process;
         let mut seen = HashSet::new();
         while seen.insert(parent.pid) {
-            if seat_sender_command(parent).is_some_and(|command| {
-                parent.directory.as_ref().map_or_else(
-                    || launcher.is_final_command_of(&command),
-                    |directory| {
-                        ParsedDispatch::parse_at(&command, directory)
-                            .is_ok_and(|parsed| parsed == launcher)
-                    },
-                )
+            if commands.get(&parent.pid).is_some_and(|command| {
+                matches!(&command.wrapped, WorkerLauncher::Dispatch(parsed) if parsed == launcher)
             }) {
                 found.insert(parent.pid, worker.clone());
             }
@@ -925,13 +1008,16 @@ fn worker_dispatches(
             parent = ancestor;
         }
     }
-    for (pid, dispatch) in wrappers {
+    for (&pid, command) in commands {
+        let WorkerLauncher::Dispatch(dispatch) = &command.wrapped else {
+            continue;
+        };
         if found.contains_key(&pid) {
             continue;
         }
         found.insert(
             pid,
-            match names.resolve_claude(&dispatch, processes, pid) {
+            match names.resolve_claude(dispatch, processes, pid) {
                 WorkerDispatch::Plain => dispatch.resolve(names.roster(&dispatch.session_dir), pid),
                 worker @ WorkerDispatch::Worker(_) => worker,
             },
@@ -1156,6 +1242,446 @@ fn is_verification_process(process: &ProcessEntry) -> bool {
     })
 }
 
+/// Process rows retained by one local scanner across census ticks.
+#[derive(Debug, Default)]
+struct ProcessCensus {
+    system:           System,
+    snapshot:         ProcessSnapshot,
+    #[cfg(test)]
+    discoveries:      usize,
+    #[cfg(test)]
+    detail_refreshes: usize,
+    #[cfg(test)]
+    discovery:        TestProcessDiscovery,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+enum TestProcessDiscovery {
+    #[default]
+    FullTable,
+    FixtureProcesses {
+        pids: Vec<Pid>,
+    },
+}
+
+#[derive(Debug, Default)]
+enum ProcessSnapshot {
+    #[default]
+    Unread,
+    Current {
+        rows:        Arc<[ProcessEntry]>,
+        revisions:   HashMap<Pid, ProcessRevision>,
+        descendants: HashSet<Pid>,
+        sessions:    HashSet<(u32, String)>,
+        recovery:    Instant,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ProcessBirth {
+    #[cfg(target_os = "linux")]
+    KernelTicks(u64),
+    #[cfg(target_os = "macos")]
+    UnixTime {
+        seconds:      u64,
+        microseconds: u64,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ProcessDirectory {
+    Known(PathBuf),
+    Unreadable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ExecObservation {
+    #[cfg(target_os = "linux")]
+    MemoryLayout {
+        code_start:  u64,
+        code_end:    u64,
+        stack_start: u64,
+    },
+    #[cfg(target_os = "macos")]
+    NameOnly,
+}
+
+/// Only identity, image and directory changes require command or environment reads.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ProcessRevision {
+    Observed {
+        birth:     ProcessBirth,
+        image:     ExecObservation,
+        name:      OsString,
+        parent:    u32,
+        directory: ProcessDirectory,
+    },
+    Exited,
+    Unreadable,
+}
+
+impl ProcessCensus {
+    #[cfg(test)]
+    fn for_test() -> Self {
+        Self {
+            discovery: TestProcessDiscovery::FixtureProcesses { pids: Vec::new() },
+            ..Self::default()
+        }
+    }
+
+    fn read(&mut self, sessions: &[SessionRecord]) -> Arc<[ProcessEntry]> {
+        self.read_at(sessions, Instant::now())
+    }
+
+    fn read_at(&mut self, sessions: &[SessionRecord], now: Instant) -> Arc<[ProcessEntry]> {
+        let session_keys: HashSet<_> = sessions
+            .iter()
+            .map(|session| (session.pid, session.session_id.clone()))
+            .collect();
+        let recover = match &self.snapshot {
+            ProcessSnapshot::Unread => true,
+            ProcessSnapshot::Current { recovery, .. } => now >= *recovery,
+        };
+        if recover {
+            let rows = self.discover(sessions);
+            let (tracked, descendants) = process_interests(&rows, sessions);
+            self.snapshot = ProcessSnapshot::Current {
+                rows: Arc::clone(&rows),
+                revisions: tracked
+                    .into_iter()
+                    .map(|pid| (pid, process_revision(pid)))
+                    .collect(),
+                descendants,
+                sessions: session_keys,
+                recovery: now + PROCESS_RECOVERY_INTERVAL,
+            };
+            return rows;
+        }
+        let ProcessSnapshot::Current {
+            rows,
+            revisions,
+            descendants,
+            sessions: previous_sessions,
+            ..
+        } = &mut self.snapshot
+        else {
+            return Arc::from([]);
+        };
+        let new_sessions: HashSet<_> = session_keys
+            .difference(previous_sessions)
+            .map(|(pid, _)| Pid::from_u32(*pid))
+            .collect();
+        let sessions_changed = *previous_sessions != session_keys;
+        *previous_sessions = session_keys;
+        let mut candidates: HashSet<_> = revisions.keys().copied().collect();
+        candidates.extend(sessions.iter().map(|session| Pid::from_u32(session.pid)));
+        for &pid in descendants.iter() {
+            candidates.extend(process_children(pid));
+        }
+        let mut changed = Vec::new();
+        let mut removed = HashSet::new();
+        let mut names = HashMap::new();
+        for pid in candidates {
+            let revision = process_revision(pid);
+            match &revision {
+                ProcessRevision::Exited => {
+                    removed.insert(pid);
+                    revisions.remove(&pid);
+                },
+                ProcessRevision::Unreadable => {},
+                ProcessRevision::Observed { name, .. } => {
+                    if new_sessions.contains(&pid) || revisions.get(&pid) != Some(&revision) {
+                        changed.push(pid);
+                        names.insert(pid, name.clone());
+                        revisions.insert(pid, revision);
+                    }
+                },
+            }
+        }
+        if changed.is_empty() && removed.is_empty() {
+            if sessions_changed {
+                retain_process_interests(rows, sessions, revisions, descendants);
+            }
+            return Arc::clone(rows);
+        }
+        #[cfg(test)]
+        {
+            self.detail_refreshes += changed.len();
+        }
+        let mut updated = refresh_changed_processes(&mut self.system, &changed, &removed, names);
+        let mut next: Vec<_> = rows
+            .iter()
+            .filter(|row| !removed.contains(&Pid::from_u32(row.pid)))
+            .map(|row| updated.remove(&row.pid).unwrap_or_else(|| row.clone()))
+            .collect();
+        next.extend(updated.into_values());
+        retain_process_interests(&next, sessions, revisions, descendants);
+        *rows = next.into();
+        Arc::clone(rows)
+    }
+
+    /// Recovery discovers roots missed by the per-process probes.
+    fn discover(&mut self, sessions: &[SessionRecord]) -> Arc<[ProcessEntry]> {
+        #[cfg(test)]
+        {
+            self.discoveries += 1;
+        }
+        #[cfg(not(test))]
+        {
+            process_table(&mut self.system, sessions).into()
+        }
+        #[cfg(test)]
+        match &self.discovery {
+            TestProcessDiscovery::FullTable => process_table(&mut self.system, sessions).into(),
+            TestProcessDiscovery::FixtureProcesses { pids: discovered } => {
+                let mut pids = vec![Pid::from_u32(std::process::id())];
+                pids.extend(discovered);
+                pids.extend(sessions.iter().map(|session| Pid::from_u32(session.pid)));
+                pids.sort_unstable();
+                pids.dedup();
+                self.system.refresh_processes_specifics(
+                    ProcessesToUpdate::Some(&pids),
+                    true,
+                    ProcessRefreshKind::nothing()
+                        .without_tasks()
+                        .with_cmd(UpdateKind::Always)
+                        .with_cwd(UpdateKind::Always)
+                        .with_environ(UpdateKind::Always),
+                );
+                let names = CurrentProcessNames::read(&self.system);
+                self.system
+                    .processes()
+                    .values()
+                    .map(|process| process_entry(process, &names))
+                    .collect::<Vec<_>>()
+                    .into()
+            },
+        }
+    }
+}
+
+/// Keep probes for current session trees and their ancestors.
+fn retain_process_interests(
+    rows: &[ProcessEntry],
+    sessions: &[SessionRecord],
+    revisions: &mut HashMap<Pid, ProcessRevision>,
+    descendants: &mut HashSet<Pid>,
+) {
+    let (tracked, next_descendants) = process_interests(rows, sessions);
+    revisions.retain(|pid, _| tracked.contains(pid));
+    for pid in tracked {
+        revisions
+            .entry(pid)
+            .or_insert_with(|| process_revision(pid));
+    }
+    *descendants = next_descendants;
+}
+
+/// Read detailed fields only for changed identities and remove exited identities.
+fn refresh_changed_processes(
+    system: &mut System,
+    changed: &[Pid],
+    removed: &HashSet<Pid>,
+    names: HashMap<Pid, OsString>,
+) -> HashMap<u32, ProcessEntry> {
+    let refresh: Vec<_> = changed.iter().chain(removed.iter()).copied().collect();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&refresh),
+        true,
+        ProcessRefreshKind::nothing()
+            .without_tasks()
+            .with_cmd(UpdateKind::Always)
+            .with_cwd(UpdateKind::Always)
+            .with_environ(UpdateKind::Always),
+    );
+    let names = CurrentProcessNames(names);
+    changed
+        .iter()
+        .filter_map(|pid| {
+            system
+                .process(*pid)
+                .map(|process| (pid.as_u32(), process_entry(process, &names)))
+        })
+        .collect()
+}
+
+/// Track displayed roots, their descendants and ancestors, excluding unrelated jobs.
+fn process_interests(
+    rows: &[ProcessEntry],
+    sessions: &[SessionRecord],
+) -> (HashSet<Pid>, HashSet<Pid>) {
+    let mut descendants: HashSet<_> = rows
+        .iter()
+        .filter(|row| {
+            row.is_codex()
+                || row.name == CLAUDE_AGENT
+                || sessions.iter().any(|session| session.pid == row.pid)
+        })
+        .map(|row| Pid::from_u32(row.pid))
+        .collect();
+    loop {
+        let before = descendants.len();
+        for row in rows {
+            if row
+                .parent
+                .is_some_and(|parent| descendants.contains(&Pid::from_u32(parent)))
+            {
+                descendants.insert(Pid::from_u32(row.pid));
+            }
+        }
+        if descendants.len() == before {
+            break;
+        }
+    }
+    let mut tracked = descendants.clone();
+    let parents: HashMap<_, _> = rows
+        .iter()
+        .map(|row| (Pid::from_u32(row.pid), row.parent))
+        .collect();
+    for &pid in &descendants {
+        let mut current = pid;
+        while let Some(Some(parent)) = parents.get(&current) {
+            current = Pid::from_u32(*parent);
+            if !tracked.insert(current) {
+                break;
+            }
+        }
+    }
+    (tracked, descendants)
+}
+
+/// Linux exposes child births without reading the full process table.
+#[cfg(target_os = "linux")]
+fn process_children(pid: Pid) -> Vec<Pid> {
+    fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|pid| pid.parse().ok().map(Pid::from_u32))
+        .collect()
+}
+
+/// New macOS descendants are recovered with the bounded full discovery scan.
+#[cfg(not(target_os = "linux"))]
+fn process_children(_: Pid) -> Vec<Pid> { Vec::new() }
+
+#[cfg(target_os = "linux")]
+fn process_revision(pid: Pid) -> ProcessRevision {
+    let bytes = match fs::read(format!("/proc/{pid}/stat")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => return ProcessRevision::Exited,
+        Err(_) => return ProcessRevision::Unreadable,
+    };
+    let Some(open) = bytes.iter().position(|byte| *byte == b'(') else {
+        return ProcessRevision::Unreadable;
+    };
+    let Some(close) = bytes.iter().rposition(|byte| *byte == b')') else {
+        return ProcessRevision::Unreadable;
+    };
+    let fields: Vec<_> = bytes[close + 1..]
+        .split(u8::is_ascii_whitespace)
+        .filter(|field| !field.is_empty())
+        .collect();
+    let number = |index: usize| {
+        fields
+            .get(index)
+            .and_then(|field| std::str::from_utf8(field).ok())?
+            .parse::<u64>()
+            .ok()
+    };
+    let (Some(started), Some(code_start), Some(code_end), Some(stack_start), Some(parent)) =
+        (number(19), number(23), number(24), number(25), number(1))
+    else {
+        return ProcessRevision::Unreadable;
+    };
+    ProcessRevision::Observed {
+        birth:     ProcessBirth::KernelTicks(started),
+        image:     ExecObservation::MemoryLayout {
+            code_start,
+            code_end,
+            stack_start,
+        },
+        name:      OsString::from_vec(bytes[open + 1..close].to_vec()),
+        parent:    u32::try_from(parent).unwrap_or_default(),
+        directory: fs::read_link(format!("/proc/{pid}/cwd"))
+            .map_or(ProcessDirectory::Unreadable, ProcessDirectory::Known),
+    }
+}
+
+/// libproc's typed reader fills the native directory record behind its safe API.
+#[cfg(target_os = "macos")]
+#[repr(transparent)]
+struct MacProcessDirectories(libc::proc_vnodepathinfo);
+
+#[cfg(target_os = "macos")]
+impl PIDInfo for MacProcessDirectories {
+    fn flavor() -> PidInfoFlavor { PidInfoFlavor::VNodePathInfo }
+}
+
+#[cfg(target_os = "macos")]
+fn process_revision(pid: Pid) -> ProcessRevision {
+    let Ok(native_pid) = i32::try_from(pid.as_u32()) else {
+        return ProcessRevision::Unreadable;
+    };
+    let Ok(identity) = libproc::proc_pid::pidinfo::<libproc::bsd_info::BSDInfo>(native_pid, 0)
+    else {
+        return if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            ProcessRevision::Exited
+        } else {
+            ProcessRevision::Unreadable
+        };
+    };
+    // Preserve the extended sixteenth character used by ps ucomm.
+    let short_name: Vec<_> = identity
+        .pbi_comm
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .copied()
+        .collect();
+    let extended_name: Vec<_> = identity
+        .pbi_name
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .copied()
+        .collect();
+    let name = if short_name.len() == 15 && extended_name.starts_with(&short_name) {
+        &extended_name[..extended_name.len().min(16)]
+    } else {
+        &short_name
+    }
+    .iter()
+    .map(|byte| byte.to_ne_bytes()[0])
+    .collect::<Vec<_>>();
+    let directory = libproc::proc_pid::pidinfo::<MacProcessDirectories>(native_pid, 0).map_or(
+        ProcessDirectory::Unreadable,
+        |paths| {
+            let bytes = paths
+                .0
+                .pvi_cdir
+                .vip_path
+                .iter()
+                .flatten()
+                .take_while(|byte| **byte != 0)
+                .map(|byte| byte.to_ne_bytes()[0])
+                .collect::<Vec<_>>();
+            ProcessDirectory::Known(PathBuf::from(String::from_utf8_lossy(&bytes).into_owned()))
+        },
+    );
+    ProcessRevision::Observed {
+        birth: ProcessBirth::UnixTime {
+            seconds:      identity.pbi_start_tvsec,
+            microseconds: identity.pbi_start_tvusec,
+        },
+        image: ExecObservation::NameOnly,
+        name: OsString::from(String::from_utf8_lossy(&name).into_owned()),
+        parent: identity.pbi_ppid,
+        directory,
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_revision(_: Pid) -> ProcessRevision { ProcessRevision::Unreadable }
+
 /// The process table the classification and the tree read.
 ///
 /// Three passes. The first reads every process's name, parent and
@@ -1202,32 +1728,34 @@ fn process_table(system: &mut System, sessions: &[SessionRecord]) -> Vec<Process
     system
         .processes()
         .values()
-        .map(|process| {
-            let mut entry = ProcessEntry {
-                pid:         process.pid().as_u32(),
-                parent:      process.parent().map(Pid::as_u32),
-                name:        names.of(process).to_string_lossy().into_owned(),
-                arguments:   process
-                    .cmd()
-                    .iter()
-                    .map(|argument| argument.to_string_lossy().into_owned())
-                    .collect(),
-                started:     process.start_time(),
-                directory:   process.cwd().map(Path::to_path_buf),
-                config_home: ConfigHome::Unread,
-                claude_pid:  if names.of(process) == CODEX_AGENT {
-                    claude_pid(process.environ())
-                } else {
-                    None
-                },
-            };
-            // sysinfo leaves the environment empty when it could not read it.
-            if !process.environ().is_empty() {
-                entry.config_home = account::config_home_of(&entry, process.environ());
-            }
-            entry
-        })
+        .map(|process| process_entry(process, &names))
         .collect()
+}
+
+fn process_entry(process: &Process, names: &CurrentProcessNames) -> ProcessEntry {
+    let mut entry = ProcessEntry {
+        pid:         process.pid().as_u32(),
+        parent:      process.parent().map(Pid::as_u32),
+        name:        names.of(process).to_string_lossy().into_owned(),
+        arguments:   process
+            .cmd()
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect(),
+        started:     process.start_time(),
+        directory:   process.cwd().map(Path::to_path_buf),
+        config_home: ConfigHome::Unread,
+        claude_pid:  if names.of(process) == CODEX_AGENT {
+            claude_pid(process.environ())
+        } else {
+            None
+        },
+    };
+    // sysinfo leaves the environment empty when it could not read it.
+    if !process.environ().is_empty() {
+        entry.config_home = account::config_home_of(&entry, process.environ());
+    }
+    entry
 }
 
 /// Names observed now, rather than sysinfo's names retained from process birth.
@@ -1432,8 +1960,6 @@ mod tests {
     #[cfg(unix)]
     use std::io::BufRead;
     #[cfg(unix)]
-    use std::io::Write;
-    #[cfg(unix)]
     use std::process::Child;
 
     use chrono::DateTime;
@@ -1464,23 +1990,25 @@ mod tests {
     #[test]
     fn idle_process_table_does_not_read_unused_executable_paths() {
         let pid = Pid::from_u32(std::process::id());
-        let mut system = System::new();
-        system.refresh_processes_specifics(
+        let mut census = ProcessCensus::for_test();
+        census.system.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[pid]),
             true,
             ProcessRefreshKind::nothing().without_tasks(),
         );
         assert!(
-            system
+            census
+                .system
                 .process(pid)
                 .expect("current process")
                 .exe()
                 .is_none()
         );
         for _ in 0..2 {
-            let entries = process_table(&mut system, &[]);
+            let entries = census.read(&[]);
             assert!(entries.iter().any(|entry| entry.pid == pid.as_u32()));
-            let paths = system
+            let paths = census
+                .system
                 .processes()
                 .values()
                 .filter(|process| process.exe().is_some())
@@ -1516,15 +2044,29 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn same_pid_exec_launcher(binary: &Path) -> Command {
+    fn agent_reply(
+        input: &mut impl std::io::Write,
+        output: &mut impl std::io::BufRead,
+        command: &[u8],
+    ) -> std::io::Result<String> {
+        input.write_all(command)?;
+        input.flush()?;
+        let mut reply = String::new();
+        output.read_line(&mut reply)?;
+        Ok(reply)
+    }
+
+    #[cfg(unix)]
+    fn same_pid_exec_launcher(binary: &Path, directory: &Path) -> Command {
         #[cfg(target_os = "macos")]
-        let launcher = "import os,sys; print('launcher',flush=True); sys.stdin.readline(); print('executing',flush=True); os.execv(sys.argv[1],[sys.argv[1]])";
+        let launcher = "import os,sys; print('launcher',flush=True); sys.stdin.readline(); os.chdir(sys.argv[2]); print('moved',flush=True); sys.stdin.readline(); print('executing',flush=True); os.execv(sys.argv[1],[sys.argv[1]])";
         #[cfg(not(target_os = "macos"))]
-        let launcher = "import os,sys; print('launcher',flush=True); sys.stdin.readline(); print('executing',flush=True); os.execv(sys.argv[1],[sys.argv[1],'-u','-c',\"import sys; [print(line.rstrip(),flush=True) for line in sys.stdin]\"])";
+        let launcher = "import os,sys; print('launcher',flush=True); sys.stdin.readline(); os.chdir(sys.argv[2]); print('moved',flush=True); sys.stdin.readline(); print('executing',flush=True); os.execv(sys.argv[1],[sys.argv[1],'-u','-c',\"import sys; [print(line.rstrip(),flush=True) for line in sys.stdin]\"])";
         let mut command = Command::new("python3");
         command
             .args(["-u", "-c", launcher])
             .arg(binary)
+            .arg(directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
         command
@@ -1543,37 +2085,53 @@ mod tests {
         }
         let directory = tempfile::tempdir()?;
         let binary = copied_agent_executable(directory.path())?;
-        let mut child = ChildUntilDrop(same_pid_exec_launcher(&binary).spawn()?);
+        let mut child = ChildUntilDrop(same_pid_exec_launcher(&binary, directory.path()).spawn()?);
         let mut input = child.0.stdin.take().ok_or("child stdin")?;
         let mut output = std::io::BufReader::new(child.0.stdout.take().ok_or("child stdout")?);
         let mut line = String::new();
         output.read_line(&mut line)?;
         assert_eq!(line.trim(), "launcher");
         let pid = Pid::from_u32(child.0.id());
-        let mut system = System::new();
-        system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[pid]),
-            true,
-            ProcessRefreshKind::nothing()
-                .without_tasks()
-                .with_exe(UpdateKind::Always),
+        let sessions = [SessionRecord {
+            pid:        pid.as_u32(),
+            session_id: "fixture".into(),
+            cwd:        None,
+            name:       None,
+            status:     None,
+            entrypoint: None,
+        }];
+        let mut census = ProcessCensus::for_test();
+        let entries = census.read(&sessions);
+        let started = entries
+            .iter()
+            .find(|row| row.pid == pid.as_u32())
+            .ok_or("live launcher")?
+            .started;
+        line = agent_reply(&mut input, &mut output, b"move\n")?;
+        assert_eq!(line.trim(), "moved");
+        let entries = census.read(&sessions);
+        assert_eq!(
+            entries
+                .iter()
+                .find(|row| row.pid == pid.as_u32())
+                .ok_or("moved launcher")?
+                .directory
+                .as_deref(),
+            Some(directory.path().canonicalize()?.as_path())
         );
-        let started = system.process(pid).ok_or("live launcher")?.start_time();
-        input.write_all(b"exec\n")?;
-        input.flush()?;
-        line.clear();
-        output.read_line(&mut line)?;
+        assert_eq!(
+            census.discoveries, 1,
+            "a cwd change patches the existing table"
+        );
+        line = agent_reply(&mut input, &mut output, b"exec\n")?;
         assert_eq!(line.trim(), "executing");
-        input.write_all(b"agent\n")?;
-        input.flush()?;
-        line.clear();
-        output.read_line(&mut line)?;
+        line = agent_reply(&mut input, &mut output, b"agent\n")?;
         assert_eq!(
             line.trim(),
             "agent",
             "the copied agent executable is running"
         );
-        let entries = process_table(&mut system, &[]);
+        let entries = census.read(&sessions);
         let agent = entries
             .iter()
             .find(|entry| entry.pid == pid.as_u32())
@@ -1590,6 +2148,24 @@ mod tests {
                 .iter()
                 .any(|argument| argument == &binary.to_string_lossy())
         );
+        assert_eq!(
+            census.discoveries, 1,
+            "exec does not enumerate the process table"
+        );
+        assert!(
+            census.detail_refreshes >= 2,
+            "cwd and exec refresh their changed row"
+        );
+        child.0.kill()?;
+        child.0.wait()?;
+        assert!(
+            !census
+                .read(&sessions)
+                .iter()
+                .any(|row| row.pid == pid.as_u32()),
+            "an exited process leaves the next census"
+        );
+        assert_eq!(census.discoveries, 1, "exit removes only the departed row");
         Ok(())
     }
 
@@ -1682,7 +2258,7 @@ mod tests {
     /// A scanner with nothing found yet, reading no home directory.
     fn scanner() -> LocalScanner {
         LocalScanner {
-            processes:           System::new(),
+            processes:           ProcessCensus::default(),
             run_records:         activity::RunRecords::default(),
             publication:         LocalPublication::FirstAnswerPending,
             home:                None,
@@ -1697,6 +2273,7 @@ mod tests {
             subagent_activity:   HashMap::new(),
             subagent_reads:      SubagentReads::default(),
             worker_names:        WorkerNames::default(),
+            worker_commands:     WorkerCommands::default(),
             session_roots:       SessionRoots::new([]),
             reviewer_pools:      ReviewerPools::default(),
             desktop_source:      DesktopSource::Windows(Vec::new()),
@@ -2095,3 +2672,249 @@ mod subagent_activity_tests;
 #[cfg(test)]
 #[path = "codex_session_tests.rs"]
 mod codex_session_tests;
+#[cfg(test)]
+mod process_cache_tests {
+    use std::process::Child;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn idle_worker_commands_parse_only_changed_process_inputs() {
+        let mut commands = WorkerCommands::default();
+        let mut names = WorkerNames::default();
+        let mut processes = vec![ProcessEntry {
+            pid:         42,
+            parent:      Some(1),
+            name:        "bash".into(),
+            started:     100,
+            arguments:   vec!["bash".into(), "-c".into(), "echo unchanged".into()],
+            directory:   Some(PathBuf::from("/one")),
+            claude_pid:  None,
+            config_home: ConfigHome::Unread,
+        }];
+        worker_dispatches(&processes, &mut names, &mut commands);
+        worker_dispatches(&processes, &mut names, &mut commands);
+        assert_eq!(
+            commands.command_reads, 1,
+            "unchanged process commands are parsed once"
+        );
+        processes[0].arguments[2] = "echo changed".into();
+        worker_dispatches(&processes, &mut names, &mut commands);
+        assert_eq!(
+            commands.command_reads, 2,
+            "exec arguments replace the parsed command"
+        );
+        processes[0].directory = Some(PathBuf::from("/two"));
+        worker_dispatches(&processes, &mut names, &mut commands);
+        assert_eq!(
+            commands.command_reads, 3,
+            "cwd changes replace relative launcher paths"
+        );
+        processes[0].started += 1;
+        worker_dispatches(&processes, &mut names, &mut commands);
+        assert_eq!(
+            commands.command_reads, 4,
+            "pid reuse starts a new command read"
+        );
+        worker_dispatches(&[], &mut names, &mut commands);
+        assert!(
+            commands.processes.is_empty(),
+            "exited process commands leave the cache"
+        );
+    }
+
+    #[test]
+    fn idle_process_table_new_sessions_patch_only_their_process_rows() {
+        let mut census = ProcessCensus::for_test();
+        let now = Instant::now();
+        census.read_at(&[], now);
+        let session = SessionRecord {
+            pid:        std::process::id(),
+            session_id: "new-session".into(),
+            cwd:        None,
+            name:       None,
+            status:     None,
+            entrypoint: None,
+        };
+        let rows = census.read_at(&[session], now + Duration::from_secs(2));
+        assert!(rows.iter().any(|row| row.pid == std::process::id()));
+        assert_eq!(
+            census.discoveries, 1,
+            "a new session does not enumerate other processes"
+        );
+        assert_eq!(
+            census.detail_refreshes, 1,
+            "only the new session needs detailed fields"
+        );
+    }
+
+    #[test]
+    fn idle_process_table_does_not_repeat_unchanged_process_discovery() {
+        let mut census = ProcessCensus::for_test();
+        let first = census.read(&[]);
+        let second = census.read(&[]);
+        assert!(!first.is_empty());
+        assert!(!second.is_empty());
+        assert_eq!(
+            census.discoveries, 1,
+            "an unchanged tick does not enumerate the process table"
+        );
+        assert_eq!(
+            census.detail_refreshes, 0,
+            "unchanged rows need no detailed field refresh"
+        );
+    }
+
+    #[test]
+    fn idle_process_table_replaces_a_reused_pid_and_retries_an_unread_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut census = ProcessCensus::for_test();
+        let pid = Pid::from_u32(std::process::id());
+        let session = SessionRecord {
+            pid:        pid.as_u32(),
+            session_id: "reused-pid".into(),
+            cwd:        None,
+            name:       None,
+            status:     None,
+            entrypoint: None,
+        };
+        let sessions = [session];
+        let first = census.read(&sessions);
+        let expected = first
+            .iter()
+            .find(|row| row.pid == pid.as_u32())
+            .ok_or("current process")?
+            .clone();
+        if let ProcessSnapshot::Current {
+            rows, revisions, ..
+        } = &mut census.snapshot
+        {
+            let revision = revisions.get_mut(&pid).ok_or("tracked identity")?;
+            if let ProcessRevision::Observed { birth, .. } = revision {
+                match birth {
+                    #[cfg(target_os = "linux")]
+                    ProcessBirth::KernelTicks(ticks) => *ticks += 1,
+                    #[cfg(target_os = "macos")]
+                    ProcessBirth::UnixTime { microseconds, .. } => *microseconds += 1,
+                }
+            }
+            let mut stale = rows.to_vec();
+            let row = stale
+                .iter_mut()
+                .find(|row| row.pid == pid.as_u32())
+                .ok_or("cached process")?;
+            row.name = "departed-agent".into();
+            row.arguments = vec!["departed-command".into()];
+            *rows = stale.into();
+        }
+        let fresh = census.read(&sessions);
+        let actual = fresh
+            .iter()
+            .find(|row| row.pid == pid.as_u32())
+            .ok_or("reused pid")?;
+        assert_eq!(actual.name, expected.name);
+        assert_eq!(actual.arguments, expected.arguments);
+        assert_eq!(census.discoveries, 1);
+        assert_eq!(census.detail_refreshes, 1);
+        if let ProcessSnapshot::Current { revisions, .. } = &mut census.snapshot {
+            revisions.insert(pid, ProcessRevision::Unreadable);
+        }
+        census.read(&sessions);
+        assert_eq!(census.discoveries, 1);
+        assert_eq!(
+            census.detail_refreshes, 2,
+            "an unread identity retries on the next tick"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn idle_process_table_recovers_lost_events_and_new_sessions_within_thirty_seconds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct RecoveryChild(Child);
+        impl Drop for RecoveryChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut census = ProcessCensus::for_test();
+        let now = Instant::now();
+        census.read_at(&[], now);
+        // This birth has no session or tracked ancestor. Only recovery can discover it.
+        let mut child = RecoveryChild(
+            Command::new("/bin/bash")
+                .args([
+                    "-c",
+                    "exec -a claude /bin/bash -c 'echo ready; read -r finish'",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()?,
+        );
+        let mut signal = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.0.stdout.take().ok_or("child stdout")?),
+            &mut signal,
+        )?;
+        assert_eq!(signal.trim(), "ready");
+        let child_pid = child.0.id();
+        census.discovery = TestProcessDiscovery::FixtureProcesses {
+            pids: vec![Pid::from_u32(child_pid)],
+        };
+        let session = SessionRecord {
+            pid:        child_pid,
+            session_id: "missed-birth".into(),
+            cwd:        None,
+            name:       None,
+            status:     None,
+            entrypoint: None,
+        };
+        let before = census.read_at(
+            &[],
+            now + PROCESS_RECOVERY_INTERVAL.saturating_sub(Duration::from_millis(1)),
+        );
+        assert!(
+            !classify::agent_rows(
+                &before,
+                std::slice::from_ref(&session),
+                &[],
+                None,
+                &AccountLabels::default()
+            )
+            .iter()
+            .any(|row| row.pid == child_pid),
+            "the missed process is absent before recovery"
+        );
+        assert_eq!(census.discoveries, 1);
+        let recovered = census.read_at(&[], now + PROCESS_RECOVERY_INTERVAL);
+        let shown =
+            classify::agent_rows(&recovered, &[session], &[], None, &AccountLabels::default());
+        assert!(
+            shown
+                .iter()
+                .any(|row| row.pid == child_pid && row.agent == Agent::Claude),
+            "recovery adds the missed live agent to displayed membership"
+        );
+        assert_eq!(
+            census.discoveries, 2,
+            "lost births, exec and inaccessible identities have a bounded recovery scan"
+        );
+        let session = SessionRecord {
+            pid:        std::process::id(),
+            session_id: "new-session".into(),
+            cwd:        None,
+            name:       None,
+            status:     None,
+            entrypoint: None,
+        };
+        let rows = census.read_at(&[session], now + PROCESS_RECOVERY_INTERVAL);
+        assert_eq!(
+            census.discoveries, 2,
+            "a new session updates its row without another recovery scan"
+        );
+        assert!(rows.iter().any(|row| row.pid == std::process::id()));
+        Ok(())
+    }
+}

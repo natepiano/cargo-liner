@@ -27,7 +27,8 @@ pub(super) fn read(
 ) -> Result<RepositoryRead<CommitHistory>, GitError> {
     #[cfg(test)]
     test_work::record(Work::HistoryRead);
-    let target = match read::commit(root, expression)? {
+    let reader = read::CommitRepositoryReader::new(root);
+    let target = match reader.commit(expression)? {
         RepositoryRead::InProcess(CommitObjectResolution::Resolved(target)) => target,
         RepositoryRead::InProcess(_) => {
             return Ok(RepositoryRead::GitRequired(
@@ -36,9 +37,9 @@ pub(super) fn read(
         },
         RepositoryRead::GitRequired(reason) => return Ok(RepositoryRead::GitRequired(reason)),
     };
-    let repository = match read::open(root)? {
+    let repository = match reader.repository()? {
         RepositoryRead::InProcess(repository) => repository,
-        RepositoryRead::GitRequired(reason) => return Ok(RepositoryRead::GitRequired(reason)),
+        RepositoryRead::GitRequired(reason) => return Ok(RepositoryRead::GitRequired(*reason)),
     };
     if repository
         .is_shallow()
