@@ -5,6 +5,7 @@ use crate::tui;
 use crate::tui::app::App;
 use crate::tui::columns;
 use crate::tui::columns::COL_DISK;
+use crate::tui::columns::LintColumnStatus;
 use crate::tui::panes;
 use crate::tui::panes::DetailCacheKey;
 use crate::tui::project_list::VisibleRow;
@@ -26,7 +27,7 @@ impl App {
         let widths = panes::compute_project_list_widths(
             &self.project_list,
             &root_labels,
-            self.config.lint_enabled(),
+            LintColumnStatus::from(self.config.current().lint.enabled),
             0,
         );
         let mut widths = widths;

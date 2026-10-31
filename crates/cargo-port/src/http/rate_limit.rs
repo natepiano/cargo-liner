@@ -113,7 +113,7 @@ pub(super) fn parse_rate_limit_response(value: &Value) -> GitHubRateLimit {
 /// `429 Too Many Requests`, or `403 Forbidden` with
 /// `X-RateLimit-Remaining: 0` (the secondary-rate-limit / abuse-detection
 /// form). A bare 403 is auth-related and not rate-limit.
-pub(super) fn github_is_rate_limited(
+pub(super) fn github_rate_limit_disposition(
     status: StatusCode,
     header_map: &HeaderMap,
 ) -> RateLimitDisposition {
@@ -136,7 +136,7 @@ pub(super) fn github_is_rate_limited(
 /// Classify a GraphQL rate-limit refusal when the body carries an `errors[].type` of
 /// `RATE_LIMITED`. GraphQL returns HTTP 200 on rate-limit, so
 /// status-based detection alone is not enough for that endpoint.
-pub(super) fn graphql_body_is_rate_limited(body: &Value) -> RateLimitDisposition {
+pub(super) fn graphql_body_rate_limit_disposition(body: &Value) -> RateLimitDisposition {
     if body
         .get(GRAPHQL_RESPONSE_ERRORS_KEY)
         .and_then(serde_json::Value::as_array)
