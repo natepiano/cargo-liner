@@ -50,6 +50,32 @@ enum ImportGate {
     Unconditional,
 }
 
+/// A gated `use` is blocked by any binding of the same name, even the same path:
+/// both imports may be active together. An unconditional `use` is blocked only
+/// by a real collision. Leaving a blocked import in place is safe on every target.
+enum ImportMoveEligibility {
+    Blocked,
+    Allowed,
+}
+
+/// Only an unconditional import whose every bare name already names the same
+/// unconditional path can become a pure deletion. A conditional import must
+/// keep its gate, so its move always inserts the carried attributes at the scope top.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImportMove {
+    DeleteDuplicate,
+    MoveToScope,
+}
+
+/// Moving an unconditional `use` collides with an item, a gated use of any path
+/// (an unconditional sibling double-imports when the gate holds), or an
+/// unconditional use of a different path. Conditional moves collide with any binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImportCollision {
+    Present,
+    Absent,
+}
+
 impl From<&ConditionalAttributes> for ImportGate {
     fn from(attributes: &ConditionalAttributes) -> Self {
         if attributes.is_empty() {
@@ -71,25 +97,47 @@ impl From<&[Attribute]> for ImportGate {
 }
 
 impl ImportGate {
-    fn blocks(self, existing: Option<&ExistingBinding>, full: &str) -> bool {
+    fn collision(self, existing: Option<&ExistingBinding>, full: &str) -> ImportCollision {
         match self {
-            Self::Conditional => existing.is_some(),
+            Self::Conditional => match existing {
+                Some(ExistingBinding::Use { .. } | ExistingBinding::Item) => {
+                    ImportCollision::Present
+                },
+                None => ImportCollision::Absent,
+            },
             Self::Unconditional => unconditional_collision(existing, full),
         }
     }
 
-    fn all_duplicates(self, scope: &ScopedUseFinder, bare_paths: &[NamedImport]) -> bool {
+    fn movement(self, scope: &ScopedUseFinder, bare_paths: &[NamedImport]) -> ImportMove {
         match self {
-            Self::Conditional => false,
-            Self::Unconditional => bare_paths.iter().all(|binding| {
-                let NamedImport {
-                    name: bare,
-                    path: full,
-                } = binding;
-                matches!(scope.existing.get(bare),
-                    Some(ExistingBinding::Use { full: existing, gate: Self::Unconditional })
-                        if existing == full)
-            }),
+            Self::Conditional => ImportMove::MoveToScope,
+            Self::Unconditional => {
+                if bare_paths.iter().all(|binding| {
+                    let NamedImport {
+                        name: bare,
+                        path: full,
+                    } = binding;
+                    match scope.existing.get(bare) {
+                        Some(ExistingBinding::Use {
+                            full: existing,
+                            gate: Self::Unconditional,
+                        }) => existing == full,
+                        Some(
+                            ExistingBinding::Use {
+                                gate: Self::Conditional,
+                                ..
+                            }
+                            | ExistingBinding::Item,
+                        )
+                        | None => false,
+                    }
+                }) {
+                    ImportMove::DeleteDuplicate
+                } else {
+                    ImportMove::MoveToScope
+                }
+            },
         }
     }
 }
@@ -163,42 +211,41 @@ impl InBodyUseFinder<'_> {
 
         let scope = &self.scope;
 
-        // `blocked` rejects a gated `use` with any `scope.existing` binding of the
-        // same name (even the same path double-imports when both are active),
-        // so skip when the name is taken. An unconditional `use` skips only on
-        // a real collision. Leaving it in place is safe on every target.
-        let blocked = bare_paths
-            .iter()
-            .any(|binding| gate.blocks(scope.existing.get(&binding.name), &binding.path));
-        if blocked {
-            return Ok(());
+        let eligibility = if bare_paths.iter().any(|binding| {
+            gate.collision(scope.existing.get(&binding.name), &binding.path)
+                == ImportCollision::Present
+        }) {
+            ImportMoveEligibility::Blocked
+        } else {
+            ImportMoveEligibility::Allowed
+        };
+        match eligibility {
+            ImportMoveEligibility::Blocked => return Ok(()),
+            ImportMoveEligibility::Allowed => {},
         }
 
-        // `all_duplicates` means every bare name is already imported unconditionally with the
-        // same full path. The fix collapses to a pure deletion (no insertion).
-        // A gated use is never a plain duplicate — its gate must be preserved.
-        let all_duplicates = gate.all_duplicates(scope, &bare_paths);
+        let movement = gate.movement(scope, &bare_paths);
 
         self.emit_move(
             use_item,
             &bare_paths,
             &conditional_attributes,
             gate,
-            all_duplicates,
+            movement,
         )
     }
 
     /// Push the finding and the insertion/deletion fixes for a movable `use`.
-    /// `gate_attrs` are prepended to the inserted line so the import stays
-    /// conditionally compiled; `all_duplicates` skips the insertion (the names
-    /// are already imported at the scope top, so the fix is a pure deletion).
+    /// `conditional_attributes` are prepended to the inserted line so the import stays
+    /// conditionally compiled; `ImportMove::DeleteDuplicate` skips the insertion
+    /// because the names are already imported at the scope top.
     fn emit_move(
         &mut self,
         use_item: &ItemUse,
         bare_paths: &[NamedImport],
         conditional_attributes: &ConditionalAttributes,
         gate: ImportGate,
-        all_duplicates: bool,
+        movement: ImportMove,
     ) -> anyhow::Result<()> {
         let use_span = use_item.span();
         // `use_span` includes the first attribute. Build the moved text from
@@ -248,15 +295,16 @@ impl InBodyUseFinder<'_> {
             item_visibility: ItemVisibility::default(),
         });
 
-        if !all_duplicates {
-            self.emit_insertion(
+        match movement {
+            ImportMove::DeleteDuplicate => {},
+            ImportMove::MoveToScope => self.emit_insertion(
                 bare_paths,
                 conditional_attributes,
                 gate,
                 use_kw_start,
                 use_end,
                 group.as_ref(),
-            );
+            ),
         }
 
         self.fixes.push(UseFix {
@@ -625,11 +673,7 @@ fn item_gate_attrs(item: &Item) -> &[Attribute] {
     }
 }
 
-/// Whether moving an unconditional `use` of `full` would collide with what
-/// the scope already exposes under that bare name: an item, a gated use of any
-/// path (an unconditional sibling would double-import when the gate holds), or
-/// an unconditional use of a different path.
-fn unconditional_collision(existing: Option<&ExistingBinding>, full: &str) -> bool {
+fn unconditional_collision(existing: Option<&ExistingBinding>, full: &str) -> ImportCollision {
     match existing {
         Some(
             ExistingBinding::Item
@@ -637,12 +681,18 @@ fn unconditional_collision(existing: Option<&ExistingBinding>, full: &str) -> bo
                 gate: ImportGate::Conditional,
                 ..
             },
-        ) => true,
+        ) => ImportCollision::Present,
         Some(ExistingBinding::Use {
             full: existing_full,
             gate: ImportGate::Unconditional,
-        }) => existing_full != full,
-        None => false,
+        }) => {
+            if existing_full == full {
+                ImportCollision::Absent
+            } else {
+                ImportCollision::Present
+            }
+        },
+        None => ImportCollision::Absent,
     }
 }
 
