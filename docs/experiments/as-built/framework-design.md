@@ -71,3 +71,4 @@ Key design elements:
 - Ruled out, a reset-reviewer first study: units keep their reviewer and never reset it, so its control arm is not current policy.
 - Ruled out, marking Mac measurements unsupported: the design must fit natedev and the Mac.
 - The first live study (worked-examples §6), chosen by the user on 2026-10-25, only tests the framework. It compares the history command with and without `python3 -S`. No recurring workload is known for it. Its 0.010 s threshold saves only about 0.070 s per week. Its purpose is fixed as `framework_exercise`, with `live_check` `not_claimed` and adoption `not_permitted`. It therefore closes as `not_proven` for production gain, or `rejected` if B fails. It cannot authorize adoption.
+- Later research (2026-10-30): `docs/experiments/best-practices-research.md` compares this design with published practice and ranks options to adapt. It changes no rule here.
