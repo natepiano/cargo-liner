@@ -61,7 +61,11 @@ impl MendRunner<'_> {
                 // preview the edits an apply would write, and combining is
                 // where conflicting groups are dropped and duplicates collapse.
                 let fix_scans = planned.fix_scans();
-                let previewed = Self::combined_fixes(fix_scans)?;
+                let previewed = Self::combined_fixes(
+                    fix_scans,
+                    &planned.sources,
+                    &self.selection.package_roots,
+                )?;
                 let notice = Self::build_fix_notice(
                     planned.operation_mode.intent,
                     Some(&planned.report),

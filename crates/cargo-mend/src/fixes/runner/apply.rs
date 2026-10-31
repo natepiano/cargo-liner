@@ -31,7 +31,8 @@ impl MendRunner<'_> {
                         SubtreeReexportEdits::Written
                     }
                 });
-        let fixes = Self::combined_fixes(fix_scans)?;
+        let fixes =
+            Self::combined_fixes(fix_scans, &planned.sources, &self.selection.package_roots)?;
         if fixes.is_empty() {
             let notice = Self::build_fix_notice(
                 planned.operation_mode.intent,
