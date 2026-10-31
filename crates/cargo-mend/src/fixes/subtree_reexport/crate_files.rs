@@ -79,3 +79,57 @@ pub(super) struct OwnerCrate<'a> {
 pub(super) fn canonical(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use anyhow::Result;
+    use tempfile::tempdir;
+
+    use super::canonical;
+    use crate::rust_syntax::ModuleMap;
+    use crate::rust_syntax::ParsedSources;
+
+    #[test]
+    fn unobserved_package_reaches_includes_through_external_modules() -> Result<()> {
+        let temp = tempdir()?;
+        let root = temp.path();
+        fs::create_dir_all(root.join("b/src"))?;
+        fs::write(
+            root.join("b/src/lib.rs"),
+            "#[path = \"../../wrapper.rs\"] mod gateway;\n",
+        )?;
+        fs::write(root.join("wrapper.rs"), "include!(\"shared.rs\");\n")?;
+        fs::write(
+            root.join("shared.rs"),
+            "pub use crate::platform::discover;\n",
+        )?;
+        fs::write(root.join("unrelated.rs"), "pub fn unrelated() {}\n")?;
+
+        let reached =
+            ModuleMap::reachable_sources([root.join("b/src/lib.rs")], &ParsedSources::default())?;
+
+        assert_eq!(
+            reached,
+            ["b/src/lib.rs", "wrapper.rs", "shared.rs"]
+                .map(|file| canonical(&root.join(file)))
+                .into_iter()
+                .collect()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn computed_include_does_not_prove_source_unreachable() -> Result<()> {
+        let temp = tempdir()?;
+        let root = temp.path().join("lib.rs");
+        fs::write(
+            &root,
+            "include!(concat!(env!(\"OUT_DIR\"), \"/shared.rs\"));\n",
+        )?;
+
+        assert!(ModuleMap::reachable_sources([root], &ParsedSources::default()).is_err());
+        Ok(())
+    }
+}

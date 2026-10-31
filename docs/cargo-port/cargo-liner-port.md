@@ -134,7 +134,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **As-built:** under `RecursiveRoot` (macOS) the registration plan in `crates/cargo-port/src/watcher/roots.rs` adds a recursive watch only for a configured root that no other configured root covers, in either root order (checkpoint 95138542). Each configured root stays a discovery boundary (`record_recursive_boundary`); coverage reads only paths that were watched (`recursively_watches`), so a failed parent registration still leaves the covered root watched. `PerFolder` is unchanged. The watcher resolves the cargo home once (`resolve_cargo_home` → `CargoHome::{Directory, Unavailable}`) and passes it to registration, so the registration tests use a test home and do not read the developer's `~/.cargo`. The one-watch-per-path invariant test in `runtime.rs` runs for both backends.
 
-### Phase 2h — mend keeps a re-export another package uses  · status: todo
+### Phase 2h — mend keeps a re-export another package uses  · status: done
 
 **Why:** showrunner 2026-10-31, found during 2g. The subtree re-export planner groups facts and module mounts by crate root (`crates/cargo-mend/src/fixes/subtree_reexport/scan.rs` `resolved_crate_facts` ≈150, mount filter ≈165). When two packages mount one source with `#[path]` and both use a `pub use` in it, a fix planned for one package can delete the export that the other package still names. Same phase: two style nits left open in 2g.
 
