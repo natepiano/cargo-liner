@@ -1467,37 +1467,123 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - The handler wheel test needs several summary rows (`wheel_test_app_with_agents`). With an empty summary, "selection unchanged" passes for the wrong reason.
 - A live cargo-tile capture shows tile rows change with no wheel input, because activity is live. Compare a wheel capture against a no-wheel control.
 
-### Phase 57a — The shortcuts overlay highlights whole rows and shows every focus key  · status: todo
+### Phase 57a — The shortcuts overlay highlights whole rows and shows every focus key  · status: done
 
-**Depends on:** Phase 57 (both edit the shortcuts overlay's tests).
+#### As-built
+
+- `tui_pane` pads each shortcut key span to the widest displayed key. Selected rows have one highlight width, including rows with no key. `build_lines` computes the width and passes it to `row_line`.
+- cargo-handler defaults `FocusUp` to `shift-up` and `FocusDown` to `shift-down`. The user can rebind both. `up` and `down` still select rows.
+- `selected_shortcut_rows_cover_the_same_width_for_short_and_long_keys` checks the drawn highlight. `shortcuts_overlay_shows_vertical_focus_keys_without_replacing_row_keys` checks focus and row keys.
+- The Keymap and Global Shortcuts screen captures include the focus keys. Live checks passed in both hosts: selected rows cover 46 cells in cargo-tile and 47 cells in cargo-handler. Commit: `772d67d3`.
+
+**Files:**
+
+- `crates/tui_pane/src/overlays/global_shortcuts.rs` — computes the key width and pads each key span.
+- `crates/tui_pane/src/overlays/global_shortcuts_tests.rs` — checks equal selected widths for short and long keys.
+- `crates/cargo-handler/src/globals.rs` — adds the vertical focus defaults and checks them.
+- `crates/cargo-handler/src/keymap.rs` — checks focus and row keys; updates captured key rows.
+- `crates/cargo-handler/src/render/mod.rs` — updates both overlay screen captures.
+- `crates/tui_pane/CHANGELOG.md` — records the selected-row width fix.
+- `crates/cargo-handler/CHANGELOG.md` — records the vertical focus keys.
+
+**Binds later work:** Keep the key width in the overlay layout. Keep focus bindings in the default keymap so users can rebind them.
+
+**Gotchas:**
+
+- Changing default keys can change overlay captures in `render/mod.rs`: `the_keymap_overlay_opens_on_its_first_screen` and `the_shortcuts_overlay_opens_on_its_first_screen`.
+
+### Phase 57d — A Codex session resumed under a second account shows its own name  · status: done
+
+**Depends on:** none.
 
 #### Work Order
 
-**Goal:** in the `?` global shortcuts overlay, the selected-row highlight has one width on every row, and cargo-handler shows a key for "Focus the tile above" and "Focus the tile below", as cargo-tile does.
+**Goal:** cargo-handler shows the Codex session's own name (for example `morty`) in the session column, also when the session runs under a second account home whose sessions folder points at the first one.
 
-**Source:** the showrunner, 2026-10-31, from the Phase 57 design check: "the selected-row highlight ends at the key text, so its width changes per row; it should have one width" and "cargo-handler's overlay shows no key for 'Focus the tile above/below', while cargo-tile shows up/down. Fix each where it lives, in tui_pane if the cause is there."
+**Source:** the user, 2026-10-31: the standalone Codex session `morty` shows only its pid in the Unassigned group; an earlier cargo-handler build showed `morty`. Diagnosis (Phase 57a side task): morty is thread `01a18dbb…`, resumed by a process with `CODEX_HOME=~/.codex2`. The `.codex2` database names it `morty`, but its `rollout_path` starts with `~/.codex/sessions`, because `.codex2/sessions` is a link to it. `classify.rs::thread_matches_home` rejects that path, `codex_startup_threads` finds no match, and `scan.rs::attach_codex_sessions` keeps the pid. Commit 21c1c47f added the path check and the pid-name reset; Phase 41 (08e18f05) repaired the originator choice but kept the check.
 
 **Constraints from prior phases:**
-- `row_line` (`crates/tui_pane/src/overlays/global_shortcuts.rs` ≈267) pads the description to `SHORTCUT_DESCRIPTION_WIDTH` but adds the key text with no padding, so the selection style stops at the key's last character. `build_render_inputs` (≈225) computes `content_width` from the rows; the key column width comes from the same rows.
-- cargo-handler's `AppGlobalAction::defaults` (`crates/cargo-handler/src/globals.rs` ≈62) gives `Up`/`Down` to `RowUp`/`RowDown` (Phase 16, row selection), so `FocusUp`/`FocusDown` have no default key. cargo-tile binds them to `up`/`down` (`crates/cargo-tile/src/app_global_action.rs`).
-- `KeyBind::shift` and `KeyBind::ctrl` exist (`crates/tui_pane/src/keymap/key_bind.rs` ≈145, ≈157).
-- Showrunner, 2026-10-31: cargo-handler's focus up/down default to `shift-up` / `shift-down`, set in `AppGlobalAction::defaults` like the other actions so the user can rebind them; `up`/`down` stay on row selection. No cargo-handler or tui_pane default binds `shift-up` or `shift-down` (checked 2026-10-31).
+- The session name is drawn from `AgentRow.name` (`summary/mod.rs::agent_fields`); names come from `census/codex_names.rs::SessionNames` and the thread database.
+- Keep accounts separate: never infer the account from the rollout path, and never merge account homes through links.
+- Neither the staff list nor the production tree names standalone sessions, so Phase 57c does not fix this.
 
 **Spec:**
-1. In tui_pane, `row_line` pads the key span to the overlay's key column width, so the selected row's style covers the same width on every row. The width has one owner: the value the layout already computes.
-2. cargo-handler binds `FocusUp` to `KeyBind::shift(KeyCode::Up)` and `FocusDown` to `KeyBind::shift(KeyCode::Down)` in `defaults`; the captured overlay rows in `crates/cargo-handler/src/keymap.rs` (≈196) show them.
-3. Red-first tests, each under 1 s: in tui_pane, the selected row's styled cells cover the same width for a row with a short key and a row with a long key; in cargo-handler, the overlay rows for focus up and focus down show a key.
+1. Keep the account home of the database each Codex thread came from, and match a resumed thread id inside that home.
+2. When the session index has no name for the thread, keep the database's own name.
+3. Add a regression test: a session resumed under one account home with a shared rollout folder shows its own name, and a thread of the other account does not match it.
 
 **Files:**
-- `crates/tui_pane/src/overlays/global_shortcuts.rs` — pad the key span
-- `crates/tui_pane/src/overlays/global_shortcuts_tests.rs` — highlight-width test
-- `crates/cargo-handler/src/globals.rs` — focus up/down default keys
-- `crates/cargo-handler/src/keymap.rs` — captured overlay rows
-- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/classify.rs` — the home match
+- `crates/cargo-handler/src/census/codex.rs` — thread records carry their account home
+- `crates/cargo-handler/src/census/codex_names.rs` — the name fallback
+- `crates/cargo-handler/src/census/scan.rs` — `attach_codex_sessions`
+- `crates/cargo-handler/src/census/scan/` — tests
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: press `?` in cargo-handler and cargo-tile, move the selection, and see one highlight width and a key on both focus rows. The checkpoint adds a Change-Review line.
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: run cargo-handler on natedev and see `morty` in the session column. The checkpoint adds a Change-Review line.
+
+### Phase 57b — The reset-shade test runs in under a second  · status: todo
+
+**Depends on:** none.
+
+#### Work Order
+
+**Goal:** the cargo-handler test `reset_shades_keep_saturated_chroma_and_separation_from_plain_text` runs in less than one second on the Mac, and keeps every check it makes now.
+
+**Source:** the showrunner, 2026-10-31: the test took 1.008 s on the Mac at the Phase 57 checkpoint (1.28 s in a later Phase 57a run). No test may take one second or more.
+
+**Constraints from prior phases:**
+- The test is in `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` (≈532).
+- Find the cost with evidence (time each part on the Mac) before a change. Do not weaken an assertion or drop a case to make it fast; if the cost is in product code the test calls, fix it there.
+
+**Spec:**
+1. Measure where the test spends its time.
+2. Remove that cost: share work the test repeats, or make the product code it calls cheaper. Every assertion and case stays.
+3. The test runs under 1 s on the Mac in a full `verify.sh test cargo-handler` run.
+
+**Files:**
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the test
+- `crates/cargo-handler/src/summary/` — product code the test calls, only if the cost is there
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean on the Mac; no test takes a second. The checkpoint adds `Change-Review: none — test speed only` unless product code changes.
+
+### Phase 57c — cargo-handler reads its staff from the staff list  · status: todo
+
+**Depends on:** none.
+
+#### Work Order
+
+**Goal:** cargo-handler takes managers, members and roles from `~/.claude/scripts/production/staff.py show --json --live` (schema 3) in place of `production_tree.py --json`, with one parser, and stops reading the review pool, which no longer exists.
+
+**Source:** herdr, 2026-10-31: the staff list is live as schema 3, with no `pool` key. The showrunner, 2026-10-31, approved the switch and confirmed schema 3 on natedev and the Mac. The user, 2026-10-31: the review pool is gone.
+
+**Constraints from prior phases:**
+- The command stays in the `hierarchy_command` setting; no path in code.
+- Read stdout only. The command prints hundreds of stderr lines (265 on natedev); never show them in the tile or in cargo-handler.
+- One parser: remove the `production_tree.py` shape parser in this phase. If a Mac config can still point at the old command, say so in the notice; the showrunner sets the order.
+- The review pool reader (`REVIEW_POOL_STATE`, `pool.json` in `census/command_inputs.rs`) and its fixtures go too.
+- Standalone sessions are not in the staff list; Phase 57d names them.
+
+**Spec:**
+1. At start, run the staff command on natedev and the Mac and confirm schema 3 with no `pool` key.
+2. Parse the schema 3 output into the census hierarchy types; remove the old edge parser and the pool reader.
+3. Measure the CPU time of one staff call against one `production_tree.py --json` call on natedev and the Mac, and name the added cost in the notice. If it is slower at the poll rate, say so before landing.
+4. Move the hierarchy fixtures and tests to the schema 3 shape.
+5. Send the showrunner the exact `hierarchy_command` config line for both machines.
+
+**Files:**
+- `crates/cargo-handler/src/census/hierarchy.rs` — the parser
+- `crates/cargo-handler/src/census/command_inputs.rs` — inputs; pool reader removed
+- `crates/cargo-handler/src/census/fixtures/` — hierarchy and pool fixtures
+- `crates/cargo-handler/src/census/*hierarchy*_tests.rs`, `census/probe/hierarchy_transport_tests.rs` — tests
+- `crates/cargo-handler/src/config.rs`, `settings.rs` — setting text only if it names the old command
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: cargo-handler on natedev with the new setting shows the same managers and members as before. The checkpoint adds a Change-Review line.
 
 ### Phase 55 — Narrow tiles keep tree guides, readable names and one header inset  · status: todo
 

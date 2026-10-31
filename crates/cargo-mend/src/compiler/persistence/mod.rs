@@ -22,6 +22,7 @@ pub(super) use schema::StoredSubtreeReexportFixFact;
 pub(super) use schema::UseSiteReference;
 pub(super) use sink::FindingsSink;
 pub(super) use sink::UseSiteIndex;
+pub(crate) use visibility_constraint::SourceModuleMount;
 pub(super) use visibility_constraint::StoredCallerReconciliation;
 pub(super) use visibility_constraint::StoredConstraintOutcome;
 pub(super) use visibility_constraint::StoredExactBoundaryAcceptance;

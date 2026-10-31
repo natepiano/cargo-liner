@@ -12,9 +12,10 @@ use super::*;
 fn codex_prompt_labels_trim_the_space_at_the_drawn_cut() {
     let prompt = format!("{} more work", "x".repeat(CODEX_PROMPT_LABEL_MAX - 2));
     let thread = CodexThread {
+        account_home: CodexAccountHome::from(Path::new("/fixture")),
         cwd:          PathBuf::from("/fixture"),
         created_ms:   0,
-        name:         None,
+        name:         SessionName::Unnamed,
         first_prompt: prompt,
         rollout:      PathBuf::from("/fixture/rollout.jsonl"),
     };
