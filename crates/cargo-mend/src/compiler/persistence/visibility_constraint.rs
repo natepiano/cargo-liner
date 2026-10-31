@@ -358,11 +358,29 @@ impl VisibilityConstraintKey {
     }
 }
 
-/// One package-qualified meaning of an item in a shared physical source.
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+/// One package-qualified module mounting the source position held by the group.
+/// The declaration belongs to the mount, but its anonymous rustc item ordinal
+/// is target-specific evidence, not module identity: cfg-gated imports can
+/// change `{use#N}` without changing either the source item or its module.
+#[derive(Eq)]
 struct VisibilityModuleMount {
     package_root: String,
     declaration:  StoredVisibilityDeclaration,
+}
+
+impl Ord for VisibilityModuleMount {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (&self.package_root, &self.declaration.item_module_def_path)
+            .cmp(&(&other.package_root, &other.declaration.item_module_def_path))
+    }
+}
+
+impl PartialOrd for VisibilityModuleMount {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+
+impl PartialEq for VisibilityModuleMount {
+    fn eq(&self, other: &Self) -> bool { self.cmp(other) == Ordering::Equal }
 }
 
 /// Per-mount requirements for the annotation at one physical source position.
