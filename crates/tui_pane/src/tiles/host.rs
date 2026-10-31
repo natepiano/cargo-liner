@@ -19,10 +19,13 @@ use crate::FrameworkOverlayId;
 use crate::Hittable;
 use crate::InputContext;
 use crate::Mode;
+use crate::OverlayWheel;
 use crate::Pane;
 use crate::ScrollDirection;
+use crate::SettingsHost;
 use crate::dispatch_hit_test;
 use crate::frame_inner;
+use crate::wheel_framework_overlay;
 
 /// A terminal cell position relative to a tile's content origin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -163,8 +166,11 @@ where
 /// Forward a wheel step to the cell under the pointer, respecting modal hits.
 pub fn handle_tile_scroll<A>(app: &mut A, position: Position, direction: ScrollDirection)
 where
-    A: TileGridHost + InputContext<Target = TilePick>,
+    A: TileGridHost + InputContext<Target = TilePick> + SettingsHost,
 {
+    if wheel_framework_overlay(app, position, direction) == OverlayWheel::Consumed {
+        return;
+    }
     if let Some(TilePick::Cell(_)) = dispatch_hit_test(app, position)
         && let Some(click) = content_click(app.tile_grid_mut().cell_hit(position), position)
     {
