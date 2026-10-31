@@ -55,6 +55,7 @@ mod dismiss;
 mod finder_state;
 mod hovered_pane_row;
 mod lint_registration;
+mod manifest_metadata;
 mod navigation;
 mod pending_clean;
 mod phase_state;
@@ -88,6 +89,8 @@ pub(super) use discovery::DiscoveryShimmer;
 pub(super) use discovery_shimmer::discovery_name_segments_for_path_with_refs;
 pub(super) use finder_state::FinderState;
 pub(super) use hovered_pane_row::HoveredPaneRow;
+pub(super) use manifest_metadata::ManifestMetadataStates;
+pub(super) use manifest_metadata::ProjectMetadataState;
 pub(crate) use pending_clean::PendingClean;
 pub(super) use phase_state::CountedPhase;
 pub(super) use phase_state::KeyedPhase;
@@ -587,6 +590,9 @@ impl App {
     }
 
     pub(super) fn prune_inactive_project_state(&mut self) {
+        self.scan
+            .manifest_metadata
+            .retain_rust_projects(&self.project_list);
         let mut all_paths: HashSet<AbsolutePath> = HashSet::new();
         self.project_list.for_each_leaf_path(|path, _| {
             all_paths.insert(AbsolutePath::from(path));
@@ -4716,6 +4722,7 @@ mod tests {
         use crate::tui::panes::LintsData;
         use crate::tui::panes::LintsProjectKind;
         use crate::tui::panes::OutputSelectionRange;
+        use crate::tui::panes::PackageRow;
         use crate::tui::panes::PaneId;
         use crate::tui::panes::SyncedDescriptionHeight;
         use crate::tui::project_list::ExpandKey;
@@ -6972,6 +6979,330 @@ mod tests {
                     "deleted row draws its whole suffix"
                 );
             }
+        }
+
+        fn render_metadata_app(app: &mut App, width: u16) -> Buffer {
+            app.ensure_visible_rows_cached();
+            app.ensure_disk_cache();
+            app.ensure_fit_widths_cached();
+            app.ensure_detail_cached();
+            let mut terminal = Terminal::new(TestBackend::new(width, 44)).expect("app terminal");
+            terminal
+                .draw(|frame| render::ui(frame, app))
+                .expect("real pane layout");
+            terminal.backend().buffer().clone()
+        }
+
+        #[test]
+        fn manifest_error_marker_and_name_style_survive_real_layout() {
+            let tmp = tempfile::tempdir().expect("project root");
+            let root = AbsolutePath::from(tmp.path().join("a"));
+            std::fs::create_dir(&root).expect("project directory");
+            let mut app = make_app(&[make_package("a", &root)]);
+            app.scan
+                .manifest_metadata
+                .record_failure(&root, "error: invalid manifest");
+            for width in [100, 160, 240] {
+                let buffer = render_metadata_app(&mut app, width);
+                let y = app.panes.project_list.body_rect.y;
+                let (x, _) = find_text_cell_in_row(&buffer, y, "a !")
+                    .expect("visible name and error marker in fitted pane");
+                assert_eq!(buffer[(x, y)].fg, tui_pane::error_color());
+                assert_eq!(buffer[(x + 2, y)].fg, tui_pane::error_color());
+                let table_start = app.panes.project_list.body_rect.x;
+                let name_end = table_start
+                    + u16::try_from(app.project_list.cached_fit_widths.get(COL_NAME))
+                        .expect("name width");
+                assert!(x + 3 < name_end, "fit reserves marker and gutter");
+                let expected_header = crate::tui::columns::header_line(
+                    &app.project_list.cached_fit_widths,
+                    "  Projects",
+                );
+                let expected_area = Rect::new(0, 0, 320, 1);
+                let mut expected = Buffer::empty(expected_area);
+                ratatui::widgets::Widget::render(
+                    ratatui::widgets::Paragraph::new(expected_header),
+                    expected_area,
+                    &mut expected,
+                );
+                let table_end = table_start
+                    + u16::try_from(app.project_list.cached_fit_widths.total_width())
+                        .expect("table width");
+                for col in name_end..table_end.min(app.panes.project_list.body_rect.right()) {
+                    assert_eq!(
+                        buffer[(col, y - 1)].symbol(),
+                        expected[(col - table_start, 0)].symbol(),
+                        "header x={col}"
+                    );
+                }
+                let failed = buffer;
+                app.scan.manifest_metadata.record_success(&root);
+                // Keep the fitted layout; only the failed name cell changes.
+                let mut terminal = Terminal::new(TestBackend::new(width, 44)).expect("healthy app");
+                terminal
+                    .draw(|frame| render::ui(frame, &mut app))
+                    .expect("healthy frame");
+                let healthy = terminal.backend().buffer();
+                for col in name_end..table_end.min(app.panes.project_list.body_rect.right()) {
+                    assert_eq!(
+                        failed[(col, y)].symbol(),
+                        healthy[(col, y)].symbol(),
+                        "later column x={col} stays aligned"
+                    );
+                }
+                assert!(
+                    find_text_cell_in_row(healthy, y, "a !").is_none(),
+                    "healthy project has no marker"
+                );
+                app.scan
+                    .manifest_metadata
+                    .record_failure(&root, "error: invalid manifest");
+            }
+        }
+
+        #[test]
+        fn manifest_error_visible_dismiss_uses_real_layout() {
+            let tmp = tempfile::tempdir().expect("project root");
+            let root = AbsolutePath::from(tmp.path().join("a"));
+            std::fs::create_dir(&root).expect("project directory");
+            let mut app = make_app(&[make_package("a", &root)]);
+            app.scan
+                .manifest_metadata
+                .record_failure(&root, "error: invalid manifest");
+            mark_deleted(&mut app, &root);
+            for width in [100, 160, 240] {
+                let buffer = render_metadata_app(&mut app, width);
+                let y = app.panes.project_list.body_rect.y;
+                assert!(
+                    find_text_cell_in_row(&buffer, y, "a !").is_some(),
+                    "deleted error marker remains visible"
+                );
+                let (x, y) = find_text_cell_in_row(&buffer, y, "[x]").expect("visible dismiss");
+                let hit =
+                    tui_pane::Hittable::hit_test_at(&app.panes.project_list, Position::new(x, y));
+                assert!(
+                    matches!(hit, Some(HoverTarget::Dismiss(DismissTarget::DeletedProject(path))) if path == root)
+                );
+            }
+        }
+
+        fn assert_clipped_manifest_error_keeps_field_access(height: u16, description: &str) {
+            let tmp = tempfile::tempdir().expect("project root");
+            let root = AbsolutePath::from(tmp.path().join("a"));
+            std::fs::create_dir(&root).expect("project directory");
+            let mut app = make_app(&[make_package("a", &root)]);
+            let error = format!(
+                "error: failed to parse manifest at {}Cargo.toml",
+                "/long/path".repeat(200)
+            );
+            app.scan.manifest_metadata.record_failure(&root, &error);
+            app.ensure_visible_rows_cached();
+            app.ensure_disk_cache();
+            app.ensure_fit_widths_cached();
+            app.ensure_detail_cached();
+            let mut package = app
+                .panes
+                .package
+                .content()
+                .expect("selected package")
+                .clone();
+            package.description = Some(description.to_string());
+            let rows = panes::package_rows_from_data(&package);
+            let (field_row, field) = rows
+                .iter()
+                .enumerate()
+                .find_map(|(row, value)| match value {
+                    PackageRow::Field(field) => Some((row, *field)),
+                    _ => None,
+                })
+                .expect("selectable field");
+            app.panes.package.set_content(package);
+            let mut git = app.panes.git.content().expect("selected Git data").clone();
+            git.description = Some(description.to_string());
+            app.panes.git.set_content(git);
+            app.set_focus_to_pane(PaneId::Package);
+            let mut terminal = Terminal::new(TestBackend::new(160, height)).expect("app terminal");
+            terminal
+                .draw(|frame| render::ui(frame, &mut app))
+                .expect("real pane layout");
+            let body = app.panes.package.viewport.content_area();
+            let buffer = terminal.backend().buffer();
+            let diagnostic_rows: Vec<_> = (body.y..body.bottom())
+                .filter(|&y| {
+                    (body.x..body.right()).any(|x| {
+                        buffer[(x, y)].fg == tui_pane::error_color()
+                            && buffer[(x, y)].symbol() != " "
+                    })
+                })
+                .collect();
+            assert!(
+                diagnostic_rows.len() <= usize::from(body.height.div_ceil(2)),
+                "diagnostic occupies at most half the Package body"
+            );
+            let last_y = *diagnostic_rows.last().expect("visible diagnostic");
+            assert!(
+                (body.x..body.right()).any(|x| buffer[(x, last_y)].symbol() == "…"),
+                "clipped diagnostic ends with ellipsis"
+            );
+            let (_, field_y) = pane_row_hit_point(&app, PaneId::Package, field_row);
+            assert!(
+                find_text_cell_in_row(buffer, field_y, field.label()).is_some(),
+                "a selectable field is drawn below the diagnostic and description"
+            );
+            for _ in 0..rows.len() {
+                if app.panes.package.viewport.pos() == field_row {
+                    break;
+                }
+                press_key(&mut app, KeyCode::Down);
+            }
+            assert_eq!(
+                app.panes.package.viewport.pos(),
+                field_row,
+                "field reachable by navigation"
+            );
+            terminal
+                .draw(|frame| render::ui(frame, &mut app))
+                .expect("navigated frame");
+            let (_, field_y) = pane_row_hit_point(&app, PaneId::Package, field_row);
+            assert!(
+                find_text_cell_in_row(terminal.backend().buffer(), field_y, field.label())
+                    .is_some()
+            );
+        }
+
+        #[test]
+        fn clipped_manifest_error_keeps_selectable_package_fields() {
+            assert_clipped_manifest_error_keeps_field_access(44, "");
+        }
+
+        #[test]
+        fn clipped_manifest_error_in_short_pane_yields_description_to_fields() {
+            assert_clipped_manifest_error_keeps_field_access(
+                18,
+                &"Long package description. ".repeat(100),
+            );
+        }
+
+        #[test]
+        fn selected_manifest_error_is_shown_in_package_pane() {
+            let tmp = tempfile::tempdir().expect("project root");
+            let root = AbsolutePath::from(tmp.path().join("a"));
+            std::fs::create_dir(&root).expect("project directory");
+            let mut app = make_app(&[make_package("a", &root)]);
+            app.scan
+                .manifest_metadata
+                .record_failure(&root, "error: invalid manifest");
+            let buffer = render_metadata_app(&mut app, 240);
+            let (x, y) = find_text_cell(&buffer, "error: invalid manifest")
+                .expect("selected project's diagnostic");
+            assert!(
+                app.panes
+                    .package
+                    .viewport
+                    .content_area()
+                    .contains(Position::new(x, y)),
+                "diagnostic belongs to Package pane"
+            );
+            assert_eq!(buffer[(x, y)].fg, tui_pane::error_color());
+            assert!(find_text_cell(&buffer, "more context").is_none());
+            app.scan.manifest_metadata.record_success(&root);
+            let healthy = render_metadata_app(&mut app, 240);
+            assert!(find_text_cell(&healthy, "error: invalid manifest").is_none());
+        }
+
+        #[test]
+        fn selected_manifest_error_wraps_its_full_first_line_in_real_layout() {
+            let tmp = tempfile::tempdir().expect("project root");
+            let root = AbsolutePath::from(tmp.path().join("a"));
+            std::fs::create_dir(&root).expect("project directory");
+            let mut app = make_app(&[make_package("a", &root)]);
+            let error = "error: failed to parse manifest at /very/long/project/path/with/more/characters/than/a/narrow/Package/pane/Cargo.toml";
+            app.scan.manifest_metadata.record_failure(&root, error);
+            for width in [100, 160, 240] {
+                let buffer = render_metadata_app(&mut app, width);
+                let inner = app.panes.package.viewport.content_area();
+                let mut rendered = String::new();
+                for y in inner.y..inner.bottom() {
+                    for x in inner.x..inner.right() {
+                        rendered.push_str(buffer[(x, y)].symbol());
+                    }
+                }
+                let without_spaces = |text: &str| {
+                    text.chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect::<String>()
+                };
+                assert!(
+                    without_spaces(&rendered).contains(&without_spaces(error)),
+                    "entire first line survives wrapping at width {width}: {rendered}"
+                );
+            }
+        }
+
+        fn render_manifest_metadata_pane(app: &mut App) -> Buffer { render_metadata_app(app, 240) }
+
+        #[test]
+        fn manifest_error_name_cell_keeps_later_columns_under_headers() {
+            let tmp = tempfile::tempdir().expect("short-name project");
+            let root = AbsolutePath::from(tmp.path().join("a"));
+            std::fs::create_dir(&root).expect("project folder");
+            let mut app = make_app(&[make_package("a", &root)]);
+            let baseline = render_manifest_metadata_pane(&mut app);
+            app.scan
+                .manifest_metadata
+                .record_failure(&root, "error: rejected manifest");
+            let failed = render_manifest_metadata_pane(&mut app);
+            let row_y = app.panes.project_list.body_rect.y;
+            let table_start = app.panes.project_list.body_rect.x;
+            let name_width = u16::try_from(app.project_list.cached_fit_widths.get(COL_NAME))
+                .expect("name width");
+            let table_end = table_start
+                + u16::try_from(app.project_list.cached_fit_widths.total_width())
+                    .expect("table width");
+            for x in table_start + name_width..table_end {
+                assert_eq!(
+                    failed[(x, row_y)].symbol(),
+                    baseline[(x, row_y)].symbol(),
+                    "later column must stay at its header coordinate x={x}"
+                );
+            }
+            let (marker_x, marker_y) =
+                find_text_cell_in_row(&failed, row_y, "a !").expect("row diagnostic marker");
+            assert_eq!(marker_y, row_y);
+            assert!(
+                marker_x + 3 < table_start + name_width,
+                "marker stays inside the name cell"
+            );
+            let (error_x, error_y) =
+                find_text_cell(&failed, "error: rejected manifest").expect("Package diagnostic");
+            assert!(
+                app.panes
+                    .package
+                    .viewport
+                    .content_area()
+                    .contains(Position::new(error_x, error_y))
+            );
+        }
+
+        #[test]
+        fn manifest_error_row_keeps_deleted_project_dismiss_target() {
+            let tmp = tempfile::tempdir().expect("deleted project");
+            let root = AbsolutePath::from(tmp.path().join("a"));
+            std::fs::create_dir(&root).expect("project folder");
+            let mut app = make_app(&[make_package("a", &root)]);
+            app.scan
+                .manifest_metadata
+                .record_failure(&root, "error: rejected manifest");
+            mark_deleted(&mut app, &root);
+            let buffer = render_manifest_metadata_pane(&mut app);
+            let (x, y) = find_text_cell(&buffer, "[x]").expect("visible dismiss suffix");
+            let hit = tui_pane::Hittable::hit_test_at(&app.panes.project_list, Position::new(x, y));
+            assert!(
+                matches!(hit,
+                    Some(HoverTarget::Dismiss(DismissTarget::DeletedProject(path))) if path == root
+                ),
+                "clicking the visible [x] must hit the deleted project"
+            );
         }
 
         #[test]
@@ -10313,6 +10644,7 @@ mod tests {
             let entries = super::as_entries(vec![item]);
             let widths = panes::compute_project_list_widths(
                 &entries,
+                &crate::tui::app::ManifestMetadataStates::default(),
                 std::slice::from_ref(&root_label),
                 true,
                 0,
@@ -10384,6 +10716,7 @@ mod tests {
             let entries = super::as_entries(vec![root]);
             let widths = panes::compute_project_list_widths(
                 &entries,
+                &crate::tui::app::ManifestMetadataStates::default(),
                 std::slice::from_ref(&root_label),
                 true,
                 0,
@@ -10724,6 +11057,7 @@ mod tests {
         use cargo_metadata::PackageId;
         use cargo_metadata::TargetKind;
         use cargo_metadata::semver::Version;
+        use tempfile::TempDir;
 
         use super::*;
         use crate::config;
@@ -10764,6 +11098,7 @@ mod tests {
         use crate::tui::app::ConfirmAction;
         use crate::tui::app::ConfirmationModalState;
         use crate::tui::app::ConfirmationReadiness;
+        use crate::tui::app::ProjectMetadataState;
         use crate::tui::app::phase_state::Denominator;
         use crate::tui::app::phase_state::FailureReason;
         use crate::tui::app::phase_state::PhaseLifecycle;
@@ -13908,11 +14243,440 @@ mod tests {
             );
         }
 
-        /// Error path: a failed arrival surfaces a "cargo metadata failed"
-        /// timed toast and still ticks the phase forward (so startup doesn't
-        /// wedge on a permanent failure).
+        fn orphan_manifest_fixture() -> TempDir {
+            let scratch = tempfile::tempdir().expect("orphan manifest root");
+            std::fs::create_dir(scratch.path().join("src")).expect("source directory");
+            std::fs::write(scratch.path().join("src/lib.rs"), "pub fn demo() {}\n")
+                .expect("source file");
+            std::fs::write(
+                scratch.path().join("Cargo.toml"),
+                "[package]\nname = \"orphan\"\nversion.workspace = true\nedition = \"2024\"\n",
+            )
+            .expect("orphan manifest");
+            scratch
+        }
+
+        fn orphan_manifest_failure(path: &Path) -> String {
+            let error = cargo_metadata::MetadataCommand::new()
+                .manifest_path(path.join("Cargo.toml"))
+                .no_deps()
+                .other_options(vec!["--offline".into()])
+                .exec()
+                .expect_err("Cargo rejects workspace inheritance");
+            match CargoMetadataError::from(error) {
+                CargoMetadataError::ManifestRejected { first_line } => first_line,
+                other => panic!("expected rejected manifest, got {other:?}"),
+            }
+        }
+
+        fn deliver_manifest_metadata(
+            app: &mut App,
+            workspace_root: &AbsolutePath,
+            result: Result<WorkspaceMetadata, CargoMetadataError>,
+        ) {
+            let generation = app
+                .scan
+                .metadata_store_handle()
+                .lock()
+                .expect("store")
+                .next_generation(workspace_root);
+            app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+                workspace_root: workspace_root.clone(),
+                generation,
+                fingerprint: ManifestFingerprint::capture(workspace_root).expect("fingerprint"),
+                result,
+            });
+        }
+
+        fn manifest_row_text(app: &mut App) -> String {
+            app.ensure_visible_rows_cached();
+            app.ensure_fit_widths_cached();
+            let holder = super::TestRenderCtxHolder {
+                ci_status_lookup: app.ci.status_lookup(),
+            };
+            let ctx = super::build_project_list_render_ctx_for_test(app, &holder);
+            let items = crate::tui::panes::render_tree_items(
+                &ctx,
+                &app.panes.project_list,
+                &app.panes.project_list.viewport,
+                &app.project_list.cached_fit_widths,
+            );
+            let area = ratatui::layout::Rect::new(0, 0, 320, 8);
+            let mut buffer = ratatui::buffer::Buffer::empty(area);
+            ratatui::widgets::Widget::render(ratatui::widgets::List::new(items), area, &mut buffer);
+            buffer
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect()
+        }
+
         #[test]
-        fn failed_metadata_arrival_surfaces_error_toast() {
+        fn orphan_manifest_metadata_error_is_on_its_row_without_toast() {
+            let scratch = orphan_manifest_fixture();
+            let project = scan::discover_project_item(scratch.path()).expect("discovered orphan");
+            let root = project.path().clone();
+            let error = orphan_manifest_failure(scratch.path());
+            let mut app = make_app(&[project]);
+            let toasts_before = app.framework.toasts.active_now().len();
+            deliver_manifest_metadata(
+                &mut app,
+                &root,
+                Err(CargoMetadataError::ManifestRejected {
+                    first_line: error.clone(),
+                }),
+            );
+
+            assert_eq!(
+                app.scan.manifest_metadata.for_project(&root),
+                &ProjectMetadataState::Failed {
+                    first_error_line: error,
+                }
+            );
+            let rendered = manifest_row_text(&mut app);
+            assert!(
+                rendered.contains(" !"),
+                "manifest error must be on its row: {rendered}"
+            );
+            assert_eq!(
+                rendered.matches(" !").count(),
+                1,
+                "one diagnostic on the project row"
+            );
+            assert_eq!(
+                app.framework.toasts.active_now().len(),
+                toasts_before,
+                "no error toast"
+            );
+            assert!(
+                app.startup.metadata.seen.contains(&root),
+                "failure completes metadata accounting"
+            );
+        }
+
+        #[test]
+        fn metadata_io_failure_keeps_toast_without_row_error() {
+            let scratch = orphan_manifest_fixture();
+            let project = scan::discover_project_item(scratch.path()).expect("discovered project");
+            let root = project.path().clone();
+            let mut app = make_app(&[project]);
+            for message in [
+                "failed to start cargo metadata: permission denied",
+                "`cargo metadata` exited with an error: error: toolchain is not installed",
+            ] {
+                let toasts_before = app.framework.toasts.active_now().len();
+                deliver_manifest_metadata(
+                    &mut app,
+                    &root,
+                    Err(CargoMetadataError::Other(message.into())),
+                );
+                assert_eq!(
+                    app.framework.toasts.active_now().len(),
+                    toasts_before + 1,
+                    "operational failure retains its error toast"
+                );
+                assert!(
+                    app.framework
+                        .toasts
+                        .active_now()
+                        .iter()
+                        .any(|toast| toast.body() == message)
+                );
+                assert_eq!(
+                    app.scan.manifest_metadata.for_project(&root),
+                    &ProjectMetadataState::NotLoaded
+                );
+                assert!(!manifest_row_text(&mut app).contains(message));
+                assert!(
+                    app.startup.metadata.seen.contains(&root),
+                    "failure still finishes accounting"
+                );
+            }
+        }
+
+        #[test]
+        fn non_rust_rescan_drops_retained_cargo_error() {
+            let scratch = orphan_manifest_fixture();
+            std::fs::create_dir(scratch.path().join(".git")).expect("Git directory");
+            let project = scan::discover_project_item(scratch.path()).expect("Rust project");
+            let root = project.path().clone();
+            let mut config = CargoPortConfig::default();
+            config.tui.include_non_rust = NonRustInclusion::Include;
+            let mut app = make_app_with_config(&[project], &config);
+            let error = "error: orphaned workspace member";
+            deliver_manifest_metadata(
+                &mut app,
+                &root,
+                Err(CargoMetadataError::ManifestRejected {
+                    first_line: error.into(),
+                }),
+            );
+            assert!(
+                manifest_row_text(&mut app).contains(" !"),
+                "retained Rust failure"
+            );
+            let rejected_fingerprint =
+                ManifestFingerprint::capture(&root).expect("rejected fingerprint");
+            std::fs::remove_file(root.join("Cargo.toml")).expect("remove manifest");
+            app.prepare_rescan();
+            app.handle_bg_msg(BackgroundMsg::ScanResult {
+                projects:     vec![RootItem::NonRust(NonRustProject::new(
+                    root.clone(),
+                    Some("a".into()),
+                ))],
+                disk_entries: Vec::new(),
+            });
+            assert!(app.scan.is_complete());
+            assert!(
+                !app.project_list.is_rust_at_path(&root),
+                "replacement is non-Rust"
+            );
+            assert!(
+                !manifest_row_text(&mut app).contains(" !"),
+                "no inherited Cargo error"
+            );
+            assert_eq!(
+                app.scan.manifest_metadata.for_project(&root),
+                &ProjectMetadataState::NotLoaded
+            );
+            let generation = app
+                .scan
+                .metadata_store_handle()
+                .lock()
+                .expect("store")
+                .next_generation(&root);
+            app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+                workspace_root: root.clone(),
+                generation,
+                fingerprint: rejected_fingerprint,
+                result: Err(CargoMetadataError::ManifestRejected {
+                    first_line: error.into(),
+                }),
+            });
+            assert_eq!(
+                app.scan.manifest_metadata.for_project(&root),
+                &ProjectMetadataState::NotLoaded,
+                "a late Rust reply cannot recreate state on the non-Rust replacement"
+            );
+        }
+
+        #[test]
+        fn completed_scan_drops_absent_manifest_state() {
+            let scratch = orphan_manifest_fixture();
+            let project = scan::discover_project_item(scratch.path()).expect("Rust project");
+            let root = project.path().clone();
+            let mut app = make_app(&[project]);
+            app.scan
+                .manifest_metadata
+                .record_failure(&root, "error: rejected manifest");
+            app.prepare_rescan();
+            assert!(
+                !app.scan.is_complete(),
+                "scan is in progress before its supplied result"
+            );
+            assert!(app.project_list.is_empty(), "rescan clears the old rows");
+            app.handle_bg_msg(BackgroundMsg::ScanResult {
+                projects:     Vec::new(),
+                disk_entries: Vec::new(),
+            });
+            assert!(app.scan.is_complete());
+            assert_eq!(
+                app.scan.manifest_metadata.for_project(&root),
+                &ProjectMetadataState::NotLoaded
+            );
+        }
+
+        #[test]
+        fn orphan_manifest_metadata_error_survives_completed_rescan_without_toast() {
+            let scratch = orphan_manifest_fixture();
+            let project = scan::discover_project_item(scratch.path()).expect("discovered orphan");
+            let root = project.path().clone();
+            let error = orphan_manifest_failure(scratch.path());
+            let mut app = make_app(&[project]);
+            deliver_manifest_metadata(
+                &mut app,
+                &root,
+                Err(CargoMetadataError::ManifestRejected {
+                    first_line: error.clone(),
+                }),
+            );
+            app.prepare_rescan();
+            assert!(
+                !app.scan.is_complete(),
+                "scan is in progress before its supplied result"
+            );
+            assert!(app.project_list.is_empty(), "rescan clears the old rows");
+            app.handle_bg_msg(BackgroundMsg::ScanResult {
+                projects:     vec![
+                    scan::discover_project_item(scratch.path()).expect("rediscovered orphan"),
+                ],
+                disk_entries: Vec::new(),
+            });
+            assert!(app.scan.is_complete(), "rescan completed");
+            assert_eq!(
+                app.scan.manifest_metadata.for_project(&root),
+                &ProjectMetadataState::Failed {
+                    first_error_line: error.clone(),
+                }
+            );
+            assert!(
+                manifest_row_text(&mut app).contains(" !"),
+                "replacement row retains its diagnostic before a new reply"
+            );
+            let toasts_before = app.framework.toasts.active_now().len();
+            deliver_manifest_metadata(
+                &mut app,
+                &root,
+                Err(CargoMetadataError::ManifestRejected { first_line: error }),
+            );
+            assert_eq!(manifest_row_text(&mut app).matches(" !").count(), 1);
+            assert_eq!(
+                app.framework.toasts.active_now().len(),
+                toasts_before,
+                "repeat failure adds no toast"
+            );
+        }
+
+        #[test]
+        fn orphan_manifest_metadata_error_clears_after_manifest_is_fixed() {
+            let scratch = orphan_manifest_fixture();
+            let project = scan::discover_project_item(scratch.path()).expect("discovered orphan");
+            let root = project.path().clone();
+            let error = orphan_manifest_failure(scratch.path());
+            let mut app = make_app(&[project]);
+            deliver_manifest_metadata(
+                &mut app,
+                &root,
+                Err(CargoMetadataError::ManifestRejected { first_line: error }),
+            );
+            assert!(
+                manifest_row_text(&mut app).contains(" !"),
+                "rejected state before the fix"
+            );
+
+            std::fs::write(
+                root.join("Cargo.toml"),
+                "[package]\nname = \"orphan\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            )
+            .expect("fixed manifest");
+            cargo_metadata::MetadataCommand::new()
+                .manifest_path(root.join("Cargo.toml"))
+                .no_deps()
+                .other_options(vec!["--offline".into()])
+                .exec()
+                .expect("Cargo accepts the fixed manifest");
+            let mut metadata = fake_metadata(&root);
+            metadata.fingerprint = ManifestFingerprint::capture(&root).expect("fixed fingerprint");
+            deliver_manifest_metadata(&mut app, &root, Ok(metadata));
+            let rendered = manifest_row_text(&mut app);
+            assert!(
+                rendered.contains(
+                    root.file_name()
+                        .expect("project directory name")
+                        .to_str()
+                        .expect("UTF-8 test path")
+                )
+            );
+            assert!(
+                !rendered.contains(" !"),
+                "accepted metadata clears the diagnostic"
+            );
+            assert_eq!(
+                app.scan.manifest_metadata.for_project(&root),
+                &ProjectMetadataState::Available
+            );
+        }
+
+        #[test]
+        fn stale_manifest_metadata_failure_does_not_mark_fixed_manifest() {
+            let scratch = orphan_manifest_fixture();
+            let project = scan::discover_project_item(scratch.path()).expect("discovered orphan");
+            let root = project.path().clone();
+            let fingerprint = ManifestFingerprint::capture(&root).expect("rejected fingerprint");
+            let mut app = make_app(&[project]);
+            let generation = app
+                .scan
+                .metadata_store_handle()
+                .lock()
+                .expect("store")
+                .next_generation(&root);
+            std::fs::write(
+                root.join("Cargo.toml"),
+                "[package]\nname = \"orphan\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            )
+            .expect("fixed manifest");
+
+            app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+                workspace_root: root.clone(),
+                generation,
+                fingerprint,
+                result: Err(CargoMetadataError::ManifestRejected {
+                    first_line: "outdated manifest rejection".into(),
+                }),
+            });
+
+            assert_eq!(
+                app.scan.manifest_metadata.for_project(&root),
+                &ProjectMetadataState::NotLoaded
+            );
+            assert!(!manifest_row_text(&mut app).contains("outdated manifest rejection"));
+            assert!(
+                !app.startup.metadata.seen.contains(&root),
+                "a fresh reply must finish accounting"
+            );
+        }
+
+        #[test]
+        fn manifest_metadata_error_is_not_repeated_on_expanded_worktree_group() {
+            let scratch = orphan_manifest_fixture();
+            let linked = tempfile::tempdir().expect("linked checkout");
+            let root = AbsolutePath::from(scratch.path());
+            let mut app = make_app(&[make_package_worktrees_item(
+                Package {
+                    path: root.clone(),
+                    name: Some("orphan".into()),
+                    worktree_status: WorktreeStatus::Primary { root: root.clone() },
+                    ..Package::default()
+                },
+                vec![Package {
+                    path: AbsolutePath::from(linked.path()),
+                    name: Some("linked".into()),
+                    worktree_status: WorktreeStatus::Linked {
+                        primary: root.clone(),
+                    },
+                    ..Package::default()
+                }],
+            )]);
+            let error = "error: orphaned workspace member";
+            deliver_manifest_metadata(
+                &mut app,
+                &root,
+                Err(CargoMetadataError::ManifestRejected {
+                    first_line: error.into(),
+                }),
+            );
+            app.project_list.expanded.remove(&ExpandKey::Node(0));
+            app.project_list
+                .recompute_visibility(app.config.include_non_rust().includes_non_rust());
+            assert_eq!(
+                manifest_row_text(&mut app).matches(" !").count(),
+                1,
+                "collapsed group shows its manifest failure"
+            );
+            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list
+                .recompute_visibility(app.config.include_non_rust().includes_non_rust());
+            assert_eq!(
+                manifest_row_text(&mut app).matches(" !").count(),
+                1,
+                "expanded group shows the failure only on the checkout"
+            );
+        }
+
+        /// A failed arrival stays on its row and still ticks the phase forward
+        /// so startup does not wedge on a permanent failure.
+        #[test]
+        fn failed_metadata_arrival_surfaces_row_error() {
             let project_a = make_project(Some("a"), "~/never-real/a");
             let mut app = make_app(std::slice::from_ref(&project_a));
             app.scan.state.phase = ScanPhase::Complete;
@@ -13926,24 +14690,36 @@ mod tests {
                 .expect("store")
                 .next_generation(&workspace_root);
 
+            let toasts_before = app.framework.toasts.active_now().len();
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: workspace_root.clone(),
                 generation,
                 fingerprint: fake_fingerprint(),
-                result: Err(CargoMetadataError::Other(
-                    "could not read Cargo.toml".into(),
-                )),
+                result: Err(CargoMetadataError::ManifestRejected {
+                    first_line: "could not read Cargo.toml".into(),
+                }),
             });
 
-            let error_toast_present = app
-                .framework
-                .toasts
-                .active_now()
-                .iter()
-                .any(|toast| toast.title().starts_with("cargo metadata failed"));
+            assert_eq!(
+                app.framework.toasts.active_now().len(),
+                toasts_before,
+                "failure adds no toast"
+            );
+            assert_eq!(
+                app.scan.manifest_metadata.for_project(&workspace_root),
+                &ProjectMetadataState::Failed {
+                    first_error_line: "could not read Cargo.toml".into(),
+                }
+            );
+            let rendered = manifest_row_text(&mut app);
+            assert!(rendered.contains(" !"));
             assert!(
-                error_toast_present,
-                "failure raises a timed error toast starting with 'cargo metadata failed'"
+                !rendered.contains("[91m"),
+                "Cargo color codes are not row text"
+            );
+            assert!(
+                !rendered.contains("additional Cargo context"),
+                "only the first error line is shown"
             );
             assert!(
                 app.startup.metadata.seen.contains(&workspace_root),
@@ -13953,9 +14729,7 @@ mod tests {
 
         /// `WorkspaceMissing` (workspace deleted between dispatch and run, e.g. after
         /// the user removes a worktree) must NOT raise a user-facing toast — it's a
-        /// stale-refresh race, not a real failure. Compare with the prior test which
-        /// asserts `Other` does raise a toast: the two together pin down the
-        /// dispatch contract on `CargoMetadataError`.
+        /// stale-refresh race, not a real failure or a row diagnostic.
         #[test]
         fn cargo_metadata_workspace_missing_does_not_raise_toast() {
             let tmp = tempfile::tempdir().expect("create test tempdir");
@@ -13993,6 +14767,10 @@ mod tests {
             assert!(
                 app.startup.metadata.seen.contains(&workspace_root),
                 "WorkspaceMissing must still tick the phase forward"
+            );
+            assert_eq!(
+                app.scan.manifest_metadata.for_project(&workspace_root),
+                &ProjectMetadataState::NotLoaded
             );
         }
 
@@ -16762,6 +17540,7 @@ mod tests {
             .resolved_root_labels(app.config.include_non_rust().includes_non_rust());
         let widths = crate::tui::panes::compute_project_list_widths(
             &app.project_list,
+            &app.scan.manifest_metadata,
             &labels,
             app.config.lint_enabled(),
             0,
@@ -16806,6 +17585,7 @@ mod tests {
             .resolved_root_labels(app.config.include_non_rust().includes_non_rust());
         let widths = crate::tui::panes::compute_project_list_widths(
             &app.project_list,
+            &app.scan.manifest_metadata,
             &labels,
             app.config.lint_enabled(),
             0,

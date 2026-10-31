@@ -118,7 +118,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Gotchas:** a `.cargo/` folder outside the configured roots that is deleted and made again gets its watch back only at the next rescan (CHANGELOG). A project made inside an existing folder with no role is found by the next full rescan.
 
-### Phase 2d — A manifest cargo cannot read shows once on its row  · status: todo
+### Phase 2d — A manifest cargo cannot read shows once on its row  · status: done
 
 **Why:** user report 2026-10-29, both machines. `~/rust/hana_demo/f3a25eaca/crates/hana/Cargo.toml` is a workspace member copied out of its workspace (`*.workspace = true` with no workspace root). Each scan shows a timed "cargo metadata failed" error toast for it (`tui/app/async_tasks/metadata_handlers.rs:61`). Showrunner approved 2026-10-29: current, right after 2b.
 
@@ -148,6 +148,10 @@ you need to create a new unit to handle all cargo port enhancements it should be
 - `crates/cargo-port/src/tui/app/mod.rs` — tests
 - `crates/cargo-port/src/tui/state/scan.rs` — `Scan` owns the per-manifest metadata state (owner approved during the phase)
 - `crates/cargo-port/src/tui/app/manifest_metadata.rs` — the per-manifest metadata state type
+- `crates/cargo-port/src/scan/cargo_metadata.rs` — `CargoMetadataError::from` classifies a rejected manifest once
+- `crates/cargo-port/src/tui/panes/package/` and `tui/panes/pane_data/detail_data.rs` — the Package pane shows the diagnostic
+- `crates/cargo-port/src/tui/panes/description.rs`, `tui/panes/widths.rs`, `tui/app/navigation/cache.rs` — layout and cache for the diagnostic rows
+- `crates/cargo-port/src/tui/render.rs` — `clip_rows_with_ellipsis`, shared by the description and the diagnostic
 - `crates/cargo-port/CHANGELOG.md`
 
 **Workers:** 1 writer (`impl`), who also writes the tests.

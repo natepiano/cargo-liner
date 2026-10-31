@@ -34,6 +34,7 @@ use crate::constants::GIT_UNREADABLE_LABEL;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::LintStatus;
 use crate::project::PinnedCommit;
+use crate::tui::app::ProjectMetadataState;
 use crate::tui::integration;
 use crate::tui::panes;
 use crate::tui::panes::DescriptionBlock;
@@ -622,6 +623,52 @@ struct ProjectPanelRender<'a> {
     synced_description_height: SyncedDescriptionHeight,
 }
 
+/// Shared wrapping for the selected diagnostic and the top-pane height fit.
+pub(in crate::tui::panes) fn manifest_error_lines(
+    state: &ProjectMetadataState,
+    pane_width: u16,
+) -> Vec<String> {
+    match state {
+        ProjectMetadataState::Failed { first_error_line } => {
+            let width = tui_pane::frame_inner(Rect::new(0, 0, pane_width, u16::MAX)).width;
+            support::word_wrap(first_error_line, usize::from(width))
+        },
+        ProjectMetadataState::NotLoaded | ProjectMetadataState::Available => Vec::new(),
+    }
+}
+
+/// Draw the diagnostic above selectable Package fields and return their area.
+fn render_manifest_error_header(
+    frame: &mut Frame,
+    area: Rect,
+    state: &ProjectMetadataState,
+) -> Rect {
+    let pane_inner = tui_pane::frame_inner(area);
+    let diagnostic = manifest_error_lines(state, area.width);
+    let diagnostic_height = u16::try_from(diagnostic.len())
+        .unwrap_or(u16::MAX)
+        .min(pane_inner.height.div_ceil(2))
+        .min(pane_inner.height.saturating_sub(1));
+    let diagnostic = render::clip_rows_with_ellipsis(
+        &diagnostic,
+        usize::from(diagnostic_height),
+        usize::from(pane_inner.width),
+    );
+    frame.render_widget(
+        Paragraph::new(diagnostic.into_iter().map(Line::from).collect::<Vec<_>>())
+            .style(Style::default().fg(error_color())),
+        Rect {
+            height: diagnostic_height,
+            ..pane_inner
+        },
+    );
+    Rect {
+        y: pane_inner.y.saturating_add(diagnostic_height),
+        height: pane_inner.height.saturating_sub(diagnostic_height),
+        ..pane_inner
+    }
+}
+
 /// Body of `PackagePane::render`. Reads pane state through
 /// `pane: &mut PackagePane` and the typed `PaneRenderCtx` instead
 /// of the whole `App`.
@@ -653,11 +700,18 @@ pub(super) fn render_package_pane_body(
         focused: matches!(pane_focus_state, PaneFocusState::Active),
         ..PaneFrameChrome::default()
     };
-    let project_inner = tui_pane::frame_inner(area);
+    let pane_inner = tui_pane::frame_inner(area);
+    let metadata_state = ctx
+        .selected_project_path
+        .map_or(&ProjectMetadataState::NotLoaded, |path| {
+            ctx.scan.manifest_metadata.for_project(path)
+        });
+    let project_inner = render_manifest_error_header(frame, area, metadata_state);
 
     {
         let viewport = &mut pane.viewport;
-        viewport.set_content_area(project_inner);
+        // The diagnostic is fixed above the normal, selectable Package content.
+        viewport.set_content_area(pane_inner);
         viewport.set_viewport_rows(usize::from(project_inner.height));
     }
     let context = ProjectPanelRender {
@@ -671,7 +725,8 @@ pub(super) fn render_package_pane_body(
 
     // `render_project_description` runs first because its returned `description_height` fixes the
     // description region's rendered lines for this frame's `package_region` tree.
-    let description_height = render_project_description(frame, &context, area, project_inner);
+    let description_height =
+        render_project_description(frame, &context, area, project_inner, metadata_state);
     let separator = u16::from(
         description_height > 0
             && project_inner.y.saturating_add(description_height) < project_inner.bottom(),
@@ -789,6 +844,7 @@ fn render_project_description(
     context: &ProjectPanelRender<'_>,
     area: Rect,
     project_inner: Rect,
+    metadata_state: &ProjectMetadataState,
 ) -> u16 {
     let lower_metadata_height = package_lower_metadata_height(context.pkg_data, context.rows);
     let reserved_lower_height = u16::from(lower_metadata_height > 0);
@@ -797,6 +853,20 @@ fn render_project_description(
     let baseline_max = project_inner
         .height
         .saturating_sub(reserved_lower_height.saturating_add(reserved_separator_height));
+    let (baseline_max, synced_floor) = match metadata_state {
+        ProjectMetadataState::Failed { .. } => {
+            // Leave one field row and its separator; the description yields,
+            // including its shared height floor, even in a short pane.
+            let max_description = project_inner.height.saturating_sub(2);
+            (
+                max_description,
+                context.synced_description_height.capped_at(max_description),
+            )
+        },
+        ProjectMetadataState::NotLoaded | ProjectMetadataState::Available => {
+            (baseline_max, context.synced_description_height)
+        },
+    };
     // `DescriptionBlock::for_pane` rebuilds the wrapped rows used for the frame's synchronized
     // description height; `block.render_with_selection` draws those owned rows so content cannot
     // drift from the height used for inter-pane synchronization.
@@ -808,7 +878,7 @@ fn render_project_description(
     block.render_with_selection(
         frame,
         project_inner,
-        context.synced_description_height,
+        synced_floor,
         baseline_max,
         tui_pane::selection_state(context.pane, 0, context.focus),
     )
