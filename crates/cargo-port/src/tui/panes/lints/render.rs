@@ -78,8 +78,8 @@ fn build_lint_rows(
     let mut rows = Vec::new();
     let mut current_date = String::new();
 
-    for (row_index, run) in runs.iter().enumerate() {
-        let date = super::super::format_date(&run.started_at);
+    for (row_index, lint_run) in runs.iter().enumerate() {
+        let date = super::super::format_date(&lint_run.started_at);
         let date_cell = if date == current_date {
             Cell::from("")
         } else {
@@ -87,28 +87,28 @@ fn build_lint_rows(
             Cell::from(Span::styled(date, date_style))
         };
 
-        let start_time = super::super::format_time(&run.started_at);
-        let end_time = run
+        let start_time = super::super::format_time(&lint_run.started_at);
+        let end_time = lint_run
             .finished_at
             .as_deref()
             .map_or_else(|| "—".to_string(), super::super::format_time);
-        let duration = super::super::format_duration(run.duration_ms);
+        let duration = super::super::format_duration(lint_run.duration_ms);
         let size = sizes
             .get(row_index)
             .copied()
             .flatten()
             .map_or_else(|| "—".to_string(), render::format_bytes);
 
-        let (result_cell, row_style) = match run.status {
+        let (result_cell, row_style) = match lint_run.status {
             LintRunStatus::Running => {
                 let spinner = running_lint_spinner(animation_elapsed);
-                let phase = phases
+                let lint_run_phase = phases
                     .get(row_index)
                     .copied()
                     .unwrap_or(LintRunPhase::Executing);
                 (
                     Cell::from(spinner),
-                    Style::default().fg(state::lint_running_spinner_color(phase)),
+                    Style::default().fg(state::lint_running_spinner_color(lint_run_phase)),
                 )
             },
             LintRunStatus::Passed => (Cell::from("passed"), Style::default().fg(success_color())),
@@ -120,7 +120,7 @@ fn build_lint_rows(
             },
         };
 
-        let selection = tui_pane::selection_state(pane, row_index, focus);
+        let pane_selection_state = tui_pane::selection_state(pane, row_index, focus);
         rows.push(
             Row::new(vec![
                 date_cell,
@@ -142,7 +142,7 @@ fn build_lint_rows(
                 ),
                 result_cell,
             ])
-            .style(selection.patch(row_style)),
+            .style(pane_selection_state.patch(row_style)),
         );
     }
 
@@ -160,7 +160,7 @@ pub fn render_lints_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut Lint,
-    ctx: &PaneRenderCtx<'_>,
+    pane_render_ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
     let Some(lints_data) = pane.content().cloned() else {
         return empty_lints_chrome(" No Lint Runs ");
@@ -168,7 +168,7 @@ pub fn render_lints_pane_body(
 
     let focused = pane.focus.is_focused();
     let title = lints_panel_title(&lints_data, focused, pane.viewport.pos());
-    let mut chrome = PaneFrameChrome {
+    let mut pane_frame_chrome = PaneFrameChrome {
         title,
         focused: focused && !lints_data.runs.is_empty(),
         ..PaneFrameChrome::default()
@@ -183,7 +183,7 @@ pub fn render_lints_pane_body(
 
     if lints_data.runs.is_empty() {
         pane.viewport.set_len(0);
-        return chrome;
+        return pane_frame_chrome;
     }
 
     let viewport_clone = pane.viewport.clone();
@@ -192,7 +192,7 @@ pub fn render_lints_pane_body(
         &lints_data.runs,
         &lints_data.sizes,
         &lints_data.phases,
-        ctx.animation_elapsed,
+        pane_render_ctx.animation_elapsed,
         &viewport_clone,
         pane_focus_state,
     );
@@ -231,13 +231,15 @@ pub fn render_lints_pane_body(
     *table_state.offset_mut() = pane.viewport.scroll_offset();
     frame.render_stateful_widget(table, inner, &mut table_state);
     pane.viewport.set_scroll_offset(table_state.offset());
-    chrome.labels.extend(tui_pane::overflow_affordance_label(
-        area,
-        pane.viewport.overflow(),
-        Style::default().fg(label_color()),
-    ));
+    pane_frame_chrome
+        .labels
+        .extend(tui_pane::overflow_affordance_label(
+            area,
+            pane.viewport.overflow(),
+            Style::default().fg(label_color()),
+        ));
 
-    let _ = ctx;
+    let _ = pane_render_ctx;
 
-    chrome
+    pane_frame_chrome
 }

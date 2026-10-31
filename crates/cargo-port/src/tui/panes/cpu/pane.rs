@@ -26,9 +26,9 @@ enum CpuMonitorSlot {
 
 impl CpuMonitorSlot {
     fn new(cpu_config: &CpuConfig, startup_services: &StartupServices) -> Self {
-        let effect = startup_services.cpu_monitor_effect();
-        startup_services.record_cpu_monitor(effect);
-        match effect {
+        let startup_effect = startup_services.cpu_monitor_effect();
+        startup_services.record_cpu_monitor(startup_effect);
+        match startup_effect {
             StartupEffect::Real => Self::Active(CpuMonitor::new(cpu_config.poll_ms)),
             StartupEffect::Suppressed => {
                 let (_sample_tx, samples) = channel::unbounded();
@@ -120,8 +120,8 @@ impl CpuPane {
     }
 
     pub fn tick(&mut self) {
-        if let Some(usage) = self.monitor.latest() {
-            self.sample_phase = CpuSamplePhase::Sampled(usage);
+        if let Some(cpu_usage) = self.monitor.latest() {
+            self.sample_phase = CpuSamplePhase::Sampled(cpu_usage);
         }
     }
 

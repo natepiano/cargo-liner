@@ -39,6 +39,7 @@ use crate::tui::columns::COL_DISK;
 use crate::tui::columns::COL_MAIN;
 use crate::tui::columns::COL_NAME;
 use crate::tui::columns::COL_SYNC;
+use crate::tui::columns::LintColumnStatus;
 use crate::tui::columns::ProjectListWidths;
 use crate::tui::project_list_state::ProjectList;
 use crate::tui::render;
@@ -49,10 +50,10 @@ pub(in crate::tui) fn compute_project_list_widths(
     entries: &ProjectList,
     metadata: &ManifestMetadataStates,
     root_labels: &[String],
-    lint_enabled: bool,
+    lint_column: LintColumnStatus,
     generation: u64,
 ) -> ProjectListWidths {
-    let mut widths = ProjectListWidths::new(lint_enabled);
+    let mut widths = ProjectListWidths::new(lint_column);
     for (index, entry) in entries.iter().enumerate() {
         observe_item_fit_widths(&mut widths, entries, metadata, entry, &root_labels[index]);
     }

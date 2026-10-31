@@ -21,7 +21,7 @@ use crate::watcher::WatcherMsg;
 impl App {
     pub(super) fn respawn_watcher(&mut self) {
         let watch_roots = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
-        let new_watcher = self.startup_services.spawn_watcher(WatcherStartup {
+        let watcher_handle = self.startup_services.spawn_watcher(WatcherStartup {
             watch_roots:    &watch_roots,
             background_tx:  self.background.background_sender(),
             ci_run_count:   self.config.ci_run_count(),
@@ -31,11 +31,12 @@ impl App {
             lint_runtime:   self.lint.runtime_clone(),
             metadata_store: self.scan.metadata_store_handle(),
         });
-        self.background.replace_watcher(new_watcher);
+        self.background.replace_watcher(watcher_handle);
     }
     pub(in crate::tui::app) fn register_existing_projects(&self) {
-        self.project_list.for_each_leaf(|item| {
-            self.background.register_item_background_services(item);
+        self.project_list.for_each_leaf(|project_entry| {
+            self.background
+                .register_item_background_services(project_entry);
         });
     }
     pub(in crate::tui::app) fn finish_watcher_registration_batch(&self) {
@@ -70,9 +71,10 @@ impl App {
     /// [`BackgroundMsg::LintHistoryLoaded`], applied by
     /// [`Self::apply_lint_history_loaded`].
     pub(in crate::tui::app) fn refresh_lint_runs_from_disk(&self) {
-        let effect = self.startup_services.lint_history_hydration_effect();
-        self.startup_services.record_lint_history_hydration(effect);
-        if effect == StartupEffect::Suppressed {
+        let startup_effect = self.startup_services.lint_history_hydration_effect();
+        self.startup_services
+            .record_lint_history_hydration(startup_effect);
+        if startup_effect == StartupEffect::Suppressed {
             self.refresh_lint_cache_usage_from_disk();
             return;
         }
@@ -101,8 +103,8 @@ impl App {
     /// selected project's lint runs render.
     pub(super) fn apply_lint_history_loaded(&mut self, entries: Vec<(AbsolutePath, Vec<LintRun>)>) {
         for (path, runs) in entries {
-            if let Some(lr) = self.project_list.lint_at_path_mut(path.as_path()) {
-                lr.set_hydrated_runs(runs);
+            if let Some(lint_runs) = self.project_list.lint_at_path_mut(path.as_path()) {
+                lint_runs.set_hydrated_runs(runs);
             }
             self.startup.lint_phase.seen.insert(path);
         }
@@ -116,14 +118,15 @@ impl App {
         if !self.project_list.is_rust_at_path(project_path) {
             return;
         }
-        let effect = self.startup_services.lint_history_hydration_effect();
-        self.startup_services.record_lint_history_hydration(effect);
-        if effect == StartupEffect::Suppressed {
+        let startup_effect = self.startup_services.lint_history_hydration_effect();
+        self.startup_services
+            .record_lint_history_hydration(startup_effect);
+        if startup_effect == StartupEffect::Suppressed {
             return;
         }
         let runs = lint::read_history(project_path);
-        if let Some(lr) = self.project_list.lint_at_path_mut(project_path) {
-            lr.set_hydrated_runs(runs);
+        if let Some(lint_runs) = self.project_list.lint_at_path_mut(project_path) {
+            lint_runs.set_hydrated_runs(runs);
         }
     }
     /// Spawn the lint-cache-size disk walk on the tokio blocking pool.
@@ -134,9 +137,9 @@ impl App {
     /// of `~/Library/Caches/cargo-port/lint-runs`, which can hold
     /// thousands of archived run files.
     pub(in crate::tui) fn refresh_lint_cache_usage_from_disk(&self) {
-        let effect = self.startup_services.lint_cache_scan_effect();
-        self.startup_services.record_lint_cache_scan(effect);
-        if effect == StartupEffect::Suppressed {
+        let startup_effect = self.startup_services.lint_cache_scan_effect();
+        self.startup_services.record_lint_cache_scan(startup_effect);
+        if startup_effect == StartupEffect::Suppressed {
             return;
         }
         let cache_size_bytes = self
@@ -148,11 +151,11 @@ impl App {
         let sender = self.background.background_sender();
         let handle = self.net.http_client().handle;
         handle.spawn(async move {
-            let usage =
+            let cache_usage =
                 tokio::task::spawn_blocking(move || lint::retained_cache_usage(cache_size_bytes))
                     .await
                     .unwrap_or_default();
-            let _ = sender.send(BackgroundMsg::LintCacheUsage { usage });
+            let _ = sender.send(BackgroundMsg::LintCacheUsage { usage: cache_usage });
         });
     }
     pub(in crate::tui::app) fn lint_runtime_projects(&self) -> Vec<RegisterProjectRequest> {
@@ -162,18 +165,25 @@ impl App {
         self.project_list
             .lint_runtime_root_entries()
             .into_iter()
-            .filter(|entry| !self.project_list.is_deleted(entry.path.as_path()))
-            .map(|entry| {
-                RegisterProjectRequest::new(project::home_relative_path(&entry.path), entry.path)
-                    .with_linked_primary_root(entry.linked_primary_root)
+            .filter(|lint_runtime_root_entry| {
+                !self
+                    .project_list
+                    .is_deleted(lint_runtime_root_entry.path.as_path())
+            })
+            .map(|lint_runtime_root_entry| {
+                RegisterProjectRequest::new(
+                    project::home_relative_path(&lint_runtime_root_entry.path),
+                    lint_runtime_root_entry.path,
+                )
+                .with_linked_primary_root(lint_runtime_root_entry.linked_primary_root)
             })
             .collect()
     }
     pub(super) fn sync_lint_runtime_projects(&self) {
-        let Some(runtime) = self.lint.runtime() else {
+        let Some(runtime_handle) = self.lint.runtime() else {
             return;
         };
-        runtime.sync_projects(self.lint_runtime_projects());
+        runtime_handle.sync_projects(self.lint_runtime_projects());
     }
     pub(super) fn register_lint_project_if_eligible(&self, item: &RootItem) {
         if !item.is_rust() {
@@ -186,7 +196,7 @@ impl App {
             return;
         }
         let path = item.path();
-        let Some(runtime) = self.lint.runtime() else {
+        let Some(runtime_handle) = self.lint.runtime() else {
             tracing::trace!(
                 target: PERF_LOG_TARGET,
                 reason = "no_runtime",
@@ -231,7 +241,7 @@ impl App {
             RootItem::Worktrees(group) => group.primary.linked_primary_root(),
             RootItem::NonRust(_) => None,
         };
-        runtime.register_project(
+        runtime_handle.register_project(
             RegisterProjectRequest::new(item.display_path().into_string(), path.clone())
                 .with_linked_primary_root(linked_primary_root),
         );
@@ -253,7 +263,7 @@ impl App {
         let Some(runtime) = self.lint.runtime().cloned() else {
             return;
         };
-        let on_discovery = self.config.current().lint.on_discovery;
+        let discovery_lint = self.config.current().lint.on_discovery;
 
         let mut pending: Vec<(AbsolutePath, Option<SystemTime>)> = Vec::new();
         for request in self.lint_runtime_projects() {
@@ -270,11 +280,11 @@ impl App {
             };
             // `LintRuns::cached_status` excludes live and pending lint states,
             // so startup never triggers a second run for those projects.
-            let Some(cached) = runs.cached_status() else {
+            let Some(cached_lint_status) = runs.cached_status() else {
                 continue;
             };
             let max_source_mtime = self.startup.source_mtimes.get(&request.abs_path).copied();
-            if cached.should_lint_on_startup(max_source_mtime, on_discovery) {
+            if cached_lint_status.should_lint_on_startup(max_source_mtime, discovery_lint) {
                 pending.push((request.abs_path, max_source_mtime));
             }
         }
@@ -298,7 +308,10 @@ impl App {
 fn item_is_linked_worktree(item: &RootItem) -> bool {
     match item {
         RootItem::Rust(project) => project.worktree_status().is_linked_worktree(),
-        RootItem::Worktrees(group) => group.primary.worktree_status().is_linked_worktree(),
+        RootItem::Worktrees(worktree_group) => worktree_group
+            .primary
+            .worktree_status()
+            .is_linked_worktree(),
         RootItem::NonRust(_) => false,
     }
 }

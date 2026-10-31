@@ -32,13 +32,21 @@ pub(super) struct VisibilityFindingContext {
 }
 
 pub(super) fn visibility_finding_context(
-    ctx: &VisibilityContext<'_, '_>,
-    item: &ItemInfo<'_>,
+    visibility_context: &VisibilityContext<'_, '_>,
+    item_info: &ItemInfo<'_>,
 ) -> VisibilityFindingContext {
-    let crate_kind = policy::crate_kind_for_root(ctx.root_module, &ctx.settings.package_root);
-    let config_rel_path = settings::config_relative_path_for_settings(item.file_path, ctx.settings);
-    let parent_module = ctx.tcx.parent_module_from_def_id(item.def_id);
-    let parent_visibility = if ctx
+    let crate_kind = policy::crate_kind_for_root(
+        visibility_context.root_module,
+        &visibility_context.settings.package_root,
+    );
+    let config_rel_path = settings::config_relative_path_for_settings(
+        item_info.file_path,
+        visibility_context.settings,
+    );
+    let parent_module = visibility_context
+        .tcx
+        .parent_module_from_def_id(item_info.def_id);
+    let parent_visibility = if visibility_context
         .tcx
         .local_visibility(parent_module.to_local_def_id())
         .is_public()
@@ -47,8 +55,10 @@ pub(super) fn visibility_finding_context(
     } else {
         ParentVisibility::Private
     };
-    let module_location = policy::resolve_module_location(ctx.tcx, parent_module.to_local_def_id());
-    let logical_module_depth = policy::module_depth(ctx.tcx, parent_module.to_local_def_id());
+    let module_location =
+        policy::resolve_module_location(visibility_context.tcx, parent_module.to_local_def_id());
+    let logical_module_depth =
+        policy::module_depth(visibility_context.tcx, parent_module.to_local_def_id());
 
     VisibilityFindingContext {
         crate_kind,

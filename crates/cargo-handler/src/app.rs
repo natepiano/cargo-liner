@@ -9,6 +9,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Constraint;
+use ratatui::layout::Layout;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use tui_pane::AppContext;
@@ -33,6 +36,7 @@ use tui_pane::SettingStep;
 use tui_pane::SettingsHost;
 use tui_pane::TerminalApp;
 use tui_pane::TileGridHost;
+use tui_pane::ToastVisualDeadline;
 use tui_pane::VisualDeadline;
 
 use crate::agent_cell;
@@ -99,8 +103,31 @@ pub(crate) enum AppPaneId {
     Favorites,
 }
 
+/// Only a clock request may reuse a body from an earlier frame.
+#[derive(Clone, Copy, Default)]
+enum FrameRequest {
+    #[default]
+    Full,
+    StatusClock,
+}
+
+/// Geometry and toast timing belong to the retained body they validate.
+#[derive(Default)]
+enum PaintedFrame {
+    #[default]
+    Absent,
+    Current {
+        buffer:       Box<Buffer>,
+        toast_change: ToastVisualDeadline,
+    },
+}
+
 /// Top-level application state.
 pub(crate) struct App {
+    frame_request:                FrameRequest,
+    painted_frame:                PaintedFrame,
+    #[cfg(test)]
+    full_frames:                  usize,
     /// Framework state — overlays, panes, toasts, settings pane.
     pub(crate) framework:         Framework<Self>,
     /// Resolved bindings.
@@ -152,6 +179,23 @@ pub(crate) struct App {
 }
 
 impl App {
+    #[cfg(test)]
+    pub(crate) const fn full_frame_count(&self) -> usize { self.full_frames }
+
+    /// Request the status clock without changing the tile body.
+    pub(crate) const fn request_clock_frame(&mut self) {
+        self.frame_request = FrameRequest::StatusClock;
+    }
+
+    /// Events and changed data require a new body, including selection hit geometry.
+    pub(crate) fn invalidate_body(&mut self) {
+        self.painted_frame = PaintedFrame::Absent;
+        self.frame_request = FrameRequest::Full;
+    }
+
+    /// A repaint from the runner, rather than the status clock, paints the full frame.
+    pub(crate) const fn prepare_full_frame(&mut self) { self.frame_request = FrameRequest::Full; }
+
     /// Discard preferences for session or machine-pool tiles no longer present.
     pub(crate) fn prune_tree_sorts(&mut self) {
         let machines = self
@@ -203,6 +247,10 @@ impl App {
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         Ok(Self {
+            #[cfg(test)]
+            full_frames: 0,
+            frame_request: FrameRequest::Full,
+            painted_frame: PaintedFrame::Absent,
             framework,
             keymap: Rc::new(keymap),
             loaded_config,
@@ -314,14 +362,56 @@ impl TerminalApp for App {
     fn keymap(&self) -> Rc<Keymap<Self>> { Rc::clone(&self.keymap) }
 
     fn draw(&mut self, frame: &mut Frame, keymap: &Keymap<Self>) {
+        let now = Instant::now();
+        let toast_change = self.framework.toasts.next_visual_change_deadline(now);
+        let stable_layers = !self.attract.showing()
+            && !self.favorites_overlay.is_open()
+            && self.framework.overlay().is_none();
+        if matches!(self.frame_request, FrameRequest::StatusClock)
+            && stable_layers
+            && let PaintedFrame::Current {
+                buffer,
+                toast_change: painted_toast_change,
+            } = &self.painted_frame
+            && buffer.area == frame.area()
+            && *painted_toast_change == toast_change
+            && !matches!(toast_change, ToastVisualDeadline::At(at) if now >= at)
+        {
+            frame.buffer_mut().content.clone_from_slice(&buffer.content);
+            let [_, status] = Layout::vertical([
+                Constraint::Min(0),
+                Constraint::Length(crate::constants::STATUS_LINE_HEIGHT),
+            ])
+            .areas(frame.area());
+            render::draw_status_line(frame, self, keymap, status);
+            self.frame_request = FrameRequest::Full;
+            return;
+        }
+        #[cfg(test)]
+        {
+            self.full_frames += 1;
+        }
         render::draw(frame, self, keymap);
+        self.painted_frame = if stable_layers {
+            PaintedFrame::Current {
+                buffer: Box::new(frame.buffer_mut().clone()),
+                toast_change,
+            }
+        } else {
+            PaintedFrame::Absent
+        };
+        self.frame_request = FrameRequest::Full;
     }
 
     fn scroll(&mut self, position: Position, direction: ScrollDirection) {
+        self.invalidate_body();
         tui_pane::handle_tile_scroll(self, position, direction);
     }
 
-    fn click(&mut self, position: Position) { tui_pane::handle_tile_click(self, position); }
+    fn click(&mut self, position: Position) {
+        self.invalidate_body();
+        tui_pane::handle_tile_click(self, position);
+    }
 
     /// Settling the window costs several round trips to the window
     /// server, which is far longer than a frame, and `terminal.draw` is
@@ -342,6 +432,7 @@ impl TerminalApp for App {
     /// scope does not bind is still its own, and disarms a pending
     /// delete rather than reaching a global.
     fn modal_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
+        self.invalidate_body();
         tui_pane::dispatch_favorites_key(self, keymap, bind)
     }
 
@@ -354,7 +445,10 @@ impl TerminalApp for App {
         tui_pane::dispatch_attract_key(self, keymap, bind)
     }
 
-    fn resized(&mut self, area: Rect) { self.attract.record_terminal_resize(area); }
+    fn resized(&mut self, area: Rect) {
+        self.invalidate_body();
+        self.attract.record_terminal_resize(area);
+    }
 
     /// The attract screen reclamps its parameters to the new size, so
     /// an open favorites table re-marks which row matches them.
@@ -413,15 +507,235 @@ impl FavoritesHost for App {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    fn wheel_test_app_with_agents() -> App {
+        let mut app = App::new_for_test().expect("test app");
+        let rows = (1..=4)
+            .map(|pid| {
+                serde_json::from_value::<AgentRow>(serde_json::json!({
+                    "agent":"claude", "name":format!("agent-{pid}"), "pid":pid,
+                    "started":100, "process_started":100, "directory":"/fixture",
+                    "status":"idle", "children":[{
+                        "kind":"shell", "depth":0, "pid":9000+pid,
+                        "name":format!("build-for-{pid}"), "started":100
+                    }]
+                }))
+                .expect("a fixture agent")
+            })
+            .collect();
+        app.census.apply(CensusUpdate::Local {
+            rows,
+            hierarchy: HierarchyEdges::default().into(),
+            stage: ScanStage::Completed,
+        });
+        app
+    }
+
+    fn draw_settled_wheel_frame(app: &mut App, terminal: &mut Terminal<TestBackend>) {
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("tile frame");
+        app.tiles.settle_for_test();
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("settled tile frame");
+    }
+
+    fn open_overflowing_shortcuts(app: &mut App, terminal: &mut Terminal<TestBackend>) -> Rect {
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        keymap.dispatch_framework_global(GlobalAction::OpenGlobalShortcuts, app);
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("overlay frame");
+        let viewport = app.framework.global_shortcuts_pane.viewport();
+        assert!(
+            viewport.content_height() > viewport.visible_rows(),
+            "overlay must overflow"
+        );
+        viewport.content_area()
+    }
+
+    #[test]
+    fn shortcuts_overlay_wheel_scrolls_and_keeps_tiles_still() {
+        let mut app = wheel_test_app_with_agents();
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 16))
+            .expect("test terminal");
+        draw_settled_wheel_frame(&mut app, &mut terminal);
+        let summary = SelectionSurface::Summary;
+        let state = app.selections.surface(&summary).expect("summary state");
+        assert!(
+            state.viewport().len() > 1,
+            "summary needs selectable agents"
+        );
+        let selection_before = (state.viewport().pos(), state.viewport().scroll_offset());
+        let summary_area = state.viewport().content_area();
+        let outside = Position::new(summary_area.x, summary_area.y);
+        let tile_before = app.tiles.hit_test_at(outside);
+        assert!(matches!(tile_before, Some(tui_pane::TilePick::Cell(_))));
+        assert!(
+            app.tiles
+                .placements(app.selection_area, app.loaded_config.config.tiles.growth())
+                .iter()
+                .any(
+                    |placement| matches!(placement.content, tui_pane::TileContent::Summary)
+                        && placement.frame.inner().contains(outside)
+                ),
+            "pointer {outside:?} in {summary_area:?} must hit the summary"
+        );
+        app.scroll(outside, ScrollDirection::Down);
+        let state = app.selections.surface(&summary).expect("summary state");
+        assert_eq!(state.viewport().pos(), selection_before.0 + 1);
+        app.scroll(outside, ScrollDirection::Up);
+        let state = app.selections.surface(&summary).expect("summary state");
+        assert_eq!(
+            (state.viewport().pos(), state.viewport().scroll_offset()),
+            selection_before
+        );
+        let content = open_overflowing_shortcuts(&mut app, &mut terminal);
+        let viewport = app.framework.global_shortcuts_pane.viewport();
+        let inside = Position::new(content.x, content.y);
+        assert!(!content.contains(outside));
+        let start = viewport.pos();
+        let offset = viewport.scroll_offset();
+        app.scroll(outside, ScrollDirection::Down);
+        assert_eq!(app.framework.global_shortcuts_pane.viewport().pos(), start);
+        assert_eq!(
+            app.framework
+                .global_shortcuts_pane
+                .viewport()
+                .scroll_offset(),
+            offset
+        );
+        let state = app.selections.surface(&summary).expect("summary state");
+        assert_eq!(
+            (state.viewport().pos(), state.viewport().scroll_offset()),
+            selection_before
+        );
+        app.scroll(inside, ScrollDirection::Down);
+        assert_eq!(
+            app.framework.global_shortcuts_pane.viewport().pos(),
+            start + 1
+        );
+        app.scroll(inside, ScrollDirection::Up);
+        assert_eq!(app.framework.global_shortcuts_pane.viewport().pos(), start);
+        let steps = app.framework.global_shortcuts_pane.viewport().len();
+        for _ in 0..steps {
+            app.scroll(inside, ScrollDirection::Down);
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("wheel down frame");
+        }
+        assert!(
+            app.framework
+                .global_shortcuts_pane
+                .viewport()
+                .scroll_offset()
+                > offset
+        );
+        for _ in 0..steps {
+            app.scroll(inside, ScrollDirection::Up);
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("wheel up frame");
+        }
+        assert_eq!(
+            app.framework
+                .global_shortcuts_pane
+                .viewport()
+                .scroll_offset(),
+            offset
+        );
+        assert_eq!(app.framework.global_shortcuts_pane.viewport().pos(), start);
+        assert_eq!(app.tiles.hit_test_at(outside), tile_before);
+        let state = app.selections.surface(&summary).expect("summary state");
+        assert_eq!(
+            (state.viewport().pos(), state.viewport().scroll_offset()),
+            selection_before
+        );
+    }
+
+    #[test]
+    fn idle_status_frames_do_not_repeat_body_layout() {
+        let mut app = App::new_for_test().expect("test app");
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("first frame");
+        let first = terminal.backend().buffer().clone();
+        app.started -= std::time::Duration::from_secs(1);
+        app.request_clock_frame();
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("clock frame");
+        assert_eq!(app.full_frames, 1, "Uptime does not lay out tiles again");
+        for y in 0..23 {
+            for x in 0..80 {
+                assert_eq!(first[(x, y)], terminal.backend().buffer()[(x, y)]);
+            }
+        }
+        assert_ne!(
+            &first.content[23 * 80..],
+            &terminal.backend().buffer().content[23 * 80..],
+            "the status clock changes"
+        );
+    }
+
+    #[test]
+    fn idle_status_frames_repaint_the_body_after_input_or_geometry_changes() {
+        let mut app = App::new_for_test().expect("test app");
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("first frame");
+        app.request_clock_frame();
+        app.scroll(Position::new(1, 1), ScrollDirection::Down);
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("input frame");
+        assert_eq!(app.full_frames, 2, "input invalidates the retained body");
+        app.request_clock_frame();
+        app.resized(Rect::new(0, 0, 100, 24));
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("resize frame");
+        assert_eq!(app.full_frames, 3, "resize invalidates the retained body");
+        app.request_clock_frame();
+        app.invalidate_body();
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("new data frame");
+        assert_eq!(
+            app.full_frames, 4,
+            "changed data invalidates the retained body"
+        );
+    }
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Position;
+    use tui_pane::GlobalAction;
+    use tui_pane::Hittable;
+    use tui_pane::ScrollDirection;
+    use tui_pane::TerminalApp;
+
     use super::*;
     use crate::agent_cell::TreeColumn;
     use crate::census::AgentRow;
     use crate::census::HierarchyEdge;
     use crate::census::HierarchyRole;
     use crate::census::SessionIdentity;
+    use crate::census::accounts::AccountsFailure;
+    use crate::census::accounts::AccountsTable;
     use crate::census::hierarchy::ReviewerState;
     use crate::census::scan::ScanStage;
     use crate::config::Config;
+    use crate::interaction::SelectionSurface;
     use crate::sort::SummaryColumn;
 
     /// A saved preference belongs to one root incarnation, rather than its slot or pid alone.

@@ -207,7 +207,7 @@ fn push_stat_lines(
     raw_lines: &[String],
 ) {
     let parsed = stats::parse_stat_lines(raw_lines);
-    let alignment = ValueAlignment::for_lines(&parsed);
+    let alignment = stats::value_alignment_for_lines(&parsed);
     for line in parsed {
         push_parsed_stat_line(lines, selectable_lines, pane, line, alignment);
     }

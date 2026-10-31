@@ -1,12 +1,14 @@
 //! Literal worker launcher commands and their roster-backed thread identities.
 
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::collections::btree_map::Entry;
 use std::fs;
 use std::iter::Peekable;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::Chars;
+use std::time::Instant;
 use std::time::SystemTime;
 
 use serde::Deserialize;
@@ -19,6 +21,8 @@ use super::HierarchyRole;
 use super::RoleFallback;
 use super::classify::ProcessEntry;
 use super::tier::ThreadWorktree;
+use super::transcript::DirectoryChange;
+use super::transcript::InputDirectoryWatch;
 use crate::constants::REVIEW_JOB_HEADING;
 use crate::constants::SESSION_ROOTS;
 use crate::constants::UUID_TEXT_LENGTH;
@@ -428,11 +432,43 @@ impl SessionRoots {
 /// A roster cached by its file modification time, never searched globally.
 #[derive(Debug, Default)]
 pub(super) struct WorkerNames {
-    rosters: BTreeMap<PathBuf, (SystemTime, WorkerRoster)>,
-    seats:   BTreeMap<PathBuf, (SystemTime, SeatDocument)>,
+    #[cfg(test)]
+    prompt_parses:   usize,
+    prompts:         BTreeMap<String, WorkerPrompt>,
+    directories:     BTreeMap<PathBuf, SeatDirectory>,
+    jobs:            BTreeMap<String, JobText>,
+    #[cfg(test)]
+    directory_reads: usize,
+    rosters:         BTreeMap<PathBuf, (SystemTime, WorkerRoster)>,
+    seats:           BTreeMap<PathBuf, (SystemTime, SeatDocument)>,
+}
+
+/// A watch owns the identity documents currently present in one session.
+#[derive(Debug)]
+struct SeatDirectory {
+    watch:     InputDirectoryWatch,
+    documents: BTreeMap<PathBuf, SeatDocument>,
+}
+
+/// A prompt revision owns both its session paths and its parsed task.
+#[derive(Debug)]
+struct WorkerPrompt {
+    text:        String,
+    roots:       Vec<PathBuf>,
+    directories: Vec<PathBuf>,
+    job:         JobText,
 }
 
 impl WorkerNames {
+    /// Drop watches and identity documents for sessions the census no longer sees.
+    pub(super) fn retain_sessions(&mut self, sessions: &HashSet<PathBuf>) {
+        self.directories.retain(|path, _| sessions.contains(path));
+        self.seats.retain(|path, _| {
+            path.parent()
+                .is_some_and(|parent| sessions.contains(parent))
+        });
+    }
+
     /// Rewritten identity files are fetched once per observed modification time.
     fn seat_document(&mut self, path: PathBuf) -> &SeatDocument {
         let modified = fs::metadata(&path)
@@ -467,31 +503,28 @@ impl WorkerNames {
         processes: &[ProcessEntry],
         dispatch_pid: u32,
     ) -> WorkerDispatch {
+        let documents = self.seat_documents(&dispatch.session_dir);
+        let job = self
+            .jobs
+            .entry(dispatch.job.clone())
+            .or_insert_with(|| JobText::parse(&dispatch.job, JobSource::DispatchJob))
+            .clone();
         let mut found = Vec::new();
-        for entry in fs::read_dir(&dispatch.session_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
-            let filename = entry.file_name();
-            let Some(filename) = filename.to_str() else {
-                continue;
-            };
-            if !filename.starts_with(WORKER_FILE_PREFIX)
-                || !entry.path().extension().is_some_and(|extension| {
-                    extension.eq_ignore_ascii_case(WORKER_DOCUMENT_EXTENSION)
-                })
+        for (path, document) in &documents {
+            if !path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(WORKER_FILE_PREFIX))
             {
                 continue;
             }
-            let SeatDocument::Worker(seat) = self.seat_document(entry.path()).clone() else {
+            let SeatDocument::Worker(seat) = document else {
                 continue;
             };
             if !matches!(seat.family, SeatFamily::Claude) || seat.worker_id.is_empty() {
                 continue;
             }
-            let SeatDocument::Claim(claim) =
-                self.seat_document(dispatch.session_dir.join(format!(
+            let Some(SeatDocument::Claim(claim)) =
+                documents.get(&dispatch.session_dir.join(format!(
                     "{CLAIM_FILE_PREFIX}{}.{WORKER_DOCUMENT_EXTENSION}",
                     seat.slot
                 )))
@@ -509,9 +542,9 @@ impl WorkerNames {
             };
             if selected {
                 found.push(ResolvedWorkerDispatch {
-                    seat:       seat.name,
-                    identity:   WorkerIdentity::ClaudeSession(seat.worker_id),
-                    job:        JobText::parse(&dispatch.job, JobSource::DispatchJob),
+                    seat:       seat.name.clone(),
+                    identity:   WorkerIdentity::ClaudeSession(seat.worker_id.clone()),
+                    job:        job.clone(),
                     short_seat: seat.slot.clone(),
                     role:       match dispatch.pass_role {
                         DispatchRole::Worker(role) => DispatchRole::Worker(role),
@@ -525,6 +558,51 @@ impl WorkerNames {
         } else {
             WorkerDispatch::Plain
         }
+    }
+
+    fn seat_documents(&mut self, directory: &Path) -> BTreeMap<PathBuf, SeatDocument> {
+        let now = Instant::now();
+        let changed = self
+            .directories
+            .entry(directory.to_path_buf())
+            .or_insert_with(|| SeatDirectory {
+                watch:     InputDirectoryWatch::new(directory, now),
+                documents: BTreeMap::new(),
+            })
+            .watch
+            .take_changed(directory, now);
+        if changed == DirectoryChange::Reconcile {
+            #[cfg(test)]
+            {
+                self.directory_reads += 1;
+            }
+            let documents = fs::read_dir(directory)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    let name = entry.file_name();
+                    let name = name.to_str()?;
+                    if !(name.starts_with(WORKER_FILE_PREFIX)
+                        || name.starts_with(CLAIM_FILE_PREFIX))
+                        || !path.extension().is_some_and(|extension| {
+                            extension.eq_ignore_ascii_case(WORKER_DOCUMENT_EXTENSION)
+                        })
+                    {
+                        return None;
+                    }
+                    let document = self.seat_document(path.clone()).clone();
+                    Some((path, document))
+                })
+                .collect();
+            if let Some(cached) = self.directories.get_mut(directory) {
+                cached.documents = documents;
+            }
+        }
+        self.directories
+            .get(directory)
+            .map_or_else(BTreeMap::new, |cached| cached.documents.clone())
     }
 
     /// Session paths mentioned by the first task prompt under the supplied roots.
@@ -546,6 +624,53 @@ impl WorkerNames {
         paths.sort();
         paths.dedup();
         paths
+    }
+
+    fn prompt_inputs(
+        &mut self,
+        thread: &str,
+        prompt: &str,
+        roots: &SessionRoots,
+    ) -> (Vec<PathBuf>, JobText) {
+        let changed = !self
+            .prompts
+            .get(thread)
+            .is_some_and(|cached| cached.text == prompt && cached.roots == roots.directories);
+        if changed {
+            #[cfg(test)]
+            {
+                self.prompt_parses += 1;
+            }
+            self.prompts.insert(
+                thread.to_owned(),
+                WorkerPrompt {
+                    text:        prompt.to_owned(),
+                    roots:       roots.directories.clone(),
+                    directories: Self::session_dirs(prompt, roots),
+                    job:         JobText::parse(prompt, JobSource::FirstTaskPrompt),
+                },
+            );
+        }
+        self.prompts.get(thread).map_or_else(
+            || (Vec::new(), JobText::Unrecorded),
+            |cached| (cached.directories.clone(), cached.job.clone()),
+        )
+    }
+
+    pub(super) fn directories(
+        &mut self,
+        thread: &str,
+        prompt: &str,
+        roots: &SessionRoots,
+    ) -> Vec<PathBuf> {
+        self.prompt_inputs(thread, prompt, roots).0
+    }
+
+    pub(super) fn task(&mut self, thread: &str, prompt: &str, roots: &SessionRoots) -> WorkerTask {
+        match self.prompt_inputs(thread, prompt, roots).1 {
+            JobText::Recorded(job) => WorkerTask::Task(job),
+            JobText::Unrecorded => WorkerTask::RoleOnly,
+        }
     }
 
     /// Read a discovered roster only when its modification time changes.
@@ -578,7 +703,8 @@ impl WorkerNames {
         roots: &SessionRoots,
     ) -> WorkerDispatch {
         let mut selected = None;
-        for directory in Self::session_dirs(prompt, roots) {
+        let (directories, job) = self.prompt_inputs(thread_id, prompt, roots);
+        for directory in directories {
             let (modified, roster) = self.roster_snapshot(&directory);
             let modified = *modified;
             for (seat, worker) in &roster.seats {
@@ -597,7 +723,7 @@ impl WorkerNames {
                     ResolvedWorkerDispatch {
                         seat:       seat.clone(),
                         identity:   WorkerIdentity::CodexThread(thread_id.to_owned()),
-                        job:        JobText::parse(prompt, JobSource::FirstTaskPrompt),
+                        job:        job.clone(),
                         short_seat: short.to_owned(),
                         role:       match worker.role {
                             DispatchRole::Unroled => DispatchRole::from_short_seat(short),
@@ -914,6 +1040,7 @@ impl ParsedDispatch {
 
     /// A live launcher's wrapper may set variables before its final dispatch.
     /// Commands following the dispatch still belong to the shell and must stay visible.
+    #[cfg(test)]
     pub(super) fn is_final_command_of(&self, command: &str) -> bool {
         Self::parse(command).is_ok_and(|parsed| parsed == *self)
     }
@@ -1983,3 +2110,103 @@ mod prompt_opening_tests;
 
 #[cfg(test)]
 mod context_job_tests;
+
+#[cfg(test)]
+mod idle_prompt_tests {
+    use super::*;
+
+    #[test]
+    fn departed_worker_sessions_release_their_watches_and_documents() -> std::io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let leaving = root.path().join("leaving");
+        let staying = root.path().join("staying");
+        for directory in [&leaving, &staying] {
+            fs::create_dir(directory)?;
+            fs::write(
+                directory.join("impl_worker_test.json"),
+                r#"{"name":"test","slot":"test","family":"claude","worker_id":"session"}"#,
+            )?;
+        }
+        let mut names = WorkerNames::default();
+        let first = names.seat_documents(&leaving);
+        let kept = names.seat_documents(&staying);
+        assert_eq!(first.len(), 1);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(names.directory_reads, 2);
+        names.retain_sessions(&HashSet::from([staying.clone()]));
+        assert_eq!(
+            names.directories.len(),
+            1,
+            "only the current session keeps a watch"
+        );
+        assert!(!names.directories.contains_key(&leaving));
+        assert_eq!(
+            names.seats.len(),
+            1,
+            "the departed seat document is dropped"
+        );
+        assert!(names.seats.keys().all(|path| path.starts_with(&staying)));
+        assert_eq!(names.seat_documents(&staying).len(), kept.len());
+        assert_eq!(
+            names.directory_reads, 2,
+            "the retained session is not listed again"
+        );
+        let returned = names.seat_documents(&leaving);
+        let worker_id = |documents: &BTreeMap<PathBuf, SeatDocument>| {
+            documents
+                .values()
+                .filter_map(|document| match document {
+                    SeatDocument::Worker(worker) => Some(worker.worker_id.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(worker_id(&first), ["session"]);
+        assert_eq!(worker_id(&returned), worker_id(&first));
+        assert_eq!(
+            names.directories.len(),
+            2,
+            "the returning session gets a watch"
+        );
+        assert_eq!(
+            names.directory_reads, 3,
+            "the returning session is listed once"
+        );
+        names.retain_sessions(&HashSet::new());
+        assert_eq!(names.directories.len(), 0);
+        assert_eq!(names.seats.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn idle_worker_seats_do_not_list_an_unchanged_directory() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let dispatch = ParsedDispatch {
+            session_dir: directory.path().to_path_buf(),
+            worktree:    SeatCheckout::RosterOnly,
+            seat:        SeatSelection::Launcher,
+            job:         "Test the change".into(),
+            pass_role:   DispatchRole::Unroled,
+        };
+        let mut names = WorkerNames::default();
+        names.resolve_claude(&dispatch, &[], 1);
+        names.resolve_claude(&dispatch, &[], 1);
+        assert_eq!(
+            names.directory_reads, 1,
+            "an unchanged seat directory is listed once"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn idle_worker_prompts_parse_once_per_change() {
+        let mut names = WorkerNames::default();
+        let roots = SessionRoots::new([PathBuf::from("/tmp/unit")]);
+        names.prompt_inputs("thread", "Task one /tmp/unit/session", &roots);
+        names.prompt_inputs("thread", "Task one /tmp/unit/session", &roots);
+        assert_eq!(names.prompt_parses, 1, "an unchanged prompt is parsed once");
+        let (paths, _) = names.prompt_inputs("thread", "Task two /tmp/unit/next", &roots);
+        assert_eq!(names.prompt_parses, 2, "a revised prompt is parsed once");
+        assert_eq!(paths, [PathBuf::from("/tmp/unit/next")]);
+    }
+}

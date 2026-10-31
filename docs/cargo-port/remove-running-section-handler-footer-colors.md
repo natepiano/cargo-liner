@@ -645,6 +645,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/tui_pane/src/tiles/draw.rs` — the tile title spacing (5a) and its rendered test
 - `crates/tui_pane/src/overlays/global_shortcuts.rs`, `crates/tui_pane/src/overlays/global_shortcuts_tests.rs`, `crates/tui_pane/src/keymap/mod.rs`, `crates/tui_pane/src/keymap/key_bind.rs`, `crates/tui_pane/src/bar/nav_region.rs`, `crates/tui_pane/CHANGELOG.md`
 - `crates/cargo-handler/src/keymap.rs`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-tile/src/constants.rs` — callers that stop supplying title padding (5a): `SUMMARY_CELL_TITLE` ≈87 and the agent title lead below it, `group_title` ≈914, and cargo-tile `SUMMARY_CELL_TITLE` ≈213
 - `crates/cargo-port/src/tui/sccache/status_line.rs`, `crates/cargo-port/src/sccache.rs`, `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs`, `crates/cargo-port/src/tui/keymap/`, `crates/cargo-port/src/themes/`, `crates/cargo-port/CHANGELOG.md`
 - `crates/tui_pane/src/format.rs`, `crates/tui_pane/src/lib.rs`, `crates/cargo-tile/src/sccache.rs`, `crates/cargo-handler/src/footer_colors/mod.rs`
 - `crates/tui_pane/src/theme/selected_ink.rs` — new shared selected-ground resolver, exported from `crates/tui_pane/src/theme/mod.rs`
@@ -654,7 +655,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/cargo-handler/src/footer_colors/tests.rs` — `oklch_ink` moves to the shared measurement API
 
 **Workers:** 1 writer + 1 tester.
-- `impl` — `tiles/draw.rs` title padding and its inline test, overlay, keymap, bar, the shared formatter, both sccache callers, the shared resolver module (`theme/selected_ink.rs`) and its exports, the application callers (cargo-handler `SelectedGroundInk`, cargo-port `tree_rows.rs`), the cache integration in `footer_colors/mod.rs`, the registrations and the CHANGELOGs; hub: `crates/tui_pane/src/lib.rs` and `crates/tui_pane/src/theme/mod.rs` (exports).
+- `impl` — `tiles/draw.rs` title padding and its inline test, the callers that stop padding titles (both `constants.rs` files and handler `render/mod.rs` `group_title`), overlay, keymap, bar, the shared formatter, both sccache callers, the shared resolver module (`theme/selected_ink.rs`) and its exports, the application callers (cargo-handler `SelectedGroundInk`, cargo-port `tree_rows.rs`), the cache integration in `footer_colors/mod.rs`, the registrations and the CHANGELOGs; hub: `crates/tui_pane/src/lib.rs` and `crates/tui_pane/src/theme/mod.rs` (exports).
 - `test` — the external rendered tests, the separate resolver tests (`theme/selected_ink_tests.rs`), the handler selected-ink tests (`render/selected_ink_tests.rs`), the named cargo-port selected-row render test (`selected_row_ink_tests.rs`), and the move of `footer_colors::tests::oklch_ink` and the selected-ink tests to the shared measurement API.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test cargo-port`, `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` and `bash ~/.claude/scripts/direct/verify.sh lint tui_pane` clean. No test takes a second. Live: framed shots of the overlay in cargo-handler and cargo-tile, and of the cargo-handler and cargo-port bars, in a dark and a light theme. The checkpoint carries `Change-Review: the shortcuts overlay and the status bars use sentence case, lower-case key names, one word for tiles in cargo-handler and one sccache percent format | open the global shortcuts overlay in cargo-handler and cargo-tile, and read the cargo-handler and cargo-port bars`.
@@ -1299,47 +1300,32 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Ruled out:** a `ChildKind` variant for timers (it touches about 20 sites in `census/mod.rs`).
 
-### Phase 47 — cargo-handler idles under 1 % of one core, second cut  · status: todo
+### Phase 47 — cargo-handler idles under 1 % of one core, second cut  · status: done
 
-**Depends on:** Phase 40
+#### As-built
 
-#### Work Order
-
-**Goal:** an idle cargo-handler uses less own CPU than the installed binary, as the second cut toward under 1 % of one core (0.60 own CPU-s per minute at most). Phase 54 holds the under-1 % gate.
-
-**Source:** showrunner ruling, 2026-10-29: Phase 40 landed at 9.7 % of one core (5.81 own CPU-s per minute; installed 13.2 %), and the under-1 % target moved here. CPU work ranks first after Phases 41 and 46. Remaining-cost table: unit session `phases/47/source.md`.
-
-**Constraints from prior phases:**
-- Keep the Phase 40 preservation tests green: parsed, malformed and failed run reads (`census/activity_regression_tests.rs` ≈225–375) and retained command answers, clock expiry, retry, replacement and directory removal (`census/command_inputs.rs` ≈453–628). Cache states stay implementation-only; activity, account readings (failure surface `census/accounts.rs` ≈214) and hierarchy membership and notices must still reach the display.
-- Shared files after this phase: `census/scan.rs` (also Phases 49a, 42, 35, 21) and `census/hierarchy.rs` (also Phase 34) belong to this phase until its checkpoint; later phases keep this phase's CPU acceptance test green.
-- Phase 40 keeps one `System` per scan and per hierarchy, refreshes in place, reads no executable paths, detects a same-pid exec through `CurrentProcessNames` (`census/scan.rs`), keeps parsed run records keyed by file revision (`census/activity.rs`), and runs the account and hierarchy scripts only when their inputs change (`census/command_inputs.rs`). Keep each of these behaviours and their regression tests.
-- Remaining cost per minute, largest first (release profile): run directory listing and file stats 1.20 CPU-s, ancestry `System` refresh 1.14, frame draw 0.84, process commands and directories 0.76, transcript subagents 0.27, agent environments 0.27, worker dispatches 0.23, process names 0.23, app server thread data 0.19; each other step is under 0.06.
-- The `System` refresh alone is over the budget, so a full process enumeration every 2 s cannot stay.
-- On macOS, `CurrentProcessNames::read` (`census/scan.rs`) runs `/bin/ps -axo pid=,ucomm=` on every scan; cut that cost too, and measure the Mac build as well as Linux.
-- Since main 655c7948, `census/hierarchy.rs` holds its snapshot tests inline (`mod tests { mod snapshot }`), and `command_inputs.rs` is a `#[path]` child module of `hierarchy.rs`.
-- Measure with the Phase 40 method: the release branch binary and the installed binary idle in the same 60 s window against the real `/tmp/claude` tree, own CPU and child CPU apart.
-
-**Spec:**
-1. Measure first: profile each step on the release build, then fix the largest costs at their cause.
-2. Run directories: list and stat a directory only when it changes (a file change watch, with a named recovery scan for the cases a watch cannot see).
-3. Processes: refresh only the rows whose process changed (new pid/start time, exec, or a directory change); never enumerate every process field on a routine tick.
-4. Frame draw: draw a frame only when its content, geometry or a time-dependent text changes. The redraw decision is in `terminal.rs` (≈168, ≈184; `app.rs` ≈337 gives only the favorites deadline). Replace `Ticker::shown_second: Option<u64>` (`terminal.rs` ≈100) with a named display-time state that asks each time-dependent text for its next change: shell countdowns, account reading ages, notices, motion, Uptime and the `age` column (per second now; per minute after Phase 43). Test that an unchanged frame is skipped and that each of these time changes draws.
-5. Recovery: each removed scan keeps a named recovery path. Name and test the behaviour for an unavailable watch, lost events, a replaced or removed directory, a new session, process exit, pid reuse, same-pid exec and a cwd change, with a bounded recovery interval on Linux and macOS. Counted tests prove that recovery updates the displayed activity and membership, and that an unchanged tick does less work.
-6. Counted, red-first regression tests for each cut, each under 1 s.
-7. Live measurement as in Phase 40: state the own CPU of the branch and of the installed binary in one paired window.
+- The census watches its inputs (transcript subagent directories, worker seat directories, run records and the process set) and refreshes only the process rows that changed (new pid or start time, exec, directory change). `DirectoryChange::{Unchanged, Reconcile}` (`census/transcript.rs`) decides per census poll if a rescan runs. Parsed worker data is reused until its input changes.
+- When a watch fails or loses events, the census falls back to a periodic rescan: `INPUT_WATCH_RECOVERY` 30 s, `INPUT_WATCH_RETRY` 2 s, `PROCESS_RECOVERY_INTERVAL` 30 s, `RUN_WATCH_RECOVERY` 30 s, `RUN_WATCH_RETRY` 2 s (`constants.rs`). A recovery scan shows the same rows as a full rescan.
+- On macOS, the process revision comes from libproc 0.14.11 (`BSDInfo`, `VNodePathInfo` through `MacProcessDirectories`), a macOS-only dependency.
+- Body text redraws only at its next change: `DisplayText::AgentAge::next_change` per session start, managed worker ages, shell countdowns and account reading age.
+- Measured idle own CPU, branch against the previously installed binary in one paired window: Linux 1.30 against 2.71 CPU-s per minute; Mac 0.26 against 0.91 (Apple Silicon `proc_pid_rusage` ticks converted with `mach_timebase_info`). The under-1 % target (0.60 CPU-s per minute) is not met.
 
 **Files:**
-- `crates/cargo-handler/src/census/{activity.rs,scan.rs,hierarchy.rs,command_inputs.rs,activity_regression_tests.rs}` — the watched run records and the changed-row process refresh
-- `crates/cargo-handler/src/app.rs` — draw only on change
-- `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/terminal.rs` — the redraw decision, the display-time state and their inline tests
-- `crates/cargo-handler/src/render/mod.rs` — the status draw, reachable in the crate so a clock-only frame redraws only the status line (one line; Phase 43 holds the file until its checkpoint and lands first)
-- `crates/cargo-handler/Cargo.toml`, `Cargo.lock` — the workspace `notify` dependency for the watched run records
-- `crates/cargo-handler/src/census/transcript.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — running subagents and worker prompts read once per change, in their owning readers
+- `crates/cargo-handler/src/census/scan.rs` — process discovery, process revisions, recovery
+- `crates/cargo-handler/src/census/transcript.rs` — subagent directory watches, `DirectoryChange`
+- `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — worker seat directory watches
+- `crates/cargo-handler/src/census/activity.rs` — run record watches, `retain_sessions`
+- `crates/cargo-handler/src/terminal.rs` — display-time state and the next body change
+- `crates/cargo-handler/src/constants.rs` — census recovery timings
+- `crates/cargo-handler/Cargo.toml`, `Cargo.lock` — `notify`, and libproc on macOS
 
-**Workers:** 1 writer (`test` seat, which wrote Phase 40).
+**Binds later work:** The under-1 % target is carried by the phase titled "Tile hosts draw only frames that change". Departed sessions' directory watches in `SubagentReads` and `WorkerNames` are not dropped yet (a known defect); the phase titled "The census drops the directory watches of sessions that left" carries it. Later census work keeps the recovery test that runs a real `exec -a claude` child (`scan.rs`) green.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Phase 47 checkpoints its measured gain (showrunner ruling, 2026-10-30: the branch is below the installed binary in a paired Phase 40 measurement). The under-1 % gate (0.60 own CPU-s per minute) moves to Phase 54. The checkpoint adds a Change-Review line.
+**Gotchas:**
+- On Apple Silicon, `proc_pid_rusage` CPU fields are 24 MHz mach ticks, not nanoseconds; convert with `mach_timebase_info`. A Mac measure also records the agent and terminal counts the census shows.
+- Tests that poll tile motion settle the motion before body assertions.
+
+**Ruled out:** sysinfo for the Mac process revision — sysinfo 0.39.6 enumerates all pids and keeps a stale name after a same-pid exec.
 
 ### Phase 48 — The focus tint fills the whole tile  · status: done
 
@@ -1362,6 +1348,24 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - A capture that reads `~/.config` is transparent, because the user config sets `transparent = true`. An opaque shot needs a scratch config with `transparent = false`.
 - The opaque path fills the interior a second time after `draw_clipped` fills the pane. Its cost is not measured.
 
+### Phase 47a — The census drops the directory watches of sessions that left  · status: done
+
+#### As-built
+
+- `retain_session_caches` in `census/scan.rs` runs after each scan. It calls `RunRecords::retain_sessions`, `SubagentReads::retain_sessions` and `WorkerNames::retain_sessions` in one step.
+- `SubagentReads::retain_sessions` keeps only the directories of sessions in the transcript set of this poll. It drops the watch, the cached rows, and the `reads` and `metadata` entries under each dropped directory.
+- `WorkerNames::retain_sessions` drops each `SeatDirectory` (watch and documents) whose session is gone.
+- The function `subagent_directory` in `transcript.rs` owns the subagent directory key. Both the read path and the retain step use it.
+- Watches, file descriptors and cached records do not grow as sessions come and go. A session that comes back gets a new watch and the same rows as a first read.
+
+**Files:**
+- `crates/cargo-handler/src/census/scan.rs` — `retain_session_caches`, called after each scan
+- `crates/cargo-handler/src/census/transcript.rs` — `SubagentReads::retain_sessions`, `subagent_directory`, and the counted retain tests
+- `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — `WorkerNames::retain_sessions` and its tests
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Gotchas:** the `WorkerNames` retain set is the dispatch session directories of live worker commands, direct and wrapped. It is not the set of seen run sessions. A retain on seen run sessions alone drops the watches of live workers.
+
 ### Phase 54 — Tile hosts draw only frames that change  · status: todo
 
 **Depends on:** Phase 48, Phase 47
@@ -1375,7 +1379,10 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 **Constraints from prior phases:**
 - Phase 47 release profile, cargo-handler idle, per minute: 1043 body frames cost 1.28 own CPU-s; `TileGrid::tick` (`tiles/grid.rs` ≈2160) asked for 936 of the repaints, one on every tick while `GridMotion` is not `Settled`.
 - The public placements give cell content and `PaneFrame` only; column bands, title ownership and motion heights live in `TileDrawing` and `tiles/draw.rs`, so a host cannot prove from placements alone that a frame is unchanged.
-- Hosts: cargo-handler `terminal.rs` ≈326 (`app.tiles.tick()`, Phase 47's display-time state); cargo-tile `terminal.rs` ≈227 and `render.rs` ≈8682.
+- Hosts: cargo-handler `terminal.rs` `Ticker::poll_at` ≈383 (`app.tiles.tick()`, Phase 47's display-time state); cargo-tile `terminal.rs` ≈227 and `render.rs` ≈8682.
+- cargo-handler `app.rs`: `PaintedFrame` (≈116) is the retained body frame, and `App::draw` (≈364) reuses it for a status-only draw. The grid's painted record and this body cache must not both own "what was last painted": one owns it, and the other asks it.
+- Phase 47 shipped each session's age deadline: `DisplayText::AgentAge::next_change` (`terminal.rs` ≈123) schedules each age from its own start, and `next_body_change` (≈192) includes managed workers (tests ≈503 and ≈574). Keep that one calculation.
+- Phase 47 Mac measure defect: `proc_pid_rusage` CPU fields on Apple Silicon are 24 MHz mach ticks, not nanoseconds (timebase 125/3, proved 2026-10-31). Phase 47's corrected Mac own CPU-s per minute: branch 0.26, installed 0.91. Linux: branch 1.30, installed 2.71.
 - `tiles/draw.rs` is Phase 48's until its checkpoint; cargo-tile's files may be held by tile-unit: claim through berth (the showrunner tells tile-unit).
 - `draw_tile_grid` (`tiles/draw.rs` ≈384) prepares the measurements before it paints, and records the painted geometry after it paints (`record_painted_cells`, `record_painted_summary_frames`). Phase 9 reads that last painted record for clicks; keep that use.
 - `age_label` (`crates/cargo-handler/src/summary/age.rs` ≈4) writes elapsed whole minutes from each session's own start. So each session's age text changes at its own elapsed-minute boundary, not at one shared wall-clock minute. A label that gains a digit or a `:` part also widens the shared age column (`AgeLayout`, same file). Neither change comes with a census revision.
@@ -1385,21 +1392,21 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 2. `TileGrid::tick` asks for a repaint only when that answer is yes.
 3. cargo-handler and cargo-tile each skip a frame whose visual state and content are equal to the last drawn one.
 4. The comparison state changes only after a body frame is painted. Hold it in an explicit enum, for example `LastPainted::{NeverPainted, Painted(..)}`. A poll that draws no body, and a status-only draw, leave it unchanged.
-5. The display-time state asks each session's age for its own next change: the next elapsed-minute boundary of that session, and the next width growth of the shared age column. No census revision is needed for either draw.
+5. Keep Phase 47's per-session age deadline (`DisplayText::AgentAge::next_change`) as the one calculation. Add the next width growth of the shared age column (`AgeLayout`) to it, so that draw needs no census revision.
 6. Red-first counted tests in tui_pane and in each host: an unchanged settled grid asks for no frame; each motion step, band change and title change asks for one; several polls with no body draw keep the comparison state; status-only draws keep it; fading content with settled geometry still draws each fade step; motion completes after skipped equal frames; age deadlines for sessions with offset starts each draw at their own minute; an age width growth draws with no census revision; a theme, transparency or tint change with equal geometry draws. Each under 1 s.
-7. Live measurement in both hosts, before and after, with the Phase 40 paired method: own CPU under 1 % of one core, and no worse than the installed binary.
+7. Live measurement in both hosts, on Linux and on the Mac, before and after, with the Phase 40 paired method: own CPU under 1 % of one core, and no worse than the installed binary. Each run shows live agents, and records the agent and terminal counts the census showed, the window length and the load. On the Mac, convert `proc_pid_rusage` ticks with `mach_timebase_info`.
 8. CHANGELOG: one Changed line in tui_pane, cargo-handler and cargo-tile.
 
 **Files:**
 - `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs` — the visual state owner, the last painted state and their tests
 - `crates/tui_pane/CHANGELOG.md`
-- `crates/cargo-handler/src/terminal.rs`, `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/summary/age.rs` — each session's next age change
+- `crates/cargo-handler/src/terminal.rs`, `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/CHANGELOG.md` — the host frame skip; `app.rs` holds `PaintedFrame`
+- `crates/cargo-handler/src/summary/age.rs` — the age column's next width growth
 - `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/CHANGELOG.md`
 
 **Workers:** 1 writer (`test` seat, which wrote Phase 47).
 
-**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-handler`, `verify.sh test cargo-tile` and `verify.sh lint tui_pane` clean; no test takes a second. Final CPU gate (moved from Phase 47): own CPU under 0.60 CPU-s per minute in the Phase 40 paired method, measured in cargo-handler and in cargo-tile. The checkpoint adds a Change-Review line.
+**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-handler`, `verify.sh test cargo-tile`, and `verify.sh lint` for tui_pane, cargo-handler and cargo-tile clean; no test takes a second. Final CPU gate (moved from Phase 47): own CPU under 0.60 CPU-s per minute in the Phase 40 paired method, for cargo-handler and cargo-tile, each on Linux and on the Mac, with live agents. The checkpoint adds a Change-Review line.
 
 ### Phase 58 — The focus tint reaches the frame and stands apart from selection  · status: todo
 
@@ -1409,7 +1416,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Goal:** on an opaque screen a focused tile is one tinted surface up to and under its frame line, and a selected row in an unfocused tile never reads as the focus tint.
 
-**Source:** Phase 48 design check, 2026-10-30, on `phases/48/live/final_opaque2/focused_summary.png` (built from 531e8ca4), rows routed from Phase 48: (1) a black band shows between the tint and the summary frame on all four sides, because the border cells keep the default ground; (2) the selected row of an unfocused tile (#2e2e2e) is almost the same colour as the focus tint (#2e2e39); (3) the opaque shot had no empty row below the content, so the shot set did not show the empty-row fill.
+**Source:** Phase 48 design check, 2026-10-30, on `phases/48/live/final_opaque2/focused_summary.png` (built from 531e8ca4), rows routed from Phase 48: (1) a black band shows between the tint and the summary frame on all four sides, because the border cells keep the default ground; (2) the selected row of an unfocused tile (#2e2e2e) is almost the same colour as the focus tint (#2e2e39); (3) the opaque shot had no empty row below the content, so the shot set did not show the empty-row fill. Phase 48 merge-repair design check, 2026-10-31, on `phases/48/live/b1f383c7/handler_opaque_first_summary_frame/with_overlay.png` (built from b1f383c7): (4) on an opaque screen the settings overlay interior paints no ground (2703 default cells), so the tiles show through it; the overlay must paint the opaque pane ground (showrunner, 2026-10-31).
 
 **Constraints from prior phases:**
 - Phase 48: `tint_painted()` (`crates/tui_pane/src/pane/chrome.rs` ≈135) is the one owner of whether a ground is painted; `pane_fill` (≈129) and `pane_background` (≈157) take their answer from it. On a transparent screen a focused tile paints no ground and shows focus only as the lit border (showrunner ruling 2026-10-29); keep that.
@@ -1417,59 +1424,155 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - Phase 54 changes `tiles/draw.rs` first (the visual state owner); this phase runs after it on the same file.
 - `GridLines::render` (`crates/tui_pane/src/pane/frame.rs` ≈659) paints the final border styles; `mark` already combines focus ownership for shared edge cells.
 - `pane_fill` (`chrome.rs` ≈129) returns `Option<Style>` and `screen_ground` returns `Option<Color>`; absence means a transparent screen or a disabled tint.
+- `chrome.rs` ≈151 already has `TileGround::{Unpainted { blend }, Painted(Color)}`, used through `PaneChrome::paint_tile_ground` by tile drawing and the handler summary. `Unpainted { blend }` carries the colour fading ink blends toward on a transparent screen. It is the existing paint-state owner.
+- `PopupFrame::render_with_areas` (`crates/tui_pane/src/pane/popup.rs` ≈43) clears its area and draws a block with no background, so on an opaque screen an overlay interior shows default cells.
 - cargo-handler's `paint_selection` (`crates/cargo-handler/src/render/mod.rs` ≈487) changes the row ground and adjusts ink; it draws no selection marker. `render/selected_ink_tests.rs` ≈207 requires the remembered ground and ≈325 requires contrast between it and the tile.
 - The shared selection style also reaches cargo-port through `PaneSelectionState::overlay_style`; it stays unchanged, so the tile grid applies the rule where it draws a tile.
 
 **Spec:**
 1. Opaque screen: a focused tile paints its tint on its border cells too, so the frame line stands on the tint with no default-ground band beside it. A shared edge takes the tint when `mark` gives it to the focused tile. Unfocused tiles and the transparent screen do not change. `tint_painted()` stays the one owner.
-1a. One chrome-owned paint result replaces `pane_fill`'s `Option<Style>` and `screen_ground`'s `Option<Color>`, for example `PaneGround::{TerminalBackground, Opaque(Color)}`; the fill, the border and the readout all take it.
+1a. Extend the existing `TileGround` (`chrome.rs` ≈151) into the one chrome-owned paint result; it replaces `pane_fill`'s `Option<Style>` and `screen_ground`'s `Option<Color>`. Keep its no-paint state with the fade destination (`Unpainted { blend }`). The fill, the border, the readout and the popup interior all take it. No second paint-state type.
+1b. On an opaque screen, `PopupFrame::render_with_areas` paints the opaque pane ground on the overlay interior and border, so no tile shows through an open overlay (Source item 4). A transparent screen keeps today's overlay.
 2. Showrunner rulings, 2026-10-30: in the tile grid, an unfocused tile shows no selection; its remembered row shows again when the tile takes focus, so the tint alone means focus. cargo-handler draws no selection marker (`paint_selection` ≈487), so no ground means no visible selection there. The rule is the tile grid's only: the shared selection style for all panes does not change, and cargo-port's unfocused panes stay as they are. Today that row draws #2e2e2e in Default Dark against the focus tint #2e2e39 (`crates/tui_pane/src/pane/state.rs` `selection_state_for` ≈73).
-3. Red-first buffer tests: a focused tile on an opaque screen has the tint on every border cell and every interior cell; a transparent screen paints no ground on any of them; a shared edge takes the tint in both paint orders, with moving clips and titles; a remembered row in an unfocused tile draws no selection and shows again when the tile takes focus; a cargo-port pane's unfocused selection does not change; a selected row in the focused tile does not change; `render/selected_ink_tests.rs` ≈207 and ≈325 change to the ruling with an Assertion-Change line. Each under 1 s.
+3. Red-first buffer tests: a focused tile on an opaque screen has the tint on every border cell and every interior cell; a transparent screen paints no ground on any of them; a shared edge takes the tint in both paint orders, with moving clips and titles; a remembered row in an unfocused tile draws no selection and shows again when the tile takes focus; on an opaque screen an open settings overlay paints the pane ground on every interior cell, and on a transparent screen it paints none; the transparent readout fade and the first summary frame keep their current results; a cargo-port pane's unfocused selection does not change; a selected row in the focused tile does not change; `render/selected_ink_tests.rs` ≈207 and ≈325 change to the ruling with an Assertion-Change line. Each under 1 s.
 4. CHANGELOG: one Changed line in tui_pane.
 
 **Files:**
 - `crates/tui_pane/src/pane/chrome.rs`, `crates/tui_pane/src/pane/state.rs`, `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/tiles/draw.rs` — the paint result, the border ground, the unfocused selection ground and their tests
+- `crates/tui_pane/src/pane/popup.rs` — the opaque overlay ground and its test
 - `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/render/selected_ink_tests.rs` — the handler selection paint and its tests
 - `crates/tui_pane/CHANGELOG.md`
 
 **Workers:** 1 writer (`impl`).
 
-**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-handler` and `verify.sh lint tui_pane` clean; no test takes a second. Live: an opaque shot of cargo-handler with the summary focused, at least one empty row below its content and an unfocused tile with a selected row, and a transparent shot of the same state; both pass a fresh design check. The checkpoint adds a Change-Review line.
+**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-handler` and `verify.sh lint tui_pane` clean; no test takes a second. Live: an opaque shot of cargo-handler with the summary focused, at least one empty row below its content and an unfocused tile with a selected row, an opaque shot with the settings overlay open, and transparent shots of the same states; all pass a fresh design check. The checkpoint adds a Change-Review line.
 
-### Phase 57 — The mouse wheel scrolls the shortcuts overlay in every host  · status: todo
+### Phase 57 — The mouse wheel scrolls the shortcuts overlay in every host  · status: done
 
-**Depends on:** Phase 54; port-unit's Phase 2e "The shortcuts overlay's wheel scroll lives in tui_pane". Showrunner, 2026-10-30: it returns `OverlayWheel::{Consumed, NoOverlay}`, where `Consumed` covers any wheel step over an open overlay; port-unit, 2026-10-30: `pub fn wheel_framework_overlay<Ctx: SettingsHost>(ctx: &mut Ctx, position: Position, direction: ScrollDirection) -> OverlayWheel` and `pub enum OverlayWheel { Consumed, NoOverlay }`, both exported from the tui_pane crate root; `ScrollDirection` is `tui_pane::ScrollDirection`; `SettingsHost` (`app_settings/navigation.rs`) extends `AppContext`. `Consumed` is any wheel event while Settings, Keymap or GlobalShortcuts is open; the caller applies its own `invert_scroll` first. Port Phase 2e runs after its 2d and 2g; port-unit says if the signature changes. Background: cargo-port's `scroll_modal_overlay_at` (`crates/cargo-port/src/tui/input/dispatch.rs` ≈721) consumes a wheel event over an open overlay even outside its content or when it cannot move (for example `OverlayWheel::{Consumed, NoOverlay}`, with shared tests for those cases)
+#### As-built
+
+- `tui_pane::handle_tile_scroll` now has a `SettingsHost` bound. It calls `wheel_framework_overlay` first and returns when the result is `OverlayWheel::Consumed`.
+- A wheel step over an open Settings, Keymap or GlobalShortcuts overlay never scrolls a tile behind it. The overlay arms live only in `wheel_framework_overlay`; the hosts hold no copy.
+- cargo-tile `App::scroll` calls `tui_pane::handle_tile_scroll`, as cargo-handler already does. Before this, cargo-tile ignored wheel steps.
+- Each host has the test `shortcuts_overlay_wheel_scrolls_and_keeps_tiles_still`. With the `?` overlay open and taller than its viewport, a step down moves the viewport and a step up moves it back. A step with the overlay closed reaches the tile or summary.
+
+**Files:**
+- `crates/tui_pane/src/tiles/host.rs` — `handle_tile_scroll` routes the overlay wheel first.
+- `crates/cargo-tile/src/app.rs` — `scroll` through `handle_tile_scroll`, and the wheel test.
+- `crates/cargo-handler/src/app.rs` — the wheel test, with the `wheel_test_app_with_agents` fixture. The test is split into named helpers to stay under the clippy line limit.
+
+**Binds later work:** cargo-port can move its own overlay wheel arms onto `wheel_framework_overlay`. `handle_tile_scroll` sits beside `content_click` in `tiles/host.rs`. The global shortcuts overlay `row_line` and the handler keymap are shared edit points with this test.
+
+**Gotchas:**
+- The handler wheel test needs several summary rows (`wheel_test_app_with_agents`). With an empty summary, "selection unchanged" passes for the wrong reason.
+- A live cargo-tile capture shows tile rows change with no wheel input, because activity is live. Compare a wheel capture against a no-wheel control.
+
+### Phase 57a — The shortcuts overlay highlights whole rows and shows every focus key  · status: done
+
+#### As-built
+
+- `tui_pane` pads each shortcut key span to the widest displayed key. Selected rows have one highlight width, including rows with no key. `build_lines` computes the width and passes it to `row_line`.
+- cargo-handler defaults `FocusUp` to `shift-up` and `FocusDown` to `shift-down`. The user can rebind both. `up` and `down` still select rows.
+- `selected_shortcut_rows_cover_the_same_width_for_short_and_long_keys` checks the drawn highlight. `shortcuts_overlay_shows_vertical_focus_keys_without_replacing_row_keys` checks focus and row keys.
+- The Keymap and Global Shortcuts screen captures include the focus keys. Live checks passed in both hosts: selected rows cover 46 cells in cargo-tile and 47 cells in cargo-handler. Commit: `772d67d3`.
+
+**Files:**
+
+- `crates/tui_pane/src/overlays/global_shortcuts.rs` — computes the key width and pads each key span.
+- `crates/tui_pane/src/overlays/global_shortcuts_tests.rs` — checks equal selected widths for short and long keys.
+- `crates/cargo-handler/src/globals.rs` — adds the vertical focus defaults and checks them.
+- `crates/cargo-handler/src/keymap.rs` — checks focus and row keys; updates captured key rows.
+- `crates/cargo-handler/src/render/mod.rs` — updates both overlay screen captures.
+- `crates/tui_pane/CHANGELOG.md` — records the selected-row width fix.
+- `crates/cargo-handler/CHANGELOG.md` — records the vertical focus keys.
+
+**Binds later work:** Keep the key width in the overlay layout. Keep focus bindings in the default keymap so users can rebind them.
+
+**Gotchas:**
+
+- Changing default keys can change overlay captures in `render/mod.rs`: `the_keymap_overlay_opens_on_its_first_screen` and `the_shortcuts_overlay_opens_on_its_first_screen`.
+
+### Phase 57d — A Codex session resumed under a second account shows its own name  · status: done
+
+#### As-built
+
+- Each `CodexThread` carries `CodexAccountHome`, the lexical home of the database that supplied it. A shared rollout link does not change its account.
+- `thread_matches_home` matches the process account home to the database account home. A resumed thread from another account does not match, even with the same thread id and rollout path.
+- `SessionNames::name` uses the thread's own account index. If that index has no name, it keeps the database name. `SessionName` distinguishes `Named` from `Unnamed`.
+- `resumed_codex_with_shared_rollouts_keeps_its_database_name_and_account` checks the shared folder, foreign account, database fallback and own index rename. `default_and_named_codex_homes_keep_their_own_threads_with_shared_sessions` checks separate accounts.
+- The Mac suite passed 776 of 776 tests; the slowest took 0.325 s. Lint passed. The live cells view showed `morty idle codex2`. Commit: `449c5b97`.
+
+**Files:**
+
+- `crates/cargo-handler/src/census/classify.rs` — matches threads by their database account home; updates test records.
+- `crates/cargo-handler/src/census/codex.rs` — adds `CodexAccountHome` to database reads and uses `SessionName` for thread names.
+- `crates/cargo-handler/src/census/codex_names.rs` — normalizes names and uses the own account index with a database fallback.
+- `crates/cargo-handler/src/census/codex_label_cut_tests.rs` — gives the label fixture an account home and an unnamed state.
+- `crates/cargo-handler/src/census/codex_session_tests.rs` — updates account fixtures and makes no-name cases explicit.
+- `crates/cargo-handler/src/census/scan.rs` — attaches the resolved name and includes the account-home tests.
+- `crates/cargo-handler/src/census/scan/codex_home_tests.rs` — tests a resumed thread with shared rollouts and separate account databases.
+- `crates/cargo-handler/CHANGELOG.md` — records the resumed-session name fix.
+
+**Binds later work:** Keep account ownership with the source database; never derive it from a shared rollout path. Phase 57c's staff list does not cover standalone sessions, which still need the Codex name readers.
+
+**Gotchas:**
+
+- The activity fixture is explicitly unnamed because the database name is now kept. A fixture that expects a pid must have no database name.
+- The live capture needs the cells view. The summary-only view hides Unassigned.
+
+### Phase 57b — The reset-shade test runs in under a second  · status: done
+
+#### As-built
+
+- `reset_shades_keep_saturated_chroma_and_separation_from_plain_text` reuses each draw within one theme when both pane backgrounds match. The cache is local to the test's theme loop.
+- Every theme, tint case, reset rank and assertion stays. Each case still checks all 256 ranks. Product code is unchanged.
+- The Mac test took 0.375 s, down from 1.0–1.28 s. The full Mac suite passed 775 of 775 tests.
+- Both reviews approved with no findings. Commit: `5c5ddaad`. `Change-Review: none — test speed only`.
+
+**Files:**
+
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — reuses draws by the pair of pane backgrounds within each theme.
+
+**Binds later work:** Keep every case and assertion when reducing test time. If frame size, app data or time varies between cases, include that input in draw reuse or make a separate draw.
+
+**Gotchas:**
+
+- Tint on and off can produce the same pane backgrounds on a transparent screen. A tint flag alone does not identify a distinct draw.
+
+### Phase 57c — cargo-handler reads its staff from the staff list  · status: todo
+
+**Depends on:** none.
 
 #### Work Order
 
-**Goal:** the mouse wheel scrolls the `?` global shortcuts overlay, and the other framework overlays, in cargo-tile and cargo-handler, through the one shared tui_pane function that cargo-port also calls.
+**Goal:** cargo-handler takes managers, members and roles from `~/.claude/scripts/production/staff.py show --json --live` (schema 3) in place of `production_tree.py --json`, with one parser, and stops reading the review pool, which no longer exists.
 
-**Source:** the user (via the showrunner), 2026-10-30, on change review row C119 (Phase 18, merge 2a881055), returned: "it does split but what doesn't work is mouse scrolling on either one - it does work on cargo port - this needs to be shared code". Showrunner: put overlay wheel scrolling in tui_pane so every host gets it from one place, with a test per host; CPU work runs first. When this lands, port-unit moves cargo-port to the shared path and removes its own; the showrunner tells port-unit. The fix returns as a new change review row. Showrunner, 2026-10-30, after the user's no-duplication rule: port-unit moves cargo-port's overlay scroll into one public tui_pane function (`OverlayScroll::{Scrolled, NoOverlay}`) and cargo-port calls it, with no copy left; this phase only wires the hosts to it.
+**Source:** herdr, 2026-10-31: the staff list is live as schema 3, with no `pool` key. The showrunner, 2026-10-31, approved the switch and confirmed schema 3 on natedev and the Mac. The user, 2026-10-31: the review pool is gone.
 
 **Constraints from prior phases:**
-- The runner gives every wheel step to `TerminalApp::scroll` (`crates/tui_pane/src/runner/event_loop.rs` ≈214, `handle_mouse`). The trait default does nothing (`crates/tui_pane/src/runner/app.rs` ≈56).
-- cargo-handler's `scroll` (`crates/cargo-handler/src/app.rs` ≈390) calls `tui_pane::handle_tile_scroll` (`crates/tui_pane/src/tiles/host.rs` ≈164). That function scrolls only a `TilePick::Cell` hit; a `TilePick::OverlayRow` hit does nothing. The click path already handles `TilePick::OverlayRow` through `select_framework_overlay_row` (≈157).
-- cargo-tile does not implement `scroll` (`crates/cargo-tile/src/app.rs`), so its wheel steps do nothing.
-- cargo-port's working path is `scroll_modal_overlay_at` (`crates/cargo-port/src/tui/input/dispatch.rs` ≈705). For the framework overlays it does: `Settings` moves the selection (`NavAction::Up`/`Down`) when the pointer is inside the settings content area; `Keymap` and `GlobalShortcuts` call `viewport_mut().scroll_if_contains(pos, direction)`. It applies cargo-port's own `invert_scroll` before that call (≈651).
-- The framework holds the open overlay (`Framework::overlay`, `crates/tui_pane/src/framework/mod.rs` ≈379) and the panes (`global_shortcuts_pane` ≈101, `keymap_pane`, `settings_pane`).
-- Phase 56 also edits `tiles/host.rs` (`content_click`); this phase runs first.
-- No duplicated state, logic or data: one owner for each fact. The overlay scroll has one owner, the tui_pane function from port-unit's phase. Do not copy its arms.
+- The command stays in the `hierarchy_command` setting; no path in code.
+- Read stdout only. The command prints hundreds of stderr lines (265 on natedev); never show them in the tile or in cargo-handler.
+- One parser: remove the `production_tree.py` shape parser in this phase. If a Mac config can still point at the old command, say so in the notice; the showrunner sets the order.
+- The review pool reader (`REVIEW_POOL_STATE`, `pool.json` in `census/command_inputs.rs`) and its fixtures go too.
+- Standalone sessions are not in the staff list; Phase 57d names them.
 
 **Spec:**
-1. `handle_tile_scroll` calls the shared tui_pane overlay scroll function first. When it returns `OverlayWheel::Consumed`, the step stops there, so a wheel step over an open overlay never scrolls a tile behind it.
-2. cargo-tile implements `scroll` through `handle_tile_scroll`, as cargo-handler does.
-3. Red-first tests, each under 1 s: in cargo-tile and in cargo-handler, with the global shortcuts overlay open and taller than its viewport, a wheel step down moves the overlay viewport and a step up moves it back; a step outside the overlay does not scroll a tile.
+1. At start, run the staff command on natedev and the Mac and confirm schema 3 with no `pool` key.
+2. Parse the schema 3 output into the census hierarchy types; remove the old edge parser and the pool reader.
+3. Measure the CPU time of one staff call against one `production_tree.py --json` call on natedev and the Mac, and name the added cost in the notice. If it is slower at the poll rate, say so before landing.
+4. Move the hierarchy fixtures and tests to the schema 3 shape.
+5. Send the showrunner the exact `hierarchy_command` config line for both machines.
 
 **Files:**
-- `crates/tui_pane/src/tiles/host.rs` — `handle_tile_scroll` calls the shared overlay scroll first
-- `crates/cargo-tile/src/app.rs` — `scroll` through `handle_tile_scroll`
-- `crates/cargo-tile/src/` — one wheel test in a cargo-tile test module
-- `crates/cargo-handler/src/` — one wheel test in a cargo-handler test module
-- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/hierarchy.rs` — the parser
+- `crates/cargo-handler/src/census/command_inputs.rs` — inputs; pool reader removed
+- `crates/cargo-handler/src/census/fixtures/` — hierarchy and pool fixtures
+- `crates/cargo-handler/src/census/*hierarchy*_tests.rs`, `census/probe/hierarchy_transport_tests.rs` — tests
+- `crates/cargo-handler/src/config.rs`, `settings.rs` — setting text only if it names the old command
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: in cargo-tile and cargo-handler, press `?` and scroll the overlay with the wheel. The checkpoint adds a Change-Review line.
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: cargo-handler on natedev with the new setting shows the same managers and members as before. The checkpoint adds a Change-Review line.
 
 ### Phase 55 — Narrow tiles keep tree guides, readable names and one header inset  · status: todo
 

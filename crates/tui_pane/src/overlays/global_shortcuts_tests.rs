@@ -59,7 +59,10 @@ impl Globals<ShortcutApp> for ShortcutGlobals {
     type Actions = ShortcutAction;
     fn render_order() -> &'static [ShortcutAction] { ShortcutAction::ALL }
     fn defaults() -> Bindings<ShortcutAction> {
-        crate::bindings! { 'z' => ShortcutAction::Row01 }
+        crate::bindings! {
+            'z' => ShortcutAction::Row01,
+            crate::KeyBind::ctrl('x') => ShortcutAction::Row02,
+        }
     }
     fn dispatcher() -> fn(ShortcutAction, &mut ShortcutApp) { |_, _| {} }
 }
@@ -83,6 +86,36 @@ fn screen(buffer: &Buffer) -> String {
         .iter()
         .map(ratatui::buffer::Cell::symbol)
         .collect()
+}
+
+#[test]
+fn selected_shortcut_rows_cover_the_same_width_for_short_and_long_keys() {
+    let keymap = keymap();
+    let rows = keymap.global_shortcut_rows();
+    let mut widths = Vec::new();
+    for action in ["row_01", "row_02"] {
+        let selected = rows
+            .iter()
+            .position(|row| row.action == action)
+            .expect("fixture row");
+        let mut pane = GlobalShortcutsPane::new();
+        pane.focus.pane_focus_state = PaneFocusState::Active;
+        pane.viewport_mut().set_pos(selected);
+        let buffer = draw(&mut pane, &keymap, 64);
+        let inner = pane.viewport().content_area();
+        let y = inner.y
+            + u16::try_from(pane.line_for_selection(selected).expect("row line"))
+                .expect("line fits terminal");
+        let width = (inner.x..inner.right())
+            .filter(|&x| buffer[(x, y)].bg == crate::active_focus_color())
+            .count();
+        assert!(width > 0, "selected row must have a visible highlight");
+        widths.push(width);
+    }
+    assert_eq!(
+        widths[0], widths[1],
+        "key length must not change highlight width"
+    );
 }
 #[test]
 fn tall_global_shortcuts_draw_every_action_without_a_page_marker() {

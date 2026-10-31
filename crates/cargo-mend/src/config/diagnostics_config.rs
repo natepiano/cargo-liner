@@ -27,9 +27,9 @@ impl DiagnosticsConfig {
             .collect()
     }
 
-    pub(crate) fn merge_project(&self, project: &Self) -> Self {
+    pub(crate) fn merge_project(&self, project_diagnostics_config: &Self) -> Self {
         let mut rules = self.rules.clone();
-        for (code, enabled) in &project.rules {
+        for (code, enabled) in &project_diagnostics_config.rules {
             rules.insert(*code, *enabled);
         }
         Self { rules }
@@ -81,28 +81,29 @@ mod tests {
 
     #[test]
     fn merge_project_overrides_global() {
-        let mut global = DiagnosticsConfig::default();
-        global.rules.insert(
+        let mut global_diagnostics_config = DiagnosticsConfig::default();
+        global_diagnostics_config.rules.insert(
             DiagnosticCode::PreferModuleImport,
             DiagnosticStatus::Disabled,
         );
 
-        let mut project = DiagnosticsConfig::default();
-        project.rules.insert(
+        let mut project_diagnostics_config = DiagnosticsConfig::default();
+        project_diagnostics_config.rules.insert(
             DiagnosticCode::PreferModuleImport,
             DiagnosticStatus::Enabled,
         );
-        project
+        project_diagnostics_config
             .rules
             .insert(DiagnosticCode::SuspiciousPub, DiagnosticStatus::Disabled);
 
-        let merged = global.merge_project(&project);
+        let merged_diagnostics_config =
+            global_diagnostics_config.merge_project(&project_diagnostics_config);
         assert_eq!(
-            merged.is_enabled(DiagnosticCode::PreferModuleImport),
+            merged_diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport),
             DiagnosticStatus::Enabled
         );
         assert_eq!(
-            merged.is_enabled(DiagnosticCode::SuspiciousPub),
+            merged_diagnostics_config.is_enabled(DiagnosticCode::SuspiciousPub),
             DiagnosticStatus::Disabled
         );
     }

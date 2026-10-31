@@ -458,6 +458,18 @@ pub(crate) const LOCAL_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 /// How often the scheduler asks each remote machine for its agents.
 pub(crate) const REMOTE_PROBE_INTERVAL: Duration = Duration::from_secs(5);
 
+// census recovery
+/// Recover lost input events and replaced input directories within thirty seconds.
+pub(crate) const INPUT_WATCH_RECOVERY: Duration = Duration::from_secs(30);
+/// Retry an unavailable input watch at the local census interval.
+pub(crate) const INPUT_WATCH_RETRY: Duration = Duration::from_secs(2);
+/// Recover process births and changes missed by per-process probes.
+pub(crate) const PROCESS_RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
+/// Recover lost run events and replaced run directories within thirty seconds.
+pub(crate) const RUN_WATCH_RECOVERY: Duration = Duration::from_secs(30);
+/// Retry an unavailable run watch at the local census interval.
+pub(crate) const RUN_WATCH_RETRY: Duration = Duration::from_secs(2);
+
 // desktops
 /// How long the scanner keeps what `KWin` and tmux answered before
 /// asking again. Each `KWin` read loads and runs a script inside the

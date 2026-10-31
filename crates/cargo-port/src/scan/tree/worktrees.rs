@@ -32,11 +32,11 @@ pub(super) fn merge_worktrees_new(items: &mut Vec<RootItem>) {
     let mut primary_indices: HashMap<AbsolutePath, usize> = HashMap::new();
     let mut worktree_indices: Vec<usize> = Vec::new();
 
-    for (i, item) in items.iter().enumerate() {
-        let Some(identity) = item_worktree_identity(item) else {
+    for (i, root_item) in items.iter().enumerate() {
+        let Some(identity) = item_worktree_identity(root_item) else {
             continue;
         };
-        let is_linked = item_is_linked(item);
+        let is_linked = item_is_linked(root_item);
         if is_linked {
             worktree_indices.push(i);
         } else {
@@ -46,8 +46,8 @@ pub(super) fn merge_worktrees_new(items: &mut Vec<RootItem>) {
 
     let identities_with_worktrees: HashSet<AbsolutePath> = worktree_indices
         .iter()
-        .filter_map(|&wi| {
-            item_worktree_identity(&items[wi])
+        .filter_map(|&worktree_index| {
+            item_worktree_identity(&items[worktree_index])
                 .filter(|id| primary_indices.contains_key(id.as_path()))
                 .cloned()
         })
@@ -61,27 +61,27 @@ pub(super) fn merge_worktrees_new(items: &mut Vec<RootItem>) {
     // higher worktree indices preserves lower indices.
     let mut moves: Vec<(usize, AbsolutePath)> = worktree_indices
         .iter()
-        .filter_map(|&wi| {
-            let id = item_worktree_identity(&items[wi])?.clone();
+        .filter_map(|&worktree_index| {
+            let id = item_worktree_identity(&items[worktree_index])?.clone();
             primary_indices.get(id.as_path())?;
-            Some((wi, id))
+            Some((worktree_index, id))
         })
         .collect();
     moves.sort_by_key(|entry| Reverse(entry.0));
 
     let mut extracted: Vec<(RootItem, AbsolutePath)> = Vec::new();
-    for (wi, id) in moves {
-        let item = items.remove(wi);
-        extracted.push((item, id));
+    for (worktree_index, id) in moves {
+        let root_item = items.remove(worktree_index);
+        extracted.push((root_item, id));
     }
 
     // Rebuild `primary_map` from remaining `items` because `items.remove`
     // shifted the old `primary_indices`.
     let mut primary_map: HashMap<AbsolutePath, usize> = HashMap::new();
-    for (i, item) in items.iter().enumerate() {
-        if let Some(id) = item_worktree_identity(item)
+    for (i, root_item) in items.iter().enumerate() {
+        if let Some(id) = item_worktree_identity(root_item)
             .filter(|id| identities_with_worktrees.contains(*id))
-            .filter(|_| !item_is_linked(item))
+            .filter(|_| !item_is_linked(root_item))
         {
             primary_map.insert(id.clone(), i);
         }
@@ -99,22 +99,25 @@ pub(super) fn merge_worktrees_new(items: &mut Vec<RootItem>) {
     let mut replacements: Vec<(usize, RootItem)> = Vec::new();
     for (id, idx) in &primary_map {
         let linked = linked_by_id.remove(id).unwrap_or_default();
-        let RootItem::Rust(primary) = &items[*idx] else {
+        let RootItem::Rust(primary_rust_project) = &items[*idx] else {
             continue;
         };
         let linked_projects: Vec<RustProject> = linked
             .into_iter()
-            .filter_map(|item| match item {
+            .filter_map(|root_item| match root_item {
                 RootItem::Rust(p) => Some(p),
                 _ => None,
             })
             .collect();
-        let replacement = RootItem::Worktrees(WorktreeGroup::new(primary.clone(), linked_projects));
-        replacements.push((*idx, replacement));
+        let replacement_root_item = RootItem::Worktrees(WorktreeGroup::new(
+            primary_rust_project.clone(),
+            linked_projects,
+        ));
+        replacements.push((*idx, replacement_root_item));
     }
 
-    for (idx, replacement) in replacements {
-        items[idx] = replacement;
+    for (idx, replacement_root_item) in replacements {
+        items[idx] = replacement_root_item;
     }
 }
 
@@ -171,63 +174,68 @@ mod tests {
 
     #[test]
     fn merges_virtual_workspace() {
-        let primary = make_workspace(None, "/home/ws", false, Some("/home/ws"));
-        let worktree = make_workspace(None, "/home/ws_feat", true, Some("/home/ws"));
-        let mut items = vec![primary, worktree];
+        let primary_root_item = make_workspace(None, "/home/ws", false, Some("/home/ws"));
+        let linked_root_item = make_workspace(None, "/home/ws_feat", true, Some("/home/ws"));
+        let mut items = vec![primary_root_item, linked_root_item];
         merge_worktrees_new(&mut items);
 
         assert_eq!(items.len(), 1, "worktree should be merged into primary");
-        let RootItem::Worktrees(group) = &items[0] else {
+        let RootItem::Worktrees(worktree_group) = &items[0] else {
             panic!("merged workspace should produce a worktree group")
         };
         assert!(
-            matches!(&group.primary, RustProject::Workspace(_)),
+            matches!(&worktree_group.primary, RustProject::Workspace(_)),
             "primary should be a workspace"
         );
-        assert_eq!(group.linked.len(), 1, "should have one linked worktree");
+        assert_eq!(
+            worktree_group.linked.len(),
+            1,
+            "should have one linked worktree"
+        );
     }
 
     #[test]
     fn merges_named_workspace() {
-        let primary = make_workspace(Some("my-ws"), "/home/ws", false, Some("/home/ws"));
-        let worktree = make_workspace(Some("my-ws"), "/home/ws_feat", true, Some("/home/ws"));
-        let mut items = vec![primary, worktree];
+        let primary_root_item = make_workspace(Some("my-ws"), "/home/ws", false, Some("/home/ws"));
+        let linked_root_item =
+            make_workspace(Some("my-ws"), "/home/ws_feat", true, Some("/home/ws"));
+        let mut items = vec![primary_root_item, linked_root_item];
         merge_worktrees_new(&mut items);
 
         assert_eq!(items.len(), 1);
-        let RootItem::Worktrees(group) = &items[0] else {
+        let RootItem::Worktrees(worktree_group) = &items[0] else {
             panic!("merged named workspace should produce a worktree group")
         };
         assert!(
-            matches!(&group.primary, RustProject::Workspace(_)),
+            matches!(&worktree_group.primary, RustProject::Workspace(_)),
             "primary should be a workspace"
         );
-        assert_eq!(group.linked.len(), 1);
+        assert_eq!(worktree_group.linked.len(), 1);
     }
 
     #[test]
     fn merges_standalone_project() {
-        let primary = make_package(Some("app"), "/home/app", false, Some("/home/app"));
-        let worktree = make_package(Some("app"), "/home/app_feat", true, Some("/home/app"));
-        let mut items = vec![primary, worktree];
+        let primary_root_item = make_package(Some("app"), "/home/app", false, Some("/home/app"));
+        let linked_root_item = make_package(Some("app"), "/home/app_feat", true, Some("/home/app"));
+        let mut items = vec![primary_root_item, linked_root_item];
         merge_worktrees_new(&mut items);
 
         assert_eq!(items.len(), 1);
-        let RootItem::Worktrees(group) = &items[0] else {
+        let RootItem::Worktrees(worktree_group) = &items[0] else {
             panic!("merged package should produce a worktree group")
         };
         assert!(
-            matches!(&group.primary, RustProject::Package(_)),
+            matches!(&worktree_group.primary, RustProject::Package(_)),
             "primary should be a package"
         );
-        assert_eq!(group.linked.len(), 1);
+        assert_eq!(worktree_group.linked.len(), 1);
     }
 
     #[test]
     fn leaves_different_repos_unmerged() {
-        let a = make_package(Some("a"), "/home/a", false, Some("/home/a"));
-        let b = make_package(Some("b"), "/home/b", true, Some("/home/b"));
-        let mut items = vec![a, b];
+        let primary_root_item = make_package(Some("a"), "/home/a", false, Some("/home/a"));
+        let unrelated_root_item = make_package(Some("b"), "/home/b", true, Some("/home/b"));
+        let mut items = vec![primary_root_item, unrelated_root_item];
         merge_worktrees_new(&mut items);
 
         assert_eq!(items.len(), 2, "different repos should remain separate");
@@ -235,9 +243,9 @@ mod tests {
 
     #[test]
     fn leaves_items_without_identity_unmerged() {
-        let a = make_package(Some("x"), "/home/x", false, None);
-        let b = make_package(Some("x"), "/home/x2", true, None);
-        let mut items = vec![a, b];
+        let first_root_item = make_package(Some("x"), "/home/x", false, None);
+        let second_root_item = make_package(Some("x"), "/home/x2", true, None);
+        let mut items = vec![first_root_item, second_root_item];
         merge_worktrees_new(&mut items);
 
         assert_eq!(

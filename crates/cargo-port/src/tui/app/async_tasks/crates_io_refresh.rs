@@ -66,18 +66,20 @@ impl App {
     /// only when the fetched version differs from `previous_version`.
     fn spawn_crates_io_refresh(
         &self,
-        target: CratesIoRefreshTarget,
+        crates_io_refresh_target: CratesIoRefreshTarget,
         previous_version: Option<String>,
     ) {
         let sender = self.background.background_sender();
         let client = self.net.http_client();
         rayon::spawn(move || {
-            let (info, signal) = client.fetch_crates_io_info(&target.name);
+            let (info, signal) = client.fetch_crates_io_info(&crates_io_refresh_target.name);
             scan::emit_service_signal(&sender, signal);
             let Some(info) = info else {
                 return;
             };
-            for message in crates_io_refresh_messages(target, previous_version, info) {
+            for message in
+                crates_io_refresh_messages(crates_io_refresh_target, previous_version, info)
+            {
                 let _ = sender.send(message);
             }
         });
@@ -85,15 +87,15 @@ impl App {
 }
 
 fn crates_io_refresh_messages(
-    target: CratesIoRefreshTarget,
+    crates_io_refresh_target: CratesIoRefreshTarget,
     previous_version: Option<String>,
     info: CratesIoRelease,
 ) -> Vec<BackgroundMsg> {
     let CratesIoRefreshTarget {
         name,
         paths,
-        notification,
-    } = target;
+        notification: release_notification,
+    } = crates_io_refresh_target;
     let mut messages = Vec::with_capacity(paths.len() + 1);
     for path in paths {
         messages.push(BackgroundMsg::CratesIoVersion {
@@ -103,7 +105,7 @@ fn crates_io_refresh_messages(
     }
     if let Some(previous_version) = previous_version
         && previous_version != info.version
-        && let Some(display_name) = notification.into_name(name)
+        && let Some(display_name) = release_notification.into_name(name)
     {
         messages.push(BackgroundMsg::CratesIoNewRelease {
             display_name,
@@ -211,27 +213,27 @@ mod tests {
 
         let now = Instant::now();
         let mut checked_at = HashMap::new();
-        let mut targets = Vec::new();
+        let mut crates_io_refresh_targets = Vec::new();
         for _ in &paths {
-            if let Some(target) =
+            if let Some(crates_io_refresh_target) =
                 app.collect_crates_io_fetch_plan()
                     .take_stalest(&checked_at, now, Duration::ZERO)
             {
-                checked_at.insert(target.name.clone(), now);
-                targets.push(target);
+                checked_at.insert(crates_io_refresh_target.name.clone(), now);
+                crates_io_refresh_targets.push(crates_io_refresh_target);
             }
         }
-        assert_eq!(targets.len(), paths.len());
-        let release = CratesIoRelease {
+        assert_eq!(crates_io_refresh_targets.len(), paths.len());
+        let crates_io_release = CratesIoRelease {
             version:    RELEASE_VERSION.to_string(),
             prerelease: Some(PRERELEASE_VERSION.to_string()),
             downloads:  2,
         };
-        for target in targets {
+        for crates_io_refresh_target in crates_io_refresh_targets {
             for message in crates_io_refresh_messages(
-                target,
+                crates_io_refresh_target,
                 Some(PREVIOUS_VERSION.to_string()),
-                release.clone(),
+                crates_io_release.clone(),
             ) {
                 app.handle_bg_msg(message);
             }
@@ -243,7 +245,7 @@ mod tests {
                     .rust_info_at_path(path.as_path())
                     .map(|rust| &rust.crates_io),
                 Some(&crate::project::CratesIoReleaseState::Released(
-                    release.clone()
+                    crates_io_release.clone()
                 )),
             );
         }

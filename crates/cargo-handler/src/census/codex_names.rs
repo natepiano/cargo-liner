@@ -8,7 +8,9 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use super::codex::CodexThread;
 use super::transcript::JsonlCursor;
+use super::tree;
 use crate::constants::CODEX_SESSION_INDEX_FILENAME;
 
 /// A recorded user name, distinct from the pid fallback chosen by the caller.
@@ -16,6 +18,14 @@ use crate::constants::CODEX_SESSION_INDEX_FILENAME;
 pub(super) enum SessionName {
     Unnamed,
     Named(String),
+}
+
+impl From<Option<String>> for SessionName {
+    fn from(name: Option<String>) -> Self {
+        name.map(|name| name.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|name| !name.is_empty())
+            .map_or(Self::Unnamed, Self::Named)
+    }
 }
 
 /// A file generation prevents replaced or truncated indexes retaining stale names.
@@ -97,14 +107,14 @@ impl SessionNames {
         }
     }
 
-    /// The last record for this exact thread in this exact configuration home.
-    pub(super) fn name(&self, codex_home: &Path, thread: &str) -> SessionName {
-        self.0
-            .get(codex_home)
-            .and_then(|index| index.names.get(thread))
-            .map_or(SessionName::Unnamed, |name| {
-                SessionName::Named(name.clone())
-            })
+    /// The index name from this thread's account, else its database name.
+    pub(super) fn name(&self, thread: &CodexThread) -> SessionName {
+        tree::thread_id(&thread.rollout)
+            .and_then(|id| self.0.get(thread.account_home.as_ref())?.names.get(&id))
+            .map_or_else(
+                || thread.name.clone(),
+                |name| SessionName::Named(name.clone()),
+            )
     }
 
     /// File traffic from the most recent read, for incremental-reader regressions.

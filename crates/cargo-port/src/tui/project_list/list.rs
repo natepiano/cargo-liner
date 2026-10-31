@@ -58,6 +58,7 @@ use crate::tui::app::CiRunDisplayMode;
 use crate::tui::app::CleanSelection;
 use crate::tui::app::SelectionPaths;
 use crate::tui::app::SelectionSync;
+use crate::tui::columns::LintColumnStatus;
 use crate::tui::columns::ProjectListWidths;
 use crate::tui::dismiss_target::DismissTarget;
 use crate::tui::panes;
@@ -116,12 +117,12 @@ impl ProjectList {
     }
 
     /// Production-only seeding: load `last_selected` from the terminal-state
-    /// file and stamp the lint-enabled state into the column-width cache.
+    /// file and stamp lint column visibility into the column-width cache.
     /// Tests build via `ProjectList::new` / `ProjectList::default` and skip
     /// this side-effecting initialization.
-    pub(in crate::tui) fn init_runtime_state(&mut self, lint_enabled: bool) {
+    pub(in crate::tui) fn init_runtime_state(&mut self, lint_column: LintColumnStatus) {
         self.paths = SelectionPaths::new();
-        self.cached_fit_widths = ProjectListWidths::new(lint_enabled);
+        self.cached_fit_widths = ProjectListWidths::new(lint_column);
     }
 
     // `len`, `is_empty`, `iter` and indexed access expose the `ProjectList::roots` collection.
@@ -1121,8 +1122,8 @@ impl ProjectList {
         self.cached_fit_widths = widths;
     }
 
-    pub(in crate::tui) fn reset_fit_widths(&mut self, lint_enabled: bool) {
-        self.cached_fit_widths = ProjectListWidths::new(lint_enabled);
+    pub(in crate::tui) fn reset_fit_widths(&mut self, lint_column: LintColumnStatus) {
+        self.cached_fit_widths = ProjectListWidths::new(lint_column);
     }
 
     // `mutate` lends `ProjectList` to a `SelectionMutation` guard.
