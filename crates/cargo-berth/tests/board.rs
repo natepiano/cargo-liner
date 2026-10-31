@@ -69,13 +69,13 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use cargo_berth_test_support::FixtureCommand as Command;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
@@ -1408,7 +1408,7 @@ fn reservation_lifecycle_query_distinguishes_all_four_states() {
 fn human_board_uses_and_restores_an_attached_terminal() {
     let repository = initialized_repository();
     let transcript = repository.path().join("terminal-transcript");
-    let mut child = std::process::Command::new("/usr/bin/script")
+    let mut child = cargo_berth_test_support::FixtureCommand::new("/usr/bin/script")
         .args([
             "-q",
             transcript

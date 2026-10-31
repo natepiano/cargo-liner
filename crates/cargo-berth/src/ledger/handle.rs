@@ -1787,7 +1787,7 @@ mod tests {
             .open(&ledger.paths.lock)?;
         holder.lock()?;
         let ready = repository.path().join("acquiring");
-        let child = std::process::Command::new(std::env::current_exe()?)
+        let child = cargo_berth_test_support::FixtureCommand::new(std::env::current_exe()?)
             .args(["--exact", TEST, "--nocapture"])
             .env(CHILD_ROOT, repository.path())
             .env(
@@ -1862,7 +1862,7 @@ mod tests {
                 .open(&ledger.paths.lock)?;
             lock.lock()?;
             let ready = repository.path().join("session-prepared");
-            let mut child = std::process::Command::new(std::env::current_exe()?)
+            let mut child = cargo_berth_test_support::FixtureCommand::new(std::env::current_exe()?)
                 .args(["--exact", TEST, "--nocapture"])
                 .env(CHILD_ROOT, repository.path())
                 .env(CHILD_MODE, mode)

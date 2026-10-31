@@ -799,10 +799,10 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
-    use std::process::Command;
     use std::process::Stdio;
 
     use cargo_berth_test_support::ChildDeadlineExt as _;
+    use cargo_berth_test_support::FixtureCommand as Command;
 
     use super::EXECUTABLE_ENVIRONMENT;
     use super::EXECUTABLE_RESOLUTION;
