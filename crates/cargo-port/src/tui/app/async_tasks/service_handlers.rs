@@ -57,14 +57,14 @@ impl App {
         }
     }
 
-    pub(super) fn apply_service_signal(&mut self, signal: ServiceSignal) {
-        match signal {
-            ServiceSignal::Reachable(service) => self.handle_service_reachable(service),
-            ServiceSignal::Unreachable(service) => {
-                self.apply_unavailability(service, AvailabilityKind::Unreachable);
+    pub(super) fn apply_service_signal(&mut self, service_signal: ServiceSignal) {
+        match service_signal {
+            ServiceSignal::Reachable(service_kind) => self.handle_service_reachable(service_kind),
+            ServiceSignal::Unreachable(service_kind) => {
+                self.apply_unavailability(service_kind, AvailabilityKind::Unreachable);
             },
-            ServiceSignal::RateLimited(service) => {
-                self.apply_unavailability(service, AvailabilityKind::RateLimited);
+            ServiceSignal::RateLimited(service_kind) => {
+                self.apply_unavailability(service_kind, AvailabilityKind::RateLimited);
             },
         }
     }
@@ -80,9 +80,9 @@ impl App {
     /// the grace window finds `unavailable_toast == None` and
     /// silently clears state without flashing a "back online" toast,
     /// while still triggering the missing-data refetch.
-    pub(super) fn handle_service_reachable(&mut self, service: ServiceKind) {
-        let outcome = self.net.availability_for(service).mark_reachable();
-        self.apply_recovery_outcome(service, outcome);
+    pub(super) fn handle_service_reachable(&mut self, service_kind: ServiceKind) {
+        let recovery_outcome = self.net.availability_for(service_kind).mark_reachable();
+        self.apply_recovery_outcome(service_kind, recovery_outcome);
     }
     /// Record the unavailability transition and spawn the retry
     /// thread. The user-visible toast is **not** pushed here — it's
@@ -90,12 +90,16 @@ impl App {
     /// which only fires after the [`crate::constants::SERVICE_UNAVAILABLE_GRACE`]
     /// window elapses without recovery. Single transient timeouts
     /// in a sea of successful fetches never reach the UI.
-    pub(super) fn apply_unavailability(&mut self, service: ServiceKind, kind: AvailabilityKind) {
+    pub(super) fn apply_unavailability(
+        &mut self,
+        service: ServiceKind,
+        availability_kind: AvailabilityKind,
+    ) {
         let spawn_retry = {
-            let avail = self.net.availability_for(service);
-            match kind {
-                AvailabilityKind::Unreachable => avail.mark_unreachable(),
-                AvailabilityKind::RateLimited => avail.mark_rate_limited(),
+            let availability = self.net.availability_for(service);
+            match availability_kind {
+                AvailabilityKind::Unreachable => availability.mark_unreachable(),
+                AvailabilityKind::RateLimited => availability.mark_rate_limited(),
             }
         };
         if spawn_retry {
@@ -110,10 +114,10 @@ impl App {
     /// still down. No-op if the state has flipped back to reachable
     /// during the grace window (a real fetch landed) or a live toast
     /// is already showing.
-    pub(super) fn confirm_service_unreachable(&mut self, service: ServiceKind) {
-        let (kind, prior_toast) = {
-            let avail = self.net.availability_for(service);
-            let kind = match avail.status() {
+    pub(super) fn confirm_service_unreachable(&mut self, service_kind: ServiceKind) {
+        let (availability_kind, prior_toast) = {
+            let availability = self.net.availability_for(service_kind);
+            let availability_kind = match availability.status() {
                 AvailabilityStatus::Unreachable => AvailabilityKind::Unreachable,
                 AvailabilityStatus::RateLimited => AvailabilityKind::RateLimited,
                 // The GitHub token is fixed for the process. Missing-token
@@ -124,32 +128,32 @@ impl App {
                 | AvailabilityStatus::Unauthenticated
                 | AvailabilityStatus::NotInstalled => return,
             };
-            (kind, avail.toast_id())
+            (availability_kind, availability.toast_id())
         };
         let alive = prior_toast.is_some_and(|id| self.framework.toasts.is_alive(id));
         if alive {
             return;
         }
-        let toast_id = self.push_service_unavailable_toast(service, kind);
-        self.net.availability_for(service).set_toast(toast_id);
+        let toast_id = self.push_service_unavailable_toast(service_kind, availability_kind);
+        self.net.availability_for(service_kind).set_toast(toast_id);
         // For `ServiceKind::GitHub`, `fail_startup_repo_phase` with `FailureReason::RateLimited` or
         // `FetchError` finishes `startup.repo` instead of waiting for timeout when confirmed
         // unavailability prevents its fetches completing. `push_service_unavailable_toast` already
         // names the reason, so the row adds no duplicate reason.
-        if service == ServiceKind::GitHub {
-            let reason = match kind {
+        if service_kind == ServiceKind::GitHub {
+            let failure_reason = match availability_kind {
                 AvailabilityKind::RateLimited => FailureReason::RateLimited,
                 AvailabilityKind::Unreachable => FailureReason::FetchError,
             };
-            self.fail_startup_repo_phase(reason);
+            self.fail_startup_repo_phase(failure_reason);
         }
     }
     pub(super) fn push_service_unavailable_toast(
         &mut self,
-        service: ServiceKind,
-        kind: AvailabilityKind,
+        service_kind: ServiceKind,
+        availability_kind: AvailabilityKind,
     ) -> ToastId {
-        let (title, body) = service_unavailable_message(service, kind);
+        let (title, body) = service_unavailable_message(service_kind, availability_kind);
         self.framework.toasts.push_persistent(
             title,
             body,
@@ -166,7 +170,7 @@ impl App {
     /// Otherwise emit [`crate::scan::BackgroundMsg::ServiceUnreachableConfirmed`]
     /// to push the user-visible toast, then enter the 1Hz retry loop
     /// until probe succeeds.
-    pub(super) fn spawn_service_retry(&self, service: ServiceKind) {
+    pub(super) fn spawn_service_retry(&self, service_kind: ServiceKind) {
         #[cfg(test)]
         if !self.scan.retry_spawn_mode().is_enabled() {
             return;
@@ -175,16 +179,16 @@ impl App {
         self.startup_services.spawn_service_retry_probe(
             self.background.background_sender(),
             self.net.http_client(),
-            service,
+            service_kind,
         );
     }
     /// Apply a `ServiceRecovered` message from the retry probe.
     /// Routes through the shared [`Self::apply_recovery_outcome`]
     /// helper so the toast handling and refetch hook stay in lockstep
     /// with the `handle_service_reachable` path.
-    pub(super) fn mark_service_recovered(&mut self, service: ServiceKind) {
-        let outcome = self.net.availability_for(service).mark_recovered();
-        self.apply_recovery_outcome(service, outcome);
+    pub(super) fn mark_service_recovered(&mut self, service_kind: ServiceKind) {
+        let recovery_outcome = self.net.availability_for(service_kind).mark_recovered();
+        self.apply_recovery_outcome(service_kind, recovery_outcome);
     }
     /// Unified post-recovery dispatch: dismiss / push the back-online
     /// toast on the `WithToast` variant, then fire
@@ -197,8 +201,8 @@ impl App {
     /// the startup panel was meant to embed. Gating on
     /// [`RecoveryOutcome::triggers_refetch`] keeps the missing-data refetch
     /// for outages the user actually saw while suppressing that startup burst.
-    fn apply_recovery_outcome(&mut self, service: ServiceKind, outcome: RecoveryOutcome) {
-        match outcome {
+    fn apply_recovery_outcome(&mut self, service: ServiceKind, recovery_outcome: RecoveryOutcome) {
+        match recovery_outcome {
             RecoveryOutcome::NoTransition => return,
             RecoveryOutcome::Silent => {},
             RecoveryOutcome::WithToast(toast_id) => {
@@ -207,7 +211,7 @@ impl App {
                 self.show_timed_toast(title, body);
             },
         }
-        if outcome.triggers_refetch() {
+        if recovery_outcome.triggers_refetch() {
             self.refetch_missing_after_recovery(service);
         }
     }
@@ -243,8 +247,8 @@ const fn service_unavailable_message(
     }
 }
 
-const fn service_recovered_message(service: ServiceKind) -> (&'static str, &'static str) {
-    match service {
+const fn service_recovered_message(service_kind: ServiceKind) -> (&'static str, &'static str) {
+    match service_kind {
         ServiceKind::GitHub => ("GitHub available", "Back online."),
         ServiceKind::CratesIo => ("crates.io available", "Back online."),
     }

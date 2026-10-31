@@ -32,9 +32,9 @@ impl Renderable<PaneRenderCtx<'_>> for SettingsPane {
         &mut self,
         frame: &mut Frame<'_>,
         _: Rect,
-        ctx: &PaneRenderCtx<'_>,
+        pane_render_ctx: &PaneRenderCtx<'_>,
     ) -> Option<PaneFrameChrome> {
-        settings::render_settings_pane_body(frame, self, ctx);
+        settings::render_settings_pane_body(frame, self, pane_render_ctx);
         // `SettingsPane` draws its own floating border in `settings::render_settings_pane_body`, so
         // `render` returns no `PaneFrameChrome` for the grid.
         None
@@ -46,9 +46,9 @@ impl Renderable<PaneRenderCtx<'_>> for FinderPane {
         &mut self,
         frame: &mut Frame<'_>,
         area: Rect,
-        ctx: &PaneRenderCtx<'_>,
+        pane_render_ctx: &PaneRenderCtx<'_>,
     ) -> Option<PaneFrameChrome> {
-        finder::render_finder_pane_body(frame, area, self, ctx);
+        finder::render_finder_pane_body(frame, area, self, pane_render_ctx);
         None
     }
 }

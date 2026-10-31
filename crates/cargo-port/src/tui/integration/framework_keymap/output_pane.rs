@@ -42,8 +42,8 @@ impl Shortcuts<App> for OutputPane {
     /// The cancel label tracks what the next Esc actually does, matching
     /// the output pane's own title: stop a running process, or close the
     /// pane.
-    fn bar_label(&self, action: OutputAction, ctx: &App) -> &'static str {
-        match action {
+    fn bar_label(&self, output_action: OutputAction, ctx: &App) -> &'static str {
+        match output_action {
             OutputAction::Cancel => {
                 if ctx.panes.output.selection().is_visual() {
                     // `ctx.panes.output.selection().is_visual()` makes `OutputAction::Cancel`
@@ -56,7 +56,7 @@ impl Shortcuts<App> for OutputPane {
                     "close"
                 }
             },
-            OutputAction::SelectAll => action.bar_label(),
+            OutputAction::SelectAll => output_action.bar_label(),
         }
     }
 
@@ -65,5 +65,5 @@ impl Shortcuts<App> for OutputPane {
 
 impl CopySelection<App> for OutputPane {
     /// `y` copies the selected range of captured output.
-    fn copy_selection(ctx: &App) -> CopySelectionResult { ctx.copy_output_selection() }
+    fn copy_selection(app: &App) -> CopySelectionResult { app.copy_output_selection() }
 }
