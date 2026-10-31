@@ -57,8 +57,11 @@ fn collect_from_tokens(tokens: &TokenStream, names: &mut BTreeSet<String>) {
             TokenTree::Literal(literal) => {
                 if let Ok(text) = syn::parse_str::<LitStr>(&literal.to_string()) {
                     let value = text.value();
-                    if is_plain_ident(&value) {
-                        names.insert(value);
+                    match AttributeReference::from(value.as_str()) {
+                        AttributeReference::BareIdentifier => {
+                            names.insert(value);
+                        },
+                        AttributeReference::NotBareIdentifier => {},
                     }
                 }
             },
@@ -68,15 +71,27 @@ fn collect_from_tokens(tokens: &TokenStream, names: &mut BTreeSet<String>) {
     }
 }
 
-/// True for a string that is exactly one identifier. A qualified string such as
+/// Classifies strings that are exactly one ASCII identifier. A qualified string such as
 /// `"defaults::default_scale"` resolves through the module, not through the
 /// function import, so a prefer-module-import rewrite cannot break it.
-fn is_plain_ident(value: &str) -> bool {
-    let mut characters = value.chars();
-    characters
-        .next()
-        .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
-        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+enum AttributeReference {
+    BareIdentifier,
+    NotBareIdentifier,
+}
+
+impl From<&str> for AttributeReference {
+    fn from(value: &str) -> Self {
+        let mut characters = value.chars();
+        if characters
+            .next()
+            .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
+            && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            Self::BareIdentifier
+        } else {
+            Self::NotBareIdentifier
+        }
+    }
 }
 
 #[cfg(test)]

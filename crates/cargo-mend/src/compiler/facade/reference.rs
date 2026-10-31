@@ -163,7 +163,7 @@ pub(super) fn scan_facade_usage(
             )
         })
         .collect::<ParentFacadeUsageByName>();
-    let explicit_names = ExportNameIndex::new(exported_names);
+    let explicit_names = ExportNameIndex::from(exported_names);
 
     for source_path in source_cache.source_files() {
         if export_file_candidate(source_cache, source_path, &explicit_names)
@@ -301,8 +301,8 @@ struct ExportNameIndex<'name> {
     normalized: FxHashSet<&'name str>,
 }
 
-impl<'name> ExportNameIndex<'name> {
-    fn new(exported_names: &'name [String]) -> Self {
+impl<'name> From<&'name [String]> for ExportNameIndex<'name> {
+    fn from(exported_names: &'name [String]) -> Self {
         Self {
             normalized: exported_names
                 .iter()
@@ -310,7 +310,9 @@ impl<'name> ExportNameIndex<'name> {
                 .collect(),
         }
     }
+}
 
+impl<'name> ExportNameIndex<'name> {
     fn iter(&self) -> impl Iterator<Item = &'name str> + '_ { self.normalized.iter().copied() }
 
     /// The exported name equal to `segment`, ignoring any `r#` prefix.
@@ -932,7 +934,7 @@ pub(in crate::compiler) fn external_facade_usage(
     module_path: &[String],
     item_names: &[String],
 ) -> ExternalFacadeUsage {
-    let item_names = ExportNameIndex::new(item_names);
+    let item_names = ExportNameIndex::from(item_names);
     for source_file in source_cache.source_files_under(source_root).iter() {
         let Some(extracted) = source_cache.extracted_paths(source_file) else {
             continue;
@@ -1082,7 +1084,7 @@ mod tests {
     fn external_usage_preserves_scope_name_and_caller_location() -> anyhow::Result<()> {
         let target = ["parent", "child"].map(String::from);
         let names = [String::from("Thing")];
-        let index = ExportNameIndex::new(&names);
+        let index = ExportNameIndex::from(names.as_slice());
         for (source, current, suffix, child_usage, facade_usage) in [
             (
                 "use crate::parent::child::Thing;",
@@ -1183,7 +1185,7 @@ mod tests {
     #[test]
     fn path_candidate_filter_keeps_anchor_finals_and_normalized_names() {
         let names = [String::from("r#Thing")];
-        let exports = ExportNameIndex::new(&names);
+        let exports = ExportNameIndex::from(names.as_slice());
         for (raw, expected) in [
             (vec![], super::ExportPathCandidate::Possible),
             (vec!["crate", "Thing"], super::ExportPathCandidate::Possible),
@@ -1217,7 +1219,11 @@ mod tests {
         ] {
             let names = names.into_iter().map(String::from).collect::<Vec<_>>();
             assert_eq!(
-                super::export_file_candidate(&cache, &file, &ExportNameIndex::new(&names)),
+                super::export_file_candidate(
+                    &cache,
+                    &file,
+                    &ExportNameIndex::from(names.as_slice())
+                ),
                 expected,
                 "{names:?}",
             );
@@ -1397,7 +1403,7 @@ mod tests {
                 &source_segments,
                 &[],
                 &compiler_segments,
-                &ExportNameIndex::new(&exported_names),
+                &ExportNameIndex::from(exported_names.as_slice()),
             ),
             Some("Thing")
         );
@@ -1414,7 +1420,7 @@ mod tests {
                 &source_segments,
                 &[],
                 &compiler_segments,
-                &ExportNameIndex::new(&exported_names),
+                &ExportNameIndex::from(exported_names.as_slice()),
             ),
             Some("Thing")
         );
@@ -1432,7 +1438,7 @@ mod tests {
                 &source_segments,
                 &current_module_path,
                 &compiler_segments,
-                &ExportNameIndex::new(&exported_names),
+                &ExportNameIndex::from(exported_names.as_slice()),
             ),
             Some("Thing")
         );
@@ -1449,7 +1455,7 @@ mod tests {
                 &source_segments,
                 &[],
                 &compiler_segments,
-                &ExportNameIndex::new(&exported_names),
+                &ExportNameIndex::from(exported_names.as_slice()),
             ),
             None
         );
