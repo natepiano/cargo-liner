@@ -42,3 +42,6 @@ tui_pane = { workspace = true, features = ["backdrop"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[dev-dependencies]
+census-test-support = { workspace = true }
