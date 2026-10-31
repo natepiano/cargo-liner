@@ -952,7 +952,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Files:** `crates/cargo-mend/src/compiler/build/execute.rs`
 
-### Phase 45 — Paths that a merge of the merge branch brings in are not incursions  · status: todo
+### Phase 45 — Paths that a merge of the merge branch brings in are not incursions  · status: done
 
 **Depends on:** 42
 
@@ -978,7 +978,13 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Verification:** a red-first test (under 1 s): trunk with an upstream that is one commit ahead, and an entering reservation with an ordering hold; a fast-forward of trunk to the upstream tip is not refused, and the hold shows as observed. A companion test: a move to a commit the upstream does not contain is still refused. `cargo-berth` lint and related tests pass.
 
-**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+**Cause:** committed write selection skipped received-commit filtering when the recorded integration tips came before the phase start. A merge branch that was never recorded as an integration target was not among those tips, so its side's paths entered the phase's net diff and incursion attribution.
+
+**Fix:** one phase commit origin (unit-written, received from the merge branch, or unclassified) is read from the first-parent ancestry. Write selection and incursion provenance both use it. A conflict resolution written in the merge commit stays a unit write; unknown ancestry stays conservative.
+
+**Repair (showrunner hold of a6a2aa4e):** the first fix ran one more `git log` in every post-commit hook, which broke the hook's cost limits, and it treated peer work brought in by the merge at HEAD as received history. Ancestry is now classified from the parent graph that reconciliation already reads, so no Git child is added. Work that enters with the current merge is judged at its post-commit boundary.
+
+**Files:** `crates/cargo-berth/src/drift/{writes,observation,selection,provenance}.rs`, `crates/cargo-berth/src/git/{mod,reachability}.rs`, `crates/cargo-berth/tests/drift.rs`
 
 ### Phase 47 — cargo-berth keeps its ledger and indexes in memory between requests  · status: dropped
 
