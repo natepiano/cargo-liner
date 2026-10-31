@@ -25,6 +25,7 @@ use tui_pane::KeymapEditContext;
 use tui_pane::KeymapError;
 use tui_pane::KeymapUiContext;
 use tui_pane::NoToastAction;
+use tui_pane::ScrollDirection;
 use tui_pane::SettingStep;
 use tui_pane::SettingsFileSpec;
 use tui_pane::SettingsHost;
@@ -316,6 +317,10 @@ impl TerminalApp for App {
 
     fn click(&mut self, position: Position) { tui_pane::handle_tile_click(self, position); }
 
+    fn scroll(&mut self, position: Position, direction: ScrollDirection) {
+        tui_pane::handle_tile_scroll(self, position, direction);
+    }
+
     /// `<os config dir>/cargo-tile/panic.log`, beside `config.toml`.
     fn panic_log(&self) -> Option<PathBuf> {
         SettingsFileSpec::new(CONFIG_DIRNAME, PANIC_LOG_FILENAME).resolved_path()
@@ -402,7 +407,90 @@ impl FavoritesHost for App {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    #[test]
+    fn shortcuts_overlay_wheel_scrolls_and_keeps_tiles_still() {
+        let mut app = App::new_for_test().expect("test app");
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 16))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("tile frame");
+        app.tiles.settle_for_test();
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("settled tile frame");
+        let tile_before = app.tiles.hit_test_at(Position::new(1, 1));
+
+        keymap.dispatch_framework_global(GlobalAction::OpenGlobalShortcuts, &mut app);
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("overlay frame");
+        let viewport = app.framework.global_shortcuts_pane.viewport();
+        assert!(
+            viewport.content_height() > viewport.visible_rows(),
+            "overlay must overflow"
+        );
+        let content = viewport.content_area();
+        let inside = Position::new(content.x, content.y);
+        let outside = Position::new(1, 1);
+        assert!(!content.contains(outside));
+        let start = viewport.pos();
+        let offset = viewport.scroll_offset();
+        app.scroll(outside, ScrollDirection::Down);
+        assert_eq!(app.framework.global_shortcuts_pane.viewport().pos(), start);
+        assert_eq!(
+            app.framework
+                .global_shortcuts_pane
+                .viewport()
+                .scroll_offset(),
+            offset
+        );
+
+        app.scroll(inside, ScrollDirection::Down);
+        assert_eq!(
+            app.framework.global_shortcuts_pane.viewport().pos(),
+            start + 1
+        );
+        app.scroll(inside, ScrollDirection::Up);
+        assert_eq!(app.framework.global_shortcuts_pane.viewport().pos(), start);
+        let steps = app.framework.global_shortcuts_pane.viewport().len();
+        for _ in 0..steps {
+            app.scroll(inside, ScrollDirection::Down);
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("wheel down frame");
+        }
+        assert!(
+            app.framework
+                .global_shortcuts_pane
+                .viewport()
+                .scroll_offset()
+                > offset
+        );
+        for _ in 0..steps {
+            app.scroll(inside, ScrollDirection::Up);
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("wheel up frame");
+        }
+        assert_eq!(
+            app.framework
+                .global_shortcuts_pane
+                .viewport()
+                .scroll_offset(),
+            offset
+        );
+        assert_eq!(app.framework.global_shortcuts_pane.viewport().pos(), start);
+        assert_eq!(app.tiles.hit_test_at(outside), tile_before);
+    }
+
+    use ratatui::layout::Position;
     use tui_pane::Appearance;
+    use tui_pane::GlobalAction;
+    use tui_pane::Hittable;
+    use tui_pane::ScrollDirection;
+    use tui_pane::TerminalApp;
 
     use super::App;
     use crate::progress::capture_roots::AccountCaptureDirectory;
