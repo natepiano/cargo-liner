@@ -236,7 +236,8 @@ impl HttpClient {
             self.update_rate_limit_bucket(bucket, quota);
         }
         let status = response.status();
-        let rate_limit_disposition = rate_limit::github_is_rate_limited(status, response.headers());
+        let rate_limit_disposition =
+            rate_limit::github_rate_limit_disposition(status, response.headers());
         let body = match response.bytes().await {
             Ok(body) => body,
             Err(error) => {
@@ -287,7 +288,7 @@ impl HttpClient {
             self.update_rate_limit_bucket(bucket, quota);
         }
         let status = response.status();
-        let http_rate_limit = rate_limit::github_is_rate_limited(status, response.headers());
+        let http_rate_limit = rate_limit::github_rate_limit_disposition(status, response.headers());
         let body = match response.bytes().await {
             Ok(body) => body,
             Err(error) => {
@@ -304,11 +305,11 @@ impl HttpClient {
             },
             RateLimitDisposition::ProcessResponse => {},
         }
-        // `rate_limit::graphql_body_is_rate_limited` inspects the body's
+        // `rate_limit::graphql_body_rate_limit_disposition` inspects the body's
         // `errors[].type` for `RATE_LIMITED` because GraphQL returns HTTP 200 on rate-limit,
         // making status-code detection alone insufficient.
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
-            match rate_limit::graphql_body_is_rate_limited(&json) {
+            match rate_limit::graphql_body_rate_limit_disposition(&json) {
                 RateLimitDisposition::ReportRefusal => {
                     return (None, Some(ServiceSignal::RateLimited(ServiceKind::GitHub)));
                 },
@@ -546,37 +547,37 @@ mod tests {
     }
 
     #[test]
-    fn github_is_rate_limited_on_429() {
+    fn github_rate_limit_disposition_on_429() {
         let headers = HeaderMap::new();
         assert_eq!(
-            rate_limit::github_is_rate_limited(StatusCode::TOO_MANY_REQUESTS, &headers),
+            rate_limit::github_rate_limit_disposition(StatusCode::TOO_MANY_REQUESTS, &headers),
             RateLimitDisposition::ReportRefusal
         );
     }
 
     #[test]
-    fn github_is_rate_limited_on_403_with_zero_remaining() {
+    fn github_rate_limit_disposition_on_403_with_zero_remaining() {
         let headers = test_support::header_map(&[("x-ratelimit-remaining", "0")]);
         assert_eq!(
-            rate_limit::github_is_rate_limited(StatusCode::FORBIDDEN, &headers),
+            rate_limit::github_rate_limit_disposition(StatusCode::FORBIDDEN, &headers),
             RateLimitDisposition::ReportRefusal
         );
     }
 
     #[test]
-    fn github_is_not_rate_limited_on_403_with_remaining() {
+    fn github_rate_limit_disposition_on_403_with_remaining() {
         let headers = test_support::header_map(&[("x-ratelimit-remaining", "500")]);
         assert_eq!(
-            rate_limit::github_is_rate_limited(StatusCode::FORBIDDEN, &headers),
+            rate_limit::github_rate_limit_disposition(StatusCode::FORBIDDEN, &headers),
             RateLimitDisposition::ProcessResponse
         );
     }
 
     #[test]
-    fn github_is_not_rate_limited_on_200() {
+    fn github_rate_limit_disposition_on_200() {
         let headers = test_support::header_map(&[("x-ratelimit-remaining", "0")]);
         assert_eq!(
-            rate_limit::github_is_rate_limited(StatusCode::OK, &headers),
+            rate_limit::github_rate_limit_disposition(StatusCode::OK, &headers),
             RateLimitDisposition::ProcessResponse
         );
     }
@@ -599,7 +600,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                rate_limit::github_is_rate_limited(StatusCode::FORBIDDEN, &headers),
+                rate_limit::github_rate_limit_disposition(StatusCode::FORBIDDEN, &headers),
                 expected
             );
         }
@@ -609,7 +610,7 @@ mod tests {
     fn graphql_rate_limited_body_is_detected() {
         let body = json!({ "errors": [{ "type": "RATE_LIMITED", "message": "x" }] });
         assert_eq!(
-            rate_limit::graphql_body_is_rate_limited(&body),
+            rate_limit::graphql_body_rate_limit_disposition(&body),
             RateLimitDisposition::ReportRefusal
         );
     }
@@ -618,7 +619,7 @@ mod tests {
     fn graphql_body_without_errors_is_not_rate_limited() {
         let body = json!({ "data": { "repo": null } });
         assert_eq!(
-            rate_limit::graphql_body_is_rate_limited(&body),
+            rate_limit::graphql_body_rate_limit_disposition(&body),
             RateLimitDisposition::ProcessResponse
         );
     }
@@ -627,7 +628,7 @@ mod tests {
     fn graphql_body_with_unrelated_errors_is_not_rate_limited() {
         let body = json!({ "errors": [{ "type": "NOT_FOUND", "message": "x" }] });
         assert_eq!(
-            rate_limit::graphql_body_is_rate_limited(&body),
+            rate_limit::graphql_body_rate_limit_disposition(&body),
             RateLimitDisposition::ProcessResponse
         );
     }
@@ -660,7 +661,10 @@ mod tests {
                 RateLimitDisposition::ReportRefusal,
             ),
         ] {
-            assert_eq!(rate_limit::graphql_body_is_rate_limited(&body), expected);
+            assert_eq!(
+                rate_limit::graphql_body_rate_limit_disposition(&body),
+                expected
+            );
         }
     }
 

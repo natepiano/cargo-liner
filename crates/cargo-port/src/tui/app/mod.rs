@@ -8736,6 +8736,7 @@ mod tests {
         use crate::project::WorktreeHealth::Normal;
         use crate::tui::app::startup;
         use crate::tui::columns;
+        use crate::tui::columns::LintColumnStatus;
         use crate::tui::columns::ProjectRow;
         use crate::tui::columns::RowLifecycle;
         use crate::tui::input;
@@ -9332,15 +9333,24 @@ mod tests {
             let mut app = make_app(&[make_project(Some("demo"), "~/demo")]);
             let mut cargo_port_config = CargoPortConfig::default();
 
-            assert!(!app.project_list.cached_fit_widths.lint_enabled());
+            assert_eq!(
+                app.project_list.cached_fit_widths.lint_column_status(),
+                columns::LintColumnStatus::Hidden
+            );
 
             cargo_port_config.lint.enabled = LintIndicator::Enabled;
             app.apply_config(&cargo_port_config);
-            assert!(app.project_list.cached_fit_widths.lint_enabled());
+            assert_eq!(
+                app.project_list.cached_fit_widths.lint_column_status(),
+                columns::LintColumnStatus::Enabled
+            );
 
             cargo_port_config.lint.enabled = LintIndicator::Disabled;
             app.apply_config(&cargo_port_config);
-            assert!(!app.project_list.cached_fit_widths.lint_enabled());
+            assert_eq!(
+                app.project_list.cached_fit_widths.lint_column_status(),
+                columns::LintColumnStatus::Hidden
+            );
         }
 
         #[test]
@@ -9437,7 +9447,7 @@ mod tests {
                 lifecycle:         RowLifecycle::Deleted,
                 worktree_health:   Normal,
             });
-            let widths = crate::tui::columns::ProjectListWidths::new(true);
+            let widths = crate::tui::columns::ProjectListWidths::new(LintColumnStatus::Enabled);
             let line = columns::row_to_line(&row, &widths);
 
             let suffix = line
@@ -9563,6 +9573,7 @@ mod tests {
         use crate::project::PinnedCommit;
         use crate::project::Submodule;
         use crate::tui::columns;
+        use crate::tui::columns::LintColumnStatus;
         use crate::tui::panes;
         use crate::tui::project_list::ExpandTarget;
 
@@ -10646,7 +10657,7 @@ mod tests {
                 &entries,
                 &crate::tui::app::ManifestMetadataStates::default(),
                 std::slice::from_ref(&root_label),
-                true,
+                LintColumnStatus::Enabled,
                 0,
             );
             let root_width =
@@ -10718,7 +10729,7 @@ mod tests {
                 &entries,
                 &crate::tui::app::ManifestMetadataStates::default(),
                 std::slice::from_ref(&root_label),
-                true,
+                LintColumnStatus::Enabled,
                 0,
             );
             let root_width =
@@ -17542,7 +17553,7 @@ mod tests {
             &app.project_list,
             &app.scan.manifest_metadata,
             &labels,
-            app.config.lint_enabled(),
+            crate::tui::columns::LintColumnStatus::from(app.config.current().lint.enabled),
             0,
         );
         let items = {
@@ -17587,7 +17598,7 @@ mod tests {
             &app.project_list,
             &app.scan.manifest_metadata,
             &labels,
-            app.config.lint_enabled(),
+            crate::tui::columns::LintColumnStatus::from(app.config.current().lint.enabled),
             0,
         );
         let items = {

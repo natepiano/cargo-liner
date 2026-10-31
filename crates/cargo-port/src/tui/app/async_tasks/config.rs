@@ -15,6 +15,7 @@ use crate::http::ServiceSignal;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::app::CargoPortToastAction;
+use crate::tui::columns::LintColumnStatus;
 use crate::tui::integration;
 use crate::tui::integration::NonRustCacheState;
 use crate::tui::integration::ReloadContext;
@@ -476,10 +477,10 @@ impl App {
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();
 
-        // `project_list.reset_fit_widths` recomputes fit widths because `config.lint_enabled()`
-        // changes the available column schema.
+        // `project_list.reset_fit_widths` recomputes fit widths because
+        // `config.current().lint.enabled` changes the available column schema.
         self.project_list
-            .reset_fit_widths(self.config.lint_enabled());
+            .reset_fit_widths(LintColumnStatus::from(self.config.current().lint.enabled));
 
         if let Some(warning) = lint_spawn.warning {
             self.overlays
