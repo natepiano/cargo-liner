@@ -8,6 +8,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- `wheel_framework_overlay` and `OverlayWheel` route a mouse wheel over the settings, keymap or global shortcuts overlay through the settings host; a host clears its own state first with `SettingsHost::before_settings_navigation`.
 - `RowsReadout` and `TileCells::rows_readout` let a tile foot name the selected row, `content rows: 3 of 12`; a checked constructor refuses a row past the total, and the default keeps `content rows: 12`.
 - Tile grids can reserve the summary’s measured rows before sharing the remaining rows among tiles.
 - `ThemeRegistry::from_dir_with_parser` lets applications validate their own theme families while sharing deterministic directory loading, failed-file reporting and built-in role inheritance.
