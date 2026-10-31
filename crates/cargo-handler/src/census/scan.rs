@@ -616,10 +616,32 @@ impl LocalScanner {
                 };
             }
         }
-        self.run_records.retain_sessions(&seen_run_sessions);
+        self.retain_session_caches(transcripts, seen_run_sessions);
         fold_claude_dispatches(rows);
         self.transcript_activity
             .retain(|path, _| seen_transcripts.contains(path));
+    }
+
+    /// Release session watches and records together after the census uses them.
+    fn retain_session_caches(
+        &mut self,
+        transcripts: &HashMap<u32, PathBuf>,
+        mut sessions: HashSet<PathBuf>,
+    ) {
+        sessions.extend(
+            self.worker_commands
+                .processes
+                .values()
+                .flat_map(|command| [&command.direct, &command.wrapped])
+                .filter_map(|launcher| match launcher {
+                    WorkerLauncher::Dispatch(dispatch) => Some(dispatch.session_dir.clone()),
+                    WorkerLauncher::OtherCommand => None,
+                }),
+        );
+        self.run_records.retain_sessions(&sessions);
+        self.worker_names.retain_sessions(&sessions);
+        self.subagent_reads
+            .retain_sessions(&transcripts.values().cloned().collect());
     }
 
     /// The tier each Codex among `processes` that is not an app server
