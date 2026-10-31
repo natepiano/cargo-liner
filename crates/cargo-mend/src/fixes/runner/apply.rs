@@ -20,17 +20,19 @@ impl MendRunner<'_> {
         let compiler_warnings = planned.compiler_warnings;
         let compiler_fixable = planned.compiler_fixable;
         let fix_scans = planned.fix_scans();
-        let applied_pub_use = fix_scans.pub_use.map_or(0, |scan| scan.applied);
-        let subtree_reexport_edits =
-            fix_scans
-                .subtree_reexports
-                .map_or(SubtreeReexportEdits::Unchanged, |scan| {
-                    if scan.fixes.is_empty() {
-                        SubtreeReexportEdits::Unchanged
-                    } else {
-                        SubtreeReexportEdits::Written
-                    }
-                });
+        let applied_pub_use = fix_scans
+            .pub_use
+            .map_or(0, |pub_use_fix_scan| pub_use_fix_scan.applied);
+        let subtree_reexport_edits = fix_scans.subtree_reexports.map_or(
+            SubtreeReexportEdits::Unchanged,
+            |subtree_reexport_scan| {
+                if subtree_reexport_scan.fixes.is_empty() {
+                    SubtreeReexportEdits::Unchanged
+                } else {
+                    SubtreeReexportEdits::Written
+                }
+            },
+        );
         let fixes = Self::combined_fixes(fix_scans)?;
         if fixes.is_empty() {
             let notice = Self::build_fix_notice(
@@ -59,25 +61,25 @@ impl MendRunner<'_> {
         self.session_snapshot
             .record(&fixes)
             .map_err(MendFailure::Unexpected)?;
-        let applied = imports::apply_fixes(&fixes).map_err(MendFailure::Unexpected)?;
+        let applied_fix_counts = imports::apply_fixes(&fixes).map_err(MendFailure::Unexpected)?;
         let validation_output_mode = if self.output_format == OutputFormat::Json {
             BuildOutputMode::Json
         } else {
             BuildOutputMode::Validation
         };
         match self.build_selection(validation_output_mode) {
-            Ok(checked) => {
-                let validation = &checked.result;
+            Ok(checked_selection) => {
+                let validation = &checked_selection.result;
                 let check_duration = plan_check_duration + validation.check_duration;
                 let notice = Self::build_fix_notice(
                     planned.operation_mode.intent,
                     Some(&validation.report),
                     fix_scans,
-                    applied,
+                    applied_fix_counts,
                 );
                 let warning_facts = validation.report.facts.compiler_warning_facts;
                 let report = validation.report.clone();
-                self.next_analysis = NextAnalysis::Validated(Box::new(checked));
+                self.next_analysis = NextAnalysis::Validated(Box::new(checked_selection));
                 Ok(ExecutionOutcome {
                     report,
                     notice,
@@ -90,19 +92,21 @@ impl MendRunner<'_> {
                     compiler_warning_facts: warning_facts,
                 })
             },
-            Err(err) => {
+            Err(mend_failure) => {
                 let rollback_status = self
                     .session_snapshot
                     .restore()
                     .map_or(RollbackStatus::RestoreFailed, |()| RollbackStatus::Restored);
-                let cause = match err {
-                    MendFailure::Analysis(a) => a.cause,
-                    MendFailure::Unexpected(e) => CompilerFailureCause::Unexpected(e),
-                    MendFailure::FixValidation(f) => f.cause,
+                let compiler_failure_cause = match mend_failure {
+                    MendFailure::Analysis(analysis_failure) => analysis_failure.cause,
+                    MendFailure::Unexpected(error) => CompilerFailureCause::Unexpected(error),
+                    MendFailure::FixValidation(fix_validation_failure) => {
+                        fix_validation_failure.cause
+                    },
                 };
                 Err(MendFailure::FixValidation(FixValidationFailure {
                     rollback_status,
-                    cause,
+                    cause: compiler_failure_cause,
                     applied_fixes: AppliedFixes::Mend,
                 }))
             },
