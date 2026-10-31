@@ -302,6 +302,16 @@ pub(super) fn side_branch_creation_during_stopped_apply_rebase_preserves_checkpo
         ])
     );
     reanchoring_templates::drain_markers(&fixture, &[&id], CheckpointPlacement::BesideTrunk);
+    assert_reanchored_checkpoint_is_outstanding(&fixture, &id, &trunk, &rewritten_tip);
+}
+
+/// Reconciliation must keep the complete rewritten checkpoint and its retention live.
+fn assert_reanchored_checkpoint_is_outstanding(
+    fixture: &RewriteFixture,
+    id: &str,
+    trunk: &str,
+    rewritten_tip: &str,
+) {
     let events = journal_events(fixture.root());
     let accepted = events
         .iter()
@@ -311,9 +321,9 @@ pub(super) fn side_branch_creation_during_stopped_apply_rebase_preserves_checkpo
     assert_eq!(accepted["snapshot"]["stage"], "outstanding");
     assert_eq!(accepted["snapshot"]["phase_start_head"], trunk);
     assert_eq!(accepted["snapshot"]["protected_tip"], rewritten_tip);
-    assert_eq!(retained_tip(&fixture, &id), rewritten_tip);
+    assert_eq!(retained_tip(fixture, id), rewritten_tip);
     assert_eq!(
-        reanchoring_templates::snapshot(&reanchoring_templates::board(fixture.root()), &id)["lifecycle"]
+        reanchoring_templates::snapshot(&reanchoring_templates::board(fixture.root()), id)["lifecycle"]
             ["stage"],
         "outstanding"
     );
