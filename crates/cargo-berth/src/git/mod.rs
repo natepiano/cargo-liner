@@ -23,6 +23,8 @@ mod reachability;
 mod read;
 mod refs;
 mod snapshot;
+#[cfg(not(test))]
+mod spawn_lock;
 mod worktree_operation;
 
 #[cfg(test)]
@@ -30,6 +32,7 @@ mod fixture;
 
 pub(crate) use command::GitCommandOutputAvailability;
 pub(crate) use command::git_execution as execute_read_only_git;
+pub(crate) use command::with_spawn_lock;
 pub(crate) use discovery::hooks_directory;
 pub(crate) use error::GitError;
 pub(crate) use error::GitLockRefusal;

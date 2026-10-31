@@ -1058,7 +1058,7 @@ mod tests {
         let path = std::env::join_paths(std::iter::once(root.to_path_buf()).chain(
             std::env::split_paths(&std::env::var_os("PATH").ok_or("PATH missing")?),
         ))?;
-        let output = std::process::Command::new(std::env::current_exe()?)
+        let output = cargo_berth_test_support::FixtureCommand::new(std::env::current_exe()?)
             .arg(TEST)
             .arg("--nocapture")
             .env("CARGO_BERTH_READ_ENVIRONMENT_TEST", TEST)
@@ -1101,7 +1101,7 @@ mod tests {
             std::env::split_paths(&std::env::var_os("PATH").ok_or("PATH missing")?),
         ))?;
         let mut process = TestProcessGroup::spawn(
-            std::process::Command::new(std::env::current_exe()?)
+            cargo_berth_test_support::FixtureCommand::new(std::env::current_exe()?)
                 .args([TEST, "--nocapture"])
                 .env("CARGO_BERTH_PROBE_SERIALIZATION_ROOT", fixture.root())
                 .env("CARGO_BERTH_PROBE_SERIALIZATION_SHIM", shim.path())
@@ -1584,7 +1584,7 @@ mod tests {
         if std::env::var("CARGO_BERTH_READ_ENVIRONMENT_TEST").as_deref() == Ok(name) {
             return Ok(EnvironmentTestRole::Child);
         }
-        let output = std::process::Command::new(std::env::current_exe()?)
+        let output = cargo_berth_test_support::FixtureCommand::new(std::env::current_exe()?)
             .arg(name)
             .arg("--nocapture")
             .env("CARGO_BERTH_READ_ENVIRONMENT_TEST", name)
