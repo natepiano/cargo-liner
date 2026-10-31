@@ -1,6 +1,7 @@
 //! Literal worker launcher commands and their roster-backed thread identities.
 
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::collections::btree_map::Entry;
 use std::fs;
 use std::iter::Peekable;
@@ -459,6 +460,15 @@ struct WorkerPrompt {
 }
 
 impl WorkerNames {
+    /// Drop watches and identity documents for sessions the census no longer sees.
+    pub(super) fn retain_sessions(&mut self, sessions: &HashSet<PathBuf>) {
+        self.directories.retain(|path, _| sessions.contains(path));
+        self.seats.retain(|path, _| {
+            path.parent()
+                .is_some_and(|parent| sessions.contains(parent))
+        });
+    }
+
     /// Rewritten identity files are fetched once per observed modification time.
     fn seat_document(&mut self, path: PathBuf) -> &SeatDocument {
         let modified = fs::metadata(&path)
@@ -2104,6 +2114,69 @@ mod context_job_tests;
 #[cfg(test)]
 mod idle_prompt_tests {
     use super::*;
+
+    #[test]
+    fn departed_worker_sessions_release_their_watches_and_documents() -> std::io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let leaving = root.path().join("leaving");
+        let staying = root.path().join("staying");
+        for directory in [&leaving, &staying] {
+            fs::create_dir(directory)?;
+            fs::write(
+                directory.join("impl_worker_test.json"),
+                r#"{"name":"test","slot":"test","family":"claude","worker_id":"session"}"#,
+            )?;
+        }
+        let mut names = WorkerNames::default();
+        let first = names.seat_documents(&leaving);
+        let kept = names.seat_documents(&staying);
+        assert_eq!(first.len(), 1);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(names.directory_reads, 2);
+        names.retain_sessions(&HashSet::from([staying.clone()]));
+        assert_eq!(
+            names.directories.len(),
+            1,
+            "only the current session keeps a watch"
+        );
+        assert!(!names.directories.contains_key(&leaving));
+        assert_eq!(
+            names.seats.len(),
+            1,
+            "the departed seat document is dropped"
+        );
+        assert!(names.seats.keys().all(|path| path.starts_with(&staying)));
+        assert_eq!(names.seat_documents(&staying).len(), kept.len());
+        assert_eq!(
+            names.directory_reads, 2,
+            "the retained session is not listed again"
+        );
+        let returned = names.seat_documents(&leaving);
+        let worker_id = |documents: &BTreeMap<PathBuf, SeatDocument>| {
+            documents
+                .values()
+                .filter_map(|document| match document {
+                    SeatDocument::Worker(worker) => Some(worker.worker_id.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(worker_id(&first), ["session"]);
+        assert_eq!(worker_id(&returned), worker_id(&first));
+        assert_eq!(
+            names.directories.len(),
+            2,
+            "the returning session gets a watch"
+        );
+        assert_eq!(
+            names.directory_reads, 3,
+            "the returning session is listed once"
+        );
+        names.retain_sessions(&HashSet::new());
+        assert_eq!(names.directories.len(), 0);
+        assert_eq!(names.seats.len(), 0);
+        Ok(())
+    }
 
     #[test]
     fn idle_worker_seats_do_not_list_an_unchanged_directory() -> std::io::Result<()> {

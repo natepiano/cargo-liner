@@ -15,6 +15,7 @@
 //! and a subagent's state is read from the end of its file.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
 use std::io::BufRead;
@@ -822,9 +823,7 @@ pub(super) fn running_subagents(
     now: SystemTime,
     reads: &mut SubagentReads,
 ) -> Vec<Subagent> {
-    let directory = session_transcript
-        .with_extension("")
-        .join(SUBAGENTS_DIRNAME);
+    let directory = subagent_directory(session_transcript);
     let clock = Instant::now();
     let changed = reads
         .directories
@@ -849,6 +848,10 @@ pub(super) fn running_subagents(
         .filter(|row| now.duration_since(row.modified).unwrap_or_default() <= SUBAGENT_QUIET_LIMIT)
         .map(|row| row.agent.clone())
         .collect()
+}
+
+fn subagent_directory(transcript: &Path) -> PathBuf {
+    transcript.with_extension("").join(SUBAGENTS_DIRNAME)
 }
 
 fn read_subagents(directory: &Path, reads: &mut SubagentReads) -> Vec<RecentSubagent> {
@@ -955,6 +958,24 @@ pub(super) enum SubagentTurn {
 }
 
 impl SubagentReads {
+    /// Keep watches and file reads only for the current session transcripts.
+    pub(super) fn retain_sessions(&mut self, transcripts: &HashSet<PathBuf>) {
+        let directories: HashSet<_> = transcripts
+            .iter()
+            .map(|path| subagent_directory(path))
+            .collect();
+        self.directories
+            .retain(|path, _| directories.contains(path));
+        self.reads.retain(|path, _| {
+            path.parent()
+                .is_some_and(|parent| directories.contains(parent))
+        });
+        self.metadata.retain(|path, _| {
+            path.parent()
+                .is_some_and(|parent| directories.contains(parent))
+        });
+    }
+
     fn metadata(&mut self, path: &Path) -> Option<SubagentMeta> {
         let revision = SubagentMetaRevision::read(path).ok()?;
         if let Some((previous, meta)) = self.metadata.get(path)
@@ -1215,10 +1236,100 @@ mod tests {
     }
 
     #[test]
+    fn departed_subagent_sessions_release_their_watches_and_reads() -> std::io::Result<()> {
+        let root = TempDir::new()?;
+        let leaving = root.path().join("leaving.jsonl");
+        let staying = root.path().join("staying.jsonl");
+        for session in [&leaving, &staying] {
+            let directory = subagent_directory(session);
+            fs::create_dir_all(&directory)?;
+            fs::write(
+                directory.join("agent-one.meta.json"),
+                r#"{"description":"Work"}"#,
+            )?;
+            fs::write(directory.join("agent-one.jsonl"), "{\"type\":\"user\"}\n")?;
+        }
+        let now = SystemTime::now();
+        let mut reads = SubagentReads::default();
+        let first = running_subagents(&leaving, now, &mut reads);
+        let kept = running_subagents(&staying, now, &mut reads);
+        assert_eq!(first.len(), 1);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(reads.directory_reads, 2);
+        assert_eq!(reads.metadata_parses, 2);
+        let departed_directory = subagent_directory(&leaving);
+        let kept_directory = subagent_directory(&staying);
+        let departed_watch = Arc::downgrade(&reads.directories[&departed_directory].watch.changed);
+        let kept_watch = Arc::clone(&reads.directories[&kept_directory].watch.changed);
+
+        reads.retain_sessions(&HashSet::from([staying.clone()]));
+        assert_eq!(
+            reads.directories.len(),
+            1,
+            "only the current session keeps a watch"
+        );
+        assert!(
+            departed_watch.upgrade().is_none(),
+            "the departed watch is dropped"
+        );
+        assert_eq!(
+            reads.reads.len(),
+            1,
+            "the departed transcript cursor is dropped"
+        );
+        assert_eq!(reads.metadata.len(), 1, "the departed metadata is dropped");
+        assert!(
+            reads
+                .reads
+                .keys()
+                .all(|path| path.starts_with(&kept_directory))
+        );
+        assert!(
+            reads
+                .metadata
+                .keys()
+                .all(|path| path.starts_with(&kept_directory))
+        );
+        assert!(Arc::ptr_eq(
+            &kept_watch,
+            &reads.directories[&kept_directory].watch.changed
+        ));
+        assert_eq!(running_subagents(&staying, now, &mut reads), kept);
+        assert_eq!(
+            reads.directory_reads, 2,
+            "the retained session is not listed again"
+        );
+        assert_eq!(
+            reads.metadata_parses, 2,
+            "the retained metadata is not parsed again"
+        );
+
+        assert_eq!(running_subagents(&leaving, now, &mut reads), first);
+        assert_eq!(
+            reads.directories.len(),
+            2,
+            "the returning session gets a watch"
+        );
+        assert_eq!(
+            reads.directory_reads, 3,
+            "the returning session is listed once"
+        );
+        assert_eq!(
+            reads.metadata_parses, 3,
+            "the returning metadata is parsed once"
+        );
+        reads.retain_sessions(&HashSet::new());
+        assert_eq!(reads.directories.len(), 0);
+        assert_eq!(reads.reads.len(), 0);
+        assert_eq!(reads.metadata.len(), 0);
+        Ok(())
+    }
+
+    #[test]
     fn idle_subagents_do_not_list_unchanged_inputs() {
         let directory = TempDir::new().expect("temporary directory");
         let session = directory.path().join("session.jsonl");
-        let subagents = session.with_extension("").join(SUBAGENTS_DIRNAME);
+        let subagents = subagent_directory(&session);
         fs::create_dir_all(&subagents).expect("subagent directory");
         let mut reads = SubagentReads::default();
         let now = SystemTime::now();
@@ -1234,7 +1345,7 @@ mod tests {
     fn idle_subagents_recover_lost_events_replacement_and_new_directories() {
         let directory = TempDir::new().expect("temporary directory");
         let session = directory.path().join("session.jsonl");
-        let subagents = session.with_extension("").join(SUBAGENTS_DIRNAME);
+        let subagents = subagent_directory(&session);
         let mut reads = SubagentReads::default();
         let now = SystemTime::now();
         assert_eq!(

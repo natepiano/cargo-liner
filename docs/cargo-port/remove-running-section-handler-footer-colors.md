@@ -1348,7 +1348,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - A capture that reads `~/.config` is transparent, because the user config sets `transparent = true`. An opaque shot needs a scratch config with `transparent = false`.
 - The opaque path fills the interior a second time after `draw_clipped` fills the pane. Its cost is not measured.
 
-### Phase 47a — The census drops the directory watches of sessions that left  · status: todo
+### Phase 47a — The census drops the directory watches of sessions that left  · status: done
 
 **Depends on:** Phase 47. Runs beside Phase 57 (no shared files).
 
