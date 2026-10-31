@@ -128,39 +128,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 ### Phase 2e — The shortcuts overlay's wheel scroll lives in tui_pane  · status: done
 
-**Why:** showrunner, 2026-10-30. The wheel scroll of the framework overlays (Settings, Keymap, GlobalShortcuts) exists only in cargo-port, so cargo-tile and cargo-handler do not scroll the overlay with the wheel (change review C119). Handler Phase 57 wires cargo-tile and cargo-handler to the function this phase makes. The user ruled 2026-10-30 that duplication is not allowed without their approval, so this is a move, not a copy.
-
-**Depends on:** Phase 2b. Its files do not overlap Phase 2d, so it runs beside 2d (port-unit, 2026-10-30). The showrunner assigned the `crates/tui_pane` edit to this unit for this phase.
-
-#### Work Order
-
-**Goal:** one public `tui_pane` function scrolls the open framework overlay under the wheel; cargo-port calls it and keeps no copy of its arms.
-
-**Constraints:**
-- Today `scroll_modal_overlay_at` (`crates/cargo-port/src/tui/input/dispatch.rs` ≈705, on main after the phase-start merge) handles cargo-port's own overlays (finder, sccache) and then matches `app.framework.overlay()` for `Settings` (moves the selection through `settings::navigate_settings`, `crates/cargo-port/src/tui/settings.rs` ≈1666, only when the position is in the settings content area), `Keymap` and `GlobalShortcuts` (`viewport_mut().scroll_if_contains`).
-- `scroll_pane_at` applies `invert_scroll` before it calls the overlay scroll. Keep that order: cargo-port inverts, then calls the `tui_pane` function.
-- `SettingsNavigation`'s `Navigation<A>` impl requires `A: 'static`, and the Spec 1 signature does not carry that bound. So the settings movement is one crate-private function in `app_settings/navigation.rs`, and both the dispatcher and the wheel call it (port-unit, 2026-10-30). An app-specific step around it (cargo-port clears its inline error first) goes through the default `SettingsHost::before_settings_navigation` hook, not through a second copy of the arm.
-- No duplicated state, logic or data; one owner for each fact.
-
-**Spec:**
-1. One public function, exported from the `tui_pane` crate root: `pub fn wheel_framework_overlay<Ctx: SettingsHost>(ctx: &mut Ctx, position: Position, direction: ScrollDirection) -> OverlayWheel`, with `pub enum OverlayWheel { Consumed, NoOverlay }` (`SettingsHost`, `app_settings/navigation.rs`, extends `AppContext`; `ScrollDirection` is `tui_pane::ScrollDirection`). `Consumed` means any wheel event while a framework overlay is open, also outside its content or when it cannot move, as `scroll_modal_overlay_at` does today (`dispatch.rs` ≈721); `NoOverlay` when none is open. Not a bool. If the build shows a bound the signature cannot meet, the writer stops and reports before changing it (handler Phase 57 codes against it).
-2. cargo-port's `scroll_modal_overlay_at` keeps only its own overlays (finder, sccache) and then calls the `tui_pane` function. The three framework arms are deleted from cargo-port.
-3. cargo-port's wheel behavior is unchanged. Tests, each under one second: in cargo-port, with each framework overlay open, a wheel event inside its content scrolls it (Settings moves the selection) and a wheel event outside it scrolls nothing under the overlay; in `tui_pane`, the function returns `NoOverlay` with no overlay open and `Consumed` for each overlay, inside and outside its content.
-4. CHANGELOG lines in `crates/tui_pane/CHANGELOG.md` and `crates/cargo-port/CHANGELOG.md`.
-
-**Files:**
-- `crates/tui_pane/src/framework/wheel.rs` — new: the public function and `OverlayWheel`
-- `crates/tui_pane/src/framework/mod.rs` — mounts `wheel`
-- `crates/tui_pane/src/lib.rs` — the export
-- `crates/tui_pane/src/app_settings/navigation.rs` — the crate-private movement function and the host hook
-- `crates/cargo-port/src/tui/input/dispatch.rs` — call the function; delete the moved arms
-- `crates/cargo-port/src/tui/settings.rs` — the inline-error step moves into the `SettingsHost` implementation
-- `crates/tui_pane/CHANGELOG.md`
-- `crates/cargo-port/CHANGELOG.md`
-
-**Workers:** 1 writer.
-
-**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. `rg 'FrameworkOverlayId::(Settings|Keymap|GlobalShortcuts)' crates/cargo-port/src/tui/input/dispatch.rs` finds no scroll arm. Change-Review: none — cargo-port's wheel behavior does not change; Handler Phase 57 carries the visible change.
+**As-built:** `tui_pane` owns the mouse wheel over its framework overlays (checkpoint 27059d4c). `wheel_framework_overlay` (`crates/tui_pane/src/framework/wheel.rs`) scrolls the Settings, Keymap or GlobalShortcuts overlay under the pointer and returns `OverlayWheel`. Settings movement is one crate-private function in `app_settings/navigation.rs` that key navigation and the wheel both call; a host clears its own state first through `SettingsHost::before_settings_navigation`. cargo-port (`tui/input/dispatch.rs`) deleted its three overlay scroll arms and calls the function after it inverts the scroll; its remaining `FrameworkOverlayId` arms are close and key routing. Handler Phase 57 wires cargo-tile and cargo-handler to the function.
 
 ### Phase 2c — On macOS overlapping roots get one recursive watch  · status: todo
 
