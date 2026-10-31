@@ -146,6 +146,24 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **As-built:** a forwarded compiler diagnostic goes through the one owner of the progress line in `crates/cargo-mend/src/compiler/build/progress.rs` (`write_forwarded_output`): erase the line, print the block, add a newline only when the block lacks one, redraw (checkpoint 32316514). The counter runs to the end of the pass, and an unterminated last diagnostic survives the redraw and the cleanup. Live proof: a real cargo-tile mend cell read 85% after the forwarded warning.
 
+### Phase 2k — workspace lint passes on the cargo-berth reanchoring test  · status: done
+
+**Depends on:** none
+
+#### Work Order
+
+**Goal:** workspace clippy passes again on main.
+
+**Source:** showrunner, 2026-10-31. Main 8b3fa043 fails clippy `too_many_lines` (103/100) on `side_branch_creation_during_stopped_apply_rebase_preserves_checkpoint_capture` at `crates/cargo-berth/tests/support/reanchoring.rs:214` (test target `lifecycle`). Mend's autofix 46570b43 pushed it over the limit. Berth has no unit, so port-unit fixes it as its own small checkpoint.
+
+**Spec:** split that test into helpers in the same file. Keep every assert and the order of its steps. No `#[allow]` or `#[expect]`.
+
+**Files:** `crates/cargo-berth/tests/support/reanchoring.rs`
+
+**Workers:** 1 writer (impl3: the whole file set).
+
+**Acceptance:** `verify.sh test cargo-berth lifecycle` passes; workspace `verify.sh lint` passes on HEAD plus this file.
+
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 
 **Depends on:** Phase 2b
