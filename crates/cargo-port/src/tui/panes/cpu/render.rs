@@ -445,7 +445,7 @@ fn render_core_rows(
     frame: &mut Frame,
     viewport: &Viewport,
     row_rects: &mut Vec<(Rect, usize)>,
-    cpu_cfg: &CpuConfig,
+    cpu_config: &CpuConfig,
     usage: &CpuUsage,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
@@ -456,7 +456,7 @@ fn render_core_rows(
         .min(usage.cores.len());
     let number_width = layout.core_count.to_string().len();
     for (slot, core_index) in (layout.band_offset..end).enumerate() {
-        let core = &usage.cores[core_index];
+        let cpu_core_usage = &usage.cores[core_index];
         let logical_row = CpuSelectableRow::Core(core_index).logical_index(layout.core_count);
         let area = Rect {
             x:      layout.cores.x,
@@ -477,10 +477,10 @@ fn render_core_rows(
             Paragraph::new(cpu_bar_line(
                 core_index + 1,
                 number_width,
-                core.percent,
+                cpu_core_usage.percent,
                 #[cfg(target_os = "macos")]
-                core.cluster,
-                cpu_cfg,
+                cpu_core_usage.cluster,
+                cpu_config,
             )),
         );
     }
@@ -491,20 +491,20 @@ fn render_breakdown_row(
     viewport: &Viewport,
     row_rects: &mut Vec<(Rect, usize)>,
     focus: PaneFocusState,
-    row: BreakdownRowSpec<'_>,
+    breakdown_row_spec: BreakdownRowSpec<'_>,
 ) {
     render_selectable_row(
         frame,
         viewport,
         row_rects,
-        row.area,
-        row.logical_row,
+        breakdown_row_spec.area,
+        breakdown_row_spec.logical_row,
         focus,
         Paragraph::new(metric_line(
-            row.label,
-            row.percent,
-            row.color,
-            row.area.width,
+            breakdown_row_spec.label,
+            breakdown_row_spec.percent,
+            breakdown_row_spec.color,
+            breakdown_row_spec.area.width,
         )),
     );
 }
@@ -628,13 +628,13 @@ fn render_cpu_metric_rows(
     frame: &mut Frame,
     viewport: &Viewport,
     row_rects: &mut Vec<(Rect, usize)>,
-    cpu_cfg: &CpuConfig,
+    cpu_config: &CpuConfig,
     usage: &CpuUsage,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
 ) {
     render_head_rows(frame, viewport, row_rects, usage, layout, focus);
-    render_core_rows(frame, viewport, row_rects, cpu_cfg, usage, layout, focus);
+    render_core_rows(frame, viewport, row_rects, cpu_config, usage, layout, focus);
     render_breakdown_row(
         frame,
         viewport,
@@ -674,7 +674,7 @@ fn render_cpu_metric_rows(
             color:       text_default(),
         },
     );
-    render_gpu_rows(frame, viewport, row_rects, cpu_cfg, usage, layout, focus);
+    render_gpu_rows(frame, viewport, row_rects, cpu_config, usage, layout, focus);
 }
 
 /// Body of `CpuPane::render`. Lives here (next to its helpers)
@@ -685,7 +685,7 @@ pub(super) fn render_cpu_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut CpuPane,
-    ctx: &PaneRenderCtx<'_>,
+    pane_render_ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
     let inner = tui_pane::frame_inner(area);
     let mut chrome = PaneFrameChrome {
@@ -705,7 +705,7 @@ pub(super) fn render_cpu_pane_body(
         inner,
         area,
         pane,
-        &ctx.config.current().cpu,
+        &pane_render_ctx.config.current().cpu,
         &mut chrome,
     );
     chrome
