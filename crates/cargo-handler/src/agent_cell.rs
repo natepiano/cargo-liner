@@ -1944,9 +1944,7 @@ fn unclaimed_work<'a>(
             row.children
                 .iter()
                 .enumerate()
-                .filter(|(_, child)| {
-                    placement.folds_dispatch(child) || placement.hides_thread(child)
-                })
+                .filter(|(_, child)| placement.folds_dispatch(child))
                 .map(|(index, _)| index),
         )
         .collect();
@@ -2995,7 +2993,6 @@ mod tests {
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::census::WorkIdentity;
-    use crate::census::hierarchy::ReviewerState;
     use crate::census::scan::ScanStage;
     use crate::census::transcript::SubagentRole;
     use crate::census::worker_dispatch::WorkerDispatch;
@@ -4295,10 +4292,9 @@ mod tests {
             pairs
                 .iter()
                 .map(|(manager, member)| HierarchyEdge {
-                    reviewer: ReviewerState::NotPool,
-                    manager:  (*manager).to_string(),
-                    member:   (*member).to_string(),
-                    role:     HierarchyRole::Unit,
+                    manager: (*manager).to_string(),
+                    member:  (*member).to_string(),
+                    role:    HierarchyRole::Unit,
                 })
                 .collect(),
         )
@@ -4604,16 +4600,14 @@ mod tests {
             ],
             HierarchyEdges(vec![
                 HierarchyEdge {
-                    reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                    manager:  "production".to_string(),
-                    member:   "unit".to_string(),
-                    role:     HierarchyRole::Impl,
+                    manager: "production".to_string(),
+                    member:  "unit".to_string(),
+                    role:    HierarchyRole::Impl,
                 },
                 HierarchyEdge {
-                    reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                    manager:  "unit".to_string(),
-                    member:   "nested".to_string(),
-                    role:     HierarchyRole::Showrunner,
+                    manager: "unit".to_string(),
+                    member:  "nested".to_string(),
+                    role:    HierarchyRole::Showrunner,
                 },
             ])
             .into(),

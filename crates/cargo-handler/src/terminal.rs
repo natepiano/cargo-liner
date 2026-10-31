@@ -32,6 +32,7 @@ use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
 use crate::constants::BINARY_NAME;
 use crate::startup_log;
+use crate::summary::age::AgeWidthChange;
 use crate::theme;
 use crate::theme::AppearanceDiagnostic;
 use crate::theme::StartupThemeNotes;
@@ -191,12 +192,14 @@ struct DisplayTime {
 
 fn next_body_change(app: &App, now: u64) -> TextChange {
     let mut next = TextChange::Static;
+    let mut ages = Vec::new();
     let machines = app
         .census
         .machines(&app.loaded_config.config.machines.remote);
     let placement = AgentPlacement::from_machines(&machines);
     for thread in &placement.threads {
         let child = &thread.owner_row.children[thread.child_index];
+        ages.push(now.saturating_sub(child.started));
         next = next.earlier(
             DisplayText::AgentAge {
                 started: child.started,
@@ -206,6 +209,7 @@ fn next_body_change(app: &App, now: u64) -> TextChange {
     }
     for machine in machines {
         for row in machine.state.rows().iter().filter(|row| row.is_visible()) {
+            ages.push(now.saturating_sub(row.started));
             next = next.earlier(
                 DisplayText::AgentAge {
                     started: row.started,
@@ -213,6 +217,7 @@ fn next_body_change(app: &App, now: u64) -> TextChange {
                 .next_change(now),
             );
             for child in &row.children {
+                ages.push(now.saturating_sub(child.started));
                 next = next.earlier(
                     DisplayText::AgentAge {
                         started: child.started,
@@ -234,6 +239,11 @@ fn next_body_change(app: &App, now: u64) -> TextChange {
         if machine.state.hierarchy_notice().is_visible() {
             next = next.earlier(DisplayText::Notice.next_change(now));
         }
+    }
+    if let AgeWidthChange::After(seconds) = crate::summary::age::AgeLayout::next_width_growth(ages)
+        && let Some(at) = now.checked_add(seconds)
+    {
+        next = next.earlier(TextChange::At(at));
     }
     let reading = match &app.accounts.table {
         AccountsTable::Ready(reading) | AccountsTable::FailedKeepingLast { last: reading, .. } => {
@@ -393,7 +403,7 @@ impl Ticker {
         // poll_favorites, TileGrid::tick and Attract::frame_due advance
         // their state every pass, even when another requests a repaint.
         let favorites = tui_pane::poll_favorites(app, now);
-        // TileGrid::tick requests repaints until app.tiles settles.
+        // The grid advances motion and requests only changed body frames.
         let grid_moving = app.tiles.tick();
         // Attract::frame_due requests frames while app.attract is shown
         // and once more when its idle delay expires.
@@ -429,6 +439,20 @@ impl PollWork<App> for Ticker {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    #[test]
+    fn idle_visual_handler_draws_an_appearance_change_without_data() {
+        let mut app = App::new_for_test().expect("test app");
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
+        let (now, _) = settle_body(&mut app, &mut ticker, 100);
+        assert_eq!(ticker.poll_at(&mut app, now, 100), Repaint::NotNeeded);
+        let tint = tui_pane::focused_pane_tint_enabled();
+        tui_pane::set_focused_pane_tint(!tint);
+        let changed = ticker.poll_at(&mut app, now, 100);
+        tui_pane::set_focused_pane_tint(tint);
+        assert_eq!(changed, Repaint::Needed, "appearance needs a body frame");
+    }
+
     use std::sync::mpsc;
 
     use crossterm::event::KeyCode;
@@ -567,6 +591,50 @@ mod tests {
             app.full_frame_count() - before,
             usize::from(expected == Repaint::Needed),
             "body layout at {at}"
+        );
+    }
+
+    #[test]
+    fn idle_visual_offset_ages_and_shared_width_growth_draw_without_a_scan() {
+        let mut app = App::new_for_test().expect("test app");
+        let rows = [90, 120]
+            .into_iter()
+            .enumerate()
+            .map(|(index, started)| {
+                serde_json::from_value(serde_json::json!({
+                "agent":"claude", "name":"root", "pid":10 + index,
+                "started":started, "process_started":started, "directory":"/fixture",
+                "desktop":null, "branch":null, "status":"idle", "launched_by":null, "children":[]
+            })).expect("fixture agent")
+            })
+            .collect();
+        app.census.apply(CensusUpdate::Local {
+            rows,
+            hierarchy: HierarchyEdges::default().into(),
+            stage: ScanStage::Completed,
+        });
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
+        let (now, mut terminal) = settle_body(&mut app, &mut ticker, 149);
+        for (at, expected) in [
+            (149, Repaint::NotNeeded),
+            (150, Repaint::Needed),
+            (151, Repaint::NotNeeded),
+            (180, Repaint::Needed),
+            (181, Repaint::NotNeeded),
+            (689, Repaint::Needed),
+            (690, Repaint::Needed),
+            (691, Repaint::NotNeeded),
+        ] {
+            assert_body_boundary(&mut app, &mut ticker, &mut terminal, now, at, expected);
+        }
+        assert_eq!(
+            crate::summary::age::AgeLayout::from_ages([689 - 90, 689 - 120]).width(),
+            1
+        );
+        assert_eq!(
+            crate::summary::age::AgeLayout::from_ages([690 - 90, 690 - 120]).width(),
+            2
         );
     }
 

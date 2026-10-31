@@ -43,7 +43,6 @@ use super::hierarchy::HierarchyRefreshScope;
 use super::hierarchy::HierarchyRequestKind;
 use super::hierarchy::HierarchyRunner;
 use super::hierarchy::InputDrivenHierarchyRunner;
-use super::hierarchy::ReviewerPools;
 use super::probe;
 use super::remote;
 use super::remote::ProbeOutcome;
@@ -612,11 +611,10 @@ impl LocalPublications {
 
     fn deliver(
         &self,
-        mut rows: Vec<AgentRow>,
+        rows: Vec<AgentRow>,
         hierarchy: HierarchySnapshot,
         stage: ScanStage,
     ) -> Result<(), SendError<CensusUpdate>> {
-        ReviewerPools::apply(&mut rows, &hierarchy.edges);
         startup_log::startup_local_answer(&rows);
         self.sender.send(CensusUpdate::Local {
             rows,
@@ -1006,10 +1004,9 @@ mod tests {
                     Err(HierarchyError::TimedOut)
                 } else {
                     Ok(HierarchyEdges(vec![super::super::HierarchyEdge {
-                        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                        manager:  "boss".into(),
-                        member:   "worker".into(),
-                        role:     super::super::HierarchyRole::Unit,
+                        manager: "boss".into(),
+                        member:  "worker".into(),
+                        role:    super::super::HierarchyRole::Unit,
                     }]))
                 }
             }
@@ -1176,7 +1173,7 @@ mod tests {
     #[test]
     fn hierarchy_command_edges_reach_the_local_census() {
         let (_temp, source) = command_script(
-            r#"printf '%s\n' '{"schema":1,"edges":[{"manager":"remote-boss","member":"worker","role":"impl"}]}'"#,
+            r#"printf '%s\n' '{"schema":3,"inputs":[],"members":[{"id":"s0","name":"remote-boss","kind":"showrunner","parent":null,"identity":{"claude":"remote-boss"},"role":"showrunner"},{"id":"s1","name":"worker","kind":"worker","parent":"s0","identity":{"codex":"worker"},"role":"impl"}]}'"#,
         );
         let updates = spawn_with_test_source(
             HierarchyCommand::new(source),
@@ -1199,10 +1196,9 @@ mod tests {
             &MachineState::Answered(
                 vec![session_row("worker", 1)],
                 super::super::HierarchyEdges(vec![super::super::HierarchyEdge {
-                    reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                    manager:  "remote-boss".to_string(),
-                    member:   "worker".to_string(),
-                    role:     super::super::HierarchyRole::Impl,
+                    manager: "remote-boss".to_string(),
+                    member:  "worker".to_string(),
+                    role:    super::super::HierarchyRole::Impl,
                 }])
                 .into()
             )
@@ -1318,10 +1314,9 @@ mod tests {
     fn completed_rows_arrive_before_a_blocked_hierarchy_run_finishes() {
         fn retained_edges() -> HierarchyEdges {
             HierarchyEdges(vec![super::super::HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "previous".into(),
-                member:   "worker".into(),
-                role:     super::super::HierarchyRole::Unit,
+                manager: "previous".into(),
+                member:  "worker".into(),
+                role:    super::super::HierarchyRole::Unit,
             }])
         }
         struct BlockedHierarchy {
@@ -1620,10 +1615,9 @@ mod tests {
             }
         }
         let edges = HierarchyEdges(vec![super::super::HierarchyEdge {
-            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-            manager:  "boss".to_string(),
-            member:   "worker".to_string(),
-            role:     super::super::HierarchyRole::Unit,
+            manager: "boss".to_string(),
+            member:  "worker".to_string(),
+            role:    super::super::HierarchyRole::Unit,
         }]);
         let reports = [
             (false, edges.clone()),
@@ -1692,10 +1686,9 @@ mod tests {
         fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
             let round = self.0.fetch_add(1, Ordering::SeqCst) + 1;
             Ok(HierarchyEdges(vec![super::super::HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  format!("manager-{round}"),
-                member:   "worker".to_string(),
-                role:     super::super::HierarchyRole::Test,
+                manager: format!("manager-{round}"),
+                member:  "worker".to_string(),
+                role:    super::super::HierarchyRole::Test,
             }]))
         }
     }

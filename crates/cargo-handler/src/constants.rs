@@ -503,7 +503,7 @@ pub(crate) const TMUX_LIST_CLIENTS: [&str; 3] =
 
 // hierarchy discovery
 /// Version of the hierarchy command's JSON contract.
-pub(crate) const HIERARCHY_SCHEMA: u32 = 1;
+pub(crate) const HIERARCHY_SCHEMA: u32 = 3;
 /// Largest accepted hierarchy answer in bytes, before JSON decoding.
 pub(crate) const HIERARCHY_OUTPUT_LIMIT: usize = 1024 * 1024;
 /// The shell that evaluates a configured hierarchy command.
@@ -585,10 +585,6 @@ pub(crate) const ACCOUNTS_STALE_SECONDS: u64 = 60 * 60;
 pub(crate) const ACCOUNTS_LOW_PERCENT: f64 = 10.0;
 
 // reviewer discovery
-/// Review pool directory below the user's home.
-pub(crate) const REVIEW_POOL_DIRECTORY: &str = ".local/state/review-pool";
-/// One production's reviewer lease document.
-pub(crate) const REVIEW_POOL_FILE: &str = "pool.json";
 /// Claude print-mode arguments.
 pub(crate) const CLAUDE_PRINT_ARGUMENTS: [&str; 2] = ["--print", "-p"];
 /// Claude permission selector.

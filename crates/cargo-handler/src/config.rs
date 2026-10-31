@@ -113,7 +113,7 @@ pub(crate) struct MachinesConfig {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct CensusConfig {
-    /// One line of shell that prints this machine's hierarchy edges;
+    /// One line of shell that prints this machine's schema-3 staff list;
     /// empty disables hierarchy discovery.
     pub(crate) hierarchy_command: String,
     /// Optional command printing stored account roles and usage as JSON.
@@ -257,15 +257,14 @@ accounts_command = \"\"
     /// Shell quoting and separators survive a config save and reload.
     #[test]
     fn the_hierarchy_command_round_trips_as_one_shell_line() {
-        let text =
-            "[census]\nhierarchy_command = '''printf '%s' '{\"schema\":1,\"edges\":[]}' | cat'''\n";
+        let text = "[census]\nhierarchy_command = '''printf '%s' '{\"schema\":3,\"members\":[]}' | cat'''\n";
         let restated = round_trip(text);
         let reloaded: Config =
             toml::from_str(&restated).expect("the saved shell command should parse");
 
         assert_eq!(
             reloaded.census.hierarchy_command,
-            "printf '%s' '{\"schema\":1,\"edges\":[]}' | cat"
+            "printf '%s' '{\"schema\":3,\"members\":[]}' | cat"
         );
         assert_eq!(round_trip(&restated), restated);
     }

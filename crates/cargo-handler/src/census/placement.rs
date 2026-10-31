@@ -160,7 +160,6 @@ pub(crate) struct AgentPlacement<'a> {
     pub(crate) threads: Vec<super::ManagedThread<'a>>,
     /// Launcher-cycle rows promoted after the ordinary roots.
     rescued_roots:      HashSet<RowIdentity<'a>>,
-    hidden_threads:     Vec<&'a super::ChildRow>,
     claude_dispatches:  Vec<ClaudeDispatchFold<'a>>,
     /// Shell/thread pairs joined after their tile membership is normalized.
     dispatch_folds:     Vec<DispatchFold<'a>>,
@@ -202,7 +201,6 @@ impl<'a> AgentPlacement<'a> {
         let mut edges: Vec<_> = machines
             .iter()
             .flat_map(|machine| machine.state.edges())
-            .filter(|edge| edge.reviewer.is_drawn())
             .collect();
         edges.sort_by(|left, right| left.manager.cmp(&right.manager));
         let managers: HashMap<_, _> = rows
@@ -216,16 +214,10 @@ impl<'a> AgentPlacement<'a> {
         Self::resolve_managers(&mut rows, &edges, &managers);
         let rescued_roots = Self::rescue_launcher_cycles(&mut rows);
         let threads = Self::resolve_threads(machines, &managers, &edges);
-        let hidden_threads = machines.iter().flat_map(|machine| {
-            machine.state.rows().iter().flat_map(move |row| row.children.iter()).filter(move |child| {
-                matches!(&child.thread_id, CodexThreadId::Recorded(id) if machine.state.edges().iter().any(|edge| edge.member == *id && !edge.reviewer.is_drawn()))
-            })
-        }).collect();
         let mut placement = Self {
             rows,
             threads,
             rescued_roots,
-            hidden_threads,
             claude_dispatches: Vec::new(),
             dispatch_folds: Vec::new(),
         };
@@ -295,12 +287,6 @@ impl<'a> AgentPlacement<'a> {
             }
         }
         tree::join_dispatches(&children)
-    }
-
-    pub(crate) fn hides_thread(&self, child: &super::ChildRow) -> bool {
-        self.hidden_threads
-            .iter()
-            .any(|hidden| std::ptr::eq(*hidden, child))
     }
 
     /// Whether this shell's worker is already visible in its tile.
@@ -596,8 +582,7 @@ impl<'a> AgentPlacement<'a> {
                     matches!(
                         child.kind,
                         ChildKind::Shell(_) | ChildKind::Subagent(_) | ChildKind::Thread
-                    ) && !self.hides_thread(child)
-                        && !self.folds_dispatch(child)
+                    ) && !self.folds_dispatch(child)
                         && !self.threads.iter().any(|thread| {
                             std::ptr::eq(
                                 &raw const thread.owner_row.children[thread.child_index],
@@ -697,10 +682,9 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
         super::MachineState::Answered(
             worker_rows,
             super::HierarchyEdges(vec![HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "unit".to_string(),
-                member:   "mesh-worker".to_string(),
-                role:     super::HierarchyRole::Impl,
+                manager: "unit".to_string(),
+                member:  "mesh-worker".to_string(),
+                role:    super::HierarchyRole::Impl,
             }])
             .into(),
         ),
@@ -717,7 +701,6 @@ mod tests {
     use crate::census::HierarchyRole;
     use crate::census::MachineState;
     use crate::census::ServiceTier;
-    use crate::census::hierarchy::ReviewerState;
 
     fn agent(pid: u32, id: &str) -> AgentRow {
         AgentRow {
@@ -787,7 +770,6 @@ mod tests {
 
     fn edge(manager: &str, member: &str, role: HierarchyRole) -> HierarchyEdge {
         HierarchyEdge {
-            reviewer: ReviewerState::NotPool,
             manager: manager.to_string(),
             member: member.to_string(),
             role,
@@ -917,16 +899,14 @@ mod tests {
                 order.map(|index| original[index].clone()).to_vec(),
                 HierarchyEdges(vec![
                     HierarchyEdge {
-                        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                        manager:  "C".to_string(),
-                        member:   "B".to_string(),
-                        role:     HierarchyRole::Unit,
+                        manager: "C".to_string(),
+                        member:  "B".to_string(),
+                        role:    HierarchyRole::Unit,
                     },
                     HierarchyEdge {
-                        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                        manager:  "B".to_string(),
-                        member:   "A".to_string(),
-                        role:     HierarchyRole::Impl,
+                        manager: "B".to_string(),
+                        member:  "A".to_string(),
+                        role:    HierarchyRole::Impl,
                     },
                 ])
                 .into(),
@@ -999,16 +979,14 @@ mod tests {
                 order.map(|index| original[index].clone()).to_vec(),
                 HierarchyEdges(vec![
                     HierarchyEdge {
-                        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                        manager:  "B".to_string(),
-                        member:   "A".to_string(),
-                        role:     HierarchyRole::Unit,
+                        manager: "B".to_string(),
+                        member:  "A".to_string(),
+                        role:    HierarchyRole::Unit,
                     },
                     HierarchyEdge {
-                        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                        manager:  "A".to_string(),
-                        member:   "B".to_string(),
-                        role:     HierarchyRole::Impl,
+                        manager: "A".to_string(),
+                        member:  "B".to_string(),
+                        role:    HierarchyRole::Impl,
                     },
                 ])
                 .into(),

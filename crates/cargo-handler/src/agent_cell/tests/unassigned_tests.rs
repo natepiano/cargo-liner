@@ -55,10 +55,9 @@ fn unassigned_forest() -> MachineState {
     MachineState::Answered(
         vec![boss, worker, ups, nested, postmaster],
         HierarchyEdges(vec![HierarchyEdge {
-            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-            manager:  "boss-id".into(),
-            member:   "impl-id".into(),
-            role:     HierarchyRole::Impl,
+            manager: "boss-id".into(),
+            member:  "impl-id".into(),
+            role:    HierarchyRole::Impl,
         }])
         .into(),
     )

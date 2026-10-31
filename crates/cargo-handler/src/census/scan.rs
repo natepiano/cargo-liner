@@ -64,9 +64,6 @@ use super::codex_names::SessionNames;
 use super::desktop;
 use super::desktop::TmuxLayout;
 use super::desktop::WindowEntry;
-use super::hierarchy::ReviewerOutcome;
-use super::hierarchy::ReviewerPools;
-use super::hierarchy::ReviewerState;
 use super::tier;
 use super::tier::PacerHistory;
 use super::tier::Rollouts;
@@ -122,7 +119,6 @@ type ProcessKey = (u32, u64);
 /// Scans this machine for its agents and what each is running.
 #[derive(Debug)]
 pub(super) struct LocalScanner {
-    reviewer_pools:      ReviewerPools,
     processes:           ProcessCensus,
     run_records:         RunRecords,
     /// Whether a completed answer has replaced the startup classification.
@@ -284,7 +280,7 @@ impl LocalScanner {
             worker_names: WorkerNames::default(),
             worker_commands: WorkerCommands::default(),
             session_roots: SessionRoots::production(),
-            reviewer_pools: ReviewerPools::default(),
+
             processes: ProcessCensus::default(),
             run_records: activity::RunRecords::default(),
             desktop_source: DesktopSource::System,
@@ -526,9 +522,6 @@ impl LocalScanner {
         let mut runs = HashMap::new();
         let live_processes = processes.iter().map(|process| process.pid).collect();
         let mut seen_run_sessions = HashSet::new();
-        ReviewerPools::root().update(&mut self.reviewer_pools);
-        let reviewer_outcomes = self.reviewer_pools.outcomes();
-        ReviewerPools::apply_outcomes(rows, &reviewer_outcomes);
         let mut seen_transcripts = HashSet::new();
         let table = classify::pid_table(processes);
         let mut verification_activity = activity::VerificationProcesses::new(processes);
@@ -578,17 +571,6 @@ impl LocalScanner {
                         .label(WorkerRoleSource::Unroled, &child.name),
                 };
                 child.dispatch = dispatch;
-                if let Some(ReviewerOutcome {
-                    state: ReviewerState::Busy { name, started, .. },
-                    ..
-                }) = reviewer_outcomes
-                    .iter()
-                    .find(|outcome| outcome.thread_id == *id)
-                {
-                    child.worker_task = read.reviewer_task(name, *started);
-                    child.dispatch = WorkerDispatch::Plain;
-                }
-
                 let records: Vec<_> = self
                     .worker_names
                     .directories(id, prompt, &self.session_roots)
@@ -1987,7 +1969,6 @@ mod tests {
     use crate::census::Account;
     use crate::census::RoleFallback;
     use crate::census::SessionIdentity;
-    use crate::census::hierarchy::ReviewerPools;
 
     #[test]
     fn idle_verification_arguments_are_checked_once_per_process() {
@@ -2292,9 +2273,9 @@ mod tests {
             worker_names:        WorkerNames::default(),
             worker_commands:     WorkerCommands::default(),
             session_roots:       SessionRoots::new([]),
-            reviewer_pools:      ReviewerPools::default(),
-            desktop_source:      DesktopSource::Windows(Vec::new()),
-            desktops:            None,
+
+            desktop_source: DesktopSource::Windows(Vec::new()),
+            desktops:       None,
         }
     }
 
@@ -2594,10 +2575,9 @@ mod hierarchy_publication_tests {
         fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(HierarchyEdges(vec![HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "boss".to_string(),
-                member:   "worker".to_string(),
-                role:     HierarchyRole::Impl,
+                manager: "boss".to_string(),
+                member:  "worker".to_string(),
+                role:    HierarchyRole::Impl,
             }]))
         }
     }
@@ -2631,10 +2611,9 @@ mod hierarchy_publication_tests {
             },
         );
         let edges = HierarchyEdges(vec![HierarchyEdge {
-            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-            manager:  "boss".to_string(),
-            member:   "worker".to_string(),
-            role:     HierarchyRole::Impl,
+            manager: "boss".to_string(),
+            member:  "worker".to_string(),
+            role:    HierarchyRole::Impl,
         }]);
         assert_eq!(
             updates

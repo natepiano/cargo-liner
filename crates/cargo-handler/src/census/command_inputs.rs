@@ -211,10 +211,12 @@ impl<T: Clone> InputDrivenCommand<T> {
 
     fn for_command_at(command: &str, home: &Path) -> Self {
         let words: Vec<_> = command.split_whitespace().collect();
-        let hierarchy = words.len() == 3
+        let hierarchy = words.len() == 5
             && words[0].ends_with("/.claude/scripts/lib/py")
-            && words[1].ends_with("/.claude/scripts/production/production_tree.py")
-            && words[2] == "--json";
+            && words[1].ends_with("/.claude/scripts/production/staff.py")
+            && words[2] == "show"
+            && words[3] == "--json"
+            && words[4] == "--live";
         let accounts = words.len() == 5
             && words[0].ends_with("/.claude/scripts/lib/py")
             && words[1].ends_with("/.claude/scripts/accounts/accounts.py")
@@ -254,6 +256,10 @@ impl<T: Clone> InputDrivenCommand<T> {
     }
 
     fn hierarchy_inputs(&mut self, home: &Path) {
+        self.paths.push(env_path(
+            "STAFF_FILE",
+            home.join(".local/state/staff/staff.json"),
+        ));
         self.paths
             .push(home.join(".claude/scripts/direct/board.sh"));
         for root in ["/tmp/claude/unit", "/tmp/claude/delegate"] {
@@ -297,13 +303,6 @@ impl<T: Clone> InputDrivenCommand<T> {
             vec![
                 InputName::Prefix(String::new()),
                 InputName::Exact("parent".into()),
-            ],
-        );
-        self.pattern(
-            env_path("REVIEW_POOL_STATE", home.join(".local/state/review-pool")),
-            vec![
-                InputName::Prefix(String::new()),
-                InputName::Exact("pool.json".into()),
             ],
         );
         self.pattern(
@@ -450,9 +449,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn staff_membership_changes_invalidate_the_cached_command() -> Result<(), Box<dyn Error>> {
+        let home = tempfile::tempdir()?;
+        let path = home.path().join(".local/state/staff/staff.json");
+        fs::create_dir_all(path.parent().ok_or("staff directory")?)?;
+        fs::write(&path, "before")?;
+        let mut command = InputDrivenCommand::for_command_at(
+            "~/.claude/scripts/lib/py ~/.claude/scripts/production/staff.py show --json --live",
+            home.path(),
+        );
+        let runs = Cell::new(0);
+        let run = || {
+            runs.set(runs.get() + 1);
+            runs.get()
+        };
+        let now = Instant::now();
+        assert_eq!(command.read(now, run), 1);
+        assert_eq!(command.read(now, run), 1);
+        fs::write(path, "changed membership")?;
+        assert_eq!(command.read(now, run), 2);
+        Ok(())
+    }
+
+    #[test]
     fn idle_scripts_reuse_unchanged_inputs_and_run_once_after_a_change()
     -> Result<(), Box<dyn Error>> {
-        for script in ["production_tree.py", "accounts.py"] {
+        for script in ["staff.py", "accounts.py"] {
             let directory = tempfile::tempdir()?;
             let path = directory.path().join(script);
             fs::write(&path, "first")?;
@@ -559,8 +581,8 @@ mod tests {
                 ".local/state/accounts/login_renewals.json",
             ),
             (
-                "production/production_tree.py",
-                "--json",
+                "production/staff.py",
+                "show --json --live",
                 ".claude/scripts/direct/board.sh",
             ),
         ] {

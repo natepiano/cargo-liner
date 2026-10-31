@@ -225,7 +225,7 @@ mod tests {
             })
             .expect("the settings list a hierarchy command row");
         app.framework.settings_pane.select_row(selection);
-        let command = "printf '%s' '{\"schema\":1,\"edges\":[]}' | cat";
+        let command = "printf '%s' '{\"schema\":3,\"members\":[]}' | cat";
         let row_value = |app: &App| {
             rows(app)
                 .rows()

@@ -1892,3 +1892,35 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - `test` — opens as impl: no `tests/` lane; it writes the tests in `summary/accounts_tests.rs` and `summary/accounts_header_sort_tests.rs` from this Spec.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of the accounts table on natedev shows each account's session count, and the count matches the drawn rows for one account. The checkpoint adds a Change-Review line.
+
+### Phase 59 — Shift-left and shift-right move the tile focus  · status: todo
+
+**Depends on:** none.
+
+#### Work Order
+
+**Goal:** wherever shift-up and shift-down move the tile focus, shift-left and shift-right move it to the left and right tile, and the shortcuts overlay shows them in the same rows.
+
+**Source:** the user, 2026-10-31, via the showrunner: "seems as if you should support shift-left and shift-right if you have these up and down - this should go to the end of the list for sure". The showrunner placed it as the last phase.
+
+**Constraints from prior phases:**
+- Phase 57a made cargo-handler default `FocusUp` to `shift-up` and `FocusDown` to `shift-down` (`crates/cargo-handler/src/globals.rs`), because plain `up` and `down` select rows. `FocusLeft` and `FocusRight` stay on plain `left` and `right` there.
+- cargo-tile binds all four focus moves to the plain arrows (`crates/cargo-tile/src/app_global_action.rs`) and has no shift focus keys, so this phase does not change cargo-tile.
+- `TileAction::FocusLeft` and `TileAction::FocusRight` already exist in tui_pane; no new grid action is needed.
+- Keep focus bindings in the default keymap so the user can rebind them. Changed default keys change the overlay captures in `render/mod.rs` (`the_keymap_overlay_opens_on_its_first_screen`, `the_shortcuts_overlay_opens_on_its_first_screen`).
+
+**Spec:**
+1. cargo-handler defaults `FocusLeft` to `shift-left` and `FocusRight` to `shift-right`, the same form as `FocusUp` and `FocusDown`. If the keymap takes more than one default key per action with no new API, plain `left` and `right` stay as a second key; if not, the shift keys replace them, and the summary says so.
+2. The Global Shortcuts and Keymap overlays show the four focus keys in the rows where Phase 57a shows the vertical ones.
+3. Red-first tests under 1 s: each shift arrow moves focus one tile in its direction and stays at the edge; the overlay shows all four focus keys. Update the two overlay captures.
+4. CHANGELOG: one Added line in cargo-handler.
+
+**Files:**
+- `crates/cargo-handler/src/globals.rs` — the defaults and their tests
+- `crates/cargo-handler/src/keymap.rs` — key rows
+- `crates/cargo-handler/src/render/mod.rs` — the overlay captures
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: in cargo-handler on natedev, shift-left and shift-right move the focus, and the shortcuts overlay shows the four focus keys. The checkpoint adds a Change-Review line.

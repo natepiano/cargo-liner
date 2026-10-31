@@ -1002,7 +1002,6 @@ mod tests {
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::census::accounts::AccountsTable;
-    use crate::census::hierarchy::ReviewerState;
     use crate::sort::AccountsSort;
 
     /// The unix second every age in these tests is measured to.
@@ -1145,10 +1144,9 @@ mod tests {
             pairs
                 .iter()
                 .map(|(manager, member)| HierarchyEdge {
-                    reviewer: ReviewerState::NotPool,
-                    manager:  (*manager).to_string(),
-                    member:   (*member).to_string(),
-                    role:     HierarchyRole::Unit,
+                    manager: (*manager).to_string(),
+                    member:  (*member).to_string(),
+                    role:    HierarchyRole::Unit,
                 })
                 .collect(),
         )

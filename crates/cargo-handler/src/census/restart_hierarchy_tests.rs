@@ -413,8 +413,7 @@ fn restart_hierarchy_unmapped_home_session_stays_in_the_top_level_table() {
 
 #[test]
 fn restart_hierarchy_refresh_failure_keeps_the_resumed_unit_nested() {
-    let pool_root = tempfile::tempdir().expect("empty reviewer pools");
-    let mut cache = HierarchyCache::with_pool_root(pool_root.path().to_owned());
+    let mut cache = HierarchyCache::default();
     let runner = Answers(Mutex::new(VecDeque::from([
         Ok(production_edges()),
         Err(HierarchyError::TimedOut),
@@ -449,8 +448,7 @@ fn restart_hierarchy_refresh_failure_keeps_the_resumed_unit_nested() {
 
 #[test]
 fn restart_hierarchy_missing_unit_edge_refreshes_on_the_next_scan() {
-    let pool_root = tempfile::tempdir().expect("empty reviewer pools");
-    let mut cache = HierarchyCache::with_pool_root(pool_root.path().to_owned());
+    let mut cache = HierarchyCache::default();
     let runner = Answers(Mutex::new(VecDeque::from([
         Ok(HierarchyEdges::default()),
         Ok(production_edges()),
@@ -470,8 +468,7 @@ fn restart_hierarchy_missing_unit_edge_refreshes_on_the_next_scan() {
 
 #[test]
 fn restart_hierarchy_unmapped_session_gets_one_refresh_until_a_new_id_arrives() {
-    let pool_root = tempfile::tempdir().expect("empty reviewer pools");
-    let mut cache = HierarchyCache::with_pool_root(pool_root.path().to_owned());
+    let mut cache = HierarchyCache::default();
     let runner = Answers(Mutex::new(VecDeque::from([
         Ok(production_edges()),
         Ok(production_edges()),

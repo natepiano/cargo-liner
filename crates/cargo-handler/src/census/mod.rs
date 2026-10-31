@@ -63,7 +63,6 @@ pub(crate) use activity::VerifyStep;
 use hierarchy::HierarchyAnswer;
 pub(crate) use hierarchy::HierarchyNotice;
 pub(crate) use hierarchy::HierarchySnapshot;
-use hierarchy::ReviewerState;
 pub(crate) use placement::AgentPlacement;
 pub(crate) use placement::ManagedThread;
 pub(crate) use placement::PlacedAgent;
@@ -221,13 +220,11 @@ impl HierarchyRole {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct HierarchyEdge {
     /// The manager's Claude Code session id, possibly on another machine.
-    pub(crate) manager:  String,
+    pub(crate) manager: String,
     /// The member's Claude session id or Codex app-server thread id.
-    pub(crate) member:   String,
+    pub(crate) member:  String,
     /// What the member does for its manager.
-    pub(crate) role:     HierarchyRole,
-    #[serde(default)]
-    pub(crate) reviewer: ReviewerState,
+    pub(crate) role:    HierarchyRole,
 }
 
 /// The management links reported by one machine.
@@ -257,7 +254,7 @@ pub(crate) enum HierarchySource {
     /// Hierarchy discovery is disabled.
     #[default]
     Off,
-    /// A shell command printing the schema-1 hierarchy contract.
+    /// A shell command printing the schema-3 staff contract.
     Command(String),
 }
 
@@ -533,9 +530,8 @@ impl RemoteHierarchyAnswers {
                     },
                 )
             },
-            Ok((rows, HierarchyAnswer::Failed { reason, reviewers })) => {
+            Ok((rows, HierarchyAnswer::Failed { reason })) => {
                 let edges = self.edges.entry(host.to_string()).or_default();
-                hierarchy::ReviewerPools::update_edges(edges, &reviewers);
                 MachineState::Answered(
                     rows,
                     HierarchySnapshot {
@@ -769,10 +765,9 @@ mod tests {
         let mut answers = RemoteHierarchyAnswers::default();
         let mut census = Census::new("local".to_string());
         let edges = HierarchyEdges(vec![HierarchyEdge {
-            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-            manager:  "boss".to_string(),
-            member:   "worker".to_string(),
-            role:     HierarchyRole::Unit,
+            manager: "boss".to_string(),
+            member:  "worker".to_string(),
+            role:    HierarchyRole::Unit,
         }]);
         for (host, started, hierarchy, expected) in [
             (
@@ -785,8 +780,7 @@ mod tests {
                 "remote",
                 2,
                 HierarchyAnswer::Failed {
-                    reason:    HierarchyError::ExitedUnsuccessfully,
-                    reviewers: Vec::new(),
+                    reason: HierarchyError::ExitedUnsuccessfully,
                 },
                 edges.clone(),
             ),
@@ -794,8 +788,7 @@ mod tests {
                 "other",
                 3,
                 HierarchyAnswer::Failed {
-                    reason:    HierarchyError::ExitedUnsuccessfully,
-                    reviewers: Vec::new(),
+                    reason: HierarchyError::ExitedUnsuccessfully,
                 },
                 HierarchyEdges::default(),
             ),
@@ -809,8 +802,7 @@ mod tests {
                 "remote",
                 5,
                 HierarchyAnswer::Failed {
-                    reason:    HierarchyError::ExitedUnsuccessfully,
-                    reviewers: Vec::new(),
+                    reason: HierarchyError::ExitedUnsuccessfully,
                 },
                 HierarchyEdges::default(),
             ),
@@ -845,8 +837,7 @@ mod tests {
                 Ok((
                     vec![row(6)],
                     HierarchyAnswer::Failed {
-                        reason:    HierarchyError::ExitedUnsuccessfully,
-                        reviewers: Vec::new(),
+                        reason: HierarchyError::ExitedUnsuccessfully,
                     }
                 ))
             ),

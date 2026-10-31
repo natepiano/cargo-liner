@@ -5,7 +5,6 @@ use tui_pane::CellPoint;
 use super::*;
 use crate::census::Activity;
 use crate::census::RoleFallback;
-use crate::census::hierarchy::ReviewerState;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::sort;
 use crate::sort::HeaderHit;
@@ -68,16 +67,14 @@ fn sorting_forest() -> MachineState {
         vec![root, older, younger, nested],
         HierarchyEdges(vec![
             HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "root-id".into(),
-                member:   "older-id".into(),
-                role:     HierarchyRole::Fix,
+                manager: "root-id".into(),
+                member:  "older-id".into(),
+                role:    HierarchyRole::Fix,
             },
             HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "root-id".into(),
-                member:   "younger-id".into(),
-                role:     HierarchyRole::Impl,
+                manager: "root-id".into(),
+                member:  "younger-id".into(),
+                role:    HierarchyRole::Impl,
             },
         ])
         .into(),
@@ -612,7 +609,6 @@ fn independent_sort_forest() -> MachineState {
             ..agent(pid, name, age, Some(10))
         });
         edges.push(HierarchyEdge {
-            reviewer: ReviewerState::NotPool,
             manager: "root-id".into(),
             member: id,
             role,
@@ -693,10 +689,9 @@ fn showrunner_session_sort_ignores_case_and_breaks_ties_by_original_name() {
     let edges = rows
         .iter()
         .map(|row| HierarchyEdge {
-            reviewer: ReviewerState::NotPool,
-            manager:  "case-director".into(),
-            member:   format!("case-id-{}", row.pid),
-            role:     HierarchyRole::Unit,
+            manager: "case-director".into(),
+            member:  format!("case-id-{}", row.pid),
+            role:    HierarchyRole::Unit,
         })
         .collect();
     rows.push(AgentRow {

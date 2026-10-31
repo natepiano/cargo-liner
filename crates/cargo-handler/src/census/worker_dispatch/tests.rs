@@ -642,10 +642,9 @@ fn a_dispatch_folds_into_a_managed_thread_moved_from_another_host_row() {
     let mut host = agent(20, &[thread]);
     host.agent = Agent::CodexThreadHost;
     let edges = HierarchyEdges(vec![HierarchyEdge {
-        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-        manager:  "manager-id".to_string(),
-        member:   "worker-thread".to_string(),
-        role:     HierarchyRole::Impl,
+        manager: "manager-id".to_string(),
+        member:  "worker-thread".to_string(),
+        role:    HierarchyRole::Impl,
     }]);
     let tiles = drawn_tiles_with_edges(vec![root, host], edges);
     assert_eq!(
@@ -985,10 +984,9 @@ fn folded_role_buffer(short: &str, recorded: Option<&str>, managed: bool) -> Buf
     root.session_id = SessionIdentity::Claude("manager-id".into());
     let edges = if managed {
         HierarchyEdges(vec![HierarchyEdge {
-            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-            manager:  "manager-id".into(),
-            member:   "worker-thread".into(),
-            role:     HierarchyRole::Test,
+            manager: "manager-id".into(),
+            member:  "worker-thread".into(),
+            role:    HierarchyRole::Test,
         }])
     } else {
         HierarchyEdges::default()

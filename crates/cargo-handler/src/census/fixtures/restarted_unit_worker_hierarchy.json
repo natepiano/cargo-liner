@@ -1,14 +1,35 @@
 {
-  "schema": 1,
-  "edges": [
+  "schema": 3,
+  "inputs": [],
+  "members": [
     {
-      "manager": "96b016bf-87cf-4a19-af7a-77425852c2e2",
-      "member": "80636f6b-b7f3-4a3f-9853-ead35573c524",
+      "id": "s0",
+      "name": "96b016bf-87cf-4a19-af7a-77425852c2e2",
+      "kind": "showrunner",
+      "parent": null,
+      "identity": {
+        "claude": "96b016bf-87cf-4a19-af7a-77425852c2e2"
+      },
+      "role": "showrunner"
+    },
+    {
+      "id": "s1",
+      "name": "80636f6b-b7f3-4a3f-9853-ead35573c524",
+      "kind": "unit",
+      "parent": "s0",
+      "identity": {
+        "claude": "80636f6b-b7f3-4a3f-9853-ead35573c524"
+      },
       "role": "unit"
     },
     {
-      "manager": "80636f6b-b7f3-4a3f-9853-ead35573c524",
-      "member": "unit-worker-thread",
+      "id": "s2",
+      "name": "unit-worker-thread",
+      "kind": "worker",
+      "parent": "s1",
+      "identity": {
+        "codex": "unit-worker-thread"
+      },
       "role": "impl"
     }
   ]

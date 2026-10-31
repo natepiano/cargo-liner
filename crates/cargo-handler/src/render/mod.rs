@@ -1017,7 +1017,6 @@ mod tests {
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::census::WorkIdentity;
-    use crate::census::hierarchy::ReviewerState;
     use crate::census::transcript::SubagentRole;
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
@@ -1671,7 +1670,6 @@ fraying = "leading"
                 ..root.clone()
             });
             edges.push(HierarchyEdge {
-                reviewer: ReviewerState::NotPool,
                 manager,
                 member,
                 role: HierarchyRole::Impl,
@@ -1931,7 +1929,6 @@ fraying = "leading"
             let edges = HierarchyEdges(
                 role.into_iter()
                     .map(|role| HierarchyEdge {
-                        reviewer: ReviewerState::NotPool,
                         manager: "production".to_string(),
                         member: "member".to_string(),
                         role,

@@ -1,0 +1,9 @@
+{
+  "schema": 3,
+  "inputs": [],
+  "members": [
+    {"id":"boss-staff-id","kind":"showrunner","name":"production","parent":null,"role":"showrunner","identity":{"claude":"boss-session"}},
+    {"id":"unit-staff-id","kind":"unit","name":"handler","parent":"boss-staff-id","role":"unit","identity":{"claude":"unit-session"},"worktree":{"machine":"natedev","path":"/fixture/handler","state":"present"}},
+    {"id":"worker-staff-id","kind":"worker","name":"reviewer","parent":"unit-staff-id","role":"review","identity":{"codex":"worker-thread"}}
+  ]
+}

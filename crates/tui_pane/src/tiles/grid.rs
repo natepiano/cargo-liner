@@ -53,6 +53,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::num::NonZeroU16;
+use std::sync::Arc;
 use std::sync::OnceLock;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
@@ -80,9 +81,11 @@ use super::settings::TileWidthFloor;
 use crate::CycleDirection;
 use crate::PaneAxisSize;
 use crate::PaneFrame;
+use crate::Repaint;
 use crate::ResolvedPane;
 use crate::ResolvedPaneLayout;
 use crate::TileFill;
+use crate::TileGridContents;
 use crate::TileView;
 use crate::constraints_for_sizes;
 use crate::frame_inner;
@@ -172,6 +175,7 @@ pub enum TileContent<Id> {
 /// leaving the old column and the piece arriving in the new one -- which
 /// is what makes it read as sliding off one column's edge and back in at
 /// the next.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TilePlacement<Id> {
     /// What the cell draws.
     pub content: TileContent<Id>,
@@ -191,6 +195,7 @@ pub(super) enum PieceName {
 }
 
 /// One visible piece and the name role its placed geometry gives it.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TilePiece<Id> {
     /// Stable cell identity carried through movement and removal.
     identity:               CellIdentity<Id>,
@@ -239,6 +244,7 @@ pub(super) enum PieceHeightSnap {
 }
 
 /// One frame's cell pieces and the fixed column frames they move inside.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TileDrawing<Id> {
     /// Every visible piece, in cell order.
     pub(super) pieces:       Vec<TilePiece<Id>>,
@@ -1005,21 +1011,28 @@ struct CellAppearance<Id> {
 }
 
 /// A painted cell's identity, including empty cells whose numbers can change.
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum CellIdentity<Id> {
     Summary,
     Slot(Slot<Id>),
 }
 
-/// Click geometry from the most recent grid paint, before any focus change.
-enum PaintedCells<Id> {
-    Undrawn,
-    Drawn(Vec<PaintedCell<Id>>),
+/// Geometry and appearance from one body paint. Input reads these same pieces.
+struct GridVisualState<Id> {
+    drawing:     TileDrawing<Id>,
+    contents:    crate::TileGridContents,
+    theme:       Arc<crate::Theme>,
+    transparent: bool,
+    tint:        bool,
 }
 
-struct PaintedCell<Id> {
-    identity: CellIdentity<Id>,
-    frame:    PaneFrame,
+/// Only a body paint can replace this record.
+enum LastPainted<Id> {
+    NeverPainted,
+    Painted {
+        visual:         GridVisualState<Id>,
+        summary_frames: Vec<Rect>,
+    },
 }
 
 /// Whether the painted cell still owns a slot that can receive input.
@@ -1288,10 +1301,8 @@ pub struct TileGrid<Id> {
     focus:                  Focus<Id>,
     /// The sizes and timings the grid is laid out and animated with.
     settings:               TileSettings,
-    /// Summary clip rectangles painted by the last grid draw.
-    painted_summary_frames: Vec<Rect>,
-    /// Stable identities and geometry retained from the frame input refers to.
-    painted_cells:          PaintedCells<Id>,
+    /// The body paint used for both visual comparison and input.
+    last_painted:           LastPainted<Id>,
     /// Content-row usage at every size inspected during the current frame.
     frame_row_usage:        Vec<FrameCellRowUsage<Id>>,
     /// Cell geometry drawn by the last settled frame.
@@ -1332,8 +1343,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             next_slot:                     0,
             focus:                         Focus::Summary,
             settings:                      TileSettings::default(),
-            painted_summary_frames:        Vec::new(),
-            painted_cells:                 PaintedCells::Undrawn,
+            last_painted:                  LastPainted::NeverPainted,
             frame_row_usage:               Vec::new(),
             last_settled_geometry:         LastSettledCellGeometry::default(),
             motion_heights:                MotionHeightPath::default(),
@@ -2158,13 +2168,60 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// at once -- three separate travels are followable where three
     /// overlaid on each other are not.
     pub fn tick(&mut self) -> bool {
-        if matches!(self.motion, GridMotion::Settled) {
-            return false;
-        }
-        if self.progress() >= PROGRESS_SCALE {
+        if !matches!(self.motion, GridMotion::Settled) && self.progress() >= PROGRESS_SCALE {
             self.advance();
         }
-        true
+        self.visual_repaint() == Repaint::Needed
+    }
+
+    /// Whether the next body differs from the last paint. Polling does not consume it.
+    #[must_use]
+    pub fn visual_repaint(&self) -> crate::Repaint { self.visual_repaint_at(self.progress()) }
+
+    fn visual_repaint_at(&self, progress: u32) -> crate::Repaint {
+        let LastPainted::Painted { visual, .. } = &self.last_painted else {
+            return if matches!(self.motion, GridMotion::Settled) {
+                Repaint::NotNeeded
+            } else {
+                Repaint::Needed
+            };
+        };
+        let drawing = self.visible_drawing(visual.contents, progress);
+        // Height-search hints affect measurement, not pixels. The selected frames carry
+        // the visible heights; title ownership and column bands also affect pixels.
+        let same_pieces = drawing.pieces.len() == visual.drawing.pieces.len()
+            && drawing
+                .pieces
+                .iter()
+                .zip(&visual.drawing.pieces)
+                .all(|(current, painted)| {
+                    current.identity == painted.identity
+                        && current.placement == painted.placement
+                        && current.name == painted.name
+                });
+        if same_pieces
+            && drawing.column_bands == visual.drawing.column_bands
+            && visual.theme == crate::theme()
+            && visual.transparent == crate::transparent_background()
+            && visual.tint == crate::focused_pane_tint_enabled()
+        {
+            Repaint::NotNeeded
+        } else {
+            Repaint::Needed
+        }
+    }
+
+    fn visible_drawing(&self, contents: crate::TileGridContents, progress: u32) -> TileDrawing<Id> {
+        if self.display() == GridDisplay::SummaryAlone
+            && (contents == TileGridContents::Hidden || crate::frame_inner(self.area).is_empty())
+        {
+            TileDrawing {
+                pieces:       Vec::new(),
+                column_bands: Vec::new(),
+            }
+        } else {
+            self.drawing_at(self.area, self.growth, progress)
+        }
     }
 
     /// Give every running command a cell and take back the cells whose
@@ -3282,29 +3339,35 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
 
     /// Summary clip rectangles painted by the most recent `draw_tile_grid` call.
     #[must_use]
-    pub fn painted_summary_frames(&self) -> &[Rect] { &self.painted_summary_frames }
-
-    pub(super) fn record_painted_summary_frames(&mut self, frames: Vec<Rect>) {
-        self.painted_summary_frames = frames;
+    pub fn painted_summary_frames(&self) -> &[Rect] {
+        match &self.last_painted {
+            LastPainted::NeverPainted => &[],
+            LastPainted::Painted { summary_frames, .. } => summary_frames,
+        }
     }
 
-    /// Retain exactly the pieces that the grid painted, in paint order.
-    pub(super) fn record_painted_cells(&mut self, pieces: &[TilePiece<Id>]) {
-        self.painted_cells = PaintedCells::Drawn(
-            pieces
-                .iter()
-                .filter(|piece| draw::has_visible_body_row(piece.placement.frame))
-                .map(|piece| PaintedCell {
-                    identity: piece.identity.clone(),
-                    frame:    piece.placement.frame,
-                })
-                .collect(),
-        );
+    /// Commit the body that was painted. Status draws and polls never call this.
+    pub(super) fn record_painted_body(
+        &mut self,
+        drawing: TileDrawing<Id>,
+        contents: crate::TileGridContents,
+        summary_frames: Vec<Rect>,
+    ) {
+        self.last_painted = LastPainted::Painted {
+            visual: GridVisualState {
+                drawing,
+                contents,
+                theme: crate::theme(),
+                transparent: crate::transparent_background(),
+                tint: crate::focused_pane_tint_enabled(),
+            },
+            summary_frames,
+        };
     }
 
     /// Resolve the topmost painted piece before letting input change focus.
     pub(super) fn cell_hit(&self, pos: Position) -> CellHit<Id> {
-        let PaintedCells::Drawn(pieces) = &self.painted_cells else {
+        let LastPainted::Painted { visual, .. } = &self.last_painted else {
             return self
                 .cell_at(pos)
                 .and_then(|index| {
@@ -3325,11 +3388,10 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 })
                 .unwrap_or(CellHit::Missed);
         };
-        let Some(piece) = pieces
-            .iter()
-            .rev()
-            .find(|piece| piece.frame.clip().contains(pos))
-        else {
+        let Some(piece) = visual.drawing.pieces.iter().rev().find(|piece| {
+            draw::has_visible_body_row(piece.placement.frame)
+                && piece.placement.frame.clip().contains(pos)
+        }) else {
             return CellHit::Missed;
         };
         let index = match &piece.identity {
@@ -3348,7 +3410,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         CellHit::Current {
             index,
             content,
-            frame: piece.frame,
+            frame: piece.placement.frame,
         }
     }
 
@@ -6427,6 +6489,99 @@ fn eased(progress: u32) -> u32 {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    struct MotionPaintCells(TileDemands<u32>);
+
+    impl crate::TileCells<u32> for MotionPaintCells {
+        fn summary_title(&self) -> &str { "summary" }
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> { self.0.clone() }
+        fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
+    }
+
+    #[test]
+    fn idle_visual_motion_bands_and_title_transfers_need_one_body_paint() {
+        let mut grid = opening_column();
+        let area = test_area();
+        let growth = redistribute(4);
+        let cells = MotionPaintCells(grid.demands.clone());
+        let widths = grid.content_widths(area, growth);
+        let mut last_buffer = Buffer::empty(area);
+        let mut paints = 0;
+        let mut band_changes = 0;
+        let mut title_changes = 0;
+        for raw in motion_steps() {
+            let drawing = grid.drawing_at(area, growth, raw);
+            if let LastPainted::Painted { visual, .. } = &grid.last_painted {
+                band_changes += usize::from(drawing.column_bands != visual.drawing.column_bands);
+                title_changes += usize::from(
+                    drawing
+                        .pieces
+                        .iter()
+                        .map(|piece| piece.name)
+                        .collect::<Vec<_>>()
+                        != visual
+                            .drawing
+                            .pieces
+                            .iter()
+                            .map(|piece| piece.name)
+                            .collect::<Vec<_>>(),
+                );
+            }
+            let due = grid.visual_repaint_at(raw);
+            let mut buffer = Buffer::empty(area);
+            let frames = draw::draw_placements(
+                &mut buffer,
+                area,
+                &drawing,
+                &cells.0,
+                &widths,
+                TileGridContents::Shown,
+                &cells,
+            );
+            if buffer != last_buffer {
+                assert_eq!(due, crate::Repaint::Needed, "visible motion at {raw}");
+                paints += 1;
+            }
+            grid.record_painted_body(drawing, TileGridContents::Shown, frames);
+            assert_eq!(
+                grid.visual_repaint_at(raw),
+                crate::Repaint::NotNeeded,
+                "paint commits {raw}"
+            );
+            last_buffer = buffer;
+        }
+        assert!(paints > 1, "motion draws several distinct frames");
+        assert!(band_changes > 0, "columns move in this fixture");
+        assert!(title_changes > 0, "title ownership changes in this fixture");
+    }
+
+    /// A frozen transition has one drawn geometry across many polls.
+    #[test]
+    fn idle_visual_equal_motion_polls_do_not_consume_the_painted_frame() {
+        let (mut grid, area, growth, demands) = demand_resize_motion_fixture();
+        if let GridMotion::Moving(transition) = &mut grid.motion {
+            transition.started = Instant::now() + std::time::Duration::from_secs(60);
+        }
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        crate::draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            growth,
+            TileGridContents::Shown,
+            &MotionPaintCells(demands),
+        );
+        let mut frames = 0;
+        for _ in 0..32 {
+            frames += usize::from(grid.tick());
+        }
+        assert_eq!(frames, 0, "equal motion geometry asks for no body frame");
+        if let GridMotion::Moving(transition) = &mut grid.motion {
+            transition.started = Instant::now() - std::time::Duration::from_secs(60);
+        }
+        assert!(grid.tick(), "the final geometry still needs painting");
+        assert!(grid.tick(), "a poll cannot consume an unpainted change");
+    }
+
     use std::ops::RangeInclusive;
 
     use ratatui::buffer::Buffer;
