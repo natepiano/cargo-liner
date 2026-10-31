@@ -27,15 +27,16 @@ impl RustBreakdownCache {
     fn unit_totals_for_file(
         &mut self,
         path: &Path,
-        totals: LineTotals,
+        line_totals: LineTotals,
         config: &Config,
     ) -> Option<LineTotals> {
-        if let Some(cached) = self.unit_totals.get(path) {
-            return *cached;
+        if let Some(cached_unit_line_totals) = self.unit_totals.get(path) {
+            return *cached_unit_line_totals;
         }
-        let unit = unit_totals_for_file(path, totals, config);
-        self.unit_totals.insert(path.to_path_buf(), unit);
-        unit
+        let unit_line_totals = unit_totals_for_file(path, line_totals, config);
+        self.unit_totals
+            .insert(path.to_path_buf(), unit_line_totals);
+        unit_line_totals
     }
 }
 
@@ -43,57 +44,72 @@ pub(super) fn child_entries(
     root: &Path,
     language: &Language,
     config: &Config,
-    cache: &mut RustBreakdownCache,
+    rust_breakdown_cache: &mut RustBreakdownCache,
 ) -> Vec<LangEntry> {
-    let mut buckets = RustBuckets::default();
+    let mut rust_buckets = RustBuckets::default();
     for report in &language.reports {
-        let totals = LineTotals::from(report);
+        let line_totals = LineTotals::from(report);
         match rust_file_bucket(root, report.name.as_path()) {
             RustBucket::Code => {
-                add_code_file_with_unit_split(&mut buckets, report, totals, config, cache);
+                add_code_file_with_unit_split(
+                    &mut rust_buckets,
+                    report,
+                    line_totals,
+                    config,
+                    rust_breakdown_cache,
+                );
             },
-            bucket => buckets.add_file(bucket, totals),
+            bucket => rust_buckets.add_file(bucket, line_totals),
         }
     }
-    buckets.entries()
+    rust_buckets.entries()
 }
 
 fn add_code_file_with_unit_split(
-    buckets: &mut RustBuckets,
+    rust_buckets: &mut RustBuckets,
     report: &Report,
-    totals: LineTotals,
+    line_totals: LineTotals,
     config: &Config,
-    cache: &mut RustBreakdownCache,
+    rust_breakdown_cache: &mut RustBreakdownCache,
 ) {
-    let Some(unit) = cache.unit_totals_for_file(report.name.as_path(), totals, config) else {
-        buckets.add_file(RustBucket::Code, totals);
+    let Some(unit_line_totals) =
+        rust_breakdown_cache.unit_totals_for_file(report.name.as_path(), line_totals, config)
+    else {
+        rust_buckets.add_file(RustBucket::Code, line_totals);
         return;
     };
 
-    let code = totals.without(unit);
-    buckets.add_file(RustBucket::UnitTests, unit);
+    let code = line_totals.without(unit_line_totals);
+    rust_buckets.add_file(RustBucket::UnitTests, unit_line_totals);
     if !code.is_empty() {
-        buckets.add_file(RustBucket::Code, code);
+        rust_buckets.add_file(RustBucket::Code, code);
     }
 }
 
-fn unit_totals_for_file(path: &Path, totals: LineTotals, config: &Config) -> Option<LineTotals> {
+fn unit_totals_for_file(
+    path: &Path,
+    line_totals: LineTotals,
+    config: &Config,
+) -> Option<LineTotals> {
     let source = fs::read_to_string(path).ok()?;
     let ranges = cfg_test_item_ranges(&source);
     if ranges.is_empty() {
         return None;
     }
-    let unit = ranges
+    let unit_line_totals = ranges
         .iter()
         .map(|range| {
             LineTotals::from(&LanguageType::Rust.parse_from_str(&source[range.clone()], config))
         })
-        .fold(LineTotals::default(), |mut acc, totals| {
-            acc.add(totals);
-            acc
-        })
-        .capped_by(totals);
-    (!unit.is_empty()).then_some(unit)
+        .fold(
+            LineTotals::default(),
+            |mut line_totals_accumulator, totals| {
+                line_totals_accumulator.add(totals);
+                line_totals_accumulator
+            },
+        )
+        .capped_by(line_totals);
+    (!unit_line_totals.is_empty()).then_some(unit_line_totals)
 }
 
 fn rust_file_bucket(root: &Path, path: &Path) -> RustBucket {
@@ -234,12 +250,12 @@ struct BucketTotals {
 impl BucketTotals {
     const fn is_empty(self) -> bool { self.files == 0 && self.lines.is_empty() }
 
-    const fn add_file(&mut self, totals: LineTotals) {
-        if totals.is_empty() {
+    const fn add_file(&mut self, line_totals: LineTotals) {
+        if line_totals.is_empty() {
             return;
         }
         self.files += 1;
-        self.lines.add(totals);
+        self.lines.add(line_totals);
     }
 
     fn entry(self, label: &'static str) -> Option<LangEntry> {
@@ -546,20 +562,24 @@ mod tests {
 
     #[test]
     fn rust_breakdown_uses_requested_child_labels() -> TestResult {
-        let dir = tempfile::tempdir()?;
-        write_file(dir.path(), "src/lib.rs", "pub fn code() {}\n")?;
-        write_file(dir.path(), "src/tests.rs", "#[test]\nfn unit_file() {}\n")?;
+        let temp_dir = tempfile::tempdir()?;
+        write_file(temp_dir.path(), "src/lib.rs", "pub fn code() {}\n")?;
         write_file(
-            dir.path(),
+            temp_dir.path(),
+            "src/tests.rs",
+            "#[test]\nfn unit_file() {}\n",
+        )?;
+        write_file(
+            temp_dir.path(),
             "tests/integration.rs",
             "#[test]\nfn integration() {}\n",
         )?;
-        write_file(dir.path(), "examples/demo.rs", "fn main() {}\n")?;
-        write_file(dir.path(), "benches/bench.rs", "fn main() {}\n")?;
+        write_file(temp_dir.path(), "examples/demo.rs", "fn main() {}\n")?;
+        write_file(temp_dir.path(), "benches/bench.rs", "fn main() {}\n")?;
 
-        let stats = language_stats::collect_language_stats_single(dir.path());
-        let rust = rust_entry(&stats)?;
-        let labels = rust
+        let stats = language_stats::collect_language_stats_single(temp_dir.path());
+        let rust_lang_entry = rust_entry(&stats)?;
+        let labels = rust_lang_entry
             .children
             .iter()
             .map(|entry| entry.language.as_str())
@@ -575,15 +595,15 @@ mod tests {
                 BENCHES_LABEL,
             ]
         );
-        assert_rust_children_add_to_parent(rust);
+        assert_rust_children_add_to_parent(rust_lang_entry);
         Ok(())
     }
 
     #[test]
     fn inline_cfg_test_module_moves_loc_to_unit_tests() -> TestResult {
-        let dir = tempfile::tempdir()?;
+        let temp_dir = tempfile::tempdir()?;
         write_file(
-            dir.path(),
+            temp_dir.path(),
             "src/lib.rs",
             "\
 pub fn production() -> usize {
@@ -601,14 +621,14 @@ mod tests {
 ",
         )?;
 
-        let stats = language_stats::collect_language_stats_single(dir.path());
-        let rust = rust_entry(&stats)?;
-        let code = child_entry(rust, CODE_LABEL)?;
-        let unit = child_entry(rust, UNIT_TESTS_LABEL)?;
+        let stats = language_stats::collect_language_stats_single(temp_dir.path());
+        let rust_lang_entry = rust_entry(&stats)?;
+        let code = child_entry(rust_lang_entry, CODE_LABEL)?;
+        let unit_test_lang_entry = child_entry(rust_lang_entry, UNIT_TESTS_LABEL)?;
 
         assert!(code.code > 0);
-        assert!(unit.code > 0);
-        assert_rust_children_add_to_parent(rust);
+        assert!(unit_test_lang_entry.code > 0);
+        assert_rust_children_add_to_parent(rust_lang_entry);
         Ok(())
     }
 
