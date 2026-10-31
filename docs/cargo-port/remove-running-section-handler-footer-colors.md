@@ -1520,7 +1520,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - The activity fixture is explicitly unnamed because the database name is now kept. A fixture that expects a pid must have no database name.
 - The live capture needs the cells view. The summary-only view hides Unassigned.
 
-### Phase 57b — The reset-shade test runs in under a second  · status: todo
+### Phase 57b — The reset-shade test runs in under a second  · status: done
 
 **Depends on:** none.
 
