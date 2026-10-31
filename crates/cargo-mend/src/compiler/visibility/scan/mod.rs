@@ -47,15 +47,18 @@ pub(super) enum ExposureConsumers {
 
 pub(super) fn signature_exposure_for_annotation(
     ctx: &VisibilityContext<'_, '_>,
-    item: &ItemInfo<'_>,
+    item_info: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,
-    consumers: ExposureConsumers,
+    exposure_consumers: ExposureConsumers,
 ) -> Result<SignatureExposure> {
-    match signature_exposure_demand(annotation.syntax(), consumers) {
+    match signature_exposure_demand(annotation.syntax(), exposure_consumers) {
         SignatureExposureDemand::NotRequired => Ok(SignatureExposure::Contained),
-        SignatureExposureDemand::Required => {
-            policy::signature_exposure_reach(ctx, item.def_id, item.file_path, item.name)
-        },
+        SignatureExposureDemand::Required => policy::signature_exposure_reach(
+            ctx,
+            item_info.def_id,
+            item_info.file_path,
+            item_info.name,
+        ),
     }
 }
 
@@ -89,26 +92,26 @@ const fn signature_exposure_demand(
 
 pub(super) fn record_forbidden_visibility_annotation(
     ctx: &VisibilityContext<'_, '_>,
-    item: &ItemInfo<'_>,
+    item_info: &ItemInfo<'_>,
     annotation: &VisibilityAnnotation<'_>,
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
-    sink: &mut FindingsSink,
+    findings_sink: &mut FindingsSink,
 ) -> Result<AnnotationHandling> {
-    let finding_context = classify::visibility_finding_context(ctx, item);
+    let finding_context = classify::visibility_finding_context(ctx, item_info);
     let signature_exposure = signature_exposure_for_annotation(
         ctx,
-        item,
+        item_info,
         annotation,
         ExposureConsumers::ForbiddenAnnotation,
     )?;
     record::record_forbidden_visibility_annotation(
         ctx,
-        item,
+        item_info,
         annotation,
         &finding_context,
         parent_facade_analysis,
         signature_exposure,
-        sink,
+        findings_sink,
     )
 }
 
@@ -122,7 +125,7 @@ mod tests {
 
     #[test]
     fn signature_exposure_analysis_is_lazy_by_annotation_consumer() {
-        for consumers in [
+        for exposure_consumers in [
             ExposureConsumers::AllVisibilityFindings,
             ExposureConsumers::ForbiddenAnnotation,
         ] {
@@ -132,7 +135,7 @@ mod tests {
                 VisibilitySyntax::Current,
             ] {
                 assert_eq!(
-                    signature_exposure_demand(syntax, consumers),
+                    signature_exposure_demand(syntax, exposure_consumers),
                     SignatureExposureDemand::NotRequired,
                 );
             }
@@ -145,7 +148,7 @@ mod tests {
                 VisibilitySyntax::InPath(PathSpelling::Relative),
             ] {
                 assert_eq!(
-                    signature_exposure_demand(syntax, consumers),
+                    signature_exposure_demand(syntax, exposure_consumers),
                     SignatureExposureDemand::Required,
                 );
             }
