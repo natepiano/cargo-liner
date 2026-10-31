@@ -2,10 +2,9 @@
 
 use std::io;
 use std::process::Child;
-use std::process::Command;
 use std::process::Output;
 
-use crate::child_process;
+use crate::FixtureCommand as Command;
 use crate::child_process::ChildProcess;
 use crate::child_process::GIT_COMMAND_DEADLINE;
 
@@ -22,7 +21,7 @@ impl TestProcessGroup {
     /// Returns the operating system error if the command cannot start.
     pub fn spawn(command: &mut Command) -> io::Result<Self> {
         Ok(Self {
-            process: child_process::with_spawn_lock(|| ChildProcess::spawn(command))??,
+            process: crate::with_spawn_lock(|| ChildProcess::spawn(command.command_mut()))??,
         })
     }
 

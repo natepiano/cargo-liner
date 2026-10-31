@@ -406,12 +406,11 @@ fn remove_stale_builds(builds: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
-
     use tempfile::tempdir;
 
     use super::*;
     use crate::CommandDeadlineExt as _;
+    use crate::FixtureCommand as Command;
     use crate::git_driver;
 
     const RESTORE_PROBE_GIT: &str = "CARGO_BERTH_RESTORE_PROBE_GIT";
