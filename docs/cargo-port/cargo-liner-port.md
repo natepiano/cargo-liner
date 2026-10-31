@@ -148,21 +148,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 ### Phase 2k — workspace lint passes on the cargo-berth reanchoring test  · status: done
 
-**Depends on:** none
-
-#### Work Order
-
-**Goal:** workspace clippy passes again on main.
-
-**Source:** showrunner, 2026-10-31. Main 8b3fa043 fails clippy `too_many_lines` (103/100) on `side_branch_creation_during_stopped_apply_rebase_preserves_checkpoint_capture` at `crates/cargo-berth/tests/support/reanchoring.rs:214` (test target `lifecycle`). Mend's autofix 46570b43 pushed it over the limit. Berth has no unit, so port-unit fixes it as its own small checkpoint.
-
-**Spec:** split that test into helpers in the same file. Keep every assert and the order of its steps. No `#[allow]` or `#[expect]`.
-
-**Files:** `crates/cargo-berth/tests/support/reanchoring.rs`
-
-**Workers:** 1 writer (impl3: the whole file set).
-
-**Acceptance:** `verify.sh test cargo-berth lifecycle` passes; workspace `verify.sh lint` passes on HEAD plus this file.
+**As-built:** the last checks of `side_branch_creation_during_stopped_apply_rebase_preserves_checkpoint_capture` (`crates/cargo-berth/tests/support/reanchoring.rs`) moved into `assert_reanchored_checkpoint_is_outstanding`, with every assert and step in the same order and no `allow` or `expect`, so workspace clippy's `too_many_lines` passes again after mend's autofix 46570b43 (checkpoint 806cbc5c). Lifecycle tests 145/145 pass.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 
