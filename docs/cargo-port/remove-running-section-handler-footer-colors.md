@@ -1449,38 +1449,23 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 57 — The mouse wheel scrolls the shortcuts overlay in every host  · status: done
 
-**Depends on:** port-unit's Phase 2e (merged; `wheel_framework_overlay` is on main 56ade11c). Showrunner, 2026-10-31: runs before Phase 54. Port-unit's Phase 2e "The shortcuts overlay's wheel scroll lives in tui_pane". Showrunner, 2026-10-30: it returns `OverlayWheel::{Consumed, NoOverlay}`, where `Consumed` covers any wheel step over an open overlay; port-unit, 2026-10-30: `pub fn wheel_framework_overlay<Ctx: SettingsHost>(ctx: &mut Ctx, position: Position, direction: ScrollDirection) -> OverlayWheel` and `pub enum OverlayWheel { Consumed, NoOverlay }`, both exported from the tui_pane crate root; `ScrollDirection` is `tui_pane::ScrollDirection`; `SettingsHost` (`app_settings/navigation.rs`) extends `AppContext`. `Consumed` is any wheel event while Settings, Keymap or GlobalShortcuts is open; the caller applies its own `invert_scroll` first. Port Phase 2e runs after its 2d and 2g; port-unit says if the signature changes. Background: cargo-port's `scroll_modal_overlay_at` (`crates/cargo-port/src/tui/input/dispatch.rs` ≈721) consumes a wheel event over an open overlay even outside its content or when it cannot move (for example `OverlayWheel::{Consumed, NoOverlay}`, with shared tests for those cases)
+#### As-built
 
-#### Work Order
-
-**Goal:** the mouse wheel scrolls the `?` global shortcuts overlay, and the other framework overlays, in cargo-tile and cargo-handler, through the one shared tui_pane function that cargo-port also calls.
-
-**Source:** the user (via the showrunner), 2026-10-30, on change review row C119 (Phase 18, merge 2a881055), returned: "it does split but what doesn't work is mouse scrolling on either one - it does work on cargo port - this needs to be shared code". Showrunner: put overlay wheel scrolling in tui_pane so every host gets it from one place, with a test per host; CPU work runs first. When this lands, port-unit moves cargo-port to the shared path and removes its own; the showrunner tells port-unit. The fix returns as a new change review row. Showrunner, 2026-10-30, after the user's no-duplication rule: port-unit moves cargo-port's overlay scroll into one public tui_pane function (`OverlayScroll::{Scrolled, NoOverlay}`) and cargo-port calls it, with no copy left; this phase only wires the hosts to it.
-
-**Constraints from prior phases:**
-- The runner gives every wheel step to `TerminalApp::scroll` (`crates/tui_pane/src/runner/event_loop.rs` ≈214, `handle_mouse`). The trait default does nothing (`crates/tui_pane/src/runner/app.rs` ≈56).
-- cargo-handler's `scroll` (`crates/cargo-handler/src/app.rs` ≈390) calls `tui_pane::handle_tile_scroll` (`crates/tui_pane/src/tiles/host.rs` ≈164). That function scrolls only a `TilePick::Cell` hit; a `TilePick::OverlayRow` hit does nothing. The click path already handles `TilePick::OverlayRow` through `select_framework_overlay_row` (≈157).
-- cargo-tile does not implement `scroll` (`crates/cargo-tile/src/app.rs`), so its wheel steps do nothing.
-- cargo-port's working path is `scroll_modal_overlay_at` (`crates/cargo-port/src/tui/input/dispatch.rs` ≈705). For the framework overlays it does: `Settings` moves the selection (`NavAction::Up`/`Down`) when the pointer is inside the settings content area; `Keymap` and `GlobalShortcuts` call `viewport_mut().scroll_if_contains(pos, direction)`. It applies cargo-port's own `invert_scroll` before that call (≈651).
-- The framework holds the open overlay (`Framework::overlay`, `crates/tui_pane/src/framework/mod.rs` ≈379) and the panes (`global_shortcuts_pane` ≈101, `keymap_pane`, `settings_pane`).
-- Phase 56 also edits `tiles/host.rs` (`content_click`); this phase runs first.
-- No duplicated state, logic or data: one owner for each fact. The overlay scroll has one owner, the tui_pane function from port-unit's phase. Do not copy its arms.
-
-**Spec:**
-1. `handle_tile_scroll` calls the shared tui_pane overlay scroll function first. When it returns `OverlayWheel::Consumed`, the step stops there, so a wheel step over an open overlay never scrolls a tile behind it.
-2. cargo-tile implements `scroll` through `handle_tile_scroll`, as cargo-handler does.
-3. Red-first tests, each under 1 s: in cargo-tile and in cargo-handler, with the global shortcuts overlay open and taller than its viewport, a wheel step down moves the overlay viewport and a step up moves it back; a step outside the overlay does not scroll a tile.
+- `tui_pane::handle_tile_scroll` now has a `SettingsHost` bound. It calls `wheel_framework_overlay` first and returns when the result is `OverlayWheel::Consumed`.
+- A wheel step over an open Settings, Keymap or GlobalShortcuts overlay never scrolls a tile behind it. The overlay arms live only in `wheel_framework_overlay`; the hosts hold no copy.
+- cargo-tile `App::scroll` calls `tui_pane::handle_tile_scroll`, as cargo-handler already does. Before this, cargo-tile ignored wheel steps.
+- Each host has the test `shortcuts_overlay_wheel_scrolls_and_keeps_tiles_still`. With the `?` overlay open and taller than its viewport, a step down moves the viewport and a step up moves it back. A step with the overlay closed reaches the tile or summary.
 
 **Files:**
-- `crates/tui_pane/src/tiles/host.rs` — `handle_tile_scroll` calls the shared overlay scroll first
-- `crates/cargo-tile/src/app.rs` — `scroll` through `handle_tile_scroll`
-- `crates/cargo-tile/src/` — one wheel test in a cargo-tile test module
-- `crates/cargo-handler/src/` — one wheel test in a cargo-handler test module
-- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/tui_pane/src/tiles/host.rs` — `handle_tile_scroll` routes the overlay wheel first.
+- `crates/cargo-tile/src/app.rs` — `scroll` through `handle_tile_scroll`, and the wheel test.
+- `crates/cargo-handler/src/app.rs` — the wheel test, with the `wheel_test_app_with_agents` fixture. The test is split into named helpers to stay under the clippy line limit.
 
-**Workers:** 1 writer.
+**Binds later work:** cargo-port can move its own overlay wheel arms onto `wheel_framework_overlay`. `handle_tile_scroll` sits beside `content_click` in `tiles/host.rs`. The global shortcuts overlay `row_line` and the handler keymap are shared edit points with this test.
 
-**Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: in cargo-tile and cargo-handler, press `?` and scroll the overlay with the wheel. The checkpoint adds a Change-Review line.
+**Gotchas:**
+- The handler wheel test needs several summary rows (`wheel_test_app_with_agents`). With an empty summary, "selection unchanged" passes for the wrong reason.
+- A live cargo-tile capture shows tile rows change with no wheel input, because activity is live. Compare a wheel capture against a no-wheel control.
 
 ### Phase 57a — The shortcuts overlay highlights whole rows and shows every focus key  · status: todo
 
