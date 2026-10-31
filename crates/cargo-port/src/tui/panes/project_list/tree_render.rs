@@ -1,6 +1,7 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
@@ -13,12 +14,14 @@ use tui_pane::label_color;
 
 use super::ProjectListPane;
 use super::disk;
+use crate::config::ScanConfig;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::scan;
 use crate::scan::ProjectStorage;
 use crate::scan::StorageHeadroom;
 use crate::tui::columns;
+use crate::tui::columns::ProjectListWidths;
 use crate::tui::dismiss_target::DismissTarget;
 use crate::tui::panes::constants::DISMISS_SUFFIX;
 use crate::tui::panes::constants::TITLE_ELLIPSIS;
@@ -45,26 +48,12 @@ pub(super) fn render_project_list_pane_body(
             &columns::build_summary_cells(widths, &total_str),
             widths,
         )];
-        match projects.project_storage() {
-            ProjectStorage::Unknown => {},
-            ProjectStorage::Available(bytes) => {
-                let available = render::format_bytes(bytes);
-                let headroom_style = disk::headroom_style(StorageHeadroom::from(bytes));
-                summaries.push(columns::build_available_line(
-                    widths,
-                    &available,
-                    headroom_style,
-                ));
-            },
-            ProjectStorage::MultipleVolumes => {
-                let subtotal_style = Style::default().fg(theme_roles::language_subtotal_color());
-                summaries.push(columns::build_available_line(
-                    widths,
-                    "mixed",
-                    subtotal_style,
-                ));
-            },
-        }
+        append_storage_headroom_summary(
+            &mut summaries,
+            projects.project_storage(),
+            widths,
+            &ctx.config.current().scan,
+        );
         let row_width = u16::try_from(widths.total_width()).unwrap_or(u16::MAX);
         (items, header, summaries, row_width)
     };
@@ -149,6 +138,35 @@ pub(super) fn render_project_list_pane_body(
     ));
 
     chrome
+}
+
+fn append_storage_headroom_summary(
+    summaries: &mut Vec<Line<'static>>,
+    project_storage: ProjectStorage,
+    widths: &ProjectListWidths,
+    scan_config: &ScanConfig,
+) {
+    match project_storage {
+        ProjectStorage::Unknown => {},
+        ProjectStorage::Available(bytes) => {
+            let available = render::format_bytes(bytes);
+            let headroom_style =
+                disk::headroom_style(StorageHeadroom::classify(bytes, scan_config));
+            summaries.push(columns::build_available_line(
+                widths,
+                &available,
+                headroom_style,
+            ));
+        },
+        ProjectStorage::MultipleVolumes => {
+            let subtotal_style = Style::default().fg(theme_roles::language_subtotal_color());
+            summaries.push(columns::build_available_line(
+                widths,
+                "mixed",
+                subtotal_style,
+            ));
+        },
+    }
 }
 
 fn set_project_list_dismiss_actions(

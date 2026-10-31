@@ -188,7 +188,7 @@ use super::test_support::FixtureDirs;
 use crate::channel::Receiver;
 use crate::channel::Sender;
 use crate::ci::OwnerRepo;
-use crate::constants::SCAN_METADATA_CONCURRENCY;
+use crate::config;
 use crate::constants::TARGET_DIR;
 use crate::http::HttpClient;
 use crate::lint;
@@ -969,7 +969,9 @@ impl App {
             metadata_store: Arc::clone(self.scan.metadata_store()),
             // Bound by the scan-concurrency cap so these refreshes can't
             // monopolize the metadata blocking pool.
-            metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
+            metadata_limit: Arc::new(tokio::sync::Semaphore::new(
+                config::active_config().scan.metadata_concurrency.get(),
+            )),
         }
     }
 

@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 // ── Shared icons ─────────────────────────────────────────────────────
 
 pub(crate) const CI_PASSED: &str = "🟢";
@@ -37,10 +35,6 @@ pub(crate) const GIT_STATUS_MODIFIED: &str = "🟠";
 pub(crate) const GIT_UNREADABLE_LABEL: &str = "unreadable";
 pub(crate) const GIT_STATUS_UNREADABLE: &str = "⛔";
 
-// ── CI constants ──────────────────────────────────────────────────────
-
-pub(crate) const GH_TIMEOUT: Duration = Duration::from_secs(5);
-
 // ── Cache constants ───────────────────────────────────────────────────
 
 pub(crate) const CI_CACHE_DIR: &str = "ci";
@@ -77,36 +71,12 @@ pub(crate) const TARGET_DIR: &str = "target";
 // ── Scan constants ────────────────────────────────────────────────────
 
 pub(crate) const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";
-pub(crate) const SCAN_DISK_CONCURRENCY: usize = 6;
-/// `cargo metadata --no-deps` per workspace root, capped so a large multi-
-/// workspace tree doesn't monopolize the blocking pool. Runs briefly —
-/// milliseconds per invocation on typical workspaces — so a small cap is
-/// enough to preserve fairness with other enrichment tasks.
-pub(crate) const SCAN_METADATA_CONCURRENCY: usize = 4;
-/// Free space at or above which the projects' volume is considered roomy —
-/// the Available row renders in the theme's success color.
-pub(crate) const STORAGE_HEADROOM_AMPLE_BYTES: u64 = 100 * BYTES_PER_GIB;
-/// Free space below which the projects' volume is considered critical — the
-/// Available row renders in the theme's error color.
-pub(crate) const STORAGE_HEADROOM_LOW_BYTES: u64 = 50 * BYTES_PER_GIB;
-/// Hard wall-clock cap for a single `cargo metadata` invocation. Beyond
-/// this the result is discarded and the workspace enters the error toast
-/// path.
-pub(crate) const CARGO_METADATA_TIMEOUT: Duration = Duration::from_secs(10);
 // ── HTTP constants ───────────────────────────────────────────────────
 
 pub(crate) const GITHUB_API_BASE: &str = "https://api.github.com";
 pub(crate) const GITHUB_GRAPHQL_URL: &str = "https://api.github.com/graphql";
 pub(crate) const CRATES_IO_API_BASE: &str = "https://crates.io/api/v1";
 pub(crate) const CRATES_IO_USER_AGENT: &str = "cargo-port";
-pub(crate) const SERVICE_RETRY_SECS: u64 = 1;
-/// Wait this long after the first `Unreachable` signal before surfacing
-/// the "service unreachable" toast. If the service recovers inside the
-/// window (probe succeeds or a real request lands), no toast is ever
-/// shown — and the matching "back online" toast is suppressed too.
-/// Absorbs single transient timeouts in a stream of fetches without
-/// flapping the UI; a real outage surfaces after this delay.
-pub(crate) const SERVICE_UNAVAILABLE_GRACE: Duration = Duration::from_secs(3);
 
 // ── Time constants ───────────────────────────────────────────────────
 
@@ -115,22 +85,6 @@ pub(crate) const MINUTES_PER_HOUR: u64 = 60;
 pub(crate) const SECONDS_PER_DAY: u64 = 86_400;
 pub(crate) const SECONDS_PER_HOUR: u64 = 3_600;
 pub(crate) const SECONDS_PER_MINUTE: u64 = 60;
-
-// ── Watcher constants ─────────────────────────────────────────────────
-
-/// Wait for build/clean activity to settle before recalculating.
-pub(crate) const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
-
-/// Maximum time before forcing a recalc even if events keep arriving.
-pub(crate) const MAX_WAIT: Duration = Duration::from_secs(1);
-
-/// Extra settling time for new project directories (e.g. `cargo init`).
-pub(crate) const NEW_PROJECT_DEBOUNCE: Duration = Duration::from_secs(2);
-
-/// How often the watcher thread checks for expired timers.
-pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(500);
-pub(crate) const WATCHER_DISK_CONCURRENCY: usize = 2;
-pub(crate) const WATCHER_GIT_CONCURRENCY: usize = 2;
 
 // ── Lint history constants ───────────────────────────────────────────
 
@@ -142,9 +96,6 @@ pub(crate) const LINTS_PAUSED_MARKER: &str = "paused";
 /// Per-project lock file that lets only one cargo-port instance run a
 /// project's lint commands at a time.
 pub(crate) const LINTS_RUN_LOCK: &str = "run.lock";
-
-/// A `started` entry older than this is considered stale (crashed watcher).
-pub(crate) const STALE_TIMEOUT: Duration = Duration::from_mins(30);
 
 // ── Config constants ──────────────────────────────────────────────────
 
@@ -163,7 +114,6 @@ pub(crate) const DEFAULT_DISCOVERY_SHIMMER_SECS: f64 = 10.0;
 pub(crate) const DEFAULT_EDITOR: &str = "zed";
 pub(crate) const DEFAULT_HC_DARK_THEME: &str = "High Contrast Dark";
 pub(crate) const DEFAULT_HC_LIGHT_THEME: &str = "High Contrast Light";
-pub(crate) const DEFAULT_IDLE_BEFORE_LINT_SECS: u64 = 120;
 pub(crate) const DEFAULT_INLINE_DIR: &str = "crates";
 pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
 pub(crate) const DEFAULT_LOW_CPU_UTILIZATION_MAX_PERCENT: u8 = 60;
@@ -173,12 +123,10 @@ pub(crate) const DEFAULT_REMOTE_HOST_URL: &str = "https://github.com/";
 pub(crate) const KEYMAP_FILE: &str = "keymap.toml";
 pub(crate) const MIN_CPU_POLL_MS: u64 = 250;
 
-// Byte-unit constants for `crate::config::canonical_cache_size_unit` and the default cache-size
-// setting.
+// Byte-unit constants for `crate::config::canonical_cache_size_unit`.
 pub(crate) const BYTES_PER_GIB: u64 = BYTES_PER_MIB * 1024;
 pub(crate) const BYTES_PER_KIB: u64 = 1024;
 pub(crate) const BYTES_PER_MIB: u64 = BYTES_PER_KIB * 1024;
-pub(crate) const DEFAULT_CACHE_SIZE: &str = "512 MiB";
 
 // `crate::sccache::read_stats` uses these command arguments and output labels.
 pub(crate) const SCCACHE_BINARY: &str = "sccache";

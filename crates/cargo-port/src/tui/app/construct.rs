@@ -200,7 +200,6 @@ impl AppBuilder<Channeled> {
         let watcher = startup_services.spawn_watcher(WatcherStartup {
             watch_roots:    &watch_roots,
             background_tx:  inputs.background_tx.clone(),
-            ci_run_count:   inputs.cargo_port_config.tui.ci_run_count,
             non_rust:       inputs.cargo_port_config.tui.include_non_rust,
             exclude_dirs:   ExcludeDirs::from(inputs.cargo_port_config.tui.exclude_dirs.as_slice()),
             client:         inputs.startup_environment.http_client.clone(),

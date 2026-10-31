@@ -10,8 +10,8 @@ use super::paths;
 use super::read_write;
 use super::run::LintRun;
 use super::run::LintRunStatus;
+use crate::config;
 use crate::config::DiscoveryLint;
-use crate::constants::STALE_TIMEOUT;
 
 /// Whether a live lint command is making progress or is stopped waiting for a
 /// cargo file lock. Detected from command output by
@@ -289,7 +289,10 @@ pub(super) fn parse_run(run: &LintRun) -> LintStatus {
         LintRunStatus::EnvUnavailable => LintStatus::EnvUnavailable(ts),
         LintRunStatus::Running => {
             let elapsed = Utc::now().signed_duration_since(ts);
-            if elapsed > chrono::Duration::from_std(STALE_TIMEOUT).unwrap_or_default() {
+            if elapsed
+                .to_std()
+                .is_ok_and(|elapsed| elapsed > config::active_config().lint.stale_timeout())
+            {
                 LintStatus::Stale
             } else {
                 // `LintRun` deliberately does not persist `LintRunPhase`; `parse_run`
