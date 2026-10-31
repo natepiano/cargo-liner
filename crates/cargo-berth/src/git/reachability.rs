@@ -16,6 +16,7 @@ use std::io::ErrorKind;
 use std::io::Write as _;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
@@ -136,6 +137,24 @@ pub(crate) struct CommitTargetReachabilityObservation {
 pub(crate) struct PhaseStartTargetFirstParentHistories {
     intervals:         HashMap<GitObjectId, Vec<GitObjectId>>,
     candidate_history: HistoricalCandidateHistory,
+    target_merge:      OnceLock<TargetMergeContributions>,
+}
+
+/// Whether older merges can supply received history inside a phase interval.
+pub(crate) enum PhaseMergeHistory {
+    /// Every contribution is direct, or enters through the merge being judged now.
+    NoEarlierMerge,
+    /// A previous merge can contribute paths that this invocation did not write.
+    EarlierMerge,
+    /// The retained graph cannot establish the interval.
+    Unavailable,
+}
+
+#[derive(Default)]
+enum TargetMergeContributions {
+    #[default]
+    NotAMerge,
+    Entering(HashSet<GitObjectId>),
 }
 
 /// Whether the batch retained the complete graph needed to locate historical matches.
@@ -149,6 +168,45 @@ enum HistoricalCandidateHistory {
 }
 
 impl PhaseStartTargetFirstParentHistories {
+    /// Use retained parent links to decide whether write selection needs path history.
+    pub(crate) fn phase_merge_history(&self, phase_start: &GitObjectId) -> PhaseMergeHistory {
+        let HistoricalCandidateHistory::Available(history) = &self.candidate_history else {
+            return PhaseMergeHistory::Unavailable;
+        };
+        let Some(commits) = self.intervals.get(phase_start) else {
+            return PhaseMergeHistory::Unavailable;
+        };
+        if commits.iter().any(|commit| {
+            commit != &history.target
+                && history
+                    .graph
+                    .parents_by_commit
+                    .get(commit)
+                    .is_some_and(|parents| parents.len() > 1)
+        }) {
+            PhaseMergeHistory::EarlierMerge
+        } else {
+            PhaseMergeHistory::NoEarlierMerge
+        }
+    }
+
+    /// A completed merge introduces its other-parent work at this observation,
+    /// even though later commits must not be charged for that received history again.
+    pub(crate) fn entered_with_target_merge(&self, commit: &GitObjectId) -> bool {
+        let contribution = self
+            .target_merge
+            .get_or_init(|| match &self.candidate_history {
+                HistoricalCandidateHistory::Available(history) => {
+                    history.graph.target_merge_contributions(&history.target)
+                },
+                HistoricalCandidateHistory::NeedsGitQuery => TargetMergeContributions::NotAMerge,
+            });
+        match contribution {
+            TargetMergeContributions::NotAMerge => false,
+            TargetMergeContributions::Entering(commits) => commits.contains(commit),
+        }
+    }
+
     /// Prove that integration history contributes nothing new to any phase range.
     pub(crate) fn integration_tips_precede_phases(
         &self,
@@ -223,6 +281,19 @@ enum BoundaryVisit {
 }
 
 impl CommitAncestryGraph {
+    fn target_merge_contributions(&self, target: &GitObjectId) -> TargetMergeContributions {
+        let Some(parents) = self.parents_by_commit.get(target) else {
+            return TargetMergeContributions::NotAMerge;
+        };
+        let [first, _, ..] = parents.as_slice() else {
+            return TargetMergeContributions::NotAMerge;
+        };
+        let previous = self.ancestors_including(first);
+        let mut entering = self.ancestors_including(target);
+        entering.retain(|commit| commit != target && !previous.contains(commit));
+        TargetMergeContributions::Entering(entering)
+    }
+
     /// Walk each ancestor once while advancing from the oldest first-parent commit.
     fn earliest_containing_matches(
         &self,
@@ -1068,6 +1139,7 @@ fn classify_candidates_against_target(
         .collect();
     let target_histories = PhaseStartTargetFirstParentHistories {
         intervals,
+        target_merge: OnceLock::new(),
         candidate_history: HistoricalCandidateHistory::Available(ResolvedTargetCommitHistory {
             target: target.clone(),
             graph:  target_history,
