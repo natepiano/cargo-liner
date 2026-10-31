@@ -402,7 +402,7 @@ fn startup_threads<'a>(
 
 /// Match the lexical account home; shared sessions symlinks must not merge accounts.
 fn thread_matches_home(process: &ProcessEntry, thread: &CodexThread, home: Option<&Path>) -> bool {
-    codex::session_home(process, home).is_some_and(|home| thread.rollout.starts_with(home))
+    codex::session_home(process, home).is_some_and(|home| thread.account_home.as_ref() == home)
 }
 
 /// The row for `session`, when its process is alive, is Claude Code,
@@ -1036,9 +1036,10 @@ mod tests {
             }
         }
         let thread = |cwd: &str, created_ms, name: Option<&str>, prompt: &str| CodexThread {
+            account_home: codex::CodexAccountHome::from(Path::new(HOME).join(".codex").as_path()),
             cwd: PathBuf::from(cwd),
             created_ms,
-            name: name.map(str::to_string),
+            name: crate::census::codex_names::SessionName::from(name.map(str::to_string)),
             first_prompt: prompt.to_string(),
             rollout: PathBuf::from(format!("{HOME}/.codex/sessions/{created_ms}.jsonl")),
         };

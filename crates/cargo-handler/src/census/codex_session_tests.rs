@@ -59,12 +59,13 @@ impl SessionFixture {
             started:     START,
             directory:   Some("/fixture".into()),
             claude_pid:  None,
-            config_home: ConfigHome::Named(codex_home),
+            config_home: ConfigHome::Named(codex_home.clone()),
         };
         let thread = CodexThread {
+            account_home: codex::CodexAccountHome::from(codex_home.as_path()),
             cwd: "/fixture".into(),
             created_ms: START * 1000,
-            name: Some("database-title".into()),
+            name: SessionName::Named("database-title".into()),
             first_prompt: "Old task from the database".into(),
             rollout,
         };
@@ -245,6 +246,7 @@ fn codex_session_name_uses_its_home_index_and_newest_complete_record() {
 #[test]
 fn codex_session_without_a_name_record_draws_its_pid() {
     let mut fixture = SessionFixture::new();
+    fixture.threads[0].name = SessionName::Unnamed;
     let (_, _, pool) = drawn(fixture.scan(), RootWork::Absent);
     assert!(pool.iter().any(|line| line.contains("pid 10")), "{pool:?}");
 }
@@ -304,6 +306,7 @@ fn codex_session_fast_tier_draws_on_summary_tree_and_unassigned_accounts() {
 #[test]
 fn codex_session_own_rollout_draws_idle_and_then_reading_after_append() {
     let mut fixture = SessionFixture::new();
+    fixture.threads[0].name = SessionName::Unnamed;
     for (append, expected) in [("", "idle"), (READ, "reading"), (COMPLETE, "idle")] {
         if !append.is_empty() {
             fs::OpenOptions::new()
@@ -381,6 +384,7 @@ fn codex_session_app_server_thread_without_dispatch_adds_no_worker_child() {
 #[test]
 fn codex_session_removed_or_unreadable_name_index_clears_the_previous_name() {
     let mut fixture = SessionFixture::new();
+    fixture.threads[0].name = SessionName::Unnamed;
     fs::write(
         fixture.index(),
         format!("{{\"id\":\"{ID}\",\"thread_name\":\"designer\"}}\n"),
@@ -415,9 +419,11 @@ fn default_and_named_codex_homes_keep_their_own_threads_with_shared_sessions() {
     fixture.threads[0].rollout = default_home.join(format!("sessions/rollout-{ID}.jsonl"));
     fs::write(&fixture.threads[0].rollout, &contents).expect("default rollout");
     fixture.processes[0].config_home = ConfigHome::Default(Program::Codex);
+    fixture.threads[0].account_home = codex::CodexAccountHome::from(default_home.as_path());
     let other_id = "01a159cc-91d4-70c3-94a8-9c2a4259cd86";
     let mut other = fixture.threads[0].clone();
     other.rollout = named_home.join(format!("sessions/rollout-{other_id}.jsonl"));
+    other.account_home = codex::CodexAccountHome::from(named_home.as_path());
     fs::write(&other.rollout, contents).expect("named rollout");
     fixture.threads.push(other);
     let mut process = fixture.processes[0].clone();
@@ -469,6 +475,8 @@ fn codex_resume_last_uses_the_newest_older_thread_in_its_home_and_directory() {
         .path()
         .join(format!(".codex/rollout-{ID}.jsonl"));
     other_home.created_ms += 2000;
+    other_home.account_home =
+        codex::CodexAccountHome::from(fixture.home.path().join(".codex").as_path());
     fixture.threads.extend([older, other_cwd, other_home]);
     fs::write(
         fixture.index(),
@@ -501,7 +509,7 @@ fn store_threads(fixture: &SessionFixture) {
     for thread in fixture
         .threads
         .iter()
-        .filter(|thread| thread.rollout.starts_with(&codex_home))
+        .filter(|thread| thread.account_home.as_ref() == codex_home)
     {
         connection
             .execute(
@@ -510,7 +518,10 @@ fn store_threads(fixture: &SessionFixture) {
                     tree::thread_id(&thread.rollout).expect("fixture thread id"),
                     thread.cwd.to_string_lossy(),
                     i64::try_from(thread.created_ms).expect("fixture time fits"),
-                    thread.name,
+                    match &thread.name {
+                        SessionName::Named(name) => Some(name.as_str()),
+                        SessionName::Unnamed => None,
+                    },
                     thread.first_prompt,
                     thread.rollout.to_string_lossy(),
                 ],

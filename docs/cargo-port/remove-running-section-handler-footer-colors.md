@@ -1492,7 +1492,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 - Changing default keys can change overlay captures in `render/mod.rs`: `the_keymap_overlay_opens_on_its_first_screen` and `the_shortcuts_overlay_opens_on_its_first_screen`.
 
-### Phase 57d — A Codex session resumed under a second account shows its own name  · status: todo
+### Phase 57d — A Codex session resumed under a second account shows its own name  · status: done
 
 **Depends on:** none.
 
