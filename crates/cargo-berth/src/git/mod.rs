@@ -25,6 +25,7 @@ mod refs;
 mod snapshot;
 #[cfg(not(test))]
 mod spawn_lock;
+mod work;
 mod worktree_operation;
 
 #[cfg(test)]
