@@ -9,6 +9,9 @@ use std::path::PathBuf;
 use crate::config::DefaultArguments;
 use crate::constants::ARGUMENT_ASSIGNMENT;
 use crate::constants::ARGUMENT_SEPARATOR;
+use crate::constants::CAPTURE_RUNNER_NAME;
+use crate::constants::CAPTURE_SHIM_ARGUMENT;
+use crate::constants::CAPTURE_SHIM_PASSTHROUGH_ARGUMENT;
 use crate::constants::CARGO_DEFAULT_PROFILE;
 use crate::constants::CARGO_DISPLAY_NAME;
 use crate::constants::CARGO_PROCESS_NAMES;
@@ -583,8 +586,40 @@ impl CargoArguments {
     }
 }
 
+/// Native capture keeps its cargo path and capture parent outside the command's arguments.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CargoTransport<'argv> {
+    /// The v4 runner owns the invocation while another process executes these arguments.
+    NativeCapture { arguments: &'argv [OsString] },
+    /// Cargo, an external subcommand, or the earlier shell transport.
+    Ordinary,
+}
+
+impl<'argv> CargoTransport<'argv> {
+    /// Recognize the installed entry's complete protocol before interpreting cargo argv.
+    pub(super) fn from_argv(argv: &'argv [OsString]) -> Self {
+        match argv {
+            [program, flag, executable, _capture_parent, arguments @ ..]
+                if Path::new(program).file_name() == Some(OsStr::new(CAPTURE_RUNNER_NAME))
+                    && (flag == CAPTURE_SHIM_ARGUMENT
+                        || flag == CAPTURE_SHIM_PASSTHROUGH_ARGUMENT)
+                    && is_cargo_binary(executable) =>
+            {
+                Self::NativeCapture { arguments }
+            },
+            _ => Self::Ordinary,
+        }
+    }
+}
+
 /// Wrappers may precede the cargo binary; empty argv and a rejected program differ.
 pub(super) fn cargo_split(argv: &[OsString]) -> Result<CargoArguments, CargoArgvAbsence> {
+    if let CargoTransport::NativeCapture { arguments } = CargoTransport::from_argv(argv) {
+        return Ok(CargoArguments {
+            start:  argv.len() - arguments.len(),
+            layout: ArgumentLayout::Cargo,
+        });
+    }
     if let Some(start) = argv.iter().position(is_cargo_binary) {
         return Ok(CargoArguments {
             start:  start + 1,

@@ -41,6 +41,7 @@ use sysinfo::UpdateKind;
 use tui_pane::kernel_parent;
 
 use super::command_text;
+use super::command_text::CargoTransport;
 use super::command_text::CommandText;
 use super::command_text::RowAbsence;
 use super::command_text::ScannerHome;
@@ -1188,6 +1189,22 @@ enum CargoAncestry {
     WalkLimitReached,
 }
 
+/// A native transport and its forwarded worker name the same invocation.
+enum CargoProcessRole {
+    /// This process starts an independent command.
+    Invocation(Pid),
+    /// This worker executes the command whose identity stays with the runner.
+    NativeCaptureWorker { invocation: Pid },
+}
+
+impl CargoProcessRole {
+    const fn invocation(self) -> Pid {
+        match self {
+            Self::Invocation(pid) | Self::NativeCaptureWorker { invocation: pid } => pid,
+        }
+    }
+}
+
 /// What phase one learned: the parent links, the cargo processes, and the
 /// compiler processes waiting to be attributed to one of them.
 pub(super) struct Census {
@@ -1238,6 +1255,7 @@ impl Census {
     ) {
         self.include_registered_processes(records, capture);
         self.include_dispatched_processes(records);
+        self.identify_native_invocations(records);
         self.identify_capture_wrappers(records, capture);
         self.collapse_shims(records);
         self.identify_captures(capture);
@@ -1250,6 +1268,67 @@ impl Census {
                 Some((pid, ProcessOwner::observe(process.uid, capture)))
             })
             .collect();
+    }
+
+    /// Canonical invocation ownership is resolved before counters or rows are attributed.
+    fn identify_native_invocations(&mut self, records: &ProcessObservations<'_>) {
+        let mut seen = HashSet::new();
+        self.cargo = self
+            .cargo
+            .iter()
+            .copied()
+            .map(|pid| self.cargo_process_role(records, pid).invocation())
+            .filter(|pid| seen.insert(*pid))
+            .collect();
+    }
+
+    /// Only direct cargo forwarding links belong to the runner's invocation.
+    /// A native runner or a non-cargo parent starts a separate command boundary.
+    fn cargo_process_role(&self, records: &ProcessObservations<'_>, pid: Pid) -> CargoProcessRole {
+        let Some(candidate) = records.process(pid) else {
+            return CargoProcessRole::Invocation(pid);
+        };
+        if matches!(
+            CargoTransport::from_argv(candidate.cmd()),
+            CargoTransport::NativeCapture { .. }
+        ) {
+            return CargoProcessRole::Invocation(pid);
+        }
+        let mut workers = vec![candidate];
+        for &ancestor in self.ancestor_pids(pid).as_slice().iter().rev() {
+            let Some(parent) = records.process(ancestor) else {
+                return CargoProcessRole::Invocation(pid);
+            };
+            if let CargoTransport::NativeCapture { arguments } =
+                CargoTransport::from_argv(parent.cmd())
+            {
+                let forwards = workers.iter().all(|worker| {
+                    forwards_cargo_arguments(worker.cmd(), arguments)
+                        || self
+                            .parents
+                            .get(&worker.pid())
+                            .and_then(|pid| records.process(*pid))
+                            .is_some_and(|parent| {
+                                matches!(
+                                    Self::dispatch(parent, worker),
+                                    DispatchedProcess::Matched { .. }
+                                )
+                            })
+                });
+                return if forwards {
+                    CargoProcessRole::NativeCaptureWorker {
+                        invocation: ancestor,
+                    }
+                } else {
+                    CargoProcessRole::Invocation(pid)
+                };
+            }
+            if !self.cargo.contains(&ancestor) {
+                return CargoProcessRole::Invocation(pid);
+            }
+            workers.push(parent);
+        }
+        CargoProcessRole::Invocation(pid)
     }
 
     /// A cargo-launched script keeps its dispatched pid despite an interpreter's native name.
@@ -2040,6 +2119,9 @@ impl Census {
         let (Some(outer), Some(inner)) = (system.process(pid), system.process(child)) else {
             return false;
         };
+        if let CargoTransport::NativeCapture { .. } = CargoTransport::from_argv(outer.cmd()) {
+            return false;
+        }
         if matches!(
             Self::dispatch(outer, inner),
             DispatchedProcess::Matched { .. }
@@ -2865,14 +2947,19 @@ fn newest_first(left: &CargoProcess, right: &CargoProcess) -> std::cmp::Ordering
 /// Recognize both argv forwarding and the shim's single-quoted POSIX command string.
 /// PTY helpers and their shells carry this command; an application launched by cargo does not.
 fn forwards_capture_command(argv: &[OsString], record: &RegistrationCandidate) -> bool {
+    forwards_cargo_arguments(argv, record.arguments())
+}
+
+/// Compare the command after its transport boundary, preserving each original argv byte.
+fn forwards_cargo_arguments(argv: &[OsString], registered: &[OsString]) -> bool {
     if let Ok(arguments) = command_text::cargo_split(argv)
-        && (argv[arguments.start..] == *record.arguments()
-            || forwards_json_capture_arguments(&argv[arguments.start..], record.arguments()))
+        && (argv[arguments.start..] == *registered
+            || forwards_json_capture_arguments(&argv[arguments.start..], registered))
     {
         return true;
     }
     let mut expected_arguments = Vec::new();
-    for argument in record.arguments() {
+    for argument in registered {
         expected_arguments.push(b'\'');
         for byte in argument.as_bytes() {
             if *byte == b'\'' {
@@ -3482,6 +3569,8 @@ impl CensusSequence {
 )]
 #[path = "."]
 mod tests {
+    #[path = "native_capture_tests.rs"]
+    mod native_capture_tests;
     #[path = "scan_cpu_scenario_tests.rs"]
     mod scan_cpu_scenario_tests;
 

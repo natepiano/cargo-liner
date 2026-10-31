@@ -1329,7 +1329,7 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 
 ### Phase 29 — Move-only splits  · status: todo
 
-**Depends on:** Phase 28 (its landed checkpoint)
+**Depends on:** none (Phase 28 was dropped, 2026-10-29).
 
 #### Work Order
 
@@ -1363,6 +1363,10 @@ Port of the session's CPU fix 1 (one retained System refreshed in place, Active/
 
 Port of the approved capture shim cost work (one process per call apart from cargo and tee, boot receipt, shim v4) onto main. Work order: phases/30m/implementation_prompt.md.
 
+**Protocol words (Phase 44, director 2026-10-30):** the native capture entry and the shim script name the entry program and its `--capture-shim` / `--capture-shim-passthrough` flags only through the constants.rs items Phase 44 adds (no second copy); a test checks that the script uses the same words.
+
+**Phase 44 follow-ups (director, 2026-10-31):** in `census/scan.rs`, one predicate for `matches!(Self::dispatch(parent, child), DispatchedProcess::Matched { .. })` (three sites) and one for the `CargoTransport::NativeCapture` check (two sites); in `census/command_text.rs` `CargoTransport::from_argv`, the unused capture-parent position is `_`, not `_capture_parent` (style rule 23).
+
 ### Phase 35m — Summary arguments on main  · status: todo
 
 Port of the summary-arguments rule and the nextest header ANSI handling onto main. Work order: phases/35m/implementation_prompt.md.
@@ -1374,6 +1378,21 @@ Port of the directory header rule (whole path; GUID middle cut; middle cut; last
 ### Phase 41 — The exec census test finds its program on PATH  · status: done
 
 Showrunner request (2026-10-29): the 36m merge tree fails `census::scan::refresh_worker_tests::a_shell_execing_cargo_enters_the_retained_discoverys_census` on natedev with ENOENT, because the test copies `/bin/cat` and NixOS has no `/bin/cat`. The test finds its program on PATH, with no absolute tool path, and passes on natedev and on the Mac. Work order: phases/41/implementation_prompt.md.
+
+### Phase 44 — A captured command shows once, with the work under it  · status: done
+
+**Depends on:** Phase 38
+
+**Work Order.** User report, 2026-10-30 11:18 (natedev cargo-tile tab, installed main 378873e3). For each top-level command, the summary draws two rows with the same pid: `cargo --workspace` with cpu `0%` and mem `0.0G`, and `cargo nextest run --workspace` with its progress (`87%`) and no cpu. The cells split the same way: one tile shows `cargo --workspace 0% 0.0G`, another shows the full tree (child `cargo-nextest` 116% 1.1G, `cargo test` 99% 5.5G). That pid is the capture shim, `cargo-tile-capture --capture-shim <real cargo> …`, which stays alive as the parent of the real work. Its argv is parsed as the command (`cargo --workspace`), and its own cpu and mem are shown.
+
+- **Goal:** the summary shows each top-level command once, with its full command text (`cargo nextest run --workspace`), and its cpu and mem are the work under it. Its own cell shows the detailed tree. This is the user's design ("the summary shows each top-level command; its own cell shows the detailed version"), and a tile shows one command once.
+- **Spec:** find the cause first: where the shim pid becomes a row and a tile of its own (census classification of the `cargo-tile-capture --capture-shim` argv; roster and summary rows). Fix it by type: the shim process is the captured invocation's identity (one invocation, one row), its command text comes from the real cargo argv it runs, and its cpu and mem come from the invocation's subtree. No placeholder value; no procedural filter.
+- **Acceptance:** a red-first test built from the real argv shape above (`cargo-tile-capture --capture-shim <path>/cargo nextest run …` with a busy child) shows one summary row with the full command and the child's cpu and mem; main fails it; each test under 1 s. Live check vs main on natedev under a real `cargo nextest run`: one row per command, the cpu column not 0% while the child works.
+- **Files:** decided by the cause; expected `crates/cargo-tile/src/census/scan.rs` and the summary row code in `crates/cargo-tile/src/render.rs` / `roster.rs`. Not `crates/tui_pane/src/tiles/draw.rs` or `tiles/grid.rs` (handler unit).
+
+### Phase 45 — A new cell's text brightens from 75% to its final color  · status: merged into Phase 42
+
+User, 2026-10-30: this work goes in Phase 42, and Phase 42 does not hold full ink. Its Work Order is now in Phase 42.
 
 ### Phase 43 — The reader uses less CPU under load  · status: todo
 
@@ -1469,15 +1488,80 @@ From phase 30m review 3 (routed at repair round 4). When `sh` runs but `tee` is 
 
 From phase 38's live check (routed at repair round 4; phase 38 landed because it beats main on every live count: delayed cells readable 3 of 6 on the branch against 0 of 8 on main, fades and deadlines as main). A cell that opens from the foot of its column first paints only its column-header row. Phase 38 decides the cell's entry on that frame, so when the alpha there is 60–63 the cell takes main's fade, and its command text appears 1–2 frames later below 75% and fades out (live b1, cells s3–s5, first text frame 0.731).
 
-**Spec (Astra review, phase 38 F003):** the entry decision is made only by consuming a private `VisibleCommandText` value, which only the layout and pane visibility mapping can construct when a nonempty command fragment survives the pane's clipping (`tui_pane` frame.rs scratch-buffer copy). Each tracked row has its own state `AwaitingText`, `MainFade` or `HoldFinalInk`; a child's entry is not consumed by its lead. Ink reads (`for_painting`, the readout) are pure: while entry is pending they preview the candidate ink and commit nothing. Classification uses the row's original fade, not the painted copy. Expiry stays where it is.
+**Spec (Astra review, phase 38 F003):** the entry decision is made only by consuming a private `VisibleCommandText` value, which only the layout and pane visibility mapping can construct when a nonempty command fragment survives the pane's clipping (`tui_pane` frame.rs scratch-buffer copy). Each tracked row has its own state `AwaitingText`, `MainFade` or `Brighten { started }`; a child's entry is not consumed by its lead. Ink reads (`for_painting`, the readout) are pure: while entry is pending they preview the candidate ink and commit nothing. Classification uses the row's original fade, not the painted copy. Expiry stays where it is.
 
-**Acceptance:** a staged-reveal test (headers at alpha 62, command text first shown at alpha 68) gives exact final RGB on the first text frame, later frames and just before the unchanged deadline; a clipped-in-scratch case, a hidden child and text first shown below the threshold keep their own rules; red on main first, each under 1 s; live capture vs main: every delayed-entry cell at or above 75% until main's deadline.
+**Brighten (user, 2026-10-30; change review row C152 returned; Phase 45 merged here):** "i didn't want full color i wanted 75% of the full color and it goes to 100% over a few frames". There is no hold at full ink. A late-entry cell's text starts at 75% of its color on the first visible text frame and brightens to 100% in about 250 ms (one value, the director's call), then follows its ordinary lifetime. Cells readable at first paint keep main's fade. One owner for the entry state; no placeholder value and no copied state. Repaints are asked for only while a brighten runs; when the last brighten ends, the reader returns to main's idle frame rate with no extra frames.
 
-**Files:** `crates/cargo-tile/src/roster.rs`, `crates/cargo-tile/src/render.rs`, `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/tiles/draw.rs`.
+**Acceptance:** a staged-reveal test (headers at alpha 62, command text first shown at alpha 68) gives exact RGB at 75% on the first text frame, mid-brighten, at 100% at its end and just before the unchanged deadline, and no repaint request after the brighten ends; a clipped-in-scratch case, a hidden child and text first shown below the threshold keep their own rules; red first, each under 1 s; live capture vs main: each late-entry cell starts at 0.75 (±0.02) and reaches 1.00, the readout ink equals the text ink, frame count and reader CPU over the same workload, branch vs main (no frames after the brighten beyond main's).
+
+**Files:** `crates/cargo-tile/src/roster.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/tui_pane/src/pane/frame.rs`. Not `crates/tui_pane/src/tiles/draw.rs` or `tiles/grid.rs`: the handler unit's equal-frame phase owns them (showrunner, 2026-10-30).
+
+### Phase 47 — A command cell's account and directory are its border title  · status: todo
+
+**Goal:** A command cell names its account and directory in its top border (`┌ [natepiano] ~/rust/hana ─`), and the body row that held them goes to the cell's content. From the user (2026-10-31): "when am i going to get my user and directory moved to the cell title". This was built on the Phase 28 tree (`CommandTitle` in `render/mod.rs` at `refs/tile-unit/p28-snapshot-1322`) and left with it on 2026-10-29; Phase 36m ported only the directory cut rule.
+
+**Spec:**
+1. The cell's heading text (account tag, then the directory, cut by Phase 36m's rule) is the border title through `TileCells::group_title` (`TileGroupTitle::Titled`), in the heading's ink and fade. The body draws no heading row. The summary and its `summary` title do not change.
+2. The cut fits the title room (frame width minus the corners and the title's spaces), not the body width.
+3. One owner computes the heading text for a cell; the title reads it. No second copy of the fitted text or of the fade (user rule 2026-10-30: no duplication). A per-frame cache only when a measurement names its cost.
+4. A cell's demand counts one row less. Live fill must not fall below main: the Phase 28 tree lost fill here, so the live capture compares columns that end above the foot against main.
+
+**Tests:** `a_command_cell_names_its_directory_in_its_border`; `a_cell_title_cuts_the_directory_by_the_header_rule_at_title_width`; `a_command_cell_draws_no_heading_row_in_its_body`; the Phase 36m header tests move to the title.
+
+**Live check:** 393 x 89 on natedev against main: one title per cell, no heading row in a body, fill equal or better.
+
+**Files:** `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`.
+
+**Depends on:** Phase 42 (both change `render.rs`).
+
+### Phase 46 — Enter shows the focused cell on the full screen, and Esc returns to the grid  · status: todo
+
+**Depends on:** Phase 42 (both change `render.rs` and the `tui_pane` frame; this phase starts on top of Phase 42's checkpoint)
+
+#### Work Order
+
+**Goal:** The user can open any focused cell, the summary or a command cell, on the full grid area to read all of it, and close it again. From the user (2026-10-30, with a screenshot of 64 build cells where the summary shows 6 of its 77 rows): "we need the ability to take a focused cell (it can be summary or others) and expand it to full screen to see what's going on and then collapse it. Esc almost certainly to collapse - but some standard key to expand it - don't care right now". Director's call: Enter expands (the grid does not bind Enter today; it is the usual key to open the selected item). A one-line keymap revert if the user wants another key.
+
+**State model (before code):** the view is one enum with one owner, `GridView::Grid`, `GridView::Expanding { cell, started }`, `GridView::Expanded { cell: <the cell's stable identity>, scroll: <first shown row> }` or `GridView::Collapsing { cell, started }` (item 4). No flag beside the enum and no copy of the focused cell elsewhere. Transitions:
+- `Grid` + Enter with a focused cell → `Expanding`, then `Expanded { cell: focused, scroll: 0 }` when the motion ends.
+- `Expanded` + Esc → `Collapsing`, then `Grid` when the motion ends; focus stays on the same cell.
+- `Expanded` and the cell leaves the roster (its command ended and its cell is removed) → `Grid`, focus as the grid gives it today when a focused cell leaves.
+- `Expanded` + Up/Down/PageUp/PageDown/Home/End → change `scroll` only, clamped so the last row stays at the bottom edge.
+- An open overlay keeps its own keys: Esc closes the overlay first, and a second Esc collapses the cell.
+
+**Spec:**
+1. **Full area.** The expanded cell takes the whole grid area; the status bar stays. Its frame, header and rows are drawn by the same cell draw path the grid uses, given the larger rectangle. There is no second renderer and no copied row logic.
+2. **All rows.** The expanded cell draws every row its content has (the summary's 77 rows in the screenshot), not the grid's height budget. When the rows do not fit, the keys above scroll them, and the frame's readout shows the shown range.
+3. **Live.** The expanded cell updates on each scan as it does in the grid. Pause (Phase 34, when it lands) holds it the same way.
+4. **Animated (user, 2026-10-30: "when i hit enter it should animate out to fill the whole screen and esc it should animate back to the size it should be").** Enter grows the cell from its grid rectangle to the full grid area; Esc shrinks it back to the rectangle the grid gives it on that frame (the size it should be now, not a saved old rectangle). The motion uses the grid's existing cell travel (its clock, easing and duration), not a second animation path. The growing cell draws over the cells under it; those cells stay where they are. Esc during the grow, or Enter during the shrink, turns the motion around from where it stands, with no jump. Pause holds the motion as it holds travel. Repaints are asked for only while the motion runs. The view enum carries the motion: `GridView::Expanding`, `Expanded` and `Collapsing` each name their cell, so no flag sits beside the enum.
+5. **Status bar.** The grid's hint row gains `enter expand`; while expanded it reads `esc collapse` in the same style as the hints today.
+6. **Keymap.** A new action `global.expand = enter`, with its `?` overlay description "Expand the focused cell". Esc collapse is fixed, as Esc closes overlays today.
+7. **Tests, red first:**
+   - `enter_expands_the_focused_cell_to_the_grid_area`: a grid with a summary and two command cells, focus on the summary, Enter; the drawn buffer has one frame on the whole grid area and shows rows the grid cell cut.
+   - `esc_returns_to_the_grid_with_focus_kept`: from expanded, Esc; the buffer equals the grid frame before Enter, with focus on the same cell.
+   - `an_ended_cell_returns_to_the_grid`: the expanded cell's command ends and its cell is removed; the next frame is the grid.
+   - `enter_grows_the_cell_and_esc_shrinks_it_to_its_current_grid_rectangle`: with injected time, the cell's frame at mid-motion lies strictly between its grid rectangle and the full area; at the end it equals the full area; after Esc it ends on the grid's rectangle for that frame, and an Esc during the grow turns it around from its mid rectangle.
+   - `expanded_rows_scroll_to_the_last_row`: more rows than the area; End shows the last row at the bottom edge, and Down past it does not move.
+   - The keymap rows test `EXPECTED` gains `global.expand = enter`.
+
+**Files:** find each by name; Phase 42 moves lines.
+- `crates/cargo-tile/src/app_global_action.rs`, `crates/cargo-tile/src/keymap.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/src/terminal.rs` — the action, the binding, the view state and its key routing.
+- `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs` — the expanded draw through the grid's cell draw path, the hint words, and the tests.
+- `crates/tui_pane/src/tiles/grid.rs` (and its exports) — only if the cell rectangle is assigned there: the expanded rectangle goes where the grid assigns rectangles (fix where it lives), as one additive method, with a `tui_pane` CHANGELOG Added line.
+- `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` — the keys, and one Added line.
+
+**Seats:** 1 writer (`impl`): one state, one key path and one draw path.
+
+**Constraints:** duplication is not allowed (user, 2026-10-30): the expanded cell uses the grid's cell draw path and the one view enum; a reviewer treats a second draw path or copied state as a blocker. No new `#[allow]` or `#[expect]`; no test takes a second. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`.
+
+**Acceptance gate:**
+- `verify.sh lint` for each changed crate, then the Mac test pass for `cargo-tile` (and `tui_pane`, `cargo-handler`, `cargo-port` when `tui_pane` changes); the tests red before and green after; none takes a second.
+- Unit director's live capture: a running tile with many cells; Enter on the summary grows it smoothly to the full area and shows all its rows; End scrolls to the last row; Esc shrinks it back to its grid size with focus kept; frame times and CPU during the motion against the grid's ordinary travel; Enter on a command cell and the command ends, and the view returns to the grid.
+- Change-review line: Enter shows the focused cell on the full screen, and Esc returns to the grid.
 
 ### Phase 30 — The capture shim costs one process per cargo call  · status: todo
 
-**Depends on:** Phase 28 (its landed checkpoint). It does not depend on Phase 29: its files are not the files of Phase 29's splits, thus it can run beside Phase 29.
+**Depends on:** none (Phase 28 was dropped, 2026-10-29). It does not depend on Phase 29: its files are not the files of Phase 29's splits, thus it can run beside Phase 29.
 
 #### Work Order
 
@@ -1509,16 +1593,15 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 ### Phase 31 — Ended cells leave whole  · status: todo
 
-**Depends on:** Phase 28 (its landed checkpoint on main, which delivers the Phase 22, 24 and 25 work)
+**Depends on:** none (Phase 28 was dropped, 2026-10-29).
 
 #### Work Order
 
-**Goal:** An ended cell fades and shrinks as one whole cell. It never paints as a one-row headless cell in mid-column (Phase 24 second capture, `r24b_d40_overview_9.00`; first capture, `r24_d80_overview_9.00`). This phase also takes any defect that Phase 28's landing capture moves out of its scope.
+**Goal:** An ended cell fades and shrinks as one whole cell. It never paints as a one-row headless cell in mid-column (Phase 24 second capture, `r24b_d40_overview_9.00`; first capture, `r24_d80_overview_9.00`).
 
 **Spec:**
 
-1. **An ended cell leaves whole.** Each frame of an ended cell's leave paints its header, its rows and its foot, or paints nothing. Test, red first: a fixture under 1 s in which an ended cell shrinks in mid-column, checked in the rendered buffer frame by frame.
-2. **The defects that Phase 28's landing capture moves here,** each with its evidence and a red-first test.
+1. **An ended cell leaves whole.** Each frame of an ended cell's leave paints its header, its rows and its foot, or paints nothing. Test, red first: a fixture under 1 s in which an ended cell shrinks in mid-column, checked in the rendered buffer frame by frame. The fixture also covers the frame with no rows: the roster has dropped the group while the grid still draws its closing cell (main 1fdee462: empty bordered box with `content rows: 0` in 38 of 107 frames, from 3 ms to 550 ms; `frame_draw_group` returns without rows).
 
 **Landing rule:** Phase 24's landing rule, unchanged. At most 3 repair rounds.
 
@@ -1563,7 +1646,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 5. **Add-ons approved by the showrunner (2026-10-22 to 2026-10-25),** each with a red-first test:
    - **The `run` ink.** On the focused tile ground (46,46,57), the command word `run` ink (3,197,3) measures 4.28:1. Lift it to at least 4.5:1 with an OKLCH lightness-only lift that keeps the hue.
-   - **The rows readout is off by default.** The tui_pane tile rows readout (`content rows: N  r/c: R/C`, `draw_rows_readout` in `crates/tui_pane/src/tiles/draw.rs`) is a layout aid. It is off by default in cargo-tile, cargo-handler and cargo-port. One key, bound through the shared tui_pane keymap and shown in the keys bar, turns it on and off for the session (no settings entry). When it is off, the demand adds no readout row (`add_readout_rows`, `rows_readout_height`); when it is on, its text does not change. The state is an enum (`RowsReadout::{Hidden, Shown}`), read by the demand and draw paths. Record the key in this Work Order: one that is free in all three keymaps. The red `+n unseen` count (`UnseenTiles::Trailing(n)`, handler overflow plan) stays on at all times, on the last placed piece's bottom border; a clipped piece's red shortfall count goes under the same key. Tell the handler unit when this lands.
+   - **The rows readout is off by default:** moved to handler Phase 55, 2026-10-30.
    - **Frame draw time** (showrunner 2026-10-25, moved from Phase 24). Phase 24's release captures: d80 max 19.1 ms (p99 3.2), t40 7.8 (p99 3.5), t80 79.9 (one frame; p99 6.1), d40 9.7 (p99 5.4) (`shots41_reply.txt` FRAME TIME). Exit: in busy release captures, no frame draws for more than 4 ms.
    - **Summary rows name their crate.** Phase 24's t80 shot at 9.00 (`ph24b`) shows summary rows with no crate path line and with cut names. In t40, summary pids are listed under the p22k02 path line with no path line of their own. Each summary row names its own crate path, and a name is cut only with `…`.
 
@@ -1591,7 +1674,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 ### Phase 33 — A nextest run shows its tests, and CPU counts only what each process adds  · status: todo
 
-**Depends on:** Phase 20, Phase 21, Phase 23, Phase 28 (its landed checkpoint delivers the Phase 22, 24 and 25 work), Phase 32
+**Depends on:** Phase 20, Phase 21, Phase 23, Phase 32
 
 #### Work Order
 
@@ -1670,7 +1753,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 ### Phase 34 — Space pauses the display  · status: todo
 
-**Depends on:** Phase 20, Phase 21, Phase 23, Phase 28 (its landed checkpoint delivers the Phase 22, 24 and 25 work), Phase 32
+**Depends on:** Phase 20, Phase 21, Phase 23, Phase 32
 
 #### Work Order
 
@@ -1711,7 +1794,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 ### Phase 35 — Phase 20's follow-ups: one table walk, plain caches, and whole marks  · status: todo
 
-**Depends on:** Phase 20, Phase 21, Phase 23, Phase 28 (its landed checkpoint delivers the Phase 22, 24 and 25 work), Phase 32, Phase 33, Phase 34
+**Depends on:** Phase 20, Phase 21, Phase 23, Phase 32, Phase 33, Phase 34
 
 #### Work Order
 
@@ -1783,7 +1866,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 ### Phase 36 — Every cell moves toward one target layout  · status: todo
 
-**Depends on:** Phase 20, Phase 28 (its landed checkpoint delivers the Phase 22, 24 and 25 work), Phase 35
+**Depends on:** Phase 20, Phase 35
 
 #### Work Order
 
