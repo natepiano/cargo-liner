@@ -8,6 +8,8 @@
 
 use std::ops::Range;
 
+use chrono::DateTime;
+use chrono::Local;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -32,6 +34,7 @@ use crate::sort::SortDirection;
 use crate::sort::SummaryColumn;
 
 const NOW: u64 = 1_792_166_400;
+const ACCOUNT_RESET: &str = "2026-10-18T14:00:00Z";
 // Optional columns leave before layout selection. These widths force the kept
 // columns onto two lines or into stacked facts, including the pane frame.
 const TWO_LINE_ACCOUNTS_WIDTH: u16 = 36;
@@ -246,6 +249,14 @@ fn failed_accounts_without_agents_keep_the_summary_visible() {
     );
 }
 
+fn local_account_reset(format: &str) -> String {
+    DateTime::parse_from_rfc3339(ACCOUNT_RESET)
+        .expect("account reset timestamp")
+        .with_timezone(&Local)
+        .format(format)
+        .to_string()
+}
+
 pub(super) fn interactive_accounts() -> App {
     let mut app = App::new_for_test().expect("test app");
     app.loaded_config.config.tiles.initial_rows =
@@ -263,7 +274,7 @@ pub(super) fn interactive_accounts() -> App {
                 "roles":["showrunners", "units"], "weekly_left_percent":60,
                 "credits":13_446, "use_credits":true, "credits_in_use":true,
                 "read_ok":true, "read_at":"2026-10-16T15:57:53Z",
-                "resets_at":"2026-10-17T14:00:00Z"
+                "resets_at":ACCOUNT_RESET
             })
         })
         .collect();
@@ -397,13 +408,16 @@ fn assert_account_continuations_select(width: u16) {
 #[test]
 fn two_line_accounts_end_reveals_the_final_continuation() {
     // Spec 1 drops read age before TwoLine; reset is the final kept fact.
-    assert_account_tail_reachable(TWO_LINE_ACCOUNTS_WIDTH, "Sat 10:00");
+    assert_account_tail_reachable(TWO_LINE_ACCOUNTS_WIDTH, &local_account_reset("%a %H:%M"));
 }
 
 #[test]
 fn stacked_accounts_end_reveals_the_final_fact() {
     // Spec 1 drops read age before Stacked; reset is the final kept fact.
-    assert_account_tail_reachable(COMPLETE_STACKED_ACCOUNT_WIDTH, "10:00");
+    assert_account_tail_reachable(
+        COMPLETE_STACKED_ACCOUNT_WIDTH,
+        &local_account_reset("%H:%M"),
+    );
 }
 
 #[test]
@@ -609,7 +623,7 @@ fn two_line_account_continuations_and_headers_align_with_account_names() {
         let name = locate(&buffer, &format!("account-{index}"));
         let continuation = name.row + 1;
         assert!(
-            account_line(&buffer, continuation).contains("Sat 10:00"),
+            account_line(&buffer, continuation).contains(&local_account_reset("%a %H:%M")),
             "the second line contains the kept reset fact"
         );
         assert_eq!(
