@@ -49,6 +49,7 @@ pub(crate) use outcome::NoticeKind;
 pub(crate) use outcome::PassEdits;
 pub(crate) use outcome::PubUseNotice;
 pub(crate) use outcome::RollbackStatus;
+pub(crate) use outcome::SubtreeReexportEdits;
 pub(crate) use render::ColorMode;
 pub(crate) use render::CompilerStats;
 pub(crate) use render::OutputFormat;
