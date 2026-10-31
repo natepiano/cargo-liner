@@ -14,6 +14,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
 
 use super::constants::GLOBAL_SHORTCUTS_POPUP_MIN_WIDTH;
 use super::constants::OVERLAY_RIGHT_PADDING_WIDTH;
@@ -236,6 +237,11 @@ fn build_lines(
     viewport: &Viewport,
     focus: PaneFocusState,
 ) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
+    let key_width = rows
+        .iter()
+        .map(|row| key_label(row).width())
+        .max()
+        .unwrap_or(0);
     let mut lines = vec![Line::from("")];
     let mut line_targets = vec![None];
     let mut current_section = None;
@@ -246,7 +252,7 @@ fn build_lines(
             line_targets.push(None);
         }
         let selection = crate::selection_state(viewport, selectable_index, focus);
-        lines.push(row_line(row, selection));
+        lines.push(row_line(row, selection, key_width));
         line_targets.push(Some(selectable_index));
     }
     (lines, line_targets)
@@ -264,15 +270,24 @@ fn header_line<'a>(section: &'static str) -> Line<'a> {
     ])
 }
 
-fn row_line<'a>(row: &GlobalShortcutRow, selection: PaneSelectionState) -> Line<'a> {
+fn key_label(row: &GlobalShortcutRow) -> String {
+    row.key.as_ref().map_or_else(String::new, |bind| {
+        bind.platform_label(crate::AltModifierLabel::current())
+    })
+}
+
+fn row_line<'a>(
+    row: &GlobalShortcutRow,
+    selection: PaneSelectionState,
+    key_width: usize,
+) -> Line<'a> {
     let padded_desc = format!(
         "{:<width$}",
         row.description,
         width = SHORTCUT_DESCRIPTION_WIDTH
     );
-    let key_display = row.key.as_ref().map_or_else(String::new, |bind| {
-        bind.platform_label(crate::AltModifierLabel::current())
-    });
+    let mut key_display = key_label(row);
+    key_display.push_str(&" ".repeat(key_width.saturating_sub(key_display.width())));
     let (marker, description_ink) = match selection {
         PaneSelectionState::Unselected => ("  ", label_color()),
         PaneSelectionState::Active
@@ -306,6 +321,7 @@ mod tests {
     use super::GLOBAL_SHORTCUTS_POPUP_MIN_WIDTH;
     use super::OVERLAY_RIGHT_PADDING_WIDTH;
     use super::SHORTCUT_DESCRIPTION_WIDTH;
+    use super::key_label;
     use super::line_width;
     use super::render_inputs;
     use super::row_line;
@@ -328,7 +344,11 @@ mod tests {
             key:         Some(KeySequence::from(KeyBind::shift(' '))),
         };
 
-        let line = row_line(&row, PaneSelectionState::Unselected);
+        let line = row_line(
+            &row,
+            PaneSelectionState::Unselected,
+            key_label(&row).width(),
+        );
         let description_width = line.spans[0].content.as_ref().width();
         let indent_width = format!("{SECTION_ITEM_INDENT}  ").width();
 

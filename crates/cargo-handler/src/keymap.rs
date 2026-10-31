@@ -162,6 +162,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn shortcuts_overlay_shows_vertical_focus_keys_without_replacing_row_keys() {
+        let rows = default_keymap().global_shortcut_rows();
+        for (action, expected) in [
+            ("focus_up", "shift-up"),
+            ("focus_down", "shift-down"),
+            ("row_up", "up"),
+            ("row_down", "down"),
+        ] {
+            let row = rows
+                .iter()
+                .find(|row| row.action == action)
+                .expect("shortcut row");
+            assert_eq!(
+                row.key.as_ref().map(ToString::to_string).as_deref(),
+                Some(expected),
+                "{action}"
+            );
+        }
+    }
+
     /// Section names, TOML tables, action keys, default binds and their
     /// order, captured from the first build: cargo-tile's rows without
     /// its `freeze` and `process_tree` globals.
@@ -193,8 +214,8 @@ mod tests {
         "[Global Shortcuts] global",
         "global.add_tile = +",
         "global.dismiss = x",
-        "global.focus_up = ",
-        "global.focus_down = ",
+        "global.focus_up = shift-up",
+        "global.focus_down = shift-down",
         "global.focus_left = left",
         "global.focus_right = right",
         "global.open_favorites = ctrl-o",

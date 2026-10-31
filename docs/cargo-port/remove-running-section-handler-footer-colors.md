@@ -1467,7 +1467,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - The handler wheel test needs several summary rows (`wheel_test_app_with_agents`). With an empty summary, "selection unchanged" passes for the wrong reason.
 - A live cargo-tile capture shows tile rows change with no wheel input, because activity is live. Compare a wheel capture against a no-wheel control.
 
-### Phase 57a — The shortcuts overlay highlights whole rows and shows every focus key  · status: todo
+### Phase 57a — The shortcuts overlay highlights whole rows and shows every focus key  · status: done
 
 **Depends on:** Phase 57 (both edit the shortcuts overlay's tests).
 
@@ -1498,6 +1498,99 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 **Workers:** 1 writer.
 
 **Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: press `?` in cargo-handler and cargo-tile, move the selection, and see one highlight width and a key on both focus rows. The checkpoint adds a Change-Review line.
+
+### Phase 57d — A Codex session resumed under a second account shows its own name  · status: todo
+
+**Depends on:** none.
+
+#### Work Order
+
+**Goal:** cargo-handler shows the Codex session's own name (for example `morty`) in the session column, also when the session runs under a second account home whose sessions folder points at the first one.
+
+**Source:** the user, 2026-10-31: the standalone Codex session `morty` shows only its pid in the Unassigned group; an earlier cargo-handler build showed `morty`. Diagnosis (Phase 57a side task): morty is thread `01a18dbb…`, resumed by a process with `CODEX_HOME=~/.codex2`. The `.codex2` database names it `morty`, but its `rollout_path` starts with `~/.codex/sessions`, because `.codex2/sessions` is a link to it. `classify.rs::thread_matches_home` rejects that path, `codex_startup_threads` finds no match, and `scan.rs::attach_codex_sessions` keeps the pid. Commit 21c1c47f added the path check and the pid-name reset; Phase 41 (08e18f05) repaired the originator choice but kept the check.
+
+**Constraints from prior phases:**
+- The session name is drawn from `AgentRow.name` (`summary/mod.rs::agent_fields`); names come from `census/codex_names.rs::SessionNames` and the thread database.
+- Keep accounts separate: never infer the account from the rollout path, and never merge account homes through links.
+- Neither the staff list nor the production tree names standalone sessions, so Phase 57c does not fix this.
+
+**Spec:**
+1. Keep the account home of the database each Codex thread came from, and match a resumed thread id inside that home.
+2. When the session index has no name for the thread, keep the database's own name.
+3. Add a regression test: a session resumed under one account home with a shared rollout folder shows its own name, and a thread of the other account does not match it.
+
+**Files:**
+- `crates/cargo-handler/src/census/classify.rs` — the home match
+- `crates/cargo-handler/src/census/codex.rs` — thread records carry their account home
+- `crates/cargo-handler/src/census/codex_names.rs` — the name fallback
+- `crates/cargo-handler/src/census/scan.rs` — `attach_codex_sessions`
+- `crates/cargo-handler/src/census/scan/` — tests
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: run cargo-handler on natedev and see `morty` in the session column. The checkpoint adds a Change-Review line.
+
+### Phase 57b — The reset-shade test runs in under a second  · status: todo
+
+**Depends on:** none.
+
+#### Work Order
+
+**Goal:** the cargo-handler test `reset_shades_keep_saturated_chroma_and_separation_from_plain_text` runs in less than one second on the Mac, and keeps every check it makes now.
+
+**Source:** the showrunner, 2026-10-31: the test took 1.008 s on the Mac at the Phase 57 checkpoint (1.28 s in a later Phase 57a run). No test may take one second or more.
+
+**Constraints from prior phases:**
+- The test is in `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` (≈532).
+- Find the cost with evidence (time each part on the Mac) before a change. Do not weaken an assertion or drop a case to make it fast; if the cost is in product code the test calls, fix it there.
+
+**Spec:**
+1. Measure where the test spends its time.
+2. Remove that cost: share work the test repeats, or make the product code it calls cheaper. Every assertion and case stays.
+3. The test runs under 1 s on the Mac in a full `verify.sh test cargo-handler` run.
+
+**Files:**
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the test
+- `crates/cargo-handler/src/summary/` — product code the test calls, only if the cost is there
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean on the Mac; no test takes a second. The checkpoint adds `Change-Review: none — test speed only` unless product code changes.
+
+### Phase 57c — cargo-handler reads its staff from the staff list  · status: todo
+
+**Depends on:** none.
+
+#### Work Order
+
+**Goal:** cargo-handler takes managers, members and roles from `~/.claude/scripts/production/staff.py show --json --live` (schema 3) in place of `production_tree.py --json`, with one parser, and stops reading the review pool, which no longer exists.
+
+**Source:** herdr, 2026-10-31: the staff list is live as schema 3, with no `pool` key. The showrunner, 2026-10-31, approved the switch and confirmed schema 3 on natedev and the Mac. The user, 2026-10-31: the review pool is gone.
+
+**Constraints from prior phases:**
+- The command stays in the `hierarchy_command` setting; no path in code.
+- Read stdout only. The command prints hundreds of stderr lines (265 on natedev); never show them in the tile or in cargo-handler.
+- One parser: remove the `production_tree.py` shape parser in this phase. If a Mac config can still point at the old command, say so in the notice; the showrunner sets the order.
+- The review pool reader (`REVIEW_POOL_STATE`, `pool.json` in `census/command_inputs.rs`) and its fixtures go too.
+- Standalone sessions are not in the staff list; Phase 57d names them.
+
+**Spec:**
+1. At start, run the staff command on natedev and the Mac and confirm schema 3 with no `pool` key.
+2. Parse the schema 3 output into the census hierarchy types; remove the old edge parser and the pool reader.
+3. Measure the CPU time of one staff call against one `production_tree.py --json` call on natedev and the Mac, and name the added cost in the notice. If it is slower at the poll rate, say so before landing.
+4. Move the hierarchy fixtures and tests to the schema 3 shape.
+5. Send the showrunner the exact `hierarchy_command` config line for both machines.
+
+**Files:**
+- `crates/cargo-handler/src/census/hierarchy.rs` — the parser
+- `crates/cargo-handler/src/census/command_inputs.rs` — inputs; pool reader removed
+- `crates/cargo-handler/src/census/fixtures/` — hierarchy and pool fixtures
+- `crates/cargo-handler/src/census/*hierarchy*_tests.rs`, `census/probe/hierarchy_transport_tests.rs` — tests
+- `crates/cargo-handler/src/config.rs`, `settings.rs` — setting text only if it names the old command
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: cargo-handler on natedev with the new setting shows the same managers and members as before. The checkpoint adds a Change-Review line.
 
 ### Phase 55 — Narrow tiles keep tree guides, readable names and one header inset  · status: todo
 
