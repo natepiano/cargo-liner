@@ -300,16 +300,23 @@ offset. Reservation rows occur at
   `not_provided_by_caller`.
 - `lifecycle.stage`: `active`; `outstanding` with `protected_tip`; or `released`
   with `disposition`. The disposition uses `kind = integrated`,
-  `rewritten_integration`, `abandoned`, or `retired_orphan`; the last three add
-  the scalar `evidence` field.
+  `rewritten_integration`, `kept_on_branch`, `abandoned`, `retired_orphan`, or
+  `unchanged_scopes`. `rewritten_integration`, `kept_on_branch`, `abandoned`,
+  and `retired_orphan` add the scalar `evidence` field. `unchanged_scopes` adds
+  the object `evidence: { "target_commit": <oid> }`.
 - `integration_evidence.kind`: `active_work`; `released_without_checkpoint`; or
   `current` with a nested `status`. That nested value has its own `status`
   discriminator: `integration_evidence.status.status` is `not_integrated`;
   `integrated` with `trunk_oid`, `proof`, and `witness`; `trunk_rewritten`; or
   `object_unknown`. Integrated `proof` is `protected_tip_ancestor`,
   `scoped_patch_equivalent`, or `rewritten_witness_ancestor`. `trunk_oid` is the
-  evaluated tip of the reservation's judged branch: its recorded target, or the
-  repository trunk when that target ref is missing. An outstanding row's status
+  evaluated proof commit of the reservation's judged branch: its recorded
+  target, or the repository trunk when that target ref is missing. The proof
+  commit is the commit of the branch's configured upstream, or the local tip
+  when the branch has no upstream, so a merge that is not pushed reads
+  `not_integrated`
+  ([worktree-coordination.md](worktree-coordination.md#integration-proof)).
+  An outstanding row's status
   is judged with its merge extent: it is `integrated` only while the extent is
   `empty`; a `protected` extent reads `not_integrated` (or `trunk_rewritten`,
   `object_unknown`), and a `not_derived` or `unavailable` extent reads
@@ -420,7 +427,8 @@ The sections mean:
   `edge_id`, `blocker`, `direction`, and a `consequence` whose `state` is `holding` (with
   `action`), `cancelled`, `fulfilled`, or `replaced` with `reservation_id`: the
   reservation whose later `claim --replace` retired this answer's edge to the
-  same holder. A `sequence` entry recorded with `--replace` adds `replaced`,
+  same holder. An edge that `init --repair-ordering-cycle` retired reads
+  `cancelled`. A `sequence` entry recorded with `--replace` adds `replaced`,
   the contradicted orderings it overturned toward its own `blocker`, in the
   journal's `{ reservation_id, edge_id, holder }` form. A widen onto paths no other
   reservation holds (`authorization.kind = "no_conflict"`), or whose overlaps
@@ -432,13 +440,16 @@ The sections mean:
   under `waiting`, `settled_ordering_constraints`, or `unresolved_overlaps`.
 - `released_overlap_answer_count`: how many recorded overlap answers belong to
   released reservations. The board does not list them; the journal keeps each
-  one.
+  one until compaction removes its expired history.
 - `unconstrained_reservations`: non-resolved rows not involved in a recorded
   ordering edge and not held under `waiting`. These are `active` and `outstanding`
   rows; a `released` reservation is always resolved audit history.
-- `resolved`: released reservation audit history. Its four dispositions are
-  `integrated`, `rewritten_integration`, `abandoned`, and `retired_orphan`.
-  Orphan retirement remains distinct from deliberate abandonment.
+- `resolved`: released reservation audit history. Its six dispositions are
+  `integrated`, `rewritten_integration`, `kept_on_branch`, `abandoned`,
+  `retired_orphan`, and `unchanged_scopes`. Work kept on its branch, orphan
+  retirement, and deliberate abandonment stay distinct. `unchanged_scopes`
+  marks a stale reservation that reconciliation released by itself because no
+  path in its scopes differed from its target.
 - `available_forced_permits`: unused force permits and the skipped holds they
   can authorize.
 - `bypass_audit`: durable force and environment-override history. It remains
@@ -488,6 +499,14 @@ notice reported once by the read that imported the marker into the journal and
 deleted it; the next board read returns an empty list. The corresponding
 `bypass_audit` entry remains as durable history.
 
+When the reconciliation that precedes a command, such as `board`, `check`, or a
+`claim` at the reservation limit, releases a reservation by itself with `unchanged_scopes` or `retired_orphan`,
+the envelope's `message` ends with one line for each release:
+`Automatically released reservation <id>: <reason>.` The `presentation` adds
+one block for each, with the summary
+`cargo-berth released a reservation automatically.` No payload member carries
+these notices.
+
 Board `lost_integration_evidence` entries use this tagged form:
 
 ```json
@@ -529,8 +548,8 @@ disposition with `retired_orphan` when the work landed where git cannot match
 it, such as a reworked squash or a branch other than the integration target.
 Git no longer revalidates the retired reservation, so the alert stops.
 `resolve <id> --integrated-as <commit>` refuses with exit 5 `invalid_input` a
-commit not reachable from the reservation's target (from the repository trunk
-when that target ref is missing). It also refuses a reachable commit that
+commit not reachable from the proof commit of the reservation's target (of the
+repository trunk when that target ref is missing). It also refuses a reachable commit that
 neither contains the protected tip nor carries an
 equivalent of its scoped changes, naming the commit, the protected tip, and
 `resolve <id> --retire-orphan --why <reason>`, and a commit git
@@ -588,8 +607,9 @@ only the requested id, `blocked_by` is empty, and the payload echoes the id:
 - `status = "released_without_checkpoint"`, with `disposition`.
 
 The disposition is the same tagged value used by board rows: `kind =
-"integrated"`; or `rewritten_integration`, `abandoned`, or `retired_orphan`
-with `evidence`. The lifecycle payload deliberately omits current integration
+"integrated"`; `rewritten_integration`, `kept_on_branch`, `abandoned`, or
+`retired_orphan` with the scalar `evidence`; or `unchanged_scopes` with
+`evidence: { "target_commit" }`. The lifecycle payload deliberately omits current integration
 evidence. Any retained reservation can be selected, whichever complete-board
 section lists its row. The selector has no terminal representation and requires
 `--json`.
@@ -674,11 +694,12 @@ exit code `0`, and `payload.kind = "journal_compaction"`. `payload.data` is
 tagged by `status`:
 
 - `{ "status": "nothing_to_compact" }`: no merge extent observation is
-  superseded, and `journal.ndjson` is byte-identical.
+  superseded, no expired history can be removed, and `journal.ndjson` is
+  byte-identical.
 - `{ "status": "compacted", "removed": { "records", "bytes" }, "remaining":
   { "records", "bytes" } }`: `removed` counts the superseded merge extent
-  observations taken out, and `remaining` the records the compacted journal
-  holds. Byte counts include each record's newline.
+  observations and expired history records taken out, and `remaining` the
+  records the compacted journal holds. Byte counts include each record's newline.
 
 A refused compaction returns status `ledger_unreadable` and exit code `4`, with
 a `message` that names the cause and ends `the journal is unchanged`. Lock
@@ -818,7 +839,12 @@ for the new phase; its message also names the sibling-held paths and reservation
 When opening a new phase would exceed `maximum_reservations`, `check` returns
 `status = "reservation_limit_reached"`, exit code `1`, and a check payload with
 `data: { "status": "reservation_limit_reached", "maximum": <limit> }`.
-It appends no claim and writes no mapping for the refused phase.
+It appends no claim and writes no mapping for the refused phase. A `claim`
+that would exceed the limit returns the same status and exit code with
+`payload.kind = "claim"` and the same `data`. Before either command refuses, it
+releases every stale reservation whose scopes have no change against its
+target (disposition `unchanged_scopes`) and tries once more. It refuses only
+when the count is still at the limit.
 
 `session_mapping_publication.status` has these values:
 
@@ -903,9 +929,34 @@ exit code `5`, naming the holders, so a re-ruling that no longer applies never
 records. `--replace` without `--before` or `--after` is a usage error at exit
 code `5`.
 
+## Ordering cycle refusal
+
+A `claim`, including one that widens a reservation, or a `sequence` whose new
+ordering edges would close a cycle with the live edges returns
+`status = "ordering_cycle"` and exit code `2`, and appends nothing. One claim checks all its new edges together. The
+`message` names the cycle in order as reservation ids joined by ` -> `. A
+`claim` carries `payload.kind = "no_facts"`; a `sequence` keeps its rejected
+sequence payload.
+
+`cargo-berth init --repair-ordering-cycle --json` returns `verb = "init"`,
+`status = "clear"`, exit code `0`, and `payload.kind = "no_facts"`. It appends
+one `retire_cyclic_ordering_edge` record for the earliest live edge that closes
+a cycle, and its `message` names that edge, its endpoints, and the record that
+declared it. On an acyclic ledger the message says the journal is unchanged.
+When the graph still has a cycle with that edge retired, the command appends
+nothing and reports the ledger error.
+
 ## Drift outcomes
 
-A drift response carries `payload.kind = "drift"`. Each
+A drift response carries `payload.kind = "drift"`. When the worktree's own git
+directory holds `index.lock`, drift compares nothing: the envelope has
+`status = "git_operation_in_progress"`, `exit_code = 0`, empty `reservations`
+and `blocked_by`, and `presentation` `not_provided`, and `payload.data` is
+`{ "not_checked": "git_operation_in_progress" }`. That response writes no
+journal record, fingerprint, or told-once record. The `PostToolUse` hook shows
+nothing for it, and the post-commit hook prints its message as a warning.
+
+A checked drift response has the report below. Each
 `payload.data.results[]` entry uses `status = "unchanged"`, `changed`, or
 `phase_start_object_unknown`. The unreadable-phase-start form carries
 `reservation_id` and `phase_start`, and means Git could not read the baseline
@@ -990,7 +1041,16 @@ The first six have envelope `status = "outstanding"`. `evidence_revalidated`
 and `already_settled` take the envelope status from `evidence` (`integrated`,
 `outstanding` for `not_integrated`, `trunk_rewritten`, or `object_unknown`).
 `released` has `integrated` for an `integrated` or `rewritten_integration`
-disposition and `released` otherwise. An integrated release appends
+disposition and `released` otherwise.
+
+`release <id> --keep-work --why <reason>` and `release <id> --abandon --why
+<reason>` end an active or outstanding reservation without a checkpoint or an
+integration check. Each appends one `release` record and answers `released`
+with disposition `kept_on_branch` or `abandoned`, whose `evidence` is the
+trimmed reason. On a reservation that already has a disposition, either form
+returns `invalid_input` at exit `5`.
+
+An integrated release appends
 `evidence_revalidated` and then `release` in one locked transaction, so one
 call after the merge answers `released`. Messages and the judgment behind
 each outcome are in [parallel-phases.md](parallel-phases.md).
@@ -1000,8 +1060,10 @@ each outcome are in [parallel-phases.md](parallel-phases.md).
 `.git/cargo-berth/journal.ndjson` contains one complete JSON object per line.
 Records are never rewritten. Journal compaction may remove a merge extent
 observation (`holder_merge_extent_observed` or `merge_extent_observed`) once
-later observations name every reservation it names; every other record keeps
-its bytes and its order. A record's `event_id` never changes, while its line
+later observations name every reservation it names. It also removes the
+records of finished reservations older than 24 hours that no retained record
+needs ([worktree-coordination.md](worktree-coordination.md#journal-compaction)).
+Every kept record keeps its bytes and its order. A record's `event_id` never changes, while its line
 number and byte offset can. The generations of the remaining records still rise
 from one record to the next, with gaps where records were removed.
 
@@ -1097,6 +1159,7 @@ The operation union is:
 | `overlap_refused` | `verb`, `scopes`, `holders` |
 | `resolve_defer` | `deferred_reservation_id`, `blocker_reservation_id`, `edge_id`, `direction`, `reason` |
 | `sequence` | `predecessor`, `successor`, `edge_id`, `scopes`, `reason` |
+| `retire_cyclic_ordering_edge` | `edge` |
 | `incursion` | `incident_id`, `reservation_id`, `blocked_paths` |
 | `resolve_incursion` | `incident_id` |
 | `forced_integration_permit` | `permit_id`, `reservation_id`, `reason`, `skipped_holds` |
@@ -1161,6 +1224,12 @@ These operation fields use the following tagged values:
   coverage; `enrollment`, `sequence`, `sequence_per_holder`, `defer`, and
   `override` cover their `scopes` whatever the counterpart's revision has
   become.
+- `retire_cyclic_ordering_edge` `edge` is `{ "edge_id": <uuid-v7>,
+  "declaration_event_id": <uuid-v7>, "predecessor": <uuid-v7>, "successor":
+  <uuid-v7> }`: the one live edge that `init --repair-ordering-cycle` retired,
+  with the record that declared it. Replay removes that edge and keeps every
+  reservation and every other edge. An edge that replay does not hold with the
+  same id, declaration and endpoints makes the journal unreadable.
 - `coordination_identity_provenance` is `presented` or `not_presented`. It
   records whether a caller presented the coordination identity the claim was
   made under, or whether the engine issued one because nothing identified the
@@ -1193,10 +1262,15 @@ These operation fields use the following tagged values:
   A resnapshot can update only an active claim snapshot or an outstanding
   protected tip and baseline. A resnapshot of a released reservation makes the journal
   unreadable.
-- A release disposition is `{ "kind": "integrated" }`, or has `kind` equal to
-  `rewritten_integration`, `abandoned`, or `retired_orphan` plus a scalar
-  `evidence` field containing the commit or reason. `superseded` and
-  `replacement` use the same format.
+- A release disposition is `{ "kind": "integrated" }`; has `kind` equal to
+  `rewritten_integration`, `kept_on_branch`, `abandoned`, or `retired_orphan`
+  plus a scalar `evidence` field containing the commit or reason; or is
+  `{ "kind": "unchanged_scopes", "evidence": { "target_commit": <oid> } }`,
+  naming the target commit at which no scope path differed. `superseded` and
+  `replacement` use the same format. The optional `release` `source` is
+  `command` when a `release` or `resolve` command named the reservation, or
+  `reconciliation` when reconciliation ended it; records written before the
+  field omit it.
 - Integration evidence `status.status` is `not_integrated`; `integrated` with
   `trunk_oid`, `proof`, and `witness`; `trunk_rewritten`; or `object_unknown`.
   Integrated `proof` is `protected_tip_ancestor`, `scoped_patch_equivalent`, or
