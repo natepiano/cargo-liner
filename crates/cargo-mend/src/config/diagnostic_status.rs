@@ -23,7 +23,9 @@ impl From<bool> for DiagnosticStatus {
 }
 
 impl From<DiagnosticStatus> for bool {
-    fn from(value: DiagnosticStatus) -> Self { matches!(value, DiagnosticStatus::Enabled) }
+    fn from(diagnostic_status: DiagnosticStatus) -> Self {
+        matches!(diagnostic_status, DiagnosticStatus::Enabled)
+    }
 }
 
 impl Serialize for DiagnosticStatus {

@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::ops::Deref;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -157,9 +158,16 @@ pub(in crate::compiler) struct StoredInterfaceCeiling {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(in crate::compiler) struct StoredVisibilityConstraint {
-    pub diagnostic_code:            DiagnosticCode,
-    pub source:                     StoredVisibilitySource,
-    pub declaration:                StoredVisibilityDeclaration,
+    pub diagnostic_code: DiagnosticCode,
+    pub source:          StoredVisibilitySource,
+    pub declaration:     StoredVisibilityDeclaration,
+    #[serde(flatten)]
+    pub facts:           StoredVisibilityFacts,
+}
+
+/// Target-specific requirements, independent of the module mounting the item.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(in crate::compiler) struct StoredVisibilityFacts {
     pub visibility_annotation:      String,
     pub declared_reach:             StoredVisibilityReach,
     pub spelling:                   StoredVisibilitySpelling,
@@ -181,7 +189,7 @@ pub(in crate::compiler) struct StoredVisibilityConstraint {
     pub outcome:                    StoredConstraintOutcome,
 }
 
-impl StoredVisibilityConstraint {
+impl StoredVisibilityFacts {
     pub(in crate::compiler) fn required_reach(&self) -> Option<StoredVisibilityReach> {
         let facade_requirement = match &self.facade {
             StoredFacadeConstraint::Resolved { required } => Some(required.clone()),
@@ -200,36 +208,40 @@ impl StoredVisibilityConstraint {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct VisibilityConstraintSet {
-    constraints: BTreeSet<StoredVisibilityConstraint>,
+    constraints: BTreeMap<StoredVisibilityFacts, Vec<StoredFinding>>,
 }
 
 impl VisibilityConstraintSet {
+    #[cfg(test)]
     fn from_constraint(constraint: StoredVisibilityConstraint) -> Self {
         Self {
-            constraints: BTreeSet::from([constraint]),
+            constraints: BTreeMap::from([(constraint.facts, Vec::new())]),
         }
     }
 
+    #[cfg(test)]
     fn join(mut self, additional: Self) -> Self {
-        self.constraints.extend(additional.constraints);
+        for (facts, findings) in additional.constraints {
+            self.constraints.entry(facts).or_default().extend(findings);
+        }
         self
     }
 
     fn required_reach(&self) -> Option<StoredVisibilityReach> {
         self.constraints
-            .iter()
-            .filter_map(StoredVisibilityConstraint::required_reach)
+            .keys()
+            .filter_map(StoredVisibilityFacts::required_reach)
             .reduce(|current, additional| current.join(&additional))
     }
 
     fn includes_facade_blocker(&self) -> bool {
         self.constraints
-            .iter()
+            .keys()
             .any(|constraint| matches!(constraint.facade, StoredFacadeConstraint::Blocked))
     }
 
     fn includes_absent_facade(&self) -> bool {
-        self.constraints.iter().any(|constraint| {
+        self.constraints.keys().any(|constraint| {
             matches!(
                 constraint.facade,
                 StoredFacadeConstraint::Absent | StoredFacadeConstraint::Impossible
@@ -241,13 +253,13 @@ impl VisibilityConstraintSet {
         !self.constraints.is_empty()
             && self
                 .constraints
-                .iter()
+                .keys()
                 .all(|constraint| matches!(constraint.facade, StoredFacadeConstraint::Impossible))
     }
 
     fn all_facades_are_absent_or_impossible(&self) -> bool {
         !self.constraints.is_empty()
-            && self.constraints.iter().all(|constraint| {
+            && self.constraints.keys().all(|constraint| {
                 matches!(
                     constraint.facade,
                     StoredFacadeConstraint::Absent | StoredFacadeConstraint::Impossible
@@ -257,19 +269,19 @@ impl VisibilityConstraintSet {
 
     fn all_facades_are_resolved(&self) -> bool {
         self.constraints
-            .iter()
+            .keys()
             .all(|constraint| matches!(constraint.facade, StoredFacadeConstraint::Resolved { .. }))
     }
 
     fn all_exact_boundaries_are_eligible(&self) -> bool {
-        self.constraints.iter().all(|constraint| {
+        self.constraints.keys().all(|constraint| {
             constraint.exact_boundary_acceptance == StoredExactBoundaryAcceptance::Eligible
         })
     }
 
     fn all_exact_paths_are_allowed(&self) -> bool {
         self.constraints
-            .iter()
+            .keys()
             .all(|constraint| constraint.exact_path_policy == StoredExactPathPolicy::Allowed)
     }
 
@@ -278,10 +290,10 @@ impl VisibilityConstraintSet {
     ///
     /// [`Self::all_exact_boundaries_are_eligible`] is the suppression-side
     /// question and folds `pub_in_path` in; this one deliberately does not, so
-    /// [`VisibilityConstraintGroup::supports_rewrite`] can apply the setting
+    /// [`MountVisibility::supports_rewrite`] can apply the setting
     /// against `ExactBoundarySpelling::CratePath` alone.
     fn all_annotation_edits_are_eligible(&self) -> bool {
-        self.constraints.iter().all(|constraint| {
+        self.constraints.keys().all(|constraint| {
             constraint.annotation_edit_acceptance == StoredExactBoundaryAcceptance::Eligible
         })
     }
@@ -289,7 +301,7 @@ impl VisibilityConstraintSet {
     fn uniform_declared_reach(&self) -> Option<StoredVisibilityReach> {
         let mut reaches = self
             .constraints
-            .iter()
+            .keys()
             .map(|constraint| &constraint.declared_reach);
         let first = reaches.next()?.clone();
         reaches.all(|reach| *reach == first).then_some(first)
@@ -302,7 +314,7 @@ impl VisibilityConstraintSet {
     fn declares_exactly_its_signature_reach(&self) -> bool {
         !self.constraints.is_empty()
             && self.all_exact_boundaries_are_eligible()
-            && self.constraints.iter().all(|constraint| {
+            && self.constraints.keys().all(|constraint| {
                 constraint.spelling == StoredVisibilitySpelling::ExactPath
                     && matches!(constraint.facade, StoredFacadeConstraint::Absent)
                     && constraint.signature_requirement.as_ref() == Some(&constraint.declared_reach)
@@ -310,7 +322,7 @@ impl VisibilityConstraintSet {
     }
 
     fn uses_caller_reconciliation(&self) -> bool {
-        self.constraints.iter().any(|constraint| {
+        self.constraints.keys().any(|constraint| {
             constraint.caller_reconciliation == StoredCallerReconciliation::CallerAware
         }) || (self.includes_absent_facade() && self.required_reach().is_some())
     }
@@ -318,15 +330,13 @@ impl VisibilityConstraintSet {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct VisibilityConstraintKey {
-    package_root:    String,
     diagnostic_code: DiagnosticCode,
     source:          StoredVisibilitySource,
 }
 
 impl VisibilityConstraintKey {
-    fn new(package_root: &str, constraint: &StoredVisibilityConstraint) -> Self {
+    fn new(constraint: &StoredVisibilityConstraint) -> Self {
         Self {
-            package_root:    package_root.to_string(),
             diagnostic_code: constraint.diagnostic_code,
             source:          constraint.source.clone(),
         }
@@ -334,11 +344,10 @@ impl VisibilityConstraintKey {
 
     /// The key a finding would carry if it were a constraint, so a finding can
     /// be matched against constraints by lookup instead of by scanning. A
-    /// constraint and a finding correspond exactly when their package root,
-    /// diagnostic code, and source position agree, which is precisely this key.
-    fn for_finding(package_root: &str, finding: &StoredFinding) -> Self {
+    /// constraint and a finding correspond when their diagnostic code and
+    /// physical source position agree, including across package boundaries.
+    fn for_finding(finding: &StoredFinding) -> Self {
         Self {
-            package_root:    package_root.to_string(),
             diagnostic_code: finding.diagnostic_code,
             source:          StoredVisibilitySource {
                 path:   finding.path.clone(),
@@ -349,10 +358,299 @@ impl VisibilityConstraintKey {
     }
 }
 
+/// One package-qualified module mounting the source position held by the group.
+/// The declaration belongs to the mount, but its anonymous rustc item ordinal
+/// is target-specific evidence, not module identity: cfg-gated imports can
+/// change `{use#N}` without changing either the source item or its module.
+#[derive(Eq)]
+struct VisibilityModuleMount {
+    package_root: String,
+    declaration:  StoredVisibilityDeclaration,
+}
+
+impl Ord for VisibilityModuleMount {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (&self.package_root, &self.declaration.item_module_def_path)
+            .cmp(&(&other.package_root, &other.declaration.item_module_def_path))
+    }
+}
+
+impl PartialOrd for VisibilityModuleMount {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+
+impl PartialEq for VisibilityModuleMount {
+    fn eq(&self, other: &Self) -> bool { self.cmp(other) == Ordering::Equal }
+}
+
+/// Per-mount requirements for the annotation at one physical source position.
+/// Module boundaries are resolved within each mount before comparing spellings.
+#[derive(Default)]
+struct SharedSourceVisibility {
+    mounts: BTreeMap<VisibilityModuleMount, VisibilityConstraintGroup>,
+}
+
+/// A source's package-qualified module identity. Library, binary and test
+/// reports can describe the same module; their requirements are joined before
+/// comparing distinct mounts. Compilation identity is evidence, not a mount.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SourceModuleMount {
+    package_root: String,
+    module_path:  Vec<String>,
+}
+
+#[derive(Default)]
+struct SourceMountInventory {
+    sources: BTreeMap<String, BTreeMap<SourceModuleMount, BTreeSet<usize>>>,
+}
+
+impl SourceMountInventory {
+    fn collect(reports: &[StoredReport]) -> Self {
+        let mut inventory = Self::default();
+        for (report_index, report) in reports.iter().enumerate() {
+            for mount in &report.module_mount_facts {
+                inventory
+                    .sources
+                    .entry(mount.file.clone())
+                    .or_default()
+                    .entry(SourceModuleMount {
+                        package_root: report.package_root.clone(),
+                        module_path:  mount.module_path.clone(),
+                    })
+                    .or_default()
+                    .insert(report_index);
+            }
+        }
+        inventory
+    }
+
+    fn locate(&self, report_index: usize, path: &str, module: &[String]) -> FindingMount {
+        let Some(mounts) = self.sources.get(path) else {
+            return FindingMount::Unknown;
+        };
+        let mut in_report = mounts
+            .iter()
+            .filter(|(_, reports)| reports.contains(&report_index))
+            .map(|(mount, _)| mount);
+        let Some(first) = in_report.next() else {
+            return FindingMount::Unknown;
+        };
+        // Producers without a def-path still identify the mount unambiguously
+        // when this target compiled the source in just one place.
+        if in_report.next().is_none() {
+            return FindingMount::Known(first.clone());
+        }
+        mounts
+            .iter()
+            .filter(|(mount, reports)| {
+                reports.contains(&report_index) && module.starts_with(&mount.module_path)
+            })
+            .max_by_key(|(mount, _)| mount.module_path.len())
+            .map_or(FindingMount::Unknown, |(mount, _)| {
+                FindingMount::Known(mount.clone())
+            })
+    }
+}
+
+fn module_segments(module: &str) -> Vec<String> {
+    module
+        .split("::")
+        .filter(|segment| !segment.is_empty() && *segment != "crate")
+        .map(str::to_string)
+        .collect()
+}
+
+enum FindingMount {
+    Known(SourceModuleMount),
+    Unknown,
+}
+
+struct VisibilityProposal {
+    report_index: usize,
+    module_path:  Vec<String>,
+    finding:      StoredFinding,
+}
+
+/// The written replacement, independent of which diagnostic proposed it.
+#[derive(PartialEq, Eq)]
+enum VisibilityReplacement {
+    Private,
+    Public,
+    Crate,
+    Parent,
+    CratePath(String),
+    FieldSuggestion(String),
+    Unproven,
+}
+
+impl VisibilityReplacement {
+    fn for_finding(finding: &StoredFinding) -> Self {
+        match finding.fix_support {
+            FixSupport::UnusedPub => Self::Private,
+            FixSupport::NarrowToPubCrate => Self::Crate,
+            FixSupport::FieldVisibility => finding
+                .suggestion
+                .as_ref()
+                .map_or(Self::Unproven, |suggestion| {
+                    Self::FieldSuggestion(suggestion.clone())
+                }),
+            FixSupport::RestrictedAnnotation => match finding.exact_boundary_spelling {
+                ExactBoundarySpelling::Private => Self::Private,
+                ExactBoundarySpelling::Public => Self::Public,
+                ExactBoundarySpelling::Crate => Self::Crate,
+                ExactBoundarySpelling::Parent => Self::Parent,
+                ExactBoundarySpelling::CratePath => finding
+                    .narrower_scope_def_path
+                    .as_ref()
+                    .map_or(Self::Unproven, |boundary| Self::CratePath(boundary.clone())),
+            },
+            // A facade edit changes other declarations too; annotation agreement
+            // alone does not prove that the complete edit works in every mount.
+            _ => Self::Unproven,
+        }
+    }
+}
+
+// These fixes rewrite declaration annotations. Subtree re-export fixes move
+// imports instead; their planner already rejects owners with several parents
+// and retains their diagnostics so its skipped-fix notice remains observable.
+const fn edits_visibility(finding: &StoredFinding) -> bool {
+    matches!(
+        finding.fix_support,
+        FixSupport::RestrictedAnnotation
+            | FixSupport::UnusedPub
+            | FixSupport::NarrowToPubCrate
+            | FixSupport::FieldVisibility
+            | FixSupport::PubUse
+    )
+}
+
+const fn concerns_visibility(finding: &StoredFinding) -> bool {
+    edits_visibility(finding)
+        || matches!(
+            finding.diagnostic_code,
+            DiagnosticCode::ForbiddenPubInCrate
+                | DiagnosticCode::OverbroadPubCrate
+                | DiagnosticCode::SuspiciousPub
+                | DiagnosticCode::UnusedPub
+                | DiagnosticCode::NarrowToPubCrate
+                | DiagnosticCode::FieldVisibilityWiderThanType
+                | DiagnosticCode::InternalParentPubUseFacade
+        )
+}
+
+/// Agreement owns automatic edit decisions only. Manual diagnostics survive
+/// independently, once per distinct diagnostic at the physical source site.
+fn resolve_visibility_proposals(
+    proposals: Vec<VisibilityProposal>,
+    inventory: &SourceMountInventory,
+    reports: &[StoredReport],
+) -> Vec<(usize, StoredFinding)> {
+    // Agreement follows every source an edit changes, not just the diagnostic
+    // location advertising it. Fix facts own the additional destinations.
+    let expected: BTreeMap<_, _> = proposals
+        .iter()
+        .flat_map(|proposal| {
+            visibility_edit_sources(&reports[proposal.report_index], &proposal.finding)
+        })
+        .filter_map(|path| {
+            inventory
+                .sources
+                .get(path)
+                .filter(|mounts| mounts.len() > 1)
+                .map(|mounts| (path.to_string(), mounts))
+        })
+        .collect();
+    if expected.is_empty() {
+        return proposals
+            .into_iter()
+            .map(|proposal| (proposal.report_index, proposal.finding))
+            .collect();
+    }
+    let mut covered: BTreeMap<String, BTreeSet<SourceModuleMount>> = BTreeMap::new();
+    let mut replacement = VisibilityReplacement::Unproven;
+    let mut agreeing = true;
+    let mut automatic = Vec::new();
+    let mut manual = Vec::new();
+    let mut manual_keys = BTreeSet::new();
+    for proposal in proposals {
+        if edits_visibility(&proposal.finding) {
+            let proposed = VisibilityReplacement::for_finding(&proposal.finding);
+            if automatic.is_empty() {
+                replacement = proposed;
+            } else if replacement != proposed {
+                agreeing = false;
+            }
+            for path in visibility_edit_sources(&reports[proposal.report_index], &proposal.finding)
+            {
+                if !expected.contains_key(path) {
+                    continue;
+                }
+                match inventory.locate(proposal.report_index, path, &proposal.module_path) {
+                    FindingMount::Known(mount) => {
+                        covered.entry(path.to_string()).or_default().insert(mount);
+                    },
+                    FindingMount::Unknown => {
+                        agreeing = false;
+                    },
+                }
+            }
+            automatic.push((proposal.report_index, proposal.finding));
+        } else {
+            let finding = &proposal.finding;
+            let key = (
+                finding.diagnostic_code,
+                finding.severity,
+                finding.message.clone(),
+                finding.item.clone(),
+                finding.suggestion.clone(),
+                finding.related.clone(),
+            );
+            if manual_keys.insert(key) {
+                manual.push((proposal.report_index, proposal.finding));
+            }
+        }
+    }
+    let all_mounts_agree = expected.iter().all(|(path, mounts)| {
+        covered
+            .get(path)
+            .is_some_and(|covered| covered.iter().eq(mounts.keys()))
+    });
+    if agreeing
+        && replacement != VisibilityReplacement::Unproven
+        && all_mounts_agree
+        && manual.is_empty()
+        && let Some(finding) = automatic.into_iter().next()
+    {
+        manual.push(finding);
+    }
+    manual
+}
+
+/// A finding can authorize an edit at its own site or through persisted fix
+/// facts at other sites. Use the same advertising-site identity as fact pruning.
+fn visibility_edit_sources<'a>(
+    report: &'a StoredReport,
+    finding: &'a StoredFinding,
+) -> BTreeSet<&'a str> {
+    let mut paths = BTreeSet::from([finding.path.as_str()]);
+    let site = super::schema::PubUseNarrowingSite::for_finding(finding);
+    for fact in &report.pub_use_fix_facts {
+        if super::schema::PubUseNarrowingSite::advertising_sites(fact)
+            .iter()
+            .any(|advertising| site.as_ref() == Some(advertising))
+        {
+            paths.insert(&fact.child_path);
+            paths.insert(&fact.parent_path);
+        }
+    }
+    paths
+}
+
 #[derive(Clone)]
-struct VisibilityFindingCandidate {
-    constraint: StoredVisibilityConstraint,
-    finding:    StoredFinding,
+struct VisibilityFindingCandidate<'a> {
+    constraint: &'a StoredVisibilityFacts,
+    finding:    &'a StoredFinding,
 }
 
 /// What demands the boundary a declaration spells. A type named only in
@@ -368,11 +666,12 @@ enum BoundaryDemand {
     BeyondSignature,
 }
 
+/// Constraints across compilation targets for one `VisibilityModuleMount`.
+/// Every declaration in this group therefore has the same module path.
 #[derive(Default)]
 struct VisibilityConstraintGroup {
-    constraints:  VisibilityConstraintSet,
-    candidates:   Vec<VisibilityFindingCandidate>,
-    report_index: Option<usize>,
+    constraints: VisibilityConstraintSet,
+    reports:     BTreeSet<usize>,
 }
 
 /// Whether replacing the annotation with `spelling` at `boundary` changes what
@@ -416,7 +715,7 @@ fn replacement_spelling(spelling: ExactBoundarySpelling, boundary: &str) -> Stri
 ///
 /// Any restricted spelling is contained in `pub(crate)`, and every spelling is
 /// contained in `pub`; a bare `pub` narrowed to `pub(crate)` is the case this
-/// must exclude. [`VisibilityConstraintGroup::interface_leak`] is the only
+/// must exclude. [`MountVisibility::interface_leak`] is the only
 /// caller, because widening is the edit that can raise a trait impl past a type
 /// its own interface names.
 fn replacement_only_widens(spelling: ExactBoundarySpelling, annotation: &str) -> bool {
@@ -435,23 +734,57 @@ impl VisibilityConstraintGroup {
     fn include(
         &mut self,
         report_index: usize,
-        constraint: StoredVisibilityConstraint,
+        facts: StoredVisibilityFacts,
         finding: Option<StoredFinding>,
     ) {
-        self.report_index = Some(
-            self.report_index
-                .map_or(report_index, |current| current.min(report_index)),
-        );
+        let candidates = self.constraints.constraints.entry(facts).or_default();
         if let Some(finding) = finding {
-            self.candidates.push(VisibilityFindingCandidate {
-                constraint: constraint.clone(),
-                finding,
-            });
+            self.reports.insert(report_index);
+            candidates.push(finding);
         }
-        let current = std::mem::take(&mut self.constraints);
-        self.constraints = current.join(VisibilityConstraintSet::from_constraint(constraint));
     }
 
+    fn candidates(&self) -> impl Iterator<Item = VisibilityFindingCandidate<'_>> {
+        self.constraints
+            .constraints
+            .iter()
+            .flat_map(|(constraint, findings)| {
+                findings
+                    .iter()
+                    .map(move |finding| VisibilityFindingCandidate {
+                        constraint,
+                        finding,
+                    })
+            })
+    }
+
+    fn render(
+        &self,
+        callers: &CallerMap,
+        package_root: &str,
+        declaration: &StoredVisibilityDeclaration,
+    ) -> Option<StoredFinding> {
+        MountVisibility {
+            group: self,
+            declaration,
+        }
+        .render(callers, package_root)
+    }
+}
+
+/// A mount supplies the sole declaration used to interpret its target facts.
+struct MountVisibility<'a> {
+    group:       &'a VisibilityConstraintGroup,
+    declaration: &'a StoredVisibilityDeclaration,
+}
+
+impl Deref for MountVisibility<'_> {
+    type Target = VisibilityConstraintGroup;
+
+    fn deref(&self) -> &Self::Target { self.group }
+}
+
+impl MountVisibility<'_> {
     fn render(&self, callers: &CallerMap, package_root: &str) -> Option<StoredFinding> {
         let required_reach = self.constraints.required_reach();
         if self.declares_effective_required_boundary(callers, package_root, required_reach.as_ref())
@@ -462,7 +795,7 @@ impl VisibilityConstraintGroup {
             return self.public_candidate();
         }
         if self.constraints.includes_facade_blocker() {
-            if self.constraints.constraints.iter().all(|constraint| {
+            if self.constraints.constraints.keys().all(|constraint| {
                 constraint.spelling == StoredVisibilitySpelling::Crate
                     && constraint.declared_reach == StoredVisibilityReach::Crate
             }) {
@@ -478,12 +811,8 @@ impl VisibilityConstraintGroup {
         }
         let candidate = self.preferred_candidate()?;
         let mut finding = candidate.finding.clone();
-        let item_def_path = candidate.constraint.declaration.item_def_path.clone();
-        let item_module = candidate
-            .constraint
-            .declaration
-            .item_module_def_path
-            .clone();
+        let item_def_path = self.declaration.item_def_path.clone();
+        let item_module = self.declaration.item_module_def_path.clone();
         if !self.constraints.uses_caller_reconciliation() {
             return Some(finding);
         }
@@ -514,7 +843,7 @@ impl VisibilityConstraintGroup {
             },
         };
         if exact_boundary_spelling == ExactBoundarySpelling::Crate
-            && self.constraints.constraints.iter().all(|constraint| {
+            && self.constraints.constraints.keys().all(|constraint| {
                 constraint.spelling == StoredVisibilitySpelling::Crate
                     && constraint.declared_reach == StoredVisibilityReach::Crate
             })
@@ -560,7 +889,7 @@ impl VisibilityConstraintGroup {
         package_root: &str,
         required_reach: Option<&StoredVisibilityReach>,
     ) -> bool {
-        if self.candidates.iter().any(|candidate| {
+        if self.candidates().any(|candidate| {
             matches!(
                 candidate.finding.fix_support,
                 FixSupport::PubUse | FixSupport::NeedsManualPubUseCleanup
@@ -594,11 +923,7 @@ impl VisibilityConstraintGroup {
         callers: &CallerMap,
         package_root: &str,
     ) -> Option<StoredVisibilityReach> {
-        let declaration = self
-            .constraints
-            .constraints
-            .first()
-            .map(|constraint| &constraint.declaration)?;
+        let declaration = self.declaration;
         let reaching =
             &caller_aware::callers_for_package(callers, package_root, &declaration.item_def_path)?
                 .reaching;
@@ -627,7 +952,7 @@ impl VisibilityConstraintGroup {
             && self
                 .constraints
                 .constraints
-                .iter()
+                .keys()
                 .all(|constraint| constraint.spelling == StoredVisibilitySpelling::ExactPath)
             && self
                 .constraints
@@ -638,34 +963,24 @@ impl VisibilityConstraintGroup {
     }
 
     fn callers_require_structural_repair(&self, callers: &CallerMap, package_root: &str) -> bool {
-        self.constraints.constraints.iter().any(|constraint| {
-            let reaching_callers = caller_aware::callers_for_package(
-                callers,
-                package_root,
-                &constraint.declaration.item_def_path,
-            )
-            .map(|item_callers| &item_callers.reaching);
-            matches!(
-                caller_repair(&constraint.declaration, reaching_callers),
-                NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
-            )
-        })
+        let reaching_callers = caller_aware::callers_for_package(
+            callers,
+            package_root,
+            &self.declaration.item_def_path,
+        )
+        .map(|item_callers| &item_callers.reaching);
+        matches!(
+            caller_repair(self.declaration, reaching_callers),
+            NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
+        )
     }
 
     fn exact_boundary_spelling(&self, boundary: &str) -> ExactBoundarySpelling {
         if boundary == "crate" {
             return ExactBoundarySpelling::Crate;
         }
-        if self
-            .constraints
-            .constraints
-            .first()
-            .is_some_and(|constraint| {
-                let parent =
-                    visibility::parent_scope_def_path(&constraint.declaration.item_module_def_path);
-                !parent.is_empty() && visibility::crate_rooted_def_path(parent) == boundary
-            })
-        {
+        let parent = visibility::parent_scope_def_path(&self.declaration.item_module_def_path);
+        if !parent.is_empty() && visibility::crate_rooted_def_path(parent) == boundary {
             ExactBoundarySpelling::Parent
         } else {
             ExactBoundarySpelling::CratePath
@@ -673,14 +988,9 @@ impl VisibilityConstraintGroup {
     }
 
     fn parent_boundary_path(&self) -> String {
-        self.constraints.constraints.first().map_or_else(
-            || String::from("crate"),
-            |constraint| {
-                visibility::crate_rooted_def_path(visibility::parent_scope_def_path(
-                    &constraint.declaration.item_module_def_path,
-                ))
-            },
-        )
+        visibility::crate_rooted_def_path(visibility::parent_scope_def_path(
+            &self.declaration.item_module_def_path,
+        ))
     }
 
     fn supports_rewrite(&self, spelling: ExactBoundarySpelling) -> bool {
@@ -701,7 +1011,11 @@ impl VisibilityConstraintGroup {
         boundary: &str,
         spelling: ExactBoundarySpelling,
     ) -> Option<&StoredInterfaceCeiling> {
-        let constraint = self.constraints.constraints.first()?;
+        let constraint = self
+            .constraints
+            .constraints
+            .first_key_value()
+            .map(|(facts, _)| facts)?;
         if !replacement_only_widens(spelling, &constraint.visibility_annotation) {
             return None;
         }
@@ -771,8 +1085,12 @@ impl VisibilityConstraintGroup {
             // same reach keeps the policy headline, which remains relevant. Restrict this
             // through `visibility::is_annotation_policy_headline`: headlines naming what caps
             // the item convey more and remain valid after boundary resolution.
-            DiagnosticCode::ForbiddenPubInCrate => {
-                self.constraints.constraints.first().map_or_else(
+            DiagnosticCode::ForbiddenPubInCrate => self
+                .constraints
+                .constraints
+                .first_key_value()
+                .map(|(facts, _)| facts)
+                .map_or_else(
                     || finding.message.clone(),
                     |constraint| {
                         let annotation = constraint.visibility_annotation.as_str();
@@ -789,8 +1107,7 @@ impl VisibilityConstraintGroup {
                             visibility::forbidden_pub_in_headline(annotation)
                         }
                     },
-                )
-            },
+                ),
             _ => finding.message.clone(),
         };
         // Every call site is already behind `Self::supports_rewrite`, which
@@ -814,9 +1131,14 @@ impl VisibilityConstraintGroup {
         } else {
             FixSupport::None
         };
-        if let Some(constraint) = self.constraints.constraints.first() {
+        if let Some(constraint) = self
+            .constraints
+            .constraints
+            .first_key_value()
+            .map(|(facts, _)| facts)
+        {
             finding.visibility_annotation = Some(constraint.visibility_annotation.clone());
-            finding.item_def_path = Some(constraint.declaration.item_def_path.clone());
+            finding.item_def_path = Some(self.declaration.item_def_path.clone());
         }
         finding.narrower_scope_def_path = interface_leak.is_none().then(|| match spelling {
             ExactBoundarySpelling::CratePath | ExactBoundarySpelling::Parent => boundary
@@ -848,17 +1170,12 @@ impl VisibilityConstraintGroup {
 
     fn public_candidate(&self) -> Option<StoredFinding> {
         let mut finding = self
-            .candidates
-            .iter()
+            .candidates()
             .filter(|candidate| {
                 candidate.constraint.required_reach() == Some(StoredVisibilityReach::Public)
             })
-            .min_by(|left, right| candidate_order(left, right))
-            .or_else(|| {
-                self.candidates
-                    .iter()
-                    .min_by(|left, right| candidate_order(left, right))
-            })
+            .min_by(candidate_order)
+            .or_else(|| self.candidates().min_by(candidate_order))
             .map(|candidate| candidate.finding.clone())?;
         if self.supports_rewrite(ExactBoundarySpelling::Public) {
             self.apply_rewrite(
@@ -871,30 +1188,24 @@ impl VisibilityConstraintGroup {
     }
 
     fn blocker_candidate(&self) -> Option<StoredFinding> {
-        self.candidates
-            .iter()
+        self.candidates()
             .filter(|candidate| {
                 matches!(candidate.constraint.facade, StoredFacadeConstraint::Blocked)
             })
-            .min_by(|left, right| candidate_order(left, right))
-            .or_else(|| {
-                self.candidates
-                    .iter()
-                    .min_by(|left, right| candidate_order(left, right))
-            })
+            .min_by(candidate_order)
+            .or_else(|| self.candidates().min_by(candidate_order))
             .map(|candidate| candidate.finding.clone())
     }
 
     fn facade_cleanup_candidate(&self) -> Option<StoredFinding> {
-        self.candidates
-            .iter()
+        self.candidates()
             .filter(|candidate| {
                 matches!(
                     candidate.finding.fix_support,
                     FixSupport::PubUse | FixSupport::NeedsManualPubUseCleanup
                 )
             })
-            .min_by(|left, right| candidate_order(left, right))
+            .min_by(candidate_order)
             .map(|candidate| candidate.finding.clone())
     }
 
@@ -939,8 +1250,8 @@ impl VisibilityConstraintGroup {
         Some(finding)
     }
 
-    fn preferred_candidate(&self) -> Option<&VisibilityFindingCandidate> {
-        self.candidates.iter().min_by(|left, right| {
+    fn preferred_candidate(&self) -> Option<VisibilityFindingCandidate<'_>> {
+        self.candidates().min_by(|left, right| {
             candidate_priority(left)
                 .cmp(&candidate_priority(right))
                 .then_with(|| candidate_order(left, right))
@@ -964,27 +1275,19 @@ impl VisibilityConstraintGroup {
         {
             return BoundaryDemand::BeyondSignature;
         }
-        let demanded_beyond_signature = self.constraints.constraints.iter().any(|constraint| {
-            // If `requirement_repair` finds a narrower canonical annotation already
-            // reaches the boundary, keep reporting the spelling finding: it does
-            // not demand a facade.
-            if !matches!(
-                requirement_repair(&constraint.declaration, required_reach),
-                NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
-            ) {
-                return true;
-            }
-            let naming_callers = caller_aware::callers_for_package(
-                callers,
-                package_root,
-                &constraint.declaration.item_def_path,
-            )
-            .map(|item_callers| &item_callers.naming);
-            matches!(
-                caller_repair(&constraint.declaration, naming_callers),
-                NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
-            )
-        });
+        let naming_callers = caller_aware::callers_for_package(
+            callers,
+            package_root,
+            &self.declaration.item_def_path,
+        )
+        .map(|item_callers| &item_callers.naming);
+        let demanded_beyond_signature = !matches!(
+            requirement_repair(self.declaration, required_reach),
+            NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
+        ) || matches!(
+            caller_repair(self.declaration, naming_callers),
+            NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations
+        );
         if demanded_beyond_signature {
             BoundaryDemand::BeyondSignature
         } else {
@@ -998,32 +1301,22 @@ impl VisibilityConstraintGroup {
         package_root: &str,
         required_reach: Option<&StoredVisibilityReach>,
     ) -> NoFacadeVisibilityRepair {
-        let mut repair = NoFacadeVisibilityRepair::RemoveAnnotation;
-        for constraint in &self.constraints.constraints {
-            if !self.constraints.all_facades_are_impossible() {
-                repair = repair
-                    .most_invasive(requirement_repair(&constraint.declaration, required_reach));
-            }
-            let reaching_callers = caller_aware::callers_for_package(
-                callers,
-                package_root,
-                &constraint.declaration.item_def_path,
-            )
-            .map(|item_callers| &item_callers.reaching);
-            repair = repair.most_invasive(caller_repair(&constraint.declaration, reaching_callers));
-        }
-        repair
+        let repair = if self.constraints.all_facades_are_impossible() {
+            NoFacadeVisibilityRepair::RemoveAnnotation
+        } else {
+            requirement_repair(self.declaration, required_reach)
+        };
+        let reaching_callers = caller_aware::callers_for_package(
+            callers,
+            package_root,
+            &self.declaration.item_def_path,
+        )
+        .map(|item_callers| &item_callers.reaching);
+        repair.most_invasive(caller_repair(self.declaration, reaching_callers))
     }
 
     fn caller_boundary_path(&self, callers: &CallerMap, package_root: &str) -> String {
-        let Some(declaration) = self
-            .constraints
-            .constraints
-            .first()
-            .map(|constraint| &constraint.declaration)
-        else {
-            return String::from("crate");
-        };
+        let declaration = self.declaration;
         let no_callers = BTreeSet::new();
         let reaching_callers =
             caller_aware::callers_for_package(callers, package_root, &declaration.item_def_path)
@@ -1115,56 +1408,144 @@ fn caller_repair(
     )
 }
 
-pub(super) fn reconcile_visibility_constraints(reports: &mut [StoredReport], callers: &CallerMap) {
-    let mut groups: BTreeMap<VisibilityConstraintKey, VisibilityConstraintGroup> = BTreeMap::new();
+fn group_visibility_constraints(
+    reports: &[StoredReport],
+) -> BTreeMap<VisibilityConstraintKey, SharedSourceVisibility> {
+    let mut groups: BTreeMap<VisibilityConstraintKey, SharedSourceVisibility> = BTreeMap::new();
     for (report_index, report) in reports.iter().enumerate() {
-        // Build `findings_by_key` once from `report.findings` rather than searching
-        // them for each `report.visibility_constraints` entry: both counts grow
-        // with project size, so searching costs their product.
-        let mut findings_by_key: BTreeMap<VisibilityConstraintKey, &StoredFinding> =
+        let mut findings_by_key: BTreeMap<VisibilityConstraintKey, Vec<&StoredFinding>> =
             BTreeMap::new();
         for finding in &report.findings {
             findings_by_key
-                .entry(VisibilityConstraintKey::for_finding(
-                    &report.package_root,
-                    finding,
-                ))
-                .or_insert(finding);
+                .entry(VisibilityConstraintKey::for_finding(finding))
+                .or_default()
+                .push(finding);
         }
         for constraint in &report.visibility_constraints {
-            let key = VisibilityConstraintKey::new(&report.package_root, constraint);
-            let finding = if constraint.outcome == StoredConstraintOutcome::Finding {
-                findings_by_key.get(&key).copied().cloned()
-            } else {
-                None
+            let key = VisibilityConstraintKey::new(constraint);
+            let mount = VisibilityModuleMount {
+                package_root: report.package_root.clone(),
+                declaration:  constraint.declaration.clone(),
             };
-            groups
-                .entry(key)
+            let group = groups
+                .entry(key.clone())
                 .or_default()
-                .include(report_index, constraint.clone(), finding);
+                .mounts
+                .entry(mount)
+                .or_default();
+            let findings = findings_by_key.get(&key);
+            if constraint.facts.outcome == StoredConstraintOutcome::Finding
+                && let Some(findings) = findings
+            {
+                for finding in findings {
+                    group.include(
+                        report_index,
+                        constraint.facts.clone(),
+                        Some((*finding).clone()),
+                    );
+                }
+            } else {
+                group.include(report_index, constraint.facts.clone(), None);
+            }
         }
     }
+    groups
+}
 
-    let reconciled_keys = groups
+pub(super) fn reconcile_visibility_constraints(reports: &mut [StoredReport], callers: &CallerMap) {
+    let inventory = SourceMountInventory::collect(reports);
+    let groups = group_visibility_constraints(reports);
+
+    let reconciled_keys: BTreeSet<_> = groups
         .iter()
-        .filter(|(_, group)| !group.candidates.is_empty())
+        .filter(|(_, shared)| {
+            shared
+                .mounts
+                .values()
+                .any(|group| group.candidates().next().is_some())
+        })
         .map(|(key, _)| key.clone())
-        .collect::<BTreeSet<_>>();
+        .collect();
+    let mut sites: BTreeMap<StoredVisibilitySource, Vec<VisibilityProposal>> = BTreeMap::new();
     for report in reports.iter_mut() {
-        let package_root = report.package_root.clone();
         report.findings.retain(|finding| {
-            !reconciled_keys.contains(&VisibilityConstraintKey::for_finding(
-                &package_root,
-                finding,
-            ))
+            !reconciled_keys.contains(&VisibilityConstraintKey::for_finding(finding))
         });
     }
-
-    for (key, group) in groups {
-        let Some(report_index) = group.report_index else {
-            continue;
-        };
-        if let Some(finding) = group.render(callers, &key.package_root) {
+    for (key, shared) in groups {
+        for (mount, group) in shared.mounts {
+            let rendered = group.render(callers, &mount.package_root, &mount.declaration);
+            // Some scans defer an automatic edit until callers are merged and
+            // therefore initially mark it None. An ineligible annotation or a
+            // manual rendered outcome instead denotes an actual manual error.
+            if inventory
+                .sources
+                .get(&key.source.path)
+                .is_some_and(|mounts| mounts.len() > 1)
+            {
+                for candidate in group.candidates().filter(|candidate| {
+                    !edits_visibility(candidate.finding)
+                        && (candidate.constraint.annotation_edit_acceptance
+                            == StoredExactBoundaryAcceptance::Ineligible
+                            || rendered
+                                .as_ref()
+                                .is_some_and(|finding| !edits_visibility(finding)))
+                }) {
+                    if let Some(report_index) = group.reports.first() {
+                        sites
+                            .entry(key.source.clone())
+                            .or_default()
+                            .push(VisibilityProposal {
+                                report_index: *report_index,
+                                module_path:  module_segments(
+                                    &mount.declaration.item_module_def_path,
+                                ),
+                                finding:      candidate.finding.clone(),
+                            });
+                    }
+                }
+            }
+            if let Some(finding) = rendered {
+                for report_index in &group.reports {
+                    sites
+                        .entry(key.source.clone())
+                        .or_default()
+                        .push(VisibilityProposal {
+                            report_index: *report_index,
+                            module_path:  module_segments(&mount.declaration.item_module_def_path),
+                            finding:      finding.clone(),
+                        });
+                }
+            }
+        }
+    }
+    for (report_index, report) in reports.iter_mut().enumerate() {
+        let mut retained = Vec::new();
+        for finding in std::mem::take(&mut report.findings) {
+            if !concerns_visibility(&finding) {
+                retained.push(finding);
+                continue;
+            }
+            let module = finding
+                .item_def_path
+                .as_deref()
+                .and_then(|item| item.rsplit_once("::"))
+                .map_or("", |(module, _)| module);
+            let module_path = module_segments(module);
+            sites
+                .entry(VisibilityConstraintKey::for_finding(&finding).source)
+                .or_default()
+                .push(VisibilityProposal {
+                    report_index,
+                    module_path,
+                    finding,
+                });
+        }
+        report.findings = retained;
+    }
+    for proposals in sites.into_values() {
+        for (report_index, finding) in resolve_visibility_proposals(proposals, &inventory, reports)
+        {
             reports[report_index].findings.push(finding);
         }
     }
@@ -1194,6 +1575,7 @@ mod tests {
     use super::StoredFacadeConstraint;
     use super::StoredVisibilityConstraint;
     use super::StoredVisibilityDeclaration;
+    use super::StoredVisibilityFacts;
     use super::StoredVisibilityReach;
     use super::StoredVisibilitySource;
     use super::StoredVisibilitySpelling;
@@ -1204,6 +1586,8 @@ mod tests {
     use crate::compiler::persistence::StoredFinding;
     use crate::compiler::persistence::StoredReport;
     use crate::compiler::persistence::caller_aware;
+    use crate::compiler::persistence::schema::StoredModuleMountFact;
+    use crate::compiler::persistence::schema::StoredPubUseFixFact;
     use crate::compiler::persistence::schema::UseSite;
     use crate::compiler::persistence::schema::UseSiteReference;
     use crate::config::DiagnosticCode;
@@ -1212,6 +1596,36 @@ mod tests {
     use crate::reporting::ExactBoundarySpelling;
     use crate::reporting::FixSupport;
     use crate::reporting::Severity;
+
+    struct TestMount {
+        group:       VisibilityConstraintGroup,
+        declaration: StoredVisibilityDeclaration,
+    }
+
+    impl Default for TestMount {
+        fn default() -> Self {
+            Self {
+                group:       VisibilityConstraintGroup::default(),
+                declaration: constraint(StoredFacadeConstraint::Absent, None).declaration,
+            }
+        }
+    }
+
+    impl TestMount {
+        fn include_constraint(
+            &mut self,
+            report: usize,
+            constraint: StoredVisibilityConstraint,
+            finding: Option<StoredFinding>,
+        ) {
+            self.declaration = constraint.declaration;
+            self.group.include(report, constraint.facts, finding);
+        }
+
+        fn render(&self, callers: &CallerMap, package: &str) -> Option<StoredFinding> {
+            self.group.render(callers, package, &self.declaration)
+        }
+    }
 
     #[test]
     fn reach_join_is_associative_commutative_and_idempotent() {
@@ -1294,15 +1708,16 @@ mod tests {
         let blocker = constraint(StoredFacadeConstraint::Blocked, None);
 
         for constraints in [[public.clone(), blocker.clone()], [blocker, public]] {
-            let mut group = VisibilityConstraintGroup::default();
+            let mut group = TestMount::default();
             for constraint in constraints {
-                let message =
-                    if constraint.signature_requirement == Some(StoredVisibilityReach::Public) {
-                        "public requirement"
-                    } else {
-                        "facade blocker"
-                    };
-                group.include(0, constraint, Some(finding(message)));
+                let message = if constraint.facts.signature_requirement
+                    == Some(StoredVisibilityReach::Public)
+                {
+                    "public requirement"
+                } else {
+                    "facade blocker"
+                };
+                group.include_constraint(0, constraint, Some(finding(message)));
             }
 
             let rendered = group.render(&CallerMap::new(), "/package");
@@ -1316,7 +1731,7 @@ mod tests {
 
     #[test]
     fn sibling_resolved_facades_suppress_a_satisfied_crate_annotation() {
-        let mut group = VisibilityConstraintGroup::default();
+        let mut group = TestMount::default();
         for boundary in ["crate::left", "crate::right"] {
             let mut constraint = constraint(
                 StoredFacadeConstraint::Resolved {
@@ -1324,9 +1739,9 @@ mod tests {
                 },
                 None,
             );
-            constraint.declared_reach = StoredVisibilityReach::Crate;
-            constraint.spelling = StoredVisibilitySpelling::Crate;
-            group.include(0, constraint, Some(finding(boundary)));
+            constraint.facts.declared_reach = StoredVisibilityReach::Crate;
+            constraint.facts.spelling = StoredVisibilitySpelling::Crate;
+            group.include_constraint(0, constraint, Some(finding(boundary)));
         }
 
         assert!(group.render(&CallerMap::new(), "/package").is_none());
@@ -1340,9 +1755,9 @@ mod tests {
             },
             None,
         );
-        constraint.outcome = StoredConstraintOutcome::Accepted;
-        let mut group = VisibilityConstraintGroup::default();
-        group.include(0, constraint, None);
+        constraint.facts.outcome = StoredConstraintOutcome::Accepted;
+        let mut group = TestMount::default();
+        group.include_constraint(0, constraint, None);
 
         assert!(group.render(&CallerMap::new(), "/package").is_none());
     }
@@ -1355,8 +1770,8 @@ mod tests {
         );
         constraint.declaration.item_def_path = String::from("crate::a::b::c::item");
         constraint.declaration.item_module_def_path = String::from("crate::a::b::c");
-        let mut group = VisibilityConstraintGroup::default();
-        group.include(0, constraint, Some(finding("exact boundary")));
+        let mut group = TestMount::default();
+        group.include_constraint(0, constraint, Some(finding("exact boundary")));
         let callers = caller_map("crate::a::b::c::item", "crate::a::caller");
 
         assert!(group.render(&callers, "/package").is_none());
@@ -1368,8 +1783,8 @@ mod tests {
             StoredFacadeConstraint::Impossible,
             Some(StoredVisibilityReach::Crate),
         );
-        let mut group = VisibilityConstraintGroup::default();
-        group.include(0, constraint, Some(finding("parent boundary")));
+        let mut group = TestMount::default();
+        group.include_constraint(0, constraint, Some(finding("parent boundary")));
         let callers = caller_map("crate::a::b::item", "crate::a::caller");
 
         assert!(group.render(&callers, "/package").is_none());
@@ -1382,16 +1797,16 @@ mod tests {
             Some(StoredVisibilityReach::Crate),
         );
         constraint.diagnostic_code = DiagnosticCode::OverbroadPubCrate;
-        constraint.visibility_annotation = String::from("pub(crate)");
-        constraint.declared_reach = StoredVisibilityReach::Crate;
-        constraint.spelling = StoredVisibilitySpelling::Crate;
+        constraint.facts.visibility_annotation = String::from("pub(crate)");
+        constraint.facts.declared_reach = StoredVisibilityReach::Crate;
+        constraint.facts.spelling = StoredVisibilitySpelling::Crate;
         constraint.declaration.item_def_path = String::from("crate::a::b::c::item");
         constraint.declaration.item_module_def_path = String::from("crate::a::b::c");
         let mut candidate = finding("crate visibility");
         candidate.diagnostic_code = DiagnosticCode::OverbroadPubCrate;
         candidate.fix_support = FixSupport::RestrictedAnnotation;
-        let mut group = VisibilityConstraintGroup::default();
-        group.include(0, constraint.clone(), Some(candidate.clone()));
+        let mut group = TestMount::default();
+        group.include_constraint(0, constraint.clone(), Some(candidate.clone()));
 
         let callers = caller_map("crate::a::b::c::item", "crate::a::caller");
         let rendered = group.render(&callers, "/package");
@@ -1409,8 +1824,8 @@ mod tests {
         assert_eq!(rendered.narrower_scope_def_path.as_deref(), Some("a"),);
         assert_eq!(rendered.fix_support, FixSupport::RestrictedAnnotation);
 
-        let mut root_group = VisibilityConstraintGroup::default();
-        root_group.include(0, constraint, Some(candidate));
+        let mut root_group = TestMount::default();
+        root_group.include_constraint(0, constraint, Some(candidate));
         let root_callers = caller_map("crate::a::b::c::item", "crate::other");
         assert!(
             root_group.render(&root_callers, "/package").is_none(),
@@ -1429,8 +1844,8 @@ mod tests {
             NoFacadeVisibilityRepair::StructuralMigrationForCallerLocations,
             String::from("replaced by the structural headline"),
         );
-        let mut group = VisibilityConstraintGroup::default();
-        group.include(0, constraint, Some(finding(&structural_headline)));
+        let mut group = TestMount::default();
+        group.include_constraint(0, constraint, Some(finding(&structural_headline)));
 
         let callers = caller_map("crate::a::b::item", "crate::other");
         let rendered = group.render(&callers, "/package");
@@ -1458,8 +1873,8 @@ mod tests {
     #[test]
     fn a_resolved_boundary_keeps_a_headline_that_never_denied_one_exists() {
         let constraint = constraint(StoredFacadeConstraint::Impossible, None);
-        let mut group = VisibilityConstraintGroup::default();
-        group.include(
+        let mut group = TestMount::default();
+        group.include_constraint(
             0,
             constraint,
             Some(finding("parent facade caps reach at `pub(crate)`")),
@@ -1477,13 +1892,13 @@ mod tests {
     fn facade_less_parent_boundary_upgrades_a_manual_candidate_to_pub_super() {
         let mut constraint = constraint(StoredFacadeConstraint::Impossible, None);
         constraint.diagnostic_code = DiagnosticCode::OverbroadPubCrate;
-        constraint.visibility_annotation = String::from("pub(crate)");
-        constraint.declared_reach = StoredVisibilityReach::Crate;
-        constraint.spelling = StoredVisibilitySpelling::Crate;
+        constraint.facts.visibility_annotation = String::from("pub(crate)");
+        constraint.facts.declared_reach = StoredVisibilityReach::Crate;
+        constraint.facts.spelling = StoredVisibilitySpelling::Crate;
         let mut candidate = finding("crate visibility");
         candidate.diagnostic_code = DiagnosticCode::OverbroadPubCrate;
-        let mut group = VisibilityConstraintGroup::default();
-        group.include(0, constraint, Some(candidate));
+        let mut group = TestMount::default();
+        group.include_constraint(0, constraint, Some(candidate));
 
         let callers = caller_map("crate::a::b::item", "crate::a::caller");
         let rendered = group.render(&callers, "/package");
@@ -1516,13 +1931,13 @@ mod tests {
             Some(StoredVisibilityReach::Crate),
         );
         constraint.diagnostic_code = DiagnosticCode::OverbroadPubCrate;
-        constraint.visibility_annotation = String::from("pub(crate)");
-        constraint.declared_reach = StoredVisibilityReach::Crate;
-        constraint.spelling = StoredVisibilitySpelling::Crate;
+        constraint.facts.visibility_annotation = String::from("pub(crate)");
+        constraint.facts.declared_reach = StoredVisibilityReach::Crate;
+        constraint.facts.spelling = StoredVisibilitySpelling::Crate;
         let mut candidate = finding("crate visibility");
         candidate.diagnostic_code = DiagnosticCode::OverbroadPubCrate;
-        let mut group = VisibilityConstraintGroup::default();
-        group.include(0, constraint, Some(candidate));
+        let mut group = TestMount::default();
+        group.include_constraint(0, constraint, Some(candidate));
 
         let callers = caller_map("crate::a::b::item", "crate::a::caller");
         assert!(
@@ -1535,13 +1950,13 @@ mod tests {
     fn bare_pub_rewrites_to_crate_reach_for_crate_wide_callers() {
         let mut constraint = constraint(StoredFacadeConstraint::Absent, None);
         constraint.diagnostic_code = DiagnosticCode::SuspiciousPub;
-        constraint.visibility_annotation = String::from("pub");
-        constraint.declared_reach = StoredVisibilityReach::Public;
-        constraint.spelling = StoredVisibilitySpelling::Public;
+        constraint.facts.visibility_annotation = String::from("pub");
+        constraint.facts.declared_reach = StoredVisibilityReach::Public;
+        constraint.facts.spelling = StoredVisibilitySpelling::Public;
         let mut candidate = finding("public visibility");
         candidate.diagnostic_code = DiagnosticCode::SuspiciousPub;
-        let mut group = VisibilityConstraintGroup::default();
-        group.include(0, constraint, Some(candidate));
+        let mut group = TestMount::default();
+        group.include_constraint(0, constraint, Some(candidate));
         let callers = caller_map("crate::a::b::item", "crate::other");
 
         let rendered = group.render(&callers, "/package");
@@ -1568,15 +1983,15 @@ mod tests {
     fn bare_pub_rewrites_to_an_exact_ancestor_for_sibling_callers() {
         let mut constraint = constraint(StoredFacadeConstraint::Absent, None);
         constraint.diagnostic_code = DiagnosticCode::SuspiciousPub;
-        constraint.visibility_annotation = String::from("pub");
-        constraint.declared_reach = StoredVisibilityReach::Public;
-        constraint.spelling = StoredVisibilitySpelling::Public;
+        constraint.facts.visibility_annotation = String::from("pub");
+        constraint.facts.declared_reach = StoredVisibilityReach::Public;
+        constraint.facts.spelling = StoredVisibilitySpelling::Public;
         constraint.declaration.item_def_path = String::from("crate::a::b::c::item");
         constraint.declaration.item_module_def_path = String::from("crate::a::b::c");
         let mut candidate = finding("public visibility");
         candidate.diagnostic_code = DiagnosticCode::SuspiciousPub;
-        let mut group = VisibilityConstraintGroup::default();
-        group.include(0, constraint, Some(candidate));
+        let mut group = TestMount::default();
+        group.include_constraint(0, constraint, Some(candidate));
         let callers = caller_map("crate::a::b::c::item", "crate::a::caller");
 
         let rendered = group.render(&callers, "/package");
@@ -1620,6 +2035,313 @@ mod tests {
         caller_aware::apply_caller_aware_suppression(&mut reports)
     }
 
+    #[test]
+    fn shared_source_visibility_keeps_a_later_mounts_crate_callers() {
+        let mut reports = vec![
+            mounted_visibility_report("/package", "crate::a::b", "crate::a::b"),
+            mounted_visibility_report("/package", "crate::test_pointer", "crate"),
+        ];
+        let callers = caller_aware::apply_caller_aware_suppression(&mut reports);
+
+        super::reconcile_visibility_constraints(&mut reports, &callers);
+
+        assert!(
+            reports.iter().all(|report| report.findings.is_empty()),
+            "a mount needing crate visibility must prevent another mount's narrowing: {reports:#?}"
+        );
+    }
+
+    #[test]
+    fn shared_source_visibility_retains_current_when_exact_paths_disagree() {
+        let mut reports = vec![
+            mounted_visibility_report("/package", "crate::a::b::c", "crate::a::caller"),
+            mounted_visibility_report("/package", "crate::x::y::z", "crate::x::caller"),
+        ];
+        let callers = caller_aware::apply_caller_aware_suppression(&mut reports);
+
+        super::reconcile_visibility_constraints(&mut reports, &callers);
+
+        assert!(
+            reports.iter().all(|report| report.findings.is_empty()),
+            "neither exact path is valid in both mounts: {reports:#?}"
+        );
+    }
+
+    #[test]
+    fn shared_source_visibility_includes_mounts_from_other_packages() {
+        let mut reports = vec![
+            mounted_visibility_report("/one", "crate::support::shared", "crate::support"),
+            mounted_visibility_report("/two", "crate::support::shared", "crate"),
+        ];
+        let callers = caller_aware::apply_caller_aware_suppression(&mut reports);
+
+        super::reconcile_visibility_constraints(&mut reports, &callers);
+
+        assert!(
+            reports.iter().all(|report| report.findings.is_empty()),
+            "a source edit must satisfy callers in every package: {reports:#?}"
+        );
+    }
+
+    #[test]
+    fn shared_source_visibility_allows_a_common_parent_spelling() {
+        let mut reports = vec![
+            mounted_visibility_report("/package", "crate::a::b", "crate::a"),
+            mounted_visibility_report("/package", "crate::x::y::z", "crate::x::y"),
+        ];
+        let callers = caller_aware::apply_caller_aware_suppression(&mut reports);
+
+        super::reconcile_visibility_constraints(&mut reports, &callers);
+
+        let findings: Vec<_> = reports.iter().flat_map(|report| &report.findings).collect();
+        assert_eq!(findings.len(), 1, "one source gets one edit");
+        assert_eq!(
+            findings[0].exact_boundary_spelling,
+            ExactBoundarySpelling::Parent
+        );
+        assert_eq!(findings[0].fix_support, FixSupport::RestrictedAnnotation);
+    }
+
+    #[test]
+    fn shared_source_visibility_silent_public_mount_vetoes_narrowing() {
+        let mut report =
+            mounted_visibility_report("/package", "crate::internal::nested::hidden", "crate");
+        let constraint = &mut report.visibility_constraints[0];
+        constraint.diagnostic_code = DiagnosticCode::SuspiciousPub;
+        constraint.facts.visibility_annotation = String::from("pub");
+        constraint.facts.declared_reach = StoredVisibilityReach::Public;
+        constraint.facts.spelling = StoredVisibilitySpelling::Public;
+        constraint.facts.facade = StoredFacadeConstraint::Resolved {
+            required: StoredVisibilityReach::Crate,
+        };
+        report.findings[0].diagnostic_code = DiagnosticCode::SuspiciousPub;
+        report.module_mount_facts = ["api", "internal::nested::hidden"]
+            .into_iter()
+            .map(mount_fact)
+            .collect();
+        let mut reports = vec![report];
+        let callers = caller_aware::apply_caller_aware_suppression(&mut reports);
+
+        super::reconcile_visibility_constraints(&mut reports, &callers);
+
+        assert_eq!(
+            reports[0].findings.len(),
+            0,
+            "the public mount has no constraint or finding and vetoes the edit"
+        );
+    }
+
+    #[test]
+    fn shared_source_visibility_silent_used_mount_vetoes_unused_pub() {
+        let mut report = mounted_visibility_report("/package", "crate::b", "crate::b");
+        report.visibility_constraints.clear();
+        let candidate = &mut report.findings[0];
+        candidate.diagnostic_code = DiagnosticCode::UnusedPub;
+        candidate.fix_support = FixSupport::UnusedPub;
+        candidate.item_def_path = Some(String::from("crate::b::item"));
+        candidate.visibility_annotation = None;
+        candidate.narrower_scope_def_path = Some(String::from("crate::b"));
+        report.module_mount_facts = ["a", "b"].into_iter().map(mount_fact).collect();
+        report.use_sites = vec![UseSite {
+            target_def_path:        String::from("crate::a::item"),
+            caller_module_def_path: String::from("crate"),
+            reference:              UseSiteReference::Named,
+        }];
+        let mut reports = vec![report];
+        let callers = caller_aware::apply_caller_aware_suppression(&mut reports);
+
+        super::reconcile_visibility_constraints(&mut reports, &callers);
+
+        assert_eq!(
+            reports[0].findings.len(),
+            0,
+            "unused in b cannot remove visibility used through a"
+        );
+    }
+
+    #[test]
+    fn shared_source_visibility_preserves_distinct_manual_diagnostics_once() {
+        let mut reports: Vec<_> = ["crate::a", "crate::b", "crate::a"]
+            .into_iter()
+            .map(|module| {
+                let mut report = mounted_visibility_report("/package", module, module);
+                let constraint = &mut report.visibility_constraints[0];
+                constraint.diagnostic_code = DiagnosticCode::ForbiddenPubInCrate;
+                constraint.facts.visibility_annotation = String::from("pub(in self)");
+                constraint.facts.spelling = StoredVisibilitySpelling::NonCanonical;
+                constraint.facts.facade = StoredFacadeConstraint::Absent;
+                constraint.facts.caller_reconciliation = StoredCallerReconciliation::Fixed;
+                constraint.facts.exact_boundary_acceptance =
+                    StoredExactBoundaryAcceptance::Ineligible;
+                constraint.facts.annotation_edit_acceptance =
+                    StoredExactBoundaryAcceptance::Ineligible;
+                let candidate = &mut report.findings[0];
+                candidate.diagnostic_code = DiagnosticCode::ForbiddenPubInCrate;
+                candidate.message = String::from("manual spelling error");
+                candidate.fix_support = FixSupport::None;
+                report.module_mount_facts = ["a", "b"].into_iter().map(mount_fact).collect();
+                report
+            })
+            .collect();
+        let mut distinct = reports[1].findings[0].clone();
+        distinct.message = String::from("another manual visibility error");
+        reports[1].findings.push(distinct);
+        let callers = caller_aware::apply_caller_aware_suppression(&mut reports);
+
+        super::reconcile_visibility_constraints(&mut reports, &callers);
+
+        let mut messages: Vec<_> = reports
+            .iter()
+            .flat_map(|report| &report.findings)
+            .map(|finding| finding.message.as_str())
+            .collect();
+        messages.sort_unstable();
+        assert_eq!(
+            messages,
+            ["another manual visibility error", "manual spelling error"]
+        );
+    }
+
+    #[test]
+    fn repeated_target_reports_preserve_single_mount_visibility_findings() {
+        for (code, support) in [
+            (
+                DiagnosticCode::NarrowToPubCrate,
+                FixSupport::NarrowToPubCrate,
+            ),
+            (
+                DiagnosticCode::FieldVisibilityWiderThanType,
+                FixSupport::FieldVisibility,
+            ),
+            (
+                DiagnosticCode::InternalParentPubUseFacade,
+                FixSupport::PubUse,
+            ),
+            (DiagnosticCode::UnusedPub, FixSupport::UnusedPub),
+        ] {
+            let mut reports: Vec<_> = (0..2)
+                .map(|_| {
+                    let mut report =
+                        mounted_visibility_report("/package", "crate::helpers", "crate");
+                    report.crate_root_file = String::from("/package/src/lib.rs");
+                    report.visibility_constraints.clear();
+                    let candidate = &mut report.findings[0];
+                    candidate.diagnostic_code = code;
+                    candidate.fix_support = support;
+                    candidate.item_def_path = None;
+                    report
+                })
+                .collect();
+            super::reconcile_visibility_constraints(&mut reports, &CallerMap::new());
+            assert_eq!(
+                reports
+                    .iter()
+                    .map(|report| report.findings.len())
+                    .sum::<usize>(),
+                2,
+                "recompiling one mount must preserve {code:?}/{support:?}"
+            );
+            assert!(
+                reports
+                    .iter()
+                    .flat_map(|report| &report.findings)
+                    .all(
+                        |finding| finding.diagnostic_code == code && finding.fix_support == support
+                    )
+            );
+        }
+    }
+
+    #[test]
+    fn shared_edit_destination_vetoes_parent_facade_authorization() {
+        let mut report = mounted_visibility_report("/package", "crate::actor", "crate");
+        report.visibility_constraints.clear();
+        let parent = "/package/src/actor/mod.rs";
+        let child = "/package/src/shared.rs";
+        let candidate = &mut report.findings[0];
+        candidate.path = parent.to_string();
+        candidate.diagnostic_code = DiagnosticCode::InternalParentPubUseFacade;
+        candidate.fix_support = FixSupport::PubUse;
+        candidate.item = Some(String::from("struct Item"));
+        candidate.item_def_path = Some(String::from("crate::actor::shared::Item"));
+        report.pub_use_fix_facts.push(StoredPubUseFixFact {
+            child_path:      child.to_string(),
+            child_line:      1,
+            child_item_name: String::from("Item"),
+            parent_path:     parent.to_string(),
+            parent_line:     1,
+            child_module:    String::from("shared"),
+        });
+        report.module_mount_facts = [
+            (parent, "actor"),
+            (child, "actor::shared"),
+            (child, "other::nested::hidden"),
+        ]
+        .into_iter()
+        .map(|(file, module)| {
+            let mut fact = mount_fact(module);
+            fact.file = file.to_string();
+            fact
+        })
+        .collect();
+        report.use_sites.push(UseSite {
+            target_def_path:        String::from("crate::other::nested::hidden::Item"),
+            caller_module_def_path: String::from("crate"),
+            reference:              UseSiteReference::Named,
+        });
+        let mut reports = vec![report];
+        let callers = caller_aware::apply_caller_aware_suppression(&mut reports);
+        super::reconcile_visibility_constraints(&mut reports, &callers);
+        assert_eq!(
+            reports[0].findings.len(),
+            0,
+            "a parent facade must not authorize narrowing a shared child with a silent mount"
+        );
+    }
+
+    fn mount_fact(module: &str) -> StoredModuleMountFact {
+        StoredModuleMountFact {
+            crate_root_file: String::from("/package/src/lib.rs"),
+            file:            String::from("/package/src/lib.rs"),
+            module_path:     module.split("::").map(str::to_string).collect(),
+        }
+    }
+
+    fn mounted_visibility_report(package_root: &str, module: &str, caller: &str) -> StoredReport {
+        let mut constraint = constraint(StoredFacadeConstraint::Impossible, None);
+        constraint.diagnostic_code = DiagnosticCode::OverbroadPubCrate;
+        constraint.facts.visibility_annotation = String::from("pub(crate)");
+        constraint.facts.declared_reach = StoredVisibilityReach::Crate;
+        constraint.facts.spelling = StoredVisibilitySpelling::Crate;
+        constraint.declaration.item_def_path = format!("{module}::item");
+        constraint.declaration.item_module_def_path = module.to_string();
+        let mut candidate = finding("crate visibility");
+        candidate.diagnostic_code = DiagnosticCode::OverbroadPubCrate;
+        StoredReport {
+            version:                    FINDINGS_SCHEMA_VERSION,
+            analysis_fingerprint:       String::new(),
+            scope_fingerprint:          String::new(),
+            package_root:               package_root.to_string(),
+            crate_root_file:            format!("{package_root}/{module}.rs"),
+            config_fingerprint:         String::new(),
+            source_files:               vec![constraint.source.path.clone()],
+            findings:                   vec![candidate],
+            use_sites:                  vec![UseSite {
+                target_def_path:        constraint.declaration.item_def_path.clone(),
+                caller_module_def_path: caller.to_string(),
+                reference:              UseSiteReference::Named,
+            }],
+            visibility_constraints:     vec![constraint],
+            pub_use_fix_facts:          Vec::new(),
+            subtree_reexport_fix_facts: Vec::new(),
+            module_mount_facts:         vec![mount_fact(
+                module.strip_prefix("crate::").unwrap_or(module),
+            )],
+            all_features_coverage:      AllFeaturesCoverage::default(),
+            compiler_warning_facts:     CompilerWarningFacts::None,
+        }
+    }
+
     fn restricted(boundary: &str) -> StoredVisibilityReach {
         StoredVisibilityReach::Restricted {
             boundary: boundary.to_string(),
@@ -1632,26 +2354,28 @@ mod tests {
     ) -> StoredVisibilityConstraint {
         StoredVisibilityConstraint {
             diagnostic_code: DiagnosticCode::ForbiddenPubInCrate,
-            source: StoredVisibilitySource {
+            source:          StoredVisibilitySource {
                 path:   String::from("/package/src/lib.rs"),
                 line:   1,
                 column: 1,
             },
-            declaration: StoredVisibilityDeclaration {
+            declaration:     StoredVisibilityDeclaration {
                 item_def_path:        String::from("crate::a::b::item"),
                 item_module_def_path: String::from("crate::a::b"),
             },
-            visibility_annotation: String::from("pub(in crate::a)"),
-            declared_reach: restricted("crate::a"),
-            interface_ceiling: None,
-            spelling: StoredVisibilitySpelling::ExactPath,
-            signature_requirement,
-            facade,
-            exact_boundary_acceptance: StoredExactBoundaryAcceptance::Eligible,
-            annotation_edit_acceptance: StoredExactBoundaryAcceptance::Eligible,
-            exact_path_policy: StoredExactPathPolicy::Allowed,
-            caller_reconciliation: StoredCallerReconciliation::CallerAware,
-            outcome: StoredConstraintOutcome::Finding,
+            facts:           StoredVisibilityFacts {
+                visibility_annotation: String::from("pub(in crate::a)"),
+                declared_reach: restricted("crate::a"),
+                interface_ceiling: None,
+                spelling: StoredVisibilitySpelling::ExactPath,
+                signature_requirement,
+                facade,
+                exact_boundary_acceptance: StoredExactBoundaryAcceptance::Eligible,
+                annotation_edit_acceptance: StoredExactBoundaryAcceptance::Eligible,
+                exact_path_policy: StoredExactPathPolicy::Allowed,
+                caller_reconciliation: StoredCallerReconciliation::CallerAware,
+                outcome: StoredConstraintOutcome::Finding,
+            },
         }
     }
 

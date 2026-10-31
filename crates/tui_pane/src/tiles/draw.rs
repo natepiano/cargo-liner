@@ -48,7 +48,6 @@ use crate::draw_clipped;
 use crate::error_color;
 use crate::frame_inner;
 use crate::label_color;
-use crate::pane_background;
 use crate::screen_ground;
 use crate::success_color;
 use crate::text_default;
@@ -484,9 +483,6 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
         // topology the border lattice follows.
         let line_frame =
             PaneFrame::new(placement.frame.clip()).with_focus(placement.frame.is_focused());
-        // The ground a fading row is carried toward is the one its
-        // own cell is painted on, which focus moves.
-        let ground = pane_background(placement.frame.is_focused());
         let cell_rows = match &placement.content {
             TileContent::Summary => demands.summary,
             TileContent::Group(id) => demands.rows_for(id),
@@ -504,6 +500,8 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
                 TileContent::Group(_) | TileContent::Empty(_) => SummaryFoot::Empty,
             };
             draw_clipped(buffer, placement.frame, |buffer, inner| {
+                let ground =
+                    PaneChrome::paint_tile_ground(buffer, inner, placement.frame.is_focused());
                 draw_cell_with_rows_readout(
                     buffer,
                     inner,
@@ -973,6 +971,7 @@ mod tests {
     use crate::TileView;
     use crate::ToastActivation;
     use crate::ToastStyle;
+    use crate::pane_background;
     use crate::tiles::constants::COLUMN_FOOT_TEST_AREA;
     use crate::tiles::constants::COLUMN_FOOT_TEST_BODY_STEP;
     use crate::tiles::constants::COLUMN_FOOT_TEST_GROUP_COUNT;
@@ -1062,6 +1061,148 @@ mod tests {
             rows_readout_lines(area, 12, 80)[0].to_string(),
             "content rows: 12  r/c: 10/80"
         );
+    }
+
+    #[test]
+    fn transparent_tile_readout_fades_toward_theme_without_painting_ground()
+    -> Result<(), Box<dyn Error>> {
+        let previous_tint = crate::focused_pane_tint_enabled();
+        let previous_transparency = crate::transparent_background();
+        crate::set_focused_pane_tint(true);
+        crate::set_transparent_background(true);
+        let area = Rect::new(0, 0, 60, 10);
+        let mut cells = StubCells::demanding(1, []);
+        let progress = CellFadeProgress::new(128);
+        cells.readout_fades = vec![(TileContent::Summary, CellReadoutFade::Fading(progress))];
+        let widths = [(TileContent::Summary, area.width - 2)];
+        let mut demands = cells.demands(&widths);
+        add_readout_rows(&mut demands, &widths);
+        for focused in [true, false] {
+            let drawing = TileDrawing {
+                pieces:       vec![tile_piece(
+                    TileContent::Summary,
+                    PaneFrame::new(area).with_focus(focused),
+                    PieceName::Shown,
+                )],
+                column_bands: vec![area],
+            };
+            let mut buffer = Buffer::empty(area);
+            draw_placements(
+                &mut buffer,
+                area,
+                &drawing,
+                &demands,
+                &widths,
+                TileGridContents::Shown,
+                &cells,
+            );
+            let inner = frame_inner(area);
+            let foot_y = inner.bottom() - 1;
+            let label_x = (inner.left()..inner.right())
+                .find(|&x| buffer[(x, foot_y)].symbol() == "c")
+                .ok_or("the readout label must be present")?;
+            let ink = buffer[(label_x, foot_y)].fg;
+            assert_eq!(
+                ink,
+                blend_color(label_color(), pane_background(focused), progress.amount()),
+                "a transparent tile still fades toward its theme ground"
+            );
+            assert_ne!(
+                ink,
+                label_color(),
+                "the readout must not retain its raw ink"
+            );
+            for y in inner.top()..inner.bottom() {
+                for x in inner.left()..inner.right() {
+                    assert_eq!(buffer[(x, y)].bg, Color::Reset, "interior at ({x}, {y})");
+                }
+            }
+        }
+        crate::set_focused_pane_tint(previous_tint);
+        crate::set_transparent_background(previous_transparency);
+        Ok(())
+    }
+
+    #[test]
+    fn focused_tile_tint_covers_short_rows_empty_rows_and_readout() {
+        struct ShortContent {
+            focused: bool,
+        }
+
+        impl TileCells<u32> for ShortContent {
+            fn summary_title(&self) -> &'static str { "summary" }
+
+            fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+                TileDemands {
+                    summary: 1,
+                    ..TileDemands::default()
+                }
+            }
+
+            fn draw(&self, buffer: &mut Buffer, _: &TileContent<u32>, inner: Rect, _: Color) {
+                PaneChrome::paint_tile_ground(buffer, inner, self.focused);
+                Paragraph::new("short").render(inner, buffer);
+            }
+        }
+
+        let previous_tint = crate::focused_pane_tint_enabled();
+        let previous_transparency = crate::transparent_background();
+        crate::set_focused_pane_tint(true);
+        let area = Rect::new(0, 0, 60, 10);
+        for transparent in [true, false] {
+            crate::set_transparent_background(transparent);
+            for focused in [true, false] {
+                let drawing = TileDrawing {
+                    pieces:       vec![tile_piece(
+                        TileContent::Summary,
+                        PaneFrame::new(area).with_focus(focused),
+                        PieceName::Shown,
+                    )],
+                    column_bands: vec![area],
+                };
+                let cells = ShortContent { focused };
+                let widths = [(TileContent::Summary, area.width - 2)];
+                let mut demands = cells.demands(&widths);
+                add_readout_rows(&mut demands, &widths);
+                let mut buffer = Buffer::empty(area);
+                draw_placements(
+                    &mut buffer,
+                    area,
+                    &drawing,
+                    &demands,
+                    &widths,
+                    TileGridContents::Shown,
+                    &cells,
+                );
+                let expected = if transparent {
+                    Color::Reset
+                } else if focused {
+                    pane_background(true)
+                } else {
+                    screen_ground().unwrap_or(Color::Reset)
+                };
+                let inner = frame_inner(area);
+                for y in inner.top()..inner.bottom() {
+                    for x in inner.left()..inner.right() {
+                        assert_eq!(
+                            buffer[(x, y)].bg,
+                            expected,
+                            "interior at ({x}, {y}); focused={focused}, transparent={transparent}"
+                        );
+                    }
+                }
+                assert_eq!(buffer[(1, 1)].symbol(), "s");
+                assert_eq!(buffer[(inner.right() - 1, 1)].symbol(), " ");
+                assert_eq!(buffer[(1, inner.bottom() - 2)].symbol(), " ");
+                assert!(
+                    area_lines(&buffer, area)
+                        .join("\n")
+                        .contains("content rows: 1")
+                );
+            }
+        }
+        crate::set_focused_pane_tint(previous_tint);
+        crate::set_transparent_background(previous_transparency);
     }
 
     #[test]
@@ -1621,6 +1762,30 @@ mod tests {
         TilePiece::for_test(content, frame, name)
     }
 
+    /// Mark content coverage independently of a tile's focus tint.
+    struct MotionCoverageCells(StubCells);
+
+    impl TileCells<u32> for MotionCoverageCells {
+        fn summary_title(&self) -> &str { self.0.summary_title() }
+
+        fn group_title(&self, id: &u32) -> Option<Line<'static>> { self.0.group_title(id) }
+
+        fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            self.0.demands(widths)
+        }
+
+        fn draw(
+            &self,
+            buffer: &mut Buffer,
+            content: &TileContent<u32>,
+            inner: Rect,
+            background: Color,
+        ) {
+            buffer.set_style(inner, Style::default().bg(Color::Magenta));
+            self.0.draw(buffer, content, inner, background);
+        }
+    }
+
     /// Draw moving pieces with the width their contents were measured at.
     fn draw_motion_fixture_with_width(
         area: Rect,
@@ -1640,7 +1805,7 @@ mod tests {
             .iter()
             .map(|&id| (TileContent::Group(id), measured))
             .collect::<Vec<_>>();
-        let cells = StubCells::new(groups);
+        let cells = MotionCoverageCells(StubCells::new(groups));
         let mut buffer = Buffer::empty(area);
         draw_placements(
             &mut buffer,
@@ -1805,7 +1970,7 @@ mod tests {
         None
     }
 
-    /// Whether pane ground, a lattice line or an owned title covers one row.
+    /// Whether a row has content, a frame, or an inactive cell's untinted foot.
     fn row_has_coverage(
         buffer: &Buffer,
         drawing: &TileDrawing<u32>,
@@ -1817,11 +1982,37 @@ mod tests {
             let cell = &buffer[(x, y)];
             cell.bg != ground
                 || is_lattice_glyph(cell.symbol())
-                || drawing
-                    .pieces
-                    .iter()
-                    .any(|piece| piece_title_covers(piece, cell.symbol(), x, y))
+                || drawing.pieces.iter().any(|piece| {
+                    piece_title_covers(piece, cell.symbol(), x, y)
+                        || untinted_foot_contains(buffer, piece.placement.frame, x, y)
+                })
         })
+    }
+
+    /// An inactive foot needs its fixture count unless no readout text fits.
+    fn untinted_foot_contains(buffer: &Buffer, frame: PaneFrame, x: u16, y: u16) -> bool {
+        let ReadoutRow::Reserved(readout) = readout_row(frame.inner()) else {
+            return false;
+        };
+        let clip = frame_inner(frame.clip());
+        let contains = !frame.is_focused()
+            && clip.contains((x, y).into())
+            && x >= frame.inner().left()
+            && x < frame.inner().right()
+            && i64::from(y) == i64::from(readout.y) + i64::from(frame.shift());
+        if !contains {
+            return false;
+        }
+        // Motion fixtures reserve their one measured row for the foot.
+        let count = format!("{TILE_ROWS_CONTENT_LABEL}0");
+        if count.len() > usize::from(readout.width) {
+            return true;
+        }
+        let text: String = (readout.left().max(buffer.area.left())
+            ..readout.right().min(buffer.area.right()))
+            .map(|column| buffer[(column, y)].symbol())
+            .collect();
+        text.contains(&count)
     }
 
     /// Whether this cell contains the exact title character this piece owns.
@@ -4936,6 +5127,48 @@ mod tests {
     }
 
     #[test]
+    fn an_erased_inactive_readout_that_fits_does_not_cover_its_row() {
+        let previous_transparency = crate::transparent_background();
+        crate::set_transparent_background(false);
+        let area = Rect::new(0, 0, 60, 10);
+        let drawing = TileDrawing {
+            pieces:       vec![tile_piece(
+                TileContent::Group(7),
+                PaneFrame::new(area),
+                PieceName::Shown,
+            )],
+            column_bands: vec![area],
+        };
+        let mut buffer = draw_motion_fixture(area, &drawing);
+        let inner = frame_inner(area);
+        let y = inner.bottom() - TILE_ROWS_READOUT_HEIGHT;
+        let background = screen_ground().unwrap_or(Color::Reset);
+        assert!(buffer_line(&buffer, y).contains("content rows:"));
+        assert!(row_has_coverage(
+            &buffer,
+            &drawing,
+            background,
+            inner.left()..inner.right(),
+            y
+        ));
+        for x in inner.left()..inner.right() {
+            buffer[(x, y)].set_symbol(" ").set_bg(background);
+        }
+        assert!(
+            !row_has_coverage(
+                &buffer,
+                &drawing,
+                background,
+                inner.left()..inner.right(),
+                y
+            ),
+            "an erased readout that fits must leave a missing row"
+        );
+        assert!(bare_band_row_failure(&buffer, &drawing, "erased readout", 0).is_some());
+        crate::set_transparent_background(previous_transparency);
+    }
+
+    #[test]
     fn no_line_is_doubled_through_a_transition() {
         crate::set_transparent_background(false);
         let area = Rect::new(0, 0, 60, 18);
@@ -5119,7 +5352,11 @@ mod tests {
                         cells.readout_fade(&placement.content),
                         CellReadoutFade::Fading(progress)
                     );
-                    let ground = pane_background(placement.frame.is_focused());
+                    let ground = if transparent || placement.frame.is_focused() {
+                        pane_background(placement.frame.is_focused())
+                    } else {
+                        screen_ground().unwrap_or_else(|| pane_background(false))
+                    };
                     let mut written = 0;
                     for x in inner.left()..inner.right() {
                         let before = &unfaded[(x, foot_y)];

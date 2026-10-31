@@ -25,8 +25,6 @@ use crate::reservation::RetainedReservationSet;
 pub(super) enum CommittedWriteSelection {
     /// No complete ancestry comparison is available; retain the observed paths.
     Unclassified,
-    /// Every integration tip already precedes each phase start; nothing was received.
-    NoReceivedCommits,
     /// Only these phase paths and head paths have commits outside integration history.
     UnitWrites {
         by_phase_start: HashMap<GitObjectId, Vec<ReservationScopePath>>,

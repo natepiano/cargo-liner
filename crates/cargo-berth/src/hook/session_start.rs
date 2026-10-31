@@ -82,10 +82,10 @@ pub(crate) fn execute() -> ExitCode {
 /// Reconcile the payload's repository and state what this session should read.
 fn reconcile_session() -> SessionStartReport {
     let SessionStartReconciliationRequest {
-        working_directory_selection,
-        harness_session_id_availability,
+        working_directory_selection: hook_working_directory_selection,
+        harness_session_id_availability: harness_session_identity_availability,
     } = match read_request() {
-        Ok(request) => request,
+        Ok(session_start_reconciliation_request) => session_start_reconciliation_request,
         Err(SessionStartPayloadParseError::InvalidPayload) => {
             return SessionStartReport::Stated {
                 summary: INVALID_PAYLOAD_SUMMARY.to_owned(),
@@ -93,14 +93,14 @@ fn reconcile_session() -> SessionStartReport {
             };
         },
     };
-    if let Err(error) = working_directory_selection.enter_current_process() {
+    if let Err(error) = hook_working_directory_selection.enter_current_process() {
         return SessionStartReport::Stated {
             summary: UNRECONCILED_SUMMARY.to_owned(),
             detail:  unreconciled_detail(&error),
         };
     }
-    told_record::forget_for_opening_session(&harness_session_id_availability);
-    harness_session_id_availability.select_for_current_process();
+    told_record::forget_for_opening_session(&harness_session_identity_availability);
+    harness_session_identity_availability.select_for_current_process();
     EngineAnswerOccasion::OpeningSession.own_this_process();
     read_board()
 }
@@ -190,8 +190,8 @@ impl SessionStartReport {
 /// `berth_session_start.sh` states no continuation field, because a session-start
 /// response cannot stop anything and the harness already continues by default. The
 /// shared writer is told to omit it rather than being given a second copy of itself.
-fn publish(report: SessionStartReport) {
-    match report {
+fn publish(session_start_report: SessionStartReport) {
+    match session_start_report {
         SessionStartReport::NothingToRaise => {},
         SessionStartReport::Stated { summary, detail } => {
             context_notice::write_context_notice(

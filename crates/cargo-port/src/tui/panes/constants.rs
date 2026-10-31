@@ -45,8 +45,12 @@ pub(super) enum DiskCell {
 }
 
 impl DiskCell {
-    pub(super) fn for_row(size: String, lifecycle: RowLifecycle, health: WorktreeHealth) -> Self {
-        match (lifecycle, health) {
+    pub(super) fn for_row(
+        size: String,
+        lifecycle: RowLifecycle,
+        worktree_health: WorktreeHealth,
+    ) -> Self {
+        match (lifecycle, worktree_health) {
             (RowLifecycle::Deleted, WorktreeHealth::Normal | WorktreeHealth::Broken) => {
                 Self::DeleteMarked
             },
@@ -131,8 +135,12 @@ impl TreeRowDepth {
 
     pub(super) const fn child(self) -> Self { Self(self.0 + 1) }
 
-    pub(super) const fn member_of(self, group: &MemberGroup) -> Self {
-        if group.is_named() { self.child() } else { self }
+    pub(super) const fn member_of(self, member_group: &MemberGroup) -> Self {
+        if member_group.is_named() {
+            self.child()
+        } else {
+            self
+        }
     }
 
     /// A non-root lineage includes its root and the row itself.
@@ -144,7 +152,7 @@ impl TreeRowDepth {
 
 /// Reserve the widest drawn ending and ancestor segments, so fitting is
 /// independent of expansion state and sibling order.
-pub(super) fn tree_prefix_width(depth: TreeRowDepth) -> usize {
+pub(super) fn tree_prefix_width(tree_row_depth: TreeRowDepth) -> usize {
     let dw = columns::display_width;
     let ending_width = [
         TreeRowExpansion::Expanded,
@@ -152,11 +160,16 @@ pub(super) fn tree_prefix_width(depth: TreeRowDepth) -> usize {
         TreeRowExpansion::Leaf,
     ]
     .into_iter()
-    .flat_map(|state| [state.prefix(false), state.prefix(true)])
+    .flat_map(|tree_row_expansion| {
+        [
+            tree_row_expansion.prefix(false),
+            tree_row_expansion.prefix(true),
+        ]
+    })
     .map(dw)
     .max()
     .unwrap_or_default();
-    depth.0 * dw(TREE_PREFIX_BLANK).max(dw(TREE_PREFIX_CONTINUATION)) + ending_width
+    tree_row_depth.0 * dw(TREE_PREFIX_BLANK).max(dw(TREE_PREFIX_CONTINUATION)) + ending_width
 }
 
 // `TESTS_IGNORED_LABEL` and `TESTS_TOTAL_LABEL` identify Tests detail rows.

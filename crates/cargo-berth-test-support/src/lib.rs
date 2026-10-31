@@ -21,11 +21,14 @@
 // Git and fixture commands compile the same deadline and cleanup implementation.
 #[path = "../../cargo-berth/src/git/child.rs"]
 mod child_process;
+#[path = "../../cargo-berth/src/git/spawn_lock.rs"]
+mod spawn_lock;
 
 mod berth_command;
 mod command_deadline;
 mod constants;
 mod directory_snapshot;
+mod fixture_command;
 mod fixture_directory;
 mod git_driver;
 mod integration_repository;
@@ -42,6 +45,7 @@ pub use command_deadline::ChildDeadlineExt;
 pub use command_deadline::CommandDeadlineExt;
 pub use constants::CLAUDE_CODE_SESSION_ENVIRONMENT;
 pub use directory_snapshot::DirectorySnapshot;
+pub use fixture_command::FixtureCommand;
 pub use fixture_directory::fixture_tempdir;
 pub use git_driver::EXECUTABLE_ENVIRONMENT;
 pub use git_driver::GitDriver;
@@ -70,6 +74,7 @@ pub use repository_template::LedgerFixture;
 pub use repository_template::LedgerTemplate;
 pub use repository_template::RepositoryTemplate;
 pub use repository_template::TemplateBuildTiming;
+pub use spawn_lock::with_spawn_lock;
 pub use test_process_group::TestProcessGroup;
 
 /// Capture a fixture command with bounded exit and pipe waits.

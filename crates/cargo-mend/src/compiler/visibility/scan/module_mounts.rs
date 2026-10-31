@@ -13,15 +13,12 @@ use super::subtree_reexport_fix;
 use crate::compiler::persistence::StoredModuleMountFact;
 use crate::compiler::visibility::source;
 
-/// Records the files the `--fix` for `pub_use_outside_subtree` cannot find by
-/// following `mod` declarations from the crate root: a file whose items an
-/// `include!` places directly in a module, and a module file outside the crate
-/// root file's directory. Each is paired with the module its items belong to.
+/// Records every compiled source mount, whether or not it emitted a diagnostic.
+/// Inline modules in the same file are not additional mounts of that file.
 pub(super) fn collect_module_mounts(
     tcx: TyCtxt<'_>,
     crate_root_file: &Path,
 ) -> Vec<StoredModuleMountFact> {
-    let crate_root_directory = crate_root_file.parent();
     let mut mounts: BTreeSet<(PathBuf, Vec<String>)> = BTreeSet::new();
     tcx.hir_for_each_module(|module| {
         let module_def_id = module.to_local_def_id();
@@ -52,7 +49,8 @@ pub(super) fn collect_module_mounts(
                 mounts.insert((item_file, module_path.clone()));
             }
         }
-        if !crate_root_directory.is_some_and(|directory| module_file.starts_with(directory)) {
+        let declaration_file = source::real_file_path(tcx, tcx.def_span(module_def_id));
+        if module_def_id == CRATE_DEF_ID || declaration_file.as_ref() != Some(&module_file) {
             mounts.insert((module_file, module_path));
         }
     });

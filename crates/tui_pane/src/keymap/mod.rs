@@ -57,7 +57,9 @@ pub use single_key_scope::KeyAlreadyBound;
 pub use single_key_scope::SingleKeyScope;
 pub use vim::VimMode;
 pub use vim_alias::ReservedVimMotionKey;
+pub use vim_alias::is_navigation_generated_vim_extra;
 pub use vim_alias::validate_vim_motion_bind;
+pub use vim_alias::vim_motion_conflicts;
 
 use self::help_rows::framework_global_help_row;
 use self::runtime_scope::RuntimeScope;

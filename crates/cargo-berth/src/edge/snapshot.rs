@@ -74,7 +74,7 @@ impl EdgeOrderingTarget {
     pub(crate) fn wait_name(&self) -> &str {
         match self {
             Self::RepositoryTrunk(_) | Self::CrossTarget { .. } => "trunk",
-            Self::SharedTarget(target) => target.short_name(),
+            Self::SharedTarget(integration_target) => integration_target.short_name(),
             Self::Unavailable => "ordering target",
         }
     }
@@ -232,8 +232,8 @@ impl RepositorySnapshot {
         let trunk_observation = JudgedTargetTip::repository_trunk(&targets, &repository_trunk);
         let judged_targets = targets
             .iter()
-            .map(|(target, observation)| {
-                let judged = match observation {
+            .map(|(target, target_observation)| {
+                let judged_target_tip = match target_observation {
                     TargetObservation::Resolved(commit) => {
                         JudgedTargetTip::Resolved(commit.clone())
                     },
@@ -244,7 +244,7 @@ impl RepositorySnapshot {
                         JudgedTargetTip::ObjectUnknown
                     },
                 };
-                (target.clone(), judged)
+                (target.clone(), judged_target_tip)
             })
             .collect();
         Self {
@@ -290,9 +290,9 @@ impl RepositorySnapshot {
 
     /// Borrow the observation at which this reservation is judged.
     pub(crate) fn target_for(&self, reservation_id: ReservationId) -> &JudgedTargetTip {
-        let target = self.recorded_target(reservation_id);
+        let integration_target = self.recorded_target(reservation_id);
         self.judged_targets
-            .get(target)
+            .get(integration_target)
             .unwrap_or_else(|| self.repository_trunk())
     }
 
@@ -303,9 +303,11 @@ impl RepositorySnapshot {
 
     /// Return the branch identity used to judge this reservation, independent of its tip.
     pub(crate) fn judging_target(&self, reservation_id: ReservationId) -> EdgeJudgingTarget {
-        let target = self.recorded_target(reservation_id);
-        match self.targets.get(target) {
-            Some(TargetObservation::Resolved(_)) => EdgeJudgingTarget::Branch(target.clone()),
+        let integration_target = self.recorded_target(reservation_id);
+        match self.targets.get(integration_target) {
+            Some(TargetObservation::Resolved(_)) => {
+                EdgeJudgingTarget::Branch(integration_target.clone())
+            },
             Some(TargetObservation::Missing) => {
                 EdgeJudgingTarget::Branch(self.repository_trunk.clone())
             },
@@ -352,11 +354,11 @@ impl RepositorySnapshot {
         let WorktreeHead::Resolved(successor_head) = &successor.worktree_head else {
             return Ok(SuccessorIncorporationEvidence::ObjectUnknown);
         };
-        let predecessor_incorporation = self
+        let predecessor_successor_incorporation = self
             .successor_incorporation
             .get(&predecessor)
             .ok_or(MissingReadinessFact::PredecessorIncorporation(predecessor))?;
-        match predecessor_incorporation {
+        match predecessor_successor_incorporation {
             PredecessorSuccessorIncorporation::Classified(successor_heads) => successor_heads
                 .get(successor_head)
                 .copied()

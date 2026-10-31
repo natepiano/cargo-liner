@@ -263,8 +263,6 @@ impl DetailField {
     }
 }
 
-pub fn strip_ansi(raw: &str) -> String { copy_data::strip_ansi(raw) }
-
 pub fn sanitize_ansi_for_output(raw: &str) -> String { copy_data::sanitize_ansi_for_output(raw) }
 
 pub const fn github_stars_is_unreachable_placeholder(data: &GitData) -> bool {

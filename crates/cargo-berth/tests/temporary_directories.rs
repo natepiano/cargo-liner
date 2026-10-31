@@ -8,10 +8,10 @@
 use std::env;
 use std::fs;
 use std::panic;
-use std::process::Command;
 
 use cargo_berth_test_support::CommandDeadlineExt as _;
 use cargo_berth_test_support::DirectorySnapshot;
+use cargo_berth_test_support::FixtureCommand as Command;
 use cargo_berth_test_support::IntegrationRepository;
 
 const FIXTURE_EXIT_ENVIRONMENT: &str = "CARGO_BERTH_TEMPORARY_FIXTURE_EXIT";

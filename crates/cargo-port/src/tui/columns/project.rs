@@ -22,6 +22,7 @@ use super::constants::COL_NAME;
 use super::constants::COL_SYNC;
 use super::constants::NUM_COLS;
 use crate::ci::CiStatus;
+use crate::config::LintIndicator;
 use crate::constants::IN_SYNC;
 use crate::project::GitStatus;
 use crate::project::WorktreeHealth;
@@ -102,7 +103,12 @@ impl ColumnDef {
 }
 
 /// The canonical column layout — single source of truth.
-pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
+pub(super) const fn column_defs(lint_column: LintColumnStatus) -> [ColumnDef; NUM_COLS] {
+    let (lint_headers, lint_width, lint_header_mode): (&[&str], usize, HeaderMode) =
+        match lint_column {
+            LintColumnStatus::Enabled => (&["Lint"], 2, HeaderMode::BorrowLeft),
+            LintColumnStatus::Hidden => (&[""], 0, HeaderMode::Hidden),
+        };
     [
         // `COL_NAME` uses this `ColumnDef` for the project name.
         ColumnDef {
@@ -114,15 +120,11 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
         },
         // `COL_LINT` uses `HeaderMode::BorrowLeft` to borrow "Li" from `COL_NAME` padding.
         ColumnDef {
-            header_levels: if lint_enabled { &["Lint"] } else { &[""] },
-            width:         ColumnWidth::Fixed(if lint_enabled { 2 } else { 0 }),
+            header_levels: lint_headers,
+            width:         ColumnWidth::Fixed(lint_width),
             align:         Align::Left,
             gap:           0,
-            header_mode:   if lint_enabled {
-                HeaderMode::BorrowLeft
-            } else {
-                HeaderMode::Hidden
-            },
+            header_mode:   lint_header_mode,
         },
         // `COL_CI` reserves two columns for the CI glyph.
         ColumnDef {
@@ -240,14 +242,11 @@ impl LintCell {
     pub(super) const fn style(&self) -> Style { self.style }
 }
 
+/// Deleted rows strike their content while suffix spans retain their own style.
 #[derive(Clone)]
 pub(in crate::tui) enum RowLifecycle {
     Present,
     Deleted,
-}
-
-impl RowLifecycle {
-    pub(super) const fn is_deleted(&self) -> bool { matches!(self, Self::Deleted) }
 }
 
 impl From<bool> for RowLifecycle {
@@ -260,14 +259,21 @@ impl From<bool> for RowLifecycle {
     }
 }
 
+/// Lint visibility selects the column schema and seeds the width cache.
+/// Configuration changes must reset fit widths because this changes the available columns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LintColumnStatus {
+pub(in crate::tui) enum LintColumnStatus {
     Enabled,
     Hidden,
 }
 
-impl LintColumnStatus {
-    const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
+impl From<LintIndicator> for LintColumnStatus {
+    fn from(indicator: LintIndicator) -> Self {
+        match indicator {
+            LintIndicator::Enabled => Self::Enabled,
+            LintIndicator::Disabled => Self::Hidden,
+        }
+    }
 }
 
 impl From<bool> for LintColumnStatus {
@@ -309,7 +315,7 @@ pub(in crate::tui) struct RowCells {
 // `ProjectListWidths` wraps `ColumnWidths` with lint visibility and generation invalidation.
 
 /// Project-list column widths. Thin wrapper around the generic
-/// [`ColumnWidths`] primitive that adds the lint-enabled flag,
+/// [`ColumnWidths`] primitive that adds lint column visibility,
 /// the generation counter App uses to invalidate cached widths
 /// after tree changes, and the project-list-specific seeding
 /// from `column_defs`.
@@ -320,17 +326,17 @@ pub(in crate::tui) struct ProjectListWidths {
 }
 
 impl Default for ProjectListWidths {
-    fn default() -> Self { Self::new(true) }
+    fn default() -> Self { Self::new(LintColumnStatus::Enabled) }
 }
 
 impl ProjectListWidths {
     /// Seed from column definitions: Fixed columns get their width,
     /// Fit columns get their minimum.
-    pub(in crate::tui) fn new(lint_enabled: bool) -> Self {
+    pub(in crate::tui) fn new(lint_column: LintColumnStatus) -> Self {
         Self {
-            inner:       ColumnWidths::new(project_list_specs(lint_enabled)),
-            lint_column: LintColumnStatus::from(lint_enabled),
-            generation:  u64::MAX,
+            inner: ColumnWidths::new(project_list_specs(lint_column)),
+            lint_column,
+            generation: u64::MAX,
         }
     }
 
@@ -345,7 +351,7 @@ impl ProjectListWidths {
 
     /// Total display width of all columns including gaps.
     pub(in crate::tui) fn total_width(&self) -> usize {
-        let defs = column_defs(self.lint_column.is_enabled());
+        let defs = column_defs(self.lint_column);
         let mut total = 0;
         for (i, def) in defs.iter().enumerate() {
             total += def.gap + self.get(i);
@@ -353,13 +359,13 @@ impl ProjectListWidths {
         total
     }
 
-    pub(in crate::tui) const fn lint_enabled(&self) -> bool { self.lint_column.is_enabled() }
+    pub(in crate::tui) const fn lint_column_status(&self) -> LintColumnStatus { self.lint_column }
 }
 
 /// Map the project-list `column_defs` into [`ColumnSpec`]s for
 /// `ColumnWidths`.
-fn project_list_specs(lint_enabled: bool) -> Vec<ColumnSpec> {
-    column_defs(lint_enabled)
+fn project_list_specs(lint_column: LintColumnStatus) -> Vec<ColumnSpec> {
+    column_defs(lint_column)
         .iter()
         .map(|def| {
             let seed = u16::try_from(def.seed_width()).unwrap_or(u16::MAX);
@@ -405,7 +411,7 @@ fn pad_center(s: &str, target: usize) -> String {
 /// Render a `RowCells` into a styled `Line` using the column definitions and
 /// resolved widths. Replaces `project_row_spans`.
 pub(in crate::tui) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) -> Line<'static> {
-    let defs = column_defs(widths.lint_enabled());
+    let defs = column_defs(widths.lint_column_status());
     let mut spans = Vec::with_capacity(NUM_COLS);
     // `suffix_indices` identifies `spans` that carry suffixes and are exempt from deleted-row
     // strikethrough.
@@ -473,20 +479,26 @@ pub(in crate::tui) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) ->
         spans.push(Span::styled(content, cell.style));
     }
 
-    if row.lifecycle.is_deleted() {
-        let strike = Style::default()
-            .fg(label_color())
-            .add_modifier(Modifier::CROSSED_OUT);
-        for (i, span) in spans.iter_mut().enumerate() {
-            if !suffix_indices.contains(&i) {
-                span.style = strike;
+    match row.lifecycle {
+        RowLifecycle::Deleted => {
+            let strike = Style::default()
+                .fg(label_color())
+                .add_modifier(Modifier::CROSSED_OUT);
+            for (i, span) in spans.iter_mut().enumerate() {
+                if !suffix_indices.contains(&i) {
+                    span.style = strike;
+                }
             }
-        }
-    } else if matches!(row.worktree_health, WorktreeHealth::Broken) {
-        let broken_style = Style::default().fg(on_error_color()).bg(error_color());
-        for span in &mut spans {
-            span.style = broken_style;
-        }
+        },
+        RowLifecycle::Present => match row.worktree_health {
+            WorktreeHealth::Normal => {},
+            WorktreeHealth::Broken => {
+                let broken_style = Style::default().fg(on_error_color()).bg(error_color());
+                for span in &mut spans {
+                    span.style = broken_style;
+                }
+            },
+        },
     }
 
     Line::from(spans)
@@ -495,7 +507,7 @@ pub(in crate::tui) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) ->
 /// Build the header `Line` from column definitions and resolved widths.
 /// `name_text` is the dynamic header for the Name column (e.g. "~/rust (42)").
 pub(in crate::tui) fn header_line(widths: &ProjectListWidths, name_text: &str) -> Line<'static> {
-    let defs = column_defs(widths.lint_enabled());
+    let defs = column_defs(widths.lint_column_status());
     let header_style = Style::default()
         .fg(theme_roles::column_header_color())
         .add_modifier(Modifier::BOLD);
@@ -694,6 +706,22 @@ pub(in crate::tui) fn project_name_shimmer_style(git_status: Option<GitStatus>) 
     }
 }
 
+/// The shimmer segment's emphasis selects its style as consecutive characters are grouped.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShimmerInk {
+    Base,
+    Accent,
+}
+
+impl ShimmerInk {
+    const fn style(self, base: Style, accent: Style) -> Style {
+        match self {
+            Self::Base => base,
+            Self::Accent => accent,
+        }
+    }
+}
+
 pub(in crate::tui) fn build_shimmer_segments(
     name: &str,
     base_style: Style,
@@ -713,22 +741,22 @@ pub(in crate::tui) fn build_shimmer_segments(
     let window_len = window_len.min(len);
     let mut segments = Vec::new();
     let mut current = String::new();
-    let mut highlighted = false;
+    let mut ink = ShimmerInk::Base;
 
     for (index, ch) in chars.iter().enumerate() {
-        let is_highlighted = (index + len - head) % len < window_len;
+        let next_ink = if (index + len - head) % len < window_len {
+            ShimmerInk::Accent
+        } else {
+            ShimmerInk::Base
+        };
         if current.is_empty() {
-            highlighted = is_highlighted;
-        } else if is_highlighted != highlighted {
+            ink = next_ink;
+        } else if next_ink != ink {
             segments.push(StyledSegment {
                 text:  std::mem::take(&mut current),
-                style: if highlighted {
-                    accent_style
-                } else {
-                    base_style
-                },
+                style: ink.style(base_style, accent_style),
             });
-            highlighted = is_highlighted;
+            ink = next_ink;
         }
         current.push(*ch);
     }
@@ -736,11 +764,7 @@ pub(in crate::tui) fn build_shimmer_segments(
     if !current.is_empty() {
         segments.push(StyledSegment {
             text:  current,
-            style: if highlighted {
-                accent_style
-            } else {
-                base_style
-            },
+            style: ink.style(base_style, accent_style),
         });
     }
 
@@ -818,7 +842,7 @@ pub(in crate::tui) fn build_available_line(
     disk: &str,
     style: Style,
 ) -> Line<'static> {
-    let defs = column_defs(widths.lint_enabled());
+    let defs = column_defs(widths.lint_column_status());
     let sigma_col = summary_label_col(widths);
     let sigma_end = (0..=sigma_col)
         .map(|col| rendered_column_width(widths, &defs, col))
@@ -872,11 +896,13 @@ mod tests {
     use crate::constants::LINT_PASSED;
     use crate::project::WorktreeHealth;
 
-    fn seeded_width(index: usize) -> usize { column_defs(true)[index].seed_width() }
+    fn seeded_width(index: usize) -> usize {
+        column_defs(LintColumnStatus::Enabled)[index].seed_width()
+    }
 
     #[test]
     fn resolved_widths_seeds_from_defs() {
-        let widths = ProjectListWidths::new(true);
+        let widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         // `ProjectListWidths::new` seeds `ColumnWidth::Fixed` columns at `seeded_width`.
         assert_eq!(widths.get(COL_LINT), seeded_width(COL_LINT));
         assert_eq!(widths.get(COL_LANG), seeded_width(COL_LANG));
@@ -891,7 +917,7 @@ mod tests {
 
     #[test]
     fn observe_grows_fit_columns() {
-        let mut widths = ProjectListWidths::new(true);
+        let mut widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         widths.observe(COL_NAME, 25);
         assert_eq!(widths.get(COL_NAME), 25);
         // `widths.observe(COL_LINT, 99)` cannot grow the `ColumnWidth::Fixed` lint column.
@@ -901,8 +927,8 @@ mod tests {
 
     #[test]
     fn total_width_sums_gaps_and_widths() {
-        let defs = column_defs(true);
-        let widths = ProjectListWidths::new(true);
+        let defs = column_defs(LintColumnStatus::Enabled);
+        let widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         let total = widths.total_width();
         let expected: usize = defs
             .iter()
@@ -914,7 +940,7 @@ mod tests {
 
     #[test]
     fn header_line_borrows_only_overflow_from_name() {
-        let mut widths = ProjectListWidths::new(true);
+        let mut widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
@@ -934,7 +960,7 @@ mod tests {
 
     #[test]
     fn git_header_borrows_from_hidden_lang_column() {
-        let mut widths = ProjectListWidths::new(true);
+        let mut widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
@@ -953,13 +979,13 @@ mod tests {
     #[test]
     fn header_levels_promote_with_observed_width() {
         // Empty: only the seed (1) for COL_MAIN, (2) for COL_SYNC.
-        let widths = ProjectListWidths::new(true);
-        let defs = column_defs(true);
+        let widths = ProjectListWidths::new(LintColumnStatus::Enabled);
+        let defs = column_defs(LintColumnStatus::Enabled);
         assert_eq!(defs[COL_MAIN].header_for_width(widths.get(COL_MAIN)), "M");
         assert_eq!(defs[COL_SYNC].header_for_width(widths.get(COL_SYNC)), "Og");
 
         // The observed `COL_MAIN` and `COL_SYNC` widths select the second `header_levels` labels.
-        let mut widths = ProjectListWidths::new(true);
+        let mut widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         widths.observe(COL_MAIN, 3);
         widths.observe(COL_SYNC, 5);
         assert_eq!(defs[COL_MAIN].header_for_width(widths.get(COL_MAIN)), "Mn");
@@ -970,7 +996,7 @@ mod tests {
 
         // These `widths.observe` calls make the longest `COL_MAIN` and `COL_SYNC` header labels
         // fit.
-        let mut widths = ProjectListWidths::new(true);
+        let mut widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         widths.observe(COL_MAIN, 4);
         widths.observe(COL_SYNC, 6);
         assert_eq!(
@@ -985,7 +1011,7 @@ mod tests {
 
     #[test]
     fn header_line_uses_widest_label_that_fits() {
-        let mut widths = ProjectListWidths::new(true);
+        let mut widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 6);
@@ -1017,7 +1043,7 @@ mod tests {
 
     #[test]
     fn row_to_line_same_width_with_and_without_emoji() {
-        let mut widths = ProjectListWidths::new(true);
+        let mut widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         widths.observe(COL_NAME, 32);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
@@ -1079,7 +1105,7 @@ mod tests {
 
     #[test]
     fn summary_row_places_sigma_next_to_disk_total() {
-        let mut widths = ProjectListWidths::new(true);
+        let mut widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
@@ -1099,7 +1125,7 @@ mod tests {
 
     #[test]
     fn availability_label_ends_below_summary_sigma() {
-        let mut widths = ProjectListWidths::new(true);
+        let mut widths = ProjectListWidths::new(LintColumnStatus::Enabled);
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
@@ -1140,9 +1166,22 @@ mod tests {
     }
 
     #[test]
+    fn lint_column_status_maps_configuration_variants() {
+        assert_eq!(
+            LintColumnStatus::from(LintIndicator::Enabled),
+            LintColumnStatus::Enabled
+        );
+        assert_eq!(
+            LintColumnStatus::from(LintIndicator::Disabled),
+            LintColumnStatus::Hidden
+        );
+    }
+
+    #[test]
     fn lint_column_collapses_when_disabled() {
-        let defs = column_defs(false);
-        let mut widths = ProjectListWidths::new(false);
+        let defs = column_defs(LintColumnStatus::Hidden);
+        let mut widths = ProjectListWidths::new(LintColumnStatus::Hidden);
+        assert_eq!(widths.lint_column_status(), LintColumnStatus::Hidden);
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
@@ -1163,7 +1202,7 @@ mod tests {
 
     #[test]
     fn hidden_lint_column_does_not_shift_ci_cells() {
-        let mut widths = ProjectListWidths::new(false);
+        let mut widths = ProjectListWidths::new(LintColumnStatus::Hidden);
         widths.observe(COL_NAME, 24);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
@@ -1285,6 +1324,70 @@ mod tests {
             Some(theme_roles::git_ignored_color())
         );
         assert_eq!(ignored.cells[COL_GIT_PATH].text, "");
+    }
+
+    #[test]
+    fn lifecycle_rendering_preserves_suffix_style_and_broken_precedence() {
+        let widths = ProjectListWidths::new(LintColumnStatus::Enabled);
+        let base = Style::default().fg(title_color());
+        let suffix = Style::default().fg(error_color());
+        let strike = Style::default()
+            .fg(label_color())
+            .add_modifier(Modifier::CROSSED_OUT);
+        let broken = Style::default().fg(on_error_color()).bg(error_color());
+        for (lifecycle, health, expected, expected_suffix) in [
+            (RowLifecycle::Present, WorktreeHealth::Normal, base, suffix),
+            (
+                RowLifecycle::Present,
+                WorktreeHealth::Broken,
+                broken,
+                broken,
+            ),
+            (
+                RowLifecycle::Deleted,
+                WorktreeHealth::Normal,
+                strike,
+                suffix,
+            ),
+            (
+                RowLifecycle::Deleted,
+                WorktreeHealth::Broken,
+                strike,
+                suffix,
+            ),
+        ] {
+            let mut row = build_group_header_cells("", "demo");
+            row.lifecycle = lifecycle;
+            row.worktree_health = health;
+            row.cells[COL_DISK] = CellContent {
+                text: String::from("1"),
+                style: base,
+                suffix: Some(String::from("!")),
+                suffix_style: Some(suffix),
+                ..CellContent::default()
+            };
+            let line = row_to_line(&row, &widths);
+            assert_eq!(line.spans[COL_NAME].style, expected);
+            assert_eq!(line.spans[COL_DISK].style, expected);
+            assert_eq!(line.spans[COL_DISK + 1].style, expected_suffix);
+            assert_eq!(line.spans[COL_DISK + 1].content.as_ref(), "!");
+        }
+    }
+
+    #[test]
+    fn shimmer_ink_preserves_base_accent_and_empty_output() {
+        let base = Style::default();
+        let accent = Style::default().fg(title_color());
+        for (name, window, expected_text, expected_style) in [
+            ("abcd", 0, "abcd", base),
+            ("abcd", 4, "abcd", accent),
+            ("", 2, "", base),
+        ] {
+            let segments = build_shimmer_segments(name, base, accent, 0, window);
+            assert_eq!(segments.len(), 1);
+            assert_eq!(segments[0].text, expected_text);
+            assert_eq!(segments[0].style, expected_style);
+        }
     }
 
     #[test]

@@ -1664,11 +1664,12 @@ pub(super) fn handle_settings_navigation_key(app: &mut App, key: KeyCode) {
 }
 
 pub(super) fn navigate_settings(app: &mut App, action: NavAction) {
-    app.overlays.clear_inline_error();
     SettingsNavigation::<App>::dispatcher()(action, *app.framework.focused(), app);
 }
 
 impl SettingsHost for App {
+    fn before_settings_navigation(&mut self) { self.overlays.clear_inline_error(); }
+
     fn settings_row_count(&self) -> usize {
         settings_rows(self, self.config.current())
             .iter()
@@ -2132,10 +2133,36 @@ mod settings_scroll_tests;
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use tui_pane::GlobalAction;
+
     use super::config::Transparency;
     use super::config::WorkspaceMemberInclusion;
     use super::*;
     use crate::tui::test_support;
+
+    #[test]
+    fn settings_navigation_clears_inline_errors_only_with_settings_open() {
+        let mut app = test_support::make_app(&[]);
+        app.overlays.set_inline_error("previous settings error");
+        navigate_settings(&mut app, NavAction::Down);
+        assert!(app.overlays.inline_error().is_some());
+        assert_eq!(app.framework.settings_pane.viewport().pos(), 0);
+
+        let keymap = app.framework_keymap.clone();
+        keymap.dispatch_framework_global(GlobalAction::OpenSettings, &mut app);
+        for key in [
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Home,
+            KeyCode::End,
+        ] {
+            app.overlays.set_inline_error("previous settings error");
+            handle_settings_navigation_key(&mut app, key);
+            assert!(app.overlays.inline_error().is_none(), "{key:?}");
+        }
+    }
 
     #[test]
     fn setting_selection_ignores_section_headers() {

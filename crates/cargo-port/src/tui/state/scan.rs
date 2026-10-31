@@ -21,21 +21,23 @@ use crate::project::CommitDate;
 use crate::project::ManifestFingerprint;
 use crate::project::WorkspaceMetadataStore;
 use crate::tui::app::DiscoveryShimmer;
+use crate::tui::app::ManifestMetadataStates;
 #[cfg(test)]
 use crate::tui::app::RetrySpawnMode;
 use crate::tui::app::ScanState;
 use crate::tui::app::TargetDirIndex;
 
 pub(crate) struct Scan {
-    pub(in crate::tui) state:            ScanState,
-    data_generation:                     u64,
-    discovery_shimmers:                  HashMap<AbsolutePath, DiscoveryShimmer>,
-    pending_git_first_commit:            HashMap<AbsolutePath, CommitDate>,
-    metadata_store:                      Arc<Mutex<WorkspaceMetadataStore>>,
-    pub(in crate::tui) target_dir_index: TargetDirIndex,
-    priority_fetch_path:                 Option<AbsolutePath>,
+    pub(in crate::tui) state:             ScanState,
+    data_generation:                      u64,
+    discovery_shimmers:                   HashMap<AbsolutePath, DiscoveryShimmer>,
+    pending_git_first_commit:             HashMap<AbsolutePath, CommitDate>,
+    metadata_store:                       Arc<Mutex<WorkspaceMetadataStore>>,
+    pub(in crate::tui) manifest_metadata: ManifestMetadataStates,
+    pub(in crate::tui) target_dir_index:  TargetDirIndex,
+    priority_fetch_path:                  Option<AbsolutePath>,
     #[cfg(test)]
-    retry_spawn_mode:                    RetrySpawnMode,
+    retry_spawn_mode:                     RetrySpawnMode,
 }
 
 impl Scan {
@@ -49,6 +51,7 @@ impl Scan {
             discovery_shimmers: HashMap::new(),
             pending_git_first_commit: HashMap::new(),
             metadata_store,
+            manifest_metadata: ManifestMetadataStates::default(),
             target_dir_index: TargetDirIndex::new(),
             priority_fetch_path: None,
             #[cfg(test)]

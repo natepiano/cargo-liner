@@ -49,12 +49,14 @@ impl App {
         self.project_list.recompute_visibility(include_non_rust);
     }
 
-    pub(in crate::tui) fn rescan(&mut self) {
+    pub(in crate::tui::app) fn prepare_rescan(&mut self) {
         // Preserve the open/closed layout across the rebuild: snapshot the live
         // expansions as restart-stable targets before the tree is cleared, then
         // hand them back through `pending_expanded` so `handle_scan_result`
         // re-applies them once the new tree is built.
         let preserved_expanded = self.project_list.export_expanded();
+        // `scan.manifest_metadata` survives row replacement. Rediscovered manifests
+        // retain their last diagnostic until an accepted metadata reply replaces it.
         self.project_list.clear();
         // `project_list.clear()` removes `ProjectInfo::disk_usage_bytes` along with the previous
         // project items.
@@ -91,6 +93,10 @@ impl App {
         self.project_list.set_cursor(0);
         self.panes.project_list.viewport.set_scroll_offset(0);
         self.scan.bump_generation();
+    }
+
+    pub(in crate::tui) fn rescan(&mut self) {
+        self.prepare_rescan();
         let scan_dirs = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
         let scan_start = self
             .startup_services

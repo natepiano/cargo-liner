@@ -32,6 +32,7 @@ mod pub_use_fixes;
 mod pub_use_outside_subtree;
 mod pub_use_outside_subtree_fixes;
 mod rendering;
+mod shared_source_visibility;
 #[path = "../support/mod.rs"]
 mod support;
 mod suspicious_pub_fixes;

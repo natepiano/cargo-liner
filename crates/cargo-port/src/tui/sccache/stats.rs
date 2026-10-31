@@ -1,4 +1,4 @@
-use unicode_width::UnicodeWidthStr;
+pub(super) use tui_pane::NumericColumnAlignment as ValueAlignment;
 
 use crate::sccache;
 
@@ -86,90 +86,11 @@ fn normalize_cache_location(value: &str) -> (String, String) {
     ("Cache location".to_string(), value.to_string())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct ValueAlignment {
-    numeric_left_width: usize,
-}
-
-impl ValueAlignment {
-    pub(super) fn for_lines(lines: &[ParsedStatLine]) -> Self {
-        let numeric_left_width = lines
-            .iter()
-            .filter_map(|line| match line {
-                ParsedStatLine::Field { value, .. } => NumericValue::parse(value),
-                ParsedStatLine::Subheader { .. } | ParsedStatLine::Text(_) => None,
-            })
-            .map(NumericValue::left_width)
-            .max()
-            .unwrap_or(0);
-        Self { numeric_left_width }
-    }
-
-    pub(super) fn format(self, value: &str) -> String {
-        let Some(numeric) = NumericValue::parse(value) else {
-            return value.to_string();
-        };
-        let leading = self.numeric_left_width.saturating_sub(numeric.left_width());
-        format!(
-            "{}{}{}{}",
-            " ".repeat(leading),
-            numeric.sign,
-            numeric.integer,
-            numeric.rest
-        )
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct NumericValue<'a> {
-    sign:    &'a str,
-    integer: &'a str,
-    rest:    &'a str,
-}
-
-impl<'a> NumericValue<'a> {
-    fn parse(value: &'a str) -> Option<Self> {
-        let value = value.trim();
-        let mut pos = 0;
-        let sign = if value.starts_with('-') || value.starts_with('+') {
-            pos = 1;
-            &value[..1]
-        } else {
-            ""
-        };
-        let int_start = pos;
-        while let Some(ch) = value[pos..].chars().next()
-            && ch.is_ascii_digit()
-        {
-            pos += ch.len_utf8();
-        }
-        if pos == int_start {
-            return None;
-        }
-        let int_end = pos;
-        if value[pos..].starts_with('.') {
-            pos += 1;
-            let frac_start = pos;
-            while let Some(ch) = value[pos..].chars().next()
-                && ch.is_ascii_digit()
-            {
-                pos += ch.len_utf8();
-            }
-            if pos == frac_start {
-                return None;
-            }
-        }
-        if !value[pos..].is_empty() && !value[pos..].starts_with(char::is_whitespace) {
-            return None;
-        }
-        Some(Self {
-            sign,
-            integer: &value[int_start..int_end],
-            rest: &value[int_end..],
-        })
-    }
-
-    fn left_width(self) -> usize { self.sign.width() + self.integer.width() }
+pub(super) fn value_alignment_for_lines(lines: &[ParsedStatLine]) -> ValueAlignment {
+    ValueAlignment::from_values(lines.iter().filter_map(|line| match line {
+        ParsedStatLine::Field { value, .. } => Some(value.as_str()),
+        ParsedStatLine::Subheader { .. } | ParsedStatLine::Text(_) => None,
+    }))
 }
 
 #[cfg(test)]
@@ -265,44 +186,18 @@ mod tests {
     }
 
     #[test]
-    fn value_alignment_lines_up_numeric_columns() {
-        let lines = vec![
-            ParsedStatLine::Field {
-                label: "Cache misses".to_string(),
-                value: "184".to_string(),
+    fn value_alignment_for_lines_measures_only_fields() {
+        let lines = [
+            ParsedStatLine::Text("123456".to_string()),
+            ParsedStatLine::Subheader {
+                text:    "12345".to_string(),
+                context: StatContext::Stats,
             },
             ParsedStatLine::Field {
-                label: "Cache hits rate".to_string(),
-                value: "72.42 %".to_string(),
-            },
-            ParsedStatLine::Field {
-                label: "Cache timeouts".to_string(),
-                value: "0".to_string(),
-            },
-            ParsedStatLine::Field {
-                label: "Compile requests".to_string(),
-                value: "2531".to_string(),
-            },
-            ParsedStatLine::Field {
-                label: "Average cache write".to_string(),
-                value: "0.001 s".to_string(),
+                label: "Count".to_string(),
+                value: "12".to_string(),
             },
         ];
-        let alignment = ValueAlignment::for_lines(&lines);
-
-        assert_eq!(alignment.format("184"), " 184");
-        assert_eq!(alignment.format("72.42 %"), "  72.42 %");
-        assert_eq!(alignment.format("0"), "   0");
-        assert_eq!(alignment.format("2531"), "2531");
-        assert_eq!(alignment.format("0.001 s"), "   0.001 s");
-    }
-
-    #[test]
-    fn value_alignment_leaves_semver_unpadded() {
-        let alignment = ValueAlignment {
-            numeric_left_width: 4,
-        };
-
-        assert_eq!(alignment.format("0.14.0"), "0.14.0");
+        assert_eq!(value_alignment_for_lines(&lines).format("1"), " 1");
     }
 }

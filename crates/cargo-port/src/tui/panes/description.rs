@@ -51,6 +51,15 @@ pub(in crate::tui) struct SyncedDescriptionHeight(u16);
 
 impl SyncedDescriptionHeight {
     pub(in crate::tui) const fn rows(self) -> u16 { self.0 }
+
+    /// Limit the shared floor when a pane must reserve space for other content.
+    pub(in crate::tui) const fn capped_at(self, max_rows: u16) -> Self {
+        if self.0 > max_rows {
+            Self(max_rows)
+        } else {
+            self
+        }
+    }
 }
 
 /// Pre-wrapped description block for one detail pane. Owns the wrapped
@@ -184,17 +193,11 @@ impl DescriptionBlock {
             return 0;
         }
 
-        let visible_count = usize::from(row_budget).min(self.rows.len());
-        let overflowed = self.rows.len() > visible_count;
-        let mut visible: Vec<String> = self.rows.iter().take(visible_count).cloned().collect();
-        if overflowed && let Some(last) = visible.last_mut() {
-            let with_ellipsis = format!("{last}\u{2026}");
-            *last = render::truncate_with_ellipsis(
-                &with_ellipsis,
-                usize::from(self.column_width),
-                "\u{2026}",
-            );
-        }
+        let visible = render::clip_rows_with_ellipsis(
+            &self.rows,
+            usize::from(row_budget),
+            usize::from(self.column_width),
+        );
 
         let style = selection.patch(self.style);
         let lines: Vec<Line<'static>> = visible

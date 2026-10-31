@@ -19,30 +19,33 @@ use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 
 pub(super) fn visit_item(
-    ctx: &VisibilityContext<'_, '_>,
+    visibility_context: &VisibilityContext<'_, '_>,
     item: &Item<'_>,
-    sink: &mut FindingsSink,
+    findings_sink: &mut FindingsSink,
 ) -> Result<()> {
     if item.span.from_expansion() || item.vis_span.from_expansion() {
         return Ok(());
     }
-    let Some(file_path) = source::real_file_path(ctx.tcx, item.vis_span) else {
+    let Some(file_path) = source::real_file_path(visibility_context.tcx, item.vis_span) else {
         return Ok(());
     };
-    let Some(visibility_text) = source::visibility_text(ctx.tcx, item.vis_span)? else {
+    let Some(visibility_text) = source::visibility_text(visibility_context.tcx, item.vis_span)?
+    else {
         return Ok(());
     };
 
     let name = item.kind.ident().as_ref().map(ToString::to_string);
-    let owner_module = ctx.tcx.parent_module_from_def_id(item.owner_id.def_id);
+    let owner_module = visibility_context
+        .tcx
+        .parent_module_from_def_id(item.owner_id.def_id);
 
     if visibility_text == "pub"
-        && policy::module_depth(ctx.tcx, owner_module.to_local_def_id()) <= 1
+        && policy::module_depth(visibility_context.tcx, owner_module.to_local_def_id()) <= 1
         && matches!(item.kind, ItemKind::Use(..))
-        && source::use_item_contains_glob(ctx.tcx, item.span)?
+        && source::use_item_contains_glob(visibility_context.tcx, item.span)?
     {
-        sink.findings.push(source::build_finding(
-            ctx.tcx,
+        findings_sink.findings.push(source::build_finding(
+            visibility_context.tcx,
             &file_path,
             item.span,
             FindingParams {
@@ -61,10 +64,16 @@ pub(super) fn visit_item(
         )?);
     }
 
-    pub_use_outside_subtree::record(ctx.tcx, item, &file_path, ctx.root_module, sink)?;
+    pub_use_outside_subtree::record(
+        visibility_context.tcx,
+        item,
+        &file_path,
+        visibility_context.root_module,
+        findings_sink,
+    )?;
 
     record::record_visibility_findings(
-        ctx,
+        visibility_context,
         &ItemInfo {
             def_id:          item.owner_id.def_id,
             file_path:       &file_path,
@@ -82,14 +91,14 @@ pub(super) fn visit_item(
             },
             facade_subject:  item.owner_id.def_id,
         },
-        sink,
+        findings_sink,
     )
 }
 
 pub(super) fn visit_impl_item(
-    ctx: &VisibilityContext<'_, '_>,
+    visibility_context: &VisibilityContext<'_, '_>,
     item: &ImplItem<'_>,
-    sink: &mut FindingsSink,
+    findings_sink: &mut FindingsSink,
 ) -> Result<()> {
     let Some(visibility_span) = item.vis_span() else {
         return Ok(());
@@ -97,18 +106,21 @@ pub(super) fn visit_impl_item(
     if item.span.from_expansion() || visibility_span.from_expansion() {
         return Ok(());
     }
-    let Some(file_path) = source::real_file_path(ctx.tcx, visibility_span) else {
+    let Some(file_path) = source::real_file_path(visibility_context.tcx, visibility_span) else {
         return Ok(());
     };
-    let Some(visibility_text) = source::visibility_text(ctx.tcx, visibility_span)? else {
+    let Some(visibility_text) = source::visibility_text(visibility_context.tcx, visibility_span)?
+    else {
         return Ok(());
     };
 
     let name = item.ident.to_string();
-    let facade_subject = ctx.reexport_index.facade_subject(item.owner_id.def_id);
+    let facade_subject = visibility_context
+        .reexport_index
+        .facade_subject(item.owner_id.def_id);
 
     record::record_visibility_findings(
-        ctx,
+        visibility_context,
         &ItemInfo {
             def_id: item.owner_id.def_id,
             file_path: &file_path,
@@ -119,29 +131,30 @@ pub(super) fn visit_impl_item(
             category: ItemCategory::Declaration,
             facade_subject,
         },
-        sink,
+        findings_sink,
     )
 }
 
 pub(super) fn visit_foreign_item(
-    ctx: &VisibilityContext<'_, '_>,
+    visibility_context: &VisibilityContext<'_, '_>,
     item: &ForeignItem<'_>,
-    sink: &mut FindingsSink,
+    findings_sink: &mut FindingsSink,
 ) -> Result<()> {
     if item.span.from_expansion() || item.vis_span.from_expansion() {
         return Ok(());
     }
-    let Some(file_path) = source::real_file_path(ctx.tcx, item.vis_span) else {
+    let Some(file_path) = source::real_file_path(visibility_context.tcx, item.vis_span) else {
         return Ok(());
     };
-    let Some(visibility_text) = source::visibility_text(ctx.tcx, item.vis_span)? else {
+    let Some(visibility_text) = source::visibility_text(visibility_context.tcx, item.vis_span)?
+    else {
         return Ok(());
     };
 
     let name = item.ident.to_string();
 
     record::record_visibility_findings(
-        ctx,
+        visibility_context,
         &ItemInfo {
             def_id:          item.owner_id.def_id,
             file_path:       &file_path,
@@ -152,6 +165,6 @@ pub(super) fn visit_foreign_item(
             category:        ItemCategory::Declaration,
             facade_subject:  item.owner_id.def_id,
         },
-        sink,
+        findings_sink,
     )
 }

@@ -2272,3 +2272,40 @@ edition = "2024"
          needs, so only line 2 is reported: {report:#?}",
     );
 }
+
+/// A cfg-gated import changes rustc's anonymous use-item ordinal, not the
+/// physical declaration or the module mounting it. Join its target facts.
+#[test]
+fn cfg_shifted_reexport_keeps_its_cross_target_facade() {
+    let temp = tempdir().expect("create cfg-shifted re-export fixture");
+    write_sources(
+        &temp,
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"cfg_shifted_reexport\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            ),
+            ("mend.toml", "[visibility]\npub_in_path = \"required\"\n"),
+            ("src/lib.rs", "mod x;\npub fn run() { x::run(); }\n"),
+            (
+                "src/x.rs",
+                "mod parent;\nmod caller;\npub(crate) fn run() { caller::run(); }\n",
+            ),
+            (
+                "src/x/parent.rs",
+                "mod data;\n#[cfg(test)]\npub(super) use data::Item;\npub(super) fn run() { let _ = data::Item; }\n",
+            ),
+            (
+                "src/x/parent/data.rs",
+                "#[cfg(test)]\nuse core::marker::PhantomData;\nmod child;\npub(in crate::x) use child::Item;\n",
+            ),
+            ("src/x/parent/data/child.rs", "pub struct Item;\n"),
+            (
+                "src/x/caller.rs",
+                "pub(super) fn run() { super::parent::run(); }\n",
+            ),
+        ],
+    );
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_codes(&report, "src/x/parent/data.rs", &[]);
+}

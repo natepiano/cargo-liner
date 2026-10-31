@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The settings, keymap and global shortcuts overlays scroll by the mouse wheel through `tui_pane`; modal capture and scroll inversion stay the same.
+
 ### Fixed
+
+- Mark rejected Cargo manifests on their rows and show the selected error in the Package pane across rescans, without repeated error toasts; clear the diagnostic when metadata succeeds or the project is no longer Rust. Launch, I/O and timeout failures keep their error toasts.
 
 - On Linux, recreated external `.cargo` folders need a rescan to regain their config watch when their parent is unwatched; watching every ancestor would add a watch per ancestor folder.
 

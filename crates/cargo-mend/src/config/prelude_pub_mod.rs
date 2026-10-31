@@ -17,7 +17,9 @@ impl From<bool> for PreludePubMod {
 }
 
 impl From<PreludePubMod> for bool {
-    fn from(value: PreludePubMod) -> Self { matches!(value, PreludePubMod::Allowed) }
+    fn from(prelude_pub_mod: PreludePubMod) -> Self {
+        matches!(prelude_pub_mod, PreludePubMod::Allowed)
+    }
 }
 
 impl Serialize for PreludePubMod {

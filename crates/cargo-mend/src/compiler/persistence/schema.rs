@@ -72,7 +72,7 @@ pub(in crate::compiler) struct UseSite {
     pub reference:              UseSiteReference,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(in crate::compiler) struct StoredFinding {
     pub severity:                Severity,
     pub diagnostic_code:         DiagnosticCode,
@@ -188,4 +188,49 @@ pub(in crate::compiler) struct StoredModuleMountFact {
     pub crate_root_file: String,
     pub file:            String,
     pub module_path:     Vec<String>,
+}
+
+/// The child declaration a `--fix pub-use` narrowing would rewrite.
+///
+/// The driver writes a `StoredPubUseFixFact` next to the finding that
+/// authorizes it — `SuspiciousPub` on the child declaration, or
+/// `InternalParentPubUseFacade` on the parent `pub use` line. The four
+/// suppression stages inside `reconcile_cross_target_reports` can drop that
+/// finding afterwards; a fact whose site no longer appears in
+/// `StoredReport::findings` would let the fixer apply a narrowing the
+/// cross-target analysis already rejected.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct PubUseNarrowingSite {
+    path:      String,
+    line:      usize,
+    item_name: String,
+}
+
+impl PubUseNarrowingSite {
+    pub(super) fn for_finding(finding: &StoredFinding) -> Option<Self> {
+        finding.item.as_deref().map(|item| Self {
+            path:      finding.path.clone(),
+            line:      finding.line,
+            item_name: StoredFinding::item_name(item).to_string(),
+        })
+    }
+
+    /// The two lines a single `pub use` fix can be advertised on. One edit,
+    /// two diagnostics: `suspicious_pub` reports it on the child declaration,
+    /// `internal_parent_pub_use_facade` reports it on the parent `pub use`
+    /// line. Either surviving finding keeps the fact.
+    pub(super) fn advertising_sites(fact: &StoredPubUseFixFact) -> [Self; 2] {
+        [
+            Self {
+                path:      fact.child_path.clone(),
+                line:      fact.child_line,
+                item_name: fact.child_item_name.clone(),
+            },
+            Self {
+                path:      fact.parent_path.clone(),
+                line:      fact.parent_line,
+                item_name: fact.child_item_name.clone(),
+            },
+        ]
+    }
 }

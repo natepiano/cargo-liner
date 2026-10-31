@@ -7,8 +7,10 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 
+use ansi_to_tui::IntoText;
 use cargo_metadata::Error;
 use cargo_metadata::Metadata;
+use cargo_metadata::MetadataCommand;
 use tokio::runtime::Handle;
 use tokio::sync::Semaphore;
 use tui_pane::PERF_LOG_TARGET;
@@ -41,31 +43,46 @@ use crate::project::WorkspaceMetadata;
 use crate::project::WorkspaceMetadataStore;
 
 /// Structured failure for a `cargo metadata` invocation. Held inside
-/// [`BackgroundMsg::CargoMetadata`] so the main loop can raise a keyed
-/// error toast and leave the affected rows in fallback state.
-///
-/// Variant chosen deliberately so the handler dispatches on cause rather
-/// than string-matching: `WorkspaceMissing` is the expected race when the
-/// user just deleted a worktree (no toast — the workspace is gone), and
-/// `Other` is a real failure surface that needs to be visible.
+/// [`BackgroundMsg::CargoMetadata`] so the main loop can distinguish a
+/// rejected manifest's row diagnostic from an operational error toast.
 #[derive(Clone, Debug)]
 pub(crate) enum CargoMetadataError {
     /// Workspace root no longer exists on disk between dispatch and run.
     /// Common when a worktree is deleted while a refresh is in flight.
     /// Logged at debug; never shown to the user.
     WorkspaceMissing,
-    /// All other failures: cargo subprocess errors, timeouts, parse
-    /// failures. Shown verbatim in a timed error toast.
+    /// Cargo ran and rejected this manifest's metadata request with a nonzero exit.
+    /// Discovery has already accepted its TOML; retain the diagnostic on its row.
+    ManifestRejected { first_line: String },
+    /// Launch, I/O, timeout and output-decoding failures retain their timed toast.
     Other(String),
 }
 
-impl CargoMetadataError {
-    /// Message body for the error toast — only meaningful for `Other`.
-    pub(crate) const fn user_facing_message(&self) -> Option<&str> {
-        match self {
-            Self::WorkspaceMissing => None,
-            Self::Other(message) => Some(message.as_str()),
+impl From<Error> for CargoMetadataError {
+    fn from(error: Error) -> Self {
+        if let Error::CargoMetadata { stderr } = &error {
+            let diagnostic = stderr
+                .as_str()
+                .into_text()
+                .map_or_else(|_| stderr.clone(), |text| text.to_string());
+            // exec discards exit status, and Cargo and launchers can both use 101.
+            // Cargo's manifest diagnostic identifies this failure at the process boundary.
+            if let Some(evidence) = diagnostic.lines().find(|line| {
+                let trimmed = line.trim_start();
+                trimmed
+                    .strip_prefix("error: ")
+                    .unwrap_or(trimmed)
+                    .starts_with("failed to parse manifest at")
+            }) {
+                let first_line = diagnostic
+                    .lines()
+                    .find(|line| line.starts_with("error:"))
+                    .unwrap_or(evidence)
+                    .to_string();
+                return Self::ManifestRejected { first_line };
+            }
         }
+        Self::Other(format_cargo_metadata_error(&error))
     }
 }
 
@@ -387,9 +404,11 @@ fn execute_cargo_metadata(manifest_path: &Path) -> Result<Metadata, CargoMetadat
     let mut command = cargo_metadata::MetadataCommand::new();
     command.manifest_path(manifest_path).no_deps();
     command.other_options(vec![CARGO_OFFLINE_FLAG.to_string()]);
-    command
-        .exec()
-        .map_err(|err| CargoMetadataError::Other(format_cargo_metadata_error(&err)))
+    execute_metadata_command(&command)
+}
+
+fn execute_metadata_command(command: &MetadataCommand) -> Result<Metadata, CargoMetadataError> {
+    command.exec().map_err(CargoMetadataError::from)
 }
 
 fn format_cargo_metadata_error(err: &Error) -> String {
@@ -456,12 +475,110 @@ fn build_workspace_metadata(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
     use crate::project::Package;
     use crate::project::RustProject;
     use crate::project::Workspace;
     use crate::project::WorktreeStatus;
     use crate::scan::tree;
+
+    #[cfg(unix)]
+    #[test]
+    fn manifest_rejection_normalizes_colored_diagnostic_after_preamble() -> std::io::Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let launcher = scratch.path().join("cargo-launcher");
+        std::fs::write(
+            &launcher,
+            "#!/bin/sh\nprintf '\\033[33mlauncher preamble\\033[0m\\n\\033[33mwarning: example warning\\033[0m\\n\\033[31merror: failed to parse manifest at `/project/Cargo.toml`\\033[0m\\n\\nCaused by:\\n  inherited version has no workspace\\n' >&2\nexit 101\n",
+        )?;
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700))?;
+        let mut command = MetadataCommand::new();
+        command.cargo_path(&launcher);
+        assert!(matches!(execute_metadata_command(&command),
+            Err(CargoMetadataError::ManifestRejected { first_line })
+                if first_line == "error: failed to parse manifest at `/project/Cargo.toml`"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failing_cargo_launcher_remains_an_operational_error() -> std::io::Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let launcher = scratch.path().join("cargo-launcher");
+        for status in [1, 101] {
+            std::fs::write(
+                &launcher,
+                format!("#!/bin/sh\necho 'error: toolchain is not installed' >&2\nexit {status}\n"),
+            )?;
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700))?;
+            let mut command = cargo_metadata::MetadataCommand::new();
+            command.cargo_path(&launcher);
+            let failure = execute_metadata_command(&command);
+            assert!(
+                matches!(failure, Err(CargoMetadataError::Other(message)) if message.contains("toolchain is not installed")),
+                "launcher failure must retain its toast"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_rustup_toolchain_remains_an_operational_error() -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = tempfile::tempdir()?;
+        let launcher = scratch.path().join("cargo-launcher");
+        std::fs::write(
+            &launcher,
+            "#!/bin/sh\nexec rustup run cargo-port-test-missing-toolchain cargo \"$@\"\n",
+        )?;
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700))?;
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command.cargo_path(&launcher);
+        assert_eq!(
+            command.cargo_command().output()?.status.code(),
+            Some(1),
+            "rustup rejects an uninstalled named toolchain before Cargo runs"
+        );
+        assert!(matches!(execute_metadata_command(&command),
+            Err(CargoMetadataError::Other(message)) if message.contains("cargo-port-test-missing-toolchain") && message.contains("not installed")));
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_errors_without_process_evidence_remain_operational() {
+        let rejected = CargoMetadataError::from(Error::CargoMetadata {
+            stderr: "error: cannot inherit version without a workspace\nmore context".into(),
+        });
+        assert!(matches!(rejected, CargoMetadataError::Other(message)
+            if message == "`cargo metadata` exited with an error: error: cannot inherit version without a workspace"));
+        let io = CargoMetadataError::from(Error::Io(std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "permission denied",
+        )));
+        assert!(matches!(io, CargoMetadataError::Other(message)
+            if message == "failed to start `cargo metadata`: permission denied"));
+        let decoding = CargoMetadataError::from(Error::NoJson);
+        assert!(matches!(decoding, CargoMetadataError::Other(_)));
+    }
+
+    #[test]
+    fn orphan_workspace_manifest_is_typed_as_rejected() -> std::io::Result<()> {
+        let scratch = tempfile::tempdir()?;
+        std::fs::create_dir(scratch.path().join("src"))?;
+        std::fs::write(scratch.path().join("src/lib.rs"), "")?;
+        let manifest = scratch.path().join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            "[package]\nname = \"orphan\"\nversion.workspace = true\nedition = \"2024\"\n",
+        )?;
+        assert!(matches!(execute_cargo_metadata(&manifest),
+            Err(CargoMetadataError::ManifestRejected { first_line }) if !first_line.is_empty()));
+        Ok(())
+    }
 
     fn status_for(is_linked_worktree: bool, primary_abs: Option<&str>) -> WorktreeStatus {
         match (is_linked_worktree, primary_abs) {

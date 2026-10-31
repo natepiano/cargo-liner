@@ -62,7 +62,9 @@ impl Display for GateError {
             Self::Planning(error) => error.fmt(formatter),
             Self::Git(error) => error.fmt(formatter),
             Self::PermitReplay(error) => error.fmt(formatter),
-            Self::CoordinationIdentity(rejection) => rejection.fmt(formatter),
+            Self::CoordinationIdentity(coordination_identity_rejection) => {
+                coordination_identity_rejection.fmt(formatter)
+            },
             Self::ReservationNotEntering(reservation_id) => write!(
                 formatter,
                 "reservation {reservation_id} is not newly reachable in the proposed target update"
@@ -78,10 +80,10 @@ impl Display for GateError {
             Self::HookReportedNoIssuingDirectory => formatter.write_str(
                 "the managed reference-transaction hook did not report its issuing directory",
             ),
-            Self::UnsupportedSymbolicTargetUpdate(target) => write!(
+            Self::UnsupportedSymbolicTargetUpdate(integration_target) => write!(
                 formatter,
                 "target {} received a symbolic-ref update instead of a commit update",
-                target.short_name(),
+                integration_target.short_name(),
             ),
             Self::MultipleGatedReferences(references) => write!(
                 formatter,
@@ -99,16 +101,16 @@ impl Display for GateError {
 impl Error for GateError {}
 
 impl From<GateTransactionRejection> for GateError {
-    fn from(rejection: GateTransactionRejection) -> Self {
-        match rejection {
+    fn from(gate_transaction_rejection: GateTransactionRejection) -> Self {
+        match gate_transaction_rejection {
             GateTransactionRejection::ReconciliationPreparation(error) => {
                 Self::Reconciliation(error)
             },
             GateTransactionRejection::Reconciliation(error) => Self::Planning(error),
             GateTransactionRejection::Git(error) => Self::Git(error),
             GateTransactionRejection::PermitReplay(error) => Self::PermitReplay(error),
-            GateTransactionRejection::CoordinationIdentity(rejection) => {
-                Self::CoordinationIdentity(rejection)
+            GateTransactionRejection::CoordinationIdentity(coordination_identity_rejection) => {
+                Self::CoordinationIdentity(coordination_identity_rejection)
             },
             GateTransactionRejection::InvalidCanonicalWorktreeRoot => {
                 Self::Ledger(LedgerError::InvalidCanonicalWorktreeRoot)

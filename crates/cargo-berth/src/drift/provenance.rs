@@ -24,6 +24,7 @@ use super::report::DriftReport;
 use super::report::IncursionCommit;
 use super::report::IncursionCommitOrigin;
 use super::report::ReservationDriftResult;
+use super::writes::PhaseCommitOrigin;
 use crate::edge::JudgedTargetTip;
 use crate::edge::RepositorySnapshot;
 use crate::git;
@@ -325,6 +326,14 @@ pub(super) fn read_committed_foreign_paths(
             ),
         },
     )?;
+    for (phase_start, anchor) in &mut batch.anchors {
+        anchor.range_commits.retain(|commit| {
+            match full_changes.commit_origin(phase_start, commit) {
+                PhaseCommitOrigin::UnitWritten | PhaseCommitOrigin::Unclassified => true,
+                PhaseCommitOrigin::ReceivedFromMergeBranch => false,
+            }
+        });
+    }
     if batch
         .anchors
         .values()

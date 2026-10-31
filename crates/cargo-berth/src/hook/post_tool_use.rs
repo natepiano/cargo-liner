@@ -235,10 +235,10 @@ impl PostToolUseAnswer {
     /// Keep only the lines `reader` has not been told, and nothing when every line was told.
     ///
     /// The summary stays as the engine stated it, so the user still reads the whole state.
-    fn told_once_to(self, reader: &HookReader) -> Self {
+    fn told_once_to(self, hook_reader: &HookReader) -> Self {
         match self {
             Self::Silent => Self::Silent,
-            Self::Stated { summary, detail } => match reader.tell_once(&detail) {
+            Self::Stated { summary, detail } => match hook_reader.tell_once(&detail) {
                 UntoldDetail::NothingNew => Self::Silent,
                 UntoldDetail::Untold(detail) => Self::Stated { summary, detail },
             },
@@ -272,7 +272,7 @@ pub(crate) fn execute() -> ExitCode {
         BashLaunch::Background => Ok(PostToolUseAnswer::Silent),
     }) {
         Ok(answer) => answer,
-        Err(error) => error.answer(),
+        Err(post_tool_use_observation_error) => post_tool_use_observation_error.answer(),
     };
     answer.publish();
     ExitCode::SUCCESS
@@ -289,15 +289,15 @@ fn read_observed_bash_call() -> Result<BashLaunch, PostToolUseObservationError> 
 }
 
 /// Decide what the response carries, reading the live board only when drift needs it.
-fn answer_for(drift_envelope: &OutputEnvelope) -> PostToolUseAnswer {
-    match drift_envelope.post_tool_use_rendering() {
+fn answer_for(drift_output_envelope: &OutputEnvelope) -> PostToolUseAnswer {
+    match drift_output_envelope.post_tool_use_rendering() {
         PostToolUseRendering::NoFeedback => PostToolUseAnswer::Silent,
         PostToolUseRendering::Feedback { summary, detail } => {
             PostToolUseAnswer::Stated { summary, detail }
         },
         PostToolUseRendering::FeedbackDecidedByLiveIncursionState => match live_incursion_state() {
             LiveIncursionState::Read(board_envelope) => PostToolUseAnswer::from_rendering(
-                drift_envelope.post_tool_use_rendering_with_live_board(&board_envelope),
+                drift_output_envelope.post_tool_use_rendering_with_live_board(&board_envelope),
             ),
             LiveIncursionState::Unverifiable => PostToolUseAnswer::unverifiable(),
         },
@@ -306,7 +306,7 @@ fn answer_for(drift_envelope: &OutputEnvelope) -> PostToolUseAnswer {
 
 /// Read the board this process must consult before it can state incursion feedback.
 fn live_incursion_state() -> LiveIncursionState {
-    let board_envelope =
+    let board_output_envelope =
         match board::execute(BoardOutputSelection::CompleteBoard, CliOutputFormat::Json) {
             BoardDisplayOutcome::HeadlessResponse(board_envelope)
             | BoardDisplayOutcome::TerminalDidNotOpen(board_envelope)
@@ -314,8 +314,8 @@ fn live_incursion_state() -> LiveIncursionState {
             | BoardDisplayOutcome::FactsUnavailable(board_envelope) => board_envelope,
             BoardDisplayOutcome::TerminalRestored => return LiveIncursionState::Unverifiable,
         };
-    if matches!(board_envelope.exit_code(), BerthExit::Clear) {
-        LiveIncursionState::Read(Box::new(board_envelope))
+    if matches!(board_output_envelope.exit_code(), BerthExit::Clear) {
+        LiveIncursionState::Read(Box::new(board_output_envelope))
     } else {
         LiveIncursionState::Unverifiable
     }

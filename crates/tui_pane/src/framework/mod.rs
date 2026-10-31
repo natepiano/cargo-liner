@@ -8,6 +8,7 @@ mod input;
 mod list_navigation;
 mod render;
 mod tab_stop;
+mod wheel;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -33,6 +34,8 @@ pub use self::render::render_panes;
 use self::tab_stop::RegisteredTabStop;
 use self::tab_stop::TabOrder;
 pub use self::tab_stop::TabStop;
+pub use self::wheel::OverlayWheel;
+pub use self::wheel::wheel_framework_overlay;
 use crate::AppContext;
 use crate::ClipboardBackend;
 use crate::CopyOutcome;

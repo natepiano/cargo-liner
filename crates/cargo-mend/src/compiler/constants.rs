@@ -90,7 +90,8 @@ pub(super) const METADATA_FILE_EXTENSION: &str = "rmeta";
 pub(super) const REPORT_FILE_EXTENSION: &str = "mend.json";
 
 // `FINDINGS_SCHEMA_VERSION` versions the persisted findings format.
-pub(super) const FINDINGS_SCHEMA_VERSION: u32 = 35;
+// Version 36 requires a complete source-mount inventory, even for clean mounts.
+pub(super) const FINDINGS_SCHEMA_VERSION: u32 = 36;
 
 // `PROGRESS_BAR_FILL`, `PROGRESS_BAR_HEAD`, `PROGRESS_BAR_WIDTH`, `PROGRESS_FRAMES`
 // and `PROGRESS_INTERVAL` control the progress indicator's rendering and timing.

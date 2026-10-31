@@ -99,7 +99,7 @@ pub(super) fn parse_output_line(raw: &str) -> Line<'static> {
     let padded = format!(" {raw}");
     let safe = pane_data::sanitize_ansi_for_output(&padded);
     ansi_to_tui::IntoText::into_text(&safe).map_or_else(
-        |_| Line::from(Span::raw(pane_data::strip_ansi(&safe))),
+        |_| Line::from(Span::raw(tui_pane::strip_ansi(&safe))),
         |text| {
             text.lines
                 .into_iter()

@@ -175,6 +175,7 @@ fn draw_panes_at(
     app.tiles.set_min_tile_width(minimum);
     app.tiles
         .set_tile_width_floor(TileWidthFloor::CompressSingleColumn);
+    app.tiles.set_view(app.loaded_config.config.tiles.view);
     let focused = app
         .tiles
         .placements(area, growth)
@@ -191,7 +192,6 @@ fn draw_panes_at(
         ),
     };
     *cells.focused.borrow_mut() = focused.clone();
-    app.tiles.set_view(app.loaded_config.config.tiles.view);
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
         &mut app.tiles,
@@ -821,7 +821,7 @@ impl TileCells<TileKey> for Cells<'_> {
         }
     }
 
-    fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, ground: Color) {
+    fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, _: Color) {
         match content {
             TileContent::Summary => {
                 let layout = self.summary_layout(inner.width);
@@ -862,7 +862,11 @@ impl TileCells<TileKey> for Cells<'_> {
                     u16::try_from(height).unwrap_or(u16::MAX),
                 );
                 let mut complete = Buffer::empty(virtual_area);
-                complete.set_style(virtual_area, Style::default().bg(ground));
+                tui_pane::PaneChrome::paint_tile_ground(
+                    &mut complete,
+                    virtual_area,
+                    *self.focused.borrow() == SelectableSurface::Surface(SelectionSurface::Summary),
+                );
                 summary::draw_measured(&mut complete, virtual_area, &self.summary_frame(), &layout);
                 *self.painted_summary.borrow_mut() = PaintedSummary::Drawn(layout);
                 for y in 0..inner.height {
@@ -991,6 +995,7 @@ mod tests {
     use ratatui::buffer::Cell;
     use tui_pane::CellPoint;
     use tui_pane::FavoritesFileState;
+    use tui_pane::TileView;
     use tui_pane::dispatch_key;
 
     use super::*;
@@ -1331,6 +1336,113 @@ fraying = "leading"
             .map(str::to_string)
             .chain([status_row(status_left, None)])
             .collect()
+    }
+
+    #[test]
+    fn first_summary_frame_after_agent_focus_keeps_content_and_foot_tinted() {
+        let previous_tint = tui_pane::focused_pane_tint_enabled();
+        let previous_transparency = tui_pane::transparent_background();
+        let mut app = laid_out_app();
+        tui_pane::set_focused_pane_tint(true);
+        tui_pane::set_transparent_background(false);
+        app.loaded_config.config.tiles.view = TileView::Cells;
+        app.census.apply(CensusUpdate::Local {
+            rows:      vec![boss(60)],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Classified,
+        });
+        let area = Rect::new(0, 0, WIDTH, HEIGHT - STATUS_LINE_HEIGHT);
+        let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("test terminal");
+        terminal
+            .draw(|frame| draw_panes_at(frame, &mut app, area, TileGridContents::Shown, NOW))
+            .expect("initial grid frame");
+        app.tiles.settle_for_test();
+        terminal
+            .draw(|frame| draw_panes_at(frame, &mut app, area, TileGridContents::Shown, NOW))
+            .expect("settled grid frame");
+        app.tiles.settle_for_test();
+        app.tiles.focus_cell(tui_pane::TABLE_CELL + 1);
+        app.tiles.settle_for_test();
+        let growth = app.loaded_config.config.tiles.growth();
+        assert!(app.tiles.placements(area, growth).iter().any(|placement| {
+            placement.frame.is_focused() && matches!(placement.content, TileContent::Group(_))
+        }));
+        app.loaded_config.config.tiles.view = TileView::Summary;
+        terminal
+            .draw(|frame| draw_panes_at(frame, &mut app, area, TileGridContents::Shown, NOW))
+            .expect("first summary frame");
+        assert!(app.tiles.placements(area, growth).iter().all(|placement| {
+            placement.frame.is_focused() && matches!(placement.content, TileContent::Summary)
+        }));
+        let buffer = terminal.backend().buffer();
+        let tint = tui_pane::pane_background(true);
+        let foot_ground = buffer[(area.right() - 2, area.bottom() - 2)].bg;
+        assert_eq!(foot_ground, tint, "the summary foot has the focus tint");
+        let table_header_y = (area.top() + 1..area.bottom() - 2)
+            .find(|&y| {
+                (area.left() + 1..area.right() - 1)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .split_whitespace()
+                    .any(|word| word == "pid")
+            })
+            .expect("unselected session table header");
+        assert_eq!(
+            buffer[(area.right() - 2, table_header_y)].bg,
+            foot_ground,
+            "the first summary content frame has the same tint as its foot"
+        );
+        tui_pane::set_focused_pane_tint(previous_tint);
+        tui_pane::set_transparent_background(previous_transparency);
+    }
+
+    #[test]
+    fn focused_summary_keeps_transparent_ground_or_opaque_tint() {
+        let previous_tint = tui_pane::focused_pane_tint_enabled();
+        let previous_transparency = tui_pane::transparent_background();
+        let app = App::new_for_test().expect("test app");
+        tui_pane::set_focused_pane_tint(true);
+        let cells = Cells::new(
+            app.census.machines(&[]),
+            NOW,
+            app.footer_colors.colors(),
+            &HashMap::new(),
+            SummarySort::default(),
+        )
+        .with_selections(
+            Selections::default(),
+            SelectableSurface::Surface(SelectionSurface::Summary),
+        );
+        let height = u16::try_from(cells.summary_layout(60).height()).expect("summary height");
+        let area = Rect::new(0, 0, 60, height);
+        for transparent in [true, false] {
+            tui_pane::set_transparent_background(transparent);
+            let mut buffer = Buffer::empty(area);
+            cells.draw(
+                &mut buffer,
+                &TileContent::Summary,
+                area,
+                tui_pane::pane_background(true),
+            );
+            let expected = if transparent {
+                Color::Reset
+            } else {
+                tui_pane::pane_background(true)
+            };
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    assert_eq!(
+                        buffer[(x, y)].bg,
+                        expected,
+                        "summary at ({x}, {y}); transparent={transparent}"
+                    );
+                }
+            }
+            let text: String = buffer.content.iter().map(Cell::symbol).collect();
+            assert!(text.contains("natedev"), "{text}");
+        }
+        tui_pane::set_focused_pane_tint(previous_tint);
+        tui_pane::set_transparent_background(previous_transparency);
     }
 
     #[test]

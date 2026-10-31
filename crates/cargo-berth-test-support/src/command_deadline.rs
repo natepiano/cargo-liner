@@ -31,7 +31,7 @@ impl CommandDeadlineExt for Command {
     fn bounded_output(&mut self) -> io::Result<Output> { crate::command_output(self) }
 
     fn bounded_status(&mut self) -> io::Result<ExitStatus> {
-        let mut process = child_process::with_spawn_lock(|| ChildProcess::spawn(self))??;
+        let mut process = crate::with_spawn_lock(|| ChildProcess::spawn(self))??;
         process.wait(GIT_COMMAND_DEADLINE)
     }
 }
@@ -77,4 +77,10 @@ struct DirectChildOnly;
 
 impl DescendantCleanup for DirectChildOnly {
     fn stop_descendants(&self, _: u32) {}
+}
+
+impl CommandDeadlineExt for crate::FixtureCommand {
+    fn bounded_output(&mut self) -> io::Result<Output> { self.output() }
+
+    fn bounded_status(&mut self) -> io::Result<ExitStatus> { self.command_mut().bounded_status() }
 }

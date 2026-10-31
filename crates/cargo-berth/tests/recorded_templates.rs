@@ -12,10 +12,10 @@ use std::io::Write;
 use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use cargo_berth_test_support::FixtureCommand as Command;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
 

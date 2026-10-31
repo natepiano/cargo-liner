@@ -35,7 +35,6 @@ pub use detail_field::package_rows_from_data;
 pub use detail_field::package_selectable_row_at_or_after;
 pub use detail_field::package_selectable_row_at_or_before;
 pub use detail_field::sanitize_ansi_for_output;
-pub use detail_field::strip_ansi;
 pub(in crate::tui) use formatting::GitReadHealth;
 pub(in crate::tui) use formatting::GitSyncLabels;
 pub use formatting::format_ahead_behind;

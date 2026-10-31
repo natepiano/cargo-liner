@@ -18,6 +18,8 @@ use super::ordering;
 use super::report::DriftComparisonMode;
 use super::selection::CommittedWriteSelection;
 use super::selection::DriftComparisonChoice;
+use super::writes;
+use super::writes::PhaseCommitOrigin;
 use crate::config::BerthConfig;
 use crate::git;
 use crate::git::CommitCandidateReachability;
@@ -117,11 +119,18 @@ pub(super) struct CheapDeltaChanges {
 
 pub(super) struct FullPhaseStartChanges {
     committed:   HashMap<ReservationId, FullReservationPhaseHistory>,
+    authorship:  CommittedHistoryAuthorship,
     head_commit: HeadCommitOwnAttribution,
     history:     FullPhaseHistoryObservation,
     staged:      StagedWorkingTreeChanges,
     unstaged:    UnstagedWorkingTreeChanges,
     untracked:   UntrackedWorkingTreeChanges,
+}
+
+/// Whether write selection established the unit line, or retained all contributions.
+enum CommittedHistoryAuthorship {
+    Unclassified,
+    UnitFirstParent,
 }
 
 /// The shared target and phase-start states established by one full comparison.
@@ -138,6 +147,28 @@ pub(super) enum FullPhaseHistoryObservation {
 
 impl FullPhaseStartChanges {
     pub(super) const fn phase_history(&self) -> &FullPhaseHistoryObservation { &self.history }
+
+    pub(super) fn commit_origin(
+        &self,
+        phase_start: &GitObjectId,
+        commit: &GitObjectId,
+    ) -> PhaseCommitOrigin {
+        match (&self.authorship, &self.history) {
+            (
+                CommittedHistoryAuthorship::UnitFirstParent,
+                FullPhaseHistoryObservation::Anchored { ancestry, .. },
+            ) => writes::phase_commit_origin(ancestry, phase_start, commit),
+            (
+                CommittedHistoryAuthorship::Unclassified,
+                FullPhaseHistoryObservation::Anchored { .. },
+            )
+            | (
+                CommittedHistoryAuthorship::Unclassified
+                | CommittedHistoryAuthorship::UnitFirstParent,
+                FullPhaseHistoryObservation::NoReservationAnchor,
+            ) => PhaseCommitOrigin::Unclassified,
+        }
+    }
 }
 
 pub(super) enum ObservedDriftChanges {
@@ -175,6 +206,7 @@ impl ObservedDriftChanges {
         else {
             return Ok(());
         };
+        changes.authorship = CommittedHistoryAuthorship::UnitFirstParent;
         for (id, history) in &mut changes.committed {
             if let FullReservationPhaseHistory::Compared(committed) = history {
                 let reservation = reservations
@@ -591,6 +623,7 @@ fn observe_full(
         comparison,
         changes: ObservedDriftChanges::Full(FullPhaseStartChanges {
             committed,
+            authorship: CommittedHistoryAuthorship::Unclassified,
             head_commit,
             history,
             staged: StagedWorkingTreeChanges(staged_paths),

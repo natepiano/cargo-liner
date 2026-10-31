@@ -83,8 +83,9 @@ fn infer_ci_columns(runs: &[CiRun]) -> Vec<CiJobColumn> {
     for run in runs {
         for job in &run.jobs {
             let runtime = job.duration_secs.unwrap_or(0);
-            if let Some(existing) = cols.iter_mut().find(|col| col.name == job.name) {
-                existing.max_runtime_s = existing.max_runtime_s.max(runtime);
+            if let Some(existing_ci_job_column) = cols.iter_mut().find(|col| col.name == job.name) {
+                existing_ci_job_column.max_runtime_s =
+                    existing_ci_job_column.max_runtime_s.max(runtime);
             } else {
                 cols.push(CiJobColumn {
                     name:          job.name.clone(),
@@ -105,13 +106,13 @@ fn ci_job_display_columns(cols: &[CiJobColumn]) -> Vec<CiDisplayColumn> {
 
 fn ci_display_columns_for_width(runs: &[CiRun], inner_width: u16) -> Vec<CiDisplayColumn> {
     let cols = infer_ci_columns(runs);
-    let all_columns = ci_job_display_columns(&cols);
-    if ci_table_fixed_width(runs, &all_columns, true) <= usize::from(inner_width) {
-        return all_columns;
+    let all_ci_display_columns = ci_job_display_columns(&cols);
+    if ci_table_fixed_width(runs, &all_ci_display_columns, true) <= usize::from(inner_width) {
+        return all_ci_display_columns;
     }
 
-    let mut ranked = cols.clone();
-    ranked.sort_by(|left, right| {
+    let mut ranked_ci_job_columns = cols.clone();
+    ranked_ci_job_columns.sort_by(|left, right| {
         right
             .max_runtime_s
             .cmp(&left.max_runtime_s)
@@ -119,11 +120,11 @@ fn ci_display_columns_for_width(runs: &[CiRun], inner_width: u16) -> Vec<CiDispl
     });
 
     let mut selected = HashSet::new();
-    for candidate in ranked {
-        selected.insert(candidate.name.clone());
-        let display_columns = ci_grouped_display_columns(&cols, &selected);
-        if ci_table_fixed_width(runs, &display_columns, true) > usize::from(inner_width) {
-            selected.remove(&candidate.name);
+    for ci_job_column in ranked_ci_job_columns {
+        selected.insert(ci_job_column.name.clone());
+        let ci_display_columns = ci_grouped_display_columns(&cols, &selected);
+        if ci_table_fixed_width(runs, &ci_display_columns, true) > usize::from(inner_width) {
+            selected.remove(&ci_job_column.name);
         }
     }
 
@@ -134,39 +135,42 @@ fn ci_grouped_display_columns(
     cols: &[CiJobColumn],
     selected: &HashSet<String>,
 ) -> Vec<CiDisplayColumn> {
-    let mut display = Vec::new();
+    let mut ci_display_columns = Vec::new();
     let mut other = Vec::new();
-    for col in cols {
-        if selected.contains(&col.name) {
-            display.push(CiDisplayColumn::Job(col.name.clone()));
+    for ci_job_column in cols {
+        if selected.contains(&ci_job_column.name) {
+            ci_display_columns.push(CiDisplayColumn::Job(ci_job_column.name.clone()));
         } else {
-            other.push(col.name.clone());
+            other.push(ci_job_column.name.clone());
         }
     }
     if !other.is_empty() {
-        display.push(CiDisplayColumn::Other { jobs: other });
+        ci_display_columns.push(CiDisplayColumn::Other { jobs: other });
     }
-    display
+    ci_display_columns
 }
 
 fn build_ci_header_row(cols: &[CiDisplayColumn], widths: &[Constraint]) -> Row<'static> {
-    let right_aligned = Style::default()
+    let header_style = Style::default()
         .add_modifier(Modifier::BOLD)
         .fg(theme_roles::column_header_color());
     let mut header_cells = vec![
-        Cell::from(" Commit").style(right_aligned),
-        Cell::from("Branch").style(right_aligned),
-        Cell::from("Timestamp").style(right_aligned),
+        Cell::from(" Commit").style(header_style),
+        Cell::from("Branch").style(header_style),
+        Cell::from("Timestamp").style(header_style),
     ];
-    for (i, col) in cols.iter().enumerate() {
+    for (i, ci_display_column) in cols.iter().enumerate() {
         let width = constraint_width(widths.get(3 + i)).unwrap_or(CI_JOB_LABEL_MIN_WIDTH);
         header_cells.push(
-            Cell::from(Line::from(col.header_label_for_width(width)).alignment(Alignment::Right))
-                .style(right_aligned),
+            Cell::from(
+                Line::from(ci_display_column.header_label_for_width(width))
+                    .alignment(Alignment::Right),
+            )
+            .style(header_style),
         );
     }
     header_cells
-        .push(Cell::from(Line::from("Total").alignment(Alignment::Right)).style(right_aligned));
+        .push(Cell::from(Line::from("Total").alignment(Alignment::Right)).style(header_style));
     Row::new(header_cells).bottom_margin(0)
 }
 
@@ -176,7 +180,7 @@ fn build_ci_data_row(
     show_durations: bool,
     commit_width: usize,
     branch_width: usize,
-    selection: PaneSelectionState,
+    pane_selection_state: PaneSelectionState,
 ) -> Row<'static> {
     let timestamp = pane_data::format_timestamp(&ci_run.created_at);
     let total_dur = ci_run
@@ -195,8 +199,8 @@ fn build_ci_data_row(
         Cell::from(timestamp),
     ];
 
-    for col in cols {
-        let data = ci_column_data(ci_run, col);
+    for ci_display_column in cols {
+        let data = ci_column_data(ci_run, ci_display_column);
         if let Some(data) = data {
             let style = render::ci_status_style(Some(data.status));
             cells.push(ci_metric_cell(
@@ -218,7 +222,7 @@ fn build_ci_data_row(
         total_style,
     ));
 
-    Row::new(cells).style(selection.overlay_style())
+    Row::new(cells).style(pane_selection_state.overlay_style())
 }
 
 fn ci_metric_cell(
@@ -313,7 +317,7 @@ fn build_ci_widths(
     // can use both areas.
     let (commit_width, branch_width) =
         ci_description_widths(ci_runs, cols, show_durations, inner_width);
-    let mut specs = vec![
+    let mut column_specs = vec![
         ColumnSpec {
             min: label_width(" Commit"),
             max: Some(commit_width),
@@ -324,40 +328,40 @@ fn build_ci_widths(
         },
         ColumnSpec::fixed(CI_TIMESTAMP_WIDTH),
     ];
-    for col in cols {
-        let label_min = label_width(&col.header_min_label());
+    for ci_display_column in cols {
+        let label_min = label_width(&ci_display_column.header_min_label());
         if show_durations {
-            specs.push(ColumnSpec::fit(label_min.max(ci_status_glyph_width_u16())));
+            column_specs.push(ColumnSpec::fit(label_min.max(ci_status_glyph_width_u16())));
         } else {
-            specs.push(ColumnSpec::fixed(
+            column_specs.push(ColumnSpec::fixed(
                 label_min.max(ci_status_glyph_width_u16()),
             ));
         }
     }
     let total_label = label_width("Total");
     if show_durations {
-        specs.push(ColumnSpec::fit(
+        column_specs.push(ColumnSpec::fit(
             total_label.max(ci_status_glyph_width_u16()),
         ));
     } else {
-        specs.push(ColumnSpec::fixed(
+        column_specs.push(ColumnSpec::fixed(
             total_label.max(ci_status_glyph_width_u16()),
         ));
     }
 
-    let spec_len = specs.len();
-    let mut widths = ColumnWidths::new(specs);
+    let spec_len = column_specs.len();
+    let mut column_widths = ColumnWidths::new(column_specs);
 
     for run in ci_runs {
-        widths.observe_cell_usize(0, run.commit_title.as_deref().unwrap_or("").len() + 1);
-        widths.observe_cell_usize(1, run.branch.len());
+        column_widths.observe_cell_usize(0, run.commit_title.as_deref().unwrap_or("").len() + 1);
+        column_widths.observe_cell_usize(1, run.branch.len());
     }
     if show_durations {
-        for (i, col) in cols.iter().enumerate() {
+        for (i, ci_display_column) in cols.iter().enumerate() {
             let col_idx = 3 + i;
             for run in ci_runs {
-                if let Some(data) = ci_column_data(run, col) {
-                    widths.observe_cell_usize(
+                if let Some(data) = ci_column_data(run, ci_display_column) {
+                    column_widths.observe_cell_usize(
                         col_idx,
                         ci_metric_content_width(data.duration.trim().width()),
                     );
@@ -367,7 +371,7 @@ fn build_ci_widths(
         let total_idx = 3 + cols.len();
         for run in ci_runs {
             if let Some(seconds) = run.wall_clock_secs {
-                widths.observe_cell_usize(
+                column_widths.observe_cell_usize(
                     total_idx,
                     ci_metric_content_width(ci::format_secs(seconds).trim().width()),
                 );
@@ -375,7 +379,7 @@ fn build_ci_widths(
         }
     }
 
-    let mut resolved: Vec<u16> = (0..spec_len).map(|i| widths.get(i)).collect();
+    let mut resolved: Vec<u16> = (0..spec_len).map(|i| column_widths.get(i)).collect();
     widen_ci_header_columns(&mut resolved, cols, inner_width);
     resolved.into_iter().map(Constraint::Length).collect()
 }
@@ -392,12 +396,12 @@ fn widen_ci_header_columns(widths: &mut [u16], cols: &[CiDisplayColumn], inner_w
         return;
     };
 
-    for (i, col) in cols.iter().enumerate() {
+    for (i, ci_display_column) in cols.iter().enumerate() {
         if slack == 0 {
             break;
         }
         let idx = 3 + i;
-        let target = col.header_target_width();
+        let target = ci_display_column.header_target_width();
         let current = usize::from(widths[idx]);
         let grow_by = target.saturating_sub(current).min(slack);
         widths[idx] = widths[idx].saturating_add(u16::try_from(grow_by).unwrap_or(u16::MAX));
@@ -572,7 +576,7 @@ fn ci_non_description_width(
     let base = usize::from(CI_TIMESTAMP_WIDTH);
     let job_columns: usize = cols
         .iter()
-        .map(|col| ci_duration_width(ci_runs, col, show_durations))
+        .map(|ci_display_column| ci_duration_width(ci_runs, ci_display_column, show_durations))
         .sum();
     let total = ci_total_width(ci_runs, show_durations);
     base + job_columns + total + column_count.saturating_sub(1)
@@ -610,7 +614,7 @@ pub fn render_ci_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut Ci,
-    ctx: &PaneRenderCtx<'_>,
+    pane_render_ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
     let Some(ci_data) = pane.content().cloned() else {
         return empty_ci_chrome(" No CI Runs ");
@@ -628,7 +632,7 @@ pub fn render_ci_pane_body(
     let focused_pos = ci_focused.then(|| pane.viewport.pos());
     let title = ci_panel_title(&ci_data, focused_pos);
 
-    let mut chrome = PaneFrameChrome {
+    let mut pane_frame_chrome = PaneFrameChrome {
         title,
         focused: ci_focused,
         ..PaneFrameChrome::default()
@@ -676,15 +680,17 @@ pub fn render_ci_pane_body(
     *table_state.offset_mut() = pane.viewport.scroll_offset();
     frame.render_stateful_widget(table, inner, &mut table_state);
     pane.viewport.set_scroll_offset(table_state.offset());
-    chrome.labels.extend(tui_pane::overflow_affordance_label(
-        area,
-        pane.viewport.overflow(),
-        Style::default().fg(label_color()),
-    ));
+    pane_frame_chrome
+        .labels
+        .extend(tui_pane::overflow_affordance_label(
+            area,
+            pane.viewport.overflow(),
+            Style::default().fg(label_color()),
+        ));
 
-    let _ = ctx;
+    let _ = pane_render_ctx;
 
-    chrome
+    pane_frame_chrome
 }
 
 /// The frame for a pane with nothing to list.
@@ -810,8 +816,8 @@ mod tests {
         let cols = infer_ci_columns(&runs);
         let selected =
             std::collections::HashSet::from(["clippy".to_string(), "benchmark".to_string()]);
-        let expected = ci_grouped_display_columns(&cols, &selected);
-        let width = ci_table_fixed_width(&runs, &expected, true);
+        let expected_ci_display_columns = ci_grouped_display_columns(&cols, &selected);
+        let width = ci_table_fixed_width(&runs, &expected_ci_display_columns, true);
 
         assert!(
             ci_table_fixed_width(
@@ -828,11 +834,11 @@ mod tests {
                 &runs,
                 u16::try_from(width).expect("grouped CI table width should fit u16"),
             ),
-            expected
+            expected_ci_display_columns
         );
         assert!(ci_display_table_shows_durations(
             &runs,
-            &expected,
+            &expected_ci_display_columns,
             u16::try_from(width).expect("grouped CI table width should fit u16"),
         ));
     }
@@ -999,9 +1005,9 @@ mod tests {
         let labels: Vec<String> = cols
             .iter()
             .enumerate()
-            .map(|(i, col)| {
+            .map(|(i, ci_display_column)| {
                 let width = constraint_width(widths.get(3 + i)).unwrap_or(CI_JOB_LABEL_MIN_WIDTH);
-                col.header_label_for_width(width)
+                ci_display_column.header_label_for_width(width)
             })
             .collect();
 

@@ -397,17 +397,21 @@ mod tests {
         // `short` gives `PaneId::Cpu` more than `cpu_floor` and `PaneId::Targets` more height than
         // `tall`, because its shorter top row frees middle-row space.
         let cpu_floor = super::cpu::cpu_required_pane_height(12);
-        let tall = resolve_layout(
+        let tall_resolved_pane_layout = resolve_layout(
             Rect::new(0, 0, 120, 40),
             30,
             12,
             BottomRow::Diagnostics,
             100,
         );
-        let short = resolve_layout(Rect::new(0, 0, 120, 40), 30, 12, BottomRow::Diagnostics, 4);
+        let short_resolved_pane_layout =
+            resolve_layout(Rect::new(0, 0, 120, 40), 30, 12, BottomRow::Diagnostics, 4);
 
-        assert!(short.area(PaneId::Cpu).height > cpu_floor);
-        assert!(short.area(PaneId::Targets).height > tall.area(PaneId::Targets).height);
+        assert!(short_resolved_pane_layout.area(PaneId::Cpu).height > cpu_floor);
+        assert!(
+            short_resolved_pane_layout.area(PaneId::Targets).height
+                > tall_resolved_pane_layout.area(PaneId::Targets).height
+        );
     }
 
     fn assert_layout_has_no_overlaps(layout: &PaneGridLayout<PaneId>) {

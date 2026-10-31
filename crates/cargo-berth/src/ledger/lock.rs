@@ -156,11 +156,11 @@ mod tests {
     use std::env;
     use std::fs;
     use std::path::Path;
-    use std::process::Command;
     use std::thread;
     use std::time::Duration;
 
     use cargo_berth_test_support::ChildDeadlineExt as _;
+    use cargo_berth_test_support::FixtureCommand as Command;
     use tempfile::tempdir;
 
     use super::MutationLock;

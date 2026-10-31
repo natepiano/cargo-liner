@@ -115,13 +115,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::panic;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use cargo_berth_test_support::FixtureCommand as Command;
 use lock_contention::LOCK_CONTENTION_TOLERANCE;
 use tempfile::TempDir;
 use tempfile::tempdir;
@@ -3265,11 +3265,21 @@ fn renamed_trunk_refreshes_dispatch_before_next_prepared_update() {
         "trunk rename failed: {}",
         String::from_utf8_lossy(&renamed.stderr)
     );
-    let refreshed = fs::read_to_string(repository.path().join(HOOK_CONTEXT_PATH))
-        .expect("refreshed hook context should read");
+    // Git returns before the detached refresh worker publishes its context.
+    let refresh_started_at = Instant::now();
+    let refreshed = loop {
+        let context = fs::read_to_string(repository.path().join(HOOK_CONTEXT_PATH))
+            .expect("refreshed hook context should read");
+        if context.contains("cargo_berth_trunk_reference='refs/heads/renamed'")
+            || refresh_started_at.elapsed() >= SCHEDULING_ALLOWANCE
+        {
+            break context;
+        }
+        thread::sleep(POLL_INTERVAL);
+    };
     assert!(
         refreshed.contains("cargo_berth_trunk_reference='refs/heads/renamed'"),
-        "hook did not refresh after branch rename: {}",
+        "hook did not refresh after branch rename: {refreshed}; {}",
         String::from_utf8_lossy(&renamed.stderr)
     );
     assert!(!refreshed.contains("cargo_berth_trunk_reference='refs/heads/main'"));

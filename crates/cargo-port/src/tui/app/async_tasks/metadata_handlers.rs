@@ -54,12 +54,35 @@ impl App {
                     return;
                 }
             },
-            Err(err) => match err.user_facing_message() {
-                Some(message) => {
+            Err(err) => match err {
+                CargoMetadataError::ManifestRejected { first_line } => {
+                    if ManifestFingerprint::capture(&workspace_root)
+                        .is_ok_and(|current| &current != fingerprint)
+                    {
+                        tracing::debug!(
+                            workspace_root = %workspace_root.display(),
+                            generation,
+                            "cargo_metadata_msg_fingerprint_drift"
+                        );
+                        return;
+                    }
+                    if self.project_list.is_rust_at_path(&workspace_root) {
+                        self.scan
+                            .manifest_metadata
+                            .record_failure(&workspace_root, &first_line);
+                    }
+                    tracing::warn!(
+                        workspace_root = %workspace_root.as_path().display(),
+                        generation,
+                        error = %first_line,
+                        "cargo_metadata_failed"
+                    );
+                },
+                CargoMetadataError::Other(message) => {
                     let label = project::home_relative_path(workspace_root.as_path());
                     self.show_timed_toast(
                         format!("cargo metadata failed ({label})"),
-                        message.to_string(),
+                        message.clone(),
                     );
                     tracing::warn!(
                         workspace_root = %workspace_root.as_path().display(),
@@ -68,7 +91,7 @@ impl App {
                         "cargo_metadata_failed"
                     );
                 },
-                None => {
+                CargoMetadataError::WorkspaceMissing => {
                     // `WorkspaceMissing`: the workspace root vanished
                     // between dispatch and run (typically the user just
                     // deleted a worktree). Stale-refresh race, not a real
@@ -134,6 +157,7 @@ impl App {
         if let Ok(mut store) = metadata_store.lock() {
             store.upsert(workspace_metadata);
         }
+        self.scan.manifest_metadata.record_success(workspace_root);
         if tree_changed {
             self.panes.clear_for_tree_change();
             self.rebuild_visible_rows_now();
@@ -159,6 +183,7 @@ impl App {
         // clean on any member from the metadata store. Members missing from new metadata linger in
         // the index until a full scan restart (existing accepted staleness).
         for project_root in member_roots {
+            self.scan.manifest_metadata.record_success(&project_root);
             self.scan
                 .target_dir_index
                 .upsert(TargetDirMember { project_root }, target_directory.clone());
