@@ -164,7 +164,8 @@ pub(in crate::compiler) fn load_report(
     } = merged_fix_facts;
     sort_and_dedup_pub_use_fix_facts(&mut pub_use_fix_facts);
     drop_conflicting_subtree_reexport_fix_facts(&mut subtree_reexport_fix_facts);
-    retain_mount_facts_of_fixable_crates(&mut module_mount_facts, &subtree_reexport_fix_facts);
+    module_mount_facts.sort();
+    module_mount_facts.dedup();
 
     LoadedReport {
         report: Report {
@@ -193,8 +194,8 @@ fn reconcile_cross_target_reports(reports: &mut [StoredReport]) {
 /// Drops every stored fix fact whose authorizing finding did not survive
 /// `reconcile_cross_target_reports`. Pruning happens once, at that boundary:
 /// the surviving finding set is settled the moment those four stages return,
-/// and the facts are still untouched here. A report's `module_mount_facts`
-/// serve only its subtree re-export facts, so they go with the last of those.
+/// and the facts are still untouched here. Mount evidence survives independently:
+/// a source's silent mounts can veto another crate's subtree re-export edit.
 fn discard_fix_facts_for_suppressed_findings(reports: &mut [StoredReport]) {
     for report in reports {
         let subtree_reexport_sites: BTreeSet<SubtreeReexportSite> = report
@@ -213,9 +214,6 @@ fn discard_fix_facts_for_suppressed_findings(reports: &mut [StoredReport]) {
         report
             .subtree_reexport_fix_facts
             .retain(|fact| subtree_reexport_sites.contains(&SubtreeReexportSite::from(fact)));
-        if report.subtree_reexport_fix_facts.is_empty() {
-            report.module_mount_facts.clear();
-        }
 
         let narrowing_sites: BTreeSet<PubUseNarrowingSite> = report
             .findings
@@ -314,37 +312,25 @@ fn sort_and_dedup_pub_use_fix_facts(pub_use_fix_facts: &mut Vec<PubUseFixFact>) 
 }
 
 /// Sorts and dedups on full content, then drops every use site that still
-/// carries more than one distinct fact. Two compilation units that disagree on
-/// how to rewrite one re-export leave the fixer nothing it can trust, so it
+/// carries more than one distinct fact within one crate. Proposals from different
+/// crates stay for the planner to compare their physical edits. Builds of one crate
+/// that disagree on a re-export leave the fixer nothing it can trust, so it
 /// skips the site; the finding keeps advertising the fix.
 fn drop_conflicting_subtree_reexport_fix_facts(facts: &mut Vec<SubtreeReexportFixFact>) {
-    facts.sort();
+    facts.sort_by(|a, b| (&a.crate_root_file, a).cmp(&(&b.crate_root_file, b)));
     facts.dedup();
     let agreed = facts
         .chunk_by(|a, b| {
-            a.use_path == b.use_path && a.use_line == b.use_line && a.use_column == b.use_column
+            a.crate_root_file == b.crate_root_file
+                && a.use_path == b.use_path
+                && a.use_line == b.use_line
+                && a.use_column == b.use_column
         })
         .filter(|site| site.len() == 1)
         .flatten()
         .cloned()
         .collect();
     *facts = agreed;
-}
-
-/// Keeps a mount fact only while some surviving subtree re-export fact comes
-/// from the same crate root, since the fixer reads mounts only for those, then
-/// sorts and dedups the survivors.
-fn retain_mount_facts_of_fixable_crates(
-    module_mount_facts: &mut Vec<ModuleMountFact>,
-    subtree_reexport_fix_facts: &[SubtreeReexportFixFact],
-) {
-    let fixable_crate_roots: BTreeSet<&str> = subtree_reexport_fix_facts
-        .iter()
-        .map(|fact| fact.crate_root_file.as_str())
-        .collect();
-    module_mount_facts.retain(|fact| fixable_crate_roots.contains(fact.crate_root_file.as_str()));
-    module_mount_facts.sort();
-    module_mount_facts.dedup();
 }
 
 fn stored_matches_selected_root(
@@ -1039,7 +1025,7 @@ mod tests {
     }
 
     #[test]
-    fn mount_facts_go_with_the_last_subtree_reexport_fix_fact() {
+    fn silent_mount_facts_survive_the_last_subtree_reexport_fix_fact() {
         let fixture = PersistenceFixture::new();
         let unfixable = stored_finding(
             DiagnosticCode::PubUseOutsideSubtree,
@@ -1056,9 +1042,10 @@ mod tests {
         discard_fix_facts_for_suppressed_findings(&mut reports);
 
         assert!(reports[0].subtree_reexport_fix_facts.is_empty());
-        assert!(
-            reports[0].module_mount_facts.is_empty(),
-            "mount facts serve only subtree re-export facts"
+        assert_eq!(
+            reports[0].module_mount_facts,
+            vec![stored_module_mount_fact(&fixture.crate_root)],
+            "silent mounts still constrain edits authorized by other packages"
         );
     }
 

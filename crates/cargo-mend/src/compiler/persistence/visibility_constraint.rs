@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use super::caller_aware;
 use super::caller_aware::CallerMap;
+use super::schema::PubUseNarrowingSite;
 use super::schema::StoredFinding;
 use super::schema::StoredReport;
 use crate::compiler::visibility;
@@ -394,9 +395,27 @@ struct SharedSourceVisibility {
 /// reports can describe the same module; their requirements are joined before
 /// comparing distinct mounts. Compilation identity is evidence, not a mount.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct SourceModuleMount {
+pub(crate) struct SourceModuleMount {
     package_root: String,
     module_path:  Vec<String>,
+}
+
+impl SourceModuleMount {
+    pub(crate) fn module_path(&self) -> &[String] { &self.module_path }
+
+    pub(crate) const fn new(package_root: String, module_path: Vec<String>) -> Self {
+        Self {
+            package_root,
+            module_path,
+        }
+    }
+}
+
+/// Whether every observed automatic proposal agrees on its replacement.
+#[derive(PartialEq, Eq)]
+enum VisibilityProposalAgreement {
+    Unanimous,
+    Vetoed,
 }
 
 #[derive(Default)]
@@ -569,7 +588,7 @@ fn resolve_visibility_proposals(
     }
     let mut covered: BTreeMap<String, BTreeSet<SourceModuleMount>> = BTreeMap::new();
     let mut replacement = VisibilityReplacement::Unproven;
-    let mut agreeing = true;
+    let mut agreement = VisibilityProposalAgreement::Unanimous;
     let mut automatic = Vec::new();
     let mut manual = Vec::new();
     let mut manual_keys = BTreeSet::new();
@@ -579,7 +598,7 @@ fn resolve_visibility_proposals(
             if automatic.is_empty() {
                 replacement = proposed;
             } else if replacement != proposed {
-                agreeing = false;
+                agreement = VisibilityProposalAgreement::Vetoed;
             }
             for path in visibility_edit_sources(&reports[proposal.report_index], &proposal.finding)
             {
@@ -591,7 +610,7 @@ fn resolve_visibility_proposals(
                         covered.entry(path.to_string()).or_default().insert(mount);
                     },
                     FindingMount::Unknown => {
-                        agreeing = false;
+                        agreement = VisibilityProposalAgreement::Vetoed;
                     },
                 }
             }
@@ -616,7 +635,7 @@ fn resolve_visibility_proposals(
             .get(path)
             .is_some_and(|covered| covered.iter().eq(mounts.keys()))
     });
-    if agreeing
+    if agreement == VisibilityProposalAgreement::Unanimous
         && replacement != VisibilityReplacement::Unproven
         && all_mounts_agree
         && manual.is_empty()
@@ -634,9 +653,9 @@ fn visibility_edit_sources<'a>(
     finding: &'a StoredFinding,
 ) -> BTreeSet<&'a str> {
     let mut paths = BTreeSet::from([finding.path.as_str()]);
-    let site = super::schema::PubUseNarrowingSite::for_finding(finding);
+    let site = PubUseNarrowingSite::for_finding(finding);
     for fact in &report.pub_use_fix_facts {
-        if super::schema::PubUseNarrowingSite::advertising_sites(fact)
+        if PubUseNarrowingSite::advertising_sites(fact)
             .iter()
             .any(|advertising| site.as_ref() == Some(advertising))
         {

@@ -1107,7 +1107,7 @@ fn unrewritable_findings_are_counted_in_the_skipped_notice() {
 
     let stderr = run_fix(root);
     assert!(
-        stderr.contains("skipped 2 `pub_use_outside_subtree` finding(s) `--fix` could not rewrite"),
+        stderr.contains("skipped 1 `pub_use_outside_subtree` finding(s) `--fix` could not rewrite"),
         "the notice must count the skipped findings:\n{stderr}"
     );
     assert_eq!(rust_sources(root), sources, "no source may change");
@@ -1123,4 +1123,387 @@ fn unrewritable_findings_are_counted_in_the_skipped_notice() {
         report.summary.errors, 0,
         "a skipped finding stays a warning: {report:#?}"
     );
+}
+
+/// A second package mounts the same re-export as its public prelude. Only the
+/// first package has a sideways facade and redirectable callers.
+#[test]
+fn shared_reexport_needed_by_another_package_stays_manual() {
+    let temp = tempdir().expect("create shared re-export workspace");
+    let root = temp.path();
+    // The second package intentionally exposes its platform module. Review it
+    // here so this fixture isolates preservation of the shared re-export.
+    write(
+        root,
+        "mend.toml",
+        "[visibility]\npub_in_path = \"permitted\"\nallow_pub_mod = [\"b/src/lib.rs\"]\n",
+    );
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"a\", \"b\"]\nresolver = \"2\"\n",
+    );
+    for name in ["a", "b"] {
+        write(
+            root,
+            &format!("{name}/Cargo.toml"),
+            &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        );
+        write(
+            root,
+            &format!("{name}/src/platform.rs"),
+            "pub fn discover() -> u8 { 7 }\n",
+        );
+    }
+    let shared = "pub use crate::platform::discover;\n";
+    write(root, "shared.rs", shared);
+    write(
+        root,
+        "a/src/lib.rs",
+        concat!(
+            "mod platform;\n#[path = \"../../shared.rs\"] mod bridge;\n",
+            "pub fn run() -> u8 { bridge::discover() }\n",
+        ),
+    );
+    write(
+        root,
+        "b/src/lib.rs",
+        concat!(
+            "pub mod platform;\n#[path = \"../../shared.rs\"] pub mod prelude;\n",
+            "pub fn run() -> u8 { prelude::discover() }\n",
+        ),
+    );
+
+    let stderr = run_fix_command(mend_command_for(&root.join("Cargo.toml")).args([
+        "--workspace",
+        "--all-targets",
+        "--fix",
+    ]));
+    assert_eq!(
+        fs::read_to_string(root.join("shared.rs")).expect("read shared source"),
+        shared
+    );
+    assert_eq!(
+        stderr
+            .matches("skipped 1 `pub_use_outside_subtree`")
+            .count(),
+        1,
+        "the kept re-export is reported once: {stderr}",
+    );
+    let check = cargo_command()
+        .args(["check", "--workspace", "--all-targets", "--quiet"])
+        .arg("--manifest-path")
+        .arg(root.join("Cargo.toml"))
+        .output()
+        .expect("check both packages after mend");
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+}
+
+/// Both packages mount the same re-export under ordinary module names. One
+/// package can additionally need a private import for a descendant glob user.
+#[derive(Clone, Copy)]
+enum SharedReexportUse {
+    SameRewrite,
+    DescendantGlobInFirstPackage,
+}
+
+fn shared_reexport_workspace(callers: SharedReexportUse) -> tempfile::TempDir {
+    let temp = tempdir().expect("create two-package re-export workspace");
+    let root = temp.path();
+    write(
+        root,
+        "mend.toml",
+        "[visibility]\npub_in_path = \"permitted\"\n",
+    );
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"a\", \"b\"]\nresolver = \"2\"\n",
+    );
+    for (package, owner) in [("a", "bridge"), ("b", "gateway")] {
+        write(
+            root,
+            &format!("{package}/Cargo.toml"),
+            &format!("[package]\nname = \"{package}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        );
+        write(
+            root,
+            &format!("{package}/src/platform.rs"),
+            "pub fn discover() -> u8 { 7 }\n",
+        );
+        let (declaration, local_call) = match callers {
+            SharedReexportUse::SameRewrite => (
+                format!("#[path = \"../../shared.rs\"] mod {owner};"),
+                String::new(),
+            ),
+            SharedReexportUse::DescendantGlobInFirstPackage => {
+                let local = if package == "a" {
+                    concat!(
+                        "mod callers { use super::*; pub(super) fn local() -> u8 { discover() } }\n",
+                        "pub fn local() -> u8 { callers::local() }\n",
+                    )
+                } else {
+                    ""
+                };
+                write(
+                    root,
+                    &format!("{package}/src/{owner}.rs"),
+                    &format!("include!(\"../../shared.rs\");\n{local}"),
+                );
+                let call = if package == "a" {
+                    format!(" + {owner}::local()")
+                } else {
+                    String::new()
+                };
+                (format!("mod {owner};"), call)
+            },
+        };
+        write(
+            root,
+            &format!("{package}/src/lib.rs"),
+            &format!(
+                "mod platform;\n{declaration}\npub fn run() -> u8 {{ {owner}::discover(){local_call} }}\n"
+            ),
+        );
+    }
+    write(root, "shared.rs", "pub use crate::platform::discover;\n");
+    temp
+}
+
+fn assert_workspace_builds(root: &Path) {
+    let check = cargo_command()
+        .args(["check", "--workspace", "--all-targets", "--quiet"])
+        .arg("--manifest-path")
+        .arg(root.join("Cargo.toml"))
+        .output()
+        .expect("check both packages");
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+}
+
+#[test]
+fn package_filtered_local_reexport_is_rewritten() {
+    let temp = tempdir().expect("create package-local re-export workspace");
+    let root = temp.path();
+    write(
+        root,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"a\", \"b\"]\nresolver = \"2\"\n",
+    );
+    write(
+        root,
+        "mend.toml",
+        "[visibility]\npub_in_path = \"permitted\"\n",
+    );
+    for package in ["a", "b"] {
+        write(
+            root,
+            &format!("{package}/Cargo.toml"),
+            &format!("[package]\nname = \"{package}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        );
+    }
+    write(
+        root,
+        "a/src/lib.rs",
+        "mod platform;\nmod bridge;\npub fn run() -> u8 { bridge::discover() }\n",
+    );
+    write(root, "a/src/platform.rs", "pub fn discover() -> u8 { 7 }\n");
+    write(
+        root,
+        "a/src/bridge.rs",
+        "pub use crate::platform::discover;\n",
+    );
+    write(root, "b/src/lib.rs", "pub fn independent() -> u8 { 9 }\n");
+    let stderr =
+        run_fix_command(mend_command_for(&root.join("Cargo.toml")).args(["-p", "a", "--fix"]));
+    assert_eq!(
+        fs::read_to_string(root.join("a/src/bridge.rs")).expect("read rewritten owner"),
+        ""
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("a/src/lib.rs")).expect("read redirected caller"),
+        "mod platform;\nmod bridge;\npub fn run() -> u8 { platform::discover() }\n"
+    );
+    assert!(!stderr.contains("skipped"), "{stderr}");
+    assert_workspace_builds(root);
+}
+
+#[test]
+fn package_filtered_shared_reexport_stays_manual() {
+    let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
+    let root = temp.path();
+    let shared = fs::read_to_string(root.join("shared.rs")).expect("read shared source");
+    let stderr =
+        run_fix_command(mend_command_for(&root.join("Cargo.toml")).args(["-p", "a", "--fix"]));
+    assert_eq!(
+        fs::read_to_string(root.join("shared.rs")).expect("read kept source"),
+        shared
+    );
+    assert_eq!(
+        stderr
+            .matches("skipped 1 `pub_use_outside_subtree`")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    assert_workspace_builds(root);
+}
+
+/// Qualified includes in an unselected package are still possible mounts.
+#[test]
+fn package_filtered_reexport_used_through_qualified_include_stays_manual() {
+    let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
+    let root = temp.path();
+    write(
+        root,
+        "b/src/lib.rs",
+        concat!(
+            "mod platform;\nmod gateway { std::include!(\"../../shared.rs\"); }\n",
+            "pub fn run() -> u8 { gateway::discover() }\n",
+        ),
+    );
+    assert_filtered_reexport_stays_manual(root);
+}
+
+/// A function-local module cannot be placed in the crate module inventory;
+/// the unselected package must conservatively veto the shared edit.
+#[test]
+fn package_filtered_reexport_used_by_block_local_module_stays_manual() {
+    let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
+    let root = temp.path();
+    write(
+        root,
+        "b/src/lib.rs",
+        &format!(
+            "mod platform;\npub fn run() -> u8 {{ #[path = {:?}] mod gateway; gateway::discover() }}\n",
+            root.join("shared.rs"),
+        ),
+    );
+    assert_filtered_reexport_stays_manual(root);
+}
+
+fn assert_filtered_reexport_stays_manual(root: &Path) {
+    let shared = fs::read_to_string(root.join("shared.rs")).expect("read shared source");
+    let stderr =
+        run_fix_command(mend_command_for(&root.join("Cargo.toml")).args(["-p", "a", "--fix"]));
+    assert_eq!(
+        fs::read_to_string(root.join("shared.rs")).expect("read kept source"),
+        shared
+    );
+    assert_eq!(
+        stderr
+            .matches("skipped 1 `pub_use_outside_subtree`")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    assert_workspace_builds(root);
+}
+
+/// Directory nesting alone is not a mount from the unselected root package.
+#[test]
+fn package_filtered_nested_member_local_reexport_is_rewritten() {
+    let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
+    let root = temp.path();
+    write(
+        root,
+        "Cargo.toml",
+        concat!(
+            "[package]\nname = \"b\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            "[workspace]\nmembers = [\"a\"]\nresolver = \"2\"\n",
+        ),
+    );
+    write(root, "src/lib.rs", "pub fn independent() -> u8 { 9 }\n");
+    write(
+        root,
+        "a/src/lib.rs",
+        "mod platform;\nmod bridge;\npub fn run() -> u8 { bridge::discover() }\n",
+    );
+    write(
+        root,
+        "a/src/bridge.rs",
+        "pub use crate::platform::discover;\n",
+    );
+    let stderr =
+        run_fix_command(mend_command_for(&root.join("Cargo.toml")).args(["-p", "a", "--fix"]));
+    assert_eq!(
+        fs::read_to_string(root.join("a/src/bridge.rs")).expect("read rewritten owner"),
+        ""
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("a/src/lib.rs")).expect("read redirected caller"),
+        "mod platform;\nmod bridge;\npub fn run() -> u8 { platform::discover() }\n",
+    );
+    assert!(!stderr.contains("skipped"), "{stderr}");
+    assert_workspace_builds(root);
+}
+
+#[test]
+fn package_manifest_shared_reexport_stays_manual() {
+    let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
+    let root = temp.path();
+    let shared = fs::read_to_string(root.join("shared.rs")).expect("read shared source");
+    let stderr = run_fix_command(mend_command_for(&root.join("a/Cargo.toml")).arg("--fix"));
+    assert_eq!(
+        fs::read_to_string(root.join("shared.rs")).expect("read kept source"),
+        shared
+    );
+    assert_eq!(
+        stderr
+            .matches("skipped 1 `pub_use_outside_subtree`")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    assert_workspace_builds(root);
+}
+
+#[test]
+fn shared_reexport_with_agreeing_packages_is_rewritten() {
+    let temp = shared_reexport_workspace(SharedReexportUse::SameRewrite);
+    let root = temp.path();
+    let stderr =
+        run_fix_command(mend_command_for(&root.join("Cargo.toml")).args(["--workspace", "--fix"]));
+    assert_eq!(
+        fs::read_to_string(root.join("shared.rs")).expect("read rewritten source"),
+        ""
+    );
+    assert!(!stderr.contains("skipped"), "{stderr}");
+    for (package, owner) in [("a", "bridge"), ("b", "gateway")] {
+        let caller = fs::read_to_string(root.join(format!("{package}/src/lib.rs")))
+            .expect("read redirected caller");
+        assert!(
+            !caller.contains(&format!("{owner}::discover()")),
+            "{caller}"
+        );
+    }
+    assert_workspace_builds(root);
+}
+
+#[test]
+fn shared_reexport_with_different_mount_edits_is_reported_once() {
+    let temp = shared_reexport_workspace(SharedReexportUse::DescendantGlobInFirstPackage);
+    let root = temp.path();
+    let shared = fs::read_to_string(root.join("shared.rs")).expect("read shared source");
+    let stderr =
+        run_fix_command(mend_command_for(&root.join("Cargo.toml")).args(["--workspace", "--fix"]));
+    assert_eq!(
+        fs::read_to_string(root.join("shared.rs")).expect("read kept source"),
+        shared
+    );
+    assert_eq!(
+        stderr
+            .matches("skipped 1 `pub_use_outside_subtree`")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    assert_workspace_builds(root);
 }
