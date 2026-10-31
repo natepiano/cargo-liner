@@ -9,36 +9,44 @@ use super::Value;
 use crate::scan::exclude;
 
 pub(super) fn workspace_member_paths_new(
-    ws_path: &Path,
+    workspace_path: &Path,
     items: &[RootItem],
 ) -> HashSet<AbsolutePath> {
-    let manifest = ws_path.join(CARGO_TOML);
+    let manifest = workspace_path.join(CARGO_TOML);
     let Some((members, excludes)) = workspace_member_patterns(&manifest) else {
         return items
             .iter()
-            .filter(|item| item.path().starts_with(ws_path) && item.path() != ws_path)
-            .map(|item| item.path().clone())
+            .filter(|root_item| {
+                root_item.path().starts_with(workspace_path) && root_item.path() != workspace_path
+            })
+            .map(|root_item| root_item.path().clone())
             .collect();
     };
 
     items
         .iter()
-        .filter(|item| item.path().starts_with(ws_path) && item.path() != ws_path)
-        .filter_map(|item| {
-            item.path().strip_prefix(ws_path).ok().and_then(|relative| {
-                let relative_str = normalize_workspace_path(relative);
-                let included = members
-                    .iter()
-                    .any(|pattern| workspace_pattern_matches(pattern, &relative_str));
-                let is_excluded = excludes
-                    .iter()
-                    .any(|pattern| workspace_pattern_matches(pattern, &relative_str));
-                if included && !is_excluded {
-                    Some(item.path().clone())
-                } else {
-                    None
-                }
-            })
+        .filter(|root_item| {
+            root_item.path().starts_with(workspace_path) && root_item.path() != workspace_path
+        })
+        .filter_map(|root_item| {
+            root_item
+                .path()
+                .strip_prefix(workspace_path)
+                .ok()
+                .and_then(|relative| {
+                    let relative_str = normalize_workspace_path(relative);
+                    let included = members
+                        .iter()
+                        .any(|pattern| workspace_pattern_matches(pattern, &relative_str));
+                    let is_excluded = excludes
+                        .iter()
+                        .any(|pattern| workspace_pattern_matches(pattern, &relative_str));
+                    if included && !is_excluded {
+                        Some(root_item.path().clone())
+                    } else {
+                        None
+                    }
+                })
         })
         .collect()
 }
@@ -46,9 +54,9 @@ pub(super) fn workspace_member_paths_new(
 fn workspace_member_patterns(manifest_path: &Path) -> Option<(Vec<String>, Vec<String>)> {
     let contents = std::fs::read_to_string(manifest_path).ok()?;
     let table: Table = contents.parse().ok()?;
-    let workspace = table.get("workspace")?.as_table()?;
+    let workspace_table = table.get("workspace")?.as_table()?;
 
-    let members = workspace
+    let members = workspace_table
         .get("members")
         .and_then(Value::as_array)
         .map(|entries| {
@@ -60,7 +68,7 @@ fn workspace_member_patterns(manifest_path: &Path) -> Option<(Vec<String>, Vec<S
         })
         .unwrap_or_default();
 
-    let excludes = workspace
+    let excludes = workspace_table
         .get("exclude")
         .and_then(Value::as_array)
         .map(|entries| {

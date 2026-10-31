@@ -81,16 +81,16 @@ pub(super) fn search_finder(
     let mut scored: Vec<(usize, u16)> = index
         .iter()
         .enumerate()
-        .filter_map(|(i, item)| {
+        .filter_map(|(i, finder_item)| {
             let mut total_score: u16 = 0;
             for atom in &atoms {
-                let score = item
+                let score = finder_item
                     .search_tokens
                     .iter()
                     .filter_map(|token| {
                         let mut buf = Vec::new();
-                        let haystack = Utf32Str::new(token, &mut buf);
-                        atom.score(haystack, &mut matcher)
+                        let utf32_str = Utf32Str::new(token, &mut buf);
+                        atom.score(utf32_str, &mut matcher)
                     })
                     .max()?;
                 total_score = total_score.saturating_add(score);
@@ -155,7 +155,7 @@ pub(in crate::tui) fn handle_finder_text_key(app: &mut App, key: KeyCode) {
 }
 
 fn close_finder(app: &mut App) {
-    let return_target = app
+    let focused_pane = app
         .overlays
         .take_finder_return()
         .unwrap_or(FocusedPane::App(AppPaneId::ProjectList));
@@ -163,7 +163,7 @@ fn close_finder(app: &mut App) {
     app.project_list.finder.query.clear();
     app.project_list.finder.results.clear();
     app.overlays.finder_pane.viewport.home();
-    app.set_focus(return_target);
+    app.set_focus(focused_pane);
 }
 
 fn refresh_finder_results(app: &mut App) {
@@ -186,9 +186,9 @@ fn confirm_finder(app: &mut App) {
     else {
         return;
     };
-    let item = app.project_list.finder.index[idx].clone();
+    let finder_item = app.project_list.finder.index[idx].clone();
 
-    let return_target = app
+    let focused_pane = app
         .overlays
         .take_finder_return()
         .unwrap_or(FocusedPane::App(AppPaneId::ProjectList));
@@ -196,23 +196,23 @@ fn confirm_finder(app: &mut App) {
     app.project_list.finder.query.clear();
     app.project_list.finder.results.clear();
     app.overlays.finder_pane.viewport.home();
-    app.set_focus(return_target);
+    app.set_focus(focused_pane);
 
     // `project_list.select_project_in_tree` selects `item.project_path` before any target or
     // pull-request navigation.
     let include_non_rust = app.config.include_non_rust().includes_non_rust();
     app.project_list
-        .select_project_in_tree(item.project_path.as_path(), include_non_rust);
+        .select_project_in_tree(finder_item.project_path.as_path(), include_non_rust);
 
-    match item.kind {
+    match finder_item.kind {
         FinderKind::Project => {
             // `FinderKind::Project` needs no further action after `select_project_in_tree`.
         },
         FinderKind::Binary | FinderKind::Example | FinderKind::Bench => {
-            navigate_to_target(app, &item);
+            navigate_to_target(app, &finder_item);
         },
         FinderKind::PullRequest => {
-            navigate_to_pull_request(app, &item);
+            navigate_to_pull_request(app, &finder_item);
         },
     }
 }
@@ -223,15 +223,15 @@ fn confirm_finder(app: &mut App) {
 /// here to land the cursor on a specific row.
 fn repopulate_selected_detail_panes(app: &mut App) {
     app.sync_selected_project();
-    if let Some(data) = app
+    if let Some(detail_pane_data) = app
         .project_list
         .selected_project_path()
         .and_then(|path| app.project_list.entry_containing(path))
         .map(|entry| panes::build_pane_data(app, &entry.root_item))
     {
-        app.panes.package.set_content(data.package);
-        app.panes.git.set_content(data.git);
-        app.panes.targets.set_content(data.targets);
+        app.panes.package.set_content(detail_pane_data.package);
+        app.panes.git.set_content(detail_pane_data.git);
+        app.panes.targets.set_content(detail_pane_data.targets);
     }
 }
 
@@ -249,7 +249,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
 
     // Match `entry.name` and `entry.run_target_kind` against `target_name` and `target_kind`, then
     // call `app.panes.targets.viewport.set_pos(i)`.
-    let entries = panes::build_target_list_from_data(&targets_data);
+    let target_entries = panes::build_target_list_from_data(&targets_data);
     let target_kind = match item.kind {
         FinderKind::Binary => RunTargetKind::Binary,
         FinderKind::Example => RunTargetKind::Example,
@@ -257,9 +257,9 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
         FinderKind::Project | FinderKind::PullRequest => return,
     };
     let target_name = item.target_name.as_deref().unwrap_or("");
-    for (i, entry) in entries.iter().enumerate() {
-        if entry.name == target_name
-            && std::mem::discriminant(&entry.run_target_kind)
+    for (i, target_entry) in target_entries.iter().enumerate() {
+        if target_entry.name == target_name
+            && std::mem::discriminant(&target_entry.run_target_kind)
                 == std::mem::discriminant(&target_kind)
         {
             app.panes.targets.viewport.set_pos(i);
@@ -269,7 +269,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
 }
 
 fn navigate_to_pull_request(app: &mut App, item: &FinderItem) {
-    let Some(target) = item.pr_target.as_ref() else {
+    let Some(pull_request_target) = item.pr_target.as_ref() else {
         return;
     };
     repopulate_selected_detail_panes(app);
@@ -278,17 +278,17 @@ fn navigate_to_pull_request(app: &mut App, item: &FinderItem) {
         .selected_project_path()
         .and_then(|path| app.project_list.fetch_url_for(path))
         .and_then(|url| ci::parse_owner_repo(&url));
-    if selected_owner_repo.as_ref() != Some(&target.owner_repo) {
+    if selected_owner_repo.as_ref() != Some(&pull_request_target.owner_repo) {
         return;
     }
     app.set_focus(FocusedPane::App(AppPaneId::Git));
-    let Some(git) = app.panes.git.content() else {
+    let Some(git_data) = app.panes.git.content() else {
         return;
     };
     let mut index = 0;
-    while let Some(row) = panes::git_row_at(git, index) {
-        if let GitRow::PullRequest(pull_request) = row
-            && pull_request.number == target.number
+    while let Some(git_row) = panes::git_row_at(git_data, index) {
+        if let GitRow::PullRequest(pull_request) = git_row
+            && pull_request.number == pull_request_target.number
         {
             app.panes.git.viewport.set_pos(index);
             return;
@@ -308,11 +308,11 @@ pub(in crate::tui) fn render_finder_pane_body(
     frame: &mut Frame,
     _: Rect,
     pane: &mut FinderPane,
-    ctx: &PaneRenderCtx<'_>,
+    pane_render_ctx: &PaneRenderCtx<'_>,
 ) {
     // Use `ctx.project_list.finder.col_widths`, cached during index construction, to keep popup
     // sizing stable across query results.
-    let col_widths = ctx.project_list.finder.col_widths;
+    let col_widths = pane_render_ctx.project_list.finder.col_widths;
 
     // Compute `natural_width` from `col_widths` plus four gaps and two borders; clamp `popup_width`
     // to `frame.area().width`.
@@ -322,15 +322,20 @@ pub(in crate::tui) fn render_finder_pane_body(
         .unwrap_or(u16::MAX)
         .clamp(MIN_POPUP_WIDTH, max_popup_width);
 
-    let title = if ctx.project_list.finder.query.is_empty() {
+    let title = if pane_render_ctx.project_list.finder.query.is_empty() {
         " Find Anything ".to_string()
-    } else if ctx.project_list.finder.total <= ctx.project_list.finder.results.len() {
-        format!(" Find Anything ({}) ", ctx.project_list.finder.total)
+    } else if pane_render_ctx.project_list.finder.total
+        <= pane_render_ctx.project_list.finder.results.len()
+    {
+        format!(
+            " Find Anything ({}) ",
+            pane_render_ctx.project_list.finder.total
+        )
     } else {
         format!(
             " Find Anything ({} of {}) ",
-            ctx.project_list.finder.results.len(),
-            ctx.project_list.finder.total
+            pane_render_ctx.project_list.finder.results.len(),
+            pane_render_ctx.project_list.finder.total
         )
     };
 
@@ -360,7 +365,7 @@ pub(in crate::tui) fn render_finder_pane_body(
     let input_line = Line::from(vec![
         Span::styled("  / ", prompt_style),
         Span::styled(
-            format!("{}_", ctx.project_list.finder.query),
+            format!("{}_", pane_render_ctx.project_list.finder.query),
             Style::default().fg(title_color()),
         ),
     ]);
@@ -376,11 +381,11 @@ pub(in crate::tui) fn render_finder_pane_body(
         width:  inner.width,
         height: 1,
     };
-    let sep = Line::from(Span::styled(
+    let separator_line = Line::from(Span::styled(
         "─".repeat(inner.width as usize),
         Style::default().fg(label_color()),
     ));
-    frame.render_widget(ratatui::widgets::Paragraph::new(sep), sep_area);
+    frame.render_widget(ratatui::widgets::Paragraph::new(separator_line), sep_area);
 
     // `results_area` reserves the remaining `inner` rectangle for `render_finder_results`.
     let results_area = Rect {
@@ -390,27 +395,34 @@ pub(in crate::tui) fn render_finder_pane_body(
         height: inner.height.saturating_sub(2),
     };
 
-    let result_count = ctx.project_list.finder.results.len();
+    let result_count = pane_render_ctx.project_list.finder.results.len();
     pane.viewport.set_len(result_count);
     pane.viewport.set_content_area(results_area);
     pane.viewport
         .set_viewport_rows(usize::from(results_area.height.saturating_sub(1)));
-    render_finder_results(frame, pane, ctx, col_widths, results_area, popup.outer);
+    render_finder_results(
+        frame,
+        pane,
+        pane_render_ctx,
+        col_widths,
+        results_area,
+        popup.outer,
+    );
 }
 
 /// Build a `Line` where characters matching the fuzzy query get a tinted
 /// background, similar to Zed's finder highlighting.
 fn highlighted_spans(text: &str, query: &str, fg: Color) -> Line<'static> {
-    let base = Style::default().fg(fg);
-    let highlight = base.bg(finder_match_bg());
+    let base_style = Style::default().fg(fg);
+    let highlight_style = base_style.bg(finder_match_bg());
 
     if text.is_empty() || query.is_empty() {
-        return Line::from(Span::styled(text.to_owned(), base));
+        return Line::from(Span::styled(text.to_owned(), base_style));
     }
 
     let words: Vec<&str> = query.split_whitespace().collect();
     if words.is_empty() {
-        return Line::from(Span::styled(text.to_owned(), base));
+        return Line::from(Span::styled(text.to_owned(), base_style));
     }
 
     let atoms: Vec<Atom> = words
@@ -428,7 +440,7 @@ fn highlighted_spans(text: &str, query: &str, fg: Color) -> Line<'static> {
 
     let mut matcher = Matcher::default();
     let mut buf = Vec::new();
-    let haystack = Utf32Str::new(text, &mut buf);
+    let utf32_str = Utf32Str::new(text, &mut buf);
 
     // Build `char_byte_ranges` to translate `Atom::indices` character offsets into byte slices of
     // `text`.
@@ -441,7 +453,10 @@ fn highlighted_spans(text: &str, query: &str, fg: Color) -> Line<'static> {
     let mut indices = Vec::new();
     for atom in &atoms {
         indices.clear();
-        if atom.indices(haystack, &mut matcher, &mut indices).is_some() {
+        if atom
+            .indices(utf32_str, &mut matcher, &mut indices)
+            .is_some()
+        {
             for &char_idx in &indices {
                 if let Some(&(start, end)) = char_byte_ranges.get(char_idx as usize) {
                     for flag in &mut highlight_mask[start..end] {
@@ -466,7 +481,11 @@ fn highlighted_spans(text: &str, query: &str, fg: Color) -> Line<'static> {
             end = pos + ch.len_utf8();
             chars.next();
         }
-        let style = if is_match { highlight } else { base };
+        let style = if is_match {
+            highlight_style
+        } else {
+            base_style
+        };
         spans.push(Span::styled(text[start..end].to_owned(), style));
     }
 
@@ -476,52 +495,56 @@ fn highlighted_spans(text: &str, query: &str, fg: Color) -> Line<'static> {
 fn render_finder_results(
     frame: &mut Frame,
     pane: &mut FinderPane,
-    ctx: &PaneRenderCtx<'_>,
+    pane_render_ctx: &PaneRenderCtx<'_>,
     col_widths: [usize; FINDER_COLUMN_COUNT],
     area: Rect,
     popup_area: Rect,
 ) {
-    if ctx.project_list.finder.results.is_empty() {
-        let msg = if ctx.project_list.finder.query.is_empty() {
+    if pane_render_ctx.project_list.finder.results.is_empty() {
+        let msg = if pane_render_ctx.project_list.finder.query.is_empty() {
             "Type to search projects, PRs, examples, benches..."
         } else {
             "No matches"
         };
-        let hint = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
+        let hint_paragraph = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
             format!("  {msg}"),
             Style::default().fg(label_color()),
         )));
-        frame.render_widget(hint, area);
+        frame.render_widget(hint_paragraph, area);
         return;
     }
 
-    let query = ctx.project_list.finder.query.clone();
-    let rows: Vec<Row> = ctx
+    let query = pane_render_ctx.project_list.finder.query.clone();
+    let rows: Vec<Row> = pane_render_ctx
         .project_list
         .finder
         .results
         .iter()
         .enumerate()
         .map(|(row_index, &idx)| {
-            let item = &ctx.project_list.finder.index[idx];
-            let parent = if item.kind == FinderKind::Project {
+            let finder_item = &pane_render_ctx.project_list.finder.index[idx];
+            let parent = if finder_item.kind == FinderKind::Project {
                 String::new()
             } else {
-                item.parent_label.clone()
+                finder_item.parent_label.clone()
             };
             Row::new(vec![
                 Cell::from(highlighted_spans(
-                    &item.display_name,
+                    &finder_item.display_name,
                     &query,
                     text_default(),
                 )),
                 Cell::from(highlighted_spans(&parent, &query, text_default())),
-                Cell::from(highlighted_spans(&item.branch, &query, text_default())),
-                Cell::from(highlighted_spans(&item.dir, &query, text_default())),
                 Cell::from(highlighted_spans(
-                    item.kind.label(),
+                    &finder_item.branch,
                     &query,
-                    item.kind.color(),
+                    text_default(),
+                )),
+                Cell::from(highlighted_spans(&finder_item.dir, &query, text_default())),
+                Cell::from(highlighted_spans(
+                    finder_item.kind.label(),
+                    &query,
+                    finder_item.kind.color(),
                 )),
             ])
             .style(
@@ -531,19 +554,19 @@ fn render_finder_results(
         })
         .collect();
 
-    let widths = col_widths.map(|w| Constraint::Length(u16::try_from(w).unwrap_or(u16::MAX)));
+    let constraints = col_widths.map(|w| Constraint::Length(u16::try_from(w).unwrap_or(u16::MAX)));
 
     let header_style = Style::default()
         .fg(label_color())
         .add_modifier(Modifier::BOLD);
-    let header = Row::new(
+    let header_row = Row::new(
         FINDER_HEADERS
             .iter()
             .map(|h| Cell::from(Span::styled(*h, header_style))),
     );
 
-    let table = Table::new(rows, widths)
-        .header(header)
+    let table = Table::new(rows, constraints)
+        .header(header_row)
         .column_spacing(1)
         .row_highlight_style(Style::default());
 
@@ -584,7 +607,7 @@ mod tests {
 
     #[test]
     fn single_word_does_not_match_across_unrelated_tokens() {
-        let item = FinderItem {
+        let finder_item = FinderItem {
             display_name:  "clay-layout (vendored)".to_string(),
             search_tokens: index::build_search_tokens(&[
                 "clay-layout (vendored)",
@@ -603,14 +626,14 @@ mod tests {
             pr_target:     None,
         };
 
-        let (results, total) = search_finder(&[item], "android", 50);
+        let (results, total) = search_finder(&[finder_item], "android", 50);
         assert_eq!(results, [] as [usize; 0]);
         assert_eq!(total, 0);
     }
 
     #[test]
     fn single_word_matches_directory_token() {
-        let item = FinderItem {
+        let finder_item = FinderItem {
             display_name:  "raylib_renderer".to_string(),
             search_tokens: index::build_search_tokens(&[
                 "raylib_renderer",
@@ -628,14 +651,14 @@ mod tests {
             pr_target:     None,
         };
 
-        let (results, total) = search_finder(&[item], "widgets", 50);
+        let (results, total) = search_finder(&[finder_item], "widgets", 50);
         assert_eq!(results, vec![0]);
         assert_eq!(total, 1);
     }
 
     #[test]
     fn multi_word_matches_across_tokens() {
-        let item = FinderItem {
+        let finder_item = FinderItem {
             display_name:  "build-easefunction-graphs".to_string(),
             search_tokens: index::build_search_tokens(&[
                 "build-easefunction-graphs",
@@ -653,14 +676,14 @@ mod tests {
             pr_target:     None,
         };
 
-        let (results, total) = search_finder(&[item], "tools graphs", 50);
+        let (results, total) = search_finder(&[finder_item], "tools graphs", 50);
         assert_eq!(results, vec![0]);
         assert_eq!(total, 1);
     }
 
     #[test]
     fn treats_slash_as_word_separator() {
-        let item = FinderItem {
+        let finder_item = FinderItem {
             display_name:  "bevy".to_string(),
             search_tokens: index::build_search_tokens(&[
                 "bevy",
@@ -677,7 +700,7 @@ mod tests {
             dir:           "~/rust/bevy".to_string(),
             pr_target:     None,
         };
-        let index = [item];
+        let index = [finder_item];
         let (with_slash, total_slash) = search_finder(&index, "rust/", 50);
         assert_eq!(with_slash, vec![0]);
         assert_eq!(total_slash, 1);

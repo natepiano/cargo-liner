@@ -94,7 +94,7 @@ impl FinderKind {
 pub(in crate::tui) fn build_finder_index(
     entries: &ProjectList,
 ) -> (Vec<FinderItem>, [usize; FINDER_COLUMN_COUNT]) {
-    let mut items = Vec::new();
+    let mut finder_items = Vec::new();
     let mut seen_pull_requests = HashSet::new();
 
     for entry in entries {
@@ -102,17 +102,17 @@ pub(in crate::tui) fn build_finder_index(
             continue;
         }
         match &entry.root_item {
-            RootItem::Rust(RustProject::Workspace(ws)) => {
-                add_workspace_items(&mut items, ws);
+            RootItem::Rust(RustProject::Workspace(workspace)) => {
+                add_workspace_items(&mut finder_items, workspace);
             },
-            RootItem::Rust(RustProject::Package(pkg)) => {
-                add_package_items(&mut items, pkg);
+            RootItem::Rust(RustProject::Package(package)) => {
+                add_package_items(&mut finder_items, package);
             },
-            RootItem::NonRust(nr) => {
-                let dp = nr.display_path().into_string();
-                let abs = nr.path();
-                let branch = branch_for(nr.git_info());
-                let root_name = nr.root_directory_name().into_string();
+            RootItem::NonRust(non_rust_project) => {
+                let dp = non_rust_project.display_path().into_string();
+                let abs = non_rust_project.path();
+                let branch = branch_for(non_rust_project.git_info());
+                let root_name = non_rust_project.root_directory_name().into_string();
                 let context = TypedProjectContext {
                     project_name: &root_name,
                     cargo_name:   None,
@@ -120,35 +120,37 @@ pub(in crate::tui) fn build_finder_index(
                     display_path: &dp,
                     branch:       &branch,
                 };
-                add_project_items_from_typed(&mut items, &context, &[], &[], &[]);
+                add_project_items_from_typed(&mut finder_items, &context, &[], &[], &[]);
             },
-            RootItem::Worktrees(group) => {
-                let primary_path = group.primary.path().clone();
+            RootItem::Worktrees(worktree_group) => {
+                let primary_path = worktree_group.primary.path().clone();
                 let mut emit = |entry: &RustProject| match entry {
-                    RustProject::Workspace(ws) => add_workspace_items(&mut items, ws),
-                    RustProject::Package(pkg) => add_package_items(&mut items, pkg),
+                    RustProject::Workspace(workspace) => {
+                        add_workspace_items(&mut finder_items, workspace);
+                    },
+                    RustProject::Package(package) => add_package_items(&mut finder_items, package),
                 };
-                if group.primary.visibility() == Visibility::Visible {
-                    emit(&group.primary);
+                if worktree_group.primary.visibility() == Visibility::Visible {
+                    emit(&worktree_group.primary);
                 }
-                for l in &group.linked {
-                    if l.path() == &primary_path {
+                for rust_project in &worktree_group.linked {
+                    if rust_project.path() == &primary_path {
                         continue;
                     }
-                    if l.visibility() != Visibility::Visible {
+                    if rust_project.visibility() != Visibility::Visible {
                         continue;
                     }
-                    emit(l);
+                    emit(rust_project);
                 }
             },
         }
-        add_pull_request_items(entries, &mut items, &mut seen_pull_requests, entry);
+        add_pull_request_items(entries, &mut finder_items, &mut seen_pull_requests, entry);
     }
 
     // Compute `col_widths` from all `FinderItem` values and `FINDER_HEADERS`, preserving popup size
     // when queries filter the index.
     let mut col_widths: [usize; FINDER_COLUMN_COUNT] = FINDER_HEADERS.map(str::len);
-    for item in &items {
+    for item in &finder_items {
         col_widths[0] = col_widths[0].max(item.display_name.len());
         col_widths[1] = col_widths[1].max(if item.kind == FinderKind::Project {
             0
@@ -160,7 +162,7 @@ pub(in crate::tui) fn build_finder_index(
         col_widths[4] = col_widths[4].max(item.kind.label().len());
     }
 
-    (items, col_widths)
+    (finder_items, col_widths)
 }
 
 fn add_pull_request_items(
@@ -218,8 +220,8 @@ fn add_pull_request_items(
     }
 }
 
-fn branch_for(git_info: Option<&CheckoutInfo>) -> String {
-    git_info.map_or_else(String::new, |g| g.head.display_label())
+fn branch_for(checkout_info: Option<&CheckoutInfo>) -> String {
+    checkout_info.map_or_else(String::new, |g| g.head.display_label())
 }
 
 fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &Workspace) {
@@ -230,7 +232,7 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &Workspace) {
     let root_name = ws.root_directory_name().into_string();
     let cargo_name = ws.package_name().into_string();
     let cargo_name = (cargo_name != root_name).then_some(cargo_name);
-    let root_context = TypedProjectContext {
+    let root_typed_project_context = TypedProjectContext {
         project_name: &root_name,
         cargo_name:   cargo_name.as_deref(),
         abs_path:     root_abs_path,
@@ -240,19 +242,19 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &Workspace) {
 
     add_project_items_from_typed(
         items,
-        &root_context,
+        &root_typed_project_context,
         cargo.types(),
         cargo.examples(),
         cargo.benches(),
     );
 
-    for group in ws.groups() {
-        for member in group.members() {
-            let member_cargo = &member.cargo;
-            let member_display_path = member.display_path();
-            let member_abs_path = member.path();
-            let member_name = member.package_name().into_string();
-            let member_context = TypedProjectContext {
+    for member_group in ws.groups() {
+        for package in member_group.members() {
+            let member_cargo = &package.cargo;
+            let member_display_path = package.display_path();
+            let member_abs_path = package.path();
+            let member_name = package.package_name().into_string();
+            let member_typed_project_context = TypedProjectContext {
                 project_name: &member_name,
                 cargo_name:   None,
                 abs_path:     member_abs_path,
@@ -261,13 +263,13 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &Workspace) {
             };
             add_project_items_from_typed(
                 items,
-                &member_context,
+                &member_typed_project_context,
                 member_cargo.types(),
                 member_cargo.examples(),
                 member_cargo.benches(),
             );
-            for vendored in member.vendored() {
-                add_vendored_items_typed(items, vendored, &member_name);
+            for vendored_package in package.vendored() {
+                add_vendored_items_typed(items, vendored_package, &member_name);
             }
         }
     }
@@ -286,7 +288,7 @@ fn add_package_items(items: &mut Vec<FinderItem>, pkg: &Package) {
     let root_name = pkg.root_directory_name().into_string();
     let pkg_name = pkg.package_name().into_string();
     let cargo_name = (pkg_name != root_name).then_some(pkg_name);
-    let root_context = TypedProjectContext {
+    let root_typed_project_context = TypedProjectContext {
         project_name: &root_name,
         cargo_name:   cargo_name.as_deref(),
         abs_path:     root_abs_path,
@@ -296,15 +298,15 @@ fn add_package_items(items: &mut Vec<FinderItem>, pkg: &Package) {
 
     add_project_items_from_typed(
         items,
-        &root_context,
+        &root_typed_project_context,
         cargo.types(),
         cargo.examples(),
         cargo.benches(),
     );
 
     let pkg_parent_name = pkg.package_name().into_string();
-    for vendored in pkg.vendored() {
-        add_vendored_items_typed(items, vendored, &pkg_parent_name);
+    for vendored_package in pkg.vendored() {
+        add_vendored_items_typed(items, vendored_package, &pkg_parent_name);
     }
 }
 
@@ -362,12 +364,12 @@ fn add_vendored_items_typed(
         });
     }
 
-    for group in cargo.examples() {
-        for name in &group.names {
-            let display = if group.category.is_empty() {
+    for example_group in cargo.examples() {
+        for name in &example_group.names {
+            let display = if example_group.category.is_empty() {
                 name.clone()
             } else {
-                format!("{}/{name}", group.category)
+                format!("{}/{name}", example_group.category)
             };
             let kind = FinderKind::Example;
             items.push(FinderItem {
@@ -469,12 +471,12 @@ fn add_project_items_from_typed(
 
     // Add `FinderKind::Example` results from `examples`, prefixing `display` with
     // `ExampleGroup::category` when present.
-    for group in examples {
-        for name in &group.names {
-            let display = if group.category.is_empty() {
+    for example_group in examples {
+        for name in &example_group.names {
+            let display = if example_group.category.is_empty() {
                 name.clone()
             } else {
-                format!("{}/{name}", group.category)
+                format!("{}/{name}", example_group.category)
             };
             let kind = FinderKind::Example;
             let mut tokens = vec![display.as_str()];
@@ -583,7 +585,7 @@ mod tests {
 
     #[test]
     fn includes_vendored_projects() {
-        let ws = Workspace {
+        let workspace = Workspace {
             path: test_path("~/rust/hana"),
             name: Some("hana".to_string()),
             rust: RustInfo {
@@ -596,9 +598,10 @@ mod tests {
             },
             ..Workspace::default()
         };
-        let list_items = ProjectList::new(vec![RootItem::Rust(RustProject::Workspace(ws))]);
-        let (items, _widths) = build_finder_index(&list_items);
-        assert!(items.iter().any(|item| {
+        let project_list =
+            ProjectList::new(vec![RootItem::Rust(RustProject::Workspace(workspace))]);
+        let (finder_items, _widths) = build_finder_index(&project_list);
+        assert!(finder_items.iter().any(|item| {
             item.project_path == test_path("~/rust/hana/crates/clay-layout")
                 && item.display_name == "clay-layout (vendored)"
                 && item.branch.is_empty()
@@ -607,7 +610,7 @@ mod tests {
 
     #[test]
     fn tokenizes_display_name_and_dir_segments() {
-        let pkg = Package {
+        let package = Package {
             path: test_path("~/rust/bevy/tools/build-easefunction-graphs"),
             name: Some("build-easefunction-graphs".to_string()),
             rust: RustInfo {
@@ -624,10 +627,10 @@ mod tests {
             ..Package::default()
         };
 
-        let (items, _widths) = build_finder_index(&ProjectList::new(vec![RootItem::Rust(
-            RustProject::Package(pkg),
+        let (finder_items, _widths) = build_finder_index(&ProjectList::new(vec![RootItem::Rust(
+            RustProject::Package(package),
         )]));
-        assert!(items.iter().any(|item| {
+        assert!(finder_items.iter().any(|item| {
             item.display_name == "build-easefunction-graphs"
                 && item.search_tokens.iter().any(|token| token == "tools")
                 && item.search_tokens.iter().any(|token| token == "graphs")
@@ -636,31 +639,31 @@ mod tests {
 
     #[test]
     fn excludes_non_visible_roots() {
-        let visible = Package {
+        let visible_package = Package {
             path: test_path("~/rust/here"),
             name: Some("here".to_string()),
             ..Package::default()
         };
-        let mut deleted = Package {
+        let mut deleted_package = Package {
             path: test_path("~/rust/gone"),
             name: Some("gone".to_string()),
             ..Package::default()
         };
-        deleted.rust.project_info.visibility = Visibility::Deleted;
+        deleted_package.rust.project_info.visibility = Visibility::Deleted;
 
-        let list = ProjectList::new(vec![
-            RootItem::Rust(RustProject::Package(visible)),
-            RootItem::Rust(RustProject::Package(deleted)),
+        let project_list = ProjectList::new(vec![
+            RootItem::Rust(RustProject::Package(visible_package)),
+            RootItem::Rust(RustProject::Package(deleted_package)),
         ]);
-        let (items, _widths) = build_finder_index(&list);
+        let (finder_items, _widths) = build_finder_index(&project_list);
 
         assert!(
-            items
+            finder_items
                 .iter()
                 .any(|item| item.project_path == test_path("~/rust/here"))
         );
         assert!(
-            items
+            finder_items
                 .iter()
                 .all(|item| item.project_path != test_path("~/rust/gone"))
         );

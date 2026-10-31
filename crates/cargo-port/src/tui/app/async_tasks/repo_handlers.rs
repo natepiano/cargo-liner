@@ -70,7 +70,7 @@ impl App {
                     let _ = sender.send(BackgroundMsg::RepoFetchQueued {
                         repo: owner_repo.clone(),
                     });
-                    let (result, meta, signal) = scan::fetch_ci_runs_cached(
+                    let (ci_fetch_result, meta, signal) = scan::fetch_ci_runs_cached(
                         &client,
                         &repo_url,
                         owner_repo.owner(),
@@ -78,7 +78,7 @@ impl App {
                         ci_run_count,
                     );
                     scan::emit_service_signal(&sender, signal);
-                    let (runs, github_total) = match result {
+                    let (runs, github_total) = match ci_fetch_result {
                         CiFetchResult::Loaded { runs, github_total } => (runs, github_total),
                         CiFetchResult::CacheOnly(runs) => (runs, 0),
                     };
@@ -100,10 +100,13 @@ impl App {
                     repo: owner_repo.clone(),
                     data: ProjectPrData::Loading(stale.clone()),
                 });
-                let (pr_fetch, signal) = client.fetch_open_pull_requests(owner_repo.clone());
+                let (pull_request_fetch, signal) =
+                    client.fetch_open_pull_requests(owner_repo.clone());
                 scan::emit_service_signal(&sender, signal);
-                data.pr_data = match pr_fetch {
-                    Some(PullRequestFetch::Loaded(info)) => ProjectPrData::Loaded(info),
+                data.pr_data = match pull_request_fetch {
+                    Some(PullRequestFetch::Loaded(project_pr_info)) => {
+                        ProjectPrData::Loaded(project_pr_info)
+                    },
                     Some(PullRequestFetch::Unavailable(reason)) => {
                         ProjectPrData::Unavailable(ProjectPrUnavailable {
                             reason,
@@ -147,14 +150,18 @@ impl App {
     /// fetch trigger is here because either a `RepoInfo` or
     /// `CheckoutInfo` arrival can signal "this repo's state changed";
     /// the dedup set absorbs N attempts for the same `OwnerRepo`.
-    pub(in crate::tui::app) fn handle_checkout_info(&mut self, path: &Path, info: CheckoutInfo) {
+    pub(in crate::tui::app) fn handle_checkout_info(
+        &mut self,
+        path: &Path,
+        checkout_info: CheckoutInfo,
+    ) {
         tracing::trace!(
             target: PERF_LOG_TARGET,
             path = %path.display(),
-            git_status = %info.status.label(),
+            git_status = %checkout_info.status.label(),
             "checkout_info_applied"
         );
-        let status = info.status;
+        let status = checkout_info.status;
         // Workspace members and vendored paths share an owning checkout: stores_own_git_state
         // prevents storing CheckoutInfo::status/branch/main_delta/tracked_ref into child
         // ProjectInfo::local_git_state; startup_git_directory_for_path and maybe_trigger_repo_fetch
@@ -164,7 +171,7 @@ impl App {
         let stores_own_git_state = !self.project_list.is_vendored_path(path)
             && !self.project_list.is_workspace_member_path(path);
         if stores_own_git_state && let Some(project) = self.project_list.at_path_mut(path) {
-            project.local_git_state = LocalGitState::Detected(Box::new(info));
+            project.local_git_state = LocalGitState::Detected(Box::new(checkout_info));
         }
         // `panes.clear_worktree_summary_cache` discards branch names read from
         // `ProjectInfo::local_git_state`, so worktree summary rows recompute from the
@@ -188,7 +195,7 @@ impl App {
     /// baseline; on transition, push or extend the "Git status changes"
     /// task toast.
     fn record_git_status_observation(&mut self, path: &Path, status: GitStatus) {
-        let Some(transition) = self
+        let Some(git_status_transition) = self
             .git_status_tracker
             .observe(AbsolutePath::from(path), status)
         else {
@@ -199,10 +206,10 @@ impl App {
             .and_then(|s| s.to_str())
             .unwrap_or("?")
             .to_string();
-        let label = state::format_git_status_transition(&name, &transition);
+        let label = state::format_git_status_transition(&name, &git_status_transition);
         let seq = self.git_status_tracker.next_item_seq();
         let key = format!("{}#{seq}", path.display());
-        let item = TrackedItem {
+        let tracked_item = TrackedItem {
             label,
             key: key.into(),
             timing: TrackedItemTiming::CompletedWithoutStart {
@@ -215,13 +222,14 @@ impl App {
             .current_toast()
             .filter(|id| self.framework.toasts.tracked_item_count(*id) > 0);
         let toast_id = reuse.unwrap_or_else(|| {
-            let id = self.framework.toasts.push_task("Git status changes", "", 1);
-            self.git_status_tracker.set_current_toast(Some(id));
-            id
+            let toast_task_id = self.framework.toasts.push_task("Git status changes", "", 1);
+            self.git_status_tracker
+                .set_current_toast(Some(toast_task_id));
+            toast_task_id
         });
         self.framework
             .toasts
-            .add_new_tracked_items(toast_id, &[item]);
+            .add_new_tracked_items(toast_id, &[tracked_item]);
     }
     /// Handle a per-repo git state update. Only the primary checkout
     /// writes `RepoInfo` (linked worktrees share the primary's
@@ -236,8 +244,8 @@ impl App {
         let preserved_first_commit = self
             .project_list
             .repo_info_for(path)
-            .map_or(FirstCommit::AwaitingProbe, |existing| {
-                existing.first_commit.clone()
+            .map_or(FirstCommit::AwaitingProbe, |existing_repo_info| {
+                existing_repo_info.first_commit.clone()
             });
         if matches!(info.first_commit, FirstCommit::AwaitingProbe) {
             info.first_commit = match preserved_first_commit {
@@ -257,7 +265,7 @@ impl App {
         let previous_last_fetched = self
             .project_list
             .repo_info_for(path)
-            .and_then(|existing| existing.last_fetched.clone());
+            .and_then(|existing_repo_info| existing_repo_info.last_fetched.clone());
         let fetch_head_advanced =
             info.last_fetched.is_some() && info.last_fetched != previous_last_fetched;
         // `is_submodule_target` allows submodules to write their own `git_repo.repo_info`;
@@ -298,11 +306,12 @@ impl App {
             return;
         };
         let current = match current {
-            Comparison::Counted(counts) => Some((counts.ahead, counts.behind)),
+            Comparison::Counted(ahead_behind) => Some((ahead_behind.ahead, ahead_behind.behind)),
             Comparison::NotCompared => None,
             Comparison::Unreadable => return,
         };
-        let Some(transition) = self.sync_tracker.observe(AbsolutePath::from(path), current) else {
+        let Some(sync_transition) = self.sync_tracker.observe(AbsolutePath::from(path), current)
+        else {
             return;
         };
         let name = path
@@ -310,10 +319,10 @@ impl App {
             .and_then(|s| s.to_str())
             .unwrap_or("?")
             .to_string();
-        let label = state::format_sync_transition(&name, &transition);
+        let label = state::format_sync_transition(&name, &sync_transition);
         let seq = self.sync_tracker.next_item_seq();
         let key = format!("{}#{seq}", path.display());
-        let item = TrackedItem {
+        let tracked_item = TrackedItem {
             label,
             key: key.into(),
             timing: TrackedItemTiming::CompletedWithoutStart {
@@ -326,13 +335,13 @@ impl App {
             .current_toast()
             .filter(|id| self.framework.toasts.tracked_item_count(*id) > 0);
         let toast_id = reuse.unwrap_or_else(|| {
-            let id = self.framework.toasts.push_task("Sync changes", "", 1);
-            self.sync_tracker.set_current_toast(Some(id));
-            id
+            let toast_task_id = self.framework.toasts.push_task("Sync changes", "", 1);
+            self.sync_tracker.set_current_toast(Some(toast_task_id));
+            toast_task_id
         });
         self.framework
             .toasts
-            .add_new_tracked_items(toast_id, &[item]);
+            .add_new_tracked_items(toast_id, &[tracked_item]);
     }
     /// Shared between `handle_repo_info` and `handle_checkout_info`:
     /// kick a GitHub fetch for this path's repo if we have a parseable
@@ -383,10 +392,10 @@ impl App {
         self.sync_running_repo_fetch_toast();
     }
     pub(super) fn handle_pull_requests(&mut self, repo: &OwnerRepo, data: &ProjectPrData) {
-        let prior = self.project_list.pr_info_for_repo(repo).cloned();
-        let data = preserve_live_pr_snapshot_while_loading(data, prior.as_ref());
+        let prior_project_pr_info = self.project_list.pr_info_for_repo(repo).cloned();
+        let data = preserve_live_pr_snapshot_while_loading(data, prior_project_pr_info.as_ref());
         let selected_matches = self.selected_repo_matches(repo);
-        self.maybe_toast_deleted_pull_requests(repo, prior.as_ref(), &data);
+        self.maybe_toast_deleted_pull_requests(repo, prior_project_pr_info.as_ref(), &data);
         self.project_list.replace_pr_data_for_repo(repo, &data);
         self.sync_pull_request_check_polls(repo, &data);
         if selected_matches {
@@ -408,17 +417,17 @@ impl App {
             == Some(repo)
     }
     fn sync_pull_request_check_polls(&mut self, repo: &OwnerRepo, data: &ProjectPrData) {
-        let ProjectPrData::Loaded(info) = data else {
+        let ProjectPrData::Loaded(project_pr_info) = data else {
             return;
         };
         let active = self.net.github.pr_check_poll_numbers(repo);
-        let checking: HashSet<u32> = info
+        let checking: HashSet<u32> = project_pr_info
             .open
             .iter()
             .filter(|pull_request| pull_request.state == PullRequestState::ChecksFailing)
             .map(|pull_request| pull_request.number)
             .collect();
-        for pull_request in info.open.iter().filter(|pull_request| {
+        for pull_request in project_pr_info.open.iter().filter(|pull_request| {
             active.contains(&pull_request.number)
                 && pull_request.state != PullRequestState::ChecksFailing
         }) {
@@ -478,10 +487,10 @@ impl App {
     fn maybe_toast_deleted_pull_requests(
         &self,
         repo: &OwnerRepo,
-        prior: Option<&ProjectPrInfo>,
+        prior_project_pr_info: Option<&ProjectPrInfo>,
         data: &ProjectPrData,
     ) {
-        let deleted = deleted_pull_requests(prior, data);
+        let deleted = deleted_pull_requests(prior_project_pr_info, data);
         if deleted.is_empty() {
             return;
         }
@@ -535,11 +544,14 @@ impl App {
                 self.project_list.primary_sync_resolution(path),
             ));
         });
-        for (path, resolution) in targets {
-            match resolution {
-                SyncResolution::Resolved(Comparison::Counted(counts)) => self
-                    .sync_tracker
-                    .seed_baseline(path.clone(), Some((counts.ahead, counts.behind))),
+        for (path, sync_resolution) in targets {
+            match sync_resolution {
+                SyncResolution::Resolved(Comparison::Counted(ahead_behind)) => {
+                    self.sync_tracker.seed_baseline(
+                        path.clone(),
+                        Some((ahead_behind.ahead, ahead_behind.behind)),
+                    );
+                },
                 SyncResolution::Resolved(Comparison::NotCompared) => {
                     self.sync_tracker.seed_baseline(path.clone(), None);
                 },
@@ -560,16 +572,16 @@ impl App {
         if already_exists {
             return false;
         }
-        let service_item = item.clone();
+        let service_root_item = item.clone();
         // `tree.insert_into_hierarchy` inserts `item` under an existing parent workspace or as a
         // top-level peer; `regroup_members` reapplies `inline_dirs`.
         let discovered_path = item.path().to_path_buf();
         let inline_dirs = self.config.current().tui.inline_dirs.clone();
-        let dispatch = self.metadata_dispatch();
+        let metadata_dispatch_context = self.metadata_dispatch();
         {
-            let mut tree = self.mutate_tree();
-            tree.insert_into_hierarchy(item, &dispatch);
-            tree.regroup_members(&inline_dirs);
+            let mut tree_mutation = self.mutate_tree();
+            tree_mutation.insert_into_hierarchy(item, &metadata_dispatch_context);
+            tree_mutation.regroup_members(&inline_dirs);
         }
         self.register_discovery_shimmer(discovered_path.as_path());
         if !legacy_expansions.is_empty() {
@@ -579,8 +591,8 @@ impl App {
         }
         self.reload_lint_history(&discovered_path);
         self.background
-            .register_item_background_services(&service_item);
-        self.register_lint_project_if_eligible(&service_item);
+            .register_item_background_services(&service_root_item);
+        self.register_lint_project_if_eligible(&service_root_item);
         // Return `true` so `poll_background` batches `scan.bump_generation` and
         // `maybe_priority_fetch` across multiple `handle_project_discovered` results, refreshing
         // derived state and caches once.
@@ -589,41 +601,43 @@ impl App {
     pub(in crate::tui::app) fn handle_project_refreshed(&mut self, item: RootItem) -> bool {
         let legacy_expansions = self.project_list.capture_legacy_root_expansions();
         let path = item.path().to_path_buf();
-        let service_item = item.clone();
+        let service_root_item = item.clone();
         // tree.replace_leaf_by_path replaces the project_list leaf and collect_project_info
         // transfers runtime state; preserve freshly probed ProjectInfo::worktree_health, while
         // worktree_status stays on Workspace/Package/NonRustProject and cannot be overwritten
         // through ProjectInfo.
         let inline_dirs = self.config.current().tui.inline_dirs.clone();
-        let dispatch = self.metadata_dispatch();
+        let metadata_dispatch_context = self.metadata_dispatch();
         {
-            let mut tree = self.mutate_tree();
+            let mut tree_mutation = self.mutate_tree();
             // The incoming probe leaf carries default Rust project state, so
             // `tree.replace_leaf_by_path` redispatches cargo metadata on each replacement.
             // `WorkspaceMetadataStore`'s per-root generation counter lets the second,
             // runtime-enriched replacement supersede the first transient extraction dispatch.
-            let Some(old) = tree.replace_leaf_by_path(&path, item.clone(), &dispatch) else {
+            let Some(previous_root_item) =
+                tree_mutation.replace_leaf_by_path(&path, item.clone(), &metadata_dispatch_context)
+            else {
                 return false;
             };
             let mut item = item;
-            for (project_path, info) in old.collect_project_info() {
+            for (project_path, project_info) in previous_root_item.collect_project_info() {
                 if let Some(project) = item.at_path_mut(&project_path) {
                     let fresh_worktree_health = project.worktree_health;
-                    *project = info;
+                    *project = project_info;
                     project.worktree_health = fresh_worktree_health;
                 }
-                transfer_lint_runs(&old, &mut item, &project_path);
+                transfer_lint_runs(&previous_root_item, &mut item, &project_path);
                 // Crates.io version/downloads live on `RustInfo` /
                 // `VendoredPackage`, not `ProjectInfo`, and are never persisted.
                 // Re-fetching on every refresh would repeatedly call crates.io,
                 // so transfer the values the old item already holds.
-                transfer_crates_io(&old, &mut item, &project_path);
+                transfer_crates_io(&previous_root_item, &mut item, &project_path);
             }
             // `tree.replace_leaf_by_path` reinstalls `item` after `transfer_lint_runs` and
             // `transfer_crates_io` enrich it with prior runtime state.
-            tree.replace_leaf_by_path(&path, item, &dispatch);
-            tree.regroup_members(&inline_dirs);
-            tree.regroup_top_level_worktrees();
+            tree_mutation.replace_leaf_by_path(&path, item, &metadata_dispatch_context);
+            tree_mutation.regroup_members(&inline_dirs);
+            tree_mutation.regroup_top_level_worktrees();
         }
         self.reload_lint_history(&path);
         if !legacy_expansions.is_empty() {
@@ -635,8 +649,8 @@ impl App {
         self.lint.clear_content();
         self.panes.clear_detail_data(None);
         self.background
-            .register_item_background_services(&service_item);
-        self.register_lint_project_if_eligible(&service_item);
+            .register_item_background_services(&service_root_item);
+        self.register_lint_project_if_eligible(&service_root_item);
         // Return `true` so `poll_background` batches generation and detail refresh after
         // `handle_project_refreshed`.
         true
@@ -662,17 +676,17 @@ fn transfer_lint_runs(old: &RootItem, item: &mut RootItem, path: &AbsolutePath) 
 /// root, member, or standalone package) or a `VendoredPackage`; both store the
 /// values set by `BackgroundMsg::CratesIoVersion`.
 fn transfer_crates_io(old: &RootItem, item: &mut RootItem, path: &AbsolutePath) {
-    if let Some(source) = old.rust_info_at_path(path)
-        && let CratesIoReleaseState::Released(_) = &source.crates_io
-        && let Some(target) = item.rust_info_at_path_mut(path)
+    if let Some(source_rust_info) = old.rust_info_at_path(path)
+        && let CratesIoReleaseState::Released(_) = &source_rust_info.crates_io
+        && let Some(target_rust_info) = item.rust_info_at_path_mut(path)
     {
-        target.crates_io = source.crates_io.clone();
+        target_rust_info.crates_io = source_rust_info.crates_io.clone();
     }
-    if let Some(source) = old.vendored_at_path(path)
-        && let CratesIoReleaseState::Released(_) = &source.crates_io
-        && let Some(target) = item.vendored_at_path_mut(path)
+    if let Some(source_vendored_package) = old.vendored_at_path(path)
+        && let CratesIoReleaseState::Released(_) = &source_vendored_package.crates_io
+        && let Some(target_vendored_package) = item.vendored_at_path_mut(path)
     {
-        target.crates_io = source.crates_io.clone();
+        target_vendored_package.crates_io = source_vendored_package.crates_io.clone();
     }
 }
 
@@ -711,24 +725,24 @@ fn pull_request_disappeared_toast(
     }
 }
 fn deleted_pull_requests(
-    prior: Option<&ProjectPrInfo>,
+    prior_project_pr_info: Option<&ProjectPrInfo>,
     data: &ProjectPrData,
 ) -> Vec<PullRequestInfo> {
-    let Some(previous) = prior else {
+    let Some(previous_project_pr_info) = prior_project_pr_info else {
         return Vec::new();
     };
-    let ProjectPrData::Loaded(current) = data else {
+    let ProjectPrData::Loaded(current_project_pr_info) = data else {
         return Vec::new();
     };
-    if previous.viewer_login != current.viewer_login {
+    if previous_project_pr_info.viewer_login != current_project_pr_info.viewer_login {
         return Vec::new();
     }
-    let current_numbers: HashSet<u32> = current
+    let current_numbers: HashSet<u32> = current_project_pr_info
         .open
         .iter()
         .map(|pull_request| pull_request.number)
         .collect();
-    previous
+    previous_project_pr_info
         .open
         .iter()
         .filter(|pull_request| !current_numbers.contains(&pull_request.number))
@@ -740,24 +754,24 @@ fn fetch_pull_requests_for_check_poll(
     repo_cache: &RepoCache,
     repo: &OwnerRepo,
 ) -> (Option<ProjectPrData>, Option<ServiceSignal>) {
-    let (pr_fetch, signal) = client.fetch_open_pull_requests(repo.clone());
-    let data = match pr_fetch {
-        Some(PullRequestFetch::Loaded(info)) => ProjectPrData::Loaded(info),
+    let (pull_request_fetch, signal) = client.fetch_open_pull_requests(repo.clone());
+    let data = match pull_request_fetch {
+        Some(PullRequestFetch::Loaded(project_pr_info)) => ProjectPrData::Loaded(project_pr_info),
         Some(PullRequestFetch::Unavailable(_)) | None => return (None, signal),
     };
     store_polled_pull_request_data(repo_cache, repo, &data);
     (Some(data), signal)
 }
 fn store_polled_pull_request_data(repo_cache: &RepoCache, repo: &OwnerRepo, data: &ProjectPrData) {
-    let Some(mut cached) = scan::load_cached_repo_data(repo_cache, repo) else {
+    let Some(mut cached_repo_data) = scan::load_cached_repo_data(repo_cache, repo) else {
         return;
     };
-    cached.pr_data = data.clone();
-    scan::store_cached_repo_data(repo_cache, repo, cached);
+    cached_repo_data.pr_data = data.clone();
+    scan::store_cached_repo_data(repo_cache, repo, cached_repo_data);
 }
 fn pull_request_still_checking(data: &ProjectPrData, number: u32) -> bool {
-    data.info().is_some_and(|info| {
-        info.open.iter().any(|pull_request| {
+    data.info().is_some_and(|project_pr_info| {
+        project_pr_info.open.iter().any(|pull_request| {
             pull_request.number == number && pull_request.state == PullRequestState::ChecksFailing
         })
     })
