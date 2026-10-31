@@ -60,7 +60,9 @@ enum KeyboardEnhancement {
 impl Command for KeyboardEnhancement {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
         match *self {
-            Self::Push(flags) => PushKeyboardEnhancementFlags(flags).write_ansi(f),
+            Self::Push(keyboard_enhancement_flags) => {
+                PushKeyboardEnhancementFlags(keyboard_enhancement_flags).write_ansi(f)
+            },
             Self::Pop => PopKeyboardEnhancementFlags.write_ansi(f),
         }
     }
@@ -272,20 +274,22 @@ pub fn run() -> ExitCode {
 
 /// Replace the current process with a fresh instance of the same binary.
 fn restart_self() {
-    let exe = AbsolutePath::from(
+    let executable_absolute_path = AbsolutePath::from(
         std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("cargo-port")),
     );
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     #[cfg(unix)]
     {
-        let err = std::process::Command::new(exe.as_path()).args(&args).exec();
+        let err = std::process::Command::new(executable_absolute_path.as_path())
+            .args(&args)
+            .exec();
         tracing::error!("Failed to restart: {err}");
     }
 
     #[cfg(windows)]
     {
-        match std::process::Command::new(exe.as_path())
+        match std::process::Command::new(executable_absolute_path.as_path())
             .args(&args)
             .spawn()
         {
