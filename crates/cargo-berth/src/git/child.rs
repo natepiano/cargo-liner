@@ -13,7 +13,6 @@ use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Output;
 use std::process::Stdio;
-use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::RecvTimeoutError;
@@ -33,8 +32,7 @@ pub(super) const PIPE_EOF_DEADLINE: Duration = Duration::from_millis(250);
 const REAP_DEADLINE: Duration = Duration::from_millis(250);
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
-// Keep dependency-owned probes and our pipe creation inside the same spawn boundary.
-static PROCESS_SPAWN: Mutex<()> = Mutex::new(());
+use super::with_spawn_lock;
 
 #[cfg(test)]
 enum DrainScheduling {
@@ -50,19 +48,6 @@ thread_local! {
     static DRAINS_AFTER_CLEANUP: std::cell::RefCell<Vec<mpsc::Sender<()>>> = const {
         std::cell::RefCell::new(Vec::new())
     };
-}
-
-/// Serialize pipe creation and child spawn.
-///
-/// # Errors
-/// Returns an error if an earlier spawn panicked while holding the lock.
-pub(super) fn with_spawn_lock<T>(operation: impl FnOnce() -> T) -> io::Result<T> {
-    let guard = PROCESS_SPAWN
-        .lock()
-        .map_err(|_| io::Error::other("Git spawn lock was poisoned"))?;
-    let result = operation();
-    drop(guard);
-    Ok(result)
 }
 
 /// A deadline whose error identifies both the child command and the pending work.

@@ -952,7 +952,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Files:** `crates/cargo-mend/src/compiler/build/execute.rs`
 
-### Phase 45 — Paths that a merge of the merge branch brings in are not incursions  · status: todo
+### Phase 45 — Paths that a merge of the merge branch brings in are not incursions  · status: done
 
 **Depends on:** 42
 
@@ -978,7 +978,13 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Verification:** a red-first test (under 1 s): trunk with an upstream that is one commit ahead, and an entering reservation with an ordering hold; a fast-forward of trunk to the upstream tip is not refused, and the hold shows as observed. A companion test: a move to a commit the upstream does not contain is still refused. `cargo-berth` lint and related tests pass.
 
-**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+**Cause:** committed write selection skipped received-commit filtering when the recorded integration tips came before the phase start. A merge branch that was never recorded as an integration target was not among those tips, so its side's paths entered the phase's net diff and incursion attribution.
+
+**Fix:** one phase commit origin (unit-written, received from the merge branch, or unclassified) is read from the first-parent ancestry. Write selection and incursion provenance both use it. A conflict resolution written in the merge commit stays a unit write; unknown ancestry stays conservative.
+
+**Repair (showrunner hold of a6a2aa4e):** the first fix ran one more `git log` in every post-commit hook, which broke the hook's cost limits, and it treated peer work brought in by the merge at HEAD as received history. Ancestry is now classified from the parent graph that reconciliation already reads, so no Git child is added. Work that enters with the current merge is judged at its post-commit boundary.
+
+**Files:** `crates/cargo-berth/src/drift/{writes,observation,selection,provenance}.rs`, `crates/cargo-berth/src/git/{mod,reachability}.rs`, `crates/cargo-berth/tests/drift.rs`
 
 ### Phase 47 — cargo-berth keeps its ledger and indexes in memory between requests  · status: dropped
 
@@ -1018,17 +1024,20 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
 
-### Phase 48 — An unchanged request runs no status scan, hash, history walk or merge  · status: todo
+### Phase 48 — The post-Bash hook computes each ancestry once and opens the repository once per worker  · status: todo
 
-**Depends on:** 42 (47 dropped). It runs beside phase 45 and keeps out of `src/drift/` until 45 is committed.
+**Depends on:** 42 and 52 (47 dropped).
 
-**Why:** the post-tool-use hook costs about 24 CPU-s, 68% SHA-1 from repeated status reads of foreign worktrees; every read starts from nothing. Second Astra review, cut B.
+**Why:** measured 2026-10-31 on 9390f1d7 with the real cargo-liner ledger (symbolized release profile, post-Bash hook up to the mutation lock, three interleaved first and repeat calls): about 125 ms wall and 175 ms CPU per call (about 117 ms user, 63 ms system), with the repeat costing the same. User CPU: successor ancestry preparation 34%, history and object reads 33%, status scans 19%, fold and reconciliation 6%, checkpoint decode 5%, git children 2%, content hash 1%. One candidate-resolution worker made 35,951 statx and 6,715 openat calls per call, because it opens the repository again for each candidate. A held check costs 4.4 ms CPU and does no status, hash, history or merge work. The earlier cross-request cache (status and merge-pair caches with event invalidation) could remove at most about 20% and was dropped (showrunner, 2026-10-31).
+
+**State model:** no state lives across requests. A request's graph batch owns its ancestor-set map and one repository reader per worker, and drops both when the request ends.
 
 **Work Order:**
-1. Keep a per-worktree observation cache and the committed merge-pair cache (keyed by ordered commits and full merge rules, with conflict paths) across requests; invalidate them from file and ref events.
-2. Hash only to settle a changed entry or to prove a dirty file clean. Today's answers do not change.
+1. Inside one request, compute each distinct tip's ancestor set once in the existing graph batch, and use it for both reachability and first-parent exclusion. Availability and parent order stay the same.
+2. Open the repository once per batch or worker, not once per candidate.
+3. Answers do not change.
 
-**Verification:** a repeated request with no change runs zero status scans, content hashes, history walks and merge evaluations (counted in a test under 1 s). Release A/B on a quiet Mac, interleaved. `cargo-berth` lint and the package suite pass.
+**Verification:** a test under 1 s counts repository opens and ancestor computations for one request with N candidates: 1 open per worker, and 1 ancestor set per distinct tip. The whole cargo-berth package and lint pass. Report with the checkpoint a complete-hook release A/B on the real ledger, interleaved, before and after, with system CPU shown apart from user CPU.
 
 **Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
 
@@ -1053,6 +1062,24 @@ Step C's spec, when it is written, carries these two states and a test for each 
 **Verification:** the test passes on Linux in 0.13 s; the Mac was held by another unit, so the Mac CI job is its Mac check. `cargo-berth` lint passes.
 
 **Files:** `crates/cargo-berth/tests/gate.rs`
+
+### Phase 52 — A finished git command never reports inherited pipe writers that are not there  · status: done
+
+**Depends on:** 41
+
+**Why:** (showrunner, 2026-10-31) in the whole-package run for phase 45's repair, `retention_ref_transactions_have_constant_git_invocations_across_cardinalities` failed once in fixture setup: `git add` returned "child exited with inherited pipe writers still open; terminated the process group before collecting output EOF" (`src/git/child.rs`, through `cargo-berth-test-support/src/git_driver.rs:368`). It passed on retry with no change. Phase 41 added this check, and product code runs it too, so the flake can reach every unit's tests and real hooks.
+
+**Work Order:**
+1. Find the cause: which process held a write end of the output pipe after `git add` exited (a git descendant, or a sibling thread's child that inherited the descriptor between pipe creation and spawn), and how long it held it.
+2. If a real `git add` can leave a writer open for that long in normal use, fix the check in `src/git/child.rs`, not the fixture. If the writer came from a race in our own spawn path, fix that race where it lives. Keep the check's purpose: a child whose own descendants keep the pipe open is still stopped and named.
+
+**Verification:** a red-first test under 1 s that reproduces the cause deterministically, then passes. The whole cargo-berth package passes, and lint passes.
+
+**Cause:** fixture starts (and the detached hook refresh in `cli.rs`) spawned outside the spawn lock. Close-on-exec closes a descriptor at exec, not at fork, so a process forked in a sibling thread's pipe-setup window held that pipe's writer until it ran exec, and the check saw an open writer after git exited.
+
+**Fix:** `src/git/spawn_lock.rs` owns the one spawn lock; every product start uses it. Test support starts every fixture command through `FixtureCommand`, which takes the same lock. The check is unchanged.
+
+**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth-test-support/`, `crates/cargo-berth/tests/`
 
 ### Phase 50 — A merged phase's reservations are released, so the reservation cap is never reached  · status: todo
 

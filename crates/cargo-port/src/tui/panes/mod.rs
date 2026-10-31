@@ -13,7 +13,6 @@ mod output;
 mod package;
 mod pane_data;
 mod project_list;
-mod render_styles;
 mod spec;
 mod support;
 mod system;
@@ -121,7 +120,6 @@ pub(super) use pane_data::max_top_pane_inner_height;
 pub(super) use project_list::ProjectListPane;
 #[cfg(test)]
 use ratatui::widgets::ListItem;
-pub(super) use render_styles::RenderStyles;
 pub(super) use spec::PaneBehavior;
 pub(super) use spec::PaneId;
 pub(super) use spec::behavior;
@@ -136,6 +134,7 @@ pub(super) use targets::TargetsData;
 pub(super) use targets::TargetsPane;
 pub(super) use targets::build_target_list_from_data;
 use tui_pane::FocusedPane;
+pub(super) use tui_pane::PaneRenderStyles as RenderStyles;
 #[cfg(test)]
 use tui_pane::Viewport;
 pub(super) use widths::compute_project_list_widths;

@@ -4,10 +4,10 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 
 use cargo_berth_test_support::CommandDeadlineExt as _;
 use cargo_berth_test_support::DirectorySnapshot;
+use cargo_berth_test_support::FixtureCommand as Command;
 use cargo_berth_test_support::berth_command;
 use serde_json::Value;
 use tempfile::TempDir;

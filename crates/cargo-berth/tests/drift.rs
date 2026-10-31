@@ -1474,6 +1474,11 @@ fn assert_legacy_incursion_coverage(layout: LegacyIncursionLayout) {
 
 /// Avoid hook side effects and make the commit unambiguously later than the claims.
 fn commit_entering_path(root: &Path, path: &str, contents: &str) -> String {
+    commit_path_without_hooks(root, path, contents);
+    git_stdout(root, &["rev-parse", "HEAD"]).trim().to_owned()
+}
+
+fn commit_path_without_hooks(root: &Path, path: &str, contents: &str) {
     let file = root.join(path);
     fs::create_dir_all(file.parent().expect("entered path parent"))
         .expect("entered directory writes");
@@ -1493,7 +1498,6 @@ fn commit_entering_path(root: &Path, path: &str, contents: &str) -> String {
         "2030-01-01T00:00:00Z",
     );
     assert_success(&committed);
-    git_stdout(root, &["rev-parse", "HEAD"]).trim().to_owned()
 }
 
 #[test]
@@ -1773,9 +1777,12 @@ fn batched_attribution_matches_per_path_history_across_git_path_cases() {
     let batched = reported_incursion_attribution(&envelope, &fixture.subject_reservation_id);
 
     assert_eq!(batched, reference);
-    assert!(batched.values().any(|commit| {
-        commit.paths.contains("held/merged.txt") && commit.subject == "side branch held path"
-    }));
+    assert!(
+        batched
+            .values()
+            .all(|commit| !commit.paths.contains("held/merged.txt")),
+        "side-branch imports are not unit-authored incursion evidence"
+    );
     assert!(batched.values().any(|commit| {
         commit.paths.contains("held/conflict-only.txt")
             && commit.subject == "resolve with held path"
@@ -1988,6 +1995,89 @@ fn an_integrated_merge_fast_forward_without_a_reservation_is_not_a_write() {
     assert_success(&observed);
     assert_eq!(json(&observed)["status"], "clear", "{}", json(&observed));
     assert!(!repo.journal().iter().any(|event| event["op"] == "claim"));
+}
+
+#[test]
+fn merging_an_unrecorded_merge_branch_does_not_enter_or_widen_its_paths() {
+    let repository = initialized_repository();
+    let (_directory, lane) = foreign_worktree(&repository, "merge-receiver");
+    GIT.run_without_hooks(repository.path(), ["switch", "--quiet", "-c", "production"]);
+    claim(&lane, "file:plan.md", SECOND_RUN);
+    // Only main is recorded as a target; production carries landed work from other units.
+    claim(repository.path(), "file:held.txt", FIRST_RUN);
+    fs::write(
+        repository.path().join("received.txt"),
+        "unheld landed work\n",
+    )
+    .expect("unheld path writes");
+    git(repository.path(), &["add", "received.txt"]);
+    commit_path_without_hooks(repository.path(), "held.txt", "landed work\n");
+    fs::write(repository.path().join("held.txt"), "holder still working\n").expect("holder edit");
+    git(
+        &lane,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--no-ff",
+            "--no-edit",
+            "production",
+        ],
+    );
+    commit_path_without_hooks(&lane, "plan.md", "unit plan after merge\n");
+
+    let observed = post_commit_drift(&lane, &[]);
+    let response = json(&observed);
+    assert_success(&observed);
+    assert_eq!(response["status"], "clear", "{response}");
+    assert!(
+        !journal_events(repository.path())
+            .iter()
+            .any(|event| { event["op"] == "incursion" || event["op"] == "widen" }),
+        "the merge's imported held and unheld paths are not unit writes: {response}"
+    );
+}
+
+#[test]
+fn a_resolution_in_an_unrecorded_merge_branch_merge_still_enters_the_held_path() {
+    let repository = initialized_repository();
+    let (_directory, lane) = foreign_worktree(&repository, "merge-resolver");
+    GIT.run_without_hooks(repository.path(), ["switch", "--quiet", "-c", "production"]);
+    claim(&lane, "file:plan.md", SECOND_RUN);
+    claim(repository.path(), "file:held.txt", FIRST_RUN);
+    commit_path_without_hooks(&lane, "held.txt", "unit side\n");
+    commit_path_without_hooks(repository.path(), "held.txt", "merge branch side\n");
+    fs::write(repository.path().join("held.txt"), "holder still working\n").expect("holder edit");
+    let conflicted = git_output(
+        &lane,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--no-ff",
+            "--no-edit",
+            "production",
+        ],
+    );
+    assert!(
+        !conflicted.status.success(),
+        "both sides add held.txt differently"
+    );
+    let resolution = commit_entering_path(&lane, "held.txt", "unit resolution\n");
+
+    let observed = post_commit_drift(&lane, &[]);
+    let response = json(&observed);
+    assert_eq!(response["status"], "incursion", "{response}");
+    let effects = incursion_effects(&response);
+    let entered = incursion_for(&effects, "held.txt");
+    assert!(
+        entered["commits"]
+            .as_array()
+            .expect("entering commits")
+            .iter()
+            .any(|commit| commit["commit"] == resolution),
+        "the resolution itself remains unit-authored evidence: {response}"
+    );
 }
 
 #[test]
@@ -4639,6 +4729,8 @@ fn per_path_incursion_attribution(
     paths: &[String],
 ) -> BTreeMap<String, ReferenceIncursionCommit> {
     let range = format!("{phase_start}..HEAD");
+    let unit_line = git_stdout(repository_root, &["rev-list", "--first-parent", &range]);
+    let unit_commits = unit_line.lines().collect::<BTreeSet<_>>();
     let mut commits = BTreeMap::new();
     for path in paths {
         let literal_path = format!(":(top,literal){path}");
@@ -4656,6 +4748,9 @@ fn per_path_incursion_attribution(
             let (commit, subject) = line
                 .split_once('\u{1f}')
                 .expect("per-path log should delimit commit and subject");
+            if !unit_commits.contains(commit) {
+                continue;
+            }
             let entry =
                 commits
                     .entry(commit.to_owned())

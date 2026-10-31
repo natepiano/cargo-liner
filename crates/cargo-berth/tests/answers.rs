@@ -45,13 +45,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Child;
-use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use cargo_berth_test_support::FixtureCommand as Command;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
