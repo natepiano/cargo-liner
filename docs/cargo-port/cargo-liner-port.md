@@ -156,9 +156,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 ### Phase 2g — cargo-mend fixes a source mounted as a module in several places  · status: done
 
-**Why:** showrunner, 2026-10-30, urgent ahead of 2d's next round: hana's widget P34 lint is blocked. One source mounted by `#[path]` in three places gets visibility from the first mount only; mend writes `pub(in crate::test_pointer)` and the build fails (E0433, E0603), so mend rolls back. Repro: `/tmp/claude/delegate/189487ea-6e3b-48f0-896d-c6f40023c0d2/p34-mend-bug.md`. The showrunner cleared edits to `crates/cargo-mend`.
-
-**Work order:** the session's phase 2g prompt. Spec: the visibility mend writes for a multi-mount source is valid in every mount and keeps every caller compiling; mounts are a type, not first-wins indexing; red-first fixture tests; CHANGELOG line.
+**As-built:** mend's visibility reduction (`crates/cargo-mend/src/compiler/persistence/visibility_constraint.rs`) groups each physical source by `SourceModuleMount` (package root plus module path), so library, binary and test compilations of one module are one mount. For a source with several mounts, an automatic edit (restricted annotation, unused pub, narrow to `pub(crate)`, field visibility, pub-use facade) lands only when every mount proposes the same `VisibilityReplacement`; a silent, unknown or disagreeing mount keeps the current annotation. Agreement runs on each source the edit changes, including the child declarations a parent facade fix rewrites (`PubUseNarrowingSite`, now in `schema.rs`). Manual diagnostics stay, once each. Findings schema 36. Tests: `tests/diagnostics/shared_source_visibility.rs` and two reduction tests.
 
 ### Phase 2c — On macOS overlapping roots get one recursive watch  · status: todo
 
