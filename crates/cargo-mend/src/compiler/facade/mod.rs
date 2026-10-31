@@ -38,8 +38,8 @@ use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::LocalDefId;
 
 pub(super) fn logical_parent_boundary_for_child(
-    tcx: TyCtxt<'_>,
+    ty_ctxt: TyCtxt<'_>,
     child_item: LocalDefId,
 ) -> Option<LogicalParentBoundary> {
-    boundary::logical_parent_boundary_for_child(tcx, child_item)
+    boundary::logical_parent_boundary_for_child(ty_ctxt, child_item)
 }

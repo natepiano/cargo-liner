@@ -50,7 +50,7 @@ pub(crate) struct MendRunner<'a> {
 impl<'a> MendRunner<'a> {
     pub(crate) const fn new(
         selection: &'a Selection,
-        cargo_plan: &'a CargoCheckPlan,
+        cargo_check_plan: &'a CargoCheckPlan,
         loaded_config: &'a LoadedConfig,
         color_mode: ColorMode,
         output_format: OutputFormat,
@@ -60,7 +60,7 @@ impl<'a> MendRunner<'a> {
             next_analysis: NextAnalysis::Required,
             toolchain_probes,
             selection,
-            cargo_plan,
+            cargo_plan: cargo_check_plan,
             loaded_config,
             color_mode,
             output_format,
@@ -83,8 +83,8 @@ impl<'a> MendRunner<'a> {
         &mut self,
         operation_mode: OperationMode,
     ) -> Result<ExecutionOutcome, MendFailure> {
-        let planned = self.plan(operation_mode)?;
-        self.execute(planned)
+        let run_plan = self.plan(operation_mode)?;
+        self.execute(run_plan)
     }
 }
 
