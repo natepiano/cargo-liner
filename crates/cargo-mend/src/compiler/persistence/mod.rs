@@ -30,6 +30,7 @@ pub(super) use visibility_constraint::StoredFacadeConstraint;
 pub(super) use visibility_constraint::StoredInterfaceCeiling;
 pub(super) use visibility_constraint::StoredVisibilityConstraint;
 pub(super) use visibility_constraint::StoredVisibilityDeclaration;
+pub(super) use visibility_constraint::StoredVisibilityFacts;
 pub(super) use visibility_constraint::StoredVisibilityReach;
 pub(super) use visibility_constraint::StoredVisibilitySource;
 pub(super) use visibility_constraint::StoredVisibilitySpelling;

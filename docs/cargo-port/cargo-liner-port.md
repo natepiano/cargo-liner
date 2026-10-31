@@ -154,6 +154,12 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; live on natedev, with a scratch project under a configured root whose Cargo.toml is valid TOML that `cargo metadata` rejects (`version.workspace = true`, no workspace root), no toast appears and its row shows the error. (hana's showrunner fixes the demo bundler, so hana_demo may be gone.) The checkpoint adds a Change-Review line.
 
+### Phase 2g — cargo-mend fixes a source mounted as a module in several places  · status: done
+
+**Why:** showrunner, 2026-10-30, urgent ahead of 2d's next round: hana's widget P34 lint is blocked. One source mounted by `#[path]` in three places gets visibility from the first mount only; mend writes `pub(in crate::test_pointer)` and the build fails (E0433, E0603), so mend rolls back. Repro: `/tmp/claude/delegate/189487ea-6e3b-48f0-896d-c6f40023c0d2/p34-mend-bug.md`. The showrunner cleared edits to `crates/cargo-mend`.
+
+**Work order:** the session's phase 2g prompt. Spec: the visibility mend writes for a multi-mount source is valid in every mount and keeps every caller compiling; mounts are a type, not first-wins indexing; red-first fixture tests; CHANGELOG line.
+
 ### Phase 2c — On macOS overlapping roots get one recursive watch  · status: todo
 
 **Depends on:** Phase 2b

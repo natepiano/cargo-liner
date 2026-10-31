@@ -46,6 +46,7 @@ use crate::compiler::persistence::StoredInterfaceCeiling;
 use crate::compiler::persistence::StoredPubUseFixFact;
 use crate::compiler::persistence::StoredVisibilityConstraint;
 use crate::compiler::persistence::StoredVisibilityDeclaration;
+use crate::compiler::persistence::StoredVisibilityFacts;
 use crate::compiler::persistence::StoredVisibilityReach;
 use crate::compiler::persistence::StoredVisibilitySpelling;
 use crate::compiler::visibility::annotation::PathSpelling;
@@ -436,20 +437,22 @@ fn record_visibility_constraint(
                 item_def_path:        use_sites::def_path_string(ctx.tcx, item.def_id),
                 item_module_def_path: use_sites::parent_module_def_path(ctx.tcx, item.def_id),
             },
-            visibility_annotation: annotation.source().to_string(),
-            declared_reach,
-            spelling: stored_visibility_spelling(annotation.syntax()),
-            signature_requirement,
-            interface_ceiling,
-            facade,
-            exact_boundary_acceptance,
-            annotation_edit_acceptance,
-            exact_path_policy: match ctx.settings.visibility_config.pub_in_path {
-                PubInPath::Forbidden => StoredExactPathPolicy::Forbidden,
-                PubInPath::Permitted | PubInPath::Required => StoredExactPathPolicy::Allowed,
+            facts: StoredVisibilityFacts {
+                visibility_annotation: annotation.source().to_string(),
+                declared_reach,
+                spelling: stored_visibility_spelling(annotation.syntax()),
+                signature_requirement,
+                interface_ceiling,
+                facade,
+                exact_boundary_acceptance,
+                annotation_edit_acceptance,
+                exact_path_policy: match ctx.settings.visibility_config.pub_in_path {
+                    PubInPath::Forbidden => StoredExactPathPolicy::Forbidden,
+                    PubInPath::Permitted | PubInPath::Required => StoredExactPathPolicy::Allowed,
+                },
+                caller_reconciliation,
+                outcome,
             },
-            caller_reconciliation,
-            outcome,
         });
 }
 
