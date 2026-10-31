@@ -1350,31 +1350,21 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 47a — The census drops the directory watches of sessions that left  · status: done
 
-**Depends on:** Phase 47. Runs beside Phase 57 (no shared files).
+#### As-built
 
-#### Work Order
-
-**Goal:** a long-running cargo-handler holds directory watches only for sessions the census still shows, so watches and their file descriptors do not grow as sessions come and go.
-
-**Source:** Phase 47 architect review, 2026-10-31, confirmed in the code: a Phase 47 defect. `RunRecords::retain_sessions` (`crates/cargo-handler/src/census/activity.rs` ≈961) drops the sessions and watches the census no longer sees, but `SubagentReads::directories` (`crates/cargo-handler/src/census/transcript.rs` ≈936, values `SubagentDirectory { watch, rows }` ≈804) and `WorkerNames::directories` (`crates/cargo-handler/src/census/worker_dispatch/mod.rs` ≈437, values `SeatDirectory { watch, documents }`) have no path that drops an entry.
-
-**Constraints from prior phases:**
-- Phase 47: `DirectoryChange::{Unchanged, Reconcile}` (`transcript.rs`) decides only whether to rescan; the census recovery constants live in `crates/cargo-handler/src/constants.rs` ("census recovery"). Keep both.
-- `RunRecords::retain_sessions` is the pattern: the census passes the set of sessions it saw this poll, and each cache keeps only those.
-- No duplicated state: one retain step per cache, called from the same place the census calls `retain_sessions`.
-
-**Spec:**
-1. `SubagentReads` and `WorkerNames` each drop every directory entry (its watch and its cached rows or documents) whose session the census did not see this poll, in the same step as `RunRecords::retain_sessions`. `SubagentReads` also drops its `reads` and `metadata` entries under those directories.
-2. Red-first counted tests, each under 1 s: after a session leaves, its directory watch and cached entries are gone from both caches; a session that stays keeps its watch and is not read again; a session that comes back is watched again and shows the same rows as a first read.
+- `retain_session_caches` in `census/scan.rs` runs after each scan. It calls `RunRecords::retain_sessions`, `SubagentReads::retain_sessions` and `WorkerNames::retain_sessions` in one step.
+- `SubagentReads::retain_sessions` keeps only the directories of sessions in the transcript set of this poll. It drops the watch, the cached rows, and the `reads` and `metadata` entries under each dropped directory.
+- `WorkerNames::retain_sessions` drops each `SeatDirectory` (watch and documents) whose session is gone.
+- The function `subagent_directory` in `transcript.rs` owns the subagent directory key. Both the read path and the retain step use it.
+- Watches, file descriptors and cached records do not grow as sessions come and go. A session that comes back gets a new watch and the same rows as a first read.
 
 **Files:**
-- `crates/cargo-handler/src/census/transcript.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — the retain steps and their tests
-- `crates/cargo-handler/src/census/scan.rs` — the calls beside `retain_sessions` (≈619)
+- `crates/cargo-handler/src/census/scan.rs` — `retain_session_caches`, called after each scan
+- `crates/cargo-handler/src/census/transcript.rs` — `SubagentReads::retain_sessions`, `subagent_directory`, and the counted retain tests
+- `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — `WorkerNames::retain_sessions` and its tests
 - `crates/cargo-handler/CHANGELOG.md`
 
-**Workers:** 1 writer (`test` seat, which wrote Phase 47).
-
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. No visible change: the checkpoint carries `Change-Review: none`.
+**Gotchas:** the `WorkerNames` retain set is the dispatch session directories of live worker commands, direct and wrapped. It is not the set of seen run sessions. A retain on seen run sessions alone drops the watches of live workers.
 
 ### Phase 54 — Tile hosts draw only frames that change  · status: todo
 
@@ -1491,6 +1481,38 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 **Workers:** 1 writer.
 
 **Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: in cargo-tile and cargo-handler, press `?` and scroll the overlay with the wheel. The checkpoint adds a Change-Review line.
+
+### Phase 57a — The shortcuts overlay highlights whole rows and shows every focus key  · status: todo
+
+**Depends on:** Phase 57 (both edit the shortcuts overlay's tests).
+
+#### Work Order
+
+**Goal:** in the `?` global shortcuts overlay, the selected-row highlight has one width on every row, and cargo-handler shows a key for "Focus the tile above" and "Focus the tile below", as cargo-tile does.
+
+**Source:** the showrunner, 2026-10-31, from the Phase 57 design check: "the selected-row highlight ends at the key text, so its width changes per row; it should have one width" and "cargo-handler's overlay shows no key for 'Focus the tile above/below', while cargo-tile shows up/down. Fix each where it lives, in tui_pane if the cause is there."
+
+**Constraints from prior phases:**
+- `row_line` (`crates/tui_pane/src/overlays/global_shortcuts.rs` ≈267) pads the description to `SHORTCUT_DESCRIPTION_WIDTH` but adds the key text with no padding, so the selection style stops at the key's last character. `build_render_inputs` (≈225) computes `content_width` from the rows; the key column width comes from the same rows.
+- cargo-handler's `AppGlobalAction::defaults` (`crates/cargo-handler/src/globals.rs` ≈62) gives `Up`/`Down` to `RowUp`/`RowDown` (Phase 16, row selection), so `FocusUp`/`FocusDown` have no default key. cargo-tile binds them to `up`/`down` (`crates/cargo-tile/src/app_global_action.rs`).
+- `KeyBind::shift` and `KeyBind::ctrl` exist (`crates/tui_pane/src/keymap/key_bind.rs` ≈145, ≈157).
+- Showrunner, 2026-10-31: cargo-handler's focus up/down default to `shift-up` / `shift-down`, set in `AppGlobalAction::defaults` like the other actions so the user can rebind them; `up`/`down` stay on row selection. No cargo-handler or tui_pane default binds `shift-up` or `shift-down` (checked 2026-10-31).
+
+**Spec:**
+1. In tui_pane, `row_line` pads the key span to the overlay's key column width, so the selected row's style covers the same width on every row. The width has one owner: the value the layout already computes.
+2. cargo-handler binds `FocusUp` to `KeyBind::shift(KeyCode::Up)` and `FocusDown` to `KeyBind::shift(KeyCode::Down)` in `defaults`; the captured overlay rows in `crates/cargo-handler/src/keymap.rs` (≈196) show them.
+3. Red-first tests, each under 1 s: in tui_pane, the selected row's styled cells cover the same width for a row with a short key and a row with a long key; in cargo-handler, the overlay rows for focus up and focus down show a key.
+
+**Files:**
+- `crates/tui_pane/src/overlays/global_shortcuts.rs` — pad the key span
+- `crates/tui_pane/src/overlays/global_shortcuts_tests.rs` — highlight-width test
+- `crates/cargo-handler/src/globals.rs` — focus up/down default keys
+- `crates/cargo-handler/src/keymap.rs` — captured overlay rows
+- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: press `?` in cargo-handler and cargo-tile, move the selection, and see one highlight width and a key on both focus rows. The checkpoint adds a Change-Review line.
 
 ### Phase 55 — Narrow tiles keep tree guides, readable names and one header inset  · status: todo
 
