@@ -136,40 +136,13 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 ### Phase 2h — mend keeps a re-export another package uses  · status: done
 
-**Why:** showrunner 2026-10-31, found during 2g. The subtree re-export planner groups facts and module mounts by crate root (`crates/cargo-mend/src/fixes/subtree_reexport/scan.rs` `resolved_crate_facts` ≈150, mount filter ≈165). When two packages mount one source with `#[path]` and both use a `pub use` in it, a fix planned for one package can delete the export that the other package still names. Same phase: two style nits left open in 2g.
-
-**Depends on:** Phase 2g (mount identity `SourceModuleMount`).
-
-#### Work Order
-
-**Goal:** a subtree re-export fix changes a shared source only when no other package's mount still needs the re-export it removes.
-
-**Constraints:**
-- Fix at the cause: the planner sees every mount of a physical source, across packages, before it removes or moves a re-export. Use 2g's `SourceModuleMount` as the one mount identity; no second mount type.
-- A source with one mount keeps today's behavior and output.
-- No new flag or option.
-
-**Spec:**
-1. For a source mounted by several packages, a re-export edit lands only when every mount that uses the re-export gets the same edit; otherwise mend keeps the re-export and reports it once as manual.
-2. F005: replace the bool accumulator `agreeing` in `resolve_visibility_proposals` (`compiler/persistence/visibility_constraint.rs`) with an enum that names the state.
-3. F006: import `PubUseNarrowingSite` in `visibility_edit_sources` instead of the full `super::schema::PubUseNarrowingSite` path.
-4. **Tests, red on main first, each under one second:** a fixture with two packages that `#[path]`-mount one source holding a `pub use`, where only one package's callers could be redirected; `mend --fix` keeps the re-export and both packages build.
-
-**Files:**
-- `crates/cargo-mend/src/fixes/subtree_reexport/scan.rs`, `crate_files.rs`, `mod.rs` — mount grouping
-- `crates/cargo-mend/src/compiler/persistence/visibility_constraint.rs` — F005, F006
-- `crates/cargo-mend/tests/` — the fixture test
-- `crates/cargo-mend/CHANGELOG.md`
-
-**Workers:** 1 writer (`review` slot, the 2g writer), who also writes the tests.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; the in-repo `mend --fix` step reports no new error.
+**As-built:** the subtree re-export planner reads every mount of a physical source that mend can see by syntax, across all packages: `mod` items with or without `#[path]` (also inside function bodies) and `include!` with any path prefix and a literal path (`crates/cargo-mend/src/rust_syntax/module_map.rs`). A shared re-export changes only when every package that uses it gets the same edit (`fixes/subtree_reexport/scan.rs`); otherwise mend keeps it and reports one skipped manual rewrite. A mount mend cannot place (`UnobservedPackageReach::Unresolved`, a non-literal include) gives that package unknown reach, which keeps the re-export. Nested packages under a root package path are told apart by source membership, not a directory prefix. `resolve_visibility_proposals` holds its agreement state in an enum; tui_pane `attract::controller` names are `pub(super)` (checkpoint 44ecc942). Gotchas: a `mod x;` that a fix leaves empty stays; renamed custom macros and attribute or derive macros are outside the mount guarantee; raw identifier spellings are the next mend phase's work. Ruled out: deleting module declarations a fix leaves empty.
 
 ### Phase 2i — mend never writes the same import twice  · status: todo
 
 **Why:** showrunner 2026-10-31. `mend --fix` on hana's `crates/hana_metrics/src/reading/tests.rs`, which has many `use crate::test_support::<item>;` imports, wrote both `use crate::test_support;` and `use crate::test_support::{self};`. The compile failed with E0252 and mend rolled the fix back. Log: `/tmp/claude-1000/-home-natepiano-worktrees-claude-natedev-builds/51505394-82db-43d3-a528-136f4ee38d7a/scratchpad/mend_dup_import.log`. Cost: one lint wait per hit; nothing is blocked.
 
-**Depends on:** Phase 2g.
+**Depends on:** Phase 2h.
 
 #### Work Order
 
@@ -181,12 +154,20 @@ you need to create a new unit to handle all cargo port enhancements it should be
 - Output for every other import shape stays the same.
 
 **Spec:**
-1. Any set of fixes that adds or rewrites imports in one module writes each imported name once.
+1. Any set of fixes that adds or rewrites imports in one module writes each imported name once within one lexical scope and one configuration: two imports of a name under different `cfg` gates or with different visibility (as in `fix_imports_preserve_public_test_reexport`) both stay, and aliases, public reachability and dependent references are kept.
+1a. When the import owner declines an edit in one file, the whole re-export change it belongs to (owner removal, caller redirects, ancestor insertion) is rebuilt or rejected as one; a regression proves a rejected caller import cannot leave its re-export deleted.
 2. **Tests, red on main first, each under one second where rustc allows:** a fixture module with several `use crate::m::<item>;` imports that mend rewrites; `mend --fix` leaves exactly one import of `m` and the crate builds.
 3. CHANGELOG: one line.
+4. From phase 2h (landed at its repair cap): the mount scan in `crates/cargo-mend/src/rust_syntax/module_map.rs` reads raw identifiers as their plain names — `r#include!` and `std::r#include!` (≈580, `segment.ident.unraw() == "include"`), `#[r#path = ".."]` (≈64) and `#[r#cfg_attr(all(), path = "..")]` (≈71, `get_ident().is_some_and(|ident| ident.unraw() == "...")`, still one segment). Tests in `tests/diagnostics/pub_use_outside_subtree_fixes.rs` next to the qualified-include test: raw include, raw path, raw cfg_attr with a nested raw path — each keeps the shared source unchanged, reports one skipped manual rewrite, and both packages build; a non-literal raw include gives Unknown reach, and after the final import step it keeps the source, reports exactly one skipped manual rewrite, and both packages build.
+
+**Constraints from prior phases:**
+- Phase 2h: a shared source's re-export changes only when every package that uses it gets the same edit; a package whose mount mend cannot place has Unknown reach and keeps the re-export.
 
 **Files:**
 - `crates/cargo-mend/src/fixes/` — the import edit owner (the writer names the files)
+- `crates/cargo-mend/src/rust_syntax/module_map.rs` — raw identifier mounts (item 4)
+- `crates/cargo-mend/src/fixes/subtree_reexport/{scan.rs,mod.rs,crate_files.rs}` — whole re-export change kept or rejected as one (item 1a); `CrateFiles.modules` keeps the `FileModulePath` enum (`Known` / `SeveralParents`) instead of `Option<Vec<String>>`
+- `crates/cargo-mend/src/fixes/facade_redirect/caller_rewrite.rs`, `crates/cargo-mend/src/fixes/pub_use_fixes/validated_plan.rs`, `crates/cargo-mend/src/fixes/runner/{combine.rs,plan.rs,notices.rs}` — redirect ownership and final composition
 - `crates/cargo-mend/tests/` — the fixture test
 - `crates/cargo-mend/CHANGELOG.md`
 
@@ -246,7 +227,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 - `crates/cargo-port/src/tui/project_list/path_index_tests.rs` — new; tester
 - `crates/cargo-port/CHANGELOG.md`
 
-**Workers:** 1 writer + 1 tester.
+**Workers:** 1 writer (impl4) owns the implementation and every test file; the unit director owns the live CPU measurements (spec 5).
 - `impl` — specs 1–3 and 6, the frame counter, and the two slow interaction tests in `tui/app/mod.rs`; hub: `crates/cargo-port/src/tui/project_list/list.rs`. Not the tester's two files.
 - `test` — spec 4, in `tui/terminal/event_loop_tests.rs` and `tui/project_list/path_index_tests.rs`, registered by `impl`.
 
@@ -282,7 +263,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 7. CHANGELOG: one line for each of the four fixes in `crates/cargo-port/CHANGELOG.md`.
 
 **Files:**
-- `crates/cargo-port/src/tui/app/async_tasks/tree.rs` — rescan keeps Deleted entries
+- `crates/cargo-port/src/tui/app/async_tasks/tree.rs` — rescan keeps Deleted entries (entry point `prepare_rescan`)
 - `crates/cargo-port/src/tui/app/async_tasks/dispatch.rs` — the completed scan result keeps Deleted entries
 - `crates/cargo-port/src/tui/app/async_tasks/disk_handlers.rs` — late replies after dismiss
 - `crates/cargo-port/src/tui/app/async_tasks/deleted_rescan_tests.rs` — new; tester
