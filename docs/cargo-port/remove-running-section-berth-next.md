@@ -913,7 +913,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - `visit_expr_if` and `visit_expr_while` open a scope for the condition and the body. `visit_condition` visits `&&` operands from left to right: a `let` initializer sees the outer bindings, and its pattern binds for later operands and the body. The scope closes before the `else` branch. Patterns use the existing `collect_pat_bindings` (`mut`, `ref`, `@`, tuple, struct, slice, alternatives).
 - Proof: `module_import_fix_keeps_if_let_registration_row_local` failed before with the exact rewrite from the report. Also `conditional_bindings_resolve_initializers_chains_bodies_and_else_separately` and `existing_binding_forms_keep_locals_and_resolve_only_outer_import_uses`. 853/853 on the Mac.
 
-### Phase 41 — A merge extent holds only the unit's own changes, not the trunk's newer ones  · status: todo
+### Phase 41 — A merge extent holds only the unit's own changes, not the trunk's newer ones  · status: done
 
 **Why:** (showrunner, 2026-10-28) a wrong result. Tile reservation 01a17e32 has a race extent of only its plan docs. Its merge extent key (trunk 0e5e78dd, head e21d5b93) lists cargo-mend `compiler/facade/`, `compiler/exposure/` and `compiler/visibility/` files and the handler and berth-next plan docs. Those came into the trunk from other units after tile's branch point. They gave false incursions: 01a1821a on style types' 01a18160 (`policy.rs`, `scan/record.rs`), and earlier ones into the handler and berth-next docs. Checked on the board: `git diff --name-only 0e5e78dd e21d5b93` names 60 paths, 8 of them cargo-mend; `git diff --name-only $(git merge-base 0e5e78dd e21d5b93) e21d5b93` names 52 and no cargo-mend path. So the extent compares against the trunk tip, not the merge base.
 
@@ -925,7 +925,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
 
-### Phase 42 — The post-tool-use hook costs little CPU on a large ledger  · status: todo
+### Phase 42 — The post-tool-use hook costs little CPU on a large ledger  · status: done
 
 **Why:** (showrunner, 2026-10-28, urgent cost defect; builds-unit perf 11:28–11:40 AST) the post-tool-use hook runs after every Bash call in every session. In a hana worktree one run costs 2–9 CPU-s (0.4 core steady, about 5 cores at peaks). It loads 542 reservations and 15,245 race scopes from a 24 MB checkpoint and a 146 MB journal, 9x the 16 MB compaction limit (`ledger/constants.rs:28`). It checks overlap pair by pair with allocating compares (`ledger/journal.rs:1245-1252`, `scope/antichain.rs:76`) and computes 25 full ancestor sets (`git/reachability.rs:336`, `:675-682`). Perf data (read only): `/tmp/claude-1000/-home-natepiano-worktrees-claude-build-followups-builds/51505394-82db-43d3-a528-136f4ee38d7a/scratchpad/berth.data`.
 
@@ -982,7 +982,29 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 ### Phase 47 — cargo-berth keeps its ledger and indexes in memory between requests  · status: todo
 
-**Depends on:** 42, 45
+**Depends on:** 42. It runs beside phase 45 (user, 2026-10-30): 45 changes only how drift reads a merge in `src/drift/`, and 47 keeps out of `src/drift/`. 47's same-answer A/B uses one base for its before and after.
+
+**State model** (written before code, lifecycle rule 2026-10-20). One resident process per canonical common git directory. It only reads: today's CLI and hook writers stay the only journal writers, under today's mutation lock, and every claim and other mutation keeps today's local path. The resident answers read queries (check, hook decisions) from a view derived from the journal. The journal stays the source of truth.
+
+| State | Entered when | A request sees |
+|---|---|---|
+| Absent | no live owner (never started, stopped, or crashed; a crash leaves a stale socket the next starter removes) | today's local path; the client starts one resident (an election lock admits one starter) |
+| Loading(cause) | startup, or a journal replacement, truncation, reinitialization or path-case change | today's local path, with no wait |
+| Serving(position) | the view is built and validated at a complete-record journal position | answers from the view after it checks the journal identity and length; an append moves it to Behind, a replacement to Loading |
+| Behind(position) | another process appended | the resident folds the new complete records, updates only the affected indexes and publishes at once, or the request takes the local path |
+| Failed(error) | the journal cannot be read or validated | today's local path with today's error or answer; a transport or cache failure never becomes an edit permission |
+| Stopping | idle 10 minutes, a binary upgrade, or shutdown | today's local path |
+
+- The position names the journal file identity (device, inode, repository incarnation) and the complete-record offset; a projection generation alone is not enough. An incomplete final record stays unapplied.
+- One tagged lifecycle enum holds these states. Only Serving holds a usable view; Behind holds an unpublished replay that queries cannot read. No ready or stale flags, and no `Option` of a view.
+- The indexes (interned path ids, path to holders, a component trie with descendant summaries) refer to folded facts by id. They never copy a reservation, and the resident and the local path run the same query code.
+- Session mappings, markers, configuration and live git facts stay request-scoped and are read fresh each time.
+- The handshake binds the common directory, repository instance, protocol and fold versions and the exact executable digest. A different binary is refused, retires the old owner and uses the local path until a new owner serves.
+- The client starts the resident detached, in its own process group, with stdin, stdout and stderr closed, so it never holds a caller's pipe. The socket is under the user runtime directory, named by a short hash of the common directory to stay within the macOS socket path limit.
+- Production counters count checkpoint bytes decoded and complete holder-index builds at their real entry points; tests read them through a diagnostics query. They never feed a decision.
+- Each lifecycle test (warm reuse, append, replacement, crash, upgrade, nested hook) runs in under 1 s.
+- (showrunner, 2026-10-30, CPU first) An idle resident uses zero CPU: no poll loop and no timer except the one idle-exit deadline. It checks freshness (journal end position) and a binary change (executable identity) on each query, never on a clock.
+- (showrunner) The checkpoint states the resident's memory on the real ledger and its gain against today's local path on the real ledger (check at 0.4 s wall on 2026-10-30) for check and the hook decision. The build goes past this state model only if a measured split of today's time shows that the resident clearly beats the local path.
 
 **Why:** (user, 2026-10-29; showrunner approved) every check, claim and hook rebuilds its view: it decodes the replay checkpoint (24 MB) and builds holder indexes on each call. Second Astra review: /tmp/claude/astra/20261030T012333Z-1840552/review.md, cut A.
 
@@ -1013,3 +1035,17 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 Step C's spec, when it is written, carries these two states and a test for each (showrunner, 2026-10-29):
 - **Bounded wait.** A request on a path that another worktree changed and the updater has not yet indexed waits a bounded few milliseconds for that update, then answers from the index. Test (under 1 s): change a file in a foreign worktree and check that path at once; the answer names the change, and the wait stays under its bound.
 - **Refresh required after lost events.** When the watcher loses events (restart, overflow, missing worktree), coverage for that worktree is unknown. A request that depends on it answers "refresh required" (a blocking result, never the "ledger unreadable" result that lets an edit through) until the updater takes a new baseline. Test (under 1 s): simulate an overflow, then check a path in that worktree; the answer is "refresh required", and after the rebaseline it is the normal answer.
+
+### Phase 49 — Four slow lifecycle and drift tests run in under a second each  · status: todo
+
+**Depends on:** 41
+
+**Why:** (showrunner, 2026-10-30, row C153 follow-up) `lifecycle::upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` took 5.3 s in the phase 46 full Mac suite. The showrunner added three drift tests from a natedev run the same day: `drift::a_merge_keeps_the_units_own_committed_paths` (2.2 s), `drift::a_working_tree_edit_after_an_integrated_fast_forward_still_counts` (1.8 s) and `drift::an_integrated_fast_forward_is_not_a_post_write` (1.5 s). A test that takes seconds is a defect to fix, not a load flake. Queued behind the CPU work (phases 45, 47, 48 first).
+
+**Work Order:**
+1. Measure where each test's time goes (fixture setup, git children, ledger replay, waits) on the Mac, with the test alone.
+2. Remove the cost at its cause (a smaller fixture, a shared template, no fixed waits) without weakening what each test proves.
+
+**Verification:** each of the four passes alone on the Mac in under 1 s, with the same assertions. `cargo-berth` lint and the package suite pass.
+
+**Files:** `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/drift.rs`, test support under `crates/cargo-berth/tests/`
