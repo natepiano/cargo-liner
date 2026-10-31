@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::widgets::ListItem;
 use tui_pane::Viewport;
 
@@ -18,11 +20,13 @@ use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
 use crate::tui::app;
 use crate::tui::app::DiscoveryRowKind;
+use crate::tui::app::ProjectMetadataState;
 use crate::tui::columns;
 use crate::tui::columns::LintCell;
 use crate::tui::columns::ProjectListWidths;
 use crate::tui::columns::ProjectRow;
 use crate::tui::columns::RowLifecycle;
+use crate::tui::columns::StyledSegment;
 use crate::tui::panes::constants;
 use crate::tui::panes::constants::DiskCell;
 use crate::tui::panes::constants::PREFIX_ROOT_COLLAPSED;
@@ -370,6 +374,86 @@ fn has_later_sibling(
     })
 }
 
+fn project_name_segments(
+    ctx: &PaneRenderCtx<'_>,
+    path: &Path,
+    name: &str,
+    git_status: Option<GitStatus>,
+    row_kind: DiscoveryRowKind,
+) -> Option<Vec<StyledSegment>> {
+    let segments = app::discovery_name_segments_for_path_with_refs(
+        ctx.scan,
+        ctx.config,
+        ctx.project_list,
+        path,
+        name,
+        git_status,
+        row_kind,
+    );
+    let state = row_metadata_state(ctx, path, row_kind);
+    if state.name_marker().is_empty() {
+        return segments;
+    }
+    let mut segments = segments.unwrap_or_else(|| {
+        vec![StyledSegment {
+            text:  name.to_string(),
+            style: Style::default(),
+        }]
+    });
+    for segment in &mut segments {
+        segment.style = segment.style.fg(tui_pane::error_color());
+    }
+    segments.push(StyledSegment {
+        text:  state.name_marker().to_string(),
+        style: Style::default().fg(tui_pane::error_color()),
+    });
+    Some(segments)
+}
+
+fn row_metadata_state<'a>(
+    ctx: &'a PaneRenderCtx<'_>,
+    path: &Path,
+    row_kind: DiscoveryRowKind,
+) -> &'a ProjectMetadataState {
+    // An expanded group also renders its primary checkout: mark it once.
+    if row_kind == DiscoveryRowKind::Root
+        && ctx.project_list.visible_rows().iter().any(|row| {
+            matches!(row, VisibleRow::WorktreeEntry { .. })
+                && ctx.project_list.abs_path_for_row(*row).as_deref() == Some(path)
+        })
+    {
+        return &ProjectMetadataState::NotLoaded;
+    }
+    ctx.scan.manifest_metadata.for_project(path)
+}
+
+fn project_row_item(
+    ctx: &PaneRenderCtx<'_>,
+    path: &Path,
+    mut line: Line<'static>,
+    row_kind: DiscoveryRowKind,
+    widths: &ProjectListWidths,
+) -> ListItem<'static> {
+    if !row_metadata_state(ctx, path, row_kind)
+        .name_marker()
+        .is_empty()
+    {
+        // Deleted-row styling is applied by row_to_line. Preserve its strike
+        // through while retaining the error role on the name and marker.
+        let mut x = 0;
+        for (index, span) in line.spans.iter_mut().enumerate() {
+            if x >= widths.get(columns::COL_NAME) {
+                break;
+            }
+            if index > 0 {
+                span.style = span.style.fg(tui_pane::error_color());
+            }
+            x += columns::display_width(&span.content);
+        }
+    }
+    ListItem::new(line)
+}
+
 fn render_root_item(
     ctx: &PaneRenderCtx<'_>,
     node_index: usize,
@@ -409,10 +493,8 @@ fn render_root_item(
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
-        name_segments: app::discovery_name_segments_for_path_with_refs(
-            ctx.scan,
-            ctx.config,
-            ctx.project_list,
+        name_segments: project_name_segments(
+            ctx,
             item.path(),
             name,
             git_status,
@@ -431,7 +513,13 @@ fn render_root_item(
         lifecycle: RowLifecycle::from(deleted),
         worktree_health,
     });
-    ListItem::new(columns::row_to_line(&row, widths))
+    project_row_item(
+        ctx,
+        item.path(),
+        columns::row_to_line(&row, widths),
+        DiscoveryRowKind::Root,
+        widths,
+    )
 }
 
 /// Build a `ListItem` for a child project (workspace member, vendored crate,
@@ -496,10 +584,8 @@ fn render_child_item<P: project::ProjectFields>(
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
-        name_segments: app::discovery_name_segments_for_path_with_refs(
-            ctx.scan,
-            ctx.config,
-            ctx.project_list,
+        name_segments: project_name_segments(
+            ctx,
             path,
             name,
             git_status,
@@ -518,7 +604,13 @@ fn render_child_item<P: project::ProjectFields>(
         lifecycle: RowLifecycle::from(deleted),
         worktree_health: project.worktree_health(),
     });
-    ListItem::new(columns::row_to_line(&row, widths))
+    project_row_item(
+        ctx,
+        path,
+        columns::row_to_line(&row, widths),
+        DiscoveryRowKind::PathOnly,
+        widths,
+    )
 }
 
 fn render_worktree_entry<'a>(
@@ -579,10 +671,8 @@ fn render_worktree_entry<'a>(
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name: &worktree_name,
-        name_segments: app::discovery_name_segments_for_path_with_refs(
-            ctx.scan,
-            ctx.config,
-            ctx.project_list,
+        name_segments: project_name_segments(
+            ctx,
             worktree_path,
             &worktree_name,
             git_status,
@@ -601,7 +691,13 @@ fn render_worktree_entry<'a>(
         lifecycle: RowLifecycle::from(deleted),
         worktree_health,
     });
-    ListItem::new(columns::row_to_line(&row, widths))
+    project_row_item(
+        ctx,
+        worktree_path,
+        columns::row_to_line(&row, widths),
+        DiscoveryRowKind::WorktreeEntry,
+        widths,
+    )
 }
 
 fn worktree_entry_disk_bytes(item: &RootItem, wi: usize) -> Option<u64> {
@@ -895,10 +991,8 @@ fn render_path_only_entry(
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
-        name_segments: app::discovery_name_segments_for_path_with_refs(
-            ctx.scan,
-            ctx.config,
-            ctx.project_list,
+        name_segments: project_name_segments(
+            ctx,
             path,
             name,
             git_status,
@@ -917,7 +1011,13 @@ fn render_path_only_entry(
         lifecycle: RowLifecycle::from(deleted),
         worktree_health: entry.info().worktree_health,
     });
-    ListItem::new(columns::row_to_line(&row, widths))
+    project_row_item(
+        ctx,
+        path,
+        columns::row_to_line(&row, widths),
+        DiscoveryRowKind::PathOnly,
+        widths,
+    )
 }
 
 fn render_wt_vendored_item(

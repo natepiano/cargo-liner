@@ -632,6 +632,21 @@ pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &st
     format!("{prefix}{ellipsis}")
 }
 
+/// Keep visible rows and mark omitted rows on the last retained line.
+pub(super) fn clip_rows_with_ellipsis(
+    rows: &[String],
+    visible: usize,
+    width: usize,
+) -> Vec<String> {
+    let mut clipped: Vec<String> = rows.iter().take(visible).cloned().collect();
+    if rows.len() > clipped.len()
+        && let Some(last) = clipped.last_mut()
+    {
+        *last = truncate_with_ellipsis(&format!("{last}…"), width, "…");
+    }
+    clipped
+}
+
 /// Palette wiring `accent_color()` / `secondary_text_color()` / `Modifier::BOLD`
 /// to the framework bar so `tui_pane::render_status_line` output uses
 /// cargo-port's key/label styling. The framework ships a theme-neutral
@@ -729,6 +744,51 @@ mod tests {
     use crate::tui::panes::BottomRow;
     use crate::tui::panes::CPU_PANE_WIDTH;
     use crate::tui::panes::PaneId;
+
+    #[test]
+    fn clip_rows_without_overflow_leaves_rows_untouched() {
+        let rows = vec!["first".to_string(), "second".to_string()];
+        assert_eq!(super::clip_rows_with_ellipsis(&rows, 3, 1), rows);
+    }
+
+    #[test]
+    fn clip_rows_overflow_appends_to_short_last_row() {
+        let rows = vec!["first".to_string(), "a".to_string(), "omitted".to_string()];
+        assert_eq!(super::clip_rows_with_ellipsis(&rows, 2, 5), ["first", "a…"]);
+    }
+
+    #[test]
+    fn clip_rows_overflow_replaces_full_width_last_character() {
+        let rows = vec!["abcde".to_string(), "omitted".to_string()];
+        assert_eq!(super::clip_rows_with_ellipsis(&rows, 1, 5), ["abcd…"]);
+    }
+
+    #[test]
+    fn clip_rows_zero_visible_returns_nothing() {
+        let rows = vec!["first".to_string()];
+        assert_eq!(
+            super::clip_rows_with_ellipsis(&rows, 0, 5),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn clip_rows_overflow_at_zero_width_has_empty_last_row() {
+        let rows = vec!["first".to_string(), "omitted".to_string()];
+        assert_eq!(super::clip_rows_with_ellipsis(&rows, 1, 0), [""]);
+    }
+
+    #[test]
+    fn clip_rows_overflow_at_one_column_shows_ellipsis() {
+        let rows = vec!["first".to_string(), "omitted".to_string()];
+        assert_eq!(super::clip_rows_with_ellipsis(&rows, 1, 1), ["…"]);
+    }
+
+    #[test]
+    fn clip_rows_overflow_respects_wide_unicode_columns() {
+        let rows = vec!["界界".to_string(), "omitted".to_string()];
+        assert_eq!(super::clip_rows_with_ellipsis(&rows, 1, 4), ["界…"]);
+    }
 
     #[test]
     fn resolved_layout_keeps_cpu_column_fixed() {

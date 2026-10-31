@@ -263,7 +263,7 @@ mod tests {
 
         apply_caller_aware_suppression(&mut reports);
 
-        assert!(reports[0].findings.is_empty());
+        assert_eq!(reports[0].findings, [] as [StoredFinding; 0]);
     }
 
     #[test]

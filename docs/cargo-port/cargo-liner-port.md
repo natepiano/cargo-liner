@@ -118,41 +118,13 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Gotchas:** a `.cargo/` folder outside the configured roots that is deleted and made again gets its watch back only at the next rescan (CHANGELOG). A project made inside an existing folder with no role is found by the next full rescan.
 
-### Phase 2d — A manifest cargo cannot read shows once on its row  · status: todo
+### Phase 2d — A manifest cargo cannot read shows once on its row  · status: done
 
-**Why:** user report 2026-10-29, both machines. `~/rust/hana_demo/f3a25eaca/crates/hana/Cargo.toml` is a workspace member copied out of its workspace (`*.workspace = true` with no workspace root). Each scan shows a timed "cargo metadata failed" error toast for it (`tui/app/async_tasks/metadata_handlers.rs:61`). Showrunner approved 2026-10-29: current, right after 2b.
+**As-built:** `CargoMetadataError::from` (`crates/cargo-port/src/scan/cargo_metadata.rs`) classifies a manifest that `cargo metadata` rejects as `ManifestRejected` with cargo's first error line. `Scan` owns `ManifestMetadataStates` (`tui/app/manifest_metadata.rs`), a per-manifest store that outlives one scan: each Rust project has a `ProjectMetadataState`, a failure records the rejected state, a later success clears it, and projects that are no longer Rust drop out. The row shows a red ` !` after the name; the Package pane shows the error (`clip_rows_with_ellipsis` in `tui/render.rs`, shared with the description). A rejected manifest makes no toast on any scan; launch, I/O and timeout failures keep their error toasts. The `WorkspaceMissing` suppression and startup completion accounting are unchanged. Live check on natedev: no toast, row marker, Package pane error, also after a rescan.
 
-**Depends on:** Phase 2b.
+### Phase 2g — cargo-mend fixes a source mounted as a module in several places  · status: done
 
-#### Work Order
-
-**Goal:** a discovered project whose manifest `cargo metadata` rejects shows that error once, as a state on its own row, with no toast on later scans; the state clears when the manifest parses.
-
-**Constraints:**
-- Scope is the reported case: a manifest that is valid TOML, so discovery (`project/cargo/parse.rs` `manifest_targets` ≈158) makes a row, and that `cargo metadata` then rejects (for example `version.workspace = true` with no workspace root). A manifest that is not valid TOML never becomes a row and stays out of scope.
-- No metadata state enum exists yet. The writer names its owner (a per-manifest store that outlives one scan, not the row: a rescan clears the list, `tui/app/async_tasks/tree.rs` ≈58), its renderer, and how the state carries across a scan replacement.
-- Keep the existing `WorkspaceMissing` suppression and the startup completion accounting in `metadata_handlers.rs` (≈72).
-- A new state is an enum variant, never a bare `Option` or a flag (Type Design Contract).
-
-**Spec:**
-1. A manifest cargo cannot parse is an error state on that project's row. It is a variant of the project's metadata state enum, not a flag, and carries cargo's first error line.
-2. The failure is stated once. A later scan that gets the same failure for the same manifest makes no toast. A changed manifest that then parses clears the state.
-3. Update the test at `tui/app/mod.rs` ≈13911 that now expects the toast.
-
-4. **Tests, red on main first, each under one second:** an orphan member manifest (`version.workspace = true`, no workspace root) in a temp root gives the error state on its row and no toast; a second, completed rescan keeps the state and makes no toast; after the manifest is fixed, the state clears.
-
-**Files:**
-- `crates/cargo-port/src/tui/app/async_tasks/metadata_handlers.rs` — the failure path (≈61) and its classification
-- `crates/cargo-port/src/tui/app/async_tasks/tree.rs` — keep the state across a scan replacement
-- `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs` — the row draws the error state; the new per-manifest state type goes beside its owner, and the writer names both in its report
-- `crates/cargo-port/src/tui/app/mod.rs` — tests
-- `crates/cargo-port/src/tui/state/scan.rs` — `Scan` owns the per-manifest metadata state (owner approved during the phase)
-- `crates/cargo-port/src/tui/app/manifest_metadata.rs` — the per-manifest metadata state type
-- `crates/cargo-port/CHANGELOG.md`
-
-**Workers:** 1 writer (`impl`), who also writes the tests.
-
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; live on natedev, with a scratch project under a configured root whose Cargo.toml is valid TOML that `cargo metadata` rejects (`version.workspace = true`, no workspace root), no toast appears and its row shows the error. (hana's showrunner fixes the demo bundler, so hana_demo may be gone.) The checkpoint adds a Change-Review line.
+**As-built:** mend's visibility reduction (`crates/cargo-mend/src/compiler/persistence/visibility_constraint.rs`) groups each physical source by `SourceModuleMount` (package root plus module path), so library, binary and test compilations of one module are one mount. For a source with several mounts, an automatic edit (restricted annotation, unused pub, narrow to `pub(crate)`, field visibility, pub-use facade) lands only when every mount proposes the same `VisibilityReplacement`; a silent, unknown or disagreeing mount keeps the current annotation. Agreement runs on each source the edit changes, including the child declarations a parent facade fix rewrites (`PubUseNarrowingSite`, now in `schema.rs`). Manual diagnostics stay, once each. Findings schema 36. Tests: `tests/diagnostics/shared_source_visibility.rs` and two reduction tests.
 
 ### Phase 2c — On macOS overlapping roots get one recursive watch  · status: todo
 
