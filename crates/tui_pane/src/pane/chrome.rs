@@ -1,3 +1,5 @@
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -43,6 +45,15 @@ pub struct PaneChrome {
 }
 
 impl PaneChrome {
+    /// Paint a tile's interior and return the colour its ink fades toward.
+    ///
+    /// Transparent tiles leave the buffer's background unchanged, while their
+    /// ink still fades toward the theme ground. Opaque tiles fade toward their
+    /// painted ground, with the focus tint only on the focused tile.
+    pub fn paint_tile_ground(buffer: &mut Buffer, area: Rect, focused: bool) -> Color {
+        tile_ground(focused).paint(buffer, area)
+    }
+
     /// Build a bordered ratatui [`Block`] using this chrome.
     #[must_use]
     pub fn block(self, title: String, focused: bool) -> Block<'static> {
@@ -133,6 +144,39 @@ pub(super) fn pane_fill(focused: bool) -> Option<Style> {
 /// Whether panes are painted with the tint: it is switched on, and the
 /// screen is not transparent.
 fn tint_painted() -> bool { focused_pane_tint_enabled() && !transparent_background() }
+
+/// Whether a tile paints its ground, and which colour receives its fading ink.
+enum TileGround {
+    Unpainted { blend: Color },
+    Painted(Color),
+}
+
+impl TileGround {
+    fn paint(self, buffer: &mut Buffer, area: Rect) -> Color {
+        match self {
+            Self::Unpainted { blend } => blend,
+            Self::Painted(ground) => {
+                buffer.set_style(area, Style::default().bg(ground));
+                ground
+            },
+        }
+    }
+}
+
+fn tile_ground(focused: bool) -> TileGround {
+    screen_ground().map_or_else(
+        || TileGround::Unpainted {
+            blend: pane_background(focused),
+        },
+        |ground| {
+            TileGround::Painted(if focused {
+                pane_background(true)
+            } else {
+                ground
+            })
+        },
+    )
+}
 
 /// The colour the app's main screen is painted solid in, or `None` when
 /// the screen is transparent and nothing may be painted under it.
