@@ -3,11 +3,81 @@
 
 use std::error::Error;
 use std::io::Write;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::AtomicUsize;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::Ordering;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
+
+#[cfg(target_os = "linux")]
+use notify::EventKind;
+#[cfg(target_os = "linux")]
+use notify::RecursiveMode;
+#[cfg(target_os = "linux")]
+use notify::event::ModifyKind;
 
 use super::*;
 use crate::census::account::ConfigHome;
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+#[cfg(target_os = "linux")]
+#[test]
+fn idle_run_records_os_watch_does_not_deliver_read_access_events() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("record.json");
+    fs::write(&path, "initial")?;
+    let reads = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&reads);
+    let (sent, received) = std::sync::mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(
+        move |answer: notify::Result<Event>| {
+            if let Ok(event) = answer {
+                match event.kind {
+                    EventKind::Access(_) => {
+                        observed.fetch_add(1, Ordering::Relaxed);
+                    },
+                    EventKind::Modify(ModifyKind::Data(_)) => {
+                        let _ = sent.send(());
+                    },
+                    _ => {},
+                }
+            }
+        },
+        RunDirectoryWatch::config(),
+    )?;
+    watcher.watch(&path, RecursiveMode::NonRecursive)?;
+    for _ in 0..32 {
+        fs::read(&path)?;
+    }
+    // The write event follows all read events on this watch; it is the completion signal.
+    fs::write(&path, "changed")?;
+    received.recv_timeout(Duration::from_millis(750))?;
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        0,
+        "unchanged record reads must not wake the watch"
+    );
+    Ok(())
+}
+
+#[test]
+fn idle_verification_trees_visit_only_descendants_once_per_scan() {
+    let processes = [
+        process(200, 1, &["unrelated"]),
+        process(101, 100, &["cargo", "clippy"]),
+        process(100, 1, &["bash", "/fixture/verify.sh"]),
+        process(201, 200, &["cargo", "test"]),
+    ];
+    let mut activity = VerificationProcesses::new(&processes);
+    assert_eq!(activity.progress(100).text(), "clippy");
+    assert_eq!(activity.progress(100).text(), "clippy");
+    assert_eq!(
+        activity.process_visits, 2,
+        "only the two verification descendants are visited once"
+    );
+}
 
 fn process(pid: u32, parent: u32, arguments: &[&str]) -> ProcessEntry {
     ProcessEntry {
@@ -225,7 +295,7 @@ fn run_file(directory: &Path, name: &str, pid: u32) -> TestResult {
 fn idle_run_records_parse_unchanged_files_only_once() -> TestResult {
     let directory = tempfile::tempdir()?;
     run_file(directory.path(), "one.json", 1)?;
-    let mut records = RunRecords::default();
+    let mut records = RunRecords::for_test();
     let mut parses = 0;
     for _ in 0..2 {
         let answer = records.read_with(directory.path(), |bytes| {
@@ -242,7 +312,7 @@ fn idle_run_records_parse_unchanged_files_only_once() -> TestResult {
 fn idle_run_records_parse_changed_and_new_files_only() -> TestResult {
     let directory = tempfile::tempdir()?;
     run_file(directory.path(), "one.json", 1)?;
-    let mut records = RunRecords::default();
+    let mut records = RunRecords::for_test();
     records.read(directory.path());
     run_file(directory.path(), "one.json", 12345)?;
     run_file(directory.path(), "two.json", 2)?;
@@ -269,7 +339,7 @@ fn idle_run_records_parse_changed_and_new_files_only() -> TestResult {
 fn idle_run_records_remove_deleted_files_from_the_cache() -> TestResult {
     let directory = tempfile::tempdir()?;
     run_file(directory.path(), "one.json", 1)?;
-    let mut records = RunRecords::default();
+    let mut records = RunRecords::for_test();
     assert_eq!(records.read(directory.path()).len(), 1);
     fs::remove_file(directory.path().join("mesh_runs/one.json"))?;
     assert!(
@@ -285,7 +355,7 @@ fn idle_run_records_keep_sessions_separate_and_retry_revised_partial_json() -> T
     let second = tempfile::tempdir()?;
     run_file(first.path(), "one.json", 1)?;
     run_file(second.path(), "two.json", 2)?;
-    let mut records = RunRecords::default();
+    let mut records = RunRecords::for_test();
     assert_eq!(records.read(first.path()).len(), 1);
     assert_eq!(records.read(second.path()).len(), 1);
     let partial = first.path().join("mesh_runs/partial.json");
@@ -316,7 +386,7 @@ fn idle_run_records_detect_same_size_rewrites_and_replacements() -> TestResult {
     run_file(directory.path(), "one.json", 1)?;
     let path = directory.path().join("mesh_runs/one.json");
     let modified = fs::metadata(&path)?.modified()?;
-    let mut records = RunRecords::default();
+    let mut records = RunRecords::for_test();
     records.read(directory.path());
     for (pid, replace) in [(2, false), (3, true)] {
         if replace {
@@ -342,7 +412,7 @@ fn idle_run_records_detect_same_size_rewrites_and_replacements() -> TestResult {
 fn idle_run_records_retry_failed_io_but_keep_malformed_revisions() -> TestResult {
     let directory = tempfile::tempdir()?;
     run_file(directory.path(), "one.json", 1)?;
-    let mut records = RunRecords::default();
+    let mut records = RunRecords::for_test();
     let parse = |bytes: &[u8]| serde_json::from_slice(bytes).ok();
     assert!(
         records
@@ -377,7 +447,7 @@ fn idle_run_records_copy_only_live_verification_candidates() -> TestResult {
     for pid in 1..=3 {
         run_file(directory.path(), &format!("{pid}.json"), pid)?;
     }
-    let mut records = RunRecords::default();
+    let mut records = RunRecords::for_test();
     for _ in 0..2 {
         let answer = records.read_for_processes(directory.path(), &HashSet::from([2]));
         assert_eq!(
@@ -387,5 +457,168 @@ fn idle_run_records_copy_only_live_verification_candidates() -> TestResult {
         );
         assert!(matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == 2));
     }
+    Ok(())
+}
+
+#[test]
+fn idle_run_watch_recovery_reuses_its_unchanged_directory() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    run_file(directory.path(), "one.json", 1)?;
+    let now = Instant::now();
+    let mut watch =
+        RunDirectoryWatch::new(directory.path(), now, RunRecords::for_test().install_watch);
+    assert!(matches!(
+        watch.take_changes(directory.path(), now),
+        RunChanges::Reconcile
+    ));
+    assert!(matches!(
+        watch.take_changes(directory.path(), now + RUN_WATCH_RECOVERY),
+        RunChanges::Reconcile
+    ));
+    assert_eq!(
+        watch.installations, 1,
+        "recovery keeps the healthy OS watch"
+    );
+    fs::rename(
+        directory.path().join("mesh_runs"),
+        directory.path().join("old-runs"),
+    )?;
+    run_file(directory.path(), "two.json", 2)?;
+    assert!(matches!(
+        watch.take_changes(directory.path(), now + RUN_WATCH_RECOVERY * 2),
+        RunChanges::Reconcile
+    ));
+    assert_eq!(
+        watch.installations, 2,
+        "a replaced directory installs its new watch"
+    );
+    Ok(())
+}
+
+#[test]
+fn idle_run_records_do_not_list_an_unchanged_watched_directory() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    run_file(directory.path(), "one.json", 1)?;
+    let mut records = RunRecords::for_test();
+    let live = HashSet::from([1]);
+    for _ in 0..2 {
+        let answer = records.read_for_processes(directory.path(), &live);
+        assert!(matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == 1));
+    }
+    assert_eq!(
+        records.directory_reads, 1,
+        "unchanged watch does not list or stat records"
+    );
+    Ok(())
+}
+
+/// Delivery, loss and unavailable watches use the same cache invalidation path.
+#[test]
+fn idle_run_records_recover_events_and_directory_replacement() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    run_file(directory.path(), "one.json", 1)?;
+    let mut records = RunRecords::for_test();
+    let live = HashSet::from([1, 2, 3]);
+    assert_eq!(records.read_for_processes(directory.path(), &live).len(), 1);
+    run_file(directory.path(), "two.json", 2)?;
+    records.watches[directory.path()].invalidate();
+    assert_eq!(records.read_for_processes(directory.path(), &live).len(), 2);
+    assert_eq!(records.directory_reads, 2);
+
+    // No delivered event: the thirty-second recovery still reads the new revision.
+    run_file(directory.path(), "one.json", 3)?;
+    records
+        .watches
+        .get_mut(directory.path())
+        .ok_or("missing watch")?
+        .recovery = Instant::now();
+    let answer = records.read_for_processes(directory.path(), &live);
+    assert!(
+        answer
+            .iter()
+            .any(|record| matches!(record, RunRecord::Verify(run) if run.pid == 3))
+    );
+    assert_eq!(records.directory_reads, 3);
+
+    fs::remove_dir_all(directory.path().join("mesh_runs"))?;
+    records
+        .watches
+        .get_mut(directory.path())
+        .ok_or("missing watch")?
+        .recovery = Instant::now();
+    assert!(
+        records
+            .read_for_processes(directory.path(), &live)
+            .is_empty()
+    );
+    assert!(matches!(
+        records.watches[directory.path()].backend,
+        RunWatchBackend::Unavailable
+    ));
+    run_file(directory.path(), "new.json", 2)?;
+    records
+        .watches
+        .get_mut(directory.path())
+        .ok_or("missing watch")?
+        .recovery = Instant::now();
+    let answer = records.read_for_processes(directory.path(), &live);
+    assert!(matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == 2));
+    assert_eq!(records.directory_reads, 5);
+    records.retain_sessions(&HashSet::new());
+    assert!(records.sessions.is_empty());
+    assert!(records.watches.is_empty());
+    Ok(())
+}
+
+#[test]
+fn idle_run_records_recover_an_unavailable_watch_and_discover_a_new_session() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let session = directory.path().join("new-session");
+    let live = HashSet::from([1]);
+    let mut records = RunRecords::for_test();
+    assert!(records.read_for_processes(&session, &live).is_empty());
+    let now = Instant::now();
+    let watch = &records.watches[&session];
+    assert!(matches!(watch.backend, RunWatchBackend::Unavailable));
+    assert!(watch.recovery <= now + RUN_WATCH_RETRY);
+    run_file(&session, "one.json", 1)?;
+    records
+        .watches
+        .get_mut(&session)
+        .ok_or("missing watch")?
+        .recovery = now;
+    let answer = records.read_for_processes(&session, &live);
+    assert!(matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == 1));
+    assert_eq!(records.directory_reads, 2);
+    Ok(())
+}
+
+#[test]
+fn idle_run_records_patch_one_changed_record_without_listing_its_mates() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    for pid in 1..=3 {
+        run_file(directory.path(), &format!("{pid}.json"), pid)?;
+    }
+    let mut records = RunRecords::for_test();
+    let live = HashSet::from([1, 2, 3, 4]);
+    assert_eq!(records.read_for_processes(directory.path(), &live).len(), 3);
+    run_file(directory.path(), "2.json", 4)?;
+    records.watches[directory.path()].record_changed("2.json".into());
+    let rows = records.read_for_processes(directory.path(), &live);
+    assert!(
+        rows.iter()
+            .any(|row| matches!(row, RunRecord::Verify(run) if run.pid == 4))
+    );
+    assert_eq!(
+        records.directory_reads, 1,
+        "a file event does not list its unchanged mates"
+    );
+    fs::remove_file(directory.path().join("mesh_runs/1.json"))?;
+    records.watches[directory.path()].record_changed("1.json".into());
+    assert_eq!(records.read_for_processes(directory.path(), &live).len(), 2);
+    run_file(directory.path(), "new.json", 1)?;
+    records.watches[directory.path()].record_changed("new.json".into());
+    assert_eq!(records.read_for_processes(directory.path(), &live).len(), 3);
+    assert_eq!(records.directory_reads, 1);
     Ok(())
 }

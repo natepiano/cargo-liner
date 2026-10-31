@@ -1299,7 +1299,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Ruled out:** a `ChildKind` variant for timers (it touches about 20 sites in `census/mod.rs`).
 
-### Phase 47 — cargo-handler idles under 1 % of one core, second cut  · status: todo
+### Phase 47 — cargo-handler idles under 1 % of one core, second cut  · status: done
 
 **Depends on:** Phase 40
 
@@ -1409,7 +1409,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Goal:** on an opaque screen a focused tile is one tinted surface up to and under its frame line, and a selected row in an unfocused tile never reads as the focus tint.
 
-**Source:** Phase 48 design check, 2026-10-30, on `phases/48/live/final_opaque2/focused_summary.png` (built from 531e8ca4), rows routed from Phase 48: (1) a black band shows between the tint and the summary frame on all four sides, because the border cells keep the default ground; (2) the selected row of an unfocused tile (#2e2e2e) is almost the same colour as the focus tint (#2e2e39); (3) the opaque shot had no empty row below the content, so the shot set did not show the empty-row fill.
+**Source:** Phase 48 design check, 2026-10-30, on `phases/48/live/final_opaque2/focused_summary.png` (built from 531e8ca4), rows routed from Phase 48: (1) a black band shows between the tint and the summary frame on all four sides, because the border cells keep the default ground; (2) the selected row of an unfocused tile (#2e2e2e) is almost the same colour as the focus tint (#2e2e39); (3) the opaque shot had no empty row below the content, so the shot set did not show the empty-row fill. Phase 48 merge-repair design check, 2026-10-31, on `phases/48/live/b1f383c7/handler_opaque_first_summary_frame/with_overlay.png` (built from b1f383c7): (4) on an opaque screen the settings overlay interior paints no ground (2703 default cells), so the tiles show through it; the overlay must paint the opaque pane ground (showrunner, 2026-10-31).
 
 **Constraints from prior phases:**
 - Phase 48: `tint_painted()` (`crates/tui_pane/src/pane/chrome.rs` ≈135) is the one owner of whether a ground is painted; `pane_fill` (≈129) and `pane_background` (≈157) take their answer from it. On a transparent screen a focused tile paints no ground and shows focus only as the lit border (showrunner ruling 2026-10-29); keep that.

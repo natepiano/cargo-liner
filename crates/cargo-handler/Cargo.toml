@@ -18,9 +18,11 @@ workspace = true
 # Reads the timestamps on the lines of Claude Code's transcripts.
 chrono = { workspace = true }
 clap   = { workspace = true }
+libc   = { workspace = true }
 # Level-triggered polling preserves keyboard readiness beside SIGWINCH.
 crossterm = { workspace = true, features = ["use-dev-tty"] }
 dirs      = { workspace = true }
+notify    = { workspace = true }
 ratatui   = { workspace = true }
 # `bundled` compiles SQLite in, so reading Codex's thread database needs
 # no system library on either platform.
@@ -38,3 +40,7 @@ tui_pane = { workspace = true, features = ["backdrop"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Safe typed per-process libproc reads retain precise births, current names and cwd.
+libproc = "0.14.11"
