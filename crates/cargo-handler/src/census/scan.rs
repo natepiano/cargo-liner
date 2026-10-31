@@ -495,12 +495,7 @@ impl LocalScanner {
             };
             let read = self.rollouts.read(&thread.rollout);
             row.activity = read.activity();
-            let Some(id) = tree::thread_id(&thread.rollout) else {
-                continue;
-            };
-            if let Some(codex_home) = codex::session_home(process, home)
-                && let SessionName::Named(name) = self.session_names.name(&codex_home, &id)
-            {
+            if let SessionName::Named(name) = self.session_names.name(thread) {
                 row.name = name;
             }
         }
@@ -2686,6 +2681,10 @@ mod hierarchy_publication_tests {
 #[cfg(test)]
 #[path = "scan/activity_scan_tests.rs"]
 mod activity_scan_tests;
+
+#[cfg(test)]
+#[path = "scan/codex_home_tests.rs"]
+mod codex_home_tests;
 
 #[cfg(test)]
 #[path = "subagent_activity_tests.rs"]

@@ -25,6 +25,7 @@ use rusqlite::params;
 use super::account::ConfigHome;
 use super::account::Program;
 use super::classify::ProcessEntry;
+use super::codex_names::SessionName;
 use crate::constants::CODEX_DIRNAME;
 use crate::constants::CODEX_LAST_THREAD_QUERY;
 use crate::constants::CODEX_LEGACY_THREADS_QUERY;
@@ -98,6 +99,7 @@ pub(super) fn read_resumed_threads(process: &ProcessEntry, codex_home: &Path) ->
 
 /// The newest database conversation in this directory, regardless of process age.
 fn query_last_thread(path: &Path, cwd: &Path) -> rusqlite::Result<Option<CodexThread>> {
+    let account_home = CodexAccountHome::from_database(path)?;
     let connection = open_read_only(path)?;
     connection
         .query_row(
@@ -105,9 +107,10 @@ fn query_last_thread(path: &Path, cwd: &Path) -> rusqlite::Result<Option<CodexTh
             params![cwd.to_string_lossy()],
             |row| {
                 Ok(CodexThread {
+                    account_home: account_home.clone(),
                     cwd:          PathBuf::from(row.get::<_, String>(0)?),
                     created_ms:   u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default(),
-                    name:         row.get(2)?,
+                    name:         SessionName::from(row.get::<_, Option<String>>(2)?),
                     first_prompt: row.get(3)?,
                     rollout:      PathBuf::from(row.get::<_, String>(4)?),
                 })
@@ -116,15 +119,38 @@ fn query_last_thread(path: &Path, cwd: &Path) -> rusqlite::Result<Option<CodexTh
         .optional()
 }
 
+/// The lexical configuration home whose database supplied a thread.
+/// Shared rollout links do not change the account that owns the database.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CodexAccountHome(PathBuf);
+
+impl From<&Path> for CodexAccountHome {
+    fn from(home: &Path) -> Self { Self(home.to_path_buf()) }
+}
+
+impl AsRef<Path> for CodexAccountHome {
+    fn as_ref(&self) -> &Path { &self.0 }
+}
+
+impl CodexAccountHome {
+    fn from_database(path: &Path) -> rusqlite::Result<Self> {
+        path.parent()
+            .map(Self::from)
+            .ok_or_else(|| Error::InvalidPath(path.to_path_buf()))
+    }
+}
+
 /// One thread an interactive Codex started, as the census reads it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct CodexThread {
+    /// The account home of the database that supplied this record.
+    pub(super) account_home: CodexAccountHome,
     /// The directory the thread runs in.
     pub(super) cwd:          PathBuf,
     /// When the thread was created, in unix milliseconds.
     pub(super) created_ms:   u64,
     /// The name the thread was given, where it has one.
-    pub(super) name:         Option<String>,
+    pub(super) name:         SessionName,
     /// The first prompt typed into the thread; empty before the first.
     pub(super) first_prompt: String,
     /// The file the thread's conversation is written to.
@@ -137,10 +163,8 @@ impl CodexThread {
     /// [`CODEX_PROMPT_LABEL_MAX`] characters; nothing when the thread
     /// has neither.
     pub(super) fn label(&self) -> Option<String> {
-        if let Some(name) = self.name.as_deref().map(one_line)
-            && !name.is_empty()
-        {
-            return Some(name);
+        if let SessionName::Named(name) = &self.name {
+            return Some(name.clone());
         }
         let prompt = one_line(&self.first_prompt);
         if prompt.is_empty() {
@@ -187,15 +211,17 @@ fn query_threads_by_id(
     path: &Path,
     ids: &[String],
 ) -> rusqlite::Result<HashMap<String, CodexThread>> {
+    let account_home = CodexAccountHome::from_database(path)?;
     let connection = open_read_only(path)?;
     let mut statement = connection.prepare(CODEX_THREAD_BY_ID_QUERY)?;
     let mut threads = HashMap::new();
     for id in ids {
         let found = statement.query_row(params![id], |row| {
             Ok(CodexThread {
+                account_home: account_home.clone(),
                 cwd:          PathBuf::from(row.get::<_, String>(0)?),
                 created_ms:   u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default(),
-                name:         row.get(2)?,
+                name:         SessionName::from(row.get::<_, Option<String>>(2)?),
                 first_prompt: row.get(3)?,
                 rollout:      PathBuf::from(row.get::<_, String>(4)?),
             })
@@ -276,6 +302,7 @@ impl ThreadsLayout {
 /// The interactive threads in the database at `path`,
 /// opened read-only.
 fn query_threads(path: &Path, created: &RangeInclusive<u64>) -> rusqlite::Result<Vec<CodexThread>> {
+    let account_home = CodexAccountHome::from_database(path)?;
     let connection = open_read_only(path)?;
     let layout = ThreadsLayout::read(&connection)?;
     let mut statement = connection.prepare(layout.query())?;
@@ -284,9 +311,10 @@ fn query_threads(path: &Path, created: &RangeInclusive<u64>) -> rusqlite::Result
     statement
         .query_map(params![CODEX_LEGACY_TUI_ORIGINATOR, from, until], |row| {
             Ok(CodexThread {
+                account_home: account_home.clone(),
                 cwd:          PathBuf::from(row.get::<_, String>(0)?),
                 created_ms:   u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default(),
-                name:         row.get(2)?,
+                name:         SessionName::from(row.get::<_, Option<String>>(2)?),
                 first_prompt: row.get(3)?,
                 rollout:      PathBuf::from(row.get::<_, String>(4)?),
             })
@@ -353,7 +381,10 @@ mod tests {
                             .expect("the fixture directory should be text"),
                         stored.originator,
                         i64::try_from(thread.created_ms).expect("the fixture time should fit"),
-                        thread.name,
+                        match &thread.name {
+                            SessionName::Named(name) => Some(name.as_str()),
+                            SessionName::Unnamed => None,
+                        },
                         thread.first_prompt,
                         thread
                             .rollout
@@ -366,11 +397,12 @@ mod tests {
     }
 
     /// A thread in `/work` created at `created_ms`.
-    fn thread(created_ms: u64, name: Option<&str>, first_prompt: &str) -> CodexThread {
+    fn thread(home: &Path, created_ms: u64, name: Option<&str>, first_prompt: &str) -> CodexThread {
         CodexThread {
+            account_home: CodexAccountHome::from(home),
             cwd: PathBuf::from("/work"),
             created_ms,
-            name: name.map(str::to_string),
+            name: SessionName::from(name.map(str::to_string)),
             first_prompt: first_prompt.to_string(),
             rollout: PathBuf::from(format!("/rollouts/{created_ms}.jsonl")),
         }
@@ -392,7 +424,7 @@ mod tests {
             &[StoredThread {
                 id:         "old",
                 originator: CODEX_LEGACY_TUI_ORIGINATOR,
-                thread:     thread(1_500, Some("from the old layout"), ""),
+                thread:     thread(directory.path(), 1_500, Some("from the old layout"), ""),
             }],
         );
         write_database(
@@ -402,27 +434,27 @@ mod tests {
                 StoredThread {
                     id:         "named",
                     originator: CODEX_LEGACY_TUI_ORIGINATOR,
-                    thread:     thread(1_500, Some("codex test"), ""),
+                    thread:     thread(directory.path(), 1_500, Some("codex test"), ""),
                 },
                 StoredThread {
                     id:         "typed",
                     originator: CODEX_LEGACY_TUI_ORIGINATOR,
-                    thread:     other(thread(2_000, None, "fix the build")),
+                    thread:     other(thread(directory.path(), 2_000, None, "fix the build")),
                 },
                 StoredThread {
                     id:         "delegate",
                     originator: "tool-impl",
-                    thread:     thread(1_600, Some("tool-impl"), "phase 1"),
+                    thread:     thread(directory.path(), 1_600, Some("tool-impl"), "phase 1"),
                 },
                 StoredThread {
                     id:         "early",
                     originator: CODEX_LEGACY_TUI_ORIGINATOR,
-                    thread:     thread(999, Some("before"), ""),
+                    thread:     thread(directory.path(), 999, Some("before"), ""),
                 },
                 StoredThread {
                     id:         "late",
                     originator: CODEX_LEGACY_TUI_ORIGINATOR,
-                    thread:     thread(2_001, Some("after"), ""),
+                    thread:     thread(directory.path(), 2_001, Some("after"), ""),
                 },
             ],
         );
@@ -435,8 +467,8 @@ mod tests {
         assert_eq!(
             threads,
             [
-                thread(1_500, Some("codex test"), ""),
-                other(thread(2_000, None, "fix the build")),
+                thread(directory.path(), 1_500, Some("codex test"), ""),
+                other(thread(directory.path(), 2_000, None, "fix the build")),
             ]
         );
     }
@@ -487,7 +519,10 @@ mod tests {
             .expect("modern thread fixtures");
         let mut names = read_threads(directory.path(), &(1000..=2000))
             .into_iter()
-            .map(|thread| thread.name.expect("fixture name"))
+            .map(|thread| match thread.name {
+                SessionName::Named(name) => name,
+                SessionName::Unnamed => String::new(),
+            })
             .collect::<Vec<_>>();
         names.sort();
         assert_eq!(names, ["legacy", "null-source", "test-codex"]);
@@ -501,7 +536,7 @@ mod tests {
             "ALTER TABLE threads ADD COLUMN thread_source TEXT;",
         ] {
             let directory = TempDir::new().expect("fixture directory");
-            let expected = thread(1500, Some("legacy"), "");
+            let expected = thread(directory.path(), 1500, Some("legacy"), "");
             write_database(
                 directory.path(),
                 "state_5.sqlite",
@@ -514,7 +549,7 @@ mod tests {
                     StoredThread {
                         id:         "worker",
                         originator: "roster",
-                        thread:     thread(1500, Some("worker"), ""),
+                        thread:     thread(directory.path(), 1500, Some("worker"), ""),
                     },
                 ],
             );
@@ -538,7 +573,7 @@ mod tests {
             &[StoredThread {
                 id:         "0199-named",
                 originator: CODEX_LEGACY_TUI_ORIGINATOR,
-                thread:     thread(1_500, Some("from the old layout"), ""),
+                thread:     thread(directory.path(), 1_500, Some("from the old layout"), ""),
             }],
         );
         write_database(
@@ -548,17 +583,17 @@ mod tests {
                 StoredThread {
                     id:         "0199-named",
                     originator: CODEX_LEGACY_TUI_ORIGINATOR,
-                    thread:     thread(1_500, Some("codex test"), ""),
+                    thread:     thread(directory.path(), 1_500, Some("codex test"), ""),
                 },
                 StoredThread {
                     id:         "0199-mesh",
                     originator: "codex_mesh",
-                    thread:     thread(2_000, None, "phase 1"),
+                    thread:     thread(directory.path(), 2_000, None, "phase 1"),
                 },
                 StoredThread {
                     id:         "0199-other",
                     originator: CODEX_LEGACY_TUI_ORIGINATOR,
-                    thread:     thread(2_500, Some("not asked for"), ""),
+                    thread:     thread(directory.path(), 2_500, Some("not asked for"), ""),
                 },
             ],
         );
@@ -569,9 +604,12 @@ mod tests {
             HashMap::from([
                 (
                     "0199-named".to_string(),
-                    thread(1_500, Some("codex test"), ""),
+                    thread(directory.path(), 1_500, Some("codex test"), ""),
                 ),
-                ("0199-mesh".to_string(), thread(2_000, None, "phase 1")),
+                (
+                    "0199-mesh".to_string(),
+                    thread(directory.path(), 2_000, None, "phase 1")
+                ),
             ])
         );
         assert!(read_threads_by_id(directory.path(), &[]).is_empty());
@@ -593,22 +631,23 @@ mod tests {
     /// with neither has no label.
     #[test]
     fn a_label_is_the_name_else_the_first_prompt() {
+        let home = Path::new("/fixture");
         assert_eq!(
-            thread(0, Some("codex test"), "fix the build")
+            thread(home, 0, Some("codex test"), "fix the build")
                 .label()
                 .as_deref(),
             Some("codex test")
         );
         assert_eq!(
-            thread(0, Some("  "), "fix the\n  build\n")
+            thread(home, 0, Some("  "), "fix the\n  build\n")
                 .label()
                 .as_deref(),
             Some("fix the build")
         );
-        assert_eq!(thread(0, None, " \n").label(), None);
+        assert_eq!(thread(home, 0, None, " \n").label(), None);
 
         let long = "word ".repeat(CODEX_PROMPT_LABEL_MAX);
-        let label = thread(0, None, &long)
+        let label = thread(home, 0, None, &long)
             .label()
             .expect("a prompt should label");
         assert_eq!(label.chars().count(), CODEX_PROMPT_LABEL_MAX);
