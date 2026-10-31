@@ -2,6 +2,8 @@
 
 mod antichain;
 
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fmt;
 use std::fmt::Display;
@@ -54,7 +56,17 @@ impl PathCase {
         test_work::record(Work::ScopeComparison);
         match self {
             Self::Sensitive => left == right,
-            Self::Insensitive => left.to_lowercase() == right.to_lowercase(),
+            Self::Insensitive if left.is_ascii() && right.is_ascii() => {
+                left.eq_ignore_ascii_case(right)
+            },
+            // String lowercase has contextual final-sigma rules; retain those exact semantics.
+            Self::Insensitive if left.contains('Σ') || right.contains('Σ') => {
+                left.to_lowercase() == right.to_lowercase()
+            },
+            Self::Insensitive => left
+                .chars()
+                .flat_map(char::to_lowercase)
+                .eq(right.chars().flat_map(char::to_lowercase)),
         }
     }
 
@@ -157,6 +169,48 @@ impl ReservationScope {
     /// Spell each path component so two scopes share a path exactly when their keys are equal.
     pub(crate) fn component_keys(&self, path_case: PathCase) -> Vec<String> {
         antichain::component_keys(self, path_case)
+    }
+}
+
+/// Borrowed declarations narrowed by their first path component and exact file spelling.
+pub(crate) struct ScopeContainmentIndex<'scope> {
+    by_first_component: HashMap<&'scope str, PathRootCoverage<'scope>>,
+}
+
+/// Exact files and containing trees beneath one shared first component.
+#[derive(Default)]
+struct PathRootCoverage<'scope> {
+    files: HashSet<&'scope str>,
+    trees: Vec<&'scope ReservationScope>,
+}
+
+impl<'scope> ScopeContainmentIndex<'scope> {
+    pub(crate) fn new(scopes: impl Iterator<Item = &'scope ReservationScope>) -> Self {
+        let mut by_first_component: HashMap<&str, PathRootCoverage<'scope>> = HashMap::new();
+        for scope in scopes {
+            let path = scope.path.as_str();
+            let first = path.split_once('/').map_or(path, |(first, _)| first);
+            let root = by_first_component.entry(first).or_default();
+            match scope.kind {
+                ScopeKind::File => {
+                    root.files.insert(path);
+                },
+                ScopeKind::Tree => root.trees.push(scope),
+            }
+        }
+        Self { by_first_component }
+    }
+
+    pub(crate) fn contains(&self, candidate: &ReservationScope) -> bool {
+        let path = candidate.path.as_str();
+        let first = path.split_once('/').map_or(path, |(first, _)| first);
+        self.by_first_component.get(first).is_some_and(|root| {
+            (candidate.kind == ScopeKind::File && root.files.contains(path))
+                || root
+                    .trees
+                    .iter()
+                    .any(|scope| scope.contains(candidate, PathCase::Sensitive))
+        })
     }
 }
 

@@ -46,15 +46,18 @@ pub(super) fn session_overview_block(
         .ready_now
         .entries
         .iter()
-        .filter(|ready| alert_routing.invoking_worktree_holds(&[ready.reservation.reservation_id]))
+        .filter(|ready_reservation| {
+            alert_routing.invoking_worktree_holds(&[ready_reservation.reservation.reservation_id])
+        })
         .map(ready_line)
         .chain(
             board
                 .waiting
                 .entries
                 .iter()
-                .filter(|entry| {
-                    alert_routing.invoking_worktree_holds(&[entry.reservation.reservation_id])
+                .filter(|waiting_entry| {
+                    alert_routing
+                        .invoking_worktree_holds(&[waiting_entry.reservation.reservation_id])
                 })
                 .map(waiting_line),
         )
@@ -63,8 +66,11 @@ pub(super) fn session_overview_block(
                 .unresolved_overlaps
                 .entries
                 .iter()
-                .filter(|overlap| {
-                    alert_routing.invoking_worktree_holds(&[overlap.deferred, overlap.blocker])
+                .filter(|unresolved_overlap| {
+                    alert_routing.invoking_worktree_holds(&[
+                        unresolved_overlap.deferred,
+                        unresolved_overlap.blocker,
+                    ])
                 })
                 .map(overlap_line),
         )

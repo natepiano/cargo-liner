@@ -150,6 +150,14 @@ mod tests {
     use super::file_module_path;
     use super::module_name_for_child_boundary_file;
 
+    const SOURCE_ROOT: &str = "/repo/src";
+    const CHILD_FILE_PATH: &str = "/repo/src/outer/child.rs";
+    const CHILD_DIRECTORY_MODULE_PATH: &str = "/repo/src/outer/child/mod.rs";
+    const LIBRARY_ROOT_FILE_PATH: &str = "/repo/src/lib.rs";
+    const BINARY_ROOT_FILE_PATH: &str = "/repo/src/main.rs";
+    const OUTER_MODULE_NAME: &str = "outer";
+    const CHILD_MODULE_NAME: &str = "child";
+
     #[test]
     fn module_file_kinds_preserve_boundary_and_module_path_names() {
         for (path, boundary, module) in [
@@ -173,53 +181,65 @@ mod tests {
 
     #[test]
     fn file_module_path_includes_leaf_file_name() {
-        let source_root = Path::new("/repo/src");
-        let path = Path::new("/repo/src/outer/child.rs");
+        let source_root = Path::new(SOURCE_ROOT);
+        let path = Path::new(CHILD_FILE_PATH);
         assert_eq!(
             file_module_path(source_root, path),
-            Some(vec!["outer".to_string(), "child".to_string()])
+            Some(vec![
+                OUTER_MODULE_NAME.to_string(),
+                CHILD_MODULE_NAME.to_string()
+            ])
         );
     }
 
     #[test]
     fn file_module_path_uses_parent_dir_for_module_rs() {
-        let source_root = Path::new("/repo/src");
-        let path = Path::new("/repo/src/outer/child/mod.rs");
+        let source_root = Path::new(SOURCE_ROOT);
+        let path = Path::new(CHILD_DIRECTORY_MODULE_PATH);
         assert_eq!(
             file_module_path(source_root, path),
-            Some(vec!["outer".to_string(), "child".to_string()])
+            Some(vec![
+                OUTER_MODULE_NAME.to_string(),
+                CHILD_MODULE_NAME.to_string()
+            ])
         );
     }
 
     #[test]
     fn file_module_path_treats_lib_rs_as_root() {
-        let source_root = Path::new("/repo/src");
-        let path = Path::new("/repo/src/lib.rs");
+        let source_root = Path::new(SOURCE_ROOT);
+        let path = Path::new(LIBRARY_ROOT_FILE_PATH);
         assert_eq!(file_module_path(source_root, path), Some(Vec::new()));
     }
 
     #[test]
     fn file_module_path_treats_main_rs_as_root() {
-        let source_root = Path::new("/repo/src");
-        let path = Path::new("/repo/src/main.rs");
+        let source_root = Path::new(SOURCE_ROOT);
+        let path = Path::new(BINARY_ROOT_FILE_PATH);
         assert_eq!(file_module_path(source_root, path), Some(Vec::new()));
     }
 
     #[test]
     fn child_boundary_name_for_module_rs_is_parent_dir() {
-        let path = Path::new("/repo/src/outer/child/mod.rs");
-        assert_eq!(module_name_for_child_boundary_file(path), Some("child"));
+        let path = Path::new(CHILD_DIRECTORY_MODULE_PATH);
+        assert_eq!(
+            module_name_for_child_boundary_file(path),
+            Some(CHILD_MODULE_NAME)
+        );
     }
 
     #[test]
     fn child_boundary_name_for_leaf_file_is_stem() {
-        let path = Path::new("/repo/src/outer/child.rs");
-        assert_eq!(module_name_for_child_boundary_file(path), Some("child"));
+        let path = Path::new(CHILD_FILE_PATH);
+        assert_eq!(
+            module_name_for_child_boundary_file(path),
+            Some(CHILD_MODULE_NAME)
+        );
     }
 
     #[test]
     fn child_boundary_name_for_root_file_is_none() {
-        let path = Path::new("/repo/src/lib.rs");
+        let path = Path::new(LIBRARY_ROOT_FILE_PATH);
         assert_eq!(module_name_for_child_boundary_file(path), None);
     }
 }

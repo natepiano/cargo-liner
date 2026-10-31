@@ -37,13 +37,13 @@ impl Shortcuts<App> for LintsPane {
 }
 
 impl CopySelection<App> for LintsPane {
-    fn copy_selection(ctx: &App) -> CopySelectionResult {
-        if !ctx.selected_row_owns_lint() {
+    fn copy_selection(app: &App) -> CopySelectionResult {
+        if !app.selected_row_owns_lint() {
             return CopySelectionResult::Nothing;
         }
-        let Some(lints) = ctx.lint.content() else {
+        let Some(lints_data) = app.lint.content() else {
             return CopySelectionResult::Nothing;
         };
-        panes::copy_payload_for_lints(lints, ctx.lint.viewport.pos())
+        panes::copy_payload_for_lints(lints_data, app.lint.viewport.pos())
     }
 }

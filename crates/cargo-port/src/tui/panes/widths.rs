@@ -33,6 +33,7 @@ use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeHealth;
+use crate::tui::app::ManifestMetadataStates;
 use crate::tui::columns;
 use crate::tui::columns::COL_DISK;
 use crate::tui::columns::COL_MAIN;
@@ -46,13 +47,14 @@ use crate::tui::render;
 /// Single entry point used by `App::ensure_fit_widths`.
 pub(in crate::tui) fn compute_project_list_widths(
     entries: &ProjectList,
+    metadata: &ManifestMetadataStates,
     root_labels: &[String],
     lint_enabled: bool,
     generation: u64,
 ) -> ProjectListWidths {
     let mut widths = ProjectListWidths::new(lint_enabled);
     for (index, entry) in entries.iter().enumerate() {
-        observe_item_fit_widths(&mut widths, entries, entry, &root_labels[index]);
+        observe_item_fit_widths(&mut widths, entries, metadata, entry, &root_labels[index]);
     }
     widths.generation = generation;
     widths
@@ -69,14 +71,15 @@ fn observe_name_width(widths: &mut ProjectListWidths, content_width: usize) {
     widths.observe(COL_NAME, name_width_with_gutter(content_width));
 }
 
-/// The ancestor whose deletion the renderer propagates to these rows.
+/// Project state shared by the name-marker and deletion-aware disk measurements.
 #[derive(Clone, Copy)]
-struct DiskFitContext<'a> {
+struct ProjectFitContext<'a> {
     projects: &'a ProjectList,
+    metadata: &'a ManifestMetadataStates,
     ancestor: &'a Path,
 }
 
-impl DiskFitContext<'_> {
+impl ProjectFitContext<'_> {
     fn cell(&self, entry: &impl ProjectFields) -> DiskCell {
         let deleted =
             self.projects.is_deleted(self.ancestor) || self.projects.is_deleted(entry.path());
@@ -95,13 +98,15 @@ fn observe_disk_width(widths: &mut ProjectListWidths, cell: &DiskCell) {
 fn observe_item_fit_widths(
     widths: &mut ProjectListWidths,
     projects: &ProjectList,
+    metadata: &ManifestMetadataStates,
     entry: &ProjectEntry,
     root_label: &str,
 ) {
     let dw = columns::display_width;
     let item = &entry.root_item;
-    let disk_context = DiskFitContext {
+    let disk_context = ProjectFitContext {
         projects,
+        metadata,
         ancestor: item.path(),
     };
     let repo_info = entry
@@ -109,7 +114,12 @@ fn observe_item_fit_widths(
         .as_ref()
         .and_then(|repo| repo.repo_info.as_ref());
 
-    observe_name_width(widths, dw(PREFIX_ROOT_COLLAPSED) + dw(root_label));
+    observe_name_width(
+        widths,
+        dw(PREFIX_ROOT_COLLAPSED)
+            + dw(root_label)
+            + dw(metadata.for_project(item.path()).name_marker()),
+    );
     let cell = DiskCell::for_row(
         formatted_disk(item.disk_usage_bytes()),
         columns::RowLifecycle::from(projects.is_deleted(item.path())),
@@ -126,7 +136,13 @@ fn observe_item_fit_widths(
         RootItem::Rust(project) => observe_rust_children_fit_widths(widths, disk_context, project),
         RootItem::NonRust(_) => {},
         RootItem::Worktrees(worktree_group) => {
-            observe_worktree_group_fit_widths(widths, projects, worktree_group, repo_info);
+            observe_worktree_group_fit_widths(
+                widths,
+                projects,
+                metadata,
+                worktree_group,
+                repo_info,
+            );
         },
     }
     for submodule in item.submodules() {
@@ -143,7 +159,7 @@ fn observe_item_fit_widths(
 
 fn observe_rust_children_fit_widths(
     widths: &mut ProjectListWidths,
-    disk_context: DiskFitContext<'_>,
+    disk_context: ProjectFitContext<'_>,
     project: &RustProject,
 ) {
     if let RustProject::Workspace(ws) = project {
@@ -167,10 +183,18 @@ fn observe_path_only_entry_fit_widths(
     prefix_width: usize,
     label: &str,
     entry: &impl ProjectFields,
-    disk_context: DiskFitContext<'_>,
+    disk_context: ProjectFitContext<'_>,
 ) {
     let dw = columns::display_width;
-    observe_name_width(widths, prefix_width + dw(label));
+    observe_name_width(
+        widths,
+        prefix_width
+            + dw(label)
+            + dw(disk_context
+                .metadata
+                .for_project(entry.path())
+                .name_marker()),
+    );
     observe_disk_width(widths, &disk_context.cell(entry));
 }
 
@@ -178,7 +202,7 @@ fn observe_new_member_group_fit_widths(
     widths: &mut ProjectListWidths,
     groups: &[MemberGroup],
     group_depth: TreeRowDepth,
-    disk_context: DiskFitContext<'_>,
+    disk_context: ProjectFitContext<'_>,
 ) {
     let dw = columns::display_width;
     for group in groups {
@@ -186,7 +210,12 @@ fn observe_new_member_group_fit_widths(
         for member in group.members() {
             observe_name_width(
                 widths,
-                constants::tree_prefix_width(member_depth) + dw(member.package_name().as_str()),
+                constants::tree_prefix_width(member_depth)
+                    + dw(member.package_name().as_str())
+                    + dw(disk_context
+                        .metadata
+                        .for_project(member.path())
+                        .name_marker()),
             );
             let cell = DiskCell::for_row(
                 formatted_disk(member.disk_usage_bytes()),
@@ -218,12 +247,20 @@ fn observe_typed_vendored_fit_widths(
     widths: &mut ProjectListWidths,
     vendored: &[VendoredPackage],
     depth: TreeRowDepth,
-    disk_context: DiskFitContext<'_>,
+    disk_context: ProjectFitContext<'_>,
 ) {
     let dw = columns::display_width;
     for project in vendored {
         let label = constants::vendored_row_label(project.package_name().as_str());
-        observe_name_width(widths, constants::tree_prefix_width(depth) + dw(&label));
+        observe_name_width(
+            widths,
+            constants::tree_prefix_width(depth)
+                + dw(&label)
+                + dw(disk_context
+                    .metadata
+                    .for_project(project.path())
+                    .name_marker()),
+        );
         let cell = DiskCell::for_row(
             formatted_disk(project.disk_usage_bytes()),
             columns::RowLifecycle::from(
@@ -242,15 +279,19 @@ fn observe_workspace_worktree_entry_fit_widths(
     worktree_name: &str,
     repo_info: Option<&RepoInfo>,
     projects: &ProjectList,
+    metadata: &ManifestMetadataStates,
 ) {
-    let disk_context = DiskFitContext {
+    let disk_context = ProjectFitContext {
         projects,
+        metadata,
         ancestor: ws.path(),
     };
     let dw = columns::display_width;
     observe_name_width(
         widths,
-        constants::tree_prefix_width(TreeRowDepth::root_child()) + dw(worktree_name),
+        constants::tree_prefix_width(TreeRowDepth::root_child())
+            + dw(worktree_name)
+            + dw(metadata.for_project(disk_context.ancestor).name_marker()),
     );
     observe_disk_width(widths, &disk_context.cell(ws));
     widths.observe(COL_SYNC, dw(&git_sync_label(ws.git_info(), repo_info)));
@@ -266,15 +307,19 @@ fn observe_package_worktree_entry_fit_widths(
     worktree_name: &str,
     repo_info: Option<&RepoInfo>,
     projects: &ProjectList,
+    metadata: &ManifestMetadataStates,
 ) {
-    let disk_context = DiskFitContext {
+    let disk_context = ProjectFitContext {
         projects,
+        metadata,
         ancestor: pkg.path(),
     };
     let dw = columns::display_width;
     observe_name_width(
         widths,
-        constants::tree_prefix_width(TreeRowDepth::root_child()) + dw(worktree_name),
+        constants::tree_prefix_width(TreeRowDepth::root_child())
+            + dw(worktree_name)
+            + dw(metadata.for_project(disk_context.ancestor).name_marker()),
     );
     observe_disk_width(widths, &disk_context.cell(pkg));
     widths.observe(COL_SYNC, dw(&git_sync_label(pkg.git_info(), repo_info)));
@@ -306,6 +351,7 @@ pub(super) fn worktree_entry_label(
 fn observe_worktree_group_fit_widths(
     widths: &mut ProjectListWidths,
     projects: &ProjectList,
+    metadata: &ManifestMetadataStates,
     worktree_group: &WorktreeGroup,
     repo_info: Option<&RepoInfo>,
 ) {
@@ -315,8 +361,9 @@ fn observe_worktree_group_fit_widths(
         if let Some(entry) = worktree_group.single_live() {
             observe_rust_children_fit_widths(
                 widths,
-                DiskFitContext {
+                ProjectFitContext {
                     projects,
+                    metadata,
                     ancestor: entry.path(),
                 },
                 entry,
@@ -338,6 +385,7 @@ fn observe_worktree_group_fit_widths(
                     &worktree_name,
                     repo_info,
                     projects,
+                    metadata,
                 );
             },
             RustProject::Package(pkg) => {
@@ -347,6 +395,7 @@ fn observe_worktree_group_fit_widths(
                     &worktree_name,
                     repo_info,
                     projects,
+                    metadata,
                 );
             },
         }

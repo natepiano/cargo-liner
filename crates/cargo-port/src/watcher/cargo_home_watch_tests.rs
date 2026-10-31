@@ -4,8 +4,8 @@ use super::RegisteredRoots;
 use super::register_cargo_home_directory;
 use super::replace_skip_set;
 use crate::project::AbsolutePath;
-use crate::watcher::repair_test_support::RecordedFolderWatches;
 use crate::watcher::skip::WatchSkipSet;
+use crate::watcher::watch_test_support::RecordedFolderWatches;
 
 #[test]
 fn cargo_home_inside_target_gets_no_watch() -> Result<(), Box<dyn Error>> {
@@ -32,12 +32,12 @@ fn cargo_home_watch_is_tracked_and_pruned_when_target_becomes_known() -> Result<
     let mut watcher = RecordedFolderWatches::default();
     let mut registered = RegisteredRoots::default();
     register_cargo_home_directory(&mut watcher, &mut registered, &cargo_home);
-    assert!(registered.watched.contains(cargo_home.as_path()));
+    assert!(registered.watched.contains_key(cargo_home.as_path()));
     let mut skips = WatchSkipSet::default();
     skips.add_target_directory(AbsolutePath::from(scratch.path().join("build-cache")));
     replace_skip_set(&mut watcher, &mut registered, skips);
     assert!(watcher.unwatched.contains(&cargo_home));
-    assert!(!registered.watched.contains(cargo_home.as_path()));
+    assert!(!registered.watched.contains_key(cargo_home.as_path()));
     Ok(())
 }
 

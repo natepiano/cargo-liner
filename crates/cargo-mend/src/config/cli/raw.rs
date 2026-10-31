@@ -118,8 +118,10 @@ mod tests {
     use super::RawCli;
     use crate::compiler::CARGO_SUBCOMMAND_MEND;
     use crate::config::cli::Cli;
+    use crate::config::cli::CompilerFixExecution;
     use crate::config::cli::FixExecution;
     use crate::config::cli::FixRequest;
+    use crate::config::cli::FixRequestSelection;
 
     fn parse(cli_args: &[&str]) -> Cli {
         let full_argv = iter::once(CARGO_SUBCOMMAND_MEND).chain(cli_args.iter().copied());
@@ -131,28 +133,31 @@ mod tests {
     fn dry_run_with_fix_compiler_does_not_mutate() {
         let cli = parse(&["--dry-run", "--fix-compiler"]);
         assert_eq!(cli.fix.execution, FixExecution::PreviewRequested);
-        assert!(cli.fix.includes(FixRequest::Compiler));
-        assert!(!cli.fix.runs_compiler_fix());
+        assert_eq!(
+            cli.fix.includes(FixRequest::Compiler),
+            FixRequestSelection::Requested
+        );
+        assert_eq!(cli.fix.runs_compiler_fix(), CompilerFixExecution::Skip);
     }
 
     #[test]
     fn dry_run_with_fix_all_does_not_mutate() {
         let cli = parse(&["--dry-run", "--fix-all"]);
         assert_eq!(cli.fix.execution, FixExecution::PreviewAll);
-        assert!(!cli.fix.runs_compiler_fix());
+        assert_eq!(cli.fix.runs_compiler_fix(), CompilerFixExecution::Skip);
     }
 
     #[test]
     fn fix_compiler_alone_does_mutate() {
         let cli = parse(&["--fix-compiler"]);
         assert_eq!(cli.fix.execution, FixExecution::ApplyRequested);
-        assert!(cli.fix.runs_compiler_fix());
+        assert_eq!(cli.fix.runs_compiler_fix(), CompilerFixExecution::Run);
     }
 
     #[test]
     fn fix_all_alone_does_mutate() {
         let cli = parse(&["--fix-all"]);
         assert_eq!(cli.fix.execution, FixExecution::ApplyAll);
-        assert!(cli.fix.runs_compiler_fix());
+        assert_eq!(cli.fix.runs_compiler_fix(), CompilerFixExecution::Run);
     }
 }

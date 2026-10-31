@@ -913,7 +913,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 - `visit_expr_if` and `visit_expr_while` open a scope for the condition and the body. `visit_condition` visits `&&` operands from left to right: a `let` initializer sees the outer bindings, and its pattern binds for later operands and the body. The scope closes before the `else` branch. Patterns use the existing `collect_pat_bindings` (`mut`, `ref`, `@`, tuple, struct, slice, alternatives).
 - Proof: `module_import_fix_keeps_if_let_registration_row_local` failed before with the exact rewrite from the report. Also `conditional_bindings_resolve_initializers_chains_bodies_and_else_separately` and `existing_binding_forms_keep_locals_and_resolve_only_outer_import_uses`. 853/853 on the Mac.
 
-### Phase 41 — A merge extent holds only the unit's own changes, not the trunk's newer ones  · status: todo
+### Phase 41 — A merge extent holds only the unit's own changes, not the trunk's newer ones  · status: done
 
 **Why:** (showrunner, 2026-10-28) a wrong result. Tile reservation 01a17e32 has a race extent of only its plan docs. Its merge extent key (trunk 0e5e78dd, head e21d5b93) lists cargo-mend `compiler/facade/`, `compiler/exposure/` and `compiler/visibility/` files and the handler and berth-next plan docs. Those came into the trunk from other units after tile's branch point. They gave false incursions: 01a1821a on style types' 01a18160 (`policy.rs`, `scan/record.rs`), and earlier ones into the handler and berth-next docs. Checked on the board: `git diff --name-only 0e5e78dd e21d5b93` names 60 paths, 8 of them cargo-mend; `git diff --name-only $(git merge-base 0e5e78dd e21d5b93) e21d5b93` names 52 and no cargo-mend path. So the extent compares against the trunk tip, not the merge base.
 
@@ -925,7 +925,7 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
 
-### Phase 42 — The post-tool-use hook costs little CPU on a large ledger  · status: todo
+### Phase 42 — The post-tool-use hook costs little CPU on a large ledger  · status: done
 
 **Why:** (showrunner, 2026-10-28, urgent cost defect; builds-unit perf 11:28–11:40 AST) the post-tool-use hook runs after every Bash call in every session. In a hana worktree one run costs 2–9 CPU-s (0.4 core steady, about 5 cores at peaks). It loads 542 reservations and 15,245 race scopes from a 24 MB checkpoint and a 146 MB journal, 9x the 16 MB compaction limit (`ledger/constants.rs:28`). It checks overlap pair by pair with allocating compares (`ledger/journal.rs:1245-1252`, `scope/antichain.rs:76`) and computes 25 full ancestor sets (`git/reachability.rs:336`, `:675-682`). Perf data (read only): `/tmp/claude-1000/-home-natepiano-worktrees-claude-build-followups-builds/51505394-82db-43d3-a528-136f4ee38d7a/scratchpad/berth.data`.
 
@@ -940,7 +940,9 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 
 **Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
 
-### Phase 44 — A rebuilt cargo-mend runs its own driver, not an earlier copy  · status: todo
+### Phase 44 — A rebuilt cargo-mend runs its own driver, not an earlier copy  · status: done
+
+**Depends on:** 38b
 
 **Why:** (phase 38b review, 2026-10-28) phase 38b made the wrapper alias an independent copy under `mend-wrapper/<fingerprint>/independent-copy-v1/`, and reuses any regular file with one link there. The fingerprint is version + `MEND_GIT_HASH` + `MEND_BUILD_ID`, and `build.rs` renews those only when HEAD or a branch ref changes. A development rebuild with an uncommitted change keeps the same fingerprint, so `cargo mend` runs the copy of the earlier build as its rustc driver. The hard-link version replaced the alias when its inode differed from the running binary.
 
@@ -949,3 +951,160 @@ A full or cheap `cargo-berth drift` for one reservation never adds a path that a
 **Verification:** the new test, under 1 s; `cargo-mend` Mac suite and lint pass.
 
 **Files:** `crates/cargo-mend/src/compiler/build/execute.rs`
+
+### Phase 45 — Paths that a merge of the merge branch brings in are not incursions  · status: done
+
+**Depends on:** 42
+
+**Why:** (hana's showrunner via the cargo-liner showrunner, 2026-10-29) a wrong result. build-speed merged the landed merge branch `init/catalyst` at 2bbd4c1fba (merge commit 466e6aae05). Its next commit d5436ae86f changed only its plan doc, but berth raised 13 incursions on reservation 01a18271 for paths that only the merge brought in (assembly P2 wrote them). hana's checkout shows the same defect. Phase 34 covers a fast-forward onto an integration target; this is a true merge commit of the production's merge branch.
+
+**Work Order:**
+1. Find where committed drift takes the paths of a merge commit from the merge branch as the unit's own writes (`src/drift/selection.rs`, `src/drift/writes.rs`), and why phase 34's received-commit filter does not remove them: the merge branch not recorded as an integration target, or the merge commit's diff read against its first parent only.
+2. Paths that come only from the merge branch's side of a merge are not unit writes. The unit's own commits after the merge, a conflict resolution the unit wrote in the merge commit, and staged, unstaged and untracked changes stay unit writes.
+
+**Verification:** a red-first test (under 1 s): a unit branch merges a merge branch that brings in file F, then commits only its plan doc; no incursion on a holder of F and no widening onto F. Companion test: a path the unit changes in the merge commit itself (a conflict resolution) still counts. `cargo-berth` lint and related tests pass.
+
+**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+
+### Phase 46 — Trunk may move to a commit its upstream already contains  · status: done
+
+**Depends on:** 42
+
+**Why:** (hana's showrunner via the cargo-liner showrunner, 2026-10-29) a wrong refusal. hana's trunk is the local `init/catalyst` at ab40610ebf; the merge gate pushed `origin/init/catalyst` 2bbd4c1fba from another checkout. `git merge --ff-only origin/init/catalyst` wrote the tree, but the reference-transaction hook refused the ref move (`gate/decision.rs` `decide_hook`: entering reservations with ordering holds, no permit). `resolve --integrated-as 2bbd4c1fba` then refuses ("must be reachable from trunk"), nothing landed since ab40610 can release, and hana's ledger filled (128/128). `integrate --force` cannot help: it forces one reservation, and any other entering hold still blocks. The integration already happened upstream, so a local refusal only splits berth's trunk from the truth.
+
+**Work Order:**
+1. When the proposed trunk tip is reachable from the trunk's upstream proof ref (phase 33's `IntegrationProofRef::Upstream`), the gate clears the move and reports the holds as observed. It does not block, and it needs no permit.
+2. A move to a commit the upstream does not contain keeps today's decision. A trunk with no upstream keeps today's decision.
+
+**Verification:** a red-first test (under 1 s): trunk with an upstream that is one commit ahead, and an entering reservation with an ordering hold; a fast-forward of trunk to the upstream tip is not refused, and the hold shows as observed. A companion test: a move to a commit the upstream does not contain is still refused. `cargo-berth` lint and related tests pass.
+
+**Cause:** committed write selection skipped received-commit filtering when the recorded integration tips came before the phase start. A merge branch that was never recorded as an integration target was not among those tips, so its side's paths entered the phase's net diff and incursion attribution.
+
+**Fix:** one phase commit origin (unit-written, received from the merge branch, or unclassified) is read from the first-parent ancestry. Write selection and incursion provenance both use it. A conflict resolution written in the merge commit stays a unit write; unknown ancestry stays conservative.
+
+**Repair (showrunner hold of a6a2aa4e):** the first fix ran one more `git log` in every post-commit hook, which broke the hook's cost limits, and it treated peer work brought in by the merge at HEAD as received history. Ancestry is now classified from the parent graph that reconciliation already reads, so no Git child is added. Work that enters with the current merge is judged at its post-commit boundary.
+
+**Files:** `crates/cargo-berth/src/drift/{writes,observation,selection,provenance}.rs`, `crates/cargo-berth/src/git/{mod,reachability}.rs`, `crates/cargo-berth/tests/drift.rs`
+
+### Phase 47 — cargo-berth keeps its ledger and indexes in memory between requests  · status: dropped
+
+**Dropped** (showrunner, 2026-10-30): measured on the real cargo-liner ledger (5.6 MB, checkpoint 0.87 MB), release build of 04ec519b, 3 interleaved pairs: a held check takes 18.5 ms wall and 8.1 ms CPU, the pre-tool-use hook decision 23.5 ms wall and 8.7 ms CPU, with 0 git children. A resident would remove about 5.3 ms CPU per request (checkpoint load; index builds are under 0.2 ms), which does not pay for a resident process. The 0.4 s the showrunner timed was an acquire on an unused path under high load; acquire is rare. The design below stays as the record.
+
+**Depends on:** 42. It runs beside phase 45 (user, 2026-10-30): 45 changes only how drift reads a merge in `src/drift/`, and 47 keeps out of `src/drift/`. 47's same-answer A/B uses one base for its before and after.
+
+**State model** (written before code, lifecycle rule 2026-10-20). One resident process per canonical common git directory. It only reads: today's CLI and hook writers stay the only journal writers, under today's mutation lock, and every claim and other mutation keeps today's local path. The resident answers read queries (check, hook decisions) from a view derived from the journal. The journal stays the source of truth.
+
+| State | Entered when | A request sees |
+|---|---|---|
+| Absent | no live owner (never started, stopped, or crashed; a crash leaves a stale socket the next starter removes) | today's local path; the client starts one resident (an election lock admits one starter) |
+| Loading(cause) | startup, or a journal replacement, truncation, reinitialization or path-case change | today's local path, with no wait |
+| Serving(position) | the view is built and validated at a complete-record journal position | answers from the view after it checks the journal identity and length; an append moves it to Behind, a replacement to Loading |
+| Behind(position) | another process appended | the resident folds the new complete records, updates only the affected indexes and publishes at once, or the request takes the local path |
+| Failed(error) | the journal cannot be read or validated | today's local path with today's error or answer; a transport or cache failure never becomes an edit permission |
+| Stopping | idle 10 minutes, a binary upgrade, or shutdown | today's local path |
+
+- The position names the journal file identity (device, inode, repository incarnation) and the complete-record offset; a projection generation alone is not enough. An incomplete final record stays unapplied.
+- One tagged lifecycle enum holds these states. Only Serving holds a usable view; Behind holds an unpublished replay that queries cannot read. No ready or stale flags, and no `Option` of a view.
+- The indexes (interned path ids, path to holders, a component trie with descendant summaries) refer to folded facts by id. They never copy a reservation, and the resident and the local path run the same query code.
+- Session mappings, markers, configuration and live git facts stay request-scoped and are read fresh each time.
+- The handshake binds the common directory, repository instance, protocol and fold versions and the exact executable digest. A different binary is refused, retires the old owner and uses the local path until a new owner serves.
+- The client starts the resident detached, in its own process group, with stdin, stdout and stderr closed, so it never holds a caller's pipe. The socket is under the user runtime directory, named by a short hash of the common directory to stay within the macOS socket path limit.
+- Production counters count checkpoint bytes decoded and complete holder-index builds at their real entry points; tests read them through a diagnostics query. They never feed a decision.
+- Each lifecycle test (warm reuse, append, replacement, crash, upgrade, nested hook) runs in under 1 s.
+- (showrunner, 2026-10-30, CPU first) An idle resident uses zero CPU: no poll loop and no timer except the one idle-exit deadline. It checks freshness (journal end position) and a binary change (executable identity) on each query, never on a clock.
+- (showrunner) The checkpoint states the resident's memory on the real ledger and its gain against today's local path on the real ledger (check at 0.4 s wall on 2026-10-30) for check and the hook decision. The build goes past this state model only if a measured split of today's time shows that the resident clearly beats the local path.
+
+**Why:** (user, 2026-10-29; showrunner approved) every check, claim and hook rebuilds its view: it decodes the replay checkpoint (24 MB) and builds holder indexes on each call. Second Astra review: /tmp/claude/astra/20261030T012333Z-1840552/review.md, cut A.
+
+**Work Order:**
+1. Load the existing journal once in a resident process per common git directory and keep identity, protection and authorization indexes across requests (interned path ids, path → holders, a component trie with descendant summaries for directory scopes). The journal stays the source of truth.
+2. Requests use the kept indexes. Today's answers do not change: same status, reservation and target in every A/B trial.
+
+**Verification:** a warm held check decodes zero checkpoint bytes and builds zero holder indexes (counted in a test under 1 s). Release A/B on a quiet Mac under a Mac build hold, interleaved, before and after. `cargo-berth` lint and the package suite pass.
+
+**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+
+### Phase 48 — The post-Bash hook computes each ancestry once and opens the repository once per worker  · status: todo
+
+**Depends on:** 42 and 52 (47 dropped).
+
+**Why:** measured 2026-10-31 on 9390f1d7 with the real cargo-liner ledger (symbolized release profile, post-Bash hook up to the mutation lock, three interleaved first and repeat calls): about 125 ms wall and 175 ms CPU per call (about 117 ms user, 63 ms system), with the repeat costing the same. User CPU: successor ancestry preparation 34%, history and object reads 33%, status scans 19%, fold and reconciliation 6%, checkpoint decode 5%, git children 2%, content hash 1%. One candidate-resolution worker made 35,951 statx and 6,715 openat calls per call, because it opens the repository again for each candidate. A held check costs 4.4 ms CPU and does no status, hash, history or merge work. The earlier cross-request cache (status and merge-pair caches with event invalidation) could remove at most about 20% and was dropped (showrunner, 2026-10-31).
+
+**State model:** no state lives across requests. A request's graph batch owns its ancestor-set map and one repository reader per worker, and drops both when the request ends.
+
+**Work Order:**
+1. Inside one request, compute each distinct tip's ancestor set once in the existing graph batch, and use it for both reachability and first-parent exclusion. Availability and parent order stay the same.
+2. Open the repository once per batch or worker, not once per candidate.
+3. Answers do not change.
+
+**Verification:** a test under 1 s counts repository opens and ancestor computations for one request with N candidates: 1 open per worker, and 1 ancestor set per distinct tip. The whole cargo-berth package and lint pass. Report with the checkpoint a complete-hook release A/B on the real ledger, interleaved, before and after, with system CPU shown apart from user CPU.
+
+**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+
+**Decided for the later steps (C: background updater and short request paths; D: compact durable state), judged after phases 47 and 48 land on their measured numbers:** step C keeps today's claim rule (user, 2026-10-29, via the showrunner). Toward other worktrees, a claim protects only what changed there; the showrunner sequences overlaps. Keeping protection for narrow named-file claims is out of scope now.
+
+Step C's spec, when it is written, carries these two states and a test for each (showrunner, 2026-10-29):
+- **Bounded wait.** A request on a path that another worktree changed and the updater has not yet indexed waits a bounded few milliseconds for that update, then answers from the index. Test (under 1 s): change a file in a foreign worktree and check that path at once; the answer names the change, and the wait stays under its bound.
+- **Refresh required after lost events.** When the watcher loses events (restart, overflow, missing worktree), coverage for that worktree is unknown. A request that depends on it answers "refresh required" (a blocking result, never the "ledger unreadable" result that lets an edit through) until the updater takes a new baseline. Test (under 1 s): simulate an overflow, then check a path in that worktree; the answer is "refresh required", and after the rebaseline it is the normal answer.
+
+### Phase 51 — Main's CI passes the renamed-trunk refresh test on Linux  · status: done
+
+**Depends on:** 41
+
+**Why:** (showrunner, 2026-10-30) main's CI run 41138166229 on 55cd6b5c fails `renamed_trunk_refreshes_dispatch_before_next_prepared_update` (tests/gate.rs:3270) in the Linux Test Suite: "hook did not refresh after branch rename" with an empty hook context.
+
+**Work Order:** find the cause from the run's log and how long the test has failed; fix the cause without loosening an assert.
+
+**Cause:** phase 41 (04ec519b) gave the detached hook-context refresh a null stderr and its own process group. Before that, git's captured output waited for the inherited stderr to close, which made the refresh finish before `git branch -m` returned by accident. The test read the context at once, so it raced the refresh. The 19 main CI runs before 55cd6b5c passed it. The refresh stays detached: that is the product behavior.
+
+**Fix:** the test polls the hook context at the file's `POLL_INTERVAL` until it names the new trunk or `SCHEDULING_ALLOWANCE` ends. Every assertion stays, and the failure message now prints the context.
+
+**Verification:** the test passes on Linux in 0.13 s; the Mac was held by another unit, so the Mac CI job is its Mac check. `cargo-berth` lint passes.
+
+**Files:** `crates/cargo-berth/tests/gate.rs`
+
+### Phase 52 — A finished git command never reports inherited pipe writers that are not there  · status: done
+
+**Depends on:** 41
+
+**Why:** (showrunner, 2026-10-31) in the whole-package run for phase 45's repair, `retention_ref_transactions_have_constant_git_invocations_across_cardinalities` failed once in fixture setup: `git add` returned "child exited with inherited pipe writers still open; terminated the process group before collecting output EOF" (`src/git/child.rs`, through `cargo-berth-test-support/src/git_driver.rs:368`). It passed on retry with no change. Phase 41 added this check, and product code runs it too, so the flake can reach every unit's tests and real hooks.
+
+**Work Order:**
+1. Find the cause: which process held a write end of the output pipe after `git add` exited (a git descendant, or a sibling thread's child that inherited the descriptor between pipe creation and spawn), and how long it held it.
+2. If a real `git add` can leave a writer open for that long in normal use, fix the check in `src/git/child.rs`, not the fixture. If the writer came from a race in our own spawn path, fix that race where it lives. Keep the check's purpose: a child whose own descendants keep the pipe open is still stopped and named.
+
+**Verification:** a red-first test under 1 s that reproduces the cause deterministically, then passes. The whole cargo-berth package passes, and lint passes.
+
+**Cause:** fixture starts (and the detached hook refresh in `cli.rs`) spawned outside the spawn lock. Close-on-exec closes a descriptor at exec, not at fork, so a process forked in a sibling thread's pipe-setup window held that pipe's writer until it ran exec, and the check saw an open writer after git exited.
+
+**Fix:** `src/git/spawn_lock.rs` owns the one spawn lock; every product start uses it. Test support starts every fixture command through `FixtureCommand`, which takes the same lock. The check is unchanged.
+
+**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth-test-support/`, `crates/cargo-berth/tests/`
+
+### Phase 50 — A merged phase's reservations are released, so the reservation cap is never reached  · status: todo
+
+**Depends on:** 48
+
+**Why:** (showrunner, 2026-10-30) 100 of hana's 128 live reservations were stale phase reservations that were never released (Codex worker phases). At the 128 cap no new reservation can open.
+
+**Work Order:**
+1. When a phase's commit is integrated into its trunk, release that phase's reservations automatically; or give one command that releases every stale reservation whose work is integrated. Prefer the automatic path if it needs no new state.
+2. A reservation with unintegrated work is never released by this path.
+
+**Verification:** a red-first test (under 1 s): a phase reservation whose commit is merged into trunk is released without a release call; a stale reservation with unmerged work stays. `cargo-berth` lint and the related tests pass.
+
+**Files:** `crates/cargo-berth/src/`, `crates/cargo-berth/tests/`
+
+### Phase 49 — Four slow lifecycle and drift tests run in under a second each  · status: todo
+
+**Depends on:** 41
+
+**Why:** (showrunner, 2026-10-30, row C153 follow-up) `lifecycle::upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` took 5.3 s in the phase 46 full Mac suite. The showrunner added three drift tests from a natedev run the same day: `drift::a_merge_keeps_the_units_own_committed_paths` (2.2 s), `drift::a_working_tree_edit_after_an_integrated_fast_forward_still_counts` (1.8 s) and `drift::an_integrated_fast_forward_is_not_a_post_write` (1.5 s). A test that takes seconds is a defect to fix, not a load flake. Queued behind the CPU work (phases 45, 47, 48 first).
+
+**Work Order:**
+1. Measure where each test's time goes (fixture setup, git children, ledger replay, waits) on the Mac, with the test alone.
+2. Remove the cost at its cause (a smaller fixture, a shared template, no fixed waits) without weakening what each test proves.
+
+**Verification:** each of the four passes alone on the Mac in under 1 s, with the same assertions. `cargo-berth` lint and the package suite pass.
+
+**Files:** `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/drift.rs`, test support under `crates/cargo-berth/tests/`

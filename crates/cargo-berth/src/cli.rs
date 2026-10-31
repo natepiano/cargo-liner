@@ -12,6 +12,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Read;
 use std::io::Write;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
@@ -2031,20 +2032,22 @@ fn schedule_managed_hook_refresh_after_trunk_deletion(
     };
     let deleted_reference = deleted_reference.to_string();
     let previous_tip = previous_tip.to_string();
-    match ProcessCommand::new(executable)
-        .args([
-            "__refresh-managed-hook-after-trunk-deletion",
-            &deleted_reference,
-            &previous_tip,
-        ])
-        .current_dir(invocation_directory)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-    {
-        Ok(refresh_worker) => drop(refresh_worker),
-        Err(error) => write_reference_transaction_diagnostic(format_args!(
+    match git::with_spawn_lock(|| {
+        ProcessCommand::new(executable)
+            .args([
+                "__refresh-managed-hook-after-trunk-deletion",
+                &deleted_reference,
+                &previous_tip,
+            ])
+            .current_dir(invocation_directory)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+    }) {
+        Ok(Ok(refresh_worker)) => drop(refresh_worker),
+        Ok(Err(error)) | Err(error) => write_reference_transaction_diagnostic(format_args!(
             "cargo-berth could not schedule its managed-hook refresh after {deleted_reference} was deleted: {error}. The stale hook will invoke cargo-berth defensively until cargo berth init refreshes it."
         )),
     }

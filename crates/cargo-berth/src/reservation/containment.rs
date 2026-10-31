@@ -10,8 +10,10 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
+use super::lifecycle::EditBlockingStatus;
 use super::lifecycle::ReservationLifecycle;
 use super::merge_extent::MergeExtent;
+use super::merge_extent::ReservationProtection;
 use super::merge_extent::RetainedMergeEvidence;
 use super::record::RecordedTarget;
 use super::record::Reservation;
@@ -30,6 +32,7 @@ use crate::ledger::ReservationScopeSet;
 use crate::ledger::ResolvedEditAuthorization;
 use crate::ledger::TargetSelectionRequest;
 use crate::ledger::WorktreeContext;
+use crate::scope::PathCase;
 use crate::verb::claim;
 
 /// What each observed foreign holder head would still bring to the acting checkout's HEAD.
@@ -71,6 +74,38 @@ impl ActingHeadContainment {
         repository: &RepositorySnapshot,
         authorization: ResolvedEditAuthorization,
     ) -> Self {
+        Self::observe_for_actor_holders(
+            reservations,
+            repository,
+            authorization,
+            &reservations.iter().collect::<Vec<_>>(),
+        )
+    }
+
+    /// Observe only holders whose complete protection touches this edit. Containment can
+    /// remove protection, never add it, so disjoint holders cannot affect the answer.
+    pub(crate) fn observe_for_edit(
+        reservations: &RetainedReservationSet,
+        repository: &RepositorySnapshot,
+        authorization: ResolvedEditAuthorization,
+        requested: &ReservationScopeSet,
+        path_case: PathCase,
+    ) -> Self {
+        let holders = requested_holders(
+            reservations,
+            authorization.worktree_id,
+            requested,
+            path_case,
+        );
+        Self::observe_for_actor_holders(reservations, repository, authorization, &holders)
+    }
+
+    fn observe_for_actor_holders(
+        reservations: &RetainedReservationSet,
+        repository: &RepositorySnapshot,
+        authorization: ResolvedEditAuthorization,
+        holders: &[&Reservation],
+    ) -> Self {
         let context = repository.context();
         let acting_worktree = authorization.worktree_id;
         let Ok(Enrollment::Enrolled(config)) = BerthConfig::read(&context.configuration_lookup())
@@ -110,8 +145,8 @@ impl ActingHeadContainment {
                 ContainmentTarget::Unavailable => return Self::unavailable(acting_worktree),
             }
         };
-        Self::observe(
-            reservations,
+        Self::observe_holders(
+            holders,
             repository,
             acting_worktree,
             &target,
@@ -126,19 +161,34 @@ impl ActingHeadContainment {
             holder_heads: Vec::new(),
         }
     }
-    /// Read which foreign holder work the acting HEAD already contains, before any lock.
-    ///
-    /// Nothing is read unless a foreign holder retains keyed committed protection. A holder
-    /// measured against the acting HEAD as trunk needs no read, since its extent already answers,
-    /// and any failed read leaves that holder's complete protection in force.
-    pub(crate) fn observe(
+    /// Apply the same candidate-first rule during locked acquisition validation.
+    pub(crate) fn observe_for_claim(
         reservations: &RetainedReservationSet,
         repository: &RepositorySnapshot,
         acting_worktree: WorktreeId,
         acting_target: &IntegrationTarget,
         repository_trunk: &IntegrationTarget,
+        requested: &ReservationScopeSet,
+        path_case: PathCase,
     ) -> Self {
-        let mut keys = reservations
+        let holders = requested_holders(reservations, acting_worktree, requested, path_case);
+        Self::observe_holders(
+            &holders,
+            repository,
+            acting_worktree,
+            acting_target,
+            repository_trunk,
+        )
+    }
+
+    fn observe_holders(
+        holders: &[&Reservation],
+        repository: &RepositorySnapshot,
+        acting_worktree: WorktreeId,
+        acting_target: &IntegrationTarget,
+        repository_trunk: &IntegrationTarget,
+    ) -> Self {
+        let mut keys = holders
             .iter()
             .filter(|holder| holder.actor().worktree != acting_worktree)
             .filter_map(|holder| match holder.merge_extent() {
@@ -173,8 +223,8 @@ impl ActingHeadContainment {
                 holder_heads,
             };
         };
-        Self::observe_at_head(
-            reservations,
+        Self::observe_holders_at_head(
+            holders,
             repository,
             repository.context(),
             acting_worktree,
@@ -194,7 +244,27 @@ impl ActingHeadContainment {
         repository_trunk: &IntegrationTarget,
         acting_head: &GitObjectId,
     ) -> Self {
-        let keys: Vec<_> = reservations
+        Self::observe_holders_at_head(
+            &reservations.iter().collect::<Vec<_>>(),
+            repository,
+            context,
+            acting_worktree,
+            acting_target,
+            repository_trunk,
+            acting_head,
+        )
+    }
+
+    fn observe_holders_at_head(
+        holders: &[&Reservation],
+        repository: &RepositorySnapshot,
+        context: &WorktreeContext,
+        acting_worktree: WorktreeId,
+        acting_target: &IntegrationTarget,
+        repository_trunk: &IntegrationTarget,
+        acting_head: &GitObjectId,
+    ) -> Self {
+        let keys: Vec<_> = holders
             .iter()
             .filter(|holder| holder.actor().worktree != acting_worktree)
             .filter_map(|holder| {
@@ -399,13 +469,55 @@ fn committed_path_remains(
             })
 }
 
+/// Query the complete unnarrowed protection of each foreign checkout. Once a checkout
+/// matches, retain all its contributors: containment can change which sibling represents
+/// the union in an overlap answer, even when that sibling's own paths are disjoint.
+fn requested_holders<'a>(
+    reservations: &'a RetainedReservationSet,
+    acting_worktree: WorktreeId,
+    requested: &ReservationScopeSet,
+    path_case: PathCase,
+) -> Vec<&'a Reservation> {
+    let candidates: HashSet<_> = reservations
+        .iter()
+        .filter(|holder| {
+            holder.actor().worktree != acting_worktree
+                && holder.edit_blocking_status() == EditBlockingStatus::Blocking
+                && match holder.protection_in_worktree(acting_worktree) {
+                    ReservationProtection::Clear => false,
+                    ReservationProtection::Protected(scopes) => {
+                        scopes.as_slice().iter().any(|held| {
+                            requested
+                                .as_slice()
+                                .iter()
+                                .any(|scope| held.overlaps(scope, path_case))
+                        })
+                    },
+                }
+        })
+        .map(|holder| holder.actor().worktree)
+        .collect();
+    reservations
+        .iter()
+        .filter(|holder| {
+            candidates.contains(&holder.actor().worktree)
+                && holder.edit_blocking_status() == EditBlockingStatus::Blocking
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
     use std::fs;
 
+    use cargo_berth_test_support::CommandDeadlineExt as _;
+    use serde_json::Error;
+    use serde_json::Value;
+    use tempfile::TempDir;
     use tempfile::tempdir;
 
+    use super::ActingHeadContainment;
     use super::ContainmentTarget;
     use super::CrossTargetRemainder;
     use super::HolderHeadRemainder;
@@ -413,16 +525,285 @@ mod tests {
     use super::automatically_selected_target;
     use super::committed_path_remains;
     use super::holder_target;
+    use crate::git::RepositorySnapshot;
+    use crate::ids::CoordinationRunId;
+    use crate::ids::EventId;
     use crate::ids::GitObjectId;
+    use crate::ids::ReservationId;
     use crate::ids::ReservationScopePath;
+    use crate::ids::WorktreeId;
+    use crate::ledger::EditAuthorization;
     use crate::ledger::IntegrationTarget;
+    use crate::ledger::JournalEvent;
+    use crate::ledger::ReservationScope;
+    use crate::ledger::ReservationScopeSet;
+    use crate::ledger::ResolvedEditAuthorization;
+    use crate::ledger::ScopeKind;
+    use crate::reservation::MergeExtent;
+    use crate::reservation::RetainedReservationSet;
     use crate::reservation::record::RecordedTarget;
+    use crate::scope::PathCase;
 
     fn paths(values: &[&str]) -> Result<HashSet<ReservationScopePath>, Box<dyn std::error::Error>> {
         values
             .iter()
             .map(|path| path.parse().map_err(Into::into))
             .collect()
+    }
+
+    #[derive(Clone, Copy)]
+    enum HolderLayout {
+        Independent,
+        Siblings,
+    }
+
+    fn containment_fixture(
+        layout: HolderLayout,
+    ) -> Result<
+        (TempDir, RetainedReservationSet, ResolvedEditAuthorization),
+        Box<dyn std::error::Error>,
+    > {
+        let (seed, acting_base) = match layout {
+            HolderLayout::Independent => ("requested-containment", "main"),
+            HolderLayout::Siblings => ("requested-sibling-containment", "first"),
+        };
+        let root = cargo_berth_test_support::copy_git_repository_seed(seed, |root| {
+            let git = |args: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
+                let output = cargo_berth_test_support::fixture_git_command()
+                    .arg("-C")
+                    .arg(root)
+                    .args(args)
+                    .bounded_output()?;
+                if !output.status.success() {
+                    return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+                }
+                Ok(())
+            };
+            git(&["init", "--quiet", "--initial-branch", "main"])?;
+            git(&["config", "user.name", "Test"])?;
+            git(&["config", "user.email", "test@example.com"])?;
+            fs::create_dir_all(root.join("src"))?;
+            fs::write(root.join("src/base.rs"), "base")?;
+            git(&["add", "."])?;
+            git(&["commit", "--quiet", "-m", "base"])?;
+            for (branch, path) in [
+                ("first", "src/first.rs"),
+                ("second", "src/second.rs"),
+                ("acting", "src/acting.rs"),
+            ] {
+                let base = if branch == "acting" {
+                    acting_base
+                } else {
+                    "main"
+                };
+                git(&["checkout", "--quiet", "-b", branch, base])?;
+                fs::write(root.join(path), branch)?;
+                git(&["add", "."])?;
+                git(&["commit", "--quiet", "-m", branch])?;
+            }
+            fs::create_dir_all(root.join(".claude/config"))?;
+            fs::write(root.join(".claude/config/berth.toml"), "trunk = \"main\"\n")?;
+            Ok::<(), Box<dyn std::error::Error>>(())
+        });
+        let repository = RepositorySnapshot::discover(root.path())?;
+        let trunk = repository.object_reader().commit("main")?;
+        let mut events = Vec::new();
+        let sibling_worktree = WorktreeId::new();
+        for (branch, path) in [("first", "src/first.rs"), ("second", "src/second.rs")] {
+            let head = repository.object_reader().commit(branch)?;
+            let id = ReservationId::new();
+            let actor = serde_json::json!({
+                "repository": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c",
+                "worktree": match layout {
+                    HolderLayout::Independent => WorktreeId::new(),
+                    HolderLayout::Siblings => sibling_worktree,
+                },
+                "run": CoordinationRunId::new(),
+            });
+            let event = |operation: Value| -> Result<JournalEvent, Error> {
+                let mut value = serde_json::json!({
+                    "schema_version": 2,
+                    "event_id": EventId::new(),
+                    "actor": actor,
+                    "at": "2026-10-28T17:34:54.123Z",
+                    "projection_generation": events.len() + 1,
+                });
+                if let (Some(value), Some(operation)) =
+                    (value.as_object_mut(), operation.as_object())
+                {
+                    value.extend(operation.clone());
+                }
+                serde_json::from_value(value)
+            };
+            let claim = event(serde_json::json!({
+                "op": "claim", "reservation_id": id,
+                "scopes": [{"path": path, "kind": "file"}],
+                "source": {"kind": "explicit"}, "purpose": {"kind": "not_provided_by_caller"},
+                "trunk_at_claim": trunk,
+                "head_snapshot": {"kind": "branch", "full_ref": format!("refs/heads/{branch}"), "head": head},
+                "phase_start_head": trunk,
+                "worktree_root": root.path(), "worktree_administrative_locator": ".",
+                "authorization": {"kind": "no_conflict"}, "coordination_identity_provenance": "presented",
+            }))?;
+            let observed = event(serde_json::json!({
+                "op": "merge_extent_observed", "reservation_id": id,
+                "extent": {"status": "protected", "scopes": [{"path": path, "kind": "file"}],
+                    "key": {"head": head, "trunk": trunk, "working_tree": {"tracked_paths": [], "untracked_paths": []}}},
+            }))?;
+            events.extend([claim, observed]);
+        }
+        let reservations = RetainedReservationSet::replay(&events)?;
+        let authorization = ResolvedEditAuthorization::for_edit_authorization(
+            WorktreeId::new(),
+            EditAuthorization::Unidentified,
+        );
+        Ok((root, reservations, authorization))
+    }
+
+    fn requested_scopes(path: &str) -> Result<ReservationScopeSet, Box<dyn std::error::Error>> {
+        Ok(ReservationScopeSet::try_from(vec![ReservationScope {
+            path: path.parse()?,
+            kind: ScopeKind::File,
+        }])?)
+    }
+
+    #[test]
+    fn disjoint_check_does_not_compute_foreign_head_containment()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, reservations, authorization) = containment_fixture(HolderLayout::Independent)?;
+        let repository = RepositorySnapshot::discover(root.path())?;
+        let requested = requested_scopes("src/disjoint.rs")?;
+        let containment = ActingHeadContainment::observe_for_edit(
+            &reservations,
+            &repository,
+            authorization,
+            &requested,
+            PathCase::Sensitive,
+        );
+        assert_eq!(containment.holder_heads, Vec::new());
+        let narrowed = reservations
+            .clone()
+            .with_acting_head_containment(containment);
+        assert_eq!(
+            narrowed
+                .conflicts_for_edit(&requested, authorization, PathCase::Sensitive)
+                .len(),
+            0
+        );
+        let mut process_starts = 0;
+        for holder in reservations.iter() {
+            let MergeExtent::Protected { key, .. } = holder.merge_extent() else {
+                return Err("protected fixture".into());
+            };
+            // A new pair can reuse an existing process; inspect the pair cache separately.
+            let queries = u64::from(!repository.merge_pair_was_observed(
+                root.path(),
+                repository.head_object_id()?,
+                &key.head,
+            )?);
+            let (_, starts) = repository.unmerged_branch_paths(
+                root.path(),
+                repository.head_object_id()?,
+                &key.head,
+            )?;
+            process_starts += starts;
+            assert_eq!(
+                queries, 1,
+                "disjoint check must leave each merge pair unqueried"
+            );
+        }
+        assert_eq!(process_starts, 1, "unqueried pairs share one process");
+        Ok(())
+    }
+
+    #[test]
+    fn overlapping_check_observes_only_the_protecting_holder_and_preserves_refusal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, reservations, authorization) = containment_fixture(HolderLayout::Independent)?;
+        let repository = RepositorySnapshot::discover(root.path())?;
+        let requested = requested_scopes("src/first.rs")?;
+        let containment = ActingHeadContainment::observe_for_edit(
+            &reservations,
+            &repository,
+            authorization,
+            &requested,
+            PathCase::Sensitive,
+        );
+        assert_eq!(containment.holder_heads.len(), 1);
+        let narrowed = reservations
+            .clone()
+            .with_acting_head_containment(containment);
+        let conflicts = narrowed.conflicts_for_edit(&requested, authorization, PathCase::Sensitive);
+        assert_eq!(conflicts.len(), 1);
+        let target = crate::ledger::IntegrationTarget::from_branch_argument("main")?;
+        let full = ActingHeadContainment::observe_at_head(
+            &reservations,
+            &RepositorySnapshot::discover(root.path())?,
+            repository.context(),
+            authorization.worktree_id,
+            &target,
+            &target,
+            repository.head_object_id()?,
+        );
+        let complete = reservations
+            .clone()
+            .with_acting_head_containment(full)
+            .conflicts_for_edit(&requested, authorization, PathCase::Sensitive);
+        assert_eq!(conflicts[0].reservation_id, complete[0].reservation_id);
+        assert_eq!(
+            conflicts[0].overlapping_scopes,
+            complete[0].overlapping_scopes
+        );
+        for (holder, expected_queries) in reservations.iter().zip(0_u64..) {
+            let MergeExtent::Protected { key, .. } = holder.merge_extent() else {
+                return Err("protected fixture".into());
+            };
+            // A new pair can reuse an existing process; inspect the pair cache separately.
+            let queries = u64::from(!repository.merge_pair_was_observed(
+                root.path(),
+                repository.head_object_id()?,
+                &key.head,
+            )?);
+            let (_, starts) = repository.unmerged_branch_paths(
+                root.path(),
+                repository.head_object_id()?,
+                &key.head,
+            )?;
+            assert_eq!(
+                starts, 0,
+                "the existing merge session serves every follow-up pair"
+            );
+            assert_eq!(
+                queries, expected_queries,
+                "only the overlapping holder's merge pair was observed"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_checkout_keeps_siblings_needed_to_select_the_overlap_representative()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, reservations, authorization) = containment_fixture(HolderLayout::Siblings)?;
+        let repository = RepositorySnapshot::discover(root.path())?;
+        let requested = requested_scopes("src/second.rs")?;
+        let containment = ActingHeadContainment::observe_for_edit(
+            &reservations,
+            &repository,
+            authorization,
+            &requested,
+            PathCase::Sensitive,
+        );
+        assert_eq!(containment.holder_heads.len(), 2);
+        let expected = reservations.iter().last().ok_or("second sibling")?.id();
+        let narrowed = reservations.with_acting_head_containment(containment);
+        let conflicts = narrowed.conflicts_for_edit(&requested, authorization, PathCase::Sensitive);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(
+            conflicts[0].reservation_id, expected,
+            "the already-contained sibling cannot represent this overlap"
+        );
+        Ok(())
     }
 
     #[test]

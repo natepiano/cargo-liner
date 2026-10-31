@@ -4,6 +4,7 @@ use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
 
+use super::runtime::WatchRequest;
 use crate::channel::Sender;
 use crate::config::NonRustInclusion;
 use crate::constants::CARGO_TOML;
@@ -57,6 +58,30 @@ pub(super) fn spawn_project_refresh_after(
         spawn_project_refresh(background_tx, project_root);
     });
 }
+pub(super) enum FolderProbeOutcome {
+    Project(WatchRequest),
+    NotProject(AbsolutePath),
+}
+
+/// Classify one folder through the production parser and outcome builder,
+/// without launching enrichment or delayed refresh work.
+#[cfg(test)]
+pub(super) fn probe_folder(dir: &AbsolutePath, non_rust: NonRustInclusion) -> FolderProbeOutcome {
+    probe_project(dir, non_rust).map_or_else(
+        || FolderProbeOutcome::NotProject(dir.clone()),
+        |item| project_probe_outcome(&item),
+    )
+}
+
+fn project_probe_outcome(item: &RootItem) -> FolderProbeOutcome {
+    FolderProbeOutcome::Project(WatchRequest {
+        project_label: item.path().to_string(),
+        abs_path:      item.path().clone(),
+        repo_root:     project::git_repo_root(item.path()),
+    })
+}
+
+/// Probe and publish discovery data; the caller applies each watch-role result.
 pub(super) fn probe_new_projects(
     background_tx: &Sender<BackgroundMsg>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
@@ -65,7 +90,8 @@ pub(super) fn probe_new_projects(
     non_rust: NonRustInclusion,
     exclude_dirs: &ExcludeDirs,
     client: &HttpClient,
-) {
+) -> Vec<FolderProbeOutcome> {
+    let mut outcomes = Vec::new();
     let now = Instant::now();
     let ready: Vec<AbsolutePath> = pending_new
         .iter()
@@ -82,17 +108,15 @@ pub(super) fn probe_new_projects(
             .file_name()
             .is_some_and(|name| exclude_dirs.excludes(name))
         {
+            outcomes.push(FolderProbeOutcome::NotProject(dir));
             continue;
         }
 
         if !dir.is_dir() {
-            // Remove missing `dir` from `discovered` and send zero-byte `BackgroundMsg::DiskUsage`
-            // so the app can mark it deleted if it was tracked.
+            // The shared outcome application publishes zero-byte DiskUsage and
+            // removes candidate subscriptions without removing the app's row.
             discovered.remove(&dir);
-            let _ = background_tx.send(BackgroundMsg::DiskUsage {
-                path:  dir,
-                bytes: 0,
-            });
+            outcomes.push(FolderProbeOutcome::NotProject(dir));
             continue;
         }
 
@@ -102,6 +126,7 @@ pub(super) fn probe_new_projects(
         if let Some(item) = probe_project(&dir, non_rust) {
             discovered.insert(dir.clone());
             let abs_path = AbsolutePath::from(item.path().to_path_buf());
+            outcomes.push(project_probe_outcome(&item));
             let project_name = item.name().map(str::to_string);
             let repo_presence = if project::git_repo_root(&abs_path).is_some() {
                 GitRepoPresence::InRepo
@@ -139,8 +164,11 @@ pub(super) fn probe_new_projects(
                 };
                 scan::fetch_project_details(&request);
             });
+        } else {
+            outcomes.push(FolderProbeOutcome::NotProject(dir));
         }
     }
+    outcomes
 }
 
 /// Walk up from `event_path` toward `scan_root`, returning the first
@@ -156,6 +184,15 @@ pub(super) fn project_level_dir(
     watch_roots: &[AbsolutePath],
     project_parents: &HashSet<AbsolutePath>,
 ) -> Option<AbsolutePath> {
+    if let Some(root) = watch_roots.iter().find(|root| {
+        event_path == root.as_path()
+            || event_path.parent() == Some(root.as_path())
+                && event_path
+                    .file_name()
+                    .is_some_and(|name| name == CARGO_TOML || name == GIT_DIR)
+    }) {
+        return Some(root.clone());
+    }
     let mut path = event_path.to_path_buf();
     let mut marker_candidate: Option<AbsolutePath> = None;
     loop {

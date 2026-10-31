@@ -34,8 +34,8 @@ impl Shortcuts<App> for GitPane {
         }
     }
 
-    fn state(&self, action: GitAction, ctx: &App) -> ShortcutState {
-        match action {
+    fn state(&self, git_action: GitAction, ctx: &App) -> ShortcutState {
+        match git_action {
             GitAction::Activate => git_activate_state(ctx),
         }
     }
@@ -44,25 +44,25 @@ impl Shortcuts<App> for GitPane {
 }
 
 impl CopySelection<App> for GitPane {
-    fn copy_selection(ctx: &App) -> CopySelectionResult {
-        let Some(git) = ctx.panes.git.content() else {
+    fn copy_selection(app: &App) -> CopySelectionResult {
+        let Some(git_data) = app.panes.git.content() else {
             return CopySelectionResult::Nothing;
         };
-        panes::copy_payload_for_git(git, ctx.panes.git.viewport.pos())
+        panes::copy_payload_for_git(git_data, app.panes.git.viewport.pos())
     }
 }
 
 /// `Activate` on the Git pane is enabled only when the cursor is on a
 /// row whose dispatch opens a URL: pull requests or remotes with a
 /// known full URL.
-pub(super) fn git_activate_state(ctx: &App) -> ShortcutState {
-    let Some(git) = ctx.panes.git.content() else {
+pub(super) fn git_activate_state(app: &App) -> ShortcutState {
+    let Some(git_data) = app.panes.git.content() else {
         return ShortcutState::Disabled;
     };
-    let pos = ctx.panes.git.viewport.pos();
-    match panes::git_row_at(git, pos) {
+    let pos = app.panes.git.viewport.pos();
+    match panes::git_row_at(git_data, pos) {
         Some(GitRow::PullRequest(_)) => ShortcutState::Enabled,
-        Some(GitRow::Remote(remote)) if remote.full_url.is_some() => ShortcutState::Enabled,
+        Some(GitRow::Remote(remote_row)) if remote_row.full_url.is_some() => ShortcutState::Enabled,
         _ => ShortcutState::Disabled,
     }
 }

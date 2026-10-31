@@ -20,6 +20,8 @@ use super::constants::GIT_NO_OPTIONAL_LOCKS_ARG;
 use super::constants::GIT_REPOSITORY_ENVIRONMENT;
 use super::constants::RETENTION_MAINTENANCE_CONFIG;
 use super::constants::RETENTION_REF_CONFIG;
+#[cfg(not(test))]
+use super::spawn_lock;
 
 /// Seal every piped stream before another child can inherit file descriptors.
 pub(super) fn spawn_with_piped_output(command: &mut Command) -> io::Result<ChildProcess> {
@@ -27,8 +29,12 @@ pub(super) fn spawn_with_piped_output(command: &mut Command) -> io::Result<Child
 }
 
 /// Include dependency-owned Git probes in the pipe-creation critical section.
-pub(super) fn with_spawn_lock<T>(operation: impl FnOnce() -> T) -> io::Result<T> {
-    child::with_spawn_lock(operation)
+pub(crate) fn with_spawn_lock<T>(operation: impl FnOnce() -> T) -> io::Result<T> {
+    // Unit-test fixtures and product reads create pipes in the same process.
+    #[cfg(test)]
+    return cargo_berth_test_support::with_spawn_lock(operation);
+    #[cfg(not(test))]
+    spawn_lock::with_spawn_lock(operation)
 }
 
 /// Capture output without holding the spawn lock while the child runs.
@@ -271,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn inherited_child_pipe_returns_a_named_timeout() -> Result<(), Box<dyn Error>> {
+    fn inherited_child_pipe_is_stopped_before_collecting_output() -> Result<(), Box<dyn Error>> {
         let mut command = Command::new("/bin/sh");
         command
             .args(["-c", "sleep 30 & exit 0"])
@@ -295,10 +301,14 @@ mod tests {
         })?;
         let error = result
             .err()
-            .ok_or("an inherited pipe writer must time out")?;
-        assert_eq!(error.kind(), ErrorKind::TimedOut);
+            .ok_or("a surviving descendant must be reported")?;
+        assert_eq!(error.kind(), ErrorKind::Other);
         assert!(error.to_string().contains("child"), "{error}");
         assert!(error.to_string().contains("output"), "{error}");
+        assert!(
+            error.to_string().contains("terminated the process group"),
+            "{error}"
+        );
         assert!(started.elapsed() < Duration::from_secs(1));
         Ok(())
     }

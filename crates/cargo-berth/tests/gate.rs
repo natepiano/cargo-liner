@@ -115,13 +115,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::panic;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use cargo_berth_test_support::FixtureCommand as Command;
 use lock_contention::LOCK_CONTENTION_TOLERANCE;
 use tempfile::TempDir;
 use tempfile::tempdir;
@@ -272,6 +272,158 @@ fn target_pair(merge_predecessor: bool) -> TargetPair {
         successor_tip: witnesses.successor_tip,
         repository,
     }
+}
+
+#[test]
+fn trunk_upstream_contains_held_tip_observes_ordering_without_a_permit() {
+    let pair = trunk_upstream_ordered_pair();
+    let root = pair.repository.root();
+    configure_trunk_upstream(root, &pair.successor_tip);
+    let moved = git_command(BERTH_EXECUTABLE)
+        .args(["merge", "--ff-only", "origin/main"])
+        .current_dir(root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .output()
+        .expect("fast-forward should run");
+    assert_success(&moved);
+    assert_eq!(git_stdout(root, &["rev-parse", "main"]), pair.successor_tip);
+    assert!(
+        String::from_utf8_lossy(&moved.stderr)
+            .contains(OBSERVED_TRUNK_UPDATE_OF_ONE_HELD_RESERVATION),
+        "held reservation should be observed: {moved:?}"
+    );
+    let journal = journal_text(root);
+    assert!(!journal.contains("\"op\":\"forced_integration_permit\""));
+    assert!(!journal.contains("\"op\":\"consume_forced_integration_permit\""));
+}
+
+#[test]
+fn trunk_upstream_contains_an_ancestor_held_tip_observes_ordering() {
+    let pair = trunk_upstream_ordered_pair();
+    let root = pair.repository.root();
+    let tree = git_stdout(
+        root,
+        &["rev-parse", &format!("{}^{{tree}}", pair.successor_tip)],
+    );
+    let upstream = git_stdout(
+        root,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            &pair.successor_tip,
+            "-m",
+            "upstream later commit",
+        ],
+    );
+    configure_trunk_upstream(root, &upstream);
+    let moved = propose_trunk(root, &pair.integration_before, &pair.successor_tip);
+    assert_success(&moved);
+    assert!(
+        String::from_utf8_lossy(&moved.stderr)
+            .contains(OBSERVED_TRUNK_UPDATE_OF_ONE_HELD_RESERVATION)
+    );
+    assert_eq!(git_stdout(root, &["rev-parse", "main"]), pair.successor_tip);
+}
+
+#[test]
+fn trunk_upstream_without_held_tip_still_refuses_ordering() {
+    let pair = trunk_upstream_ordered_pair();
+    configure_trunk_upstream(pair.repository.root(), &pair.predecessor_tip);
+    assert_trunk_ordering_refused(&pair);
+}
+
+#[test]
+fn trunk_upstream_with_a_missing_ref_still_refuses_ordering() {
+    let pair = trunk_upstream_ordered_pair();
+    configure_trunk_upstream(pair.repository.root(), &pair.successor_tip);
+    git(
+        pair.repository.root(),
+        &["update-ref", "-d", "refs/remotes/origin/main"],
+    );
+    assert_trunk_ordering_refused(&pair);
+}
+
+#[test]
+fn non_trunk_upstream_contains_held_tip_still_refuses_ordering() {
+    let pair = trunk_upstream_ordered_pair();
+    let root = pair.repository.root();
+    configure_trunk_upstream(root, &pair.successor_tip);
+    git(root, &["config", "branch.integration.remote", "origin"]);
+    git(
+        root,
+        &["config", "branch.integration.merge", "refs/heads/main"],
+    );
+    let denied = propose_branch(
+        root,
+        "integration",
+        &pair.integration_before,
+        &pair.successor_tip,
+    );
+    assert!(
+        !denied.status.success(),
+        "held move should be refused: {denied:?}"
+    );
+    let diagnostic = String::from_utf8_lossy(&denied.stderr);
+    assert!(diagnostic.contains(&pair.predecessor_id), "{diagnostic}");
+    assert!(diagnostic.contains(&pair.successor_id), "{diagnostic}");
+}
+
+#[test]
+fn trunk_without_upstream_still_refuses_ordering() {
+    assert_trunk_ordering_refused(&trunk_upstream_ordered_pair());
+}
+
+fn trunk_upstream_ordered_pair() -> TargetPair {
+    let pair = target_pair(false);
+    git(
+        pair.repository.root(),
+        &["reset", "--hard", &pair.integration_before],
+    );
+    set_gate_mode(pair.repository.root(), "enforce");
+    assert_eq!(
+        git_stdout(
+            pair.repository.root(),
+            &[
+                "rev-list",
+                "--count",
+                &format!("main..{}", pair.successor_tip)
+            ]
+        ),
+        "1"
+    );
+    pair
+}
+
+fn configure_trunk_upstream(root: &Path, tip: &str) {
+    git(root, &["config", "remote.origin.url", "."]);
+    git(
+        root,
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ],
+    );
+    git(root, &["update-ref", "refs/remotes/origin/main", tip]);
+    git(root, &["config", "branch.main.remote", "origin"]);
+    git(root, &["config", "branch.main.merge", "refs/heads/main"]);
+}
+
+fn assert_trunk_ordering_refused(pair: &TargetPair) {
+    let root = pair.repository.root();
+    let denied = propose_trunk(root, &pair.integration_before, &pair.successor_tip);
+    assert!(
+        !denied.status.success(),
+        "held move should be refused: {denied:?}"
+    );
+    let diagnostic = String::from_utf8_lossy(&denied.stderr);
+    assert!(diagnostic.contains(&pair.predecessor_id), "{diagnostic}");
+    assert!(diagnostic.contains(&pair.successor_id), "{diagnostic}");
+    assert_eq!(
+        git_stdout(root, &["rev-parse", "main"]),
+        pair.integration_before
+    );
 }
 
 fn gate_targets(root: &Path) -> Vec<String> {
@@ -3113,11 +3265,21 @@ fn renamed_trunk_refreshes_dispatch_before_next_prepared_update() {
         "trunk rename failed: {}",
         String::from_utf8_lossy(&renamed.stderr)
     );
-    let refreshed = fs::read_to_string(repository.path().join(HOOK_CONTEXT_PATH))
-        .expect("refreshed hook context should read");
+    // Git returns before the detached refresh worker publishes its context.
+    let refresh_started_at = Instant::now();
+    let refreshed = loop {
+        let context = fs::read_to_string(repository.path().join(HOOK_CONTEXT_PATH))
+            .expect("refreshed hook context should read");
+        if context.contains("cargo_berth_trunk_reference='refs/heads/renamed'")
+            || refresh_started_at.elapsed() >= SCHEDULING_ALLOWANCE
+        {
+            break context;
+        }
+        thread::sleep(POLL_INTERVAL);
+    };
     assert!(
         refreshed.contains("cargo_berth_trunk_reference='refs/heads/renamed'"),
-        "hook did not refresh after branch rename: {}",
+        "hook did not refresh after branch rename: {refreshed}; {}",
         String::from_utf8_lossy(&renamed.stderr)
     );
     assert!(!refreshed.contains("cargo_berth_trunk_reference='refs/heads/main'"));

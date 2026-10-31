@@ -72,7 +72,12 @@ pub(super) fn write_context_notice(
 pub(super) fn render_blocks(blocks: &[RenderedOutputBlock]) -> String {
     blocks
         .iter()
-        .map(|block| format!("{}\n\n{}", block.summary, block.detail))
+        .map(|rendered_output_block| {
+            format!(
+                "{}\n\n{}",
+                rendered_output_block.summary, rendered_output_block.detail
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }

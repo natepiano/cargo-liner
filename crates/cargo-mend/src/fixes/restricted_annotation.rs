@@ -96,9 +96,11 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
         else {
             continue;
         };
-        // `matches_expected_annotation` guards against source changes since the
+        // `annotation_agreement` guards against source changes since the
         // report was written. Only edit the exact annotation the compiler pass classified.
-        if !matches_expected_annotation(&source, site, expected_form, expected_annotation) {
+        if annotation_agreement(&source, site, expected_form, expected_annotation)
+            == AnnotationAgreement::Changed
+        {
             continue;
         }
         // `scan_from_report` rejects `replacement` when it writes back the bytes it
@@ -125,29 +127,41 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
     Ok(RestrictedAnnotationScan { fixes })
 }
 
-fn matches_expected_annotation(
+/// Guards against source changes since the report: edit only the exact annotation classified.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AnnotationAgreement {
+    Matches,
+    Changed,
+}
+
+fn annotation_agreement(
     source: &str,
     site: VisibilityAnnotationSite,
     expected_form: VisibilityAnnotationForm,
     expected_annotation: &str,
-) -> bool {
-    site.form == expected_form && source.get(site.start..site.end) == Some(expected_annotation)
+) -> AnnotationAgreement {
+    if site.form == expected_form && source.get(site.start..site.end) == Some(expected_annotation) {
+        AnnotationAgreement::Matches
+    } else {
+        AnnotationAgreement::Changed
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
+    use super::AnnotationAgreement;
     use super::VisibilityAnnotationForm;
     use super::VisibilityAnnotationSite;
     use super::VisibilityReplacement;
-    use super::matches_expected_annotation;
+    use super::annotation_agreement;
 
     #[test]
     fn restricted_rewrite_requires_the_annotation_captured_in_the_report() {
         let source = "pub(super) fn item() {}\n";
         let matches = VisibilityAnnotationSite::locate(source, 1, 1).map(|site| {
-            matches_expected_annotation(
+            annotation_agreement(
                 source,
                 site,
                 VisibilityAnnotationForm::Restricted,
@@ -155,7 +169,7 @@ mod tests {
             )
         });
 
-        assert_eq!(matches, Some(false));
+        assert_eq!(matches, Some(AnnotationAgreement::Changed));
     }
 
     #[test]
@@ -200,5 +214,38 @@ mod tests {
         });
 
         assert_eq!(result.as_deref(), Some("pub(super)   fn item() {}\n"));
+    }
+    #[test]
+    fn annotation_agreement_requires_both_form_and_current_bytes() {
+        for (source, form, expected_text, expected) in [
+            (
+                "pub(super) fn item() {}",
+                VisibilityAnnotationForm::Restricted,
+                "pub(super)",
+                AnnotationAgreement::Matches,
+            ),
+            (
+                "pub(super) fn item() {}",
+                VisibilityAnnotationForm::Restricted,
+                "pub(crate)",
+                AnnotationAgreement::Changed,
+            ),
+            (
+                "pub fn item() {}",
+                VisibilityAnnotationForm::Bare,
+                "pub",
+                AnnotationAgreement::Matches,
+            ),
+            (
+                "pub fn item() {}",
+                VisibilityAnnotationForm::Restricted,
+                "pub",
+                AnnotationAgreement::Changed,
+            ),
+        ] {
+            let actual = VisibilityAnnotationSite::locate(source, 1, 1)
+                .map(|site| annotation_agreement(source, site, form, expected_text));
+            assert_eq!(actual, Some(expected));
+        }
     }
 }

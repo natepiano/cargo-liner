@@ -28,9 +28,9 @@ pub(in crate::tui) enum DiscoveryRowKind {
 }
 
 impl DiscoveryRowKind {
-    pub(super) const fn allows_parent_kind(self, kind: Self) -> bool {
+    pub(super) const fn allows_parent_kind(self, discovery_row_kind: Self) -> bool {
         matches!(
-            (self, kind),
+            (self, discovery_row_kind),
             (Self::Root, Self::Root)
                 | (Self::WorktreeEntry, Self::WorktreeEntry)
                 | (Self::PathOnly, Self::PathOnly)

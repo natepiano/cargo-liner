@@ -161,7 +161,7 @@ mod tests {
         apply_cross_compilation_intersection(&mut reports);
         first = reports.remove(0);
 
-        assert!(first.findings.is_empty());
+        assert_eq!(first.findings, [] as [StoredFinding; 0]);
     }
 
     #[test]
@@ -188,7 +188,7 @@ mod tests {
         apply_cross_compilation_intersection(&mut reports);
         first = reports.remove(0);
 
-        assert!(first.findings.is_empty());
+        assert_eq!(first.findings, [] as [StoredFinding; 0]);
     }
 
     fn narrowing_finding(

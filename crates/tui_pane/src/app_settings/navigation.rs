@@ -25,6 +25,10 @@ pub trait SettingsHost: AppContext {
     /// Current selectable row count, available before the overlay's first draw.
     fn settings_row_count(&self) -> usize;
 
+    /// Prepare for navigation in the open settings overlay, for example
+    /// by clearing an inline error. Wheel events outside its content do not call this.
+    fn before_settings_navigation(&mut self) {}
+
     /// Step the settings overlay's selected row one value, then write
     /// and apply the result. A read-only row does nothing.
     fn step_setting(&mut self, step: SettingStep);
@@ -51,21 +55,26 @@ pub trait SettingsHost: AppContext {
 /// previous choice" and "the next one".
 pub struct SettingsNavigation<A>(PhantomData<fn() -> A>);
 
+impl<A: SettingsHost> SettingsNavigation<A> {
+    pub(crate) fn navigate(action: NavAction, app: &mut A) {
+        if app.framework().overlay() != Some(FrameworkOverlayId::Settings) {
+            return;
+        }
+        app.before_settings_navigation();
+        let count = app.settings_row_count();
+        app.framework_mut().settings_pane.set_row_count(count);
+        match action {
+            NavAction::Left => app.step_setting(SettingStep::Prev),
+            NavAction::Right => app.step_setting(SettingStep::Next),
+            _ => app.framework_mut().settings_pane.navigate(action),
+        }
+    }
+}
+
 impl<A: SettingsHost + 'static> Navigation<A> for SettingsNavigation<A> {
     const SECTION_NAME: &'static str = NAVIGATION_SECTION;
 
     fn dispatcher() -> fn(NavAction, FocusedPane<A::AppPaneId>, &mut A) {
-        |action, _focused, app| {
-            if app.framework().overlay() != Some(FrameworkOverlayId::Settings) {
-                return;
-            }
-            let count = app.settings_row_count();
-            app.framework_mut().settings_pane.set_row_count(count);
-            match action {
-                NavAction::Left => app.step_setting(SettingStep::Prev),
-                NavAction::Right => app.step_setting(SettingStep::Next),
-                _ => app.framework_mut().settings_pane.navigate(action),
-            }
-        }
+        |action, _focused, app| Self::navigate(action, app)
     }
 }

@@ -11,6 +11,8 @@ mod run_mode;
 
 pub(crate) use cli::BuildInfoMode;
 pub(crate) use cli::CargoCheckCli;
+pub(crate) use cli::CompilerFixExecution;
+pub(crate) use cli::FixApplication;
 pub(crate) use cli::TargetSelection;
 pub(crate) use cli::WarningPolicy;
 pub(crate) use cli::WorkspaceSelection;

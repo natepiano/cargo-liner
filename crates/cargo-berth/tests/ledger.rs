@@ -34,9 +34,9 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Output;
 
+use cargo_berth_test_support::FixtureCommand as Command;
 use tempfile::TempDir;
 use tempfile::tempdir;
 

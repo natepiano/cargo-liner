@@ -10,10 +10,10 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
-use std::process::Command;
 use std::process::Output;
 
 use crate::CommandDeadlineExt as _;
+use crate::FixtureCommand as Command;
 use crate::constants::CLAUDE_CODE_SESSION_ENVIRONMENT;
 
 /// Names a specific `cargo-berth` for a managed hook, ahead of the installed one.
@@ -378,12 +378,12 @@ fn assert_success(output: &Output, arguments: &[OsString]) {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::process::Command;
 
     use tempfile::tempdir;
 
     use super::fixture_git_command;
     use crate::CommandDeadlineExt as _;
+    use crate::FixtureCommand as Command;
 
     /// A fixture git command that ignores this machine's global and system configuration, so
     /// a developer's own `maintenance.auto=false` cannot hide a missing setting.

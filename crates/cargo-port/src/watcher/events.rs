@@ -13,7 +13,12 @@ use super::WatchState;
 use super::WatcherLoopState;
 use super::probe;
 use super::refresh;
+use super::roots;
+use super::roots::RegisteredRoots;
+use super::roots::Subscription;
+use super::roots::WatchedFolderRole;
 use crate::channel::Sender;
+use crate::constants::GIT_DIR;
 use crate::constants::NEW_PROJECT_DEBOUNCE;
 use crate::lint;
 use crate::lint::RuntimeHandle;
@@ -26,6 +31,102 @@ pub(super) struct WatcherBackgroundSinks<'a> {
     pub(super) background_tx:     &'a Sender<BackgroundMsg>,
     pub(super) lint_runtime:      Option<&'a RuntimeHandle>,
     pub(super) metadata_dispatch: Option<&'a MetadataDispatchContext>,
+}
+
+/// Route with the subscription role before running project-specific handlers.
+pub(super) fn route_folder_event(
+    watcher: &mut impl notify::Watcher,
+    registered: &mut RegisteredRoots,
+    event: &Event,
+    state: &mut WatcherLoopState,
+    background_tx: &Sender<BackgroundMsg>,
+) -> Vec<Event> {
+    let roles: Vec<_> = event
+        .paths
+        .iter()
+        .map(|path| registered.event_role(path))
+        .collect();
+    roots::update_directory_watches(watcher, registered, event);
+    let mut project_event = event.clone();
+    project_event.paths.clear();
+    for (path, old_role) in event.paths.iter().zip(roles) {
+        if registered.skips(path) {
+            continue;
+        }
+        // An ancestor removal must retire every tracked child, not just the first
+        // project-level directory selected by the discovery walk-up.
+        if !path.exists() {
+            for root in state.projects.keys().filter(|root| root.starts_with(path)) {
+                state.discovered.remove(root);
+                let _ = background_tx.send(BackgroundMsg::DiskUsage {
+                    path:  root.clone(),
+                    bytes: 0,
+                });
+            }
+        }
+        let subscription = match registered.event_role(path) {
+            Subscription::Unwatched => old_role,
+            Subscription::Watched(role) => Subscription::Watched(role),
+        };
+        match subscription {
+            Subscription::Watched(WatchedFolderRole::Project | WatchedFolderRole::ConfigSource) => {
+                project_event.paths.push(path.clone());
+            },
+            Subscription::Watched(WatchedFolderRole::Discovery | WatchedFolderRole::Candidate) => {
+                // A Cargo config folder can also lead to a known project.
+                // Preserve metadata refresh when discovery owns its subscription.
+                if matches!(
+                    lint::classify_cargo_metadata_basename(path),
+                    Some(lint::CargoMetadataTriggerKind::Config)
+                ) {
+                    project_event.paths.push(path.clone());
+                    continue;
+                }
+                // The event belongs to the watched folder itself or one immediate
+                // child. Never descend into an unassigned or candidate subtree.
+                let candidate = if path.file_name().is_some_and(|name| name == GIT_DIR)
+                    && let Some(parent) = path.parent()
+                {
+                    parent
+                } else if path.is_dir() || !path.exists() {
+                    path.as_path()
+                } else if let Some(parent) = path.parent() {
+                    parent
+                } else {
+                    continue;
+                };
+                if matches!(
+                    registered.role(candidate),
+                    Subscription::Watched(
+                        WatchedFolderRole::Discovery | WatchedFolderRole::Candidate
+                    )
+                ) || path.parent().is_some_and(|parent| {
+                    registered.role(parent) == Subscription::Watched(WatchedFolderRole::Discovery)
+                }) {
+                    let deadline = Instant::now() + NEW_PROJECT_DEBOUNCE;
+                    state
+                        .pending_new
+                        .entry(AbsolutePath::from(candidate))
+                        .or_insert(deadline);
+                    if candidate != path.as_path()
+                        && registered.role(path)
+                            == Subscription::Watched(WatchedFolderRole::Candidate)
+                    {
+                        state
+                            .pending_new
+                            .entry(AbsolutePath::from(path.as_path()))
+                            .or_insert(deadline);
+                    }
+                }
+            },
+            Subscription::Unwatched => {},
+        }
+    }
+    if project_event.paths.is_empty() {
+        Vec::new()
+    } else {
+        vec![project_event]
+    }
 }
 
 pub(super) fn process_notify_events(
@@ -196,24 +297,30 @@ pub(super) fn handle_notify_event(
 
     refresh::try_dispatch_out_of_tree_cargo_config_refresh(event_path, ctx, metadata_dispatch);
 
-    let mut matched_fast_git = false;
+    let mut matched_git = false;
     for entry in ctx.projects.values() {
-        if refresh::is_fast_git_refresh_event(event_path, entry)
-            && entry.is_alive()
+        let fast_git = entry.is_alive() && refresh::is_fast_git_refresh_event(event_path, entry);
+        let internal_git = refresh::is_internal_git_path(event_path, entry)
+            && refresh::is_internal_git_refresh_event(event_path, entry);
+        if (fast_git || internal_git)
             && let Some(refresh_key) = refresh::git_refresh_key(entry)
         {
-            matched_fast_git = true;
+            matched_git = true;
             tracing::trace!(
                 target: PERF_LOG_TARGET,
                 refresh_key = %refresh_key.display(),
                 event_path = %event_path.display(),
-                "watcher_fast_git_event"
+                fast_git,
+                "watcher_git_event"
             );
-            refresh::emit_root_git_info_refresh(background_tx, entry);
-            refresh::enqueue_git_refresh(pending_git, refresh_key, now, false, "fast_git");
+            if fast_git {
+                refresh::emit_root_git_info_refresh(background_tx, entry);
+            }
+            let cause = if fast_git { "fast_git" } else { "git_internal" };
+            refresh::enqueue_git_refresh(pending_git, refresh_key, now, false, cause);
         }
     }
-    if matched_fast_git {
+    if matched_git {
         return;
     }
 
@@ -259,11 +366,6 @@ pub(super) fn handle_notify_event(
             probe::spawn_project_refresh(background_tx.clone(), entry.abs_path.clone());
         }
         if refresh::is_internal_git_path(event_path, entry) {
-            if let Some(refresh_key) = refresh::git_refresh_key(entry)
-                && refresh::is_internal_git_refresh_event(event_path, entry)
-            {
-                refresh::enqueue_git_refresh(pending_git, refresh_key, now, false, "git_internal");
-            }
             return;
         }
         let resolved_target =
@@ -277,6 +379,27 @@ pub(super) fn handle_notify_event(
         if !is_target_event && let Some(refresh_key) = refresh::git_refresh_key(entry) {
             refresh::enqueue_git_refresh(pending_git, refresh_key, now, false, "project_event");
         }
+        return;
+    }
+
+    schedule_discovery_probe(event_path, ctx, pending_new, now);
+}
+
+fn schedule_discovery_probe(
+    event_path: &Path,
+    ctx: &EventContext<'_>,
+    pending_new: &mut HashMap<AbsolutePath, Instant>,
+    now: Instant,
+) {
+    if ctx
+        .projects
+        .values()
+        .any(|entry| refresh::is_internal_git_path(event_path, entry))
+        || matches!(
+            lint::classify_cargo_metadata_basename(event_path),
+            Some(lint::CargoMetadataTriggerKind::Config)
+        )
+    {
         return;
     }
 

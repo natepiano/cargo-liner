@@ -4,9 +4,12 @@ mod target;
 
 use std::path::PathBuf;
 
+pub(crate) use fix::CompilerFixExecution;
+pub(crate) use fix::FixApplication;
 pub(crate) use fix::FixCli;
 pub(crate) use fix::FixExecution;
 pub(crate) use fix::FixRequest;
+pub(super) use fix::FixRequestSelection;
 pub(crate) use target::CargoCheckCli;
 pub(crate) use target::TargetSelection;
 pub(crate) use target::WorkspaceSelection;

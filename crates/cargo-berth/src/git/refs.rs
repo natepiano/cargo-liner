@@ -719,7 +719,7 @@ mod tests {
         const TEST: &str = "git::refs::tests::retention_writer_starts_without_locking_refs_or_publishing_before_commit";
         if std::env::var_os(CHILD).is_none() {
             let trace = tempfile::tempdir()?;
-            let output = std::process::Command::new(std::env::current_exe()?)
+            let output = cargo_berth_test_support::FixtureCommand::new(std::env::current_exe()?)
                 .args(["--exact", TEST, "--nocapture"])
                 .env(CHILD, "1")
                 .env("GIT_TRACE2_EVENT", trace.path().join("git.json"))

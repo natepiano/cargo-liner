@@ -9,13 +9,26 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Write;
+use std::io;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::io::ErrorKind;
+use std::io::Write as _;
 use std::path::Path;
+use std::process::Stdio;
+use std::sync::OnceLock;
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
 use std::thread;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::child;
+use super::child::ChildDeadline;
+use super::child::ChildProcess;
 use super::command;
 use super::constants::GIT_ANCESTOR_RANGE_INFIX;
 use super::constants::GIT_DIFF_COMMAND;
@@ -24,9 +37,7 @@ use super::constants::GIT_HEAD_REVISION;
 use super::constants::GIT_IGNORE_MISSING_ARG;
 use super::constants::GIT_IS_ANCESTOR_ARG;
 use super::constants::GIT_MERGE_BASE_COMMAND;
-use super::constants::GIT_MERGE_TREE_CLEAN_EXIT_CODE;
 use super::constants::GIT_MERGE_TREE_COMMAND;
-use super::constants::GIT_MERGE_TREE_CONFLICT_EXIT_CODE;
 use super::constants::GIT_NAME_ONLY_ARG;
 use super::constants::GIT_NO_MESSAGES_ARG;
 use super::constants::GIT_NO_RENAMES_ARG;
@@ -126,6 +137,24 @@ pub(crate) struct CommitTargetReachabilityObservation {
 pub(crate) struct PhaseStartTargetFirstParentHistories {
     intervals:         HashMap<GitObjectId, Vec<GitObjectId>>,
     candidate_history: HistoricalCandidateHistory,
+    target_merge:      OnceLock<TargetMergeContributions>,
+}
+
+/// Whether older merges can supply received history inside a phase interval.
+pub(crate) enum PhaseMergeHistory {
+    /// Every contribution is direct, or enters through the merge being judged now.
+    NoEarlierMerge,
+    /// A previous merge can contribute paths that this invocation did not write.
+    EarlierMerge,
+    /// The retained graph cannot establish the interval.
+    Unavailable,
+}
+
+#[derive(Default)]
+enum TargetMergeContributions {
+    #[default]
+    NotAMerge,
+    Entering(HashSet<GitObjectId>),
 }
 
 /// Whether the batch retained the complete graph needed to locate historical matches.
@@ -139,6 +168,45 @@ enum HistoricalCandidateHistory {
 }
 
 impl PhaseStartTargetFirstParentHistories {
+    /// Use retained parent links to decide whether write selection needs path history.
+    pub(crate) fn phase_merge_history(&self, phase_start: &GitObjectId) -> PhaseMergeHistory {
+        let HistoricalCandidateHistory::Available(history) = &self.candidate_history else {
+            return PhaseMergeHistory::Unavailable;
+        };
+        let Some(commits) = self.intervals.get(phase_start) else {
+            return PhaseMergeHistory::Unavailable;
+        };
+        if commits.iter().any(|commit| {
+            commit != &history.target
+                && history
+                    .graph
+                    .parents_by_commit
+                    .get(commit)
+                    .is_some_and(|parents| parents.len() > 1)
+        }) {
+            PhaseMergeHistory::EarlierMerge
+        } else {
+            PhaseMergeHistory::NoEarlierMerge
+        }
+    }
+
+    /// A completed merge introduces its other-parent work at this observation,
+    /// even though later commits must not be charged for that received history again.
+    pub(crate) fn entered_with_target_merge(&self, commit: &GitObjectId) -> bool {
+        let contribution = self
+            .target_merge
+            .get_or_init(|| match &self.candidate_history {
+                HistoricalCandidateHistory::Available(history) => {
+                    history.graph.target_merge_contributions(&history.target)
+                },
+                HistoricalCandidateHistory::NeedsGitQuery => TargetMergeContributions::NotAMerge,
+            });
+        match contribution {
+            TargetMergeContributions::NotAMerge => false,
+            TargetMergeContributions::Entering(commits) => commits.contains(commit),
+        }
+    }
+
     /// Prove that integration history contributes nothing new to any phase range.
     pub(crate) fn integration_tips_precede_phases(
         &self,
@@ -213,6 +281,19 @@ enum BoundaryVisit {
 }
 
 impl CommitAncestryGraph {
+    fn target_merge_contributions(&self, target: &GitObjectId) -> TargetMergeContributions {
+        let Some(parents) = self.parents_by_commit.get(target) else {
+            return TargetMergeContributions::NotAMerge;
+        };
+        let [first, _, ..] = parents.as_slice() else {
+            return TargetMergeContributions::NotAMerge;
+        };
+        let previous = self.ancestors_including(first);
+        let mut entering = self.ancestors_including(target);
+        entering.retain(|commit| commit != target && !previous.contains(commit));
+        TargetMergeContributions::Entering(entering)
+    }
+
     /// Walk each ancestor once while advancing from the oldest first-parent commit.
     fn earliest_containing_matches(
         &self,
@@ -471,37 +552,17 @@ pub(crate) fn branch_commit_reachability(
     commit_target_reachability(repository, &target, candidate_ancestors)
 }
 
-/// Return the paths merging this branch into trunk would change, plus every conflicted path.
-///
-/// `git merge-tree --write-tree` merges `head` into `trunk` as `git merge` would, including
-/// the virtual merge base git builds when criss-cross merges leave several merge bases. A
-/// name-only diff from trunk to that result tree excludes trunk-only changes, paths the branch
-/// changed and then restored, and changes trunk already carries, so an integrated head returns
-/// an empty set even when trunk has moved ahead. A conflicted path can keep trunk's content in
-/// the result tree, as a modify/delete conflict does, so the conflicted paths `merge-tree` lists
-/// after the tree id join the diff. NUL delimiters preserve whitespace in names, and disabling
-/// rename detection in the diff retains both the removed and added paths. Missing objects,
-/// unrelated histories, and unreadable output remain failures rather than evidence of an empty
-/// merge extent.
-///
-/// Merging a commit into itself is clean and changes nothing, so the same commit on both sides
-/// returns an empty set without starting git.
-pub(crate) fn unmerged_branch_paths(
-    repository_root: &Path,
-    trunk: &GitObjectId,
-    head: &GitObjectId,
-) -> Result<Vec<ReservationScopePath>, GitError> {
-    observe_unmerged_branch_paths(repository_root, trunk, head).map(|observation| observation.paths)
-}
-
 /// The merge extent and the subprocess work actually required to obtain it.
 pub(super) struct UnmergedBranchPaths {
     pub(super) paths:       Vec<ReservationScopePath>,
     pub(super) git_queries: u64,
 }
 
-pub(super) fn observe_unmerged_branch_paths(
-    repository_root: &Path,
+// Keep the single-pair test adapter so the original no-subprocess assertion still checks
+// the same observation contract. Production queries go through RepositorySnapshot's cache.
+#[cfg(test)]
+fn observe_unmerged_branch_paths(
+    root: &Path,
     trunk: &GitObjectId,
     head: &GitObjectId,
 ) -> Result<UnmergedBranchPaths, GitError> {
@@ -511,8 +572,14 @@ pub(super) fn observe_unmerged_branch_paths(
             git_queries: 0,
         });
     }
-    let ancestry = ResolvedTrunkAncestry::read(repository_root, trunk)?;
-    observe_unmerged_branch_paths_with_ancestry(repository_root, trunk, head, &ancestry)
+    let ancestry = ResolvedTrunkAncestry::read(root, trunk)?;
+    if matches!(ancestry, ResolvedTrunkAncestry::Reachable(ancestors) if ancestors.contains(head)) {
+        return Ok(UnmergedBranchPaths {
+            paths:       Vec::new(),
+            git_queries: 0,
+        });
+    }
+    BranchMergeSession::default().paths(root, trunk, head)
 }
 
 /// Supported ancestry for one resolved trunk; unsupported history keeps Git's merge semantics.
@@ -532,58 +599,14 @@ impl ResolvedTrunkAncestry {
     }
 }
 
-pub(super) fn observe_unmerged_branch_paths_with_ancestry(
+fn merge_result_paths(
     repository_root: &Path,
     trunk: &GitObjectId,
-    head: &GitObjectId,
-    ancestry: &ResolvedTrunkAncestry,
+    result_tree: &GitObjectId,
+    mut paths: Vec<ReservationScopePath>,
+    mut git_queries: u64,
 ) -> Result<UnmergedBranchPaths, GitError> {
-    if trunk == head
-        || matches!(ancestry, ResolvedTrunkAncestry::Reachable(ancestors) if ancestors.contains(head))
-    {
-        return Ok(UnmergedBranchPaths {
-            paths:       Vec::new(),
-            git_queries: 0,
-        });
-    }
-    let merge_arguments = [
-        GIT_MERGE_TREE_COMMAND.to_owned(),
-        GIT_WRITE_TREE_ARG.to_owned(),
-        GIT_NAME_ONLY_ARG.to_owned(),
-        GIT_NO_MESSAGES_ARG.to_owned(),
-        GIT_NUL_TERMINATED_ARG.to_owned(),
-        trunk.to_string(),
-        head.to_string(),
-    ];
-    let merge_output = command::git_output_dynamic(repository_root, &merge_arguments)?;
-    let merge_failure = GitError::CommandFailed {
-        command: GIT_MERGE_TREE_COMMAND,
-        stderr:  String::from_utf8_lossy(&merge_output.stderr)
-            .trim()
-            .to_owned(),
-    };
-    if !matches!(
-        merge_output.status.code(),
-        Some(GIT_MERGE_TREE_CLEAN_EXIT_CODE | GIT_MERGE_TREE_CONFLICT_EXIT_CODE)
-    ) {
-        return Err(merge_failure);
-    }
-    let merge_output = String::from_utf8(merge_output.stdout).map_err(GitError::InvalidOutput)?;
-    let mut merge_fields = merge_output.split_terminator('\0');
-    // `merge_fields.next()` checks for a result tree because a missing object also exits 1, the
-    // conflict status, but writes none.
-    let Some(result_tree) = merge_fields.next() else {
-        return Err(merge_failure);
-    };
-    let result_tree = result_tree
-        .parse::<GitObjectId>()
-        .map_err(GitError::InvalidObjectId)?;
-    let mut paths = merge_fields
-        .map(|path| path.parse().map_err(GitError::InvalidReservationPath))
-        .collect::<Result<Vec<ReservationScopePath>, _>>()?;
-
-    let mut git_queries = 1;
-    let changed = read::merge_result_paths(repository_root, trunk, &result_tree)?.or_git(|| {
+    let changed = read::merge_result_paths(repository_root, trunk, result_tree)?.or_git(|| {
         git_queries += 1;
         let diff_arguments = [
             GIT_DIFF_COMMAND.to_owned(),
@@ -613,6 +636,195 @@ pub(super) fn observe_unmerged_branch_paths_with_ancestry(
     paths.sort_by_cached_key(ToString::to_string);
     paths.dedup();
     Ok(UnmergedBranchPaths { paths, git_queries })
+}
+
+/// Return the paths merging this branch into trunk would change, plus every conflicted path.
+///
+/// `git merge-tree --write-tree` merges `head` into `trunk` as `git merge` would, including
+/// the virtual merge base git builds when criss-cross merges leave several merge bases. A
+/// name-only diff from trunk to that result tree excludes trunk-only changes, paths the branch
+/// changed and then restored, and changes trunk already carries, so an integrated head returns
+/// an empty set even when trunk has moved ahead. A conflicted path can keep trunk's content in
+/// the result tree, as a modify/delete conflict does, so the conflicted paths `merge-tree` lists
+/// after the tree id join the diff. NUL delimiters preserve whitespace in names, and disabling
+/// rename detection in the diff retains both the removed and added paths. Missing objects,
+/// unrelated histories, and unreadable output remain failures rather than evidence of an empty
+/// merge extent.
+///
+/// Merging a commit into itself is clean and changes nothing, so the same commit on both sides
+/// returns an empty set without starting git.
+/// One checkout's ordered merge batch, retained across decision passes. Pair results are
+/// requested as the decision discovers them; Git keeps its object and merge machinery open.
+/// A fatal Git error ends that batch, so a later independent pair starts a new one.
+#[derive(Default)]
+pub(super) enum BranchMergeSession {
+    #[default]
+    NotStarted,
+    Running(Box<MergeTreeProcess>),
+}
+
+impl BranchMergeSession {
+    pub(super) fn paths(
+        &mut self,
+        root: &Path,
+        trunk: &GitObjectId,
+        head: &GitObjectId,
+    ) -> Result<UnmergedBranchPaths, GitError> {
+        let (result, starts) = match self {
+            Self::NotStarted => {
+                let mut process = Box::new(MergeTreeProcess::open(root)?);
+                let result = process.merge(trunk, head);
+                *self = Self::Running(process);
+                (result, 1)
+            },
+            Self::Running(process) => (process.merge(trunk, head), 0),
+        };
+        if result.is_err() {
+            // Missing objects and unrelated histories are fatal to `--stdin`. Preserve the
+            // error for this pair without denying a later, valid pair its own observation.
+            *self = Self::NotStarted;
+        }
+        let (tree, paths) = result?;
+        merge_result_paths(root, trunk, &tree, paths, starts)
+    }
+}
+
+/// One bounded stdin/stdout protocol with a dedicated worker, serialized by the snapshot.
+pub(super) struct MergeTreeProcess {
+    child:       ChildProcess,
+    requests:    Sender<String>,
+    responses:   Receiver<io::Result<Vec<Vec<u8>>>>,
+    diagnostics: Receiver<io::Result<Vec<u8>>>,
+}
+
+impl MergeTreeProcess {
+    fn open(root: &Path) -> Result<Self, GitError> {
+        let mut child = command::spawn_with_piped_output(
+            command::git_command(root)?
+                .args([
+                    GIT_MERGE_TREE_COMMAND,
+                    GIT_WRITE_TREE_ARG,
+                    GIT_NAME_ONLY_ARG,
+                    GIT_NO_MESSAGES_ARG,
+                    GIT_NUL_TERMINATED_ARG,
+                    GIT_STDIN_ARG,
+                ])
+                .stdin(Stdio::piped()),
+        )?;
+        let pipes = child.child_mut();
+        let (Some(mut input), Some(output), Some(diagnostics)) =
+            (pipes.stdin.take(), pipes.stdout.take(), pipes.stderr.take())
+        else {
+            return Err(io::Error::other("git merge-tree omitted a piped stream").into());
+        };
+        let (requests, pending) = mpsc::channel::<String>();
+        let (completed, responses) = mpsc::channel();
+        thread::Builder::new()
+            .name("merge-tree-batch".to_owned())
+            .spawn(move || {
+                let mut output = BufReader::new(output);
+                for request in pending {
+                    let result = (|| {
+                        writeln!(input, "{request}")?;
+                        input.flush()?;
+                        read_merge_reply(&mut output)
+                    })();
+                    let ended = result.is_err();
+                    if completed.send(result).is_err() || ended {
+                        break;
+                    }
+                }
+            })?;
+        Ok(Self {
+            child,
+            requests,
+            responses,
+            diagnostics: child::drain(Some(diagnostics))?,
+        })
+    }
+
+    fn merge(
+        &mut self,
+        trunk: &GitObjectId,
+        head: &GitObjectId,
+    ) -> Result<(GitObjectId, Vec<ReservationScopePath>), GitError> {
+        let deadline = ChildDeadline::new(
+            self.child.command(),
+            "merge-tree batch reply",
+            child::GIT_COMMAND_DEADLINE,
+        );
+        let response = self
+            .requests
+            .send(format!("{trunk} {head}"))
+            .map_err(io::Error::other)
+            .and_then(|()| deadline.receive(&self.responses));
+        let fields = match response {
+            Ok(fields) => fields,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::UnexpectedEof | io::ErrorKind::BrokenPipe
+                ) =>
+            {
+                self.child.wait(child::GIT_COMMAND_DEADLINE)?;
+                self.child.stop();
+                let diagnostics = self.diagnostics.recv().map_err(io::Error::other)??;
+                return Err(GitError::CommandFailed {
+                    command: GIT_MERGE_TREE_COMMAND,
+                    stderr:  String::from_utf8_lossy(&diagnostics).trim().to_owned(),
+                });
+            },
+            Err(error) => {
+                self.child.stop();
+                return Err(error.into());
+            },
+        };
+        let mut fields = fields.into_iter();
+        let status = fields
+            .next()
+            .ok_or_else(|| io::Error::other("missing merge status"))?;
+        if status != b"0" && status != b"1" {
+            return Err(io::Error::other("invalid merge-tree batch status").into());
+        }
+        let tree = fields
+            .next()
+            .ok_or_else(|| io::Error::other("missing merge tree"))?;
+        let tree = String::from_utf8(tree)
+            .map_err(GitError::InvalidOutput)?
+            .parse()
+            .map_err(GitError::InvalidObjectId)?;
+        let paths = fields
+            .map(|field| {
+                String::from_utf8(field)
+                    .map_err(GitError::InvalidOutput)?
+                    .parse()
+                    .map_err(GitError::InvalidReservationPath)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((tree, paths))
+    }
+}
+
+/// With `--stdin --name-only --no-messages -z`, each result is status, tree, paths,
+/// then an empty NUL record. Git flushes that boundary before reading the next pair.
+fn read_merge_reply(output: &mut impl BufRead) -> io::Result<Vec<Vec<u8>>> {
+    let mut fields = Vec::new();
+    loop {
+        let mut field = Vec::new();
+        if output.read_until(0, &mut field)? == 0 || field.pop() != Some(0) {
+            return Err(io::Error::new(
+                ErrorKind::UnexpectedEof,
+                "git merge-tree ended before its batch reply",
+            ));
+        }
+        if field.is_empty() {
+            if fields.len() < 2 {
+                return Err(io::Error::other("incomplete merge-tree batch reply"));
+            }
+            return Ok(fields);
+        }
+        fields.push(field);
+    }
 }
 
 /// Return every commit that would become reachable from `proposed` but not `previous`.
@@ -927,6 +1139,7 @@ fn classify_candidates_against_target(
         .collect();
     let target_histories = PhaseStartTargetFirstParentHistories {
         intervals,
+        target_merge: OnceLock::new(),
         candidate_history: HistoricalCandidateHistory::Available(ResolvedTargetCommitHistory {
             target: target.clone(),
             graph:  target_history,
@@ -1301,6 +1514,7 @@ pub(crate) enum ProtectedTipSuccessorHeadClassification {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::path::Path;
 
     use cargo_berth_test_support::CommandDeadlineExt as _;
 
@@ -1312,7 +1526,6 @@ mod tests {
     use super::ahead_behind_for_heads;
     use super::descendant_commits;
     use super::reachability;
-    use super::unmerged_branch_paths;
     use crate::git::GitError;
     use crate::git::fixture::FixtureResult;
     use crate::git::fixture::PRIMARY_PATH;
@@ -1321,6 +1534,14 @@ mod tests {
     use crate::git::fixture::UNAVAILABLE_OBJECT_ID;
     use crate::ids::GitObjectId;
     use crate::ids::ReservationScopePath;
+
+    fn unmerged_branch_paths(
+        root: &Path,
+        trunk: &GitObjectId,
+        head: &GitObjectId,
+    ) -> Result<Vec<ReservationScopePath>, GitError> {
+        super::observe_unmerged_branch_paths(root, trunk, head).map(|observation| observation.paths)
+    }
 
     /// The lane branch whose history criss-crosses with `main`.
     const CRISS_CROSS_LANE: &str = "lane";
@@ -1652,6 +1873,11 @@ mod tests {
         assert_eq!(
             super::observe_unmerged_branch_paths(&missing_root, &head, &head)?.git_queries,
             0
+        );
+        let snapshot = crate::git::RepositorySnapshot::discover(fixture.root())?;
+        assert_eq!(
+            snapshot.unmerged_branch_paths(&missing_root, &head, &head)?,
+            (Vec::new(), 0)
         );
         assert_eq!(
             reachability(&missing_root, &head, &head)?,

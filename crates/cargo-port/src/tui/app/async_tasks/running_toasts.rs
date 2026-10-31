@@ -1,12 +1,9 @@
 use std::collections::HashSet;
 
-use tui_pane::ReactivateOutcome;
+use tui_pane::RunningToastSlot;
 use tui_pane::ToastTaskId;
 use tui_pane::TrackedItem;
 use tui_pane::TrackedItemKey;
-use tui_pane::TrackedItemTiming;
-use tui_pane::format_toast_items;
-use tui_pane::toast_body_width;
 
 use crate::lint::LintRunOrigin;
 use crate::project;
@@ -15,22 +12,24 @@ use crate::tui::integration;
 
 impl App {
     pub(in crate::tui::app) fn sync_running_clean_toast(&mut self) {
-        let (toast_slot, items) = self.inflight.clean().items_for_toast(
+        let (toast_slot, tracked_items) = self.inflight.clean().items_for_toast(
             |p| project::home_relative_path(p.as_path()),
             integration::path_key,
         );
-        let next = self.sync_running_toast(toast_slot, "cargo clean", &items[..]);
-        self.inflight.clean_mut().toast = next;
+        let next_toast_task_id =
+            self.sync_running_toast(toast_slot, "cargo clean", &tracked_items[..]);
+        self.inflight.clean_mut().toast = next_toast_task_id;
     }
     pub(super) fn sync_running_lint_toast(&mut self) {
         self.sync_running_lint_toast_for_origin(LintRunOrigin::CatchUp);
         self.sync_running_lint_toast_for_origin(LintRunOrigin::Normal);
     }
-    fn sync_running_lint_toast_for_origin(&mut self, origin: LintRunOrigin) {
-        let (toast_slot, items) = self.lint.toast_items_for_origin(origin);
-        let title = crate::tui::state::Lint::running_toast_title(origin);
-        let next = self.sync_running_toast(toast_slot, title, &items);
-        self.lint.set_running_toast_for_origin(origin, next);
+    fn sync_running_lint_toast_for_origin(&mut self, lint_run_origin: LintRunOrigin) {
+        let (toast_slot, tracked_items) = self.lint.toast_items_for_origin(lint_run_origin);
+        let title = crate::tui::state::Lint::running_toast_title(lint_run_origin);
+        let next_toast_task_id = self.sync_running_toast(toast_slot, title, &tracked_items);
+        self.lint
+            .set_running_toast_for_origin(lint_run_origin, next_toast_task_id);
     }
     /// Keep a single "Retrieving GitHub repo details" toast in sync with the
     /// live in-flight repo fetches. The toast slot lives only in the
@@ -38,16 +37,21 @@ impl App {
     /// GitHub row, `Net::network_toasts` returns `None`, so there is nowhere
     /// to store a toast id and this no-ops.
     pub(super) fn sync_running_repo_fetch_toast(&mut self) {
-        let Some(toast_slot) = self.net.network_toasts().map(|toasts| toasts.github) else {
+        let Some(toast_slot) = self
+            .net
+            .network_toasts()
+            .map(|network_running_toasts| network_running_toasts.github)
+        else {
             return;
         };
-        let (_, items) = self
+        let (_, tracked_items) = self
             .net
             .github_running()
             .items_for_toast(ToString::to_string, integration::owner_repo_key);
-        let next = self.sync_running_toast(toast_slot, "Retrieving GitHub repo details", &items);
+        let next_toast_task_id =
+            self.sync_running_toast(toast_slot, "Retrieving GitHub repo details", &tracked_items);
         if let Some(toasts) = self.net.network_toasts_mut() {
-            toasts.github = next;
+            toasts.github = next_toast_task_id;
         }
     }
     /// Keep a single "Fetching crates.io info" toast in sync with the live
@@ -55,16 +59,21 @@ impl App {
     /// slot exists only in steady state, so while the startup panel owns the
     /// crates.io row this no-ops and no standalone toast can be created.
     pub(super) fn sync_running_crates_io_toast(&mut self) {
-        let Some(toast_slot) = self.net.network_toasts().map(|toasts| toasts.crates_io) else {
+        let Some(toast_slot) = self
+            .net
+            .network_toasts()
+            .map(|network_running_toasts| network_running_toasts.crates_io)
+        else {
             return;
         };
-        let (_, items) = self
+        let (_, tracked_items) = self
             .net
             .crates_io_running()
             .items_for_toast(String::clone, |name| TrackedItemKey::from(name.as_str()));
-        let next = self.sync_running_toast(toast_slot, "Fetching crates.io info", &items);
+        let next_toast_task_id =
+            self.sync_running_toast(toast_slot, "Fetching crates.io info", &tracked_items);
         if let Some(toasts) = self.net.network_toasts_mut() {
-            toasts.crates_io = next;
+            toasts.crates_io = next_toast_task_id;
         }
     }
     /// Return the network-toast stage to `StartupOwned`: finish any live
@@ -73,217 +82,38 @@ impl App {
     /// Called when a rescan re-opens the consolidated panel, which takes back
     /// ownership of those rows.
     pub(super) fn enter_startup_owned_network_stage(&mut self) {
-        if let Some(slots) = self.net.network_toasts().map(|t| [t.crates_io, t.github]) {
-            for task_id in slots.into_iter().flatten() {
+        if let Some(slots) = self.net.network_toasts().map(|network_running_toasts| {
+            [
+                network_running_toasts.crates_io,
+                network_running_toasts.github,
+            ]
+        }) {
+            for toast_task_id in slots.into_iter().flatten() {
                 self.framework
                     .toasts
-                    .complete_missing_items(task_id, &HashSet::new());
+                    .complete_missing_items(toast_task_id, &HashSet::new());
             }
         }
         self.net.set_network_toasts_startup_owned();
     }
-    /// Shared tracked-task toast sync. Grows as new items appear,
-    /// marks items completed (freezing elapsed + starting strikethrough)
-    /// as items disappear, and begins the toast-level linger
-    /// countdown once the tracker drains. Used by lint, clean, and
-    /// GitHub repo-fetch flows via
-    /// [`RunningTracker::items_for_toast`](tui_pane::RunningTracker::items_for_toast).
+    /// Reconcile a task toast using the framework policy.
     pub(super) fn sync_running_toast(
         &mut self,
         toast_slot: Option<ToastTaskId>,
         title: &str,
         running_items: &[TrackedItem],
     ) -> Option<ToastTaskId> {
-        if running_items.is_empty() {
-            if let Some(task_id) = toast_slot {
-                let empty: HashSet<TrackedItemKey> = HashSet::new();
-                // Marking every item completed via `complete_missing_items`
-                // triggers the framework's auto-finish path — no explicit
-                // `finish_task` needed.
-                self.framework
-                    .toasts
-                    .complete_missing_items(task_id, &empty);
-            }
-            return toast_slot;
-        }
-
-        let running_keys: HashSet<TrackedItemKey> =
-            running_items.iter().map(|item| item.key.clone()).collect();
-
-        match toast_slot {
-            Some(task_id) => match self.framework.toasts.reactivate_task(task_id) {
-                ReactivateOutcome::Revived => {
-                    self.framework
-                        .toasts
-                        .complete_missing_items(task_id, &running_keys);
-                    self.framework
-                        .toasts
-                        .add_new_tracked_items(task_id, running_items);
-                    // `add_new_tracked_items` skips keys the toast already
-                    // holds, so an item that stalls (or resumes) after it was
-                    // added needs this to reach the rendered spinner.
-                    self.framework
-                        .toasts
-                        .refresh_tracked_item_activity(task_id, running_items);
-                    for item in running_items {
-                        if let TrackedItemTiming::Running {
-                            started_at: started,
-                        }
-                        | TrackedItemTiming::Completed {
-                            started_at: started,
-                            ..
-                        } = item.timing
-                        {
-                            self.framework
-                                .toasts
-                                .restart_tracked_item(task_id, &item.key, started);
-                        }
-                    }
-                    Some(task_id)
-                },
-                ReactivateOutcome::DismissedByUser => {
-                    // `ReactivateOutcome::DismissedByUser` retains `toast_slot`'s `task_id`, so
-                    // `sync_running_toast` cannot create a duplicate next frame. Leave
-                    // `framework.toasts` untouched while the tracker continues running and its UI
-                    // remains dismissed.
-                    Some(task_id)
-                },
-                ReactivateOutcome::NotFound => Some(self.start_running_toast(title, running_items)),
-            },
-            None => Some(self.start_running_toast(title, running_items)),
+        let width = tui_pane::toast_body_width(self.framework.toast_settings());
+        let slot = toast_slot.map_or(RunningToastSlot::Vacant, RunningToastSlot::Assigned);
+        match tui_pane::sync_running_task(
+            &mut self.framework.toasts,
+            slot,
+            title,
+            running_items,
+            width,
+        ) {
+            RunningToastSlot::Vacant => None,
+            RunningToastSlot::Assigned(task_id) => Some(task_id),
         }
     }
-
-    fn start_running_toast(&mut self, title: &str, running_items: &[TrackedItem]) -> ToastTaskId {
-        let labels: Vec<&str> = running_items
-            .iter()
-            .map(|item| item.label.as_str())
-            .collect();
-        let width = toast_body_width(self.framework.toast_settings());
-        let body = format_toast_items(&labels, width);
-        let task_id = self.framework.toasts.start_task(title, body);
-        self.set_task_tracked_items(task_id, running_items);
-        task_id
-    }
-}
-
-#[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
-mod tests {
-    use tui_pane::ToastId;
-    use tui_pane::TrackedItemActivity;
-
-    use super::*;
-    use crate::tui::test_support;
-
-    const DISMISSED_ITEM: &str = "dismissed";
-    const FIRST_ITEM: &str = "first";
-    const RUNNING_TOAST_TITLE: &str = "Running task";
-    const SECOND_ITEM: &str = "second";
-    const STALE_ITEM: &str = "stale";
-    const STALE_TASK_ID: ToastTaskId = ToastTaskId(u64::MAX);
-
-    #[test]
-    fn sync_running_toast_preserves_reactivate_outcomes() {
-        let mut app = test_support::make_app(&[]);
-        let first_items = [tracked_item(FIRST_ITEM)];
-
-        let first_task_id = app
-            .sync_running_toast(None, RUNNING_TOAST_TITLE, &first_items)
-            .expect("running items should create the first toast");
-        assert_eq!(app.framework.toasts.active().len(), first_items.len());
-        assert_eq!(
-            app.framework.toasts.tracked_item_count(first_task_id),
-            first_items.len()
-        );
-
-        let revived_items = [tracked_item(FIRST_ITEM), tracked_item(SECOND_ITEM)];
-        let revived_task_id = app
-            .sync_running_toast(Some(first_task_id), RUNNING_TOAST_TITLE, &revived_items)
-            .expect("existing toast should reactivate");
-        assert_eq!(revived_task_id, first_task_id);
-        assert_eq!(app.framework.toasts.active().len(), first_items.len());
-        assert_eq!(
-            app.framework.toasts.tracked_item_count(first_task_id),
-            revived_items.len()
-        );
-
-        assert!(app.framework.toasts.dismiss(ToastId(first_task_id.get())));
-        let stored_toasts_after_dismiss = app.framework.toasts.active().len();
-        let dismissed_items = [tracked_item(DISMISSED_ITEM)];
-        let dismissed_task_id = app
-            .sync_running_toast(Some(first_task_id), RUNNING_TOAST_TITLE, &dismissed_items)
-            .expect("dismissed task slot should stay wired");
-        assert_eq!(dismissed_task_id, first_task_id);
-        assert_eq!(
-            app.framework.toasts.active().len(),
-            stored_toasts_after_dismiss
-        );
-        assert_eq!(app.framework.toasts.active_now().len(), 0);
-        assert_eq!(
-            app.framework.toasts.tracked_item_count(first_task_id),
-            revived_items.len()
-        );
-
-        let stale_items = [tracked_item(STALE_ITEM)];
-        let fresh_task_id = app
-            .sync_running_toast(Some(STALE_TASK_ID), RUNNING_TOAST_TITLE, &stale_items)
-            .expect("stale task slot should create a replacement toast");
-        assert_ne!(fresh_task_id, STALE_TASK_ID);
-        assert_ne!(fresh_task_id, first_task_id);
-        assert_eq!(
-            app.framework.toasts.active().len(),
-            stored_toasts_after_dismiss + 1
-        );
-        assert_eq!(app.framework.toasts.active_now().len(), stale_items.len());
-        assert_eq!(app.framework.toasts.tracked_item_count(STALE_TASK_ID), 0);
-        assert_eq!(
-            app.framework.toasts.tracked_item_count(fresh_task_id),
-            stale_items.len()
-        );
-    }
-
-    /// `add_new_tracked_items` skips keys the toast already holds, so a later
-    /// activity change only lands because `sync_running_toast` also refreshes
-    /// activity on existing items.
-    #[test]
-    fn sync_running_toast_pushes_activity_changes_onto_existing_items() {
-        let mut app = test_support::make_app(&[]);
-        let mut items = [tracked_item(FIRST_ITEM)];
-
-        let task_id = app
-            .sync_running_toast(None, RUNNING_TOAST_TITLE, &items)
-            .expect("running items should create the toast");
-        assert_eq!(
-            item_activity(&app, task_id),
-            TrackedItemActivity::Progressing
-        );
-
-        items[0].activity = TrackedItemActivity::Stalled;
-        app.sync_running_toast(Some(task_id), RUNNING_TOAST_TITLE, &items);
-        assert_eq!(item_activity(&app, task_id), TrackedItemActivity::Stalled);
-
-        items[0].activity = TrackedItemActivity::Progressing;
-        app.sync_running_toast(Some(task_id), RUNNING_TOAST_TITLE, &items);
-        assert_eq!(
-            item_activity(&app, task_id),
-            TrackedItemActivity::Progressing
-        );
-    }
-
-    fn item_activity(app: &App, task_id: ToastTaskId) -> TrackedItemActivity {
-        app.framework
-            .toasts
-            .active_now()
-            .iter()
-            .find(|view| view.id() == ToastId(task_id.get()))
-            .and_then(|view| view.tracked_items().first())
-            .expect("the toast should carry its tracked item")
-            .activity
-    }
-
-    fn tracked_item(label: &str) -> TrackedItem { TrackedItem::new(label, label) }
 }

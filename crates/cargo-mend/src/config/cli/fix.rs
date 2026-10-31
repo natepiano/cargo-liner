@@ -25,26 +25,56 @@ pub(crate) enum FixRequest {
     PubUse,
 }
 
+/// Whether a particular fix request was explicitly selected at the CLI boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::config) enum FixRequestSelection {
+    Requested,
+    NotRequested,
+}
+
+/// Whether this run writes fixes to disk rather than reporting or previewing them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FixApplication {
+    Apply,
+    DoNotApply,
+}
+
+/// Whether to run compiler fixes; applying all fixes always includes them, while previews never do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompilerFixExecution {
+    Run,
+    Skip,
+}
+
 impl FixCli {
-    pub(crate) fn includes(&self, requested_fix: FixRequest) -> bool {
-        self.requested_fixes.contains(&requested_fix)
+    pub(in crate::config) fn includes(&self, requested_fix: FixRequest) -> FixRequestSelection {
+        if self.requested_fixes.contains(&requested_fix) {
+            FixRequestSelection::Requested
+        } else {
+            FixRequestSelection::NotRequested
+        }
     }
 
     /// Whether this run writes fixes to disk, as opposed to reporting or
     /// previewing them.
-    pub(crate) const fn applies_fixes(&self) -> bool {
-        matches!(
-            self.execution,
-            FixExecution::ApplyRequested | FixExecution::ApplyAll
-        )
+    pub(crate) const fn applies_fixes(&self) -> FixApplication {
+        match self.execution {
+            FixExecution::ApplyRequested | FixExecution::ApplyAll => FixApplication::Apply,
+            FixExecution::ReadOnly | FixExecution::PreviewAll | FixExecution::PreviewRequested => {
+                FixApplication::DoNotApply
+            },
+        }
     }
 
-    pub(crate) fn runs_compiler_fix(&self) -> bool {
+    pub(crate) fn runs_compiler_fix(&self) -> CompilerFixExecution {
         match self.execution {
-            FixExecution::ApplyAll => true,
-            FixExecution::ApplyRequested => self.includes(FixRequest::Compiler),
+            FixExecution::ApplyAll => CompilerFixExecution::Run,
+            FixExecution::ApplyRequested => match self.includes(FixRequest::Compiler) {
+                FixRequestSelection::Requested => CompilerFixExecution::Run,
+                FixRequestSelection::NotRequested => CompilerFixExecution::Skip,
+            },
             FixExecution::ReadOnly | FixExecution::PreviewAll | FixExecution::PreviewRequested => {
-                false
+                CompilerFixExecution::Skip
             },
         }
     }
@@ -122,14 +152,17 @@ impl From<RawFixCli> for FixCli {
 mod tests {
     use std::collections::BTreeSet;
 
+    use super::CompilerFixExecution;
+    use super::FixApplication;
     use super::FixCli;
     use super::FixExecution;
     use super::FixRequest;
+    use super::FixRequestSelection;
 
     #[test]
     fn runs_compiler_fix_false_for_read_only() {
         let fix = FixCli::default();
-        assert!(!fix.runs_compiler_fix());
+        assert_eq!(fix.runs_compiler_fix(), CompilerFixExecution::Skip);
     }
 
     #[test]
@@ -138,7 +171,7 @@ mod tests {
             execution: FixExecution::PreviewAll,
             ..FixCli::default()
         };
-        assert!(!fix.runs_compiler_fix());
+        assert_eq!(fix.runs_compiler_fix(), CompilerFixExecution::Skip);
     }
 
     #[test]
@@ -147,7 +180,7 @@ mod tests {
             execution:       FixExecution::PreviewRequested,
             requested_fixes: BTreeSet::from([FixRequest::Compiler]),
         };
-        assert!(!fix.runs_compiler_fix());
+        assert_eq!(fix.runs_compiler_fix(), CompilerFixExecution::Skip);
     }
 
     #[test]
@@ -156,7 +189,7 @@ mod tests {
             execution: FixExecution::ApplyAll,
             ..FixCli::default()
         };
-        assert!(fix.runs_compiler_fix());
+        assert_eq!(fix.runs_compiler_fix(), CompilerFixExecution::Run);
     }
 
     #[test]
@@ -165,7 +198,7 @@ mod tests {
             execution:       FixExecution::ApplyRequested,
             requested_fixes: BTreeSet::from([FixRequest::Compiler]),
         };
-        assert!(fix.runs_compiler_fix());
+        assert_eq!(fix.runs_compiler_fix(), CompilerFixExecution::Run);
     }
 
     #[test]
@@ -174,6 +207,55 @@ mod tests {
             execution:       FixExecution::ApplyRequested,
             requested_fixes: BTreeSet::from([FixRequest::Mend]),
         };
-        assert!(!fix.runs_compiler_fix());
+        assert_eq!(fix.runs_compiler_fix(), CompilerFixExecution::Skip);
+    }
+    #[test]
+    fn named_fix_policies_cover_every_execution_and_request_set() {
+        let requests = [FixRequest::Compiler, FixRequest::Mend, FixRequest::PubUse];
+        for execution in [
+            FixExecution::ReadOnly,
+            FixExecution::ApplyRequested,
+            FixExecution::ApplyAll,
+            FixExecution::PreviewRequested,
+            FixExecution::PreviewAll,
+        ] {
+            for mask in 0..8 {
+                let requested_fixes = requests
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(bit, request)| (mask & (1 << bit) != 0).then_some(*request))
+                    .collect();
+                let fix = FixCli {
+                    execution,
+                    requested_fixes,
+                };
+                for (bit, request) in requests.iter().enumerate() {
+                    let expected = if mask & (1 << bit) != 0 {
+                        FixRequestSelection::Requested
+                    } else {
+                        FixRequestSelection::NotRequested
+                    };
+                    assert_eq!(fix.includes(*request), expected);
+                }
+                let (application, compiler) = match execution {
+                    FixExecution::ApplyAll => (FixApplication::Apply, CompilerFixExecution::Run),
+                    FixExecution::ApplyRequested => {
+                        let compiler = if mask & 1 != 0 {
+                            CompilerFixExecution::Run
+                        } else {
+                            CompilerFixExecution::Skip
+                        };
+                        (FixApplication::Apply, compiler)
+                    },
+                    FixExecution::ReadOnly
+                    | FixExecution::PreviewRequested
+                    | FixExecution::PreviewAll => {
+                        (FixApplication::DoNotApply, CompilerFixExecution::Skip)
+                    },
+                };
+                assert_eq!(fix.applies_fixes(), application);
+                assert_eq!(fix.runs_compiler_fix(), compiler);
+            }
+        }
     }
 }

@@ -17,6 +17,8 @@ use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use anyhow::Context;
 use anyhow::Error;
@@ -310,14 +312,17 @@ fn run_cargo_check(
 /// keeps the driver attached to the build its directory names.
 ///
 /// The copy namespace excludes aliases published by the former hard-link
-/// protocol. The build fingerprint identifies the contents, so reuse needs
-/// metadata checks, not a read of the whole binary on every mend invocation.
+/// protocol. Executable length and modification time distinguish development
+/// rebuilds that retain the analysis fingerprint. Reuse needs only metadata
+/// checks, not a read of the whole binary on every mend invocation.
 /// Returns `None` when the copy cannot be created.
 fn wrapper_alias(target_directory: &Path, current_exe: &Path) -> Option<PathBuf> {
+    let revision = WrapperExecutableRevision::read(current_exe).ok()?;
     let alias_dir = target_directory
         .join(WRAPPER_DIR_NAME)
         .join(settings::current_analysis_fingerprint())
-        .join("independent-copy-v1");
+        .join("independent-copy-v1")
+        .join(revision.directory_name());
     fs::create_dir_all(&alias_dir).ok()?;
     let alias = alias_dir.join(current_exe.file_name()?);
     if wrapper_alias_resolution(&alias) == WrapperAliasResolution::Current {
@@ -327,7 +332,31 @@ fn wrapper_alias(target_directory: &Path, current_exe: &Path) -> Option<PathBuf>
     Some(alias)
 }
 
-/// The build-specific copy namespace supplies the build identity. Reject
+/// Identifies executable rebuilds without opening or hashing executable bytes.
+struct WrapperExecutableRevision {
+    length:   u64,
+    modified: SystemTime,
+}
+
+impl WrapperExecutableRevision {
+    fn read(executable: &Path) -> io::Result<Self> {
+        let metadata = fs::metadata(executable)?;
+        Ok(Self {
+            length:   metadata.len(),
+            modified: metadata.modified()?,
+        })
+    }
+
+    fn directory_name(&self) -> String {
+        let (era, timestamp) = match self.modified.duration_since(UNIX_EPOCH) {
+            Ok(timestamp) => ("after", timestamp),
+            Err(error) => ("before", error.duration()),
+        };
+        format!("{}-{era}-{}", self.length, timestamp.as_nanos())
+    }
+}
+
+/// The fingerprint and executable revision supply the build identity. Reject
 /// symlinks and multiply linked files; neither owns its executable inode.
 fn wrapper_alias_resolution(alias: &Path) -> WrapperAliasResolution {
     let independent = fs::symlink_metadata(alias).is_ok_and(|metadata| {
@@ -505,9 +534,7 @@ fn run_cargo_fix_validation(
     if cargo_fix_features == CargoFixFeatures::All {
         command.arg(CARGO_FLAG_ALL_FEATURES);
     }
-    if color_mode.is_enabled() {
-        command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
-    }
+    configure_cargo_color(&mut command, color_mode);
     command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -592,9 +619,7 @@ fn run_cargo_fix_command(
         command.arg(CARGO_FLAG_ALL_FEATURES);
     }
 
-    if color_mode.is_enabled() {
-        command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
-    }
+    configure_cargo_color(&mut command, color_mode);
 
     command
         .stdin(Stdio::inherit())
@@ -620,15 +645,24 @@ fn feature_selection(cargo_args: &[OsString]) -> FeatureSelection {
     }
 }
 
+/// `configure_cargo_color` forces Cargo color only for `ColorMode::Enabled`.
+/// `ColorMode::Disabled` preserves the inherited environment and existing command overrides.
+fn configure_cargo_color(command: &mut Command, color_mode: ColorMode) {
+    match color_mode {
+        ColorMode::Enabled => {
+            command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
+        },
+        ColorMode::Disabled => {},
+    }
+}
+
 fn run_cargo_command(
     command: &mut Command,
     output_mode: BuildOutputMode,
     color_mode: ColorMode,
     analyzing_dir: &Path,
 ) -> Result<CommandOutcome> {
-    if color_mode.is_enabled() {
-        command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
-    }
+    configure_cargo_color(command, color_mode);
     let progress = CargoProgress::start(output_mode, analyzing_dir);
     // The status line takes its counter from cargo's bar, which cargo draws on
     // a pipe only when asked to and given a width to draw it at.
@@ -676,6 +710,7 @@ fn run_cargo_command(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::ffi::OsString;
     use std::fs;
     #[cfg(unix)]
@@ -686,7 +721,6 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    #[cfg(unix)]
     use std::process::Command;
     #[cfg(unix)]
     use std::process::Stdio;
@@ -698,13 +732,61 @@ mod tests {
     use super::FeatureSelection;
     use super::WrapperAliasResolution;
     use super::cargo_fix_features_for;
+    use super::configure_cargo_color;
     use super::feature_selection;
     use super::wrapper_alias_resolution;
+    use crate::compiler::constants::CARGO_BIN;
     use crate::compiler::constants::CARGO_FLAG_ALL_FEATURES;
     use crate::compiler::constants::CARGO_FLAG_FEATURES;
     use crate::compiler::constants::CARGO_FLAG_MANIFEST_PATH;
     use crate::compiler::constants::CARGO_FLAG_NO_DEFAULT_FEATURES;
     use crate::reporting::AllFeaturesCoverage;
+    use crate::reporting::CARGO_TERM_COLOR_ALWAYS;
+    use crate::reporting::CARGO_TERM_COLOR_ENV;
+    use crate::reporting::CARGO_TERM_COLOR_NEVER;
+    use crate::reporting::ColorMode;
+
+    #[test]
+    fn enabled_cargo_color_overrides_the_command_environment() {
+        let mut command = Command::new(CARGO_BIN);
+        command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_NEVER);
+
+        configure_cargo_color(&mut command, ColorMode::Enabled);
+
+        assert_eq!(
+            command.get_envs().collect::<Vec<_>>(),
+            [(
+                OsStr::new(CARGO_TERM_COLOR_ENV),
+                Some(OsStr::new(CARGO_TERM_COLOR_ALWAYS)),
+            )]
+        );
+    }
+
+    #[test]
+    fn disabled_cargo_color_preserves_inheritance_and_command_overrides() {
+        let mut command = Command::new(CARGO_BIN);
+
+        configure_cargo_color(&mut command, ColorMode::Disabled);
+
+        assert_eq!(command.get_envs().next(), None);
+
+        command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_NEVER);
+        configure_cargo_color(&mut command, ColorMode::Disabled);
+        assert_eq!(
+            command.get_envs().collect::<Vec<_>>(),
+            [(
+                OsStr::new(CARGO_TERM_COLOR_ENV),
+                Some(OsStr::new(CARGO_TERM_COLOR_NEVER)),
+            )]
+        );
+
+        command.env_remove(CARGO_TERM_COLOR_ENV);
+        configure_cargo_color(&mut command, ColorMode::Disabled);
+        assert_eq!(
+            command.get_envs().collect::<Vec<_>>(),
+            [(OsStr::new(CARGO_TERM_COLOR_ENV), None)]
+        );
+    }
 
     #[test]
     fn alias_resolution_reuses_only_regular_independent_copies() -> anyhow::Result<()> {
@@ -858,6 +940,29 @@ mod tests {
     }
 
     #[test]
+    fn wrapper_alias_uses_the_rebuilt_executable_with_the_same_fingerprint() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let installed = directory.path().join("cargo-mend");
+        fs::write(&installed, b"first build")?;
+        let original = super::wrapper_alias(directory.path(), &installed).context("first alias")?;
+        let modified = fs::metadata(&installed)?.modified()? + std::time::Duration::from_secs(1);
+
+        // Keep the fingerprint and length unchanged. Set the time explicitly
+        // so filesystem clock resolution cannot decide whether this is a rebuild.
+        fs::write(&installed, b"fresh build")?;
+        fs::File::options()
+            .write(true)
+            .open(&installed)?
+            .set_modified(modified)?;
+        let rebuilt =
+            super::wrapper_alias(directory.path(), &installed).context("rebuilt alias")?;
+        assert_eq!(fs::read(&rebuilt)?, b"fresh build");
+        assert_ne!(rebuilt, original);
+        assert_eq!(fs::read(original)?, b"first build");
+        Ok(())
+    }
+
+    #[test]
     fn wrapper_alias_retains_its_build_when_the_installed_binary_is_replaced() -> anyhow::Result<()>
     {
         let temp = tempdir()?;
@@ -868,10 +973,9 @@ mod tests {
         fs::write(&replacement, b"next build")?;
         fs::rename(replacement, &installed)?;
         assert_eq!(fs::read(&alias)?, b"first build");
-        assert_eq!(
-            super::wrapper_alias(temp.path(), &installed),
-            Some(alias.clone())
-        );
+        let rebuilt = super::wrapper_alias(temp.path(), &installed).context("rebuilt alias")?;
+        assert_ne!(rebuilt, alias);
+        assert_eq!(fs::read(rebuilt)?, b"next build");
         assert_eq!(fs::read(alias)?, b"first build");
         Ok(())
     }

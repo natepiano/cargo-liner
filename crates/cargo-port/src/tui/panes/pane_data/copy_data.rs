@@ -1,3 +1,5 @@
+pub(super) use tui_pane::sanitize_ansi_for_output;
+
 use super::CiData;
 use super::CopyLabel;
 use super::CopyPayload;
@@ -155,118 +157,11 @@ pub fn copy_payload_for_output(
     anchor: usize,
     cursor: usize,
 ) -> CopySelectionResult {
-    let Some(last) = snapshot.len().checked_sub(1) else {
-        return CopySelectionResult::Nothing;
-    };
-    let lo = anchor.min(cursor).min(last);
-    let hi = anchor.max(cursor).min(last);
-    let text = snapshot[lo..=hi]
-        .iter()
-        .map(|line| strip_ansi(line))
-        .collect::<Vec<_>>()
-        .join("\n");
-    copy_payload(text, CopyLabel::Row)
-}
-
-/// Strip ANSI escape sequences from `raw`, leaving only the printable
-/// text. Reuses the same parser the output renderer feeds, so the copied
-/// text matches what is on screen.
-pub(super) fn strip_ansi(raw: &str) -> String {
-    let safe = sanitize_ansi_for_output(raw);
-    ansi_to_tui::IntoText::into_text(&safe).map_or_else(
-        |_| strip_control_sequences(&safe),
-        |text| {
-            text.lines
-                .iter()
-                .map(|line| {
-                    line.spans
-                        .iter()
-                        .map(|span| span.content.as_ref())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        },
+    copy_payload(
+        tui_pane::selected_lines_text(snapshot, anchor, cursor),
+        CopyLabel::Row,
     )
 }
-
-pub(super) fn sanitize_ansi_for_output(raw: &str) -> String { sanitize_ansi(raw, true) }
-
-fn strip_control_sequences(raw: &str) -> String { sanitize_ansi(raw, false) }
-
-fn sanitize_ansi(raw: &str, preserve_sgr: bool) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut state = AnsiScanState::Ground;
-    for ch in raw.chars() {
-        state = state.consume(ch, &mut out, preserve_sgr);
-    }
-    out
-}
-
-enum AnsiScanState {
-    Ground,
-    Escape,
-    Csi(String),
-    ControlString,
-    ControlStringEscape,
-}
-
-impl AnsiScanState {
-    fn consume(self, ch: char, out: &mut String, preserve_sgr: bool) -> Self {
-        match self {
-            Self::Ground => consume_ground(ch, out),
-            Self::Escape => consume_escape(ch),
-            Self::Csi(mut sequence) => {
-                sequence.push(ch);
-                if is_csi_final(ch) {
-                    if preserve_sgr && ch == 'm' {
-                        out.push_str(&sequence);
-                    }
-                    Self::Ground
-                } else {
-                    Self::Csi(sequence)
-                }
-            },
-            Self::ControlString => match ch {
-                '\x07' => Self::Ground,
-                '\x1b' => Self::ControlStringEscape,
-                _ => Self::ControlString,
-            },
-            Self::ControlStringEscape => {
-                if ch == '\\' {
-                    Self::Ground
-                } else {
-                    Self::ControlString
-                }
-            },
-        }
-    }
-}
-
-fn consume_ground(ch: char, out: &mut String) -> AnsiScanState {
-    match ch {
-        '\x1b' => AnsiScanState::Escape,
-        '\t' => {
-            out.push(' ');
-            AnsiScanState::Ground
-        },
-        _ if ch.is_control() => AnsiScanState::Ground,
-        _ => {
-            out.push(ch);
-            AnsiScanState::Ground
-        },
-    }
-}
-
-fn consume_escape(ch: char) -> AnsiScanState {
-    match ch {
-        '[' => AnsiScanState::Csi("\x1b[".to_string()),
-        ']' | 'P' | 'X' | '^' | '_' => AnsiScanState::ControlString,
-        _ => AnsiScanState::Ground,
-    }
-}
-
-const fn is_csi_final(ch: char) -> bool { matches!(ch, '\u{40}'..='\u{7e}') }
 
 pub fn copy_payload_for_targets(data: &TargetsData, pos: usize) -> CopySelectionResult {
     let entries = panes::build_target_list_from_data(data);

@@ -18,6 +18,7 @@ use crate::reporting::ExecutionOutcome;
 use crate::reporting::Finding;
 use crate::reporting::MendFailure;
 use crate::reporting::PassEdits;
+use crate::reporting::SubtreeReexportEdits;
 use crate::rust_syntax::ParsedSources;
 
 /// A checked selection, with the syntax scans that added findings to its
@@ -52,7 +53,7 @@ impl MendRunner<'_> {
                 compiler_warnings,
                 compiler_fixable,
                 applied_pub_use: 0,
-                applied_subtree_reexport: false,
+                subtree_reexport_edits: SubtreeReexportEdits::Unchanged,
                 pass_edits: PassEdits::Unchanged,
             }),
             OperationIntent::DryRun => {
@@ -75,7 +76,7 @@ impl MendRunner<'_> {
                     compiler_warnings,
                     compiler_fixable,
                     applied_pub_use: 0,
-                    applied_subtree_reexport: false,
+                    subtree_reexport_edits: SubtreeReexportEdits::Unchanged,
                     pass_edits: PassEdits::Unchanged,
                 })
             },

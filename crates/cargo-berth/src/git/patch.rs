@@ -1159,9 +1159,9 @@ mod tests {
     use std::fs;
     use std::io;
     use std::path::Path;
-    use std::process::Command;
 
     use cargo_berth_test_support::CommandDeadlineExt as _;
+    use cargo_berth_test_support::FixtureCommand as Command;
 
     use super::HistoricalIntegrationCandidateDiscovery;
     use super::ScopedPatchComparison;

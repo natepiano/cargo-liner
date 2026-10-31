@@ -16,7 +16,9 @@ mod navigation;
 mod runtime_scope;
 mod scope_map;
 mod shortcuts;
+mod single_key_scope;
 mod vim;
+mod vim_alias;
 
 use core::fmt::Formatter;
 use std::any::Any;
@@ -51,7 +53,13 @@ pub use runtime_scope::KeymapHelpRowKind;
 pub use runtime_scope::RenderedSlot;
 pub use scope_map::ScopeMap;
 pub use shortcuts::Shortcuts;
+pub use single_key_scope::KeyAlreadyBound;
+pub use single_key_scope::SingleKeyScope;
 pub use vim::VimMode;
+pub use vim_alias::ReservedVimMotionKey;
+pub use vim_alias::is_navigation_generated_vim_extra;
+pub use vim_alias::validate_vim_motion_bind;
+pub use vim_alias::vim_motion_conflicts;
 
 use self::help_rows::framework_global_help_row;
 use self::runtime_scope::RuntimeScope;

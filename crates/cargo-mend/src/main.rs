@@ -31,7 +31,9 @@ use std::time::Instant;
 use anyhow::Result;
 use compiler::DRIVER_ENV;
 use config::BuildInfoMode;
+use config::CompilerFixExecution;
 use config::DiagnosticsConfig;
+use config::FixApplication;
 use config::OperationMode;
 use config::WarningPolicy;
 use constants::BUILD_INFO_UNKNOWN;
@@ -54,6 +56,7 @@ use reporting::ExecutionOutcome;
 use reporting::MendFailure;
 use reporting::OutputFormat;
 use reporting::PassEdits;
+use reporting::SubtreeReexportEdits;
 use selection::DisplayFilter;
 use selection::Selection;
 
@@ -108,19 +111,24 @@ const fn total_fixables(outcome: &ExecutionOutcome) -> usize {
         + outcome.compiler_fixable
 }
 
-/// Whether a completed pass is an audit or can continue applying fixes.
-enum PassPolicy {
-    Audit,
-    ApplyFixes,
-}
-
-impl From<bool> for PassPolicy {
-    fn from(applies_fixes: bool) -> Self {
-        if applies_fixes {
-            Self::ApplyFixes
-        } else {
-            Self::Audit
-        }
+/// Compiler fixes also clean unused imports created by a pub-use rewrite, even when not requested.
+const fn compiler_fix_execution(
+    requested: CompilerFixExecution,
+    applied_pub_use: usize,
+    warnings: CompilerWarningFacts,
+) -> CompilerFixExecution {
+    match requested {
+        CompilerFixExecution::Run => CompilerFixExecution::Run,
+        CompilerFixExecution::Skip => match warnings {
+            CompilerWarningFacts::UnusedImportWarnings => {
+                if applied_pub_use > 0 {
+                    CompilerFixExecution::Run
+                } else {
+                    CompilerFixExecution::Skip
+                }
+            },
+            CompilerWarningFacts::None => CompilerFixExecution::Skip,
+        },
     }
 }
 
@@ -163,25 +171,24 @@ fn run() -> Result<ExitCode, MendFailure> {
 
     let mut passes = 1;
 
-    match PassPolicy::from(cli.fix.applies_fixes()) {
-        PassPolicy::Audit => {},
-        PassPolicy::ApplyFixes => loop {
+    match cli.fix.applies_fixes() {
+        FixApplication::DoNotApply => {},
+        FixApplication::Apply => loop {
             // Decide whether to chain `cargo fix`. Two trigger conditions:
             //  1. The user explicitly asked for it (`--fix-compiler` / `--fix-all`).
             //  2. `--fix-pub-use` (or its bundle inside `--fix-all`) just applied edits that
             //     produced `unused import` warnings; auto-clean them.
-            let user_asked_for_compiler_fix = cli.fix.runs_compiler_fix();
-            let pub_use_self_heal = outcome.applied_pub_use > 0
-                && matches!(
-                    outcome.compiler_warning_facts,
-                    CompilerWarningFacts::UnusedImportWarnings
-                );
-
-            let runs_compiler_fix = user_asked_for_compiler_fix || pub_use_self_heal;
-            if runs_compiler_fix {
-                total_compiler_fix_duration +=
-                    runner.fix_compiler(outcome.report.facts.all_features_coverage)?;
-            }
+            let runs_compiler_fix = compiler_fix_execution(
+                cli.fix.runs_compiler_fix(),
+                outcome.applied_pub_use,
+                outcome.compiler_warning_facts,
+            );
+            total_compiler_fix_duration += match runs_compiler_fix {
+                CompilerFixExecution::Run => {
+                    runner.fix_compiler(outcome.report.facts.all_features_coverage)?
+                },
+                CompilerFixExecution::Skip => Duration::ZERO,
+            };
 
             if passes >= FIX_CONVERGENCE_MAX_PASSES {
                 break;
@@ -190,7 +197,9 @@ fn run() -> Result<ExitCode, MendFailure> {
             // A pass that wrote nothing leaves the tree it planned against, so
             // another pass would plan the same fix set and write nothing again.
             // Only a `cargo fix` run since then can change what mend finds.
-            if outcome.pass_edits == PassEdits::Unchanged && !runs_compiler_fix {
+            if outcome.pass_edits == PassEdits::Unchanged
+                && runs_compiler_fix == CompilerFixExecution::Skip
+            {
                 break;
             }
 
@@ -211,13 +220,11 @@ fn run() -> Result<ExitCode, MendFailure> {
                     accumulated_notice = Some(next_notice);
                 }
             }
-            let progressed = next_total < prev_total || next.applied_subtree_reexport;
-            if next_total == 0 || !progressed {
-                outcome = next;
-                break;
-            }
             outcome = next;
-            passes += 1;
+            match fix_pass_continuation(prev_total, next_total, outcome.subtree_reexport_edits) {
+                FixPassContinuation::Continue => passes += 1,
+                FixPassContinuation::Stop => break,
+            }
         },
     }
     outcome.notice = accumulated_notice;
@@ -249,6 +256,33 @@ fn run() -> Result<ExitCode, MendFailure> {
         return Ok(ExitCode::from(EXIT_CODE_WARNING));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Whether the convergence policy schedules another mend pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FixPassContinuation {
+    Continue,
+    Stop,
+}
+
+const fn fix_pass_continuation(
+    previous_total: usize,
+    next_total: usize,
+    subtree_reexport_edits: SubtreeReexportEdits,
+) -> FixPassContinuation {
+    if next_total == 0 {
+        return FixPassContinuation::Stop;
+    }
+    match subtree_reexport_edits {
+        SubtreeReexportEdits::Written => FixPassContinuation::Continue,
+        SubtreeReexportEdits::Unchanged => {
+            if next_total < previous_total {
+                FixPassContinuation::Continue
+            } else {
+                FixPassContinuation::Stop
+            }
+        },
+    }
 }
 
 fn render_outcome(
@@ -331,8 +365,12 @@ mod tests {
     use std::env;
     use std::ffi::OsString;
 
+    use super::FixPassContinuation;
     use super::build_info_text;
     use super::color_mode;
+    use super::compiler_fix_execution;
+    use super::fix_pass_continuation;
+    use crate::config::CompilerFixExecution;
     use crate::reporting::CARGO_TERM_COLOR_ALWAYS;
     use crate::reporting::CARGO_TERM_COLOR_ENV;
     use crate::reporting::CARGO_TERM_COLOR_NEVER;
@@ -340,6 +378,67 @@ mod tests {
     use crate::reporting::CLICOLOR_ENV;
     use crate::reporting::CLICOLOR_FORCE_ENV;
     use crate::reporting::ColorMode;
+    use crate::reporting::CompilerWarningFacts;
+    use crate::reporting::SubtreeReexportEdits;
+
+    #[test]
+    fn subtree_reexport_edits_keep_convergence_running_until_no_fixables_remain() {
+        for (previous_total, next_total, edits, expected) in [
+            (
+                2,
+                1,
+                SubtreeReexportEdits::Written,
+                FixPassContinuation::Continue,
+            ),
+            (
+                2,
+                1,
+                SubtreeReexportEdits::Unchanged,
+                FixPassContinuation::Continue,
+            ),
+            (
+                2,
+                2,
+                SubtreeReexportEdits::Written,
+                FixPassContinuation::Continue,
+            ),
+            (
+                2,
+                2,
+                SubtreeReexportEdits::Unchanged,
+                FixPassContinuation::Stop,
+            ),
+            (
+                2,
+                3,
+                SubtreeReexportEdits::Written,
+                FixPassContinuation::Continue,
+            ),
+            (
+                2,
+                3,
+                SubtreeReexportEdits::Unchanged,
+                FixPassContinuation::Stop,
+            ),
+            (
+                2,
+                0,
+                SubtreeReexportEdits::Written,
+                FixPassContinuation::Stop,
+            ),
+            (
+                2,
+                0,
+                SubtreeReexportEdits::Unchanged,
+                FixPassContinuation::Stop,
+            ),
+        ] {
+            assert_eq!(
+                fix_pass_continuation(previous_total, next_total, edits),
+                expected
+            );
+        }
+    }
 
     /// Restores an environment variable to its previous value on drop.
     ///
@@ -424,5 +523,31 @@ mod tests {
         assert!(build_info.contains("\ngit_hash: "));
         assert!(build_info.contains("\nbuild_id: "));
         assert!(build_info.contains("\nbuild_sysroot: "));
+    }
+    #[test]
+    fn compiler_fix_execution_preserves_requested_and_self_healing_triggers() {
+        for (applied, warnings, expected) in [
+            (0, CompilerWarningFacts::None, CompilerFixExecution::Skip),
+            (1, CompilerWarningFacts::None, CompilerFixExecution::Skip),
+            (
+                0,
+                CompilerWarningFacts::UnusedImportWarnings,
+                CompilerFixExecution::Skip,
+            ),
+            (
+                1,
+                CompilerWarningFacts::UnusedImportWarnings,
+                CompilerFixExecution::Run,
+            ),
+        ] {
+            assert_eq!(
+                compiler_fix_execution(CompilerFixExecution::Run, applied, warnings),
+                CompilerFixExecution::Run
+            );
+            assert_eq!(
+                compiler_fix_execution(CompilerFixExecution::Skip, applied, warnings),
+                expected
+            );
+        }
     }
 }

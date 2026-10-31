@@ -23,6 +23,8 @@ mod reachability;
 mod read;
 mod refs;
 mod snapshot;
+#[cfg(not(test))]
+mod spawn_lock;
 mod worktree_operation;
 
 #[cfg(test)]
@@ -30,6 +32,7 @@ mod fixture;
 
 pub(crate) use command::GitCommandOutputAvailability;
 pub(crate) use command::git_execution as execute_read_only_git;
+pub(crate) use command::with_spawn_lock;
 pub(crate) use discovery::hooks_directory;
 pub(crate) use error::GitError;
 pub(crate) use error::GitLockRefusal;
@@ -50,6 +53,7 @@ pub(crate) use reachability::CandidateHeadReachability;
 pub(crate) use reachability::CommitCandidateReachability;
 pub(crate) use reachability::CommitTargetReachability;
 pub(crate) use reachability::CommitTargetReachabilityObservation;
+pub(crate) use reachability::PhaseMergeHistory;
 pub(crate) use reachability::PhaseStartTargetFirstParentHistories;
 pub(crate) use reachability::ProtectedTipSuccessorHeadClassification;
 pub(crate) use reachability::ProtectedTipSuccessorHeads;
@@ -67,7 +71,6 @@ pub(crate) use reachability::reachability;
 pub(crate) use reachability::reachability_to_target;
 pub(crate) use reachability::reachable_commits;
 pub(crate) use reachability::reservation_checkpoint_commits;
-pub(crate) use reachability::unmerged_branch_paths;
 pub(crate) use refs::HeadAttachment;
 pub(crate) use refs::IntegrationProofRef;
 pub(crate) use refs::LocalBranchRenameTargetResolution;

@@ -39,6 +39,7 @@ use super::project;
 use crate::project::CratesIoRelease;
 use crate::project::CratesIoReleaseState;
 use crate::project::ProjectFields;
+use crate::scan;
 use crate::tui::panes::DescriptionBlock;
 use crate::tui::panes::targets;
 use crate::tui::state::CiDisplay;
@@ -87,19 +88,6 @@ fn resolve_package_title_for_package(app: &App, pkg: &Package) -> String {
     } else {
         "Package".to_string()
     }
-}
-
-/// Format a download count with comma-separated thousands (e.g. `1,234,567`).
-fn format_downloads(count: u64) -> String {
-    let digits = count.to_string();
-    let mut result = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, ch) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            result.push(',');
-        }
-        result.push(ch);
-    }
-    result
 }
 
 /// Inner height (excluding the pane border) the Details and Git top row must
@@ -153,7 +141,19 @@ fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_
     // per-pane scroll pager agree on what renders. The Package About section
     // always renders (a placeholder when the crate has no description); the Git
     // About section renders only when the repo has a description of its own.
-    let package_total = package::package_content_height(synced_desc, package_lower);
+    let error_height = scan::cargo_metadata_roots_for_item(item)
+        .iter()
+        .map(|root| {
+            package::manifest_error_lines(
+                app.scan.manifest_metadata.for_project(root),
+                package_width,
+            )
+            .len()
+        })
+        .max()
+        .unwrap_or(0);
+    let package_total =
+        package::package_content_height(synced_desc, package_lower).saturating_add(error_height);
     let git_total = git::git_content_height(synced_desc, git_desc > 0, git_lower);
 
     u16::try_from(package_total.max(git_total)).unwrap_or(u16::MAX)
@@ -840,7 +840,7 @@ pub(super) fn build_crates_io_rows(section: &CratesIoSection) -> Vec<(&'static s
             if let Some(prerelease) = &release.prerelease {
                 rows.push((prerelease_label(prerelease), prerelease.clone()));
             }
-            rows.push(("downloads", format_downloads(release.downloads)));
+            rows.push(("downloads", tui_pane::format_number(release.downloads)));
             rows
         },
     }

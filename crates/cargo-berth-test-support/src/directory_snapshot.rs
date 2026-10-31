@@ -18,10 +18,10 @@ use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Stdio;
 
 use crate::CommandDeadlineExt as _;
+use crate::FixtureCommand as Command;
 use crate::repository_template;
 
 /// The files and directories under one root, with each file's permissions.

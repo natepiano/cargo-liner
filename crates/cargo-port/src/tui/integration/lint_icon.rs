@@ -35,9 +35,11 @@ mod tests {
     use super::*;
     use crate::lint::LintRunPhase;
 
+    const TEST_SPINNER_SAMPLE_ELAPSED: Duration = Duration::from_millis(100);
+
     #[test]
     fn running_kind_uses_framework_activity_spinner_in_both_phases() {
-        let elapsed = Duration::from_millis(100);
+        let elapsed = TEST_SPINNER_SAMPLE_ELAPSED;
 
         for phase in [LintRunPhase::Executing, LintRunPhase::Blocked] {
             assert_eq!(
