@@ -194,35 +194,9 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; the in-repo `mend --fix` step reports no new error.
 
-### Phase 2j — a mend cell keeps its progress bar after a diagnostic  · status: todo
+### Phase 2j — a mend cell keeps its progress bar after a diagnostic  · status: done
 
-**Why:** showrunner 2026-10-31; the user asked why a cargo-tile mend cell shows no progress bar. Claim from the tile unit, not yet confirmed live: in Full mode the first forwarded diagnostic calls `progress.stop_for_forwarded_output()` (`src/compiler/build/stderr.rs:434`). That ends the progress state for the pass, so no counter reaches the capture log after it.
-
-**Depends on:** none (runs beside 2h and 2i; separate files).
-
-#### Work Order
-
-**Goal:** a forwarded diagnostic block prints between progress updates; the progress counter continues to the end of the pass.
-
-**Constraints:**
-- Confirm the cause with a live run first, before any edit: a real `cargo mend` pass on a crate that forwards at least one diagnostic, with stderr captured through a pseudo-terminal, and show where the counter stops. If the cause is a different one, report it and fix that one.
-- One owner writes to the progress line. A forwarded block goes through it like `write_status_notice` does: erase the line, print the block, redraw the spinner. Do not add a second writer of the terminal line.
-- No hard-coded configuration value.
-
-**Spec:**
-1. In Full mode, after a forwarded diagnostic, the counter continues; at the end of the pass the line is cleared once.
-2. **Tests, red on main first, each under one second:** change `forwarded_diagnostic_stops_progress_before_printing` to assert the new contract (the block prints, progress continues, a later counter update arrives). Name it in the commit message as an Assertion-Change.
-3. Live proof: a captured run shows counter updates after a forwarded diagnostic; the director proves it in a cargo-tile mend cell.
-4. CHANGELOG: one line.
-
-**Files:**
-- `crates/cargo-mend/src/compiler/build/progress.rs`
-- `crates/cargo-mend/src/compiler/build/stderr.rs`
-- `crates/cargo-mend/CHANGELOG.md` (phase 2h holds it; the director adds this line)
-
-**Workers:** 1 writer.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; live counter after a diagnostic in a cargo-tile mend cell.
+**As-built:** a forwarded compiler diagnostic goes through the one owner of the progress line in `crates/cargo-mend/src/compiler/build/progress.rs` (`write_forwarded_output`): erase the line, print the block, add a newline only when the block lacks one, redraw (checkpoint 32316514). The counter runs to the end of the pass, and an unterminated last diagnostic survives the redraw and the cleanup. Live proof: a real cargo-tile mend cell read 85% after the forwarded warning.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 
