@@ -16,6 +16,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Changed
 - On an opaque screen, the focus tint fills the whole interior of a focused tile, empty rows and the foot included. On a transparent screen, a tile paints no ground and focus shows only as the lit border.
+- `PaneChrome::paint_tile_ground` paints the tile ground only on opaque screens and returns the fade colour, so transparent tiles keep fading toward the theme ground.
 
 ### Fixed
 - Tile growth, floor and area changes rebuild cached motion endpoints before reusing their bands and row measurements; unchanged frames reuse endpoint admission.

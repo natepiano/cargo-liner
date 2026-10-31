@@ -48,7 +48,6 @@ use crate::draw_clipped;
 use crate::error_color;
 use crate::frame_inner;
 use crate::label_color;
-use crate::pane_background;
 use crate::screen_ground;
 use crate::success_color;
 use crate::text_default;
@@ -484,9 +483,6 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
         // topology the border lattice follows.
         let line_frame =
             PaneFrame::new(placement.frame.clip()).with_focus(placement.frame.is_focused());
-        // The ground a fading row is carried toward is the one its
-        // own cell is painted on, which focus moves.
-        let ground = tile_background(placement.frame.is_focused());
         let cell_rows = match &placement.content {
             TileContent::Summary => demands.summary,
             TileContent::Group(id) => demands.rows_for(id),
@@ -504,7 +500,8 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
                 TileContent::Group(_) | TileContent::Empty(_) => SummaryFoot::Empty,
             };
             draw_clipped(buffer, placement.frame, |buffer, inner| {
-                buffer.set_style(inner, Style::default().bg(ground));
+                let ground =
+                    PaneChrome::paint_tile_ground(buffer, inner, placement.frame.is_focused());
                 draw_cell_with_rows_readout(
                     buffer,
                     inner,
@@ -574,17 +571,6 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
     });
     grid_lines.render(buffer, chrome, PaneBorders::Shared);
     painted_summary_frames
-}
-
-/// The colour used by tile content and its fading readout.
-fn tile_background(focused: bool) -> Color {
-    screen_ground().map_or(Color::Reset, |background| {
-        if focused {
-            pane_background(true)
-        } else {
-            background
-        }
-    })
 }
 
 /// Whether a placement has a pane-interior row visible between its
@@ -985,6 +971,7 @@ mod tests {
     use crate::TileView;
     use crate::ToastActivation;
     use crate::ToastStyle;
+    use crate::pane_background;
     use crate::tiles::constants::COLUMN_FOOT_TEST_AREA;
     use crate::tiles::constants::COLUMN_FOOT_TEST_BODY_STEP;
     use crate::tiles::constants::COLUMN_FOOT_TEST_GROUP_COUNT;
@@ -1077,8 +1064,70 @@ mod tests {
     }
 
     #[test]
+    fn transparent_tile_readout_fades_toward_theme_without_painting_ground()
+    -> Result<(), Box<dyn Error>> {
+        let previous_tint = crate::focused_pane_tint_enabled();
+        let previous_transparency = crate::transparent_background();
+        crate::set_focused_pane_tint(true);
+        crate::set_transparent_background(true);
+        let area = Rect::new(0, 0, 60, 10);
+        let mut cells = StubCells::demanding(1, []);
+        let progress = CellFadeProgress::new(128);
+        cells.readout_fades = vec![(TileContent::Summary, CellReadoutFade::Fading(progress))];
+        let widths = [(TileContent::Summary, area.width - 2)];
+        let mut demands = cells.demands(&widths);
+        add_readout_rows(&mut demands, &widths);
+        for focused in [true, false] {
+            let drawing = TileDrawing {
+                pieces:       vec![tile_piece(
+                    TileContent::Summary,
+                    PaneFrame::new(area).with_focus(focused),
+                    PieceName::Shown,
+                )],
+                column_bands: vec![area],
+            };
+            let mut buffer = Buffer::empty(area);
+            draw_placements(
+                &mut buffer,
+                area,
+                &drawing,
+                &demands,
+                &widths,
+                TileGridContents::Shown,
+                &cells,
+            );
+            let inner = frame_inner(area);
+            let foot_y = inner.bottom() - 1;
+            let label_x = (inner.left()..inner.right())
+                .find(|&x| buffer[(x, foot_y)].symbol() == "c")
+                .ok_or("the readout label must be present")?;
+            let ink = buffer[(label_x, foot_y)].fg;
+            assert_eq!(
+                ink,
+                blend_color(label_color(), pane_background(focused), progress.amount()),
+                "a transparent tile still fades toward its theme ground"
+            );
+            assert_ne!(
+                ink,
+                label_color(),
+                "the readout must not retain its raw ink"
+            );
+            for y in inner.top()..inner.bottom() {
+                for x in inner.left()..inner.right() {
+                    assert_eq!(buffer[(x, y)].bg, Color::Reset, "interior at ({x}, {y})");
+                }
+            }
+        }
+        crate::set_focused_pane_tint(previous_tint);
+        crate::set_transparent_background(previous_transparency);
+        Ok(())
+    }
+
+    #[test]
     fn focused_tile_tint_covers_short_rows_empty_rows_and_readout() {
-        struct ShortContent;
+        struct ShortContent {
+            focused: bool,
+        }
 
         impl TileCells<u32> for ShortContent {
             fn summary_title(&self) -> &'static str { "summary" }
@@ -1090,16 +1139,9 @@ mod tests {
                 }
             }
 
-            fn draw(
-                &self,
-                buffer: &mut Buffer,
-                _: &TileContent<u32>,
-                inner: Rect,
-                background: Color,
-            ) {
-                Paragraph::new("short")
-                    .style(Style::default().bg(background))
-                    .render(inner, buffer);
+            fn draw(&self, buffer: &mut Buffer, _: &TileContent<u32>, inner: Rect, _: Color) {
+                PaneChrome::paint_tile_ground(buffer, inner, self.focused);
+                Paragraph::new("short").render(inner, buffer);
             }
         }
 
@@ -1118,7 +1160,7 @@ mod tests {
                     )],
                     column_bands: vec![area],
                 };
-                let cells = ShortContent;
+                let cells = ShortContent { focused };
                 let widths = [(TileContent::Summary, area.width - 2)];
                 let mut demands = cells.demands(&widths);
                 add_readout_rows(&mut demands, &widths);
@@ -5310,10 +5352,8 @@ mod tests {
                         cells.readout_fade(&placement.content),
                         CellReadoutFade::Fading(progress)
                     );
-                    let ground = if transparent {
-                        Color::Reset
-                    } else if placement.frame.is_focused() {
-                        pane_background(true)
+                    let ground = if transparent || placement.frame.is_focused() {
+                        pane_background(placement.frame.is_focused())
                     } else {
                         screen_ground().unwrap_or_else(|| pane_background(false))
                     };
