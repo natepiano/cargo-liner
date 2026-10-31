@@ -507,6 +507,154 @@ impl FavoritesHost for App {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    fn wheel_test_app_with_agents() -> App {
+        let mut app = App::new_for_test().expect("test app");
+        let rows = (1..=4)
+            .map(|pid| {
+                serde_json::from_value::<AgentRow>(serde_json::json!({
+                    "agent":"claude", "name":format!("agent-{pid}"), "pid":pid,
+                    "started":100, "process_started":100, "directory":"/fixture",
+                    "status":"idle", "children":[{
+                        "kind":"shell", "depth":0, "pid":9000+pid,
+                        "name":format!("build-for-{pid}"), "started":100
+                    }]
+                }))
+                .expect("a fixture agent")
+            })
+            .collect();
+        app.census.apply(CensusUpdate::Local {
+            rows,
+            hierarchy: HierarchyEdges::default().into(),
+            stage: ScanStage::Completed,
+        });
+        app
+    }
+
+    fn draw_settled_wheel_frame(app: &mut App, terminal: &mut Terminal<TestBackend>) {
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("tile frame");
+        app.tiles.settle_for_test();
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("settled tile frame");
+    }
+
+    fn open_overflowing_shortcuts(app: &mut App, terminal: &mut Terminal<TestBackend>) -> Rect {
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        keymap.dispatch_framework_global(GlobalAction::OpenGlobalShortcuts, app);
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("overlay frame");
+        let viewport = app.framework.global_shortcuts_pane.viewport();
+        assert!(
+            viewport.content_height() > viewport.visible_rows(),
+            "overlay must overflow"
+        );
+        viewport.content_area()
+    }
+
+    #[test]
+    fn shortcuts_overlay_wheel_scrolls_and_keeps_tiles_still() {
+        let mut app = wheel_test_app_with_agents();
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 16))
+            .expect("test terminal");
+        draw_settled_wheel_frame(&mut app, &mut terminal);
+        let summary = SelectionSurface::Summary;
+        let state = app.selections.surface(&summary).expect("summary state");
+        assert!(
+            state.viewport().len() > 1,
+            "summary needs selectable agents"
+        );
+        let selection_before = (state.viewport().pos(), state.viewport().scroll_offset());
+        let summary_area = state.viewport().content_area();
+        let outside = Position::new(summary_area.x, summary_area.y);
+        let tile_before = app.tiles.hit_test_at(outside);
+        assert!(matches!(tile_before, Some(tui_pane::TilePick::Cell(_))));
+        assert!(
+            app.tiles
+                .placements(app.selection_area, app.loaded_config.config.tiles.growth())
+                .iter()
+                .any(
+                    |placement| matches!(placement.content, tui_pane::TileContent::Summary)
+                        && placement.frame.inner().contains(outside)
+                ),
+            "pointer {outside:?} in {summary_area:?} must hit the summary"
+        );
+        app.scroll(outside, ScrollDirection::Down);
+        let state = app.selections.surface(&summary).expect("summary state");
+        assert_eq!(state.viewport().pos(), selection_before.0 + 1);
+        app.scroll(outside, ScrollDirection::Up);
+        let state = app.selections.surface(&summary).expect("summary state");
+        assert_eq!(
+            (state.viewport().pos(), state.viewport().scroll_offset()),
+            selection_before
+        );
+        let content = open_overflowing_shortcuts(&mut app, &mut terminal);
+        let viewport = app.framework.global_shortcuts_pane.viewport();
+        let inside = Position::new(content.x, content.y);
+        assert!(!content.contains(outside));
+        let start = viewport.pos();
+        let offset = viewport.scroll_offset();
+        app.scroll(outside, ScrollDirection::Down);
+        assert_eq!(app.framework.global_shortcuts_pane.viewport().pos(), start);
+        assert_eq!(
+            app.framework
+                .global_shortcuts_pane
+                .viewport()
+                .scroll_offset(),
+            offset
+        );
+        let state = app.selections.surface(&summary).expect("summary state");
+        assert_eq!(
+            (state.viewport().pos(), state.viewport().scroll_offset()),
+            selection_before
+        );
+        app.scroll(inside, ScrollDirection::Down);
+        assert_eq!(
+            app.framework.global_shortcuts_pane.viewport().pos(),
+            start + 1
+        );
+        app.scroll(inside, ScrollDirection::Up);
+        assert_eq!(app.framework.global_shortcuts_pane.viewport().pos(), start);
+        let steps = app.framework.global_shortcuts_pane.viewport().len();
+        for _ in 0..steps {
+            app.scroll(inside, ScrollDirection::Down);
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("wheel down frame");
+        }
+        assert!(
+            app.framework
+                .global_shortcuts_pane
+                .viewport()
+                .scroll_offset()
+                > offset
+        );
+        for _ in 0..steps {
+            app.scroll(inside, ScrollDirection::Up);
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("wheel up frame");
+        }
+        assert_eq!(
+            app.framework
+                .global_shortcuts_pane
+                .viewport()
+                .scroll_offset(),
+            offset
+        );
+        assert_eq!(app.framework.global_shortcuts_pane.viewport().pos(), start);
+        assert_eq!(app.tiles.hit_test_at(outside), tile_before);
+        let state = app.selections.surface(&summary).expect("summary state");
+        assert_eq!(
+            (state.viewport().pos(), state.viewport().scroll_offset()),
+            selection_before
+        );
+    }
+
     #[test]
     fn idle_status_frames_do_not_repeat_body_layout() {
         let mut app = App::new_for_test().expect("test app");
@@ -568,6 +716,14 @@ mod tests {
         );
     }
 
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Position;
+    use tui_pane::GlobalAction;
+    use tui_pane::Hittable;
+    use tui_pane::ScrollDirection;
+    use tui_pane::TerminalApp;
+
     use super::*;
     use crate::agent_cell::TreeColumn;
     use crate::census::AgentRow;
@@ -579,6 +735,7 @@ mod tests {
     use crate::census::hierarchy::ReviewerState;
     use crate::census::scan::ScanStage;
     use crate::config::Config;
+    use crate::interaction::SelectionSurface;
     use crate::sort::SummaryColumn;
 
     /// A saved preference belongs to one root incarnation, rather than its slot or pid alone.
