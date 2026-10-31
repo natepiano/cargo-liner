@@ -55,10 +55,10 @@ impl Shortcuts<App> for FinderPane {
 /// `Mode::TextInput` handler for the Finder. Routes a single keypress
 /// through the Finder pane scope first, then falls back to text entry
 /// and result-list navigation for keys that are not Finder actions.
-fn finder_keys(bind: KeyBind, app: &mut App) {
+fn finder_keys(key_bind: KeyBind, app: &mut App) {
     let keymap = Rc::clone(&app.framework_keymap);
-    match keymap.dispatch_app_pane(FinderPane::APP_PANE_ID, &bind, app) {
+    match keymap.dispatch_app_pane(FinderPane::APP_PANE_ID, &key_bind, app) {
         KeyOutcome::Consumed => {},
-        KeyOutcome::Unhandled => finder::handle_finder_text_key(app, bind.code),
+        KeyOutcome::Unhandled => finder::handle_finder_text_key(app, key_bind.code),
     }
 }
