@@ -186,6 +186,66 @@ fn exact_boundary_narrowing(
     }
 }
 
+/// Returns the reach granted by a resolved parent-facade chain.
+fn facade_chain_reach(
+    parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
+) -> FacadeChainReach {
+    parent_facade_analysis.map_or(FacadeChainReach::Unresolved, |analysis| {
+        match analysis.chain {
+            FacadeChainResolution::Resolved { required } => FacadeChainReach::ExportedAt(required),
+            FacadeChainResolution::Unresolvable { .. } => FacadeChainReach::Unresolved,
+        }
+    })
+}
+
+/// Describes an unused facade or one used only by crate-relative paths in its subtree.
+fn stale_parent_facade_message(
+    status: &ParentFacadeExportStatus,
+) -> Option<(String, &ParentFacadeExportStatus)> {
+    let facade = status
+        .use_syntax()
+        .map_or_else(|| String::from("re-export"), |syntax| format!("`{syntax}`"));
+    let message = match status.usage {
+        ParentFacadeUsage::Unused => format!(
+            "parent module also has an `unused import` warning for this {facade} at {}:{}",
+            status.parent_rel_path, status.parent_line,
+        ),
+        ParentFacadeUsage::UsedInsideSubtreeByCratePath
+        | ParentFacadeUsage::UsedInsideSubtreeByCrateImport => format!(
+            "parent {facade} at {}:{} is only used through crate-relative paths \
+                 inside its own subtree",
+            status.parent_rel_path, status.parent_line,
+        ),
+        ParentFacadeUsage::UsedInsideSubtreeByRelativeImport
+        | ParentFacadeUsage::UsedInsideSubtreeByRelativePath
+        | ParentFacadeUsage::UsedOutsideSubtree => return None,
+    };
+    Some((message, status))
+}
+
+/// Builds the warning for a suspicious declaration, with the stale parent facade it names, if any.
+fn suspicious_pub_warning(
+    stale_result: Option<(String, &ParentFacadeExportStatus)>,
+) -> SuspiciousPubAssessment {
+    let (related, fix_support, stale_parent_pub_use) = match stale_result {
+        Some((message, status)) => {
+            let fix_support = if status.fix_support == ParentFacadeFixSupport::Supported {
+                FixSupport::PubUse
+            } else {
+                FixSupport::NeedsManualPubUseCleanup
+            };
+            (Some(message), fix_support, Some(status.clone()))
+        },
+        None => (None, FixSupport::None, None),
+    };
+
+    SuspiciousPubAssessment::Warn {
+        fix_support,
+        related,
+        stale_parent_pub_use,
+    }
+}
+
 pub(super) fn classify_suspicious_pub(
     ctx: &VisibilityContext<'_, '_>,
     input: &SuspiciousPubInput<'_>,
@@ -204,15 +264,7 @@ pub(super) fn classify_suspicious_pub(
             AllowanceReason::ExposedByPublicTraitImplInterface,
         ));
     }
-    let facade_chain_reach =
-        parent_facade_analysis.map_or(FacadeChainReach::Unresolved, |analysis| {
-            match analysis.chain {
-                FacadeChainResolution::Resolved { required } => {
-                    FacadeChainReach::ExportedAt(required)
-                },
-                FacadeChainResolution::Unresolvable { .. } => FacadeChainReach::Unresolved,
-            }
-        });
+    let facade_chain_reach = facade_chain_reach(parent_facade_analysis);
     let visibility_requirement =
         joined_visibility_requirement(ctx.tcx, facade_chain_reach, signature_exposure);
     let narrowing =
@@ -240,26 +292,9 @@ pub(super) fn classify_suspicious_pub(
         return Ok(assessment);
     }
 
-    let stale_result = parent_facade_export.as_ref().and_then(|status| {
-        let facade = status
-            .use_syntax()
-            .map_or_else(|| String::from("re-export"), |syntax| format!("`{syntax}`"));
-        let message = match status.usage {
-            ParentFacadeUsage::Unused => format!(
-                "parent module also has an `unused import` warning for this {facade} at {}:{}",
-                status.parent_rel_path, status.parent_line,
-            ),
-            ParentFacadeUsage::UsedInsideSubtreeByCratePath
-            | ParentFacadeUsage::UsedInsideSubtreeByCrateImport => format!(
-                "parent {facade} at {}:{} is only used through crate-relative paths inside its own subtree",
-                status.parent_rel_path, status.parent_line,
-            ),
-            ParentFacadeUsage::UsedInsideSubtreeByRelativeImport
-            | ParentFacadeUsage::UsedInsideSubtreeByRelativePath
-            | ParentFacadeUsage::UsedOutsideSubtree => return None,
-        };
-        Some((message, status))
-    });
+    let stale_result = parent_facade_export
+        .as_ref()
+        .and_then(stale_parent_facade_message);
 
     let declared_reach = VisibilityReach::from(ctx.tcx.visibility(input.def_id.to_def_id()));
     if narrowing == ExactBoundaryNarrowing::NotRequired
@@ -282,23 +317,7 @@ pub(super) fn classify_suspicious_pub(
         ));
     }
 
-    let (related, fix_support, stale_parent_pub_use) = match stale_result {
-        Some((message, status)) => {
-            let fix_support = if status.fix_support == ParentFacadeFixSupport::Supported {
-                FixSupport::PubUse
-            } else {
-                FixSupport::NeedsManualPubUseCleanup
-            };
-            (Some(message), fix_support, Some(status.clone()))
-        },
-        None => (None, FixSupport::None, None),
-    };
-
-    Ok(SuspiciousPubAssessment::Warn {
-        fix_support,
-        related,
-        stale_parent_pub_use,
-    })
+    Ok(suspicious_pub_warning(stale_result))
 }
 
 // `resolve_module_location` maps items at depth 1 (`crate::foo`) and depth 2 (`crate::foo::bar`) to
