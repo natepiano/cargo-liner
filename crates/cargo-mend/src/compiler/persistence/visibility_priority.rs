@@ -8,8 +8,8 @@ use crate::reporting::FixSupport;
 pub(super) fn apply_visibility_narrowing_priority(reports: &mut [StoredReport]) {
     let mut unused_pub_keys = BTreeSet::new();
     let mut facade_cleanup_keys = BTreeSet::new();
-    for report in reports.iter() {
-        for finding in &report.findings {
+    for stored_report in reports.iter() {
+        for finding in &stored_report.findings {
             if finding.diagnostic_code == DiagnosticCode::UnusedPub {
                 unused_pub_keys.insert(visibility_priority_key(finding));
             }
@@ -28,8 +28,8 @@ pub(super) fn apply_visibility_narrowing_priority(reports: &mut [StoredReport]) 
         return;
     }
 
-    for report in reports.iter_mut() {
-        report.findings.retain(|finding| {
+    for stored_report in reports.iter_mut() {
+        stored_report.findings.retain(|finding| {
             if !matches!(
                 finding.diagnostic_code,
                 DiagnosticCode::NarrowToPubCrate | DiagnosticCode::SuspiciousPub
