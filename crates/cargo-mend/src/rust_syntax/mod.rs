@@ -3,6 +3,7 @@ mod identifier_character;
 mod lexical_regions;
 mod module_map;
 mod parsed_sources;
+mod path_anchor;
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -18,37 +19,13 @@ pub(crate) use module_map::ModuleDirectories;
 pub(crate) use module_map::ModuleMap;
 pub(crate) use parsed_sources::ParsedSource;
 pub(crate) use parsed_sources::ParsedSources;
+pub(crate) use path_anchor::PathAnchor;
+pub(crate) use path_anchor::leading_super_count;
+pub(crate) use path_anchor::trim_leading_self;
 use syn::Meta;
 use syn::MetaList;
 use syn::Token;
 use syn::punctuated::Punctuated;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PathAnchor {
-    Crate,
-    Super,
-    SelfMod,
-    SelfType,
-    Name,
-}
-
-impl PathAnchor {
-    pub(crate) fn first(segments: &[String]) -> Option<Self> {
-        segments.first().map(|segment| Self::from(segment.as_str()))
-    }
-}
-
-impl From<&str> for PathAnchor {
-    fn from(segment: &str) -> Self {
-        match segment {
-            "crate" => Self::Crate,
-            "super" => Self::Super,
-            "self" => Self::SelfMod,
-            "Self" => Self::SelfType,
-            _ => Self::Name,
-        }
-    }
-}
 
 enum ModuleFileKind<'a> {
     Root,
@@ -87,20 +64,6 @@ impl<'a> ModuleFileKind<'a> {
 /// `cfg(...)` or `cfg_attr(...)`.
 pub(crate) fn parse_meta_list(meta_list: &MetaList) -> syn::Result<Punctuated<Meta, Token![,]>> {
     meta_list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-}
-
-pub(crate) fn leading_super_count(segments: &[String]) -> usize {
-    segments
-        .iter()
-        .take_while(|segment| PathAnchor::from(segment.as_str()) == PathAnchor::Super)
-        .count()
-}
-
-pub(crate) fn trim_leading_self(segments: &[String]) -> &[String] {
-    match PathAnchor::first(segments) {
-        Some(PathAnchor::SelfMod) => &segments[1..],
-        _ => segments,
-    }
 }
 
 fn file_module_path(source_root: &Path, path: &Path) -> Option<Vec<String>> {
