@@ -53,18 +53,23 @@ impl<'source> From<&'source str> for VisibilitySpelling<'source> {
 }
 
 pub(super) fn check_item(
-    ctx: &VisibilityContext<'_, '_>,
+    visibility_context: &VisibilityContext<'_, '_>,
     item: &Item<'_>,
-    sink: &mut FindingsSink,
+    findings_sink: &mut FindingsSink,
 ) -> Result<()> {
     let type_def_id = item.owner_id.def_id;
     match &item.kind {
         ItemKind::Struct(_, _, variant_data) | ItemKind::Union(_, _, variant_data) => {
-            check_variant_data(ctx, type_def_id, variant_data, sink)?;
+            check_variant_data(visibility_context, type_def_id, variant_data, findings_sink)?;
         },
         ItemKind::Enum(_, _, enum_def) => {
             for variant in enum_def.variants {
-                check_variant_data(ctx, type_def_id, &variant.data, sink)?;
+                check_variant_data(
+                    visibility_context,
+                    type_def_id,
+                    &variant.data,
+                    findings_sink,
+                )?;
             }
         },
         _ => {},
@@ -73,30 +78,32 @@ pub(super) fn check_item(
 }
 
 fn check_variant_data(
-    ctx: &VisibilityContext<'_, '_>,
+    visibility_context: &VisibilityContext<'_, '_>,
     type_def_id: LocalDefId,
     variant_data: &VariantData<'_>,
-    sink: &mut FindingsSink,
+    findings_sink: &mut FindingsSink,
 ) -> Result<()> {
-    for field in variant_data.fields() {
-        check_field(ctx, type_def_id, field, sink)?;
+    for field_def in variant_data.fields() {
+        check_field(visibility_context, type_def_id, field_def, findings_sink)?;
     }
     Ok(())
 }
 
 fn check_field(
-    ctx: &VisibilityContext<'_, '_>,
+    visibility_context: &VisibilityContext<'_, '_>,
     type_def_id: LocalDefId,
-    field: &FieldDef<'_>,
-    sink: &mut FindingsSink,
+    field_def: &FieldDef<'_>,
+    findings_sink: &mut FindingsSink,
 ) -> Result<()> {
-    if field.span.from_expansion() || field.vis_span.from_expansion() {
+    if field_def.span.from_expansion() || field_def.vis_span.from_expansion() {
         return Ok(());
     }
-    let Some(file_path) = source::real_file_path(ctx.tcx, field.vis_span) else {
+    let Some(file_path) = source::real_file_path(visibility_context.tcx, field_def.vis_span) else {
         return Ok(());
     };
-    let Some(field_visibility_text) = source::visibility_text(ctx.tcx, field.vis_span)? else {
+    let Some(field_visibility_text) =
+        source::visibility_text(visibility_context.tcx, field_def.vis_span)?
+    else {
         return Ok(());
     };
     // `check_field` skips an empty `field_visibility_text`: a field with no `pub`
@@ -104,14 +111,16 @@ fn check_field(
     if field_visibility_text.is_empty() {
         return Ok(());
     }
-    let field_def_id = field.def_id;
-    let Some(annotation) =
-        VisibilityAnnotation::from_item(&field_visibility_text, field_def_id, ctx.tcx)
-    else {
+    let field_def_id = field_def.def_id;
+    let Some(annotation) = VisibilityAnnotation::from_item(
+        &field_visibility_text,
+        field_def_id,
+        visibility_context.tcx,
+    ) else {
         return Ok(());
     };
-    let highlight_span = field_highlight_span(field);
-    let field_name = field.ident.to_string();
+    let highlight_span = field_highlight_span(field_def);
+    let field_name = field_def.ident.to_string();
     let field_info = ItemInfo {
         def_id: field_def_id,
         file_path: &file_path,
@@ -122,12 +131,20 @@ fn check_field(
         category: ItemCategory::Declaration,
         facade_subject: field_def_id,
     };
-    match scan::record_forbidden_visibility_annotation(ctx, &field_info, &annotation, None, sink)? {
+    match scan::record_forbidden_visibility_annotation(
+        visibility_context,
+        &field_info,
+        &annotation,
+        None,
+        findings_sink,
+    )? {
         AnnotationHandling::Handled => return Ok(()),
         AnnotationHandling::Continue => {},
     }
 
-    let Some(type_visibility_annotation_text) = type_visibility_text(ctx, type_def_id)? else {
+    let Some(type_visibility_annotation_text) =
+        type_visibility_text(visibility_context, type_def_id)?
+    else {
         return Ok(());
     };
     // `check_field` reports only when `type_visibility_annotation_text` is empty:
@@ -145,23 +162,30 @@ fn check_field(
         VisibilitySpelling::Annotated(_) => return Ok(()),
     }
 
-    let field_declared: VisibilityReach = ctx.tcx.visibility(field_def_id.to_def_id()).into();
-    let type_declared: VisibilityReach = ctx.tcx.visibility(type_def_id.to_def_id()).into();
+    let field_declared: VisibilityReach = visibility_context
+        .tcx
+        .visibility(field_def_id.to_def_id())
+        .into();
+    let type_declared: VisibilityReach = visibility_context
+        .tcx
+        .visibility(type_def_id.to_def_id())
+        .into();
 
-    if field_declared.widening(type_declared, ctx.tcx) == ReachWidening::NotWider {
+    if field_declared.widening(type_declared, visibility_context.tcx) == ReachWidening::NotWider {
         return Ok(());
     }
     // `effective_type_visibility` accounts for `pub use` re-exports: if the type
     // is reachable through one, the field annotation matches the type's effective
     // visibility and should not
     // be flagged as unused.
-    let type_effective = effective_type_visibility(ctx, type_def_id);
-    if type_effective.dominance(field_declared, ctx.tcx) == ReachDominance::Dominates {
+    let type_effective = effective_type_visibility(visibility_context, type_def_id);
+    if type_effective.dominance(field_declared, visibility_context.tcx) == ReachDominance::Dominates
+    {
         return Ok(());
     }
 
     let finding = source::build_finding(
-        ctx.tcx,
+        visibility_context.tcx,
         &file_path,
         highlight_span,
         FindingParams {
@@ -181,7 +205,7 @@ fn check_field(
             exact_boundary_spelling: ExactBoundarySpelling::CratePath,
         },
     )?;
-    sink.findings.push(finding);
+    findings_sink.findings.push(finding);
     Ok(())
 }
 

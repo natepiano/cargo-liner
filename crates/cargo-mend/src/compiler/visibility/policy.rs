@@ -129,7 +129,9 @@ impl SignatureExposure {
     ) -> VisibilityReach {
         match self {
             Self::Contained => required,
-            Self::ExposedAt(signature_reach) => required.join(signature_reach, ctx.tcx),
+            Self::ExposedAt(signature_visibility_reach) => {
+                required.join(signature_visibility_reach, ctx.tcx)
+            },
         }
     }
 }
@@ -160,15 +162,17 @@ fn joined_visibility_requirement(
 /// exact boundaries.
 fn exact_boundary_narrowing(
     ctx: &VisibilityContext<'_, '_>,
-    input: &SuspiciousPubInput<'_>,
+    suspicious_pub_input: &SuspiciousPubInput<'_>,
     facade_chain_reach: FacadeChainReach,
     visibility_requirement: VisibilityRequirement,
 ) -> ExactBoundaryNarrowing {
     if !matches!(
         ctx.settings.visibility_config.pub_in_path,
         PubInPath::Required
-    ) || !matches!(input.visibility_syntax, VisibilitySyntax::Public)
-    {
+    ) || !matches!(
+        suspicious_pub_input.visibility_syntax,
+        VisibilitySyntax::Public
+    ) {
         return ExactBoundaryNarrowing::NotRequired;
     }
     let (FacadeChainReach::ExportedAt(_), VisibilityRequirement::AtLeast(required)) =
