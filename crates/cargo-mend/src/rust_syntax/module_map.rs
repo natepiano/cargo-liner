@@ -23,9 +23,10 @@ use syn::ext::IdentExt;
 use syn::visit;
 use syn::visit::Visit;
 
+use super::AttributeTestGate;
 use super::ParsedSources;
+use super::attribute_test_gate;
 use super::file_module_path;
-use super::is_cfg_test;
 use super::parse_meta_list;
 
 /// Where a source file sits in its crate's module tree.
@@ -329,7 +330,7 @@ impl ModuleMap {
         };
         let root = Declared {
             module_path: Vec::new(),
-            test_only:   false,
+            builds:      DeclaredBuilds::AllBuilds,
         };
         walk.declare(crate_root, &root);
         walk.walk_file(
@@ -468,7 +469,7 @@ impl DeclaredFile {
 /// declaration or an ancestor's limits it to test builds.
 struct Declared {
     module_path: Vec<String>,
-    test_only:   bool,
+    builds:      DeclaredBuilds,
 }
 
 struct ModuleWalk<'a> {
@@ -482,11 +483,6 @@ struct ModuleWalk<'a> {
 impl ModuleWalk<'_> {
     fn declare(&mut self, file: &Path, module: &Declared) {
         let file = lexically_normalized(file);
-        let builds = if module.test_only {
-            DeclaredBuilds::TestOnly
-        } else {
-            DeclaredBuilds::AllBuilds
-        };
         match self.declarations.entry(file) {
             Entry::Vacant(entry) => {
                 entry.insert(DeclaredFile {
@@ -494,12 +490,12 @@ impl ModuleWalk<'_> {
                         first:      module.module_path.clone(),
                         additional: Vec::new(),
                     },
-                    builds,
+                    builds: module.builds,
                 });
             },
             Entry::Occupied(mut entry) => {
                 let declared = entry.get_mut();
-                declared.builds = declared.builds.merge(builds);
+                declared.builds = declared.builds.merge(module.builds);
                 if module.module_path != declared.mounts.first
                     && !declared.mounts.additional.contains(&module.module_path)
                 {
@@ -542,7 +538,13 @@ impl ModuleWalk<'_> {
             module_path.push(module_name.clone());
             let child = Declared {
                 module_path,
-                test_only: module.test_only || is_cfg_test(&declaration.attrs),
+                builds: match module.builds {
+                    DeclaredBuilds::TestOnly => DeclaredBuilds::TestOnly,
+                    DeclaredBuilds::AllBuilds => match attribute_test_gate(&declaration.attrs) {
+                        AttributeTestGate::DirectCfgTest => DeclaredBuilds::TestOnly,
+                        AttributeTestGate::NotDirectCfgTest => DeclaredBuilds::AllBuilds,
+                    },
+                },
             };
 
             if let Some((_, inline_items)) = &declaration.content {
@@ -705,7 +707,7 @@ mod tests {
         let file = Path::new("/repo/src/shared.rs");
         let root = super::Declared {
             module_path: Vec::new(),
-            test_only:   true,
+            builds:      super::DeclaredBuilds::TestOnly,
         };
         walk.declare(file, &root);
         walk.declare(file, &root);

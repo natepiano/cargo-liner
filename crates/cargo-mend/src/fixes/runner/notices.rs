@@ -9,6 +9,14 @@ use crate::reporting::NoticeKind;
 use crate::reporting::PubUseNotice;
 use crate::reporting::Report;
 
+/// An enabled `FixKind` has a fixer for this run even when it made no edits;
+/// a disabled kind has no notice to render.
+#[derive(Clone, Copy)]
+enum FixerAvailability {
+    Enabled,
+    Disabled,
+}
+
 impl FixScans<'_> {
     /// Which kinds this run had a fixer for. A kind that ran and edited nothing
     /// still has a notice to render; a kind that never ran has none.
@@ -16,20 +24,49 @@ impl FixScans<'_> {
     /// Only the fixers that move or rewrite a `use` item share one total. Each
     /// remaining fixer edits a visibility annotation, so it reports under its
     /// own `FixKind` rather than being counted as an import fix.
-    const fn enabled_kinds(self) -> [(FixKind, bool); 5] {
+    const fn enabled_kinds(self) -> [(FixKind, FixerAvailability); 5] {
         [
             (
                 FixKind::Import,
-                self.imports.is_some()
+                if self.imports.is_some()
                     || self.module_imports.is_some()
                     || self.inline_types.is_some()
                     || self.imports_at_top.is_some()
-                    || self.subtree_reexports.is_some(),
+                    || self.subtree_reexports.is_some()
+                {
+                    FixerAvailability::Enabled
+                } else {
+                    FixerAvailability::Disabled
+                },
             ),
-            (FixKind::PubRemoval, self.unused_pub.is_some()),
-            (FixKind::Narrowing, self.narrowed_pub.is_some()),
-            (FixKind::Annotation, self.restricted_annotation.is_some()),
-            (FixKind::FieldVisibility, self.field_visibility.is_some()),
+            (
+                FixKind::PubRemoval,
+                match self.unused_pub {
+                    Some(_) => FixerAvailability::Enabled,
+                    None => FixerAvailability::Disabled,
+                },
+            ),
+            (
+                FixKind::Narrowing,
+                match self.narrowed_pub {
+                    Some(_) => FixerAvailability::Enabled,
+                    None => FixerAvailability::Disabled,
+                },
+            ),
+            (
+                FixKind::Annotation,
+                match self.restricted_annotation {
+                    Some(_) => FixerAvailability::Enabled,
+                    None => FixerAvailability::Disabled,
+                },
+            ),
+            (
+                FixKind::FieldVisibility,
+                match self.field_visibility {
+                    Some(_) => FixerAvailability::Enabled,
+                    None => FixerAvailability::Disabled,
+                },
+            ),
         ]
     }
 }
@@ -49,8 +86,10 @@ impl MendRunner<'_> {
         let enabled = fix_scans
             .enabled_kinds()
             .into_iter()
-            .filter(|&(_, enabled)| enabled)
-            .map(|(fix_kind, _)| (fix_kind, applied_fix_counts.count(fix_kind)))
+            .filter_map(|(fix_kind, availability)| match availability {
+                FixerAvailability::Enabled => Some((fix_kind, applied_fix_counts.count(fix_kind))),
+                FixerAvailability::Disabled => None,
+            })
             .collect::<Vec<_>>();
 
         // `reported` names only the `FixKind` values that edited something, so a run that removes

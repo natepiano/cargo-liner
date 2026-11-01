@@ -23,12 +23,25 @@ enum VisibilityReplacement {
     Replace { annotation: String },
 }
 
+/// `Unchanged` would write identical bytes and falsely count a fix while leaving the file
+/// untouched and the same finding on the next run, preventing `--fix-all` convergence.
+/// `Required` changes the source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AnnotationRewrite {
+    Unchanged,
+    Required,
+}
+
 impl VisibilityReplacement {
-    fn is_noop(&self, source: &str, site: VisibilityAnnotationSite) -> bool {
+    fn rewrite(&self, source: &str, site: VisibilityAnnotationSite) -> AnnotationRewrite {
         match self {
-            Self::Remove => false,
+            Self::Remove => AnnotationRewrite::Required,
             Self::Replace { annotation } => {
-                source.get(site.start..site.end) == Some(annotation.as_str())
+                if source.get(site.start..site.end) == Some(annotation.as_str()) {
+                    AnnotationRewrite::Unchanged
+                } else {
+                    AnnotationRewrite::Required
+                }
             },
         }
     }
@@ -108,11 +121,8 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
         {
             continue;
         }
-        // `scan_from_report` rejects `replacement` when it writes back the bytes it
-        // replaces: that is not a fix. It would be counted as applied, leave the
-        // file untouched, and the finding would
-        // return unchanged on the next run — a `--fix-all` that never converges.
-        if replacement.is_noop(&source, site) {
+        // `AnnotationRewrite::Unchanged` cannot count as an applied fix.
+        if replacement.rewrite(&source, site) == AnnotationRewrite::Unchanged {
             continue;
         }
         // `rewritten_sites` limits `scan_from_report` to one rewrite per declaration
@@ -157,6 +167,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::AnnotationAgreement;
+    use super::AnnotationRewrite;
     use super::VisibilityAnnotationForm;
     use super::VisibilityAnnotationSite;
     use super::VisibilityReplacement;
@@ -182,7 +193,10 @@ mod tests {
         let source = "pub(crate)   fn item() {}\n";
         let result = VisibilityAnnotationSite::locate(source, 1, 1).map(|site| {
             let replacement = VisibilityReplacement::Remove;
-            assert!(!replacement.is_noop(source, site));
+            assert_eq!(
+                replacement.rewrite(source, site),
+                AnnotationRewrite::Required
+            );
             let fix = replacement.into_fix(PathBuf::from("src/lib.rs"), site);
             format!(
                 "{}{}{}",
@@ -199,16 +213,20 @@ mod tests {
     fn replacing_visibility_preserves_the_separator_and_rejects_noops() {
         let source = "pub(crate)   fn item() {}\n";
         let result = VisibilityAnnotationSite::locate(source, 1, 1).map(|site| {
-            assert!(
+            assert_eq!(
                 VisibilityReplacement::Replace {
                     annotation: String::from("pub(crate)"),
                 }
-                .is_noop(source, site)
+                .rewrite(source, site),
+                AnnotationRewrite::Unchanged
             );
             let replacement = VisibilityReplacement::Replace {
                 annotation: String::from("pub(super)"),
             };
-            assert!(!replacement.is_noop(source, site));
+            assert_eq!(
+                replacement.rewrite(source, site),
+                AnnotationRewrite::Required
+            );
             let fix = replacement.into_fix(PathBuf::from("src/lib.rs"), site);
             format!(
                 "{}{}{}",

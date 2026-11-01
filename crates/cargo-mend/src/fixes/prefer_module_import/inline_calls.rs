@@ -17,6 +17,8 @@ use super::scan::InlineCallFindingInputs;
 use super::scan::ScanFileContext;
 use super::support;
 use super::support::CrateSources;
+use super::support::ImportNameCase;
+use super::support::ModuleResolution;
 use super::support::SourceSpan;
 use crate::config::DiagnosticCode;
 use crate::fixes::imports;
@@ -360,34 +362,43 @@ fn analyze_inline_call(
     }
 
     let path_anchor = PathAnchor::first(&segments)?;
-    if !path_anchor.is_crate_relative() {
-        return None;
+    match path_anchor {
+        PathAnchor::Crate | PathAnchor::Super => {},
+        PathAnchor::SelfMod | PathAnchor::SelfType | PathAnchor::Name => return None,
     }
 
     let leaf = segments.last()?;
-    if !support::is_snake_case_function_name(leaf) {
-        return None;
+    match support::import_name_case(leaf) {
+        ImportNameCase::SnakeCase => {},
+        ImportNameCase::NotSnakeCase => return None,
     }
 
     let absolute_segments = support::resolve_to_absolute(&segments, current_module_path)?;
     if absolute_segments.is_empty() {
         return None;
     }
-    if support::leaf_is_module(crate_sources, &absolute_segments) {
-        return None;
+    match support::module_resolution(crate_sources, &absolute_segments) {
+        ModuleResolution::Module => return None,
+        ModuleResolution::NotModule => {},
     }
 
     let absolute_module = absolute_segments[..absolute_segments.len() - 1].to_vec();
-    if absolute_module.is_empty() || !support::leaf_is_module(crate_sources, &absolute_module) {
+    if absolute_module.is_empty() {
         return None;
+    }
+    match support::module_resolution(crate_sources, &absolute_module) {
+        ModuleResolution::Module => {},
+        ModuleResolution::NotModule => return None,
     }
 
     let module_name = segments[segments.len() - 2].clone();
-    if PathAnchor::from(module_name.as_str()).is_crate_relative() {
-        return None;
+    match PathAnchor::from(module_name.as_str()) {
+        PathAnchor::Crate | PathAnchor::Super => return None,
+        PathAnchor::SelfMod | PathAnchor::SelfType | PathAnchor::Name => {},
     }
-    if !support::is_snake_case_module_name(&module_name) {
-        return None;
+    match support::import_name_case(&module_name) {
+        ImportNameCase::SnakeCase => {},
+        ImportNameCase::NotSnakeCase => return None,
     }
     if declared_modules.contains(&module_name) {
         return None;

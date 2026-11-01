@@ -11,6 +11,8 @@ use syn::visit::visit_item_mod;
 
 use super::support;
 use super::support::CrateSources;
+use super::support::ImportNameCase;
+use super::support::ModuleResolution;
 use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::ImportSource;
 use crate::rust_syntax::PathAnchor;
@@ -115,8 +117,9 @@ fn analyze_function_import(
     }
 
     let path_anchor = PathAnchor::first(&flat.prefix)?;
-    if !path_anchor.is_crate_relative() {
-        return None;
+    match path_anchor {
+        PathAnchor::Crate | PathAnchor::Super => {},
+        PathAnchor::SelfMod | PathAnchor::SelfType | PathAnchor::Name => return None,
     }
 
     if flat.prefix.len() < 2 {
@@ -124,24 +127,28 @@ fn analyze_function_import(
     }
 
     let leaf = &flat.leaf;
-    if !support::is_snake_case_function_name(leaf) {
-        return None;
+    match support::import_name_case(leaf) {
+        ImportNameCase::SnakeCase => {},
+        ImportNameCase::NotSnakeCase => return None,
     }
 
     let absolute_module = support::resolve_to_absolute(&flat.prefix, current_module_path)?;
     let mut absolute_segments = absolute_module.clone();
     absolute_segments.push(leaf.clone());
-    if support::leaf_is_module(crate_sources, &absolute_segments) {
-        return None;
+    match support::module_resolution(crate_sources, &absolute_segments) {
+        ModuleResolution::Module => return None,
+        ModuleResolution::NotModule => {},
     }
 
     let module_segments = &flat.prefix;
     let module_name = module_segments.last()?.clone();
-    if PathAnchor::from(module_name.as_str()).is_crate_relative() {
-        return None;
+    match PathAnchor::from(module_name.as_str()) {
+        PathAnchor::Crate | PathAnchor::Super => return None,
+        PathAnchor::SelfMod | PathAnchor::SelfType | PathAnchor::Name => {},
     }
-    if !support::is_snake_case_module_name(&module_name) {
-        return None;
+    match support::import_name_case(&module_name) {
+        ImportNameCase::SnakeCase => {},
+        ImportNameCase::NotSnakeCase => return None,
     }
     if declared_modules.contains(&module_name) {
         return None;
