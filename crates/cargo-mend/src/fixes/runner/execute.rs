@@ -66,7 +66,7 @@ impl MendRunner<'_> {
                     &planned.sources,
                     &self.selection.package_roots,
                 )?;
-                let notice = Self::build_fix_notice(
+                let execution_notice = Self::build_fix_notice(
                     planned.operation_mode.intent,
                     Some(&planned.report),
                     fix_scans,
@@ -75,7 +75,7 @@ impl MendRunner<'_> {
                 Ok(ExecutionOutcome {
                     compiler_warning_facts: planned.report.facts.compiler_warning_facts,
                     report: planned.report,
-                    notice,
+                    notice: execution_notice,
                     check_duration,
                     compiler_warnings,
                     compiler_fixable,
@@ -90,13 +90,13 @@ impl MendRunner<'_> {
 
     pub(super) fn build_selection(
         &self,
-        output_mode: BuildOutputMode,
+        build_output_mode: BuildOutputMode,
     ) -> Result<CheckedSelection, MendFailure> {
-        let mut result = compiler::run_selection(
+        let mut selection_result = compiler::run_selection(
             self.selection,
             self.cargo_plan,
             self.loaded_config,
-            output_mode,
+            build_output_mode,
             self.color_mode,
             self.toolchain_probes,
         )?;
@@ -109,7 +109,7 @@ impl MendRunner<'_> {
                 .iter()
                 .any(|&code| diagnostics_config.is_enabled(code) == DiagnosticStatus::Enabled)
         };
-        let scans = SyntaxScans {
+        let syntax_scans = SyntaxScans {
             imports:              enabled(&[
                 DiagnosticCode::ShortenLocalCrateImport,
                 DiagnosticCode::ReplaceDeepSuperImport,
@@ -130,15 +130,21 @@ impl MendRunner<'_> {
                 .transpose()
                 .map_err(MendFailure::Unexpected)?,
         };
-        let report = &mut result.report;
+        let report = &mut selection_result.report;
         let scan_findings = [
-            scans
+            syntax_scans
                 .prefer_module_import
                 .as_ref()
-                .map(|scan| &scan.findings),
-            scans.inline_path.as_ref().map(|scan| &scan.findings),
-            scans.imports.as_ref().map(|scan| &scan.findings),
-            scans.imports_at_top.as_ref().map(|scan| &scan.findings),
+                .map(|prefer_module_import_scan| &prefer_module_import_scan.findings),
+            syntax_scans
+                .inline_path
+                .as_ref()
+                .map(|inline_path_scan| &inline_path_scan.findings),
+            syntax_scans.imports.as_ref().map(|scan| &scan.findings),
+            syntax_scans
+                .imports_at_top
+                .as_ref()
+                .map(|imports_at_top_scan| &imports_at_top_scan.findings),
         ];
         report
             .findings
@@ -154,8 +160,8 @@ impl MendRunner<'_> {
         });
         report.refresh_summary();
         Ok(CheckedSelection {
-            result,
-            scans,
+            result: selection_result,
+            scans: syntax_scans,
             sources,
         })
     }

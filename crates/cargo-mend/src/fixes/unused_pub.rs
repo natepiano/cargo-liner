@@ -48,7 +48,7 @@ impl UnusedPubRemovalSite {
 
 pub(super) fn scan_from_report(report: &Report) -> Result<UnusedPubScan> {
     let root = Path::new(&report.root);
-    let mut fixes = Vec::new();
+    let mut use_fixes = Vec::new();
     for finding in &report.findings {
         if finding.diagnostic_code != DiagnosticCode::UnusedPub {
             continue;
@@ -59,9 +59,9 @@ pub(super) fn scan_from_report(report: &Report) -> Result<UnusedPubScan> {
         let Some(site) = UnusedPubRemovalSite::locate(&source, finding.line, finding.column) else {
             continue;
         };
-        fixes.push(site.into_fix(absolute_path));
+        use_fixes.push(site.into_fix(absolute_path));
     }
-    Ok(UnusedPubScan { fixes })
+    Ok(UnusedPubScan { fixes: use_fixes })
 }
 
 #[cfg(test)]
