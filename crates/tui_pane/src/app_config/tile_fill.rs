@@ -43,12 +43,12 @@ impl TileFill {
     pub(crate) fn step(&mut self, step: SettingStep) {
         let choices: Vec<String> = TILE_FILLS
             .iter()
-            .map(|fill| fill.as_str().to_string())
+            .map(|tile_fill| tile_fill.as_str().to_string())
             .collect();
         let next = app_settings::stepped(&choices, self.as_str(), step);
         *self = TILE_FILLS
             .into_iter()
-            .find(|fill| fill.as_str() == next)
+            .find(|tile_fill| tile_fill.as_str() == next)
             .unwrap_or_default();
     }
 }
@@ -107,21 +107,22 @@ mod tests {
     /// way, so a value read off the overlay can be typed into the file.
     #[test]
     fn the_overlay_spells_each_value_the_way_the_file_does() {
-        for fill in [TileFill::AddNew, TileFill::Redistribute] {
-            let written = toml::to_string(&Tiles { fill }).expect("a table should serialize");
-            assert_eq!(written, format!("fill = \"{}\"\n", fill.as_str()));
+        for tile_fill in [TileFill::AddNew, TileFill::Redistribute] {
+            let written =
+                toml::to_string(&Tiles { fill: tile_fill }).expect("a table should serialize");
+            assert_eq!(written, format!("fill = \"{}\"\n", tile_fill.as_str()));
         }
     }
 
     /// Two values, so either direction moves to the other one.
     #[test]
     fn stepping_wraps_between_the_two_values() {
-        let mut fill = TileFill::Redistribute;
-        fill.step(SettingStep::Next);
-        assert_eq!(fill, TileFill::AddNew);
-        fill.step(SettingStep::Next);
-        assert_eq!(fill, TileFill::Redistribute);
-        fill.step(SettingStep::Prev);
-        assert_eq!(fill, TileFill::AddNew);
+        let mut tile_fill = TileFill::Redistribute;
+        tile_fill.step(SettingStep::Next);
+        assert_eq!(tile_fill, TileFill::AddNew);
+        tile_fill.step(SettingStep::Next);
+        assert_eq!(tile_fill, TileFill::Redistribute);
+        tile_fill.step(SettingStep::Prev);
+        assert_eq!(tile_fill, TileFill::AddNew);
     }
 }

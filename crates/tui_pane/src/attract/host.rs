@@ -62,12 +62,12 @@ pub const fn attract_pane_id<A: AttractHost>(mode: AttractMode) -> A::AppPaneId 
 pub fn dispatch_attract_key<A: AttractHost>(
     app: &mut A,
     keymap: &Keymap<A>,
-    bind: &KeyBind,
+    key_bind: &KeyBind,
 ) -> KeyOutcome {
     let Some(mode) = app.attract().keyed_mode() else {
         return KeyOutcome::Unhandled;
     };
-    keymap.dispatch_app_pane(attract_pane_id::<A>(mode), bind, app)
+    keymap.dispatch_app_pane(attract_pane_id::<A>(mode), key_bind, app)
 }
 
 /// Put back the attract configuration the latest wholesale replacement
@@ -78,10 +78,10 @@ pub fn dispatch_attract_key<A: AttractHost>(
 /// small for some of the restored values, which parameter sets were
 /// adjusted to fit it.
 pub fn undo_attract_replacement<A: AttractHost>(app: &mut A) {
-    let outcome = app
+    let attract_configuration_restore_outcome = app
         .attract_mut()
         .restore_configuration_before_last_replacement();
-    let (title, body) = match outcome {
+    let (title, body) = match attract_configuration_restore_outcome {
         AttractConfigurationRestoreOutcome::NothingToUndo => (
             "Nothing to undo",
             "No attract replacement is available to undo".to_string(),
@@ -92,13 +92,13 @@ pub fn undo_attract_replacement<A: AttractHost>(app: &mut A) {
         ),
         AttractConfigurationRestoreOutcome::RestoredWithAdjustments {
             mode,
-            adjusted_parameter_sets,
+            adjusted_parameter_sets: adjusted_attract_parameter_sets,
         } => (
             "Attract restored with adjustments",
             format!(
                 "{} configuration restored; terminal size adjusted {} parameters",
                 mode_label(mode),
-                adjusted_parameter_sets.names(),
+                adjusted_attract_parameter_sets.names(),
             ),
         ),
     };

@@ -96,9 +96,13 @@ mod tests {
 
     #[test]
     fn push_slot_emits_two_spans_per_call() {
-        let palette = BarPalette::default();
+        let bar_palette = BarPalette::default();
         let mut spans = Vec::new();
-        push_slot(&mut spans, &rendered("save", KeyBind::from('s')), &palette);
+        push_slot(
+            &mut spans,
+            &rendered("save", KeyBind::from('s')),
+            &bar_palette,
+        );
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content.as_ref(), " s");
         assert_eq!(spans[1].content.as_ref(), " save");
@@ -106,13 +110,17 @@ mod tests {
 
     #[test]
     fn push_slot_inserts_separator_between_slots() {
-        let palette = BarPalette::default();
+        let bar_palette = BarPalette::default();
         let mut spans = Vec::new();
-        push_slot(&mut spans, &rendered("save", KeyBind::from('s')), &palette);
+        push_slot(
+            &mut spans,
+            &rendered("save", KeyBind::from('s')),
+            &bar_palette,
+        );
         push_slot(
             &mut spans,
             &rendered("cancel", KeyBind::from(KeyCode::Esc)),
-            &palette,
+            &bar_palette,
         );
         // `spans` contains two spans for the first slot, one `super::SEPARATOR`, two for the
         // second.
@@ -122,14 +130,14 @@ mod tests {
 
     #[test]
     fn push_paired_emits_two_spans_with_slash() {
-        let palette = BarPalette::default();
+        let bar_palette = BarPalette::default();
         let mut spans = Vec::new();
         push_paired(
             &mut spans,
             &KeyBind::from(KeyCode::Up).into(),
             &KeyBind::from(KeyCode::Down).into(),
             "nav",
-            &palette,
+            &bar_palette,
         );
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content.as_ref(), " ↑/↓");
@@ -138,12 +146,12 @@ mod tests {
 
     #[test]
     fn push_slot_routes_secondary_key_through_paired_renderer() {
-        let palette = BarPalette::default();
+        let bar_palette = BarPalette::default();
         let mut spans = Vec::new();
-        let mut slot = rendered("expand", KeyBind::from(KeyCode::Left));
-        slot.secondary_key = Some(KeySequence::from(KeyBind::from(KeyCode::Right)));
+        let mut rendered_slot = rendered("expand", KeyBind::from(KeyCode::Left));
+        rendered_slot.secondary_key = Some(KeySequence::from(KeyBind::from(KeyCode::Right)));
 
-        push_slot(&mut spans, &slot, &palette);
+        push_slot(&mut spans, &rendered_slot, &bar_palette);
 
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content.as_ref(), " ←/→");

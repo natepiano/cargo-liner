@@ -72,7 +72,7 @@ pub(in crate::fixes) trait GateTracking {
 pub(in crate::fixes) fn item_gate_attributes(item: &Item) -> &[Attribute] {
     match item {
         Item::Mod(_) => &[],
-        other => super::item_attributes(other),
+        other_item => super::item_attributes(other_item),
     }
 }
 

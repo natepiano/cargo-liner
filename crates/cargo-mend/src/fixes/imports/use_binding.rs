@@ -43,9 +43,9 @@ impl UseBinding {
 }
 
 pub(super) fn collect_use_bindings(tree: &UseTree) -> Vec<UseBinding> {
-    let mut bindings = Vec::new();
-    collect(tree, &mut Vec::new(), &mut bindings);
-    bindings
+    let mut use_bindings = Vec::new();
+    collect(tree, &mut Vec::new(), &mut use_bindings);
+    use_bindings
 }
 
 fn collect(tree: &UseTree, prefix: &mut Vec<String>, bindings: &mut Vec<UseBinding>) {
@@ -86,9 +86,9 @@ fn collect(tree: &UseTree, prefix: &mut Vec<String>, bindings: &mut Vec<UseBindi
                 });
             }
         },
-        UseTree::Group(group) => {
-            for item in &group.items {
-                collect(item, prefix, bindings);
+        UseTree::Group(use_group) => {
+            for use_tree in &use_group.items {
+                collect(use_tree, prefix, bindings);
             }
         },
         UseTree::Glob(_) => bindings.push(UseBinding::Glob {

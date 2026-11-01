@@ -285,9 +285,9 @@ fn scan_file(
     let file_context = ScanFileContext::new(analysis_root, path, text);
     let indexed = file_context.source();
 
-    let (candidates, mut inline_candidates) =
+    let (raw_candidates, mut inline_candidates) =
         detect_candidates(crate_sources, indexed, &current_module_path, syntax);
-    if candidates.is_empty() && inline_candidates.is_empty() {
+    if raw_candidates.is_empty() && inline_candidates.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
 
@@ -301,7 +301,7 @@ fn scan_file(
             current_module_path: &current_module_path,
             imports: &imports,
         },
-        candidates,
+        raw_candidates,
         &mut inline_candidates,
     );
 
@@ -326,16 +326,17 @@ fn scan_file(
 
     if !inline_candidates.is_empty() {
         let file_insertion = file_level_insertion(syntax, text, indexed)?;
-        let (inline_findings, inline_fixes) = inline_calls::build_inline_call_findings_and_fixes(
-            &file_context,
-            &mut InlineCallFindingInputs {
-                candidates: &inline_candidates,
-                imports: &mut imports,
-                file_insertion,
-            },
-        )?;
+        let (inline_findings, inline_use_fixes) =
+            inline_calls::build_inline_call_findings_and_fixes(
+                &file_context,
+                &mut InlineCallFindingInputs {
+                    candidates: &inline_candidates,
+                    imports: &mut imports,
+                    file_insertion,
+                },
+            )?;
         findings.extend(inline_findings);
-        fixes.extend(inline_fixes);
+        fixes.extend(inline_use_fixes);
     }
 
     Ok((findings, fixes))
@@ -350,15 +351,15 @@ fn detect_candidates<'a>(
     syntax: &File,
 ) -> (Vec<RawCandidate>, Vec<InlineCallCandidate>) {
     let declared_modules = collect_declared_modules(syntax);
-    let mut detector = ImportDetector {
+    let mut import_detector = ImportDetector {
         crate_sources,
         current_module_path: current_module_path.to_vec(),
         inline_scope: Vec::new(),
         declared_modules: &declared_modules,
         candidates: Vec::new(),
     };
-    detector.visit_file(syntax, source);
-    let mut inline_detector = InlineCallDetector {
+    import_detector.visit_file(syntax, source);
+    let mut inline_call_detector = InlineCallDetector {
         crate_sources,
         current_module_path,
         declared_modules: &declared_modules,
@@ -366,8 +367,8 @@ fn detect_candidates<'a>(
         inline_mod_depth: 0,
         conditional_attributes: ConditionalAttributes::default(),
     };
-    inline_detector.visit_file(syntax, source);
-    (detector.candidates, inline_detector.candidates)
+    inline_call_detector.visit_file(syntax, source);
+    (import_detector.candidates, inline_call_detector.candidates)
 }
 
 /// What the candidate drops read about the scanned file.
