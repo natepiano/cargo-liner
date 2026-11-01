@@ -186,7 +186,8 @@ fn exact_boundary_narrowing(
     }
 }
 
-/// Returns the reach granted by a resolved parent-facade chain.
+/// Maps `ParentFacadeAnalysis::chain` to `FacadeChainReach::ExportedAt` when resolved;
+/// missing analysis or `FacadeChainResolution::Unresolvable` yields `FacadeChainReach::Unresolved`.
 fn facade_chain_reach(
     parent_facade_analysis: Option<&ParentFacadeAnalysis<'_>>,
 ) -> FacadeChainReach {
@@ -198,10 +199,20 @@ fn facade_chain_reach(
     })
 }
 
-/// Describes an unused facade or one used only by crate-relative paths in its subtree.
-fn stale_parent_facade_message(
-    status: &ParentFacadeExportStatus,
-) -> Option<(String, &ParentFacadeExportStatus)> {
+/// `Stale` pairs a diagnostic message with its `ParentFacadeExportStatus`.
+/// `NotStale` covers an absent facade or one whose usage does not require cleanup.
+enum ParentFacadeStaleness<'a> {
+    Stale {
+        message: String,
+        status:  &'a ParentFacadeExportStatus,
+    },
+    NotStale,
+}
+
+/// Returns `ParentFacadeStaleness::Stale` for `ParentFacadeUsage::Unused` or crate-relative
+/// subtree usage, describing `ParentFacadeExportStatus::parent_rel_path` and `parent_line`.
+/// Relative subtree usage and outside usage yield `ParentFacadeStaleness::NotStale`.
+fn stale_parent_facade_message(status: &ParentFacadeExportStatus) -> ParentFacadeStaleness<'_> {
     let facade = status
         .use_syntax()
         .map_or_else(|| String::from("re-export"), |syntax| format!("`{syntax}`"));
@@ -218,17 +229,16 @@ fn stale_parent_facade_message(
         ),
         ParentFacadeUsage::UsedInsideSubtreeByRelativeImport
         | ParentFacadeUsage::UsedInsideSubtreeByRelativePath
-        | ParentFacadeUsage::UsedOutsideSubtree => return None,
+        | ParentFacadeUsage::UsedOutsideSubtree => return ParentFacadeStaleness::NotStale,
     };
-    Some((message, status))
+    ParentFacadeStaleness::Stale { message, status }
 }
 
-/// Builds the warning for a suspicious declaration, with the stale parent facade it names, if any.
-fn suspicious_pub_warning(
-    stale_result: Option<(String, &ParentFacadeExportStatus)>,
-) -> SuspiciousPubAssessment {
+/// Builds `SuspiciousPubAssessment::Warn` from `ParentFacadeStaleness`, using a stale
+/// `message` and `status.fix_support` for `related`, `fix_support` and `stale_parent_pub_use`.
+fn suspicious_pub_warning(stale_result: ParentFacadeStaleness<'_>) -> SuspiciousPubAssessment {
     let (related, fix_support, stale_parent_pub_use) = match stale_result {
-        Some((message, status)) => {
+        ParentFacadeStaleness::Stale { message, status } => {
             let fix_support = if status.fix_support == ParentFacadeFixSupport::Supported {
                 FixSupport::PubUse
             } else {
@@ -236,7 +246,7 @@ fn suspicious_pub_warning(
             };
             (Some(message), fix_support, Some(status.clone()))
         },
-        None => (None, FixSupport::None, None),
+        ParentFacadeStaleness::NotStale => (None, FixSupport::None, None),
     };
 
     SuspiciousPubAssessment::Warn {
@@ -294,11 +304,11 @@ pub(super) fn classify_suspicious_pub(
 
     let stale_result = parent_facade_export
         .as_ref()
-        .and_then(stale_parent_facade_message);
+        .map_or(ParentFacadeStaleness::NotStale, stale_parent_facade_message);
 
     let declared_reach = VisibilityReach::from(ctx.tcx.visibility(input.def_id.to_def_id()));
     if narrowing == ExactBoundaryNarrowing::NotRequired
-        && stale_result.is_none()
+        && matches!(stale_result, ParentFacadeStaleness::NotStale)
         && matches!(signature_exposure, SignatureExposure::ExposedAt(_))
         && matches!(visibility_requirement, VisibilityRequirement::AtLeast(required)
             if declared_reach.compare(required, ctx.tcx) == Some(Ordering::Equal))
@@ -310,7 +320,7 @@ pub(super) fn classify_suspicious_pub(
 
     if narrowing == ExactBoundaryNarrowing::NotRequired
         && matches!(input.module_location, ModuleLocation::ShallowPrivate)
-        && stale_result.is_none()
+        && matches!(stale_result, ParentFacadeStaleness::NotStale)
     {
         return Ok(SuspiciousPubAssessment::Allowed(
             AllowanceReason::ShallowPrivatePolicy,
