@@ -69,9 +69,10 @@ pub(super) fn drop_candidates_reached_by_descendant_globs(
         functions.retain(|candidate| {
             let mut binding_module = current_module_path.to_vec();
             binding_module.extend(candidate.inline_scope.iter().cloned());
-            !descendants
-                .iter()
-                .any(|descendant| descendant.reaches(&binding_module, &candidate.function_name))
+            !descendants.iter().any(|descendant| {
+                descendant.reaches(&binding_module, &candidate.function_name)
+                    == DescendantReach::ReachesBinding
+            })
         });
         !functions.is_empty()
     });
@@ -82,6 +83,14 @@ pub(super) fn drop_candidates_reached_by_descendant_globs(
 struct DescendantFile {
     globs:       Vec<GlobImport>,
     identifiers: BTreeSet<String>,
+}
+
+/// A descendant reaches a binding when it names the identifier and has a glob from the
+/// binding's module, or an intervening module that may re-export it through another glob.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DescendantReach {
+    ReachesBinding,
+    Unrelated,
 }
 
 impl DescendantFile {
@@ -102,16 +111,18 @@ impl DescendantFile {
         })
     }
 
-    /// Whether a glob here imports from `binding_module`, or from a module
-    /// between it and the glob that may re-export its names through a glob of
-    /// its own, and the file names `name`.
-    fn reaches(&self, binding_module: &[String], name: &str) -> bool {
-        self.identifiers.contains(name)
+    fn reaches(&self, binding_module: &[String], name: &str) -> DescendantReach {
+        if self.identifiers.contains(name)
             && self.globs.iter().any(|glob| {
                 glob.target.starts_with(binding_module)
                     && glob.importing_module.len() > glob.target.len()
                     && glob.importing_module.starts_with(&glob.target)
             })
+        {
+            DescendantReach::ReachesBinding
+        } else {
+            DescendantReach::Unrelated
+        }
     }
 }
 

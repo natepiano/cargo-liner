@@ -9,6 +9,8 @@ use anyhow::Result;
 use super::ancestor;
 use super::crate_files;
 use super::crate_files::CrateFiles;
+use super::crate_files::FileBuilds;
+use super::crate_files::ModuleLookup;
 use super::crate_files::OwnerCrate;
 use super::owner_edit;
 use super::owner_edit::EmptiedOwner;
@@ -117,10 +119,10 @@ pub(in crate::fixes) fn scan_selection(
         .values()
         .flat_map(|resolved| {
             resolved.facts.iter().filter_map(|owner| {
-                resolved
-                    .files
-                    .has_several_parents(&owner_file(root, owner.fact))
-                    .then_some(owner.index)
+                match resolved.files.module_lookup(&owner_file(root, owner.fact)) {
+                    ModuleLookup::SeveralParents => Some(owner.index),
+                    ModuleLookup::Known | ModuleLookup::Undeclared => None,
+                }
             })
         })
         .collect::<BTreeSet<_>>();
@@ -498,12 +500,11 @@ fn build_resolved_round(
                 &redirects,
                 &module_aliases,
             )?;
-            let file_test_only = files.is_test_only(file);
+            let file_builds = files.builds(file);
             for (&slot, &builds) in &result.outside_used {
-                let builds = if file_test_only {
-                    CallerBuilds::TestOnly
-                } else {
-                    builds
+                let builds = match file_builds {
+                    FileBuilds::TestOnly => CallerBuilds::TestOnly,
+                    FileBuilds::Every => builds,
                 };
                 let owner = active[slot];
                 let (_, widest) = outside_used.entry(owner.index).or_insert((owner, builds));

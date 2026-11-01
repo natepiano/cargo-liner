@@ -6,6 +6,7 @@ use syn::Item;
 use syn::UseTree;
 use syn::ext::IdentExt;
 
+use super::crate_files::FileBuilds;
 use super::crate_files::OwnerCrate;
 use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::IdentifierUse;
@@ -106,16 +107,16 @@ impl GlobReach<'_> {
         owner_file: &Path,
     ) -> Result<LocalUse> {
         let files = owner_crate.files;
-        let owner_test_only = files.is_test_only(owner_file);
+        let owner_builds = files.builds(owner_file);
         let mut reach = LocalUse::Unused;
         for (file, module) in files.scannable() {
             if file == owner_file || !module.starts_with(self.owner) {
                 continue;
             }
-            let gate = if files.is_test_only(file) && !owner_test_only {
-                LocalUse::TestOnly
-            } else {
-                LocalUse::Always
+            let gate = match (files.builds(file), owner_builds) {
+                (FileBuilds::TestOnly, FileBuilds::Every) => LocalUse::TestOnly,
+                (FileBuilds::Every, FileBuilds::Every | FileBuilds::TestOnly)
+                | (FileBuilds::TestOnly, FileBuilds::TestOnly) => LocalUse::Always,
             };
             let source = owner_crate
                 .sources

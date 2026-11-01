@@ -49,6 +49,23 @@ impl From<PathAnchor> for PathOrigin {
     }
 }
 
+/// An active generic root names an associated item, such as `S::Ok`, rather than an
+/// importable crate path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GenericBinding {
+    Active,
+    Absent,
+}
+
+/// The ASCII type-name heuristic accepts an uppercase first character and at least one
+/// lowercase character. A Pascal penultimate segment keeps the leaf qualified by its enum
+/// container, avoiding collisions with same-named structs or variants from another enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum IdentifierCase {
+    Pascal,
+    NonPascal,
+}
+
 enum BareNameFootprint {
     SingleType(String),
     QualifiedType(String),
@@ -142,8 +159,12 @@ impl InlinePathVisitor {
 
     fn pop_generics(&mut self) { self.generic_scopes.pop(); }
 
-    fn is_active_generic(&self, name: &str) -> bool {
-        self.generic_scopes.iter().any(|scope| scope.contains(name))
+    fn is_active_generic(&self, name: &str) -> GenericBinding {
+        if self.generic_scopes.iter().any(|scope| scope.contains(name)) {
+            GenericBinding::Active
+        } else {
+            GenericBinding::Absent
+        }
     }
 }
 
@@ -177,7 +198,9 @@ impl InlinePathVisitor {
                 }
             },
             PathOrigin::External => {
-                if is_pascal_case(first) || self.is_active_generic(first) {
+                if is_pascal_case(first) == IdentifierCase::Pascal
+                    || self.is_active_generic(first) == GenericBinding::Active
+                {
                     return;
                 }
             },
@@ -185,21 +208,21 @@ impl InlinePathVisitor {
         }
 
         let leaf = &segments[segments.len() - 1];
-        if !is_pascal_case(leaf) {
+        if is_pascal_case(leaf) == IdentifierCase::NonPascal {
             return;
         }
 
         let full_path = segments.join("::");
 
-        // `is_pascal_case(penultimate)` is the heuristic: if the penultimate segment is also
-        // PascalCase, the leaf is almost certainly an enum variant (or associated
-        // type/const) of that type. Import the parent type, not the leaf, so that variants
+        // `IdentifierCase::Pascal` on the penultimate segment means the leaf is almost
+        // certainly an enum variant (or associated type/const) of that type.
+        // Import the parent type, not the leaf, so that variants
         // stay disambiguated by their enum container (`RustProject::Package`
         // rather than bare `Package`). This avoids collisions with
         // same-named structs or other variants that share a leaf name.
         let penultimate = &segments[segments.len() - 2];
         let (import_segments, import_name, replacement) =
-            if is_pascal_case(penultimate) && penultimate != "Self" {
+            if is_pascal_case(penultimate) == IdentifierCase::Pascal && penultimate != "Self" {
                 let import_segments = segments[..segments.len() - 1].to_vec();
                 let replacement = format!("{penultimate}::{leaf}");
                 (import_segments, penultimate.clone(), replacement)
@@ -243,7 +266,7 @@ impl InlinePathVisitor {
             return;
         };
         let name = first.ident.to_string();
-        if !is_pascal_case(&name) {
+        if is_pascal_case(&name) == IdentifierCase::NonPascal {
             return;
         }
         match BareNameFootprint::for_path(path, name) {
@@ -398,7 +421,7 @@ impl Visit<'_> for GatedInlinePaths<'_, '_> {
             self.visitor.check_path(trait_path);
             if trait_path.segments.len() == 1 {
                 let name = trait_path.segments[0].ident.to_string();
-                if is_pascal_case(&name) {
+                if is_pascal_case(&name) == IdentifierCase::Pascal {
                     self.visitor.bare_type_names.insert(name);
                 }
             }
@@ -418,17 +441,22 @@ impl Visit<'_> for GatedInlinePaths<'_, '_> {
     }
 }
 
-pub(super) fn is_pascal_case(name: &str) -> bool {
+pub(super) fn is_pascal_case(name: &str) -> IdentifierCase {
     let Some(first) = name.chars().next() else {
-        return false;
+        return IdentifierCase::NonPascal;
     };
-    first.is_ascii_uppercase() && name.chars().any(|ch| ch.is_ascii_lowercase())
+    if first.is_ascii_uppercase() && name.chars().any(|ch| ch.is_ascii_lowercase()) {
+        IdentifierCase::Pascal
+    } else {
+        IdentifierCase::NonPascal
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
 
+    use super::IdentifierCase;
     use super::InlinePathVisitor;
     use super::is_pascal_case;
     use crate::fixes::imports::ConditionalAttributes;
@@ -528,26 +556,26 @@ mod tests {
 
     #[test]
     fn pascal_case_detects_types() {
-        assert!(is_pascal_case("MyType"));
-        assert!(is_pascal_case("Thing"));
-        assert!(is_pascal_case("PublicContainer"));
-        assert!(is_pascal_case("Foo"));
+        assert_eq!(is_pascal_case("MyType"), IdentifierCase::Pascal);
+        assert_eq!(is_pascal_case("Thing"), IdentifierCase::Pascal);
+        assert_eq!(is_pascal_case("PublicContainer"), IdentifierCase::Pascal);
+        assert_eq!(is_pascal_case("Foo"), IdentifierCase::Pascal);
     }
 
     #[test]
     fn pascal_case_rejects_functions() {
-        assert!(!is_pascal_case("do_thing"));
-        assert!(!is_pascal_case("func_a"));
+        assert_eq!(is_pascal_case("do_thing"), IdentifierCase::NonPascal);
+        assert_eq!(is_pascal_case("func_a"), IdentifierCase::NonPascal);
     }
 
     #[test]
     fn pascal_case_rejects_constants() {
-        assert!(!is_pascal_case("MAX_SIZE"));
-        assert!(!is_pascal_case("A"));
+        assert_eq!(is_pascal_case("MAX_SIZE"), IdentifierCase::NonPascal);
+        assert_eq!(is_pascal_case("A"), IdentifierCase::NonPascal);
     }
 
     #[test]
     fn pascal_case_rejects_empty() {
-        assert!(!is_pascal_case(""));
+        assert_eq!(is_pascal_case(""), IdentifierCase::NonPascal);
     }
 }
