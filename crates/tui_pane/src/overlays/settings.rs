@@ -1037,8 +1037,8 @@ mod tests {
     #[test]
     fn new_starts_in_browse_mode() {
         let pane = SettingsPane::new();
-        let app = fresh_app();
-        assert!(matches!(pane.mode(&app), Mode::Navigable));
+        let test_app = fresh_app();
+        assert!(matches!(pane.mode(&test_app), Mode::Navigable));
     }
 
     #[test]
@@ -1063,17 +1063,17 @@ mod tests {
     #[test]
     fn enter_in_browse_transitions_to_editing() {
         let mut pane = SettingsPane::new();
-        let app = fresh_app();
+        let test_app = fresh_app();
         let _ = pane.handle_key(&KeyCode::Enter.into());
-        assert!(matches!(pane.mode(&app), Mode::TextInput(_)));
+        assert!(matches!(pane.mode(&test_app), Mode::TextInput(_)));
     }
 
     #[test]
     fn esc_in_editing_returns_to_browse() {
         let mut pane = SettingsPane::for_test_editing(None);
-        let app = fresh_app();
+        let test_app = fresh_app();
         let _ = pane.handle_key(&KeyCode::Esc.into());
-        assert!(matches!(pane.mode(&app), Mode::Navigable));
+        assert!(matches!(pane.mode(&test_app), Mode::Navigable));
     }
 
     #[test]
@@ -1146,13 +1146,19 @@ mod tests {
             "alpha beta gamma delta epsilon",
         )];
 
-        let rendered = pane.render_rows(&rows, render_options());
+        let settings_render = pane.render_rows(&rows, render_options());
 
-        assert!(rendered.lines.len() > 1);
+        assert!(settings_render.lines.len() > 1);
         assert_eq!(pane.line_target(0), SettingsLineTarget::Row(0.into()));
         assert_eq!(pane.line_target(1), SettingsLineTarget::Row(0.into()));
-        assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "▶ Projects  ");
-        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "            ");
+        assert_eq!(
+            settings_render.lines[0].spans[0].content.as_ref(),
+            "▶ Projects  "
+        );
+        assert_eq!(
+            settings_render.lines[1].spans[0].content.as_ref(),
+            "            "
+        );
     }
 
     /// A line break in a value starts a line of its own at the value
@@ -1162,26 +1168,29 @@ mod tests {
         let mut pane = SettingsPane::new();
         let rows = vec![SettingsRow::value(0, "Projects", "alpha\nbeta")];
 
-        let rendered = pane.render_rows(&rows, render_options());
+        let settings_render = pane.render_rows(&rows, render_options());
 
-        assert_eq!(rendered.lines.len(), 2);
+        assert_eq!(settings_render.lines.len(), 2);
         assert_eq!(pane.line_target(1), SettingsLineTarget::Row(0.into()));
-        assert_eq!(rendered.lines[0].spans[1].content.as_ref(), "alpha");
-        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "            ");
-        assert_eq!(rendered.lines[1].spans[1].content.as_ref(), "beta");
+        assert_eq!(settings_render.lines[0].spans[1].content.as_ref(), "alpha");
+        assert_eq!(
+            settings_render.lines[1].spans[0].content.as_ref(),
+            "            "
+        );
+        assert_eq!(settings_render.lines[1].spans[1].content.as_ref(), "beta");
     }
 
     #[test]
     fn render_rows_records_first_line_for_selection() {
         let mut pane = SettingsPane::new();
-        let rows = vec![
+        let settings_rows = vec![
             SettingsRow::section("General"),
             SettingsRow::value(0, "Editor", "zed"),
         ];
 
-        let rendered = pane.render_rows(&rows, render_options());
+        let settings_render = pane.render_rows(&settings_rows, render_options());
 
-        assert_eq!(rendered.selectable_count, 1);
+        assert_eq!(settings_render.selectable_count, 1);
         assert_eq!(
             pane.line_for_selection(0),
             SettingsSelectionLine::Rendered(1)
@@ -1191,13 +1200,13 @@ mod tests {
     #[test]
     fn render_rows_selected_toggle_inlines_suffix() {
         let mut pane = SettingsPane::new();
-        let rows = vec![
+        let settings_rows = vec![
             SettingsRow::toggle(0, "Vim nav keys", true)
                 .with_suffix("  maps h/j/k/l to arrow navigation"),
         ];
 
-        let rendered = pane.render_rows(&rows, render_options());
-        let line = rendered.lines[0]
+        let settings_render = pane.render_rows(&settings_rows, render_options());
+        let line = settings_render.lines[0]
             .spans
             .iter()
             .map(|span| span.content.as_ref())
@@ -1213,8 +1222,8 @@ mod tests {
         pane.set_edit_buffer("hana".to_string(), 2);
         let rows = vec![SettingsRow::value(0, "Editor", "zed")];
 
-        let rendered = pane.render_rows(&rows, render_options());
-        let line = rendered.lines[0]
+        let settings_render = pane.render_rows(&rows, render_options());
+        let line = settings_render.lines[0]
             .spans
             .iter()
             .map(|span| span.content.as_ref())
