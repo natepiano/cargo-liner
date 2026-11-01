@@ -97,8 +97,8 @@ impl PatchEquivalenceFixture {
         self.reset_to(&self.phase_start_head)
     }
 
-    pub(super) fn reset_to(&self, target: &GitObjectId) -> io::Result<()> {
-        self.git(&["reset", "--hard", &target.to_string()])
+    pub(super) fn reset_to(&self, target_git_object_id: &GitObjectId) -> io::Result<()> {
+        self.git(&["reset", "--hard", &target_git_object_id.to_string()])
     }
 
     pub(super) fn set_executable(&self, path: &str) -> io::Result<()> {
@@ -112,14 +112,14 @@ impl PatchEquivalenceFixture {
         &self,
         scopes: &ReservationScopeSet,
         protected_tip: &GitObjectId,
-        target: &GitObjectId,
+        target_git_object_id: &GitObjectId,
     ) -> Result<ScopedPatchComparison, GitError> {
         patch::scoped_patch_equivalence(
             self.root(),
             &self.phase_start_head,
             scopes,
             protected_tip,
-            target,
+            target_git_object_id,
         )
     }
 }

@@ -357,19 +357,19 @@ mod tests {
         let worktree = WORKTREE_ID
             .parse::<WorktreeId>()
             .expect("worktree id should parse");
-        let second_run = PresentedCoordinationRun::from_run_argument(second_run_id);
-        let post_commit = DriftReservationSelection::EveryActiveForPostCommit {
+        let presented_coordination_run = PresentedCoordinationRun::from_run_argument(second_run_id);
+        let drift_reservation_selection = DriftReservationSelection::EveryActiveForPostCommit {
             widening: PostCommitWideningSelection::SessionMappingOrSingleCandidate,
         };
-        let acting = DriftActingIdentity::Run {
+        let drift_acting_identity = DriftActingIdentity::Run {
             run: second_run_id,
             worktree,
         };
 
         let occupied = RetainedReservationSet::replay(&[presented_claim()])
             .expect("the claim fixture should replay");
-        let subjects = post_commit
-            .resolve(&occupied, acting)
+        let subjects = drift_reservation_selection
+            .resolve(&occupied, drift_acting_identity)
             .expect("post-commit selection should resolve against an occupied worktree");
         assert_eq!(subjects.reporting.as_slice(), [reservation_id]);
         assert!(matches!(
@@ -378,7 +378,7 @@ mod tests {
         ));
         assert!(
             matches!(
-                occupied.worktree_occupancy(worktree, second_run),
+                occupied.worktree_occupancy(worktree, presented_coordination_run),
                 WorktreeOccupancy::Incumbent(incumbent)
                     if incumbent.actor().run == holder_run_id
             ),
@@ -386,8 +386,8 @@ mod tests {
         );
 
         let vacant = RetainedReservationSet::default();
-        let subjects = post_commit
-            .resolve(&vacant, acting)
+        let subjects = drift_reservation_selection
+            .resolve(&vacant, drift_acting_identity)
             .expect("post-commit selection should resolve against a vacant worktree");
         assert_eq!(subjects.reporting.as_slice(), []);
         assert!(matches!(
@@ -395,7 +395,7 @@ mod tests {
             PostWriteFirstTouchRequirement::Required
         ));
         assert!(matches!(
-            vacant.worktree_occupancy(worktree, second_run),
+            vacant.worktree_occupancy(worktree, presented_coordination_run),
             WorktreeOccupancy::NoIncumbent
         ));
     }
