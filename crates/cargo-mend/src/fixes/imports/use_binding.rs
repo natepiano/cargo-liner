@@ -1,5 +1,13 @@
 use syn::UseTree;
 
+/// Whether a `UseBinding::Named` binds its path's leaf spelling, including a rename to that
+/// same spelling; a `UseBinding::Glob` is `AliasOrGlob`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::fixes) enum BindingSpelling {
+    PathLeaf,
+    AliasOrGlob,
+}
+
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub(in crate::fixes) enum UseBinding {
     Named { name: String, path: String },
@@ -20,9 +28,17 @@ impl UseBinding {
         }
     }
 
-    pub(in crate::fixes) fn binds_path_leaf(&self) -> bool {
-        self.name()
-            .is_some_and(|name| self.path().rsplit("::").next() == Some(name))
+    pub(in crate::fixes) fn spelling(&self) -> BindingSpelling {
+        match self {
+            Self::Named { name, path } => {
+                if path.rsplit("::").next() == Some(name.as_str()) {
+                    BindingSpelling::PathLeaf
+                } else {
+                    BindingSpelling::AliasOrGlob
+                }
+            },
+            Self::Glob { .. } => BindingSpelling::AliasOrGlob,
+        }
     }
 }
 

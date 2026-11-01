@@ -206,17 +206,26 @@ impl<'a> RewriteBinding<'a> {
 pub(super) struct InlineCallFindingInputs<'a> {
     pub(super) candidates:     &'a [InlineCallCandidate],
     pub(super) imports:        &'a mut ModuleImports,
-    pub(super) file_insertion: FileInsertion,
+    pub(super) file_insertion: FileInsertionSite,
 }
 
-/// Where a file-level `use` goes: after the last top-level `use`, or before
-/// the first item when the file has none.
+/// Where a file-level `use` goes: after the last top-level `use`, before the first item,
+/// or at the start of an empty file. `BeforeFirstItem` and `EmptyFile` have no existing
+/// top-level `use`, so inserted imports need a blank line separating them from any following item.
 #[derive(Clone, Copy)]
-pub(super) struct FileInsertion {
-    pub(super) offset:            usize,
-    /// The file has no top-level `use`, so the inserted imports need a blank
-    /// line between them and the item that follows.
-    pub(super) before_first_item: bool,
+pub(super) enum FileInsertionSite {
+    AfterImport { offset: usize },
+    BeforeFirstItem { offset: usize },
+    EmptyFile,
+}
+
+impl FileInsertionSite {
+    pub(super) const fn offset(self) -> usize {
+        match self {
+            Self::AfterImport { offset } | Self::BeforeFirstItem { offset } => offset,
+            Self::EmptyFile => 0,
+        }
+    }
 }
 
 pub(crate) fn scan_selection(
@@ -608,12 +617,18 @@ fn collect_super_reimports(
             prefix.pop();
         },
         UseTree::Name(name) => {
-            if reaches_file_top_level(prefix, depth) {
+            if matches!(
+                file_top_level_reach(prefix, depth),
+                FileTopLevelReach::Reaches
+            ) {
                 names.insert(name.ident.to_string());
             }
         },
         UseTree::Rename(rename) => {
-            if reaches_file_top_level(prefix, depth) {
+            if matches!(
+                file_top_level_reach(prefix, depth),
+                FileTopLevelReach::Reaches
+            ) {
                 names.insert(rename.ident.to_string());
             }
         },
@@ -626,8 +641,18 @@ fn collect_super_reimports(
     }
 }
 
-fn reaches_file_top_level(prefix: &[String], depth: usize) -> bool {
-    prefix.len() == depth && prefix.iter().all(|segment| segment == "super")
+/// Whether a path climbs exactly the enclosing inline-module depth to the file's own top level.
+enum FileTopLevelReach {
+    Reaches,
+    DoesNotReach,
+}
+
+fn file_top_level_reach(prefix: &[String], depth: usize) -> FileTopLevelReach {
+    if prefix.len() == depth && prefix.iter().all(|segment| segment == "super") {
+        FileTopLevelReach::Reaches
+    } else {
+        FileTopLevelReach::DoesNotReach
+    }
 }
 
 fn drop_attribute_referenced_candidates(
@@ -645,7 +670,7 @@ fn file_level_insertion(
     syntax: &File,
     text: &str,
     source: &ImportSource<'_>,
-) -> Result<FileInsertion> {
+) -> Result<FileInsertionSite> {
     let mut last_use_end: Option<usize> = None;
     let mut first_item_start: Option<usize> = None;
     for item in &syntax.items {
@@ -661,9 +686,10 @@ fn file_level_insertion(
             last_use_end = Some(end);
         }
     }
-    Ok(FileInsertion {
-        offset:            last_use_end.or(first_item_start).unwrap_or(0),
-        before_first_item: last_use_end.is_none(),
+    Ok(match (last_use_end, first_item_start) {
+        (Some(offset), _) => FileInsertionSite::AfterImport { offset },
+        (None, Some(offset)) => FileInsertionSite::BeforeFirstItem { offset },
+        (None, None) => FileInsertionSite::EmptyFile,
     })
 }
 
