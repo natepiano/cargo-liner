@@ -71,11 +71,11 @@ pub(crate) fn phase_committed_path_diffs(
 pub(crate) fn incursion_path_log(
     repository_root: &Path,
     target: &GitObjectId,
-    paths: &[ReservationScopePath],
+    reservation_scope_paths: &[ReservationScopePath],
 ) -> IncursionPathLogInvocation {
     let record_format =
         format!("--format=%x00{INCURSION_ATTRIBUTION_RECORD_MARKER}%x00%H%x00%ct%x00%s");
-    let mut arguments = Vec::with_capacity(paths.len() + 8);
+    let mut arguments = Vec::with_capacity(reservation_scope_paths.len() + 8);
     arguments.extend([
         GIT_LOG_COMMAND.to_owned(),
         GIT_NUL_TERMINATED_ARG.to_owned(),
@@ -87,14 +87,15 @@ pub(crate) fn incursion_path_log(
         GIT_PATHSPEC_SEPARATOR.to_owned(),
     ]);
     arguments.extend(
-        paths
+        reservation_scope_paths
             .iter()
             .map(|path| format!("{GIT_LITERAL_TOP_PATHSPEC_PREFIX}{path}")),
     );
-    let output_availability = command::git_output_dynamic(repository_root, &arguments).into();
+    let git_command_output_availability =
+        command::git_output_dynamic(repository_root, &arguments).into();
     IncursionPathLogInvocation {
         arguments,
-        output_availability,
+        output_availability: git_command_output_availability,
     }
 }
 
