@@ -13,6 +13,7 @@ use schemars::JsonSchema;
 use schemars::Schema;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::ser::SerializeStruct as _;
 use serde_json::Map;
 use serde_json::Value;
 
@@ -416,8 +417,6 @@ impl Serialize for OutputEnvelope {
     where
         Serializer: serde::Serializer,
     {
-        use serde::ser::SerializeStruct as _;
-
         let mut output = serializer.serialize_struct("output_envelope", 9)?;
         output.serialize_field("output_contract_version", &self.output_contract_version)?;
         output.serialize_field("verb", &self.verb)?;

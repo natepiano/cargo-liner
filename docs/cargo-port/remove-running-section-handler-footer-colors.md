@@ -1494,61 +1494,50 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 57d — A Codex session resumed under a second account shows its own name  · status: done
 
-**Depends on:** none.
+#### As-built
 
-#### Work Order
-
-**Goal:** cargo-handler shows the Codex session's own name (for example `morty`) in the session column, also when the session runs under a second account home whose sessions folder points at the first one.
-
-**Source:** the user, 2026-10-31: the standalone Codex session `morty` shows only its pid in the Unassigned group; an earlier cargo-handler build showed `morty`. Diagnosis (Phase 57a side task): morty is thread `01a18dbb…`, resumed by a process with `CODEX_HOME=~/.codex2`. The `.codex2` database names it `morty`, but its `rollout_path` starts with `~/.codex/sessions`, because `.codex2/sessions` is a link to it. `classify.rs::thread_matches_home` rejects that path, `codex_startup_threads` finds no match, and `scan.rs::attach_codex_sessions` keeps the pid. Commit 21c1c47f added the path check and the pid-name reset; Phase 41 (08e18f05) repaired the originator choice but kept the check.
-
-**Constraints from prior phases:**
-- The session name is drawn from `AgentRow.name` (`summary/mod.rs::agent_fields`); names come from `census/codex_names.rs::SessionNames` and the thread database.
-- Keep accounts separate: never infer the account from the rollout path, and never merge account homes through links.
-- Neither the staff list nor the production tree names standalone sessions, so Phase 57c does not fix this.
-
-**Spec:**
-1. Keep the account home of the database each Codex thread came from, and match a resumed thread id inside that home.
-2. When the session index has no name for the thread, keep the database's own name.
-3. Add a regression test: a session resumed under one account home with a shared rollout folder shows its own name, and a thread of the other account does not match it.
+- Each `CodexThread` carries `CodexAccountHome`, the lexical home of the database that supplied it. A shared rollout link does not change its account.
+- `thread_matches_home` matches the process account home to the database account home. A resumed thread from another account does not match, even with the same thread id and rollout path.
+- `SessionNames::name` uses the thread's own account index. If that index has no name, it keeps the database name. `SessionName` distinguishes `Named` from `Unnamed`.
+- `resumed_codex_with_shared_rollouts_keeps_its_database_name_and_account` checks the shared folder, foreign account, database fallback and own index rename. `default_and_named_codex_homes_keep_their_own_threads_with_shared_sessions` checks separate accounts.
+- The Mac suite passed 776 of 776 tests; the slowest took 0.325 s. Lint passed. The live cells view showed `morty idle codex2`. Commit: `449c5b97`.
 
 **Files:**
-- `crates/cargo-handler/src/census/classify.rs` — the home match
-- `crates/cargo-handler/src/census/codex.rs` — thread records carry their account home
-- `crates/cargo-handler/src/census/codex_names.rs` — the name fallback
-- `crates/cargo-handler/src/census/scan.rs` — `attach_codex_sessions`
-- `crates/cargo-handler/src/census/scan/` — tests
 
-**Workers:** 1 writer.
+- `crates/cargo-handler/src/census/classify.rs` — matches threads by their database account home; updates test records.
+- `crates/cargo-handler/src/census/codex.rs` — adds `CodexAccountHome` to database reads and uses `SessionName` for thread names.
+- `crates/cargo-handler/src/census/codex_names.rs` — normalizes names and uses the own account index with a database fallback.
+- `crates/cargo-handler/src/census/codex_label_cut_tests.rs` — gives the label fixture an account home and an unnamed state.
+- `crates/cargo-handler/src/census/codex_session_tests.rs` — updates account fixtures and makes no-name cases explicit.
+- `crates/cargo-handler/src/census/scan.rs` — attaches the resolved name and includes the account-home tests.
+- `crates/cargo-handler/src/census/scan/codex_home_tests.rs` — tests a resumed thread with shared rollouts and separate account databases.
+- `crates/cargo-handler/CHANGELOG.md` — records the resumed-session name fix.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: run cargo-handler on natedev and see `morty` in the session column. The checkpoint adds a Change-Review line.
+**Binds later work:** Keep account ownership with the source database; never derive it from a shared rollout path. Phase 57c's staff list does not cover standalone sessions, which still need the Codex name readers.
 
-### Phase 57b — The reset-shade test runs in under a second  · status: todo
+**Gotchas:**
 
-**Depends on:** none.
+- The activity fixture is explicitly unnamed because the database name is now kept. A fixture that expects a pid must have no database name.
+- The live capture needs the cells view. The summary-only view hides Unassigned.
 
-#### Work Order
+### Phase 57b — The reset-shade test runs in under a second  · status: done
 
-**Goal:** the cargo-handler test `reset_shades_keep_saturated_chroma_and_separation_from_plain_text` runs in less than one second on the Mac, and keeps every check it makes now.
+#### As-built
 
-**Source:** the showrunner, 2026-10-31: the test took 1.008 s on the Mac at the Phase 57 checkpoint (1.28 s in a later Phase 57a run). No test may take one second or more.
-
-**Constraints from prior phases:**
-- The test is in `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` (≈532).
-- Find the cost with evidence (time each part on the Mac) before a change. Do not weaken an assertion or drop a case to make it fast; if the cost is in product code the test calls, fix it there.
-
-**Spec:**
-1. Measure where the test spends its time.
-2. Remove that cost: share work the test repeats, or make the product code it calls cheaper. Every assertion and case stays.
-3. The test runs under 1 s on the Mac in a full `verify.sh test cargo-handler` run.
+- `reset_shades_keep_saturated_chroma_and_separation_from_plain_text` reuses each draw within one theme when both pane backgrounds match. The cache is local to the test's theme loop.
+- Every theme, tint case, reset rank and assertion stays. Each case still checks all 256 ranks. Product code is unchanged.
+- The Mac test took 0.375 s, down from 1.0–1.28 s. The full Mac suite passed 775 of 775 tests.
+- Both reviews approved with no findings. Commit: `5c5ddaad`. `Change-Review: none — test speed only`.
 
 **Files:**
-- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the test
-- `crates/cargo-handler/src/summary/` — product code the test calls, only if the cost is there
 
-**Workers:** 1 writer.
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — reuses draws by the pair of pane backgrounds within each theme.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean on the Mac; no test takes a second. The checkpoint adds `Change-Review: none — test speed only` unless product code changes.
+**Binds later work:** Keep every case and assertion when reducing test time. If frame size, app data or time varies between cases, include that input in draw reuse or make a separate draw.
+
+**Gotchas:**
+
+- Tint on and off can produce the same pane backgrounds on a transparent screen. A tint flag alone does not identify a distinct draw.
 
 ### Phase 57c — cargo-handler reads its staff from the staff list  · status: todo
 

@@ -138,42 +138,9 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **As-built:** the subtree re-export planner reads every mount of a physical source that mend can see by syntax, across all packages: `mod` items with or without `#[path]` (also inside function bodies) and `include!` with any path prefix and a literal path (`crates/cargo-mend/src/rust_syntax/module_map.rs`). A shared re-export changes only when every package that uses it gets the same edit (`fixes/subtree_reexport/scan.rs`); otherwise mend keeps it and reports one skipped manual rewrite. A mount mend cannot place (`UnobservedPackageReach::Unresolved`, a non-literal include) gives that package unknown reach, which keeps the re-export. Nested packages under a root package path are told apart by source membership, not a directory prefix. `resolve_visibility_proposals` holds its agreement state in an enum; tui_pane `attract::controller` names are `pub(super)` (checkpoint 44ecc942). Gotchas: a `mod x;` that a fix leaves empty stays; renamed custom macros and attribute or derive macros are outside the mount guarantee; raw identifier spellings are the next mend phase's work. Ruled out: deleting module declarations a fix leaves empty.
 
-### Phase 2i — mend never writes the same import twice  · status: todo
+### Phase 2i — mend never writes the same import twice  · status: done
 
-**Why:** showrunner 2026-10-31. `mend --fix` on hana's `crates/hana_metrics/src/reading/tests.rs`, which has many `use crate::test_support::<item>;` imports, wrote both `use crate::test_support;` and `use crate::test_support::{self};`. The compile failed with E0252 and mend rolled the fix back. Log: `/tmp/claude-1000/-home-natepiano-worktrees-claude-natedev-builds/51505394-82db-43d3-a528-136f4ee38d7a/scratchpad/mend_dup_import.log`. Cost: one lint wait per hit; nothing is blocked.
-
-**Depends on:** Phase 2h.
-
-#### Work Order
-
-**Goal:** the fixer cannot write an import that names something the module already imports.
-
-**Constraints:**
-- Fix at the cause, by type: the import edits for one module go through one owner that holds the module's import set, so a second spelling of the same name (`use a::b;`, `use a::b::{self};`) is one entry, not two lines. No text check after the fact.
-- Find which fix (or which pair of fixes) writes each line, and name it in the report.
-- Output for every other import shape stays the same.
-
-**Spec:**
-1. Any set of fixes that adds or rewrites imports in one module writes each imported name once within one lexical scope and one configuration: two imports of a name under different `cfg` gates or with different visibility (as in `fix_imports_preserve_public_test_reexport`) both stay, and aliases, public reachability and dependent references are kept.
-1a. When the import owner declines an edit in one file, the whole re-export change it belongs to (owner removal, caller redirects, ancestor insertion) is rebuilt or rejected as one; a regression proves a rejected caller import cannot leave its re-export deleted.
-2. **Tests, red on main first, each under one second where rustc allows:** a fixture module with several `use crate::m::<item>;` imports that mend rewrites; `mend --fix` leaves exactly one import of `m` and the crate builds.
-3. CHANGELOG: one line.
-4. From phase 2h (landed at its repair cap): the mount scan in `crates/cargo-mend/src/rust_syntax/module_map.rs` reads raw identifiers as their plain names — `r#include!` and `std::r#include!` (≈580, `segment.ident.unraw() == "include"`), `#[r#path = ".."]` (≈64) and `#[r#cfg_attr(all(), path = "..")]` (≈71, `get_ident().is_some_and(|ident| ident.unraw() == "...")`, still one segment). Tests in `tests/diagnostics/pub_use_outside_subtree_fixes.rs` next to the qualified-include test: raw include, raw path, raw cfg_attr with a nested raw path — each keeps the shared source unchanged, reports one skipped manual rewrite, and both packages build; a non-literal raw include gives Unknown reach, and after the final import step it keeps the source, reports exactly one skipped manual rewrite, and both packages build.
-
-**Constraints from prior phases:**
-- Phase 2h: a shared source's re-export changes only when every package that uses it gets the same edit; a package whose mount mend cannot place has Unknown reach and keeps the re-export.
-
-**Files:**
-- `crates/cargo-mend/src/fixes/` — the import edit owner (the writer names the files)
-- `crates/cargo-mend/src/rust_syntax/module_map.rs` — raw identifier mounts (item 4)
-- `crates/cargo-mend/src/fixes/subtree_reexport/{scan.rs,mod.rs,crate_files.rs}` — whole re-export change kept or rejected as one (item 1a); `CrateFiles.modules` keeps the `FileModulePath` enum (`Known` / `SeveralParents`) instead of `Option<Vec<String>>`
-- `crates/cargo-mend/src/fixes/facade_redirect/caller_rewrite.rs`, `crates/cargo-mend/src/fixes/pub_use_fixes/validated_plan.rs`, `crates/cargo-mend/src/fixes/runner/{combine.rs,plan.rs,notices.rs}` — redirect ownership and final composition
-- `crates/cargo-mend/tests/` — the fixture test
-- `crates/cargo-mend/CHANGELOG.md`
-
-**Workers:** 1 writer (`review` slot, the mend writer), who also writes the tests.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; the in-repo `mend --fix` step reports no new error.
+**As-built:** every fixer that adds or rewrites a use item (PreferModuleImport, ImportsAtTop, SubtreeReexport caller rewrites, facade redirects) hands its imports to one owner, `ModuleImports` (`crates/cargo-mend/src/fixes/imports/module_imports.rs`, conditions in `import_condition.rs`). It resolves each binding from module paths seeded by Cargo target roots (`rust_syntax::ModuleMap` via `ParsedSources::for_selection`), so equal paths to one module are one binding; identity is scope + target + name, and a public or cfg-gated re-export is kept while a private import is limited to the configurations it does not cover. A file with several module paths stays unresolved and its dependent rewrites are declined. A declined import edit goes back into `subtree_reexport::scan_selection`'s fact-exclusion loop, so the whole re-export change is re-planned without that finding (re-export kept, one skipped report, independent fixes applied). Raw identifier mounts (`r#include!`, `#[r#path]`, `#[r#cfg_attr]`) count; `CrateFiles.modules` keeps the `FileModulePath` enum (checkpoint e7f314d2). Gotchas: the per-fixer `import_plan` dedup is gone; any new fixer that writes imports must go through `ModuleImports`. Ruled out: filtering finished output to drop duplicates.
 
 ### Phase 2j — a mend cell keeps its progress bar after a diagnostic  · status: done
 

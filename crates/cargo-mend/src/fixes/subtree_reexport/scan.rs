@@ -21,6 +21,7 @@ use crate::fixes::facade_redirect::CallerBuilds;
 use crate::fixes::facade_redirect::FacadeRedirect;
 use crate::fixes::facade_redirect::ModuleAliases;
 use crate::fixes::facade_redirect::RedirectTarget;
+use crate::fixes::imports::OwnedFix;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::AncestorReexport;
@@ -44,16 +45,40 @@ pub(in crate::fixes) struct SubtreeReexportScan {
     pub(in crate::fixes) skipped: usize,
 }
 
-/// A fix and the facts it belongs to; a caller fix belongs to none.
-struct OwnedFix {
-    fix:   UseFix,
-    facts: Vec<usize>,
-}
-
 /// The fixes one round builds from the facts still in play.
 struct Round {
     fixes:     Vec<OwnedFix>,
     unmatched: BTreeSet<usize>,
+}
+
+impl Round {
+    /// Preserve every fact owner until composition accepts the round. Import
+    /// safety refusals rebuild original proposals rather than filtering edits
+    /// whose replacements or retained imports planning may already have changed.
+    fn planning_refusals(
+        &self,
+        plan: &mut impl FnMut(&SubtreeReexportScan) -> Result<BTreeSet<PathBuf>>,
+    ) -> Result<BTreeSet<usize>> {
+        let fixes = self
+            .fixes
+            .iter()
+            .map(|owned| owned.fix.clone())
+            .collect::<Vec<_>>();
+        let Ok(fixes) = ValidatedFixSet::try_from(fixes) else {
+            return Ok(self
+                .fixes
+                .iter()
+                .flat_map(|owned| owned.facts.iter().copied())
+                .collect());
+        };
+        let declined = plan(&SubtreeReexportScan { fixes, skipped: 0 })?;
+        Ok(self
+            .fixes
+            .iter()
+            .filter(|owned| declined.contains(&owned.fix.path))
+            .flat_map(|owned| owned.facts.iter().copied())
+            .collect())
+    }
 }
 
 /// Facts stay with the crate files resolved for them. Owner editing cannot
@@ -76,6 +101,7 @@ pub(in crate::fixes) fn scan_selection(
     selection: &Selection,
     report: &Report,
     sources: &ParsedSources,
+    mut plan: impl FnMut(&SubtreeReexportScan) -> Result<BTreeSet<PathBuf>>,
 ) -> Result<SubtreeReexportScan> {
     let root = &selection.analysis_root;
     let (facts, mut skipped) = fixable_facts(root, report);
@@ -108,6 +134,9 @@ pub(in crate::fixes) fn scan_selection(
         rejected.extend(overlapping_facts(&round.fixes));
         rejected.extend(mounts.unagreed_facts(root, &facts, &round.fixes));
         if rejected.is_empty() {
+            rejected.extend(round.planning_refusals(&mut plan)?);
+        }
+        if rejected.is_empty() {
             break round.fixes;
         }
         excluded.extend(rejected);
@@ -131,9 +160,8 @@ pub(in crate::fixes) fn scan_selection(
     facade_redirect::dedup_fixes(&mut fixes);
     match ValidatedFixSet::try_from(fixes) {
         Ok(fixes) => Ok(SubtreeReexportScan { fixes, skipped }),
-        // Two overlapping caller rewrites belong to no single fact. If they make
-        // `ValidatedFixSet::try_from` fail, the whole pass stands down and every fact
-        // counts as skipped.
+        // Defensive validation keeps the whole pass intact if its final
+        // flattened proposals cannot be represented as one validated set.
         Err(_) => Ok(SubtreeReexportScan {
             fixes:   ValidatedFixSet::try_from(Vec::<UseFix>::new())?,
             skipped: skipped + applied,
@@ -307,6 +335,9 @@ impl ReexportMountInventory {
                     owners.insert(index);
                     let crate_root = crate_files::canonical(&root.join(&fact.crate_root_file));
                     if let Some(mount) = crates.get(&crate_root).and_then(|mounts| {
+                        if mounts.len() == 1 {
+                            return mounts.iter().next();
+                        }
                         mounts
                             .iter()
                             .filter(|mount| fact.owner_module.starts_with(mount.module_path()))
@@ -486,9 +517,11 @@ fn build_resolved_round(
             );
             round
                 .fixes
-                .extend(result.fixes.into_iter().map(|fix| OwnedFix {
-                    fix,
-                    facts: Vec::new(),
+                .extend(result.fixes.into_iter().map(|mut owned| {
+                    for index in &mut owned.facts {
+                        *index = active[*index].index;
+                    }
+                    owned
                 }));
         }
     }

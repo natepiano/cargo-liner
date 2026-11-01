@@ -61,14 +61,22 @@ impl From<&Meta> for ModulePathAttribute {
     fn from(meta: &Meta) -> Self {
         match meta {
             Meta::NameValue(value) => {
-                if value.path.is_ident("path") {
+                if value
+                    .path
+                    .get_ident()
+                    .is_some_and(|ident| ident.unraw() == "path")
+                {
                     path_from_meta(meta).map_or(Self::Ignored, Self::Direct)
                 } else {
                     Self::Ignored
                 }
             },
             Meta::List(list) => {
-                if list.path.is_ident("cfg_attr") {
+                if list
+                    .path
+                    .get_ident()
+                    .is_some_and(|ident| ident.unraw() == "cfg_attr")
+                {
                     parse_meta_list(list).map_or(Self::Ignored, |metas| {
                         Self::Conditional(metas.iter().skip(1).map(Self::from).collect())
                     })
@@ -577,7 +585,7 @@ impl<'ast> Visit<'ast> for SourceReachEdges {
             .path
             .segments
             .last()
-            .is_some_and(|segment| segment.ident == "include")
+            .is_some_and(|segment| segment.ident.unraw() == "include")
         {
             self.targets.push(
                 syn::parse2::<LitStr>(node.tokens.clone())
@@ -661,6 +669,20 @@ mod tests {
     use super::ModuleDirectories;
     use super::ModuleMap;
     use crate::rust_syntax::ParsedSources;
+
+    #[test]
+    fn nonliteral_raw_includes_leave_source_reach_unresolved() {
+        for name in ["r#include", "std::r#include"] {
+            let dir = tempdir().expect("create source reach fixture");
+            let root = dir.path().join("lib.rs");
+            fs::write(&root, format!("{name}!(concat!(\"shared\", \".rs\"));\n"))
+                .expect("write nonliteral include");
+            let sources = ParsedSources::default();
+            let error = ModuleMap::reachable_sources([root], &sources)
+                .expect_err("nonliteral raw include must not claim complete source reach");
+            assert!(error.to_string().contains("not a literal path"), "{error}");
+        }
+    }
 
     #[test]
     fn declarations_keep_the_first_mount_including_the_empty_crate_root_path() {

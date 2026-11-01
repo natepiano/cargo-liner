@@ -9,11 +9,10 @@ use crate::rust_syntax::ModuleMap;
 use crate::rust_syntax::ParsedSources;
 
 /// The source files of one crate root, keyed by canonical path, each with the
-/// module path it occupies — `None` when `#[path]` attaches it to several
-/// parents and no single module path describes it.
+/// module path it occupies, or `SeveralParents` when no single path describes it.
 #[derive(Default)]
 pub(super) struct CrateFiles {
-    modules:   BTreeMap<PathBuf, Option<Vec<String>>>,
+    modules:   BTreeMap<PathBuf, FileModulePath>,
     /// The files that compile only under test: `#[cfg(test)]` sits on their
     /// `mod` declaration or an ancestor's.
     test_only: BTreeSet<PathBuf>,
@@ -32,28 +31,29 @@ impl CrateFiles {
         let mut modules = BTreeMap::new();
         let mut test_only = BTreeSet::new();
         for (file, module_path) in module_map.declared_files() {
-            let module_path = match module_path {
-                FileModulePath::Known(module_path) => Some(module_path),
-                FileModulePath::SeveralParents => None,
-            };
             if module_map.is_test_only(file) {
                 test_only.insert(canonical(file));
             }
             modules.insert(canonical(file), module_path);
         }
         for (file, module_path) in mounts {
-            modules.entry(canonical(&file)).or_insert(Some(module_path));
+            modules
+                .entry(canonical(&file))
+                .or_insert(FileModulePath::Known(module_path));
         }
         Self { modules, test_only }
     }
 
     /// Every file with a single module path.
     pub(super) fn scannable(&self) -> impl Iterator<Item = (&Path, &[String])> {
-        self.modules.iter().filter_map(|(file, module_path)| {
-            module_path
-                .as_deref()
-                .map(|module_path| (file.as_path(), module_path))
-        })
+        self.modules
+            .iter()
+            .filter_map(|(file, module_path)| match module_path {
+                FileModulePath::Known(module_path) => {
+                    Some((file.as_path(), module_path.as_slice()))
+                },
+                FileModulePath::SeveralParents => None,
+            })
     }
 
     /// Whether `file` (canonical) compiles only under test.
@@ -61,7 +61,7 @@ impl CrateFiles {
 
     /// Whether `file` (canonical) is attached to several parents.
     pub(super) fn has_several_parents(&self, file: &Path) -> bool {
-        matches!(self.modules.get(file), Some(None))
+        matches!(self.modules.get(file), Some(FileModulePath::SeveralParents))
     }
 }
 
