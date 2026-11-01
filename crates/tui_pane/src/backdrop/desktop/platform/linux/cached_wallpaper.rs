@@ -52,7 +52,7 @@ fn reduced_wallpaper(
     wallpaper: WallpaperSnapshot,
     cell: (f64, f64),
 ) -> Result<(u16, u16, Vec<Color>), CaptureFailure> {
-    let key = WallpaperCacheKey {
+    let wallpaper_cache_key = WallpaperCacheKey {
         metrics,
         output: output.size,
         scale_bits: output.scale.to_bits(),
@@ -60,19 +60,19 @@ fn reduced_wallpaper(
     };
     if let Ok(cache) = WALLPAPER_CACHE.lock()
         && let Some(cached) = cache.as_ref()
-        && cached.key == key
+        && cached.key == wallpaper_cache_key
     {
         return Ok((cached.grid.0, cached.grid.1, cached.colors.clone()));
     }
-    let image = key
+    let rgba_image = wallpaper_cache_key
         .wallpaper
-        .render(key.output)
+        .render(wallpaper_cache_key.output)
         .ok_or(CaptureFailure::DisplayCaptureFailed)?;
-    let reduced = reduction::reduce_capture(image.as_raw(), key.output, cell)?;
+    let reduced = reduction::reduce_capture(rgba_image.as_raw(), wallpaper_cache_key.output, cell)?;
     if let Ok(mut cache) = WALLPAPER_CACHE.lock() {
         *cache = Some(CachedWallpaper {
-            key,
-            grid: (reduced.0, reduced.1),
+            key:    wallpaper_cache_key,
+            grid:   (reduced.0, reduced.1),
             colors: reduced.2.clone(),
         });
     }

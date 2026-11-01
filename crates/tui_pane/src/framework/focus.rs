@@ -31,9 +31,9 @@ pub(super) fn reconcile_focus_after_toast_change<Ctx: AppContext>(ctx: &mut Ctx)
             return;
         }
     }
-    let target = focus_cycle(ctx).first().copied();
-    if let Some(target) = target {
-        ctx.set_focus(target);
+    let first_focused_pane = focus_cycle(ctx).first().copied();
+    if let Some(focused_pane) = first_focused_pane {
+        ctx.set_focus(focused_pane);
     }
 }
 
@@ -57,9 +57,9 @@ pub(super) fn focus_step<Ctx: AppContext>(ctx: &mut Ctx, direction: CycleDirecti
         return;
     }
     if let FocusedPane::App(id) = current {
-        let pane_ring = ctx.framework().cycle_step_for(id);
-        if let Some(step) = pane_ring
-            && step(ctx, direction)
+        let pane_cycle_step = ctx.framework().cycle_step_for(id);
+        if let Some(cycle_step) = pane_cycle_step
+            && cycle_step(ctx, direction)
         {
             return;
         }

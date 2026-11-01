@@ -57,13 +57,13 @@ mod tests {
 
     #[test]
     fn single_primary_returns_inner_action() {
-        let slot = BarSlot::Single(DummyAction::Up);
-        assert_eq!(slot.primary(), DummyAction::Up);
+        let bar_slot = BarSlot::Single(DummyAction::Up);
+        assert_eq!(bar_slot.primary(), DummyAction::Up);
     }
 
     #[test]
     fn paired_primary_returns_first_action() {
-        let slot = BarSlot::Paired(DummyAction::Up, DummyAction::Down, "/");
-        assert_eq!(slot.primary(), DummyAction::Up);
+        let bar_slot = BarSlot::Paired(DummyAction::Up, DummyAction::Down, "/");
+        assert_eq!(bar_slot.primary(), DummyAction::Up);
     }
 }

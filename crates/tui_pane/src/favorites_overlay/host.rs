@@ -51,12 +51,12 @@ pub trait FavoritesHost: AttractHost {
 pub fn dispatch_favorites_key<A: FavoritesHost>(
     app: &mut A,
     keymap: &Keymap<A>,
-    bind: &KeyBind,
+    key_bind: &KeyBind,
 ) -> KeyOutcome {
     if !app.favorites_overlay().is_open() {
         return KeyOutcome::Unhandled;
     }
-    if keymap.dispatch_app_pane(A::FAVORITES_PANE, bind, app) == KeyOutcome::Unhandled {
+    if keymap.dispatch_app_pane(A::FAVORITES_PANE, key_bind, app) == KeyOutcome::Unhandled {
         app.favorites_overlay_mut().handle_unmapped_key();
     }
     KeyOutcome::Consumed
@@ -71,9 +71,9 @@ pub fn favorites_resize_settled<A: FavoritesHost>(app: &mut A) {
     if !app.favorites_overlay().is_open() {
         return;
     }
-    let current_parameters = app.attract_mut().current_settings().into();
+    let open_favorites_current_parameters = app.attract_mut().current_settings().into();
     app.favorites_overlay_mut()
-        .refresh_current_parameters(current_parameters);
+        .refresh_current_parameters(open_favorites_current_parameters);
 }
 
 /// Advance a removal fade and commit a finished one to the favorites
@@ -82,10 +82,10 @@ pub fn poll_favorites<A: FavoritesHost>(app: &mut A, now: Instant) -> Repaint {
     match app.favorites_overlay_mut().advance(now) {
         FavoritesOverlayFrameOutcome::Quiet => Repaint::NotNeeded,
         FavoritesOverlayFrameOutcome::Repaint => Repaint::Needed,
-        FavoritesOverlayFrameOutcome::CommitRemoval(removal_target) => {
-            let result = crate::remove_favorite::<A::Identity>(removal_target.clone());
+        FavoritesOverlayFrameOutcome::CommitRemoval(favorite_removal_target) => {
+            let result = crate::remove_favorite::<A::Identity>(favorite_removal_target.clone());
             app.favorites_overlay_mut()
-                .finish_removal(removal_target, result);
+                .finish_removal(favorite_removal_target, result);
             Repaint::Needed
         },
     }
