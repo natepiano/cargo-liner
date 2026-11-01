@@ -152,9 +152,9 @@ impl MergeExtent {
     }
 
     /// Only an observation of all three unchanged inputs may reuse a successful answer.
-    pub(crate) fn matches_key(&self, expected: &MergeExtentKey) -> bool {
+    pub(crate) fn matches_key(&self, expected_merge_extent_key: &MergeExtentKey) -> bool {
         match self {
-            Self::Empty { key } | Self::Protected { key, .. } => key == expected,
+            Self::Empty { key } | Self::Protected { key, .. } => key == expected_merge_extent_key,
             Self::NotDerived { .. } | Self::Unavailable { .. } => false,
         }
     }
@@ -265,9 +265,12 @@ mod tests {
             serde_json::to_string(&EffectiveMergeExtent::Live(merge_extent.clone()))?,
             serde_json::to_string(&merge_extent)?
         );
-        let live: EffectiveMergeExtent =
+        let effective_merge_extent: EffectiveMergeExtent =
             serde_json::from_value(serde_json::to_value(&merge_extent)?)?;
-        assert_eq!(live, EffectiveMergeExtent::Live(merge_extent));
+        assert_eq!(
+            effective_merge_extent,
+            EffectiveMergeExtent::Live(merge_extent)
+        );
         Ok(())
     }
 

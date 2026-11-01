@@ -125,31 +125,34 @@ impl HookReader {
         }
         remove_stale_records(ledger_directory, SystemTime::now());
         let record_path = self.record_path(ledger_directory);
-        let mut record = self.read_record(&record_path);
+        let mut told_record_file = self.read_record(&record_path);
         let now = SystemTime::now();
         let legacy_time = fs::metadata(&record_path)
             .and_then(|metadata| metadata.modified())
             .unwrap_or(now);
-        record.lines.retain(|line| {
-            let at = record.stated_at.entry(line.clone()).or_insert(legacy_time);
+        told_record_file.lines.retain(|line| {
+            let at = told_record_file
+                .stated_at
+                .entry(line.clone())
+                .or_insert(legacy_time);
             now.duration_since(*at)
                 .map_or(true, |elapsed| elapsed <= TOLD_RECORD_RETENTION)
         });
-        record
+        told_record_file
             .stated_at
-            .retain(|line, _| record.lines.contains(line));
+            .retain(|line, _| told_record_file.lines.contains(line));
         let untold_lines = stated_lines
             .into_iter()
-            .filter(|line| !record.lines.contains(*line))
+            .filter(|line| !told_record_file.lines.contains(*line))
             .collect::<Vec<_>>();
         if untold_lines.is_empty() {
             return UntoldDetail::NothingNew;
         }
         for line in &untold_lines {
-            record.lines.insert((*line).to_owned());
-            record.stated_at.insert((*line).to_owned(), now);
+            told_record_file.lines.insert((*line).to_owned());
+            told_record_file.stated_at.insert((*line).to_owned(), now);
         }
-        publish_record(&record_path, &record);
+        publish_record(&record_path, &told_record_file);
         UntoldDetail::Untold(untold_lines.join("\n"))
     }
 
@@ -169,7 +172,7 @@ impl HookReader {
 
     /// Read this reader's record, taking a missing, unreadable or foreign one as empty.
     fn read_record(&self, record_path: &Path) -> ToldRecordFile {
-        let empty = ToldRecordFile {
+        let empty_told_record_file = ToldRecordFile {
             harness_session_id: self.harness_session_id.as_str().to_owned(),
             agent_id:           match &self.agent {
                 HookReaderAgent::Main => None,
@@ -181,11 +184,12 @@ impl HookReader {
         fs::read(record_path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<ToldRecordFile>(&bytes).ok())
-            .filter(|stored| {
-                stored.harness_session_id == empty.harness_session_id
-                    && stored.agent_id == empty.agent_id
+            .filter(|stored_told_record_file| {
+                stored_told_record_file.harness_session_id
+                    == empty_told_record_file.harness_session_id
+                    && stored_told_record_file.agent_id == empty_told_record_file.agent_id
             })
-            .unwrap_or(empty)
+            .unwrap_or(empty_told_record_file)
     }
 }
 
@@ -195,16 +199,22 @@ impl HookReader {
 /// in each case the context the main agent's record describes is not the one it now reads, so
 /// the record goes. Subagent records are never reset this way, since no event marks a
 /// subagent's context as new; the retention sweep removes them once they go unwritten.
-pub(super) fn forget_for_opening_session(availability: &HarnessSessionIdentityAvailability) {
+pub(super) fn forget_for_opening_session(
+    harness_session_identity_availability: &HarnessSessionIdentityAvailability,
+) {
     let Some(ledger_directory) = current_ledger_directory() else {
         return;
     };
-    if let HarnessSessionIdentityAvailability::Available(harness_session_id) = availability {
-        let main_reader = HookReader {
+    if let HarnessSessionIdentityAvailability::Available(harness_session_id) =
+        harness_session_identity_availability
+    {
+        let main_hook_reader = HookReader {
             harness_session_id: harness_session_id.clone(),
             agent:              HookReaderAgent::Main,
         };
-        std::mem::drop(fs::remove_file(main_reader.record_path(&ledger_directory)));
+        std::mem::drop(fs::remove_file(
+            main_hook_reader.record_path(&ledger_directory),
+        ));
     }
     remove_stale_records(&ledger_directory, SystemTime::now());
 }
@@ -218,9 +228,9 @@ fn current_ledger_directory() -> Option<PathBuf> {
 }
 
 /// Replace one record through a temporary file, so a reader never sees half of one.
-fn publish_record(record_path: &Path, record: &ToldRecordFile) {
+fn publish_record(record_path: &Path, told_record_file: &ToldRecordFile) {
     let (Ok(bytes), Some(file_name)) = (
-        serde_json::to_vec(record),
+        serde_json::to_vec(told_record_file),
         record_path.file_name().and_then(|name| name.to_str()),
     ) else {
         return;
@@ -295,15 +305,18 @@ mod tests {
     #[test]
     fn a_line_is_told_once_and_a_new_line_is_told_alone() {
         let ledger_directory = TempDir::new().expect("a scratch ledger directory");
-        let main = reader(None);
+        let main_hook_reader = reader(None);
 
         assert_eq!(
-            untold(&main, &ledger_directory, "standing\nwidened"),
+            untold(&main_hook_reader, &ledger_directory, "standing\nwidened"),
             Some("standing\nwidened".to_owned())
         );
-        assert_eq!(untold(&main, &ledger_directory, "standing\nwidened"), None);
         assert_eq!(
-            untold(&main, &ledger_directory, "standing\nchanged"),
+            untold(&main_hook_reader, &ledger_directory, "standing\nwidened"),
+            None
+        );
+        assert_eq!(
+            untold(&main_hook_reader, &ledger_directory, "standing\nchanged"),
             Some("changed".to_owned())
         );
     }
@@ -326,9 +339,9 @@ mod tests {
     #[test]
     fn an_unusable_agent_id_reads_as_the_main_agent() {
         let ledger_directory = TempDir::new().expect("a scratch ledger directory");
-        let main = reader(None);
+        let main_hook_reader = reader(None);
         assert_eq!(
-            untold(&main, &ledger_directory, "standing"),
+            untold(&main_hook_reader, &ledger_directory, "standing"),
             Some("standing".to_owned())
         );
 
@@ -347,45 +360,54 @@ mod tests {
     #[test]
     fn a_blank_detail_is_stated_as_it_is() {
         let ledger_directory = TempDir::new().expect("a scratch ledger directory");
-        let main = reader(None);
+        let main_hook_reader = reader(None);
 
         for _ in 0..2 {
-            assert_eq!(untold(&main, &ledger_directory, ""), Some(String::new()));
+            assert_eq!(
+                untold(&main_hook_reader, &ledger_directory, ""),
+                Some(String::new())
+            );
         }
     }
 
     #[test]
     fn an_unreadable_record_reads_as_nothing_told() {
         let ledger_directory = TempDir::new().expect("a scratch ledger directory");
-        let main = reader(None);
-        fs::write(main.record_path(ledger_directory.path()), b"not a record")
-            .expect("the damaged record should be written");
+        let main_hook_reader = reader(None);
+        fs::write(
+            main_hook_reader.record_path(ledger_directory.path()),
+            b"not a record",
+        )
+        .expect("the damaged record should be written");
 
         assert_eq!(
-            untold(&main, &ledger_directory, "standing"),
+            untold(&main_hook_reader, &ledger_directory, "standing"),
             Some("standing".to_owned())
         );
-        assert_eq!(untold(&main, &ledger_directory, "standing"), None);
+        assert_eq!(
+            untold(&main_hook_reader, &ledger_directory, "standing"),
+            None
+        );
     }
 
     #[test]
     fn active_reader_expires_old_notice_lines_without_forgetting_recent_ones() {
         let directory = TempDir::new().expect("scratch ledger");
-        let main = reader(None);
-        assert!(untold(&main, &directory, "old\nrecent").is_some());
-        let path = main.record_path(directory.path());
-        let mut stored = main.read_record(&path);
-        stored.stated_at.insert(
+        let main_hook_reader = reader(None);
+        assert!(untold(&main_hook_reader, &directory, "old\nrecent").is_some());
+        let path = main_hook_reader.record_path(directory.path());
+        let mut told_record_file = main_hook_reader.read_record(&path);
+        told_record_file.stated_at.insert(
             "old".to_owned(),
             SystemTime::now() - Duration::from_hours(25),
         );
-        super::publish_record(&path, &stored);
+        super::publish_record(&path, &told_record_file);
         assert_eq!(
-            untold(&main, &directory, "old\nrecent"),
+            untold(&main_hook_reader, &directory, "old\nrecent"),
             Some("old".to_owned()),
             "a continuously active reader still expires yesterday's notices"
         );
-        assert_eq!(untold(&main, &directory, "old\nrecent"), None);
+        assert_eq!(untold(&main_hook_reader, &directory, "old\nrecent"), None);
     }
 
     #[test]
