@@ -1,4 +1,5 @@
 use super::CheckedSelection;
+use super::FixScans;
 use super::MendRunner;
 use super::RunPlan;
 use super::mend_runner::NextAnalysis;
@@ -149,10 +150,8 @@ impl MendRunner<'_> {
             }
         });
         let pub_use_scan = self.scan_parent_facades(pub_use, &report, &sources)?;
-        let subtree_reexport_scan =
-            self.scan_subtree_reexports(&operation_mode, &report, &sources)?;
-
-        Ok(RunPlan {
+        let mut planned = RunPlan {
+            sources,
             operation_mode,
             report,
             import_scan,
@@ -164,11 +163,13 @@ impl MendRunner<'_> {
             field_visibility_fix_scan,
             imports_at_top_scan,
             pub_use_scan,
-            subtree_reexport_scan,
+            subtree_reexport_scan: None,
             check_duration,
             compiler_warnings,
             compiler_fixable,
-        })
+        };
+        planned.subtree_reexport_scan = self.scan_subtree_reexports(&planned)?;
+        Ok(planned)
     }
 
     fn scan_restricted_annotations(
@@ -210,20 +211,33 @@ impl MendRunner<'_> {
 
     fn scan_subtree_reexports(
         &self,
-        operation_mode: &OperationMode,
-        report: &Report,
-        sources: &ParsedSources,
+        planned: &RunPlan,
     ) -> Result<Option<SubtreeReexportScan>, MendFailure> {
         match self.fix_selection(
-            operation_mode,
+            &planned.operation_mode,
             FixKind::PubUseOutsideSubtree,
             &[DiagnosticCode::PubUseOutsideSubtree],
         ) {
-            FixKindSelection::Selected => {
-                subtree_reexport::scan_selection(self.selection, report, sources)
-                    .map(Some)
-                    .map_err(MendFailure::Unexpected)
-            },
+            FixKindSelection::Selected => subtree_reexport::scan_selection(
+                self.selection,
+                &planned.report,
+                &planned.sources,
+                |subtree| {
+                    let scans = FixScans {
+                        subtree_reexports: Some(subtree),
+                        ..planned.fix_scans()
+                    }
+                    .without_pub_use_overlapping_subtree_reexports();
+                    Self::combined_import_plan(
+                        scans,
+                        &planned.sources,
+                        &self.selection.package_roots,
+                    )
+                    .map(|plan| plan.declined_files)
+                },
+            )
+            .map(Some)
+            .map_err(MendFailure::Unexpected),
             FixKindSelection::NotSelected => Ok(None),
         }
     }

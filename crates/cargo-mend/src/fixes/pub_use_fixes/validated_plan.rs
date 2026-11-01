@@ -100,7 +100,9 @@ pub(super) fn rewrite_subtree_imports_for_plans(
                     &redirects,
                     &ModuleAliases::default(),
                 )?
-                .fixes,
+                .fixes
+                .into_iter()
+                .map(|owned| owned.fix),
             );
         }
     }

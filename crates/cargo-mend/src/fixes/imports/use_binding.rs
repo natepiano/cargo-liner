@@ -1,5 +1,6 @@
 use syn::UseTree;
 
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub(in crate::fixes) enum UseBinding {
     Named { name: String, path: String },
     Glob { path: String },

@@ -11,6 +11,7 @@ use std::sync::RwLock;
 use std::time::Duration;
 
 use confique::Config as _;
+use confique::Layer as _;
 use serde::Deserialize;
 use serde::Serialize;
 use toml::Table;
@@ -808,8 +809,6 @@ fn normalize_crate_name(value: &str, field: &str) -> Result<String, String> {
 
 impl CargoPortConfig {
     pub(crate) fn from_table(table: &Table) -> Result<Self, String> {
-        use confique::Layer as _;
-
         let value = Value::Table(table.clone());
         let layer: <Self as confique::Config>::Layer = value
             .try_into()

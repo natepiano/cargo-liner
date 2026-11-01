@@ -2487,6 +2487,7 @@ mod merge_extent {
     use std::collections::BTreeSet;
     use std::fmt::Write;
     use std::fs;
+    use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::path::PathBuf;
@@ -3007,7 +3008,6 @@ mod merge_extent {
 
     #[test]
     fn reconciliation_reobserves_uncommitted_work_after_a_concurrent_widen() {
-        use std::io::Write as _;
         let fixture = Repository::with_trunk_requester();
         let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
         commit(&fixture.holder, "branch.rs", "branch work\n");
