@@ -57,11 +57,11 @@ impl<Id: Copy> PaneGridLayout<Id> {
     /// Tab order derived from placements (row-major, then column).
     #[must_use]
     pub fn tab_order(self) -> Vec<Id> {
-        let mut placements = self.placements;
-        placements.sort_by_key(|placement| (placement.row, placement.col));
-        placements
+        let mut pane_placements = self.placements;
+        pane_placements.sort_by_key(|pane_placement| (pane_placement.row, pane_placement.col));
+        pane_placements
             .into_iter()
-            .map(|placement| placement.pane)
+            .map(|pane_placement| pane_placement.pane)
             .collect()
     }
 }
@@ -85,7 +85,11 @@ pub struct ResolvedPaneLayout<Id> {
 impl<Id> ResolvedPaneLayout<Id> {
     /// Construct from a vec of resolved placements.
     #[must_use]
-    pub const fn new(panes: Vec<ResolvedPane<Id>>) -> Self { Self { panes } }
+    pub const fn new(resolved_panes: Vec<ResolvedPane<Id>>) -> Self {
+        Self {
+            panes: resolved_panes,
+        }
+    }
 
     /// The rect every resolved pane sits inside.
     ///
@@ -97,7 +101,7 @@ impl<Id> ResolvedPaneLayout<Id> {
     pub fn bounds(&self) -> Rect {
         self.panes
             .iter()
-            .map(|resolved| resolved.area)
+            .map(|resolved_pane| resolved_pane.area)
             .filter(|area| !area.is_empty())
             .reduce(Rect::union)
             .unwrap_or(Rect::ZERO)
@@ -110,17 +114,17 @@ impl<Id: Copy + Eq> ResolvedPaneLayout<Id> {
     pub fn area(&self, pane: Id) -> Rect {
         self.panes
             .iter()
-            .find(|resolved| resolved.pane == pane)
+            .find(|resolved_pane| resolved_pane.pane == pane)
             .map_or(Rect::ZERO, |resolved| resolved.area)
     }
 }
 
 /// Convert a slice of [`PaneAxisSize`] into ratatui [`Constraint`]s.
 #[must_use]
-pub fn constraints_for_sizes(sizes: &[PaneAxisSize]) -> Vec<Constraint> {
-    sizes
+pub fn constraints_for_sizes(pane_axis_sizes: &[PaneAxisSize]) -> Vec<Constraint> {
+    pane_axis_sizes
         .iter()
-        .map(|size| match size {
+        .map(|pane_axis_size| match pane_axis_size {
             PaneAxisSize::Fixed(length) => Constraint::Length(*length),
             PaneAxisSize::Fill(weight) => Constraint::Fill(*weight),
         })
