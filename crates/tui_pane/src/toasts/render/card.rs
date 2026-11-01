@@ -207,25 +207,25 @@ const fn toast_body_area(inner: Rect) -> Rect {
 
 fn render_toast_body(
     frame: &mut Frame,
-    toast: &ToastView,
+    toast_view: &ToastView,
     body_style: Style,
     body_area: Rect,
     alloc_interior: u16,
 ) {
     let palette = fallback_toast_palette();
     let alloc_body = usize::from(alloc_interior);
-    let has_action = toast.has_action() && alloc_body >= 2;
+    let has_action = toast_view.has_action() && alloc_body >= 2;
     let lines_for_body = if has_action {
         alloc_body.saturating_sub(1)
     } else {
         alloc_body
     };
-    let (lines, body_was_cut) = if toast.tracked_items().is_empty() {
-        body_lines_plain(toast, body_style, lines_for_body, body_area.width)
+    let (lines, body_was_cut) = if toast_view.tracked_items().is_empty() {
+        body_lines_plain(toast_view, body_style, lines_for_body, body_area.width)
     } else {
         (
             body_lines_tracked(
-                toast.tracked_items(),
+                toast_view.tracked_items(),
                 body_style,
                 lines_for_body,
                 usize::from(body_area.width),
@@ -258,13 +258,13 @@ fn render_toast_body(
         frame.render_widget(Paragraph::new(lines).style(body_style), body_area);
     }
     if body_was_cut {
-        render_body_elision(frame, toast, body_style, body_area, lines_for_body);
+        render_body_elision(frame, toast_view, body_style, body_area, lines_for_body);
     }
 }
 
 fn render_body_elision(
     frame: &mut Frame,
-    toast: &ToastView,
+    toast_view: &ToastView,
     body_style: Style,
     body_area: Rect,
     lines_for_body: usize,
@@ -273,7 +273,7 @@ fn render_body_elision(
         return;
     }
     let row = u16::try_from(lines_for_body.saturating_sub(1)).unwrap_or(u16::MAX);
-    let style = match toast.linger() {
+    let style = match toast_view.linger() {
         ToastLingerState::Live => body_style,
         ToastLingerState::Lingering { progress } => format::fade_to_style(f64::from(progress)),
     };
@@ -314,24 +314,27 @@ fn body_lines_plain(
 }
 
 pub(super) fn body_lines_tracked(
-    tracked: &[TrackedItemView],
+    tracked_item_views: &[TrackedItemView],
     body_style: Style,
     lines_for_body: usize,
     line_width: usize,
 ) -> Vec<Line<'static>> {
-    let total_items = tracked.len();
+    let total_items = tracked_item_views.len();
     let needs_truncation = total_items > lines_for_body;
     let (visible_items, overflow_line) = if needs_truncation && lines_for_body >= 1 {
         let show = lines_for_body.saturating_sub(1);
         let remaining = total_items.saturating_sub(show);
-        (&tracked[..show], Some(format!("(+{remaining} more)")))
+        (
+            &tracked_item_views[..show],
+            Some(format!("(+{remaining} more)")),
+        )
     } else {
-        (tracked, None)
+        (tracked_item_views, None)
     };
 
     let mut result = visible_items
         .iter()
-        .map(|item| tracked_item_line(item, body_style, line_width))
+        .map(|tracked_item_view| tracked_item_line(tracked_item_view, body_style, line_width))
         .collect::<Vec<_>>();
     if let Some(overflow) = overflow_line {
         let overflow_style = Style::default()
@@ -346,34 +349,37 @@ pub(super) fn body_lines_tracked(
 /// stalled, so a caller that reports a stall gets a red spinner without knowing
 /// anything about the palette. An item that is lingering after completion shows
 /// no spinner, so there is nothing to color.
-fn spinner_style(lifecycle: TrackedItemLifecycle, activity: TrackedItemActivity) -> Style {
+fn spinner_style(
+    lifecycle: TrackedItemLifecycle,
+    tracked_item_activity: TrackedItemActivity,
+) -> Style {
     if matches!(lifecycle, TrackedItemLifecycle::CompletedFading { .. }) {
         return Style::default();
     }
     let palette = fallback_toast_palette();
-    match activity {
+    match tracked_item_activity {
         TrackedItemActivity::Progressing => Style::default().fg(palette.accent),
         TrackedItemActivity::Stalled => Style::default().fg(palette.error),
     }
 }
 
 pub(super) fn tracked_item_line(
-    item: &TrackedItemView,
+    tracked_item_view: &TrackedItemView,
     body_style: Style,
     line_width: usize,
 ) -> Line<'static> {
     const SPINNER_SLOT: usize = 4;
     let palette = fallback_toast_palette();
 
-    let label_style = match item.lifecycle {
+    let label_style = match tracked_item_view.lifecycle {
         TrackedItemLifecycle::Running | TrackedItemLifecycle::CompletedWithoutFade => body_style,
         TrackedItemLifecycle::CompletedFading { progress } => format::fade_to_style(progress),
     };
-    let TrackedItemElapsed::Measured(elapsed) = item.elapsed else {
-        return Line::from(Span::styled(item.label.clone(), label_style));
+    let TrackedItemElapsed::Measured(elapsed) = tracked_item_view.elapsed else {
+        return Line::from(Span::styled(tracked_item_view.label.clone(), label_style));
     };
 
-    let spinner_text = match item.lifecycle {
+    let spinner_text = match tracked_item_view.lifecycle {
         TrackedItemLifecycle::Running | TrackedItemLifecycle::CompletedWithoutFade => {
             format!(" {} ", ACTIVITY_SPINNER.frame_at(elapsed))
         },
@@ -383,10 +389,10 @@ pub(super) fn tracked_item_line(
     let duration_suffix = format!("{duration_text} ");
     let suffix_width = duration_suffix.len();
     let label_budget = line_width.saturating_sub(suffix_width + SPINNER_SLOT + 1);
-    let label = format::truncate_with_ellipsis(&item.label, label_budget);
+    let label = format::truncate_with_ellipsis(&tracked_item_view.label, label_budget);
     let used = label.width() + spinner_text.width() + suffix_width;
     let padding = line_width.saturating_sub(used);
-    let duration_style = match item.lifecycle {
+    let duration_style = match tracked_item_view.lifecycle {
         TrackedItemLifecycle::Running | TrackedItemLifecycle::CompletedWithoutFade => {
             Style::default().fg(palette.title)
         },
@@ -395,7 +401,10 @@ pub(super) fn tracked_item_line(
     Line::from(vec![
         Span::styled(label, label_style),
         Span::raw(" ".repeat(padding)),
-        Span::styled(spinner_text, spinner_style(item.lifecycle, item.activity)),
+        Span::styled(
+            spinner_text,
+            spinner_style(tracked_item_view.lifecycle, tracked_item_view.activity),
+        ),
         Span::styled(duration_suffix, duration_style),
     ])
 }

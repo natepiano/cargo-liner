@@ -22,12 +22,12 @@ use crate::draw_settings;
 pub fn render_toasts<Ctx: AppContext>(
     frame: &mut Frame,
     framework: &mut Framework<Ctx>,
-    area: Rect,
+    rect: Rect,
 ) {
     Renderable::render(
         &mut framework.toasts,
         frame,
-        area,
+        rect,
         &ToastsRenderCtx {
             now:              Instant::now(),
             pane_focus_state: PaneFocusState::Inactive,
@@ -47,8 +47,12 @@ pub fn draw_framework_overlay<A: KeymapUiContext + 'static, S: Copy>(
 ) {
     match app.framework().overlay() {
         Some(FrameworkOverlayId::Settings) => {
-            let rows = settings_rows(app);
-            draw_settings(frame, &mut app.framework_mut().settings_pane, &rows);
+            let resolved_settings_rows = settings_rows(app);
+            draw_settings(
+                frame,
+                &mut app.framework_mut().settings_pane,
+                &resolved_settings_rows,
+            );
         },
         Some(FrameworkOverlayId::Keymap) => keymap_ui::draw_keymap_overlay(frame, app, keymap),
         Some(FrameworkOverlayId::GlobalShortcuts) => {

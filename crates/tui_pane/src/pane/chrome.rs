@@ -62,8 +62,8 @@ impl PaneChrome {
             .title(title)
             .title_style(self.title_style(focused))
             .border_style(self.border_style(focused));
-        if let Some(fill) = pane_fill(focused) {
-            block.style(fill)
+        if let Some(pane_fill_style) = pane_fill(focused) {
+            block.style(pane_fill_style)
         } else {
             block
         }
