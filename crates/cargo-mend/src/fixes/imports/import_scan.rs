@@ -209,28 +209,28 @@ pub(in crate::fixes) fn apply_fixes(fixes: &ValidatedFixSet) -> Result<AppliedFi
             .or_default()
             .push(tagged);
     }
-    let mut applied = AppliedFixCounts::default();
-    for (path, mut file_fixes) in by_file {
+    let mut applied_fix_counts = AppliedFixCounts::default();
+    for (path, mut file_tagged_fixes) in by_file {
         let mut text = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         // `apply_fixes` sorts `file_fixes` by descending `(start, end)` to apply later edits first
         // so earlier offsets remain valid. When two fixes share a start offset (a
         // replacement at [N..M] and an insertion at [N..N]), apply the wider replacement
         // first so [N..M] still targets the original bytes.
-        file_fixes.sort_by_key(|tagged| Reverse((tagged.fix.start, tagged.fix.end)));
-        for tagged in file_fixes {
-            let fix = &tagged.fix;
-            if fix.end <= text.len() && fix.start <= fix.end {
-                text.replace_range(fix.start..fix.end, &fix.replacement);
+        file_tagged_fixes.sort_by_key(|tagged| Reverse((tagged.fix.start, tagged.fix.end)));
+        for tagged in file_tagged_fixes {
+            let use_fix = &tagged.fix;
+            if use_fix.end <= text.len() && use_fix.start <= use_fix.end {
+                text.replace_range(use_fix.start..use_fix.end, &use_fix.replacement);
                 if let Some(fix_kind) = tagged.fix_kind {
-                    applied.record(fix_kind);
+                    applied_fix_counts.record(fix_kind);
                 }
             }
         }
         fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))?;
     }
 
-    Ok(applied)
+    Ok(applied_fix_counts)
 }
 
 #[cfg(test)]
@@ -264,10 +264,10 @@ mod tests {
             .into_iter()
             .collect();
 
-        let validated = ValidatedFixSet::try_from(fixes)?;
-        let paths = validated
+        let validated_fix_set = ValidatedFixSet::try_from(fixes)?;
+        let paths = validated_fix_set
             .iter()
-            .map(|fix| fix.path.as_path())
+            .map(|use_fix| use_fix.path.as_path())
             .collect::<Vec<_>>();
 
         assert_eq!(paths, vec![fs::canonicalize(fixtures_path)?]);
@@ -294,18 +294,18 @@ mod tests {
             },
         ];
 
-        let validated_result = ValidatedFixSet::try_from(fixes);
+        let validated_fix_set_result = ValidatedFixSet::try_from(fixes);
         assert!(
-            validated_result.is_ok(),
+            validated_fix_set_result.is_ok(),
             "adjacent edits should be valid: {}",
-            validated_result
+            validated_fix_set_result
                 .as_ref()
                 .err()
                 .map_or_else(String::new, |err| format!("{err:#}"))
         );
-        let Ok(validated) = validated_result else {
+        let Ok(validated_fix_set) = validated_fix_set_result else {
             return;
         };
-        assert_eq!(validated.iter().count(), 2);
+        assert_eq!(validated_fix_set.iter().count(), 2);
     }
 }

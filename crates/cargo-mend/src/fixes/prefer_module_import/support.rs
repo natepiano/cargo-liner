@@ -201,17 +201,17 @@ fn declares_module(
     let Some(first) = segments.first() else {
         return false;
     };
-    let Ok(source) = crate_sources.sources.source(file) else {
+    let Ok(parsed_source) = crate_sources.sources.source(file) else {
         return false;
     };
-    if !source.text().contains(first.as_str()) {
+    if !parsed_source.text().contains(first.as_str()) {
         return false;
     }
-    let Ok(syntax) = source.syntax() else {
+    let Ok(parsed_file) = parsed_source.syntax() else {
         return false;
     };
-    declares_inline_mod_path(syntax, segments)
-        || reexports_module(crate_sources, syntax, module_path, segments, visited)
+    declares_inline_mod_path(parsed_file, segments)
+        || reexports_module(crate_sources, parsed_file, module_path, segments, visited)
 }
 
 fn crate_root_file(source_root: &Path) -> Option<PathBuf> {
@@ -272,22 +272,25 @@ fn reexports_module(
 /// and `super::` targets; a bare-name target is another crate and resolves to
 /// `None`.
 fn reexport_target(item_use: &ItemUse, module_path: &[String], name: &str) -> Option<Vec<String>> {
-    let flat = flatten_use_tree(&item_use.tree)?;
-    let bound = flat.rename.as_ref().unwrap_or(&flat.leaf);
+    let flattened_import = flatten_use_tree(&item_use.tree)?;
+    let bound = flattened_import
+        .rename
+        .as_ref()
+        .unwrap_or(&flattened_import.leaf);
     if bound != name {
         return None;
     }
-    match flat.anchor() {
+    match flattened_import.anchor() {
         PathAnchor::SelfMod => {
             let mut absolute = module_path.to_vec();
-            absolute.extend(flat.prefix.iter().skip(1).cloned());
-            if !flat.prefix.is_empty() {
-                absolute.push(flat.leaf.clone());
+            absolute.extend(flattened_import.prefix.iter().skip(1).cloned());
+            if !flattened_import.prefix.is_empty() {
+                absolute.push(flattened_import.leaf.clone());
             }
             Some(absolute)
         },
         PathAnchor::Crate | PathAnchor::Super | PathAnchor::SelfType | PathAnchor::Name => {
-            flat.absolute_path(module_path)
+            flattened_import.absolute_path(module_path)
         },
     }
 }
@@ -346,14 +349,14 @@ pub(super) fn common_prefix_len(left: &[String], right: &[String]) -> usize {
         .count()
 }
 
-pub(super) fn flatten_use_tree(tree: &UseTree) -> Option<FlattenedImport> {
+pub(super) fn flatten_use_tree(use_tree: &UseTree) -> Option<FlattenedImport> {
     let mut segments = Vec::new();
-    let mut cursor = tree;
+    let mut use_tree = use_tree;
     loop {
-        match cursor {
+        match use_tree {
             UseTree::Path(path) => {
                 segments.push(path.ident.to_string());
-                cursor = &path.tree;
+                use_tree = &path.tree;
             },
             UseTree::Name(name) => {
                 break Some(FlattenedImport {
