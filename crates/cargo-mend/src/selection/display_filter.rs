@@ -57,7 +57,7 @@ impl DisplayFilter {
                 .collect();
             for (target, role) in &targets {
                 let dir = target_directory(target);
-                if cli_includes_target(cli, target) {
+                if cli_includes_target(cli, target) == TargetInclusion::Included {
                     allowed.push(dir.clone());
                     match role {
                         TargetRole::Library => {
@@ -102,9 +102,9 @@ impl DisplayFilter {
         }
     }
 
-    pub(crate) fn allows(&self, finding_path: &Path) -> bool {
+    pub(crate) fn allows(&self, finding_path: &Path) -> FindingDisplay {
         match self {
-            Self::AllowAll => true,
+            Self::AllowAll => FindingDisplay::Included,
             Self::AllowDirs {
                 allowed,
                 excluded_dirs,
@@ -117,7 +117,7 @@ impl DisplayFilter {
                 };
                 let in_allowed = allowed.iter().any(|dir| absolute.starts_with(dir));
                 if !in_allowed {
-                    return false;
+                    return FindingDisplay::Excluded;
                 }
                 // `in_excluded_dir` means the finding belongs to a narrower target.
                 // Exclude it unless that target was explicitly included too:
@@ -125,11 +125,16 @@ impl DisplayFilter {
                 let in_excluded_dir = excluded_dirs.iter().any(|dir| absolute.starts_with(dir));
                 if in_excluded_dir {
                     let lib_dir = package_root.join(SOURCE_DIR_SRC);
-                    return allowed
+                    return if allowed
                         .iter()
-                        .any(|dir| absolute.starts_with(dir) && *dir != lib_dir);
+                        .any(|dir| absolute.starts_with(dir) && *dir != lib_dir)
+                    {
+                        FindingDisplay::Included
+                    } else {
+                        FindingDisplay::Excluded
+                    };
                 }
-                true
+                FindingDisplay::Included
             },
         }
     }
@@ -140,9 +145,23 @@ impl DisplayFilter {
         }
         report
             .findings
-            .retain(|finding| self.allows(Path::new(&finding.path)));
+            .retain(|finding| self.allows(Path::new(&finding.path)) == FindingDisplay::Included);
         report.refresh_summary();
     }
+}
+
+/// Whether target selection includes a finding in the displayed report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FindingDisplay {
+    Included,
+    Excluded,
+}
+
+/// Whether the command line selects a particular target for display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetInclusion {
+    Included,
+    Omitted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,9 +193,9 @@ fn target_directory(target: &TargetMetadata) -> PathBuf {
         .map_or_else(|| target.src_path.clone(), Path::to_path_buf)
 }
 
-fn cli_includes_target(cli: &CargoCheckCli, target: &TargetMetadata) -> bool {
+fn cli_includes_target(cli: &CargoCheckCli, target: &TargetMetadata) -> TargetInclusion {
     let kind = target.kind.first().map_or("", String::as_str);
-    match kind {
+    if match kind {
         CARGO_TARGET_KIND_LIB => cli.target_selections.contains(&TargetSelection::Library),
         CARGO_TARGET_KIND_BIN => {
             cli.target_selections.contains(&TargetSelection::Binaries)
@@ -195,6 +214,10 @@ fn cli_includes_target(cli: &CargoCheckCli, target: &TargetMetadata) -> bool {
                 || cli.bench.iter().any(|name| name == &target.name)
         },
         _ => false,
+    } {
+        TargetInclusion::Included
+    } else {
+        TargetInclusion::Omitted
     }
 }
 
@@ -246,8 +269,14 @@ mod tests {
         let filter =
             DisplayFilter::from_cli(&CargoCheckCli::default(), &[package_with_lib_and_example()]);
         assert!(matches!(filter, DisplayFilter::AllowAll));
-        assert!(filter.allows(Path::new("src/anywhere.rs")));
-        assert!(filter.allows(Path::new("examples/demo/helper.rs")));
+        assert_eq!(
+            filter.allows(Path::new("src/anywhere.rs")),
+            FindingDisplay::Included
+        );
+        assert_eq!(
+            filter.allows(Path::new("examples/demo/helper.rs")),
+            FindingDisplay::Included
+        );
     }
 
     #[test]
@@ -267,8 +296,14 @@ mod tests {
             ..CargoCheckCli::default()
         };
         let filter = DisplayFilter::from_cli(&cli, &[package_with_lib_and_example()]);
-        assert!(filter.allows(Path::new("/proj/src/helpers.rs")));
-        assert!(!filter.allows(Path::new("/proj/examples/demo/helper.rs")));
+        assert_eq!(
+            filter.allows(Path::new("/proj/src/helpers.rs")),
+            FindingDisplay::Included
+        );
+        assert_eq!(
+            filter.allows(Path::new("/proj/examples/demo/helper.rs")),
+            FindingDisplay::Excluded
+        );
     }
 
     #[test]
@@ -287,9 +322,13 @@ mod tests {
             ..CargoCheckCli::default()
         };
         let filter = DisplayFilter::from_cli(&cli, &[pkg]);
-        assert!(filter.allows(Path::new("/proj/src/lib_helpers.rs")));
-        assert!(
-            !filter.allows(Path::new("/proj/src/bin/tool.rs")),
+        assert_eq!(
+            filter.allows(Path::new("/proj/src/lib_helpers.rs")),
+            FindingDisplay::Included
+        );
+        assert_eq!(
+            filter.allows(Path::new("/proj/src/bin/tool.rs")),
+            FindingDisplay::Excluded,
             "src/bin/tool.rs belongs to the bin, not the lib",
         );
     }
@@ -301,8 +340,14 @@ mod tests {
             ..CargoCheckCli::default()
         };
         let filter = DisplayFilter::from_cli(&cli, &[package_with_lib_and_example()]);
-        assert!(filter.allows(Path::new("/proj/examples/demo/helper.rs")));
-        assert!(!filter.allows(Path::new("/proj/src/anywhere.rs")));
+        assert_eq!(
+            filter.allows(Path::new("/proj/examples/demo/helper.rs")),
+            FindingDisplay::Included
+        );
+        assert_eq!(
+            filter.allows(Path::new("/proj/src/anywhere.rs")),
+            FindingDisplay::Excluded
+        );
     }
     #[test]
     fn library_role_uses_every_kind_and_preserves_explicit_binary_selection() {
@@ -318,11 +363,23 @@ mod tests {
             ..CargoCheckCli::default()
         };
         let filter = DisplayFilter::from_cli(&cli, &[package.clone()]);
-        assert!(filter.allows(Path::new("src/helper.rs")));
-        assert!(filter.allows(Path::new("src/bin/tool.rs")));
+        assert_eq!(
+            filter.allows(Path::new("src/helper.rs")),
+            FindingDisplay::Included
+        );
+        assert_eq!(
+            filter.allows(Path::new("src/bin/tool.rs")),
+            FindingDisplay::Included
+        );
         cli.target_selections = BTreeSet::from([TargetSelection::Library]);
         let filter = DisplayFilter::from_cli(&cli, &[package]);
-        assert!(!filter.allows(Path::new("src/helper.rs")));
-        assert!(!filter.allows(Path::new("src/bin/tool.rs")));
+        assert_eq!(
+            filter.allows(Path::new("src/helper.rs")),
+            FindingDisplay::Excluded
+        );
+        assert_eq!(
+            filter.allows(Path::new("src/bin/tool.rs")),
+            FindingDisplay::Excluded
+        );
     }
 }

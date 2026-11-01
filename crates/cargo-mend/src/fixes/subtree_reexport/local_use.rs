@@ -12,6 +12,7 @@ use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::IdentifierUse;
 use crate::fixes::facade_redirect::SourceLines;
 use crate::rust_syntax;
+use crate::rust_syntax::AttributeTestGate;
 
 /// How the owner module still needs a name its re-export no longer provides,
 /// ordered from no need to a need in every build.
@@ -75,10 +76,9 @@ impl GlobReach<'_> {
             let Some((brace, content)) = &item_mod.content else {
                 continue;
             };
-            let gate = if rust_syntax::is_cfg_test(&item_mod.attrs) {
-                LocalUse::TestOnly
-            } else {
-                gate
+            let gate = match rust_syntax::attribute_test_gate(&item_mod.attrs) {
+                AttributeTestGate::DirectCfgTest => LocalUse::TestOnly,
+                AttributeTestGate::NotDirectCfgTest => gate,
             };
             let mut child = module.to_vec();
             child.push(item_mod.ident.unraw().to_string());

@@ -26,6 +26,7 @@ use crate::compiler::source_cache::PathOrigin;
 use crate::compiler::source_cache::SourceCache;
 use crate::compiler::source_cache::UseRename;
 use crate::rust_syntax;
+use crate::rust_syntax::IdentifierCharacter;
 use crate::rust_syntax::PathAnchor;
 use crate::rust_syntax::SourceEndpoint;
 
@@ -415,7 +416,9 @@ fn path_separator_before(segment_start: SourceEndpoint<'_>) -> Option<SourceEndp
 }
 
 fn literal_identifier_start(segment_end: SourceEndpoint<'_>) -> SourceEndpoint<'_> {
-    let start = segment_end.trim_end_matches(rust_syntax::identifier_character);
+    let start = segment_end.trim_end_matches(|character| {
+        rust_syntax::identifier_character(character) == IdentifierCharacter::Member
+    });
     start.strip_suffix("r#").unwrap_or(start)
 }
 
@@ -427,15 +430,11 @@ fn literal_identifier_match(source: &str, offset: usize, length: usize) -> Liter
     let Some(after) = source.get(offset + length..) else {
         return LiteralIdentifierMatch::Rejected;
     };
-    if before
-        .chars()
-        .next_back()
-        .is_none_or(|character| !rust_syntax::identifier_character(character))
-        && after
-            .chars()
-            .next()
-            .is_none_or(|character| !rust_syntax::identifier_character(character))
-    {
+    if before.chars().next_back().is_none_or(|character| {
+        rust_syntax::identifier_character(character) == IdentifierCharacter::NonMember
+    }) && after.chars().next().is_none_or(|character| {
+        rust_syntax::identifier_character(character) == IdentifierCharacter::NonMember
+    }) {
         LiteralIdentifierMatch::Bounded
     } else {
         LiteralIdentifierMatch::Rejected

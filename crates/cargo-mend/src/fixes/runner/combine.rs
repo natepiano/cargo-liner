@@ -61,7 +61,11 @@ impl MendRunner<'_> {
             fixes.extend(tag(
                 Some(FixKind::Import),
                 scan.fixes.iter().filter(|fix| {
-                    !overlaps_any(fix, &prefer_ranges) && !lies_inside_any(fix, &moved_use_ranges)
+                    matches!(overlaps_any(fix, &prefer_ranges), FixOverlap::Clear)
+                        && matches!(
+                            lies_inside_any(fix, &moved_use_ranges),
+                            MovedUseRelation::Outside
+                        )
                 }),
             ));
         }
@@ -122,7 +126,7 @@ impl FixScans<'_> {
             !pub_use_fix_scan
                 .fixes
                 .iter()
-                .any(|fix| overlaps_any(fix, &subtree_ranges))
+                .any(|fix| matches!(overlaps_any(fix, &subtree_ranges), FixOverlap::Overlapping))
         });
         Self { pub_use, ..self }
     }
@@ -144,13 +148,7 @@ enum FixOverlap {
 }
 
 impl FixOverlap {
-    fn for_fix(fix: &UseFix, ranges: &[FileRange<'_>]) -> Self {
-        if overlaps_any(fix, ranges) {
-            Self::Overlapping
-        } else {
-            Self::Clear
-        }
-    }
+    fn for_fix(fix: &UseFix, ranges: &[FileRange<'_>]) -> Self { overlaps_any(fix, ranges) }
 }
 
 #[derive(Clone, Copy)]
@@ -160,13 +158,7 @@ enum MovedUseRelation {
 }
 
 impl MovedUseRelation {
-    fn for_fix(fix: &UseFix, ranges: &[FileRange<'_>]) -> Self {
-        if lies_inside_any(fix, ranges) {
-            Self::Inside
-        } else {
-            Self::Outside
-        }
-    }
+    fn for_fix(fix: &UseFix, ranges: &[FileRange<'_>]) -> Self { lies_inside_any(fix, ranges) }
 }
 
 /// Drops every fix that overlaps one of `ranges`, together with every fix
@@ -226,16 +218,24 @@ fn tag<'a>(
 
 fn file_range(fix: &UseFix) -> FileRange<'_> { (fix.path.as_path(), fix.start, fix.end) }
 
-fn overlaps_any(fix: &UseFix, ranges: &[FileRange<'_>]) -> bool {
-    ranges.iter().any(|(path, start, end)| {
+fn overlaps_any(fix: &UseFix, ranges: &[FileRange<'_>]) -> FixOverlap {
+    if ranges.iter().any(|(path, start, end)| {
         fix.path.as_path() == *path && fix.start < *end && *start < fix.end
-    })
+    }) {
+        FixOverlap::Overlapping
+    } else {
+        FixOverlap::Clear
+    }
 }
 
-fn lies_inside_any(fix: &UseFix, ranges: &[FileRange<'_>]) -> bool {
-    ranges.iter().any(|(path, start, end)| {
+fn lies_inside_any(fix: &UseFix, ranges: &[FileRange<'_>]) -> MovedUseRelation {
+    if ranges.iter().any(|(path, start, end)| {
         fix.path.as_path() == *path && *start <= fix.start && fix.end <= *end
-    })
+    }) {
+        MovedUseRelation::Inside
+    } else {
+        MovedUseRelation::Outside
+    }
 }
 
 /// The prefer-module-import fixes that survive an imports-at-top move of the

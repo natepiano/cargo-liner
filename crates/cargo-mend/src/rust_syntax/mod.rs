@@ -19,9 +19,19 @@ use syn::MetaList;
 use syn::Token;
 use syn::punctuated::Punctuated;
 
-/// Whether `character` can appear inside a Rust identifier.
-pub(crate) fn identifier_character(character: char) -> bool {
-    character.is_alphanumeric() || character == '_'
+/// Membership in the scanner's identifier characters: Unicode alphanumerics or underscore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdentifierCharacter {
+    Member,
+    NonMember,
+}
+
+pub(crate) fn identifier_character(character: char) -> IdentifierCharacter {
+    if character.is_alphanumeric() || character == '_' {
+        IdentifierCharacter::Member
+    } else {
+        IdentifierCharacter::NonMember
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,10 +46,6 @@ pub(crate) enum PathAnchor {
 impl PathAnchor {
     pub(crate) fn first(segments: &[String]) -> Option<Self> {
         segments.first().map(|segment| Self::from(segment.as_str()))
-    }
-
-    pub(crate) const fn is_crate_relative(self) -> bool {
-        matches!(self, Self::Crate | Self::Super)
     }
 }
 
@@ -94,14 +100,25 @@ pub(crate) fn parse_meta_list(meta_list: &MetaList) -> syn::Result<Punctuated<Me
     meta_list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
 }
 
-/// Whether `attributes` hold exactly `#[cfg(test)]`.
-pub(crate) fn is_cfg_test(attributes: &[Attribute]) -> bool {
-    attributes.iter().any(|attribute| {
+/// Recognition of a direct `#[cfg(test)]` attribute, without interpreting compound gates.
+/// `NotDirectCfgTest` makes no claim about whether other attributes permit every build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttributeTestGate {
+    DirectCfgTest,
+    NotDirectCfgTest,
+}
+
+pub(crate) fn attribute_test_gate(attributes: &[Attribute]) -> AttributeTestGate {
+    if attributes.iter().any(|attribute| {
         attribute.path().is_ident("cfg")
             && attribute
                 .parse_args::<Ident>()
                 .is_ok_and(|predicate_ident| predicate_ident == "test")
-    })
+    }) {
+        AttributeTestGate::DirectCfgTest
+    } else {
+        AttributeTestGate::NotDirectCfgTest
+    }
 }
 
 pub(crate) fn leading_super_count(segments: &[String]) -> usize {

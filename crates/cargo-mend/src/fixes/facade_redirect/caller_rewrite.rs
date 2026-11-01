@@ -38,6 +38,7 @@ use crate::fixes::imports::OwnedFix;
 use crate::fixes::imports::UseBinding;
 use crate::fixes::imports::UseFix;
 use crate::rust_syntax;
+use crate::rust_syntax::AttributeTestGate;
 use crate::rust_syntax::ParsedSources;
 use crate::rust_syntax::PathAnchor;
 
@@ -347,8 +348,11 @@ impl Visit<'_> for CallerRewriter<'_> {
 
     fn visit_item_mod(&mut self, item_mod: &ItemMod) {
         if let Some((_, items)) = &item_mod.content {
-            let cfg_test = rust_syntax::is_cfg_test(&item_mod.attrs);
-            self.cfg_test_depth += usize::from(cfg_test);
+            let cfg_test = rust_syntax::attribute_test_gate(&item_mod.attrs);
+            match cfg_test {
+                AttributeTestGate::DirectCfgTest => self.cfg_test_depth += 1,
+                AttributeTestGate::NotDirectCfgTest => {},
+            }
             self.module_path.push(item_mod.ident.unraw().to_string());
             let scope = Self::binding_scope(
                 items.iter(),
@@ -364,7 +368,10 @@ impl Visit<'_> for CallerRewriter<'_> {
                 }
             });
             self.module_path.pop();
-            self.cfg_test_depth -= usize::from(cfg_test);
+            match cfg_test {
+                AttributeTestGate::DirectCfgTest => self.cfg_test_depth -= 1,
+                AttributeTestGate::NotDirectCfgTest => {},
+            }
         }
     }
 

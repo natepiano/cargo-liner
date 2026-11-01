@@ -105,30 +105,47 @@ impl MendRunner<'_> {
         let sources = ParsedSources::for_selection(self.selection);
         let diagnostics_config = &self.loaded_config.diagnostics_config;
         let enabled = |codes: &[DiagnosticCode]| {
-            codes
+            if codes
                 .iter()
                 .any(|&code| diagnostics_config.is_enabled(code) == DiagnosticStatus::Enabled)
+            {
+                DiagnosticStatus::Enabled
+            } else {
+                DiagnosticStatus::Disabled
+            }
         };
         let syntax_scans = SyntaxScans {
-            imports:              enabled(&[
+            imports:              match enabled(&[
                 DiagnosticCode::ShortenLocalCrateImport,
                 DiagnosticCode::ReplaceDeepSuperImport,
-            ])
-            .then(|| imports::scan_selection(self.selection, &sources))
-            .transpose()
-            .map_err(MendFailure::Unexpected)?,
-            prefer_module_import: enabled(&[DiagnosticCode::PreferModuleImport])
-                .then(|| prefer_module_import::scan_selection(self.selection, &sources))
-                .transpose()
-                .map_err(MendFailure::Unexpected)?,
-            inline_path:          enabled(&[DiagnosticCode::InlinePathQualifiedType])
-                .then(|| inline_path_qualified_type::scan_selection(self.selection, &sources))
-                .transpose()
-                .map_err(MendFailure::Unexpected)?,
-            imports_at_top:       enabled(&[DiagnosticCode::ImportsAtTop])
-                .then(|| imports_at_top::scan_selection(self.selection, &sources))
-                .transpose()
-                .map_err(MendFailure::Unexpected)?,
+            ]) {
+                DiagnosticStatus::Enabled => Some(
+                    imports::scan_selection(self.selection, &sources)
+                        .map_err(MendFailure::Unexpected)?,
+                ),
+                DiagnosticStatus::Disabled => None,
+            },
+            prefer_module_import: match enabled(&[DiagnosticCode::PreferModuleImport]) {
+                DiagnosticStatus::Enabled => Some(
+                    prefer_module_import::scan_selection(self.selection, &sources)
+                        .map_err(MendFailure::Unexpected)?,
+                ),
+                DiagnosticStatus::Disabled => None,
+            },
+            inline_path:          match enabled(&[DiagnosticCode::InlinePathQualifiedType]) {
+                DiagnosticStatus::Enabled => Some(
+                    inline_path_qualified_type::scan_selection(self.selection, &sources)
+                        .map_err(MendFailure::Unexpected)?,
+                ),
+                DiagnosticStatus::Disabled => None,
+            },
+            imports_at_top:       match enabled(&[DiagnosticCode::ImportsAtTop]) {
+                DiagnosticStatus::Enabled => Some(
+                    imports_at_top::scan_selection(self.selection, &sources)
+                        .map_err(MendFailure::Unexpected)?,
+                ),
+                DiagnosticStatus::Disabled => None,
+            },
         };
         let report = &mut selection_result.report;
         let scan_findings = [
