@@ -102,7 +102,7 @@ impl RecordedOverlapAnswer {
                     || exact_approved_scopes
                         .as_slice()
                         .iter()
-                        .any(|overlap| overlap.reservation_id == id)
+                        .any(|authorized_overlap| authorized_overlap.reservation_id == id)
             },
             Self::Sequence {
                 reservation_id,
@@ -294,8 +294,8 @@ pub(super) fn board_overlap_answers(
         live: Vec::new(),
         released: 0,
     };
-    for event in events {
-        match &event.operation {
+    for journal_event in events {
+        match &journal_event.operation {
             JournalOperation::Claim {
                 reservation_id,
                 authorization,
@@ -363,7 +363,7 @@ pub(super) fn board_overlap_answers(
                 } = accumulated_deferral_approvals(
                     events,
                     constraints,
-                    event.event_id(),
+                    journal_event.event_id(),
                     *deferred_reservation_id,
                     *blocker_reservation_id,
                 );
@@ -427,7 +427,7 @@ fn retired_edges(events: &[JournalEvent]) -> HashMap<EdgeId, OrderingEdgeRetirem
 fn resolved_defer_pairs(events: &[JournalEvent]) -> HashSet<(ReservationId, ReservationId)> {
     events
         .iter()
-        .filter_map(|event| match &event.operation {
+        .filter_map(|journal_event| match &journal_event.operation {
             JournalOperation::ResolveDefer {
                 deferred_reservation_id,
                 blocker_reservation_id,

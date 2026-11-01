@@ -470,7 +470,7 @@ pub(super) fn bypass_audit(events: &[JournalEvent]) -> Vec<BypassAuditEntry> {
     let mut forced_seen = HashSet::new();
     let mut environment_groups: HashMap<BypassedMergeIdentity, Vec<BoardBypassTime>> =
         HashMap::new();
-    let mut audit = Vec::new();
+    let mut bypass_audit_entries = Vec::new();
     for event in events {
         let JournalOperation::Bypass {
             cause,
@@ -494,7 +494,7 @@ pub(super) fn bypass_audit(events: &[JournalEvent]) -> Vec<BypassAuditEntry> {
                 let Some(skipped_holds) = permits.get(permit_id) else {
                     continue;
                 };
-                audit.push(match skipped_holds {
+                bypass_audit_entries.push(match skipped_holds {
                     SkippedIntegrationHoldSet::OrderingEdges { edges } => {
                         BypassAuditEntry::ForcedOrderingEdges {
                             permit_id: *permit_id,
@@ -525,7 +525,7 @@ pub(super) fn bypass_audit(events: &[JournalEvent]) -> Vec<BypassAuditEntry> {
             BypassCause::ForcedIntegration { .. } => {},
         }
     }
-    audit.extend(environment_groups.into_values().map(|occurrences| {
+    bypass_audit_entries.extend(environment_groups.into_values().map(|occurrences| {
         BypassAuditEntry::EnvironmentOverride {
             override_name: "CARGO_BERTH_BYPASS=1".to_owned(),
             grouped_reference_transactions: u64::try_from(occurrences.len()).unwrap_or(u64::MAX),
@@ -533,7 +533,7 @@ pub(super) fn bypass_audit(events: &[JournalEvent]) -> Vec<BypassAuditEntry> {
             skipped_holds: UnrecordedSkippedHolds::OverridePrecededLedgerRead,
         }
     }));
-    audit
+    bypass_audit_entries
 }
 
 fn bypass_time(event: &JournalEvent, occurrence: &BypassOccurrenceTime) -> BoardBypassTime {
@@ -549,51 +549,58 @@ fn bypass_time(event: &JournalEvent, occurrence: &BypassOccurrenceTime) -> Board
 pub(super) fn incursion_sections(
     reservations: &RetainedReservationSet,
 ) -> (Vec<OutstandingIncursion>, Vec<RecordedIncursionAnswer>) {
-    let mut outstanding = Vec::new();
-    let mut recorded = Vec::new();
+    let mut outstanding_incursions = Vec::new();
+    let mut recorded_incursion_answers = Vec::new();
     // `outstanding_counts` counts every incident of the reservation's run and worktree,
     // because `resolve --every-incursion` answers that same set.
     let outstanding_counts: HashMap<ReservationId, usize> = reservations
         .outstanding_incursion_incidents()
         .filter_map(|incident| {
-            let straying = reservations.reservation(incident.reservation_id()).ok()?;
+            let straying_reservation = reservations.reservation(incident.reservation_id()).ok()?;
             let count = reservations
-                .incursion_incidents_of_coordination_identity(straying)
-                .filter(|shared| matches!(shared.status(), IncursionIncidentStatus::Outstanding))
+                .incursion_incidents_of_coordination_identity(straying_reservation)
+                .filter(|shared_incursion_incident| {
+                    matches!(
+                        shared_incursion_incident.status(),
+                        IncursionIncidentStatus::Outstanding
+                    )
+                })
                 .count();
             Some((incident.reservation_id(), count))
         })
         .collect();
     for incident in reservations.incursion_incidents() {
         match incident.status() {
-            IncursionIncidentStatus::Outstanding => outstanding.push(OutstandingIncursion {
-                incident_id:             incident.id(),
-                straying_reservation_id: incident.reservation_id(),
-                foreign_reservation_ids: incident.blocked_paths().holders().as_slice().to_vec(),
-                entered_paths:           incident.blocked_paths().paths().as_slice().to_vec(),
-                outstanding_count:       outstanding_counts
-                    .get(&incident.reservation_id())
-                    .copied()
-                    .unwrap_or(1),
-                resolution:              IncursionResolutionAction {
-                    reservation_id: incident.reservation_id(),
-                    incident_id:    incident.id(),
-                    flag:           format!(
-                        "resolve {} --incursion {}",
-                        incident.reservation_id(),
-                        incident.id()
-                    ),
-                    every_flag:     format!(
-                        "resolve {} --every-incursion",
-                        incident.reservation_id()
-                    ),
-                },
-            }),
+            IncursionIncidentStatus::Outstanding => {
+                outstanding_incursions.push(OutstandingIncursion {
+                    incident_id:             incident.id(),
+                    straying_reservation_id: incident.reservation_id(),
+                    foreign_reservation_ids: incident.blocked_paths().holders().as_slice().to_vec(),
+                    entered_paths:           incident.blocked_paths().paths().as_slice().to_vec(),
+                    outstanding_count:       outstanding_counts
+                        .get(&incident.reservation_id())
+                        .copied()
+                        .unwrap_or(1),
+                    resolution:              IncursionResolutionAction {
+                        reservation_id: incident.reservation_id(),
+                        incident_id:    incident.id(),
+                        flag:           format!(
+                            "resolve {} --incursion {}",
+                            incident.reservation_id(),
+                            incident.id()
+                        ),
+                        every_flag:     format!(
+                            "resolve {} --every-incursion",
+                            incident.reservation_id()
+                        ),
+                    },
+                });
+            },
             IncursionIncidentStatus::Resolved {
                 resolving_actor: _,
                 resolution_event_id,
                 resolved_at,
-            } => recorded.push(RecordedIncursionAnswer {
+            } => recorded_incursion_answers.push(RecordedIncursionAnswer {
                 incident_id:             incident.id(),
                 straying_reservation_id: incident.reservation_id(),
                 foreign_reservation_ids: incident.blocked_paths().holders().as_slice().to_vec(),
@@ -603,7 +610,7 @@ pub(super) fn incursion_sections(
             }),
         }
     }
-    (outstanding, recorded)
+    (outstanding_incursions, recorded_incursion_answers)
 }
 
 pub(super) fn board_alerts(
@@ -770,26 +777,32 @@ pub(super) fn board_git_cost(
     let protected_predecessors = constraints
         .ordering_constraints
         .iter()
-        .map(|constraint| constraint.predecessor)
+        .map(|integration_ordering_constraint| integration_ordering_constraint.predecessor)
         .collect::<HashSet<_>>();
     let protected_predecessor_ancestry_queries = protected_predecessors
         .iter()
-        .filter(|predecessor_id| {
+        .filter(|predecessor_reservation_id| {
             snapshot
-                .reservation(**predecessor_id)
+                .reservation(**predecessor_reservation_id)
                 .is_ok_and(|reservation| {
                     matches!(
                         reservation.evidence,
                         RepositoryReservationEvidence::Outstanding { .. }
                             | RepositoryReservationEvidence::Released { .. }
-                    ) && constraints.ordering_constraints.iter().any(|constraint| {
-                        constraint.predecessor == **predecessor_id
-                            && snapshot
-                                .reservation(constraint.successor)
-                                .is_ok_and(|reservation| {
-                                    matches!(reservation.worktree_head, WorktreeHead::Resolved(_))
-                                })
-                    })
+                    ) && constraints.ordering_constraints.iter().any(
+                        |integration_ordering_constraint| {
+                            integration_ordering_constraint.predecessor
+                                == **predecessor_reservation_id
+                                && snapshot
+                                    .reservation(integration_ordering_constraint.successor)
+                                    .is_ok_and(|reservation| {
+                                        matches!(
+                                            reservation.worktree_head,
+                                            WorktreeHead::Resolved(_)
+                                        )
+                                    })
+                        },
+                    )
                 })
         })
         .count();
@@ -838,33 +851,44 @@ mod tests {
                 ],
             }),
         ] {
-            let action: BoardOrphanResolutionAction = serde_json::from_value(wire.clone())?;
-            assert_eq!(serde_json::to_value(action)?, wire);
+            let board_orphan_resolution_action: BoardOrphanResolutionAction =
+                serde_json::from_value(wire.clone())?;
+            assert_eq!(serde_json::to_value(board_orphan_resolution_action)?, wire);
         }
         Ok(())
     }
 
     #[test]
     fn stale_reservation_alert_names_the_renew_resolution() -> FixtureResult<()> {
-        let fixture = BoardFixture::new()?;
-        let actor = fixture.main_actor();
-        let reservation = fixture.claim(&actor, "stale.rs", ConflictAuthorization::NoConflict)?;
-        let model = fixture.model()?;
-        let fresh_row =
-            test_support::board_reservation_snapshot(&model, reservation.reservation_id)?.clone();
+        let board_fixture = BoardFixture::new()?;
+        let test_actor = board_fixture.main_actor();
+        let reservation =
+            board_fixture.claim(&test_actor, "stale.rs", ConflictAuthorization::NoConflict)?;
+        let board_model = board_fixture.model()?;
+        let fresh_board_reservation_snapshot =
+            test_support::board_reservation_snapshot(&board_model, reservation.reservation_id)?
+                .clone();
         assert_eq!(
-            board_alerts(&[], std::slice::from_ref(&fresh_row), &[], |_| {
-                JudgedTargetTip::ObjectUnknown
-            })?,
+            board_alerts(
+                &[],
+                std::slice::from_ref(&fresh_board_reservation_snapshot),
+                &[],
+                |_| { JudgedTargetTip::ObjectUnknown }
+            )?,
             [] as [BoardAlert; 0]
         );
 
-        let mut stale_row = fresh_row;
-        let ReservationFreshness::Fresh { last_activity_at } = stale_row.freshness.clone() else {
+        let mut stale_board_reservation_snapshot = fresh_board_reservation_snapshot;
+        let ReservationFreshness::Fresh { last_activity_at } =
+            stale_board_reservation_snapshot.freshness.clone()
+        else {
             return Err(io::Error::other("new reservation should be fresh").into());
         };
-        stale_row.freshness = ReservationFreshness::Stale { last_activity_at };
-        let alerts = board_alerts(&[], &[stale_row], &[], |_| JudgedTargetTip::ObjectUnknown)?;
+        stale_board_reservation_snapshot.freshness =
+            ReservationFreshness::Stale { last_activity_at };
+        let alerts = board_alerts(&[], &[stale_board_reservation_snapshot], &[], |_| {
+            JudgedTargetTip::ObjectUnknown
+        })?;
         assert!(matches!(
             alerts.as_slice(),
             [BoardAlert::StaleReservation {

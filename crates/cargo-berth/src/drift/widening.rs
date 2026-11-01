@@ -18,11 +18,11 @@ pub(super) struct WideningAdmission<'a> {
 
 impl<'a> WideningAdmission<'a> {
     pub(super) fn new(
-        reservations: &RetainedReservationSet,
+        retained_reservation_set: &RetainedReservationSet,
         subject: &'a Reservation,
-        changes: &'a ObservedDriftChanges,
+        observed_drift_changes: &'a ObservedDriftChanges,
     ) -> Self {
-        let comparison_end = if reservations.iter().any(|sibling| {
+        let comparison_end = if retained_reservation_set.iter().any(|sibling| {
             sibling.id() != subject.id()
                 && sibling
                     .actor()
@@ -30,7 +30,7 @@ impl<'a> WideningAdmission<'a> {
                 && matches!(
                     sibling.protected_checkpoint(),
                     RetainedProtectedTip::Retained(tip)
-                        if changes.compares_to_checkpoint(tip.as_ref())
+                        if observed_drift_changes.compares_to_checkpoint(tip.as_ref())
                 )
         }) {
             ComparisonEnd::SiblingCheckpoint
@@ -39,7 +39,7 @@ impl<'a> WideningAdmission<'a> {
         };
         Self {
             subject,
-            changes,
+            changes: observed_drift_changes,
             comparison_end,
         }
     }
@@ -53,23 +53,29 @@ impl<'a> WideningAdmission<'a> {
     /// checkpoint still widens B.
     pub(super) fn admit(
         &self,
-        path: &ReservationScopePath,
-        coverage: &DriftBlockingCoverage,
+        reservation_scope_path: &ReservationScopePath,
+        drift_blocking_coverage: &DriftBlockingCoverage,
     ) -> WideningPathAdmission {
-        if !matches!(coverage, DriftBlockingCoverage::Unclaimed) || !self.changes.carries_work(path)
+        if !matches!(drift_blocking_coverage, DriftBlockingCoverage::Unclaimed)
+            || !self.changes.carries_work(reservation_scope_path)
         {
             return WideningPathAdmission::Excluded;
         }
-        if self.changes.committed_only(self.subject.id(), path) {
+        if self
+            .changes
+            .committed_only(self.subject.id(), reservation_scope_path)
+        {
             match self.comparison_end {
                 ComparisonEnd::SiblingCheckpoint => return WideningPathAdmission::Excluded,
-                ComparisonEnd::OwnRange if !self.changes.head_commit_introduced(path) => {
+                ComparisonEnd::OwnRange
+                    if !self.changes.head_commit_introduced(reservation_scope_path) =>
+                {
                     return WideningPathAdmission::Excluded;
                 },
                 ComparisonEnd::OwnRange => {},
             }
         }
-        WideningPathAdmission::Admitted(UnheldWideningPath(path.clone()))
+        WideningPathAdmission::Admitted(UnheldWideningPath(reservation_scope_path.clone()))
     }
 }
 

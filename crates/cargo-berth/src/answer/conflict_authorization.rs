@@ -204,10 +204,12 @@ impl ConflictAuthorization {
         reason: OverlapAuthorizationReason,
         replaced: Vec<ContradictedOrdering>,
     ) -> Self {
-        if holders
-            .iter()
-            .any(|binding| matches!(binding, ClaimSequenceBinding::ExistingEdge { .. }))
-        {
+        if holders.iter().any(|claim_sequence_binding| {
+            matches!(
+                claim_sequence_binding,
+                ClaimSequenceBinding::ExistingEdge { .. }
+            )
+        }) {
             Self::SequenceWithExistingEdges {
                 overlaps,
                 holders,
@@ -216,7 +218,10 @@ impl ConflictAuthorization {
         } else {
             Self::sequence(
                 overlaps,
-                holders.iter().map(|binding| *binding.holder()).collect(),
+                holders
+                    .iter()
+                    .map(|claim_sequence_binding| *claim_sequence_binding.holder())
+                    .collect(),
                 reason,
                 replaced,
             )
@@ -271,14 +276,15 @@ impl ConflictAuthorization {
     ) -> bool {
         let binds_edge = match self {
             Self::Sequence {
-                edge_id: recorded, ..
-            } => *recorded == edge_id,
+                edge_id: recorded_edge_id,
+                ..
+            } => *recorded_edge_id == edge_id,
             Self::SequencePerHolder { holders, .. } => {
                 holders.iter().any(|holder| holder.edge_id == edge_id)
             },
             Self::SequenceWithExistingEdges { holders, .. } => holders
                 .iter()
-                .any(|binding| binding.holder().edge_id == edge_id),
+                .any(|claim_sequence_binding| claim_sequence_binding.holder().edge_id == edge_id),
             Self::NoConflict
             | Self::Enrollment { .. }
             | Self::Defer { .. }
@@ -359,26 +365,28 @@ mod tests {
     #[test]
     fn answers_cover_shared_scopes_after_unrelated_widen() -> Result<(), Box<dyn Error>> {
         let counterpart = ReservationId::new();
-        let shared = ReservationScope {
+        let shared_reservation_scope = ReservationScope {
             path: "shared.rs".parse()?,
             kind: ScopeKind::File,
         };
-        let added = ReservationScope {
+        let added_reservation_scope = ReservationScope {
             path: "other.rs".parse()?,
             kind: ScopeKind::File,
         };
-        let original_scopes = ReservationScopeSet::try_from(vec![shared.clone()])?;
+        let original_scopes =
+            ReservationScopeSet::try_from(vec![shared_reservation_scope.clone()])?;
         let original_revision = OverlapScopeRevision::from(&original_scopes);
-        let widened_revision = OverlapScopeRevision::from(&ReservationScopeSet::try_from(vec![
-            shared.clone(),
-            added.clone(),
-        ])?);
+        let widened_overlap_scope_revision =
+            OverlapScopeRevision::from(&ReservationScopeSet::try_from(vec![
+                shared_reservation_scope.clone(),
+                added_reservation_scope.clone(),
+            ])?);
         let overlaps = AuthorizedOverlapSet::from(AuthorizedOverlap {
             reservation_id: counterpart,
             scope_revision: original_revision.clone(),
             scopes:         original_scopes.into(),
         });
-        let answers = [
+        let conflict_authorizations = [
             ConflictAuthorization::Enrollment {
                 overlaps: overlaps.clone(),
             },
@@ -401,26 +409,42 @@ mod tests {
                 reason:   "accept the conflict".parse()?,
             },
         ];
-        for answer in &answers {
-            for revision in [&original_revision, &widened_revision] {
-                assert!(answer.covers(counterpart, revision, &shared, PathCase::Sensitive));
-                assert!(!answer.covers(counterpart, revision, &added, PathCase::Sensitive));
+        for answer in &conflict_authorizations {
+            for overlap_scope_revision in [&original_revision, &widened_overlap_scope_revision] {
+                assert!(answer.covers(
+                    counterpart,
+                    overlap_scope_revision,
+                    &shared_reservation_scope,
+                    PathCase::Sensitive
+                ));
+                assert!(!answer.covers(
+                    counterpart,
+                    overlap_scope_revision,
+                    &added_reservation_scope,
+                    PathCase::Sensitive
+                ));
                 assert!(!answer.covers(
                     ReservationId::new(),
-                    revision,
-                    &shared,
+                    overlap_scope_revision,
+                    &shared_reservation_scope,
                     PathCase::Sensitive,
                 ));
             }
         }
-        let existing = ConflictAuthorization::ExistingAnswersCoverEveryOverlap { overlaps };
-        assert!(existing.covers(
+        let existing_conflict_authorization =
+            ConflictAuthorization::ExistingAnswersCoverEveryOverlap { overlaps };
+        assert!(existing_conflict_authorization.covers(
             counterpart,
             &original_revision,
-            &shared,
+            &shared_reservation_scope,
             PathCase::Sensitive,
         ));
-        assert!(!existing.covers(counterpart, &widened_revision, &shared, PathCase::Sensitive));
+        assert!(!existing_conflict_authorization.covers(
+            counterpart,
+            &widened_overlap_scope_revision,
+            &shared_reservation_scope,
+            PathCase::Sensitive
+        ));
         Ok(())
     }
 
@@ -430,18 +454,18 @@ mod tests {
     fn a_sequence_per_holder_covers_each_holders_own_scope() -> Result<(), Box<dyn Error>> {
         let first_holder = ReservationId::new();
         let second_holder = ReservationId::new();
-        let shared = ReservationScope {
+        let shared_reservation_scope = ReservationScope {
             path: "shared.rs".parse()?,
             kind: ScopeKind::File,
         };
-        let other = ReservationScope {
+        let other_reservation_scope = ReservationScope {
             path: "other.rs".parse()?,
             kind: ScopeKind::File,
         };
-        let first_overlap = authorized_overlap(first_holder, &shared)?;
-        let second_overlap = authorized_overlap(second_holder, &other)?;
-        let first_revision = first_overlap.scope_revision.clone();
-        let second_revision = second_overlap.scope_revision.clone();
+        let first_overlap = authorized_overlap(first_holder, &shared_reservation_scope)?;
+        let second_overlap = authorized_overlap(second_holder, &other_reservation_scope)?;
+        let first_overlap_scope_revision = first_overlap.scope_revision.clone();
+        let second_overlap_scope_revision = second_overlap.scope_revision.clone();
         let answer = ConflictAuthorization::SequencePerHolder {
             overlaps: AuthorizedOverlapSet::try_from(vec![first_overlap, second_overlap])?,
             holders:  vec![
@@ -460,19 +484,34 @@ mod tests {
             replaced: Vec::new(),
         };
 
-        assert!(answer.covers(first_holder, &first_revision, &shared, PathCase::Sensitive));
-        assert!(answer.covers(second_holder, &second_revision, &other, PathCase::Sensitive));
-        assert!(!answer.covers(first_holder, &first_revision, &other, PathCase::Sensitive));
+        assert!(answer.covers(
+            first_holder,
+            &first_overlap_scope_revision,
+            &shared_reservation_scope,
+            PathCase::Sensitive
+        ));
+        assert!(answer.covers(
+            second_holder,
+            &second_overlap_scope_revision,
+            &other_reservation_scope,
+            PathCase::Sensitive
+        ));
+        assert!(!answer.covers(
+            first_holder,
+            &first_overlap_scope_revision,
+            &other_reservation_scope,
+            PathCase::Sensitive
+        ));
         assert!(!answer.covers(
             second_holder,
-            &second_revision,
-            &shared,
+            &second_overlap_scope_revision,
+            &shared_reservation_scope,
             PathCase::Sensitive
         ));
         assert!(!answer.covers(
             ReservationId::new(),
-            &first_revision,
-            &shared,
+            &first_overlap_scope_revision,
+            &shared_reservation_scope,
             PathCase::Sensitive,
         ));
         Ok(())
@@ -484,12 +523,12 @@ mod tests {
     fn a_sequence_answer_records_one_edge_per_holder() -> Result<(), Box<dyn Error>> {
         let first_holder = ReservationId::new();
         let second_holder = ReservationId::new();
-        let shared = ReservationScope {
+        let shared_reservation_scope = ReservationScope {
             path: "shared.rs".parse()?,
             kind: ScopeKind::File,
         };
-        let first_overlap = authorized_overlap(first_holder, &shared)?;
-        let second_overlap = authorized_overlap(second_holder, &shared)?;
+        let first_overlap = authorized_overlap(first_holder, &shared_reservation_scope)?;
+        let second_overlap = authorized_overlap(second_holder, &shared_reservation_scope)?;
         let after_first = SequencedBlocker {
             blocker:   first_holder,
             direction: OrderingDirection::HolderBeforeRequester,
@@ -499,7 +538,7 @@ mod tests {
             direction: OrderingDirection::RequesterBeforeHolder,
         };
 
-        let one_holder = ConflictAuthorization::answered(
+        let one_holder_conflict_authorization = ConflictAuthorization::answered(
             &PermissiveOverlapAnswer::Sequence {
                 blockers:    vec![after_first],
                 replacement: OrderingReplacement::Keep,
@@ -509,12 +548,12 @@ mod tests {
             Vec::new(),
         );
         assert!(matches!(
-            one_holder,
+            one_holder_conflict_authorization,
             ConflictAuthorization::Sequence { blocker, direction, .. }
                 if blocker == first_holder && direction == after_first.direction
         ));
 
-        let per_holder = ConflictAuthorization::answered(
+        let per_holder_conflict_authorization = ConflictAuthorization::answered(
             &PermissiveOverlapAnswer::Sequence {
                 blockers:    vec![after_first, before_second],
                 replacement: OrderingReplacement::Keep,
@@ -523,7 +562,9 @@ mod tests {
             "integrate after the first holder and before the second".parse()?,
             Vec::new(),
         );
-        let ConflictAuthorization::SequencePerHolder { holders, .. } = per_holder else {
+        let ConflictAuthorization::SequencePerHolder { holders, .. } =
+            per_holder_conflict_authorization
+        else {
             return Err("two holder bindings should record SequencePerHolder".into());
         };
         assert_eq!(
@@ -549,11 +590,12 @@ mod tests {
     #[test]
     fn replaced_edges_are_additive_on_the_wire() -> Result<(), Box<dyn Error>> {
         let holder = ReservationId::new();
-        let shared = ReservationScope {
+        let shared_reservation_scope = ReservationScope {
             path: "shared.rs".parse()?,
             kind: ScopeKind::File,
         };
-        let overlaps = AuthorizedOverlapSet::from(authorized_overlap(holder, &shared)?);
+        let overlaps =
+            AuthorizedOverlapSet::from(authorized_overlap(holder, &shared_reservation_scope)?);
         let answer = |replaced| -> Result<ConflictAuthorization, Box<dyn Error>> {
             Ok(ConflictAuthorization::answered(
                 &PermissiveOverlapAnswer::Sequence {
@@ -569,12 +611,12 @@ mod tests {
             ))
         };
 
-        let kept = answer(Vec::new())?;
-        let kept_wire = serde_json::to_value(&kept)?;
+        let kept_conflict_authorization = answer(Vec::new())?;
+        let kept_wire = serde_json::to_value(&kept_conflict_authorization)?;
         assert!(kept_wire.get("replaced").is_none(), "{kept_wire}");
         assert_eq!(
             serde_json::from_value::<ConflictAuthorization>(kept_wire)?,
-            kept
+            kept_conflict_authorization
         );
 
         let replaced = answer(vec![ContradictedOrdering {
