@@ -124,14 +124,14 @@ pub(crate) fn load_config(
 }
 
 fn fingerprint_for(root: &Path, config: &VisibilityConfig) -> Result<String> {
-    let mut hasher = DefaultHasher::new();
-    root.to_string_lossy().hash(&mut hasher);
+    let mut default_hasher = DefaultHasher::new();
+    root.to_string_lossy().hash(&mut default_hasher);
     to_string(config)
         .context("failed to serialize mend config for fingerprinting")?
-        .hash(&mut hasher);
+        .hash(&mut default_hasher);
     Ok(format!(
         "{:0width$x}",
-        hasher.finish(),
+        default_hasher.finish(),
         width = FINGERPRINT_HEX_WIDTH
     ))
 }
@@ -165,9 +165,9 @@ mod tests {
 
     #[test]
     fn project_pub_in_path_overrides_global() -> Result<()> {
-        let temp = tempdir()?;
+        let temp_dir = tempdir()?;
         fs::write(
-            temp.path().join(CONFIG_FILE_NAME),
+            temp_dir.path().join(CONFIG_FILE_NAME),
             format!(
                 "[{VISIBILITY_TABLE_KEY}]\n{PUB_IN_PATH_KEY} = \"{}\"\n",
                 PubInPath::Required.config_value()
@@ -175,7 +175,7 @@ mod tests {
         )?;
         let global = global_config(PubInPath::Forbidden, PreludePubMod::Allowed);
 
-        let loaded_config = load_config(temp.path(), temp.path(), None, &global)?;
+        let loaded_config = load_config(temp_dir.path(), temp_dir.path(), None, &global)?;
 
         assert_eq!(
             loaded_config.visibility_config.pub_in_path,
@@ -186,14 +186,14 @@ mod tests {
 
     #[test]
     fn absent_project_pub_in_path_inherits_global() -> Result<()> {
-        let temp = tempdir()?;
+        let temp_dir = tempdir()?;
         fs::write(
-            temp.path().join(CONFIG_FILE_NAME),
+            temp_dir.path().join(CONFIG_FILE_NAME),
             format!("[{VISIBILITY_TABLE_KEY}]\nallow_pub_mod = []\n"),
         )?;
         let global = global_config(PubInPath::Forbidden, PreludePubMod::Allowed);
 
-        let loaded_config = load_config(temp.path(), temp.path(), None, &global)?;
+        let loaded_config = load_config(temp_dir.path(), temp_dir.path(), None, &global)?;
 
         assert_eq!(
             loaded_config.visibility_config.pub_in_path,
@@ -204,9 +204,14 @@ mod tests {
 
     #[test]
     fn absent_project_and_global_pub_in_path_uses_required() -> Result<()> {
-        let temp = tempdir()?;
+        let temp_dir = tempdir()?;
 
-        let loaded_config = load_config(temp.path(), temp.path(), None, &GlobalConfig::default())?;
+        let loaded_config = load_config(
+            temp_dir.path(),
+            temp_dir.path(),
+            None,
+            &GlobalConfig::default(),
+        )?;
 
         assert_eq!(
             loaded_config.visibility_config.pub_in_path,
@@ -217,14 +222,14 @@ mod tests {
 
     #[test]
     fn project_prelude_pub_mod_overrides_global() -> Result<()> {
-        let temp = tempdir()?;
+        let temp_dir = tempdir()?;
         fs::write(
-            temp.path().join(CONFIG_FILE_NAME),
+            temp_dir.path().join(CONFIG_FILE_NAME),
             format!("[{VISIBILITY_TABLE_KEY}]\n{PRELUDE_KEY} = false\n"),
         )?;
         let global = global_config(PubInPath::Permitted, PreludePubMod::Allowed);
 
-        let loaded_config = load_config(temp.path(), temp.path(), None, &global)?;
+        let loaded_config = load_config(temp_dir.path(), temp_dir.path(), None, &global)?;
 
         assert_eq!(
             loaded_config.visibility_config.prelude_pub_mod,
@@ -236,15 +241,15 @@ mod tests {
     #[test]
     fn resolved_pub_in_path_changes_fingerprint() -> Result<()> {
         let root = tempdir()?;
-        let forbidden = VisibilityConfig {
+        let forbidden_visibility_config = VisibilityConfig {
             pub_in_path: PubInPath::Forbidden,
             ..VisibilityConfig::default()
         };
-        let permitted = VisibilityConfig::default();
+        let permitted_visibility_config = VisibilityConfig::default();
 
         assert_ne!(
-            fingerprint_for(root.path(), &forbidden)?,
-            fingerprint_for(root.path(), &permitted)?
+            fingerprint_for(root.path(), &forbidden_visibility_config)?,
+            fingerprint_for(root.path(), &permitted_visibility_config)?
         );
         Ok(())
     }

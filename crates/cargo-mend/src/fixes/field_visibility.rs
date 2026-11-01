@@ -32,7 +32,7 @@ impl FieldVisibilityReplacement {
 
 pub(super) fn scan_from_report(report: &Report) -> Result<FieldVisibilityFixScan> {
     let root = Path::new(&report.root);
-    let mut fixes = Vec::new();
+    let mut use_fixes = Vec::new();
     for finding in &report.findings {
         if finding.diagnostic_code != DiagnosticCode::FieldVisibilityWiderThanType {
             continue;
@@ -54,7 +54,7 @@ pub(super) fn scan_from_report(report: &Report) -> Result<FieldVisibilityFixScan
         else {
             continue;
         };
-        fixes.push(UseFix {
+        use_fixes.push(UseFix {
             path:         absolute_path,
             start:        site.start,
             end:          site.end_with_separator,
@@ -62,7 +62,7 @@ pub(super) fn scan_from_report(report: &Report) -> Result<FieldVisibilityFixScan
             import_group: None,
         });
     }
-    Ok(FieldVisibilityFixScan { fixes })
+    Ok(FieldVisibilityFixScan { fixes: use_fixes })
 }
 
 /// Parse the suggestion text emitted by the `field_visibility_wider_than_type`
