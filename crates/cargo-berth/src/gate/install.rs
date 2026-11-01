@@ -712,10 +712,10 @@ impl RepositoryHookContext {
         if read_hook(&path)?.as_deref() == Some(self.contents.as_bytes()) {
             return Ok(());
         }
-        let mut replacement =
+        let mut pending_managed_hook_replacement =
             PendingManagedHookReplacement::create(hooks, REFERENCE_TRANSACTION_CONTEXT_FILE_NAME)?;
-        replacement.permissions = 0o644;
-        replacement.activate(&path, self.contents.as_bytes())
+        pending_managed_hook_replacement.permissions = 0o644;
+        pending_managed_hook_replacement.activate(&path, self.contents.as_bytes())
     }
 }
 
@@ -814,15 +814,15 @@ mod tests {
     /// The body can share an inode while execution still uses each repository's policy.
     #[test]
     fn shared_reference_body_dispatches_with_each_private_repository_context() {
-        let parent = tempfile::tempdir().expect("context test parent should exist");
-        let spy = parent.path().join("cargo-berth-spy");
+        let parent_temp_dir = tempfile::tempdir().expect("context test parent should exist");
+        let spy = parent_temp_dir.path().join("cargo-berth-spy");
         fs::write(&spy, "#!/bin/sh\nprintf '%s' \"$PWD\"\n")
             .expect("dispatch observer should write");
         fs::set_permissions(&spy, fs::Permissions::from_mode(0o755))
             .expect("dispatch observer should execute");
         let mut scripts = Vec::new();
         for name in ["first", "second"] {
-            let policy = parent.path().join(name);
+            let policy = parent_temp_dir.path().join(name);
             let common = policy.join(".git");
             let hooks = common.join("hooks");
             fs::create_dir_all(&hooks).expect("repository hooks should exist");
@@ -846,7 +846,7 @@ mod tests {
             );
             let mut child = Command::new(&hook)
                 .arg("prepared")
-                .current_dir(parent.path())
+                .current_dir(parent_temp_dir.path())
                 .env("CARGO_BERTH_EXECUTABLE", &spy)
                 .env_remove("CARGO_BERTH_BYPASS")
                 .stdin(Stdio::piped())

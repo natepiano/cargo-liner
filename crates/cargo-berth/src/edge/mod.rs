@@ -106,20 +106,22 @@ impl OrderingOverlapScopeSet {
 
     fn from_authorized_overlaps(
         blocker: ReservationId,
-        overlaps: &AuthorizedOverlapSet,
+        authorized_overlap_set: &AuthorizedOverlapSet,
     ) -> Result<Self, EdgeReplayError> {
-        let scopes = overlaps
+        let scopes = authorized_overlap_set
             .as_slice()
             .iter()
-            .filter(|overlap| overlap.reservation_id == blocker)
-            .flat_map(|overlap| overlap.scopes.as_slice().iter().cloned())
+            .filter(|authorized_overlap| authorized_overlap.reservation_id == blocker)
+            .flat_map(|authorized_overlap| authorized_overlap.scopes.as_slice().iter().cloned())
             .collect::<Vec<_>>();
         Self::from_scopes(scopes).map_err(|()| EdgeReplayError::MissingAuthorizedScopes(blocker))
     }
 
     fn combine<'scope>(scope_sets: impl Iterator<Item = &'scope Self>) -> Result<Self, ()> {
         let mut scopes = scope_sets
-            .flat_map(|scope_set| scope_set.0.as_slice().iter().cloned())
+            .flat_map(|ordering_overlap_scope_set| {
+                ordering_overlap_scope_set.0.as_slice().iter().cloned()
+            })
             .collect::<Vec<_>>();
         scopes.sort_by(|left, right| {
             left.path
@@ -361,9 +363,14 @@ impl OrderingEdge {
         match &successor.evidence {
             RepositoryReservationEvidence::Active
             | RepositoryReservationEvidence::Outstanding { .. } => {},
-            RepositoryReservationEvidence::Released { disposition, .. }
-            | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { disposition } => {
-                return Ok(match disposition {
+            RepositoryReservationEvidence::Released {
+                disposition: release_disposition,
+                ..
+            }
+            | RepositoryReservationEvidence::ReleasedWithoutCheckpoint {
+                disposition: release_disposition,
+            } => {
+                return Ok(match release_disposition {
                     ReleaseDisposition::Abandoned(_)
                     | ReleaseDisposition::RetiredOrphan(_)
                     | ReleaseDisposition::KeptOnBranch(_)
@@ -378,15 +385,19 @@ impl OrderingEdge {
             RepositoryReservationEvidence::Active => Ok(EdgeReadiness::Holding {
                 hold: EdgeHold::AwaitingPredecessorCheckpoint,
             }),
-            RepositoryReservationEvidence::ReleasedWithoutCheckpoint { disposition }
-            | RepositoryReservationEvidence::Released { disposition, .. }
-                if matches!(
-                    disposition,
-                    ReleaseDisposition::Abandoned(_)
-                        | ReleaseDisposition::RetiredOrphan(_)
-                        | ReleaseDisposition::KeptOnBranch(_)
-                        | ReleaseDisposition::UnchangedScopes(_)
-                ) =>
+            RepositoryReservationEvidence::ReleasedWithoutCheckpoint {
+                disposition: release_disposition,
+            }
+            | RepositoryReservationEvidence::Released {
+                disposition: release_disposition,
+                ..
+            } if matches!(
+                release_disposition,
+                ReleaseDisposition::Abandoned(_)
+                    | ReleaseDisposition::RetiredOrphan(_)
+                    | ReleaseDisposition::KeptOnBranch(_)
+                    | ReleaseDisposition::UnchangedScopes(_)
+            ) =>
             {
                 Ok(EdgeReadiness::Cancelled)
             },
@@ -405,11 +416,11 @@ impl OrderingEdge {
     fn checkpoint_readiness(
         &self,
         repository_snapshot: &RepositorySnapshot,
-        integration_status: &IntegrationEvidenceStatus,
+        integration_evidence_status: &IntegrationEvidenceStatus,
     ) -> Result<EdgeReadiness, MissingReadinessFact> {
         let shared_target = self.shares_judging_target(repository_snapshot);
         let evidence = if shared_target {
-            PredecessorOrderingEvidence::from(integration_status)
+            PredecessorOrderingEvidence::from(integration_evidence_status)
         } else {
             self.cross_target_evidence(repository_snapshot)?
         };
@@ -465,12 +476,14 @@ impl OrderingEdge {
     fn ordering_target(&self, repository_snapshot: &RepositorySnapshot) -> EdgeOrderingTarget {
         if self.shares_judging_target(repository_snapshot) {
             match repository_snapshot.judging_target(self.before) {
-                EdgeJudgingTarget::Branch(target)
-                    if &target == repository_snapshot.repository_trunk_target() =>
+                EdgeJudgingTarget::Branch(integration_target)
+                    if &integration_target == repository_snapshot.repository_trunk_target() =>
                 {
-                    EdgeOrderingTarget::RepositoryTrunk(target)
+                    EdgeOrderingTarget::RepositoryTrunk(integration_target)
                 },
-                EdgeJudgingTarget::Branch(target) => EdgeOrderingTarget::SharedTarget(target),
+                EdgeJudgingTarget::Branch(integration_target) => {
+                    EdgeOrderingTarget::SharedTarget(integration_target)
+                },
                 EdgeJudgingTarget::Unavailable => EdgeOrderingTarget::Unavailable,
             }
         } else {
@@ -532,8 +545,8 @@ enum PredecessorOrderingEvidence {
 }
 
 impl From<&IntegrationEvidenceStatus> for PredecessorOrderingEvidence {
-    fn from(status: &IntegrationEvidenceStatus) -> Self {
-        match status {
+    fn from(integration_evidence_status: &IntegrationEvidenceStatus) -> Self {
+        match integration_evidence_status {
             IntegrationEvidenceStatus::Integrated { .. } => Self::OnTarget,
             IntegrationEvidenceStatus::NotIntegrated => {
                 Self::NotOnTarget(UnintegratedPredecessorEvidence::NotIntegrated)
@@ -651,7 +664,7 @@ mod tests {
         let predecessor = ReservationId::new();
         let successor = ReservationId::new();
         let live_head = LIVE_HEAD.parse::<GitObjectId>()?;
-        let edge = OrderingEdge {
+        let ordering_edge = OrderingEdge {
             edge_id:              EdgeId::new(),
             before:               predecessor,
             after:                successor,
@@ -694,36 +707,37 @@ mod tests {
             )
         };
 
-        let recovered_readiness = edge.readiness(&snapshot_with_predecessor_evidence(
-            RepositoryReservationEvidence::Active,
-        ))?;
+        let recovered_edge_readiness = ordering_edge.readiness(
+            &snapshot_with_predecessor_evidence(RepositoryReservationEvidence::Active),
+        )?;
         assert_eq!(
-            recovered_readiness,
+            recovered_edge_readiness,
             EdgeReadiness::Holding {
                 hold: EdgeHold::AwaitingPredecessorCheckpoint,
             }
         );
-        assert!(recovered_readiness.holds_successor());
+        assert!(recovered_edge_readiness.holds_successor());
 
-        let abandoned_readiness = edge.readiness(&snapshot_with_predecessor_evidence(
-            RepositoryReservationEvidence::ReleasedWithoutCheckpoint {
-                disposition: ReleaseDisposition::Abandoned(
-                    "predecessor work was discarded".parse()?,
-                ),
-            },
-        ))?;
-        assert_eq!(abandoned_readiness, EdgeReadiness::Cancelled);
-        assert!(!abandoned_readiness.holds_successor());
+        let abandoned_edge_readiness =
+            ordering_edge.readiness(&snapshot_with_predecessor_evidence(
+                RepositoryReservationEvidence::ReleasedWithoutCheckpoint {
+                    disposition: ReleaseDisposition::Abandoned(
+                        "predecessor work was discarded".parse()?,
+                    ),
+                },
+            ))?;
+        assert_eq!(abandoned_edge_readiness, EdgeReadiness::Cancelled);
+        assert!(!abandoned_edge_readiness.holds_successor());
         let kept = snapshot_with_predecessor_evidence(
             RepositoryReservationEvidence::ReleasedWithoutCheckpoint {
                 disposition: ReleaseDisposition::KeptOnBranch("later phase".parse()?),
             },
         );
-        assert_eq!(edge.readiness(&kept)?, EdgeReadiness::Cancelled);
+        assert_eq!(ordering_edge.readiness(&kept)?, EdgeReadiness::Cancelled);
         let reversed = OrderingEdge {
             before: successor,
             after: predecessor,
-            ..edge
+            ..ordering_edge
         };
         assert_eq!(reversed.readiness(&kept)?, EdgeReadiness::Cancelled);
         Ok(())
@@ -738,7 +752,7 @@ mod tests {
             .map_err(std::io::Error::other)?;
         let integration = crate::ledger::IntegrationTarget::from_branch_argument("integration")
             .map_err(std::io::Error::other)?;
-        let edge = OrderingEdge {
+        let ordering_edge = OrderingEdge {
             edge_id:              EdgeId::new(),
             before:               predecessor,
             after:                successor,
@@ -792,7 +806,7 @@ mod tests {
             )])),
         );
         assert_eq!(
-            edge.readiness(&snapshot)?,
+            ordering_edge.readiness(&snapshot)?,
             EdgeReadiness::Holding {
                 hold: EdgeHold::PredecessorNotOnOrderingTarget {
                     evidence: UnintegratedPredecessorEvidence::ObjectUnknown,

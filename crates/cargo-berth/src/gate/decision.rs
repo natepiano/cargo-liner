@@ -209,17 +209,17 @@ pub(crate) fn evaluate_integration(
         &worktree_context,
         recovery_command_line,
     );
-    let update = ProposedTargetMove {
+    let proposed_target_move = ProposedTargetMove {
         target,
         previous: PreviousTargetTip::Existing(previous),
         proposed,
     };
-    let purpose = GatePurpose::Integrate {
+    let gate_purpose = GatePurpose::Integrate {
         reservation_id,
         request,
         identity_validation: Box::new(identity_validation),
     };
-    evaluate_locked(invocation_directory, &update, &purpose)
+    evaluate_locked(invocation_directory, &proposed_target_move, &gate_purpose)
 }
 
 pub(super) fn evaluate_locked(
@@ -326,35 +326,38 @@ pub(super) fn evaluate_locked(
 
 /// Prepare gate evidence against the fresh facts belonging to this replay generation.
 pub(super) fn prepare_gate_reconciliation(
-    observation: &GenerationBoundReconciliation<'_>,
+    generation_bound_reconciliation: &GenerationBoundReconciliation<'_>,
     ledger: &Ledger,
     ledger_repository: RepoInstanceId,
     berth_config: &BerthConfig,
-    update: &ProposedTargetMove,
-    purpose: GateReconciliationPurpose,
+    proposed_target_move: &ProposedTargetMove,
+    gate_reconciliation_purpose: GateReconciliationPurpose,
 ) -> Result<GateReconciliation, GateTransactionRejection> {
-    let rewrite_preflight =
-        reconcile::prepare_rewrite_reconciliation(observation.repository(), ledger, berth_config)
-            .map_err(GateTransactionRejection::ReconciliationPreparation)?;
+    let rewrite_preflight = reconcile::prepare_rewrite_reconciliation(
+        generation_bound_reconciliation.repository(),
+        ledger,
+        berth_config,
+    )
+    .map_err(GateTransactionRejection::ReconciliationPreparation)?;
     reconcile::prepare_gate_reconciliation(
-        observation.state(),
+        generation_bound_reconciliation.state(),
         ledger_repository,
         berth_config,
-        update,
-        purpose,
+        proposed_target_move,
+        gate_reconciliation_purpose,
         rewrite_preflight,
     )
     .map_err(GateTransactionRejection::Reconciliation)
 }
 
 fn finish_gate_decision(
-    outcome: LedgerReconciliationOutcome<
+    ledger_reconciliation_outcome: LedgerReconciliationOutcome<
         GateTransactionRejection,
         (ReconciliationReport, GateDecision),
     >,
     target: &IntegrationTarget,
 ) -> Result<Enrollment<GateResult>, GateError> {
-    match outcome {
+    match ledger_reconciliation_outcome {
         LedgerReconciliationOutcome::Appended {
             output: (report, decision),
             ..
@@ -405,23 +408,24 @@ fn validate_gate_identity(
 }
 
 pub(super) fn entering_reservations(
-    reconciliation: &GateReconciliation,
+    gate_reconciliation: &GateReconciliation,
     newly_reachable: &[GitObjectId],
     proposed_target: &IntegrationTarget,
     repository_trunk: &IntegrationTarget,
 ) -> Vec<ReservationId> {
-    reconciliation
+    gate_reconciliation
         .constraints()
         .reservations
         .iter()
         .filter(|reservation| {
-            proposed_target == repository_trunk || reconciliation.judges(reservation.reservation_id)
+            proposed_target == repository_trunk
+                || gate_reconciliation.judges(reservation.reservation_id)
         })
         .filter(|reservation| {
             !matches!(reservation.lifecycle, ReservationLifecycle::Released { .. })
         })
         .filter_map(|reservation| match &reservation.subject {
-            _ if reconciliation
+            _ if gate_reconciliation
                 .deferred_rewrite_enters(reservation.reservation_id, newly_reachable) =>
             {
                 Some(reservation.reservation_id)
@@ -464,36 +468,37 @@ fn entering_for_purpose(
 
 pub(super) fn decide(
     events: &[JournalEvent],
-    constraints: &IntegrationConstraintProjection,
+    integration_constraint_projection: &IntegrationConstraintProjection,
     entering: &[ReservationId],
-    purpose: &GatePurpose,
+    gate_purpose: &GatePurpose,
     gate_mode: GateMode,
     integration: HookMoveIntegration,
 ) -> Result<(GateDecision, Vec<JournalOperation>), GateTransactionRejection> {
     let mut violations = Vec::new();
     for reservation_id in entering {
-        let holds = constraints
+        let holds = integration_constraint_projection
             .holds_for(*reservation_id)
             .cloned()
             .collect::<Vec<_>>();
         if holds.is_empty() {
             continue;
         }
-        let reservation = constraints
+        let reservation = integration_constraint_projection
             .reservation(*reservation_id)
             .map_err(GateTransactionRejection::MissingConstraintFact)?
             .clone();
-        let blocking_reservations = blocking_reservations(constraints, *reservation_id, &holds)?;
+        let blocking_reservations =
+            blocking_reservations(integration_constraint_projection, *reservation_id, &holds)?;
         violations.push(IntegrationViolation {
             reservation,
             blocking_reservations,
             holds,
         });
     }
-    match purpose {
+    match gate_purpose {
         GatePurpose::Hook { phase, .. } => decide_hook(
             events,
-            constraints.generation,
+            integration_constraint_projection.generation,
             &violations,
             gate_mode,
             *phase,
@@ -504,7 +509,7 @@ pub(super) fn decide(
             request,
             ..
         } => decide_integration(
-            constraints.generation,
+            integration_constraint_projection.generation,
             *reservation_id,
             request,
             entering,
@@ -516,22 +521,24 @@ pub(super) fn decide(
 
 pub(super) fn newly_reachable_commits(
     repository_root: &Path,
-    update: &ProposedTargetMove,
+    proposed_target_move: &ProposedTargetMove,
 ) -> Result<Vec<GitObjectId>, GitError> {
-    match &update.previous {
+    match &proposed_target_move.previous {
         PreviousTargetTip::Existing(previous) => {
-            git::newly_reachable_commits(repository_root, previous, &update.proposed)
+            git::newly_reachable_commits(repository_root, previous, &proposed_target_move.proposed)
         },
-        PreviousTargetTip::Absent => git::reachable_commits(repository_root, &update.proposed),
+        PreviousTargetTip::Absent => {
+            git::reachable_commits(repository_root, &proposed_target_move.proposed)
+        },
     }
 }
 
 fn blocking_reservations(
-    constraints: &IntegrationConstraintProjection,
+    integration_constraint_projection: &IntegrationConstraintProjection,
     subject: ReservationId,
     holds: &[IntegrationHold],
 ) -> Result<Vec<IntegrationReservationFacts>, GateTransactionRejection> {
-    let blocker_ids = WireOrderedReservationIds::sorted_and_deduplicated(
+    let wire_ordered_reservation_ids = WireOrderedReservationIds::sorted_and_deduplicated(
         holds
             .iter()
             .map(|hold| match hold {
@@ -543,11 +550,11 @@ fn blocking_reservations(
             })
             .collect(),
     );
-    blocker_ids
+    wire_ordered_reservation_ids
         .into_vec()
         .into_iter()
         .map(|blocker_id| {
-            constraints
+            integration_constraint_projection
                 .reservation(blocker_id)
                 .cloned()
                 .map_err(GateTransactionRejection::MissingConstraintFact)
@@ -582,15 +589,15 @@ fn decide_hook(
         .map_err(GateTransactionRejection::PermitReplay)?;
     let mut covered = Vec::new();
     let mut uncovered = Vec::new();
-    for violation in violations {
+    for integration_violation in violations {
         let covering_permit = permits.iter().find(|permit| {
-            permit.reservation_id == violation.reservation.reservation_id
-                && skipped_set_covers(&permit.skipped_holds, &violation.holds)
+            permit.reservation_id == integration_violation.reservation.reservation_id
+                && skipped_set_covers(&permit.skipped_holds, &integration_violation.holds)
         });
         if let Some(permit) = covering_permit {
             covered.push(permit);
         } else {
-            uncovered.push(violation.clone());
+            uncovered.push(integration_violation.clone());
         }
     }
     if gate_mode.enforces() && !uncovered.is_empty() {
@@ -656,7 +663,7 @@ fn decide_integration(
     }
     match request {
         IntegrationRequest::ForceOnce(reason) => {
-            let Some(violation) = violations
+            let Some(integration_violation) = violations
                 .iter()
                 .find(|violation| violation.reservation.reservation_id == reservation_id)
             else {
@@ -676,7 +683,7 @@ fn decide_integration(
                     Vec::new(),
                 ));
             }
-            let skipped_holds = skipped_holds(&violation.holds)?;
+            let skipped_holds = skipped_holds(&integration_violation.holds)?;
             let permit_id = ForcedIntegrationPermitId::new();
             Ok((
                 GateDecision::PermitIssued {
