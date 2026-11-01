@@ -73,16 +73,16 @@ pub(in crate::fixes) fn redirect_callers_in_file(
     redirects: &[FacadeRedirect],
     module_aliases: &ModuleAliases,
 ) -> Result<FileRedirects> {
-    let source = sources
+    let parsed_source = sources
         .source(file)
         .with_context(|| format!("failed to read {}", file.display()))?;
-    let syntax = source
+    let syntax_file = parsed_source
         .syntax()
         .with_context(|| format!("failed to parse {}", file.display()))?;
     Ok(redirect_callers_in_syntax(
         file,
-        source.text(),
-        syntax,
+        parsed_source.text(),
+        syntax_file,
         module_path,
         redirects,
         module_aliases,
@@ -345,11 +345,11 @@ impl Visit<'_> for CallerRewriter<'_> {
         self.close_scope();
     }
 
-    fn visit_item_mod(&mut self, node: &ItemMod) {
-        if let Some((_, items)) = &node.content {
-            let cfg_test = rust_syntax::is_cfg_test(&node.attrs);
+    fn visit_item_mod(&mut self, item_mod: &ItemMod) {
+        if let Some((_, items)) = &item_mod.content {
+            let cfg_test = rust_syntax::is_cfg_test(&item_mod.attrs);
             self.cfg_test_depth += usize::from(cfg_test);
-            self.module_path.push(node.ident.unraw().to_string());
+            self.module_path.push(item_mod.ident.unraw().to_string());
             let scope = Self::binding_scope(
                 items.iter(),
                 ScopeKind::Module,
@@ -368,8 +368,8 @@ impl Visit<'_> for CallerRewriter<'_> {
         }
     }
 
-    fn visit_block(&mut self, node: &Block) {
-        let items = node.stmts.iter().filter_map(|stmt| match stmt {
+    fn visit_block(&mut self, block: &Block) {
+        let items = block.stmts.iter().filter_map(|stmt| match stmt {
             Stmt::Item(item) => Some(item),
             _ => None,
         });
@@ -381,7 +381,7 @@ impl Visit<'_> for CallerRewriter<'_> {
             self.module_aliases,
             &self.lines,
         );
-        self.in_scope(scope, |rewriter| visit::visit_block(rewriter, node));
+        self.in_scope(scope, |rewriter| visit::visit_block(rewriter, block));
     }
 
     fn visit_item_use(&mut self, node: &ItemUse) {
