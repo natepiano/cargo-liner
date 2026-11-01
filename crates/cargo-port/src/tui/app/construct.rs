@@ -242,7 +242,7 @@ impl AppBuilder<Started> {
         projects.init_runtime_state(LintColumnStatus::from(
             inputs.cargo_port_config.lint.enabled,
         ));
-        let background = Background::new(BackgroundChannels {
+        let background = Background::from(BackgroundChannels {
             background: (inputs.background_tx, inputs.background_rx),
             ci_fetch:   (channeled.ci_fetch_tx, channeled.ci_fetch_rx),
             clean:      (channeled.clean_tx, channeled.clean_rx),
@@ -350,13 +350,8 @@ impl App {
             self.finish_watcher_registration_batch();
         }
         self.refresh_lint_runs_from_disk();
-        self.net.set_force_github_rate_limit(
-            self.config
-                .current()
-                .debug
-                .force_github_rate_limit
-                .is_forced(),
-        );
+        self.net
+            .set_force_github_rate_limit(self.config.current().debug.force_github_rate_limit);
         self.net.spawn_rate_limit_prime(&self.startup_services);
         self.warn_if_github_unauthenticated();
     }
