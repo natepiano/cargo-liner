@@ -125,13 +125,13 @@ impl ModuleSourceMap {
         source_file: &Path,
         compute: impl FnOnce() -> Vec<ModuleContext>,
     ) -> Rc<[ModuleContext]> {
-        let cached = self
+        let cached_module_contexts = self
             .module_contexts_by_file
             .borrow()
             .get(source_file)
             .map(Rc::clone);
-        if let Some(cached) = cached {
-            return cached;
+        if let Some(cached_module_contexts) = cached_module_contexts {
+            return cached_module_contexts;
         }
         let computed: Rc<[ModuleContext]> = compute().into();
         self.module_contexts_by_file
@@ -149,43 +149,43 @@ impl ModuleSourceMap {
                 (path.to_path_buf(), canonical)
             })
             .collect();
-        let mut module_sources = Self {
+        let mut module_source_map = Self {
             structural_parents_by_file: source_cache.structural_parent_module_paths().clone(),
             crate_files: canonical_by_source_file.values().cloned().collect(),
             canonical_by_source_file,
             canonical_by_span_file: canonical_span_files(tcx),
             ..Self::default()
         };
-        module_sources
+        module_source_map
             .modules_by_path
             .insert(Vec::new(), CRATE_DEF_ID);
         for item_id in tcx.hir_crate_items(()).free_items() {
             let item = tcx.hir_item(item_id);
-            let Some(source_file) = module_sources.canonical_span_file(tcx, item.span) else {
+            let Some(source_file) = module_source_map.canonical_span_file(tcx, item.span) else {
                 continue;
             };
             let module: LocalDefId = tcx.parent_module_from_def_id(item.owner_id.def_id).into();
-            module_sources.insert(module, source_file);
+            module_source_map.insert(module, source_file);
         }
         tcx.hir_for_each_module(|module| {
             let module_def_id = module.to_local_def_id();
-            module_sources
+            module_source_map
                 .modules_by_path
                 .insert(module_path(tcx, module_def_id), module_def_id);
             if module_def_id != CRATE_DEF_ID {
-                module_sources.parent_by_module.insert(
+                module_source_map.parent_by_module.insert(
                     module_def_id,
                     tcx.parent_module_from_def_id(module_def_id).into(),
                 );
             }
             let (hir_module, _, _) = tcx.hir_get_module(module);
             if let Some(source_file) =
-                module_sources.canonical_span_file(tcx, hir_module.spans.inner_span)
+                module_source_map.canonical_span_file(tcx, hir_module.spans.inner_span)
             {
-                module_sources.insert(module_def_id, source_file);
+                module_source_map.insert(module_def_id, source_file);
             }
         });
-        module_sources
+        module_source_map
     }
 
     fn insert(&mut self, module: LocalDefId, source_file: PathBuf) {
@@ -236,10 +236,10 @@ impl ModuleSourceMap {
         span: Span,
     ) -> Option<PathBuf> {
         let file = tcx.sess.source_map().lookup_char_pos(span.lo()).file;
-        let FileName::Real(real) = &file.name else {
+        let FileName::Real(real_file_name) = &file.name else {
             return None;
         };
-        let local_path = real.local_path()?;
+        let local_path = real_file_name.local_path()?;
         Some(
             self.canonical_by_span_file
                 .get(local_path)
@@ -272,8 +272,8 @@ impl ModuleSourceMap {
         tcx: TyCtxt<'_>,
         source_file: &Path,
     ) -> Vec<LocalDefId> {
-        let canonical = self.canonical_source_file(source_file);
-        let canonical_source_file: &Path = canonical.as_ref();
+        let canonical_source_path = self.canonical_source_file(source_file);
+        let canonical_source_file: &Path = canonical_source_path.as_ref();
         let root_modules = self
             .modules_by_file
             .get(canonical_source_file)
@@ -438,7 +438,7 @@ fn canonical_span_files(tcx: TyCtxt<'_>) -> FxHashMap<PathBuf, PathBuf> {
         .files()
         .iter()
         .filter_map(|file| match &file.name {
-            FileName::Real(real) => real.local_path().map(Path::to_path_buf),
+            FileName::Real(real_file_name) => real_file_name.local_path().map(Path::to_path_buf),
             _ => None,
         })
         .map(|path| {
@@ -452,7 +452,7 @@ fn real_file_path(tcx: TyCtxt<'_>, span: Span) -> Option<PathBuf> {
     let source_map = tcx.sess.source_map();
     let file = source_map.lookup_char_pos(span.lo()).file;
     match file.name.clone() {
-        FileName::Real(real) => real
+        FileName::Real(real_file_name) => real_file_name
             .local_path()
             .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())),
         _ => None,

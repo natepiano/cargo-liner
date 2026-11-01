@@ -16,9 +16,9 @@ pub(super) fn apply_cross_compilation_intersection(reports: &mut [StoredReport])
 
 fn apply_crate_root_intersection(reports: &mut [StoredReport]) {
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (idx, report) in reports.iter().enumerate() {
+    for (idx, stored_report) in reports.iter().enumerate() {
         groups
-            .entry(report.crate_root_file.clone())
+            .entry(stored_report.crate_root_file.clone())
             .or_default()
             .push(idx);
     }
@@ -79,8 +79,8 @@ fn apply_shared_source_intersection(reports: &mut [StoredReport]) {
         }
     }
 
-    for report in reports.iter_mut() {
-        report.findings.retain(|finding| {
+    for stored_report in reports.iter_mut() {
+        stored_report.findings.retain(|finding| {
             if !requires_shared_source_agreement(finding.diagnostic_code) {
                 return true;
             }
