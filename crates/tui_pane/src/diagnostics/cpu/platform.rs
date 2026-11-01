@@ -244,7 +244,7 @@ fn registry_number(device: u32, key: &'static str) -> Option<i64> {
 fn gpu_core_count(accelerator: u32) -> Option<u16> {
     // SAFETY: `accelerator` is a live service handle from `IOIteratorNext`;
     // the key outlives the call and the retained result is consumed locally.
-    let value = unsafe {
+    let cf_type = unsafe {
         IORegistryEntryCreateCFProperty(
             accelerator,
             Some(&CFString::from_static_str("gpu-core-count")),
@@ -252,8 +252,8 @@ fn gpu_core_count(accelerator: u32) -> Option<u16> {
             0,
         )
     }?;
-    let number = value.downcast::<CFNumber>().ok()?;
-    let count = u64::try_from(number.as_i64()?).ok()?;
+    let cf_number = cf_type.downcast::<CFNumber>().ok()?;
+    let count = u64::try_from(cf_number.as_i64()?).ok()?;
     u16::try_from(count).ok()
 }
 
@@ -609,8 +609,8 @@ pub(super) fn windows_cpu_breakdown_raw() -> CpuBreakdownRaw {
         ) -> Bool;
     }
 
-    fn file_time_to_u64(value: FileTime) -> u64 {
-        (u64::from(value.dw_high_date_time) << 32) | u64::from(value.dw_low_date_time)
+    fn file_time_to_u64(file_time: FileTime) -> u64 {
+        (u64::from(file_time.dw_high_date_time) << 32) | u64::from(file_time.dw_low_date_time)
     }
 
     let mut idle_time = FileTime {

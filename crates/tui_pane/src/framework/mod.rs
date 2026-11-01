@@ -307,8 +307,14 @@ impl<Ctx: AppContext> Framework<Ctx> {
                     Ok(()) => CopyOutcome::Copied {
                         label: payload.label,
                     },
-                    Err(reason) if reason.is_unavailable() => CopyOutcome::Unavailable { reason },
-                    Err(reason) => CopyOutcome::Failed { reason },
+                    Err(clipboard_error) if clipboard_error.is_unavailable() => {
+                        CopyOutcome::Unavailable {
+                            reason: clipboard_error,
+                        }
+                    },
+                    Err(clipboard_error) => CopyOutcome::Failed {
+                        reason: clipboard_error,
+                    },
                 }
             },
         }
