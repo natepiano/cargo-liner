@@ -89,7 +89,7 @@ impl Shortcuts<App> for ProjectPane {
     }
 
     fn dispatcher() -> fn(Self::Actions, &mut App) {
-        |_action, _ctx| { /* no-op */ }
+        |_project_action, _ctx| { /* no-op */ }
     }
 }
 
@@ -105,7 +105,7 @@ struct AppNav;
 
 impl Navigation<App> for AppNav {
     fn dispatcher() -> fn(NavAction, FocusedPane<AppPaneId>, &mut App) {
-        |_action, _focused, _ctx| { /* no-op */ }
+        |_nav_action, _focused, _ctx| { /* no-op */ }
     }
 }
 
@@ -121,7 +121,7 @@ impl Globals<App> for AppGlobals {
     }
 
     fn dispatcher() -> fn(Self::Actions, &mut App) {
-        |_action, _ctx| { /* no-op */ }
+        |_app_global_action, _ctx| { /* no-op */ }
     }
 }
 
@@ -152,17 +152,17 @@ fn flatten(spans: &[Span<'static>]) -> String {
 #[test]
 fn render_status_bar_navigable_pane_shows_every_region() {
     let (app, keymap) = fresh(FocusedPane::App(AppPaneId::Project));
-    let palette = BarPalette::default();
-    let bar = render_status_bar(
+    let bar_palette = BarPalette::default();
+    let status_bar = render_status_bar(
         &FocusedPane::App(AppPaneId::Project),
         &app,
         &keymap,
         app.framework(),
-        &palette,
+        &bar_palette,
     );
-    let nav = flatten(&bar.nav);
-    let pane_action = flatten(&bar.pane_action);
-    let global = flatten(&bar.global);
+    let nav = flatten(&status_bar.nav);
+    let pane_action = flatten(&status_bar.pane_action);
+    let global = flatten(&status_bar.global);
 
     assert!(
         nav.contains("tab"),
@@ -202,14 +202,14 @@ fn render_status_bar_lone_pane_drops_the_pane_cycle_row() {
         .register::<ProjectPane>(ProjectPane)
         .build_into(&mut app.framework)
         .expect("build_into");
-    let bar = render_status_bar(
+    let status_bar = render_status_bar(
         &FocusedPane::App(AppPaneId::Project),
         &app,
         &keymap,
         app.framework(),
         &BarPalette::default(),
     );
-    let nav = flatten(&bar.nav);
+    let nav = flatten(&status_bar.nav);
 
     assert!(
         nav.contains('↑'),
@@ -224,14 +224,17 @@ fn render_status_bar_lone_pane_drops_the_pane_cycle_row() {
 #[test]
 fn status_line_global_spans_follow_supplied_policy_order() {
     let (_app, keymap) = fresh(FocusedPane::App(AppPaneId::Project));
-    let globals = [
+    let status_line_globals = [
         StatusLineGlobal::app(AppGlobalAction::Find),
         StatusLineGlobal::framework(GlobalAction::OpenSettings),
         StatusLineGlobal::framework(GlobalAction::Quit),
     ];
 
-    let spans =
-        status_line_global_spans::<App, AppGlobals>(&keymap, &globals, &BarPalette::default());
+    let spans = status_line_global_spans::<App, AppGlobals>(
+        &keymap,
+        &status_line_globals,
+        &BarPalette::default(),
+    );
     let global = flatten(&spans);
 
     assert_contains_in_order(&global, &["find", "settings", "quit"]);
@@ -245,16 +248,16 @@ fn status_line_global_spans_follow_supplied_policy_order() {
 fn render_status_bar_focused_toasts_renders_dismiss_in_global() {
     let (mut app, keymap) = fresh(FocusedPane::Framework(FrameworkFocusId::Toasts));
     let _ = app.framework_mut().toasts.push("Build done", "ok");
-    let palette = BarPalette::default();
-    let bar = render_status_bar(
+    let bar_palette = BarPalette::default();
+    let status_bar = render_status_bar(
         &FocusedPane::Framework(FrameworkFocusId::Toasts),
         &app,
         &keymap,
         app.framework(),
-        &palette,
+        &bar_palette,
     );
-    let pane_action = flatten(&bar.pane_action);
-    let global = flatten(&bar.global);
+    let pane_action = flatten(&status_bar.pane_action);
+    let global = flatten(&status_bar.global);
 
     assert!(
         pane_action.contains("enter open"),
@@ -278,6 +281,6 @@ fn assert_contains_in_order(text: &str, needles: &[&str]) {
 
 #[test]
 fn status_bar_default_is_empty() {
-    let bar = tui_pane::StatusBar::default();
-    assert!(bar.is_empty());
+    let status_bar = tui_pane::StatusBar::default();
+    assert!(status_bar.is_empty());
 }

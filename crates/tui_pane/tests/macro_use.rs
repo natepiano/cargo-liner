@@ -102,33 +102,34 @@ fn bindings_macro_works_from_outside_crate() {
         [KeyBind::from('b'), KeyBind::from(KeyCode::F(1))] => CrossCrateAction::Beta,
         KeyBind::ctrl(KeyBind::shift('g')) => CrossCrateAction::Gamma,
     };
-    let map = table.into_scope_map();
+    let scope_map = table.into_scope_map();
 
     assert_eq!(
-        map.action_for(&KeyBind::from(KeyCode::Enter)),
+        scope_map.action_for(&KeyBind::from(KeyCode::Enter)),
         Some(CrossCrateAction::Alpha),
     );
     assert_eq!(
-        map.action_for(&KeyBind::from('b')),
+        scope_map.action_for(&KeyBind::from('b')),
         Some(CrossCrateAction::Beta),
     );
     assert_eq!(
-        map.action_for(&KeyBind::from(KeyCode::F(1))),
+        scope_map.action_for(&KeyBind::from(KeyCode::F(1))),
         Some(CrossCrateAction::Beta),
     );
     assert_eq!(
-        map.key_for(CrossCrateAction::Beta)
+        scope_map
+            .key_for(CrossCrateAction::Beta)
             .and_then(KeySequence::single_key),
         Some(KeyBind::from('b')),
         "first key in list arm is primary",
     );
 
-    let composed = KeyBind {
+    let key_bind = KeyBind {
         code: KeyCode::Char('g'),
         mods: KeyModifiers::CONTROL | KeyModifiers::SHIFT,
     };
     assert_eq!(
-        map.action_for(&composed),
+        scope_map.action_for(&key_bind),
         Some(CrossCrateAction::Gamma),
         "Ctrl+Shift composition survives macro expansion",
     );
@@ -153,20 +154,20 @@ impl AppContext for CrossCrateApp {
 
 #[test]
 fn framework_skeleton_reachable_from_outside_crate() {
-    let mut app = CrossCrateApp {
+    let mut cross_crate_app = CrossCrateApp {
         framework: Framework::new(FocusedPane::App(CrossCratePaneId::Alpha)),
     };
 
     assert_eq!(
-        app.framework().focused(),
+        cross_crate_app.framework().focused(),
         &FocusedPane::App(CrossCratePaneId::Alpha),
     );
-    assert!(!app.framework().quit_requested());
-    assert!(!app.framework().restart_requested());
+    assert!(!cross_crate_app.framework().quit_requested());
+    assert!(!cross_crate_app.framework().restart_requested());
 
-    app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
+    cross_crate_app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
     assert_eq!(
-        app.framework().focused(),
+        cross_crate_app.framework().focused(),
         &FocusedPane::Framework(FrameworkFocusId::Toasts),
     );
 }
@@ -175,13 +176,13 @@ const fn no_op_text_input(_: KeyBind, _: &mut CrossCrateApp) {}
 
 #[test]
 fn bar_primitives_reachable_from_outside_crate() {
-    let single: BarSlot<CrossCrateAction> = BarSlot::Single(CrossCrateAction::Alpha);
-    let paired: BarSlot<CrossCrateAction> =
+    let single_bar_slot: BarSlot<CrossCrateAction> = BarSlot::Single(CrossCrateAction::Alpha);
+    let paired_bar_slot: BarSlot<CrossCrateAction> =
         BarSlot::Paired(CrossCrateAction::Alpha, CrossCrateAction::Beta, "/");
 
-    assert_eq!(single, BarSlot::Single(CrossCrateAction::Alpha));
+    assert_eq!(single_bar_slot, BarSlot::Single(CrossCrateAction::Alpha));
     assert_eq!(
-        paired,
+        paired_bar_slot,
         BarSlot::Paired(CrossCrateAction::Alpha, CrossCrateAction::Beta, "/"),
     );
 
@@ -192,12 +193,12 @@ fn bar_primitives_reachable_from_outside_crate() {
 
     assert_ne!(ShortcutState::Enabled, ShortcutState::Disabled);
 
-    let navigable: Mode<CrossCrateApp> = Mode::Navigable;
+    let navigable_mode: Mode<CrossCrateApp> = Mode::Navigable;
     let static_mode: Mode<CrossCrateApp> = Mode::Static;
-    let text_input: Mode<CrossCrateApp> = Mode::TextInput(no_op_text_input);
-    assert!(matches!(navigable, Mode::Navigable));
+    let text_input_mode: Mode<CrossCrateApp> = Mode::TextInput(no_op_text_input);
+    assert!(matches!(navigable_mode, Mode::Navigable));
     assert!(matches!(static_mode, Mode::Static));
-    assert!(matches!(text_input, Mode::TextInput(_)));
+    assert!(matches!(text_input_mode, Mode::TextInput(_)));
 
     assert_eq!(Visibility::Visible, Visibility::Visible);
     assert_ne!(Visibility::Visible, Visibility::Hidden);
@@ -253,7 +254,7 @@ impl Shortcuts<CrossCrateApp> for CrossCratePane {
     }
 
     fn dispatcher() -> fn(Self::Actions, &mut CrossCrateApp) {
-        |_action, _ctx| { /* no-op for the smoke test */ }
+        |_cross_crate_action, _ctx| { /* no-op for the smoke test */ }
     }
 }
 
@@ -261,7 +262,7 @@ struct CrossCrateNavigation;
 
 impl Navigation<CrossCrateApp> for CrossCrateNavigation {
     fn dispatcher() -> fn(NavAction, FocusedPane<CrossCratePaneId>, &mut CrossCrateApp) {
-        |_action, _focused, _ctx| { /* no-op for the smoke test */ }
+        |_nav_action, _focused, _ctx| { /* no-op for the smoke test */ }
     }
 }
 
@@ -282,16 +283,16 @@ impl Globals<CrossCrateApp> for CrossCrateGlobals {
     }
 
     fn dispatcher() -> fn(Self::Actions, &mut CrossCrateApp) {
-        |_action, _ctx| { /* no-op for the smoke test */ }
+        |_cross_crate_global_action, _ctx| { /* no-op for the smoke test */ }
     }
 }
 
 #[test]
 fn shortcuts_trait_works_from_outside_crate() {
-    let app = CrossCrateApp {
+    let cross_crate_app = CrossCrateApp {
         framework: Framework::new(FocusedPane::App(CrossCratePaneId::Alpha)),
     };
-    let pane = CrossCratePane;
+    let cross_crate_pane = CrossCratePane;
 
     assert_eq!(
         <CrossCratePane as Shortcuts<CrossCrateApp>>::SCOPE_NAME,
@@ -302,15 +303,15 @@ fn shortcuts_trait_works_from_outside_crate() {
         CrossCratePaneId::Alpha,
     );
     assert_eq!(
-        pane.visibility(CrossCrateAction::Alpha, &app),
+        cross_crate_pane.visibility(CrossCrateAction::Alpha, &cross_crate_app),
         Visibility::Visible,
     );
     assert_eq!(
-        pane.state(CrossCrateAction::Beta, &app),
+        cross_crate_pane.state(CrossCrateAction::Beta, &cross_crate_app),
         ShortcutState::Enabled
     );
 
-    let slots = pane.bar_slots(&app);
+    let slots = cross_crate_pane.bar_slots(&cross_crate_app);
     assert_eq!(slots.len(), 3);
     assert_eq!(
         slots[0],
@@ -322,12 +323,12 @@ fn shortcuts_trait_works_from_outside_crate() {
 
     let query: fn(&CrossCrateApp) -> Mode<CrossCrateApp> =
         <CrossCratePane as Pane<CrossCrateApp>>::mode();
-    assert!(matches!(query(&app), Mode::Navigable));
+    assert!(matches!(query(&cross_crate_app), Mode::Navigable));
     assert_eq!(CrossCratePane::vim_extras(), []);
 
-    let map = CrossCratePane::defaults().into_scope_map();
+    let scope_map = CrossCratePane::defaults().into_scope_map();
     assert_eq!(
-        map.action_for(&KeyCode::Enter.into()),
+        scope_map.action_for(&KeyCode::Enter.into()),
         Some(CrossCrateAction::Alpha),
     );
 }
@@ -350,9 +351,9 @@ fn globals_trait_works_from_outside_crate() {
         CrossCrateGlobals::render_order(),
         &[CrossCrateGlobalAction::Find, CrossCrateGlobalAction::Rescan],
     );
-    let map = CrossCrateGlobals::defaults().into_scope_map();
+    let scope_map = CrossCrateGlobals::defaults().into_scope_map();
     assert_eq!(
-        map.action_for(&'f'.into()),
+        scope_map.action_for(&'f'.into()),
         Some(CrossCrateGlobalAction::Find),
     );
 }
