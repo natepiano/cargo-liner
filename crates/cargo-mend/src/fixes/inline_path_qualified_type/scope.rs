@@ -12,6 +12,7 @@ use syn::spanned::Spanned;
 
 use super::offsets;
 use crate::fixes::imports;
+use crate::fixes::imports::BindingSpelling;
 use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::ImportSource;
 use crate::rust_syntax::PathAnchor;
@@ -110,7 +111,7 @@ impl ScopeImports {
                 .entry(name.to_string())
                 .or_default()
                 .insert(attributes.clone());
-            if binding.binds_path_leaf() {
+            if binding.spelling() == BindingSpelling::PathLeaf {
                 self.existing_imports
                     .entry(binding.path().to_string())
                     .or_default()

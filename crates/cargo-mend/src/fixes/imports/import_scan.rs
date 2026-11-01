@@ -71,13 +71,26 @@ pub(in crate::fixes) struct TaggedFix {
     pub fix:      UseFix,
 }
 
+/// Whether a `ValidatedFixSet` holds any `TaggedFix` edits for the runner to write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::fixes) enum FixSetPresence {
+    Empty,
+    HasEdits,
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::fixes) struct ValidatedFixSet {
     fixes: Vec<TaggedFix>,
 }
 
 impl ValidatedFixSet {
-    pub(in crate::fixes) const fn is_empty(&self) -> bool { self.fixes.is_empty() }
+    pub(in crate::fixes) const fn presence(&self) -> FixSetPresence {
+        if self.fixes.is_empty() {
+            FixSetPresence::Empty
+        } else {
+            FixSetPresence::HasEdits
+        }
+    }
 
     pub(in crate::fixes) fn iter(&self) -> impl Iterator<Item = &UseFix> {
         self.fixes.iter().map(|tagged| &tagged.fix)

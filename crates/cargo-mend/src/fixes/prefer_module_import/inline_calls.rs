@@ -12,6 +12,7 @@ use syn::visit;
 use syn::visit::Visit;
 
 use super::function_imports::ImportTarget;
+use super::scan::FileInsertionSite;
 use super::scan::InlineCallFindingInputs;
 use super::scan::ScanFileContext;
 use super::support;
@@ -251,7 +252,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
         };
         if !matches!(
             inline_inputs.imports.reserve_module(
-                inline_inputs.file_insertion.offset,
+                inline_inputs.file_insertion.offset(),
                 &candidate.module_path,
                 import_attributes
             ),
@@ -259,7 +260,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
         ) {
             continue;
         }
-        let offset = inline_inputs.file_insertion.offset;
+        let offset = inline_inputs.file_insertion.offset();
         insertions.push(fixes.len());
         fixes.push(UseFix {
             path:         file_context.path.to_path_buf(),
@@ -277,12 +278,16 @@ pub(super) fn build_inline_call_findings_and_fixes(
     // `insertions` selects the smallest `UseFix::replacement`: insertions at one offset apply in
     // ascending replacement order, each landing before the last, so the smallest lands last and
     // its trailing blank line separates every inserted `use` from the first item.
-    if inline_inputs.file_insertion.before_first_item
-        && let Some(last) = insertions
-            .into_iter()
-            .min_by(|&left, &right| fixes[left].replacement.cmp(&fixes[right].replacement))
-    {
-        fixes[last].replacement.push('\n');
+    match inline_inputs.file_insertion {
+        FileInsertionSite::BeforeFirstItem { .. } | FileInsertionSite::EmptyFile => {
+            if let Some(last) = insertions
+                .into_iter()
+                .min_by(|&left, &right| fixes[left].replacement.cmp(&fixes[right].replacement))
+            {
+                fixes[last].replacement.push('\n');
+            }
+        },
+        FileInsertionSite::AfterImport { .. } => {},
     }
 
     Ok((findings, fixes))
@@ -427,7 +432,7 @@ mod tests {
     use crate::fixes::imports::ImportSource;
     use crate::fixes::imports::ModuleImports;
     use crate::fixes::prefer_module_import::function_imports::ImportTarget;
-    use crate::fixes::prefer_module_import::scan::FileInsertion;
+    use crate::fixes::prefer_module_import::scan::FileInsertionSite;
     use crate::fixes::prefer_module_import::scan::InlineCallFindingInputs;
     use crate::fixes::prefer_module_import::scan::ScanFileContext;
 
@@ -476,10 +481,7 @@ mod tests {
                 &mut InlineCallFindingInputs {
                     candidates:     &candidates,
                     imports:        &mut imports,
-                    file_insertion: FileInsertion {
-                        offset:            0,
-                        before_first_item: true,
-                    },
+                    file_insertion: FileInsertionSite::BeforeFirstItem { offset: 0 },
                 },
             )?;
             assert_eq!(findings.len(), 2);

@@ -52,6 +52,22 @@ pub(super) struct ReferenceCollector<'a> {
     inline_mod_depth:      usize,
 }
 
+/// Whether the `PreviousToken` permits an unqualified imported name to be rewritten;
+/// `PreviousToken::ColonColon` and `PreviousToken::Dot` block it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BareReferencePermission {
+    Allowed,
+    Blocked,
+}
+
+/// Whether a local binding in `ReferenceCollector::active_scope` or
+/// `ReferenceCollector::enclosing_scopes` hides the imported name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameShadowing {
+    Shadowed,
+    Visible,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreviousToken {
     Other,
@@ -62,7 +78,12 @@ enum PreviousToken {
 }
 
 impl PreviousToken {
-    const fn allows_bare_reference(self) -> bool { !matches!(self, Self::ColonColon | Self::Dot) }
+    const fn bare_reference_permission(self) -> BareReferencePermission {
+        match self {
+            Self::ColonColon | Self::Dot => BareReferencePermission::Blocked,
+            Self::Other | Self::JointColon | Self::JointDot => BareReferencePermission::Allowed,
+        }
+    }
 
     const fn after_colon(self, spacing: Spacing) -> Self {
         match self {
@@ -109,12 +130,17 @@ impl<'a> ReferenceCollector<'a> {
         }
     }
 
-    fn is_shadowed(&self, name: &str) -> bool {
-        self.active_scope.contains(name)
+    fn name_shadowing(&self, name: &str) -> NameShadowing {
+        if self.active_scope.contains(name)
             || self
                 .enclosing_scopes
                 .iter()
                 .any(|scope| scope.contains(name))
+        {
+            NameShadowing::Shadowed
+        } else {
+            NameShadowing::Visible
+        }
     }
 
     fn enter_scope_with(&mut self, bindings: BTreeSet<String>) {
@@ -335,7 +361,9 @@ impl Visit<'_> for ReferenceCollector<'_> {
                 if expr_path.qself.is_none() && expr_path.path.segments.len() == 1 {
                     let segment = &expr_path.path.segments[0];
                     let name = segment.ident.to_string();
-                    if self.imported_names.contains(&name) && !self.is_shadowed(&name) {
+                    if self.imported_names.contains(&name)
+                        && matches!(self.name_shadowing(&name), NameShadowing::Visible)
+                    {
                         self.record_reference(name, segment.ident.span());
                     }
                 }
@@ -345,7 +373,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
     }
 
     fn visit_macro(&mut self, node: &Macro) {
-        // `collect_bare_refs_from_tokens` sees identifiers, not scopes, so `is_shadowed` filters
+        // `collect_bare_refs_from_tokens` sees identifiers, not scopes, so `name_shadowing` filters
         // its hits against the bindings in scope at the macro call site.
         let mut collected = Vec::new();
         let result = collect_bare_refs_from_tokens(
@@ -355,7 +383,9 @@ impl Visit<'_> for ReferenceCollector<'_> {
             self.inline_mod_depth,
             &mut collected,
         );
-        collected.retain(|reference| !self.is_shadowed(&reference.name));
+        collected.retain(|reference| {
+            matches!(self.name_shadowing(&reference.name), NameShadowing::Visible)
+        });
         match result {
             Ok(()) => {
                 if let Ok(references) = &mut self.references {
@@ -492,7 +522,11 @@ fn collect_bare_refs_from_tokens(
         match token_tree {
             TokenTree::Ident(ref ident) => {
                 let name = ident.to_string();
-                if previous_token.allows_bare_reference() && imported_names.contains(&name) {
+                if matches!(
+                    previous_token.bare_reference_permission(),
+                    BareReferencePermission::Allowed
+                ) && imported_names.contains(&name)
+                {
                     let span = ident.span();
                     let location = SourceSpan::new(source, span.start(), span.end())?;
                     references.push(BareReference {
@@ -543,6 +577,7 @@ mod tests {
     use syn::visit::Visit;
 
     use super::BareReference;
+    use super::NameShadowing;
     use super::ReferenceCollector;
     use super::collect_bare_refs_from_tokens;
     use crate::fixes::imports::ImportSource;
@@ -679,13 +714,13 @@ fn inspect(value: i32) {
             anyhow::bail!("expected a local binding");
         };
         collector.visit_local(local);
-        assert!(collector.is_shadowed("run"));
+        assert_eq!(collector.name_shadowing("run"), NameShadowing::Shadowed);
         collector.enter_scope_with(BTreeSet::from(["nested".to_string()]));
-        assert!(collector.is_shadowed("run"));
-        assert!(collector.is_shadowed("nested"));
+        assert_eq!(collector.name_shadowing("run"), NameShadowing::Shadowed);
+        assert_eq!(collector.name_shadowing("nested"), NameShadowing::Shadowed);
         collector.exit_scope();
-        assert!(collector.is_shadowed("run"));
-        assert!(!collector.is_shadowed("nested"));
+        assert_eq!(collector.name_shadowing("run"), NameShadowing::Shadowed);
+        assert_eq!(collector.name_shadowing("nested"), NameShadowing::Visible);
         collector.visit_expr(&syn::parse_str("run()").expect("parse call"));
         assert!(collector.references.expect("valid positions").is_empty());
         Ok(())
