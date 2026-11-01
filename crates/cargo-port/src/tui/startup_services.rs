@@ -552,9 +552,6 @@ impl WatcherHandle {
             Self::Disabled => Ok(()),
         }
     }
-
-    #[cfg(test)]
-    pub(super) const fn is_active(&self) -> bool { matches!(self, Self::Active(_)) }
 }
 
 #[derive(Clone)]

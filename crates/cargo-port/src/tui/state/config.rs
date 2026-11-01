@@ -15,6 +15,7 @@ use tui_pane::WatchedFile;
 use crate::config::CargoPortConfig;
 use crate::config::CargoPortConfigurationPathResolution;
 use crate::config::EdgeScroll;
+use crate::config::LintIndicator;
 use crate::config::NavigationKeys;
 use crate::config::NonRustInclusion;
 use crate::config::ScrollDirection;
@@ -56,7 +57,7 @@ impl Config {
 
     // `lint_enabled`, `invert_scroll` and related accessors expose values from `current()`.
 
-    pub(crate) const fn lint_enabled(&self) -> bool { self.current().lint.enabled.is_enabled() }
+    pub(crate) const fn lint_enabled(&self) -> LintIndicator { self.current().lint.enabled }
 
     pub(crate) const fn invert_scroll(&self) -> ScrollDirection {
         self.current().mouse.invert_scroll

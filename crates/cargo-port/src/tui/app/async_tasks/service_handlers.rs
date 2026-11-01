@@ -79,7 +79,7 @@ impl App {
     /// the confirm handler fires — so a Reachable signal *inside*
     /// the grace window finds `unavailable_toast == None` and
     /// silently clears state without flashing a "back online" toast,
-    /// while still triggering the missing-data refetch.
+    /// without triggering the missing-data refetch.
     pub(super) fn handle_service_reachable(&mut self, service_kind: ServiceKind) {
         let recovery_outcome = self.net.availability_for(service_kind).mark_reachable();
         self.apply_recovery_outcome(service_kind, recovery_outcome);
@@ -198,21 +198,19 @@ impl App {
     /// that failed during the blip; at startup those land after the panel
     /// hands the network rows back to steady state and leak the standalone
     /// "Fetching crates.io info" / "Retrieving GitHub repo details" toasts
-    /// the startup panel was meant to embed. Gating on
-    /// [`RecoveryOutcome::triggers_refetch`] keeps the missing-data refetch
-    /// for outages the user actually saw while suppressing that startup burst.
+    /// the startup panel was meant to embed. The `RecoveryOutcome::WithToast`
+    /// arm of `apply_recovery_outcome` owns the missing-data refetch for outages
+    /// the user actually saw, while `NoTransition` and `Silent` suppress that startup burst.
     fn apply_recovery_outcome(&mut self, service: ServiceKind, recovery_outcome: RecoveryOutcome) {
         match recovery_outcome {
-            RecoveryOutcome::NoTransition => return,
+            RecoveryOutcome::NoTransition => (),
             RecoveryOutcome::Silent => {},
             RecoveryOutcome::WithToast(toast_id) => {
                 self.framework.toasts.dismiss(toast_id);
                 let (title, body) = service_recovered_message(service);
                 self.show_timed_toast(title, body);
+                self.refetch_missing_after_recovery(service);
             },
-        }
-        if recovery_outcome.triggers_refetch() {
-            self.refetch_missing_after_recovery(service);
         }
     }
 }
@@ -251,5 +249,53 @@ const fn service_recovered_message(service_kind: ServiceKind) -> (&'static str, 
     match service_kind {
         ServiceKind::GitHub => ("GitHub available", "Back online."),
         ServiceKind::CratesIo => ("crates.io available", "Back online."),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RecoveryOutcome;
+    use super::ServiceKind;
+    use super::ToastId;
+    use crate::ci::OwnerRepo;
+    use crate::project::ProjectPrData;
+    use crate::scan;
+    use crate::scan::CachedRepoData;
+    use crate::tui::test_support;
+
+    #[test]
+    fn only_confirmed_outage_recovery_triggers_refetch() {
+        let mut app = test_support::make_app(&[]);
+        let owner_repo = OwnerRepo::new("acme", "failed");
+        scan::store_cached_repo_data(
+            &app.net.github.fetch_cache,
+            &owner_repo,
+            CachedRepoData {
+                runs:         Vec::new(),
+                meta:         None,
+                github_total: 0,
+                pr_data:      ProjectPrData::Unfetched,
+            },
+        );
+
+        app.apply_recovery_outcome(ServiceKind::GitHub, RecoveryOutcome::NoTransition);
+        assert!(
+            scan::load_cached_repo_data(&app.net.github.fetch_cache, &owner_repo).is_some(),
+            "NoTransition must not refetch failed entries"
+        );
+
+        // `Silent` absorbs a grace-window blip: refetching could leak standalone toasts
+        // after startup handoff. Only a user-visible `WithToast` outage refetches.
+        app.apply_recovery_outcome(ServiceKind::GitHub, RecoveryOutcome::Silent);
+        assert!(
+            scan::load_cached_repo_data(&app.net.github.fetch_cache, &owner_repo).is_some(),
+            "Silent must not refetch failed entries after a grace-window blip"
+        );
+
+        app.apply_recovery_outcome(ServiceKind::GitHub, RecoveryOutcome::WithToast(ToastId(1)));
+        assert!(
+            scan::load_cached_repo_data(&app.net.github.fetch_cache, &owner_repo).is_none(),
+            "WithToast must invalidate failed entries for refetch"
+        );
     }
 }

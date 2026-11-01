@@ -23,6 +23,7 @@ use super::VendoredPackage;
 use super::Visibility;
 use super::Workspace;
 use super::git;
+use super::git::GitDescription;
 use super::git_data;
 use super::git_data::GitData;
 use super::git_data::GitDetailFields;
@@ -154,7 +155,12 @@ fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_
         .unwrap_or(0);
     let package_total =
         package::package_content_height(synced_desc, package_lower).saturating_add(error_height);
-    let git_total = git::git_content_height(synced_desc, git_desc > 0, git_lower);
+    let description = if git_desc > 0 {
+        GitDescription::Present
+    } else {
+        GitDescription::Absent
+    };
+    let git_total = git::git_content_height(synced_desc, description, git_lower);
 
     u16::try_from(package_total.max(git_total)).unwrap_or(u16::MAX)
 }

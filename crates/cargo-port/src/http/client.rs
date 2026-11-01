@@ -23,6 +23,7 @@ use super::rate_limit::RateLimitBucket;
 use super::rate_limit::RateLimitDisposition;
 use super::rate_limit::RateLimitQuota;
 use crate::config;
+use crate::config::GitHubRateLimitMode;
 use crate::config::HttpConfig;
 use crate::constants::APP_NAME;
 use crate::constants::CRATES_IO_API_BASE;
@@ -140,12 +141,14 @@ impl HttpClient {
     /// Turning the flag on rebases the synthetic countdown to
     /// `now + SYNTHETIC_RATE_LIMIT_SECS` so the display starts at
     /// `00:59:59` and counts down from there.
-    pub(crate) fn set_force_github_rate_limit(&self, on: bool) {
-        let mode = if on {
-            let reset_at = rate_limit::now_epoch_secs().saturating_add(SYNTHETIC_RATE_LIMIT_SECS);
-            GithubQuotaMode::Synthetic { reset_at }
-        } else {
-            GithubQuotaMode::Real
+    pub(crate) fn set_force_github_rate_limit(&self, policy: GitHubRateLimitMode) {
+        let mode = match policy {
+            GitHubRateLimitMode::Forced => {
+                let reset_at =
+                    rate_limit::now_epoch_secs().saturating_add(SYNTHETIC_RATE_LIMIT_SECS);
+                GithubQuotaMode::Synthetic { reset_at }
+            },
+            GitHubRateLimitMode::Normal => GithubQuotaMode::Real,
         };
         *self
             .github_quota_mode
@@ -704,7 +707,7 @@ mod tests {
         client.update_rate_limit_bucket(RateLimitBucket::GraphQl, real_graphql);
 
         let before = rate_limit::now_epoch_secs();
-        client.set_force_github_rate_limit(true);
+        client.set_force_github_rate_limit(GitHubRateLimitMode::Forced);
         let after = rate_limit::now_epoch_secs();
 
         let github_rate_limit = client.rate_limit();
@@ -725,7 +728,7 @@ mod tests {
         // refresh remains observable while forced rate limiting is on.
         assert_eq!(github_rate_limit.graphql, Some(real_graphql));
 
-        client.set_force_github_rate_limit(false);
+        client.set_force_github_rate_limit(GitHubRateLimitMode::Normal);
         let github_rate_limit = client.rate_limit();
         // Only the GraphQL bucket was set with `update_rate_limit_bucket`,
         // so disabling `force_github_rate_limit` leaves `github_rate_limit.core`
@@ -764,7 +767,7 @@ mod tests {
                 Some(elapsed_reset)
             );
 
-            clone.set_force_github_rate_limit(false);
+            clone.set_force_github_rate_limit(GitHubRateLimitMode::Normal);
             assert!(matches!(client.github_quota_mode(), GithubQuotaMode::Real));
             assert!(matches!(clone.github_quota_mode(), GithubQuotaMode::Real));
             assert!(!client.github_rate_limit_forced());
@@ -772,7 +775,7 @@ mod tests {
             assert_eq!(client.rate_limit().core, Some(refreshed_core));
 
             let before = rate_limit::now_epoch_secs();
-            client.set_force_github_rate_limit(true);
+            client.set_force_github_rate_limit(GitHubRateLimitMode::Forced);
             let after = rate_limit::now_epoch_secs();
             assert!(matches!(
                 clone.github_quota_mode(),

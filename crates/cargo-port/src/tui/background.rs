@@ -31,13 +31,21 @@ use crate::watcher::WatchRequest;
 use crate::watcher::WatcherMsg;
 
 /// Bundle the four channel pairs plus the watcher handle that
-/// [`Background`] owns. Single argument to [`Background::new`].
+/// [`Background`] owns. Converted into [`Background`] by `From<BackgroundChannels>`.
 pub struct BackgroundChannels {
     pub background: (Sender<BackgroundMsg>, Receiver<BackgroundMsg>),
     pub ci_fetch:   (Sender<CiFetchMsg>, Receiver<CiFetchMsg>),
     pub clean:      (Sender<CleanMsg>, Receiver<CleanMsg>),
     pub owned_run:  (Sender<OwnedRunEvent>, Receiver<OwnedRunEvent>),
     pub watcher:    WatcherHandle,
+}
+
+/// `Background::watcher_state` reports `Active` or `Disabled` without copying the handle.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WatcherState {
+    Active,
+    Disabled,
 }
 
 /// Owns every long-lived I/O channel App holds. App holds a single
@@ -55,27 +63,6 @@ pub(super) struct Background {
 }
 
 impl Background {
-    pub(super) fn new(channels: BackgroundChannels) -> Self {
-        let BackgroundChannels {
-            background: (background_tx, background_rx),
-            ci_fetch: (ci_fetch_tx, ci_fetch_rx),
-            clean: (clean_tx, clean_rx),
-            owned_run: (owned_run_tx, owned_run_rx),
-            watcher,
-        } = channels;
-        Self {
-            sender: background_tx,
-            receiver: background_rx,
-            ci_fetch_tx,
-            ci_fetch_rx,
-            clean_tx,
-            clean_rx,
-            owned_run_tx,
-            owned_run_rx,
-            watcher,
-        }
-    }
-
     // `background_sender`, `ci_fetch_sender`, `clean_sender` and `owned_run_sender`
     // clone `Sender` handles for task spawning.
 
@@ -125,7 +112,12 @@ impl Background {
     pub(super) fn replace_watcher(&mut self, watcher: WatcherHandle) { self.watcher = watcher; }
 
     #[cfg(test)]
-    pub(super) const fn watcher_is_active(&self) -> bool { self.watcher.is_active() }
+    pub(super) const fn watcher_state(&self) -> WatcherState {
+        match &self.watcher {
+            WatcherHandle::Active(_) => WatcherState::Active,
+            WatcherHandle::Disabled => WatcherState::Disabled,
+        }
+    }
 
     pub(super) fn register_item_background_services(&self, item: &RootItem) {
         let started = std::time::Instant::now();
@@ -147,6 +139,29 @@ impl Background {
     }
 }
 
+impl From<BackgroundChannels> for Background {
+    fn from(channels: BackgroundChannels) -> Self {
+        let BackgroundChannels {
+            background: (background_tx, background_rx),
+            ci_fetch: (ci_fetch_tx, ci_fetch_rx),
+            clean: (clean_tx, clean_rx),
+            owned_run: (owned_run_tx, owned_run_rx),
+            watcher,
+        } = channels;
+        Self {
+            sender: background_tx,
+            receiver: background_rx,
+            ci_fetch_tx,
+            ci_fetch_rx,
+            clean_tx,
+            clean_rx,
+            owned_run_tx,
+            owned_run_rx,
+            watcher,
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -164,7 +179,7 @@ mod tests {
 
     fn fresh() -> Background {
         let (watch_tx, _watch_rx) = channel::unbounded();
-        Background::new(BackgroundChannels {
+        Background::from(BackgroundChannels {
             background: channel::unbounded(),
             ci_fetch:   channel::unbounded(),
             clean:      channel::unbounded(),
@@ -220,7 +235,7 @@ mod tests {
     #[test]
     fn send_watcher_delivers_to_watcher_channel() {
         let (watch_tx, watch_rx) = channel::unbounded();
-        let background = Background::new(BackgroundChannels {
+        let background = Background::from(BackgroundChannels {
             background: channel::unbounded(),
             ci_fetch:   channel::unbounded(),
             clean:      channel::unbounded(),
@@ -249,7 +264,7 @@ mod tests {
 
     #[test]
     fn disabled_watcher_handle_ignores_registration_messages() {
-        let background = Background::new(BackgroundChannels {
+        let background = Background::from(BackgroundChannels {
             background: channel::unbounded(),
             ci_fetch:   channel::unbounded(),
             clean:      channel::unbounded(),
@@ -261,6 +276,6 @@ mod tests {
             .send_watcher(WatcherMsg::InitialRegistrationComplete)
             .expect("disabled watcher accepts completion");
 
-        assert!(!background.watcher_is_active());
+        assert_eq!(background.watcher_state(), WatcherState::Disabled);
     }
 }

@@ -36,6 +36,7 @@ use tui_pane::Viewport;
 use super::Config;
 use super::constants::CATCH_UP_LINT_TOAST_TITLE;
 use super::constants::NORMAL_LINT_TOAST_TITLE;
+use crate::config::LintIndicator;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::CacheUsage;
 use crate::lint::LintRunOrigin;
@@ -409,7 +410,7 @@ pub(in crate::tui) fn lint_cell_for(
     config: &Config,
     animation_elapsed: Duration,
 ) -> LintCell {
-    if !config.lint_enabled() {
+    if config.lint_enabled() == LintIndicator::Disabled {
         return LintCell::from_parts(LINT_NO_LOG, ratatui::style::Style::default());
     }
     let icon = integration::lint_icon_for(status.kind()).frame_at(animation_elapsed);

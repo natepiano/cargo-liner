@@ -133,10 +133,6 @@ enum SectionFocus {
     Unfocused,
 }
 
-impl SectionFocus {
-    const fn is_focused(self) -> bool { matches!(self, Self::Focused) }
-}
-
 impl From<bool> for SectionFocus {
     fn from(focused: bool) -> Self {
         if focused {
@@ -264,7 +260,7 @@ fn append_remotes_section(
     if ctx.data.remotes.listed().is_empty() {
         return;
     }
-    let focused = matches!(current_section, Some(Section::Remote(_)));
+    let section_focus = SectionFocus::from(matches!(current_section, Some(Section::Remote(_))));
     let cursor = match current_section {
         Some(Section::Remote(i)) => Some(i),
         _ => None,
@@ -276,10 +272,10 @@ fn append_remotes_section(
     accum.section_rules.push(SectionRule {
         inner_y: accum.lines.len(),
         title,
-        section_focus: SectionFocus::from(focused),
+        section_focus,
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
-    render_remote_header(accum.lines, layout, focused);
+    render_remote_header(accum.lines, layout, section_focus);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, remote) in ctx.data.remotes.listed().iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + pull_requests_len + i;
@@ -308,7 +304,8 @@ fn append_pull_requests_section(
     {
         return;
     }
-    let focused = matches!(current_section, Some(Section::PullRequest(_)));
+    let section_focus =
+        SectionFocus::from(matches!(current_section, Some(Section::PullRequest(_))));
     let cursor = match current_section {
         Some(Section::PullRequest(i)) => Some(i),
         _ => None,
@@ -324,7 +321,7 @@ fn append_pull_requests_section(
     accum.section_rules.push(SectionRule {
         inner_y: accum.lines.len(),
         title,
-        section_focus: SectionFocus::from(focused),
+        section_focus,
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
 
@@ -337,7 +334,7 @@ fn append_pull_requests_section(
     }
 
     let col_widths = pull_request_col_widths(&section.rows, area_width, ctx.animation_elapsed);
-    render_pull_request_header(accum.lines, &col_widths, focused);
+    render_pull_request_header(accum.lines, &col_widths, section_focus);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, row) in section.rows.iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + i;
@@ -396,6 +393,13 @@ struct PullRequestColWidths {
     title:  usize,
 }
 
+/// `pull_request_col_widths` allocates both columns from one `BranchTitleCapacity`.
+enum BranchTitleCapacity {
+    Preferred,
+    ReserveTitle,
+    BranchOnly,
+}
+
 fn pull_request_col_widths(
     rows: &[PullRequestRow],
     area_width: u16,
@@ -427,17 +431,23 @@ fn pull_request_col_widths(
         .max(PULL_REQUEST_TITLE_HEADER.width());
     let fixed_width = 1 + number + 2 + status + 2 + 2;
     let branch_title_width = usize::from(area_width).saturating_sub(fixed_width);
-    let branch = if branch_title_width >= branch_preferred + title_preferred {
-        branch_preferred
+    let branch_title_capacity = if branch_title_width >= branch_preferred + title_preferred {
+        BranchTitleCapacity::Preferred
     } else if branch_title_width > PULL_REQUEST_MIN_TITLE_WIDTH {
-        branch_preferred.min(branch_title_width - PULL_REQUEST_MIN_TITLE_WIDTH)
+        BranchTitleCapacity::ReserveTitle
     } else {
-        branch_preferred.min(branch_title_width)
+        BranchTitleCapacity::BranchOnly
     };
-    let title = if branch_title_width >= branch_preferred + title_preferred {
-        title_preferred
-    } else {
-        branch_title_width.saturating_sub(branch)
+    let (branch, title) = match branch_title_capacity {
+        BranchTitleCapacity::Preferred => (branch_preferred, title_preferred),
+        BranchTitleCapacity::ReserveTitle => {
+            let branch = branch_preferred.min(branch_title_width - PULL_REQUEST_MIN_TITLE_WIDTH);
+            (branch, branch_title_width.saturating_sub(branch))
+        },
+        BranchTitleCapacity::BranchOnly => {
+            let branch = branch_preferred.min(branch_title_width);
+            (branch, branch_title_width.saturating_sub(branch))
+        },
     };
     PullRequestColWidths {
         number,
@@ -447,21 +457,20 @@ fn pull_request_col_widths(
     }
 }
 
-fn column_header_style(focused: bool) -> Style {
+fn column_header_style(section_focus: SectionFocus) -> Style {
     let style = Style::default().fg(theme_roles::column_header_color());
-    if focused {
-        style.add_modifier(Modifier::BOLD)
-    } else {
-        style
+    match section_focus {
+        SectionFocus::Focused => style.add_modifier(Modifier::BOLD),
+        SectionFocus::Unfocused => style,
     }
 }
 
 fn render_pull_request_header(
     lines: &mut Vec<Line<'static>>,
     widths: &PullRequestColWidths,
-    focused: bool,
+    section_focus: SectionFocus,
 ) {
-    let style = column_header_style(focused);
+    let style = column_header_style(section_focus);
     let text = format!(
         " {:<number$}  {:<status$}  {:<branch$}  {}",
         fit_text(PULL_REQUEST_NUMBER_HEADER, widths.number),
@@ -571,7 +580,7 @@ fn append_worktrees_section(
     if ctx.data.worktrees.is_empty() {
         return;
     }
-    let focused = matches!(current_section, Some(Section::Worktree(_)));
+    let section_focus = SectionFocus::from(matches!(current_section, Some(Section::Worktree(_))));
     let cursor = match current_section {
         Some(Section::Worktree(i)) => Some(i),
         _ => None,
@@ -581,10 +590,10 @@ fn append_worktrees_section(
     accum.section_rules.push(SectionRule {
         inner_y: accum.lines.len(),
         title,
-        section_focus: SectionFocus::from(focused),
+        section_focus,
     });
     accum.lines.push(Line::from(Span::raw(String::new())));
-    render_worktree_header(accum.lines, layout, focused);
+    render_worktree_header(accum.lines, layout, section_focus);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, wt) in ctx.data.worktrees.iter().enumerate() {
         let row_index = ctx.row_offset + flat_len + pull_requests_len + remotes_len + i;
@@ -623,15 +632,12 @@ fn push_section_overlays(
         if abs_y < inner_area.y || abs_y >= inner_area.y.saturating_add(inner_area.height) {
             continue;
         }
-        let title_color = if rule.section_focus.is_focused() {
-            title_color()
-        } else {
-            inactive_title_color()
+        let title_style = match rule.section_focus {
+            SectionFocus::Focused => Style::default()
+                .fg(title_color())
+                .add_modifier(Modifier::BOLD),
+            SectionFocus::Unfocused => Style::default().fg(inactive_title_color()),
         };
-        let mut title_style = Style::default().fg(title_color);
-        if rule.section_focus.is_focused() {
-            title_style = title_style.add_modifier(Modifier::BOLD);
-        }
         let rule_area = Rect {
             x:      outer_area.x,
             y:      abs_y,
@@ -661,6 +667,27 @@ struct RenderFlatArgs<'a> {
     row_offset:  usize,
 }
 
+/// `GitFieldPresentation::RateLimit` adds availability suffixes and dims reset text;
+/// `Plain` leaves the field's ordinary value presentation intact.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GitFieldPresentation {
+    RateLimit,
+    Plain,
+}
+
+impl From<DetailField> for GitFieldPresentation {
+    fn from(field: DetailField) -> Self {
+        if matches!(
+            field,
+            DetailField::RateLimitCore | DetailField::RateLimitGraphQl
+        ) {
+            Self::RateLimit
+        } else {
+            Self::Plain
+        }
+    }
+}
+
 /// Compute the displayed value string for a flat git-pane row,
 /// including row-specific decorations (local-only suffix on `Branch`,
 /// `(github unreachable)` / `(github rate-limited)` /
@@ -668,7 +695,11 @@ struct RenderFlatArgs<'a> {
 /// Also returns the "github unreachable" placeholder text for an empty
 /// Stars row when GitHub is down — the parallel of the crates.io
 /// unreachable placeholder on the Package pane.
-fn build_field_value(data: &GitData, field: DetailField, is_rate_limit_row: bool) -> String {
+fn build_field_value(
+    data: &GitData,
+    field: DetailField,
+    presentation: GitFieldPresentation,
+) -> String {
     if field == DetailField::Head {
         let raw = field.git_value(data);
         return if data.is_local()
@@ -681,7 +712,9 @@ fn build_field_value(data: &GitData, field: DetailField, is_rate_limit_row: bool
         };
     }
     let raw = field.git_value(data);
-    if is_rate_limit_row && let Some(suffix) = github_status_suffix(data.github_status) {
+    if presentation == GitFieldPresentation::RateLimit
+        && let Some(suffix) = github_status_suffix(data.github_status)
+    {
         return if raw.is_empty() {
             format!("({suffix})")
         } else {
@@ -775,14 +808,14 @@ fn field_value_style(data: &GitData, field: DetailField) -> Style {
             GitValueStyle::Error
         },
         DetailField::RemotesUnreadable => GitValueStyle::Error,
-        DetailField::RateLimitCore | DetailField::RateLimitGraphQl => {
-            if data.github_status.is_unauthenticated() {
+        DetailField::RateLimitCore | DetailField::RateLimitGraphQl => match data.github_status {
+            AvailabilityStatus::Unauthenticated | AvailabilityStatus::NotInstalled => {
                 GitValueStyle::Warning
-            } else if !data.github_status.is_available() {
+            },
+            AvailabilityStatus::Unreachable | AvailabilityStatus::RateLimited => {
                 GitValueStyle::Error
-            } else {
-                GitValueStyle::Plain
-            }
+            },
+            AvailabilityStatus::Reachable => GitValueStyle::Plain,
         },
         DetailField::Stars if panes::github_stars_is_unreachable_placeholder(data) => {
             GitValueStyle::Warning
@@ -836,11 +869,8 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
             *accum.focused_output_line = accum.lines.len();
         }
         let label = field.label();
-        let is_rate_limit_row = matches!(
-            *field,
-            DetailField::RateLimitCore | DetailField::RateLimitGraphQl
-        );
-        let value = build_field_value(data, *field, is_rate_limit_row);
+        let presentation = GitFieldPresentation::from(*field);
+        let value = build_field_value(data, *field, presentation);
         let selection = tui_pane::selection_state(pane, row_index, focus);
         let base_value_style = field_value_style(data, *field);
         let ls = selection.patch(styles.readonly_label);
@@ -882,8 +912,8 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
             }
         } else {
             let mut spans = vec![Span::styled(format!(" {label:<label_width$} "), ls)];
-            if is_rate_limit_row
-                && data.github_status.is_available()
+            if presentation == GitFieldPresentation::RateLimit
+                && data.github_status == AvailabilityStatus::Reachable
                 && let Some(idx) = value.find(" resets ")
             {
                 let (base, reset) = value.split_at(idx);
@@ -1027,8 +1057,12 @@ fn sync_trio(layout: &SyncColLayout, branch: &str, tracked: &str, sync: &str) ->
     )
 }
 
-fn render_remote_header(lines: &mut Vec<Line<'static>>, layout: &SyncColLayout, focused: bool) {
-    let style = column_header_style(focused);
+fn render_remote_header(
+    lines: &mut Vec<Line<'static>>,
+    layout: &SyncColLayout,
+    section_focus: SectionFocus,
+) {
+    let style = column_header_style(section_focus);
     // Leading: 1 space pad + REMOTE_ICON_COL blank for icon alignment.
     let leading = format!(
         " {:<icon$}{:<name$}  {:<url$}",
@@ -1105,8 +1139,12 @@ fn remote_row_line(
 // `render_worktree_header` and `worktree_row_line` render Worktrees with the shared
 // `SyncColLayout`.
 
-fn render_worktree_header(lines: &mut Vec<Line<'static>>, layout: &SyncColLayout, focused: bool) {
-    let style = column_header_style(focused);
+fn render_worktree_header(
+    lines: &mut Vec<Line<'static>>,
+    layout: &SyncColLayout,
+    section_focus: SectionFocus,
+) {
+    let style = column_header_style(section_focus);
     let leading = format!(
         " {:<name$}",
         WORKTREES_NAME_HEADER,
@@ -1194,7 +1232,11 @@ pub(super) fn render_git_pane_body(
     // addressable `total_rows`, so the pager must use rendered height.
     pane.viewport.set_content_height(git_content_height(
         usize::from(ctx.synced_description_height.rows()),
-        description_rows > 0,
+        if description_rows > 0 {
+            GitDescription::Present
+        } else {
+            GitDescription::Absent
+        },
         git_lower_content_height(&git_data, flat_fields.len()),
     ));
     let pane_focus_state = pane.focus.pane_focus_state;
@@ -1398,6 +1440,14 @@ pub(in crate::tui::panes) fn git_lower_content_height(
     flat_fields_len + pr_block + remotes_block + worktrees_block
 }
 
+/// `GitDescription::Present` includes the About section in `git_content_height`;
+/// `GitDescription::Absent` omits its description and separator rows.
+#[derive(Clone, Copy)]
+pub(in crate::tui::panes) enum GitDescription {
+    Present,
+    Absent,
+}
+
 /// Total vertical rows the Git pane's content occupies. When the repo has a
 /// description the About section renders, contributing the synced description
 /// height plus the separator above the lower content; otherwise the section is
@@ -1406,13 +1456,12 @@ pub(in crate::tui::panes) fn git_lower_content_height(
 /// measurement so the pager and the row height agree on what renders.
 pub(in crate::tui::panes) const fn git_content_height(
     synced_description_height: usize,
-    has_description: bool,
+    description: GitDescription,
     lower_content_height: usize,
 ) -> usize {
-    if has_description {
-        synced_description_height + 1 + lower_content_height
-    } else {
-        lower_content_height
+    match description {
+        GitDescription::Present => synced_description_height + 1 + lower_content_height,
+        GitDescription::Absent => lower_content_height,
     }
 }
 
@@ -1483,7 +1532,7 @@ mod tests {
         let layout = sync_col_layout(&[], &[], WIDE_PANE);
         let mut lines = Vec::new();
 
-        render_remote_header(&mut lines, &layout, true);
+        render_remote_header(&mut lines, &layout, SectionFocus::Focused);
 
         let text = line_text(&lines[0]);
         assert!(text.contains("Branch"));
@@ -1506,7 +1555,7 @@ mod tests {
         let widths = pull_request_col_widths(&[row], 80, Duration::ZERO);
         let mut lines = Vec::new();
 
-        render_pull_request_header(&mut lines, &widths, true);
+        render_pull_request_header(&mut lines, &widths, SectionFocus::Focused);
 
         assert!(line_text(&lines[0]).contains("Status"));
         assert!(line_text(&lines[0]).contains("Branch"));
@@ -1631,9 +1680,9 @@ mod tests {
         );
 
         let mut remote_header = Vec::new();
-        render_remote_header(&mut remote_header, &layout, true);
+        render_remote_header(&mut remote_header, &layout, SectionFocus::Focused);
         let mut worktree_header = Vec::new();
-        render_worktree_header(&mut worktree_header, &layout, true);
+        render_worktree_header(&mut worktree_header, &layout, SectionFocus::Focused);
 
         let remote_text = line_text(&remote_header[0]);
         let worktree_text = line_text(&worktree_header[0]);

@@ -8,6 +8,7 @@ use crate::project::CratesIoRelease;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
+use crate::tui::state::AvailabilityStatus;
 
 impl App {
     /// Re-query one publishable crate on crates.io per
@@ -29,10 +30,10 @@ impl App {
         if !crates_io_refresh_due(self.crates_io_refresh_at, now) {
             return;
         }
-        // Return when `net.crates_io_status().is_available()` is false during an outage or rate
-        // limit: `refetch_missing_crates_io_targets` already handles recovery, and another request
-        // each minute would only deepen the limit.
-        if !self.net.crates_io_status().is_available() {
+        // Return when `net.crates_io_status()` is not `AvailabilityStatus::Reachable` during an
+        // outage or rate limit: `refetch_missing_crates_io_targets` already handles recovery, and
+        // another request each minute would only deepen the limit.
+        if self.net.crates_io_status() != AvailabilityStatus::Reachable {
             return;
         }
         let Some(target) = self.collect_crates_io_fetch_plan().take_stalest(

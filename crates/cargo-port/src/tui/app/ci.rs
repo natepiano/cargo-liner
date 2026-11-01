@@ -25,14 +25,13 @@ pub(in crate::tui) enum CiRunDisplayMode {
 impl App {
     /// Insert CI runs from the initial scan for the entry containing `path`.
     pub(super) fn insert_ci_runs(&mut self, path: &Path, runs: Vec<CiRun>, github_total: u32) {
-        let ci_pagination = CiPagination::from(
-            self.project_list
-                .primary_url_for(path)
-                .and_then(ci::parse_owner_repo)
-                .is_some_and(|owner_repo| {
-                    scan::is_exhausted(owner_repo.owner(), owner_repo.repo())
-                }),
-        );
+        let ci_pagination = self
+            .project_list
+            .primary_url_for(path)
+            .and_then(ci::parse_owner_repo)
+            .map_or(CiPagination::HasMore, |owner_repo| {
+                scan::pagination(owner_repo.owner(), owner_repo.repo())
+            });
         if let Some(project_entry) = self.project_list.entry_containing_mut(path) {
             let repo = project_entry.git_repo.get_or_insert_with(Default::default);
             repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
