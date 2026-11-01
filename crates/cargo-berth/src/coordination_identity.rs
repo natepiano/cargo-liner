@@ -363,7 +363,9 @@ pub(crate) struct CoordinationIdentityRecoveryActions(
 );
 
 impl CoordinationIdentityRecoveryActions {
-    fn one(action: CoordinationIdentityRecoveryAction) -> Self { Self(vec![action]) }
+    fn one(coordination_identity_recovery_action: CoordinationIdentityRecoveryAction) -> Self {
+        Self(vec![coordination_identity_recovery_action])
+    }
 
     fn two(
         first: CoordinationIdentityRecoveryAction,
@@ -376,7 +378,9 @@ impl CoordinationIdentityRecoveryActions {
         self.0
             .iter()
             .map(ToString::to_string)
-            .map(|action| format!("`{action}`"))
+            .map(|coordination_identity_recovery_action| {
+                format!("`{coordination_identity_recovery_action}`")
+            })
             .collect::<Vec<_>>()
             .join(" or ")
     }
@@ -384,16 +388,20 @@ impl CoordinationIdentityRecoveryActions {
     fn original_command_recovery(&self) -> OriginalCommandRecovery {
         self.0
             .iter()
-            .find_map(|action| match action {
-                CoordinationIdentityRecoveryAction::RerunFromHoldingWorktree { argv, .. } => {
-                    Some(OriginalCommandRecovery::Runnable(argv.render()))
-                },
-                CoordinationIdentityRecoveryAction::ClaimSeparatelyHere { .. } => {
-                    Some(OriginalCommandRecovery::ContainsNonTextArgument)
-                },
-                CoordinationIdentityRecoveryAction::ClearSessionMapping { .. }
-                | CoordinationIdentityRecoveryAction::ReconcileAndSweepMarker { .. }
-                | CoordinationIdentityRecoveryAction::ReleaseIncumbentReservation { .. } => None,
+            .find_map(|coordination_identity_recovery_action| {
+                match coordination_identity_recovery_action {
+                    CoordinationIdentityRecoveryAction::RerunFromHoldingWorktree {
+                        argv, ..
+                    } => Some(OriginalCommandRecovery::Runnable(argv.render())),
+                    CoordinationIdentityRecoveryAction::ClaimSeparatelyHere { .. } => {
+                        Some(OriginalCommandRecovery::ContainsNonTextArgument)
+                    },
+                    CoordinationIdentityRecoveryAction::ClearSessionMapping { .. }
+                    | CoordinationIdentityRecoveryAction::ReconcileAndSweepMarker { .. }
+                    | CoordinationIdentityRecoveryAction::ReleaseIncumbentReservation { .. } => {
+                        None
+                    },
+                }
             })
             .unwrap_or(OriginalCommandRecovery::GitPrivateTransaction)
     }
@@ -555,7 +563,9 @@ impl CoordinationIdentityRejection {
                 incumbent_reservation_id,
                 ..
             } => vec![*incumbent_reservation_id],
-            Self::SessionWorktreeMismatch(rejection) => vec![rejection.reservation_id],
+            Self::SessionWorktreeMismatch(session_worktree_mismatch_rejection) => {
+                vec![session_worktree_mismatch_rejection.reservation_id]
+            },
         }
     }
 
@@ -612,7 +622,11 @@ impl CoordinationIdentityRejection {
             | Self::WorktreeHeldByAnotherRun {
                 recovery_actions, ..
             } => recovery_actions.render(),
-            Self::SessionWorktreeMismatch(rejection) => rejection.recovery_actions.render(),
+            Self::SessionWorktreeMismatch(session_worktree_mismatch_rejection) => {
+                session_worktree_mismatch_rejection
+                    .recovery_actions
+                    .render()
+            },
         }
     }
 }
@@ -651,34 +665,42 @@ impl Display for CoordinationIdentityRejection {
                 "Worktree {issuing_root} already holds active reservation {incumbent_reservation_id} for coordination run {incumbent_coordination_run_id}, so coordination run {issuing_coordination_run_id} cannot take work here. If coordination run {incumbent_coordination_run_id} is finished, run {} to release reservation {incumbent_reservation_id}, then retry the rejected command. If it is still working, run coordination run {issuing_coordination_run_id} from a separate checkout instead. Acquisition is all this refuses: no reservation was taken or widened for coordination run {issuing_coordination_run_id}. Whatever else this invocation reports, it observed and recorded regardless.",
                 recovery_actions.render()
             ),
-            Self::SessionWorktreeMismatch(rejection) => {
-                let original_command = rejection.recovery_actions.original_command_recovery();
+            Self::SessionWorktreeMismatch(session_worktree_mismatch_rejection) => {
+                let original_command = session_worktree_mismatch_rejection
+                    .recovery_actions
+                    .original_command_recovery();
                 write!(
                     formatter,
                     "Reservation {} for coordination run {} is active in {} ({}), but this command ran in {} ({}). ",
-                    rejection.reservation_id,
-                    rejection.coordination_run_id,
-                    rejection.holding_root,
-                    rejection.holding_worktree_id,
-                    rejection.issuing_root,
-                    rejection.issuing_worktree_id,
+                    session_worktree_mismatch_rejection.reservation_id,
+                    session_worktree_mismatch_rejection.coordination_run_id,
+                    session_worktree_mismatch_rejection.holding_root,
+                    session_worktree_mismatch_rejection.holding_worktree_id,
+                    session_worktree_mismatch_rejection.issuing_root,
+                    session_worktree_mismatch_rejection.issuing_worktree_id,
                 )?;
                 match original_command {
                     OriginalCommandRecovery::Runnable(original_command) => write!(
                         formatter,
                         "Run {}. The claim-separately action clears this session mapping; after it succeeds, start a separate harness session, claim work in {}, and rerun `{original_command}` there. No state changed.",
-                        rejection.recovery_actions.render(),
-                        rejection.issuing_root,
+                        session_worktree_mismatch_rejection
+                            .recovery_actions
+                            .render(),
+                        session_worktree_mismatch_rejection.issuing_root,
                     ),
                     OriginalCommandRecovery::ContainsNonTextArgument => write!(
                         formatter,
                         "The original command cannot be reproduced automatically because it contains an argument that is not text. Run {}. The offered action clears the misrouted session so work can start here instead. No state changed.",
-                        rejection.recovery_actions.render(),
+                        session_worktree_mismatch_rejection
+                            .recovery_actions
+                            .render(),
                     ),
                     OriginalCommandRecovery::GitPrivateTransaction => write!(
                         formatter,
                         "Run {}, then retry the original git command. No state changed.",
-                        rejection.recovery_actions.render(),
+                        session_worktree_mismatch_rejection
+                            .recovery_actions
+                            .render(),
                     ),
                 }
             },
@@ -700,7 +722,9 @@ pub(crate) enum CoordinationIdentityValidationError {
 impl Display for CoordinationIdentityValidationError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Rejected(rejection) => rejection.fmt(formatter),
+            Self::Rejected(coordination_identity_rejection) => {
+                coordination_identity_rejection.fmt(formatter)
+            },
             Self::InvalidCanonicalWorktreeRoot => {
                 formatter.write_str("the issuing worktree root is not canonical absolute UTF-8")
             },
@@ -723,7 +747,7 @@ impl Error for CoordinationIdentityValidationError {}
 /// [`PresentedCoordinationRun`], which a caller holding only a bare [`CoordinationRunId`]
 /// cannot produce.
 pub(crate) fn validate_worktree_occupancy(
-    reservations: &RetainedReservationSet,
+    retained_reservation_set: &RetainedReservationSet,
     worktree_context: &WorktreeContext,
     worktree_id: WorktreeId,
     acting_run: PresentedCoordinationRun,
@@ -733,31 +757,35 @@ pub(crate) fn validate_worktree_occupancy(
     // contains its work.
 
     let WorktreeOccupancy::Incumbent(incumbent) =
-        reservations.worktree_occupancy(worktree_id, acting_run)
+        retained_reservation_set.worktree_occupancy(worktree_id, acting_run)
     else {
         return Ok(());
     };
-    let rejection = CoordinationIdentityRejection::worktree_held_by_another_run(
-        IncumbentWorktreeRun {
-            coordination_run_id: incumbent.actor().run,
-            reservation_id:      incumbent.id(),
-        },
-        IssuingWorktreeRun {
-            coordination_run_id: acting_run.coordination_run_id(),
-            worktree_id,
-        },
-        worktree_context,
-    )?;
-    Err(CoordinationIdentityValidationError::Rejected(rejection))
+    let coordination_identity_rejection =
+        CoordinationIdentityRejection::worktree_held_by_another_run(
+            IncumbentWorktreeRun {
+                coordination_run_id: incumbent.actor().run,
+                reservation_id:      incumbent.id(),
+            },
+            IssuingWorktreeRun {
+                coordination_run_id: acting_run.coordination_run_id(),
+                worktree_id,
+            },
+            worktree_context,
+        )?;
+    Err(CoordinationIdentityValidationError::Rejected(
+        coordination_identity_rejection,
+    ))
 }
 
 /// Validate one coherently resolved authorization against retained reservations.
 pub(crate) fn validate_coordination_identity(
-    reservations: &RetainedReservationSet,
-    context: &CoordinationIdentityValidationContext,
+    retained_reservation_set: &RetainedReservationSet,
+    coordination_identity_validation_context: &CoordinationIdentityValidationContext,
 ) -> Result<(), CoordinationIdentityValidationError> {
-    let resolved_edit_authorization = context.resolved_edit_authorization;
-    let worktree_context = &context.worktree_context;
+    let resolved_edit_authorization =
+        coordination_identity_validation_context.resolved_edit_authorization;
+    let worktree_context = &coordination_identity_validation_context.worktree_context;
     let issuing_worktree_id = resolved_edit_authorization.worktree_id;
     match resolved_edit_authorization.edit_authorization() {
         EditAuthorization::Session {
@@ -765,62 +793,66 @@ pub(crate) fn validate_coordination_identity(
             reservation_id,
             ..
         } => validate_session_mapping(
-            reservations,
+            retained_reservation_set,
             coordination_run_id,
             reservation_id,
             issuing_worktree_id,
             worktree_context,
-            &context.recovery_commands,
+            &coordination_identity_validation_context.recovery_commands,
         ),
         EditAuthorization::Marker {
             coordination_run_id,
             ..
         } => validate_marker(
-            reservations,
+            retained_reservation_set,
             coordination_run_id,
             issuing_worktree_id,
             worktree_context,
-            &context.recovery_commands,
+            &coordination_identity_validation_context.recovery_commands,
         ),
         EditAuthorization::Environment { .. } | EditAuthorization::Unidentified => Ok(()),
     }
 }
 
 fn validate_session_mapping(
-    reservations: &RetainedReservationSet,
+    retained_reservation_set: &RetainedReservationSet,
     coordination_run_id: CoordinationRunId,
     reservation_id: ReservationId,
     issuing_worktree_id: WorktreeId,
     worktree_context: &WorktreeContext,
-    recovery_commands: &CoordinationIdentityRecoveryCommands,
+    coordination_identity_recovery_commands: &CoordinationIdentityRecoveryCommands,
 ) -> Result<(), CoordinationIdentityValidationError> {
-    let Some(reservation) = reservations
+    let Some(reservation) = retained_reservation_set
         .iter()
         .find(|reservation| reservation.id() == reservation_id)
     else {
-        let rejection = build_stale_session_mapping(
+        let coordination_identity_rejection = build_stale_session_mapping(
             coordination_run_id,
             reservation_id,
             worktree_context,
-            recovery_commands,
+            coordination_identity_recovery_commands,
         )?;
-        return Err(CoordinationIdentityValidationError::Rejected(rejection));
+        return Err(CoordinationIdentityValidationError::Rejected(
+            coordination_identity_rejection,
+        ));
     };
     if !reservation.is_active_for_coordination_run(coordination_run_id) {
-        let rejection = build_stale_session_mapping(
+        let coordination_identity_rejection = build_stale_session_mapping(
             coordination_run_id,
             reservation_id,
             worktree_context,
-            recovery_commands,
+            coordination_identity_recovery_commands,
         )?;
-        return Err(CoordinationIdentityValidationError::Rejected(rejection));
+        return Err(CoordinationIdentityValidationError::Rejected(
+            coordination_identity_rejection,
+        ));
     }
     if reservation.actor().worktree == issuing_worktree_id {
         return Ok(());
     }
     let issuing_root = canonical_issuing_root(worktree_context)?;
     let holding_root = reservation.worktree_root().clone();
-    let recovery_actions = match recovery_commands {
+    let recovery_actions = match coordination_identity_recovery_commands {
         CoordinationIdentityRecoveryCommands::UserCommand(original_command) => {
             user_command_mismatch_recovery_actions(original_command, &holding_root, &issuing_root)
         },
@@ -854,20 +886,21 @@ fn user_command_mismatch_recovery_actions(
     holding_root: &CanonicalWorktreeRoot,
     issuing_root: &CanonicalWorktreeRoot,
 ) -> CoordinationIdentityRecoveryActions {
-    let claim_separately = CoordinationIdentityRecoveryAction::ClaimSeparatelyHere {
-        argv: RunnableRecoveryCommandLine::clear_session_mapping(),
-        cwd:  issuing_root.clone(),
-    };
+    let coordination_identity_recovery_action =
+        CoordinationIdentityRecoveryAction::ClaimSeparatelyHere {
+            argv: RunnableRecoveryCommandLine::clear_session_mapping(),
+            cwd:  issuing_root.clone(),
+        };
     match original_command.runnable_arguments() {
         Ok(original_command) => CoordinationIdentityRecoveryActions::two(
             CoordinationIdentityRecoveryAction::RerunFromHoldingWorktree {
                 argv: original_command,
                 cwd:  holding_root.clone(),
             },
-            claim_separately,
+            coordination_identity_recovery_action,
         ),
         Err(RecoveryCommandContainsNonTextArgument) => {
-            CoordinationIdentityRecoveryActions::one(claim_separately)
+            CoordinationIdentityRecoveryActions::one(coordination_identity_recovery_action)
         },
     }
 }
@@ -876,10 +909,10 @@ fn build_stale_session_mapping(
     coordination_run_id: CoordinationRunId,
     reservation_id: ReservationId,
     worktree_context: &WorktreeContext,
-    recovery_commands: &CoordinationIdentityRecoveryCommands,
+    coordination_identity_recovery_commands: &CoordinationIdentityRecoveryCommands,
 ) -> Result<CoordinationIdentityRejection, CoordinationIdentityValidationError> {
     let issuing_root = canonical_issuing_root(worktree_context)?;
-    let clear_session_mapping = match recovery_commands {
+    let clear_session_mapping = match coordination_identity_recovery_commands {
         CoordinationIdentityRecoveryCommands::UserCommand(_) => {
             RunnableRecoveryCommandLine::clear_session_mapping()
         },
@@ -901,20 +934,20 @@ fn build_stale_session_mapping(
 }
 
 fn validate_marker(
-    reservations: &RetainedReservationSet,
+    retained_reservation_set: &RetainedReservationSet,
     coordination_run_id: CoordinationRunId,
     issuing_worktree_id: WorktreeId,
     worktree_context: &WorktreeContext,
-    recovery_commands: &CoordinationIdentityRecoveryCommands,
+    coordination_identity_recovery_commands: &CoordinationIdentityRecoveryCommands,
 ) -> Result<(), CoordinationIdentityValidationError> {
-    if reservations.iter().any(|reservation| {
+    if retained_reservation_set.iter().any(|reservation| {
         reservation
             .is_active_for_coordination_run_and_worktree(coordination_run_id, issuing_worktree_id)
     }) {
         return Ok(());
     }
     let issuing_root = canonical_issuing_root(worktree_context)?;
-    let reconcile_marker = match recovery_commands {
+    let reconcile_marker = match coordination_identity_recovery_commands {
         CoordinationIdentityRecoveryCommands::UserCommand(_) => {
             RunnableRecoveryCommandLine::board()
         },
@@ -1089,7 +1122,7 @@ mod tests {
     }
 
     fn assert_identity_validation(
-        reservations: &RetainedReservationSet,
+        retained_reservation_set: &RetainedReservationSet,
         authorization: EditAuthorization,
         expected: &str,
         worktree_context: &WorktreeContext,
@@ -1105,20 +1138,25 @@ mod tests {
             worktree_id,
             authorization,
         );
-        let context = super::CoordinationIdentityValidationContext::for_user_command(
-            resolved,
-            worktree_context,
-            command,
+        let coordination_identity_validation_context =
+            super::CoordinationIdentityValidationContext::for_user_command(
+                resolved,
+                worktree_context,
+                command,
+            );
+        let result = super::validate_coordination_identity(
+            retained_reservation_set,
+            &coordination_identity_validation_context,
         );
-        let result = super::validate_coordination_identity(reservations, &context);
         let kind = match result {
             Ok(()) => "accepted".to_owned(),
-            Err(super::CoordinationIdentityValidationError::Rejected(rejection)) => {
-                serde_json::to_value(rejection).expect("rejection should serialize")["kind"]
-                    .as_str()
-                    .expect("rejection should name its kind")
-                    .to_owned()
-            },
+            Err(super::CoordinationIdentityValidationError::Rejected(
+                coordination_identity_rejection,
+            )) => serde_json::to_value(coordination_identity_rejection)
+                .expect("rejection should serialize")["kind"]
+                .as_str()
+                .expect("rejection should name its kind")
+                .to_owned(),
             Err(error) => error.to_string(),
         };
         assert_eq!(kind, expected, "{authorization:?}");
@@ -1241,11 +1279,13 @@ mod tests {
             "cd {} && cargo-berth identity clear-session --json",
             shell_quote(&cwd.to_string())
         );
-        let action = CoordinationIdentityRecoveryAction::ClearSessionMapping {
-            argv: RunnableRecoveryCommandLine::clear_session_mapping(),
-            cwd,
-        };
-        let serialized = serde_json::to_value(&action).expect("recovery action should serialize");
+        let coordination_identity_recovery_action =
+            CoordinationIdentityRecoveryAction::ClearSessionMapping {
+                argv: RunnableRecoveryCommandLine::clear_session_mapping(),
+                cwd,
+            };
+        let serialized = serde_json::to_value(&coordination_identity_recovery_action)
+            .expect("recovery action should serialize");
 
         assert_eq!(serialized["kind"], "clear_session_mapping");
         assert_eq!(
@@ -1257,7 +1297,10 @@ mod tests {
                 .as_str()
                 .is_some_and(|cwd| cwd.starts_with('/'))
         );
-        assert_eq!(action.to_string(), expected_rendering);
+        assert_eq!(
+            coordination_identity_recovery_action.to_string(),
+            expected_rendering
+        );
     }
 
     #[test]
@@ -1298,18 +1341,19 @@ mod tests {
                 "cwd": cwd,
             }])
         );
-        let rejection = CoordinationIdentityRejection::SessionWorktreeMismatch(Box::new(
-            SessionWorktreeMismatchRejection {
-                coordination_run_id: CoordinationRunId::new(),
-                reservation_id: ReservationId::new(),
-                holding_worktree_id: WorktreeId::new(),
-                issuing_worktree_id: WorktreeId::new(),
-                holding_root: cwd.clone(),
-                issuing_root: cwd,
-                recovery_actions,
-            },
-        ));
-        let diagnostic = rejection.to_string();
+        let coordination_identity_rejection =
+            CoordinationIdentityRejection::SessionWorktreeMismatch(Box::new(
+                SessionWorktreeMismatchRejection {
+                    coordination_run_id: CoordinationRunId::new(),
+                    reservation_id: ReservationId::new(),
+                    holding_worktree_id: WorktreeId::new(),
+                    issuing_worktree_id: WorktreeId::new(),
+                    holding_root: cwd.clone(),
+                    issuing_root: cwd,
+                    recovery_actions,
+                },
+            ));
+        let diagnostic = coordination_identity_rejection.to_string();
         assert!(diagnostic.contains("cannot be reproduced automatically"));
         assert!(diagnostic.contains("an argument that is not text"));
         assert!(diagnostic.contains("clears the misrouted session"));
