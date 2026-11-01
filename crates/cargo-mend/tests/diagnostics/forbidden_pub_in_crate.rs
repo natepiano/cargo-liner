@@ -2141,11 +2141,22 @@ edition = "2024"
             ),
             (
                 "src/lib.rs",
-                "pub mod a;\n\npub fn run() -> bool { a::drive() }\n",
+                r#"pub mod a;
+
+pub fn run() -> PlaybackReadiness { a::drive() }
+
+pub enum PlaybackReadiness {
+    Ready,
+    Unavailable,
+}
+"#,
             ),
             (
                 "src/a/mod.rs",
-                "pub mod b;\n\npub(crate) fn drive() -> bool { b::drive() }\n",
+                r#"pub mod b;
+
+pub(crate) fn drive() -> crate::PlaybackReadiness { b::drive() }
+"#,
             ),
             (
                 "src/a/b/mod.rs",
@@ -2155,9 +2166,13 @@ pub(super) struct Cam {
     pub(super) value: u8,
 }
 
-pub(super) fn drive() -> bool {
+pub(super) fn drive() -> crate::PlaybackReadiness {
     let cam = Cam { value: 3 };
-    c::Playback::prepare(&cam).is_ok_and(|playback| playback.start.value() > 0)
+    if c::Playback::try_from(&cam).is_ok_and(|playback| playback.start.value() > 0) {
+        crate::PlaybackReadiness::Ready
+    } else {
+        crate::PlaybackReadiness::Unavailable
+    }
 }
 "#,
             ),
@@ -2177,8 +2192,10 @@ pub(crate) struct Playback {
     pub(super) start: Thing,
 }
 
-impl Playback {
-    pub(super) fn prepare(cam: &Cam) -> Result<Self, PrepError> {
+impl TryFrom<&Cam> for Playback {
+    type Error = PrepError;
+
+    fn try_from(cam: &Cam) -> Result<Self, Self::Error> {
         Ok(Self { start: Thing::try_from(cam.value)? })
     }
 }
