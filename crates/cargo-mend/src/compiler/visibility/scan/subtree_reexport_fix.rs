@@ -214,12 +214,12 @@ pub(super) fn classify(
         UseKind::ListStem => return Err(NoFixReason::Unresolved),
         UseKind::Single(ident) => ident,
     };
-    let last_segment = reexport
+    let last_path_segment = reexport
         .path
         .segments
         .last()
         .ok_or(NoFixReason::Unresolved)?;
-    if last_segment.ident.name != exported_name.name {
+    if last_path_segment.ident.name != exported_name.name {
         return Err(NoFixReason::Rename);
     }
     if matches!(reexport.path_walk, PathWalk::Interrupted) {

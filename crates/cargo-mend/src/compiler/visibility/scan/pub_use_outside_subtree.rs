@@ -48,11 +48,11 @@ struct EnteredModule {
 /// `StoredSubtreeReexportFixFact` at the finding's position; otherwise the
 /// finding's help names why no automatic fix applies.
 pub(super) fn record(
-    tcx: TyCtxt<'_>,
+    ty_ctxt: TyCtxt<'_>,
     item: &Item<'_>,
     file_path: &Path,
     crate_root_file: &Path,
-    sink: &mut FindingsSink,
+    findings_sink: &mut FindingsSink,
 ) -> Result<()> {
     // `record` skips `item.span.from_expansion()` because a macro-written `use`
     // has no source line of its own to rewrite.
@@ -65,12 +65,15 @@ pub(super) fn record(
     if matches!(use_kind, UseKind::ListStem) {
         return Ok(());
     }
-    let owner_module: LocalDefId = tcx.parent_module_from_def_id(item.owner_id.def_id).into();
-    match ImportReach::for_visibility(tcx.local_visibility(item.owner_id.def_id), owner_module) {
+    let owner_module: LocalDefId = ty_ctxt
+        .parent_module_from_def_id(item.owner_id.def_id)
+        .into();
+    match ImportReach::for_visibility(ty_ctxt.local_visibility(item.owner_id.def_id), owner_module)
+    {
         ImportReach::Private => return Ok(()),
         ImportReach::Reexport => {},
     }
-    match module_role(tcx, owner_module) {
+    match module_role(ty_ctxt, owner_module) {
         ModuleRole::Prelude => return Ok(()),
         ModuleRole::Ordinary => {},
     }
@@ -83,21 +86,21 @@ pub(super) fn record(
             .split_last()
             .map_or(&[][..], |(_, prefix)| prefix),
     };
-    let Some(entered) = entered_module(tcx, owner_module, module_segments) else {
+    let Some(entered) = entered_module(ty_ctxt, owner_module, module_segments) else {
         return Ok(());
     };
     let source_module = entered.module;
-    if tcx.is_descendant_of(source_module.to_def_id(), owner_module.to_def_id()) {
+    if ty_ctxt.is_descendant_of(source_module.to_def_id(), owner_module.to_def_id()) {
         return Ok(());
     }
 
     let message = format!(
         "`{}` re-exports from `{}`, which is outside its own subtree",
-        module_display_path(tcx, owner_module),
-        module_display_path(tcx, source_module),
+        module_display_path(ty_ctxt, owner_module),
+        module_display_path(ty_ctxt, source_module),
     );
     let classification = subtree_reexport_fix::classify(
-        tcx,
+        ty_ctxt,
         &SubtreeReexport {
             item,
             path,
@@ -118,7 +121,7 @@ pub(super) fn record(
         ),
     };
     let finding = source::build_finding(
-        tcx,
+        ty_ctxt,
         file_path,
         item.span,
         FindingParams {
@@ -136,10 +139,11 @@ pub(super) fn record(
         },
     )?;
     if let Ok(subtree_reexport_fix) = classification {
-        sink.subtree_reexport_fix_facts
+        findings_sink
+            .subtree_reexport_fix_facts
             .push(subtree_reexport_fix.into_fact(&finding, crate_root_file));
     }
-    sink.findings.push(finding);
+    findings_sink.findings.push(finding);
     Ok(())
 }
 
