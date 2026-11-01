@@ -178,9 +178,14 @@ impl PayloadEditTarget {
             )
     }
 
-    fn resolve(self, working_directory: &HookWorkingDirectorySelection) -> ResolvedEditTarget {
+    fn resolve(
+        self,
+        hook_working_directory_selection: &HookWorkingDirectorySelection,
+    ) -> ResolvedEditTarget {
         match self {
-            Self::Named(edit_path) => resolve_named_edit_target(&edit_path, working_directory),
+            Self::Named(edit_path) => {
+                resolve_named_edit_target(&edit_path, hook_working_directory_selection)
+            },
             Self::NotNamed { reason } => ResolvedEditTarget::Unresolved { reason },
         }
     }
@@ -453,8 +458,8 @@ fn check_request(repository_relative_path: &str) -> Result<CheckRequest, String>
         vec![PathBuf::from(format!("file:{repository_relative_path}"))],
         ScopeKind::File,
     )
-    .map(|declared_scopes| CheckRequest {
-        declared_scopes,
+    .map(|declared_reservation_scope_set| CheckRequest {
+        declared_scopes:       declared_reservation_scope_set,
         reservation_selection: CheckReservationSelection::SessionMappingOrSingleActive,
     })
     .map_err(|error| error.to_string())
