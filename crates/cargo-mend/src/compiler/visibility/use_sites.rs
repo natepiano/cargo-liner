@@ -176,11 +176,41 @@ impl PublicDeclarationRequirement {
     }
 }
 
+/// A re-export requires a public declaration even when enclosing modules cap its reach.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PublicReexportPresence {
+    Present,
+    Absent,
+}
+
+/// A public re-export outside the item's ancestors pins its declaration (E0364),
+/// even when the re-export is unreachable from outside. An ancestor's parent facade
+/// travels with the declaration during narrowing; a sibling re-export cannot.
+/// Narrowing the declaration alone leaves that `pub use` naming an item no longer `pub`,
+/// so the crate stops compiling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OutsideAncestorReexport {
+    Present,
+    Absent,
+}
+
 #[derive(Clone, Copy)]
 struct ApplicableReexportReach<'index> {
     occurrence:                     &'index ReexportOccurrence,
     reach:                          VisibilityReach,
     public_declaration_requirement: PublicDeclarationRequirement,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReexportApplicability {
+    Applicable,
+    Excluded,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModuleContainment {
+    Within,
+    Outside,
 }
 
 enum ExportedAncestorPathReachResolution {
@@ -359,38 +389,43 @@ impl ReexportIndex {
         }
     }
 
-    pub(super) fn has_public_reexport(
+    pub(super) fn public_reexport_presence(
         &self,
         tcx: TyCtxt<'_>,
         item_def_id: LocalDefId,
         facade_subject: LocalDefId,
-    ) -> bool {
-        self.applicable_reexport_reaches(tcx, item_def_id, facade_subject)
+    ) -> PublicReexportPresence {
+        if self
+            .applicable_reexport_reaches(tcx, item_def_id, facade_subject)
             .any(|reexport| {
                 reexport.public_declaration_requirement == PublicDeclarationRequirement::Required
             })
+        {
+            PublicReexportPresence::Present
+        } else {
+            PublicReexportPresence::Absent
+        }
     }
 
-    /// Whether a `pub use` that rustc requires a `pub` declaration for sits
-    /// outside the item's own ancestor modules.
-    ///
-    /// A re-export in an ancestor is the parent facade, and the narrowing
-    /// fixers rewrite that line together with the declaration. One anywhere
-    /// else — a sibling module, say — has no facade line to move with it, so
-    /// narrowing the declaration alone leaves the `pub use` naming an item that
-    /// is no longer `pub` and the crate stops compiling with E0364.
-    pub(super) fn has_public_reexport_outside_ancestors(
+    pub(super) fn outside_ancestor_reexport(
         &self,
         tcx: TyCtxt<'_>,
         item_def_id: LocalDefId,
         facade_subject: LocalDefId,
-    ) -> bool {
+    ) -> OutsideAncestorReexport {
         let parent_module: LocalDefId = tcx.parent_module_from_def_id(item_def_id).into();
-        self.applicable_reexport_reaches(tcx, item_def_id, facade_subject)
+        if self
+            .applicable_reexport_reaches(tcx, item_def_id, facade_subject)
             .any(|reexport| {
                 reexport.public_declaration_requirement == PublicDeclarationRequirement::Required
-                    && !Self::is_module_within(tcx, parent_module, reexport.occurrence.owner_module)
+                    && Self::is_module_within(tcx, parent_module, reexport.occurrence.owner_module)
+                        == ModuleContainment::Outside
             })
+        {
+            OutsideAncestorReexport::Present
+        } else {
+            OutsideAncestorReexport::Absent
+        }
     }
 
     pub(in crate::compiler) fn applicable_reexport_reaches_outside_parent(
@@ -412,7 +447,8 @@ impl ReexportIndex {
         let parent_module: LocalDefId = tcx.parent_module_from_def_id(item_def_id).into();
         self.applicable_reexport_reaches(tcx, item_def_id, facade_subject)
             .filter(move |reexport| {
-                !Self::is_module_within(tcx, reexport.occurrence.owner_module, parent_module)
+                Self::is_module_within(tcx, reexport.occurrence.owner_module, parent_module)
+                    == ModuleContainment::Outside
             })
     }
 
@@ -512,7 +548,8 @@ impl ReexportIndex {
                     occurrence.owner_module.to_def_id(),
                 ));
                 if effective_reach.compare(private_reach, tcx) != Some(Ordering::Greater)
-                    || !Self::occurrence_applies_to_item(tcx, item_def_id, subject, effective_reach)
+                    || Self::occurrence_applies_to_item(tcx, item_def_id, subject, effective_reach)
+                        == ReexportApplicability::Excluded
                 {
                     return None;
                 }
@@ -549,7 +586,7 @@ impl ReexportIndex {
                     item_def_id,
                     subject,
                     VisibilityReach::from(occurrence.visibility),
-                )
+                ) == ReexportApplicability::Applicable
             })
             .reduce(|widest, occurrence| {
                 match VisibilityReach::from(occurrence.visibility)
@@ -631,7 +668,7 @@ impl ReexportIndex {
                             item_def_id,
                             subject,
                             VisibilityReach::from(occurrence.visibility),
-                        )
+                        ) == ReexportApplicability::Applicable
                 })
                 .collect(),
         )
@@ -658,12 +695,15 @@ impl ReexportIndex {
         item_def_id: LocalDefId,
         subject: DefId,
         occurrence_reach: VisibilityReach,
-    ) -> bool {
+    ) -> ReexportApplicability {
         if item_def_id.to_def_id() == subject {
-            return true;
+            return ReexportApplicability::Applicable;
         }
         let item_reach: VisibilityReach = tcx.visibility(item_def_id.to_def_id()).into();
-        item_reach.dominance(occurrence_reach, tcx) == ReachDominance::Dominates
+        match item_reach.dominance(occurrence_reach, tcx) {
+            ReachDominance::Dominates => ReexportApplicability::Applicable,
+            ReachDominance::DoesNotDominate => ReexportApplicability::Excluded,
+        }
     }
 
     pub(super) fn exact_glob_subject_resolution(
@@ -713,7 +753,9 @@ impl ReexportIndex {
         let mut containers = Vec::new();
         if let Some(local_subject) = subject.as_local() {
             let subject_module: LocalDefId = tcx.parent_module_from_def_id(local_subject).into();
-            if Self::is_module_within(tcx, subject_module, child_module) {
+            if Self::is_module_within(tcx, subject_module, child_module)
+                == ModuleContainment::Within
+            {
                 let mut module = subject_module;
                 loop {
                     containers.push(module.to_def_id());
@@ -734,13 +776,17 @@ impl ReexportIndex {
         containers.into_iter()
     }
 
-    fn is_module_within(tcx: TyCtxt<'_>, mut module: LocalDefId, ancestor: LocalDefId) -> bool {
+    fn is_module_within(
+        tcx: TyCtxt<'_>,
+        mut module: LocalDefId,
+        ancestor: LocalDefId,
+    ) -> ModuleContainment {
         loop {
             if module == ancestor {
-                return true;
+                return ModuleContainment::Within;
             }
             if module == CRATE_DEF_ID {
-                return false;
+                return ModuleContainment::Outside;
             }
             module = tcx.parent_module_from_def_id(module).into();
         }
@@ -848,6 +894,14 @@ struct UseSiteCollector<'a, 'tcx> {
 enum InterfaceVisibility {
     Public,
     Restricted,
+}
+
+/// A field escapes its owning module when its visibility is public or restricted to a wider
+/// scope. A module-private field caps the reach of its type and is not followed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FieldTypeExposure {
+    EscapesModule,
+    Contained,
 }
 
 #[derive(Clone, Copy)]
@@ -1048,7 +1102,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
         self.push_site(did, UseSiteReference::ThroughSignature);
         let owning_module = self.tcx.parent_module_from_def_id(local).to_def_id();
         for field in self.tcx.adt_def(did).all_fields() {
-            if !self.field_escapes_module(field.did, owning_module) {
+            if self.field_escapes_module(field.did, owning_module) == FieldTypeExposure::Contained {
                 continue;
             }
             for arg in self
@@ -1323,14 +1377,16 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
             .map(ty::AdtDef::did)
     }
 
-    /// True when `field` is visible beyond `owning_module` — i.e. its
-    /// visibility is `pub` or restricted to a scope wider than the type's own
-    /// module. A module-private field caps the reach of its type and is not
-    /// followed.
-    fn field_escapes_module(&self, field: DefId, owning_module: DefId) -> bool {
+    fn field_escapes_module(&self, field: DefId, owning_module: DefId) -> FieldTypeExposure {
         match self.tcx.visibility(field) {
-            Visibility::Public => true,
-            Visibility::Restricted(scope) => scope.to_def_id() != owning_module,
+            Visibility::Public => FieldTypeExposure::EscapesModule,
+            Visibility::Restricted(scope) => {
+                if scope.to_def_id() == owning_module {
+                    FieldTypeExposure::Contained
+                } else {
+                    FieldTypeExposure::EscapesModule
+                }
+            },
         }
     }
 

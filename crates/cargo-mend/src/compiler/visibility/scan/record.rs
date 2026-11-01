@@ -61,7 +61,9 @@ use crate::compiler::visibility::source;
 use crate::compiler::visibility::use_sites;
 use crate::compiler::visibility::use_sites::FacadeChainBlocker;
 use crate::compiler::visibility::use_sites::FacadeChainResolution;
+use crate::compiler::visibility::use_sites::OutsideAncestorReexport;
 use crate::compiler::visibility::use_sites::ParentFacadeAnalysis;
+use crate::compiler::visibility::use_sites::PublicReexportPresence;
 use crate::compiler::visibility::use_sites::RetainedFacadeRequirement;
 use crate::config::DiagnosticCode;
 use crate::config::PreludePubMod;
@@ -2142,12 +2144,15 @@ fn maybe_record_narrow_to_pub_crate(
     let (Some(name), Some(kind_label)) = (item.name, item.kind_label) else {
         return Ok(());
     };
-    if ctx.public_visibility_targets.contains(&item.def_id)
-        || ctx
-            .reexport_index
-            .has_public_reexport(ctx.tcx, item.def_id, item.facade_subject)
-    {
+    if ctx.public_visibility_targets.contains(&item.def_id) {
         return Ok(());
+    }
+    match ctx
+        .reexport_index
+        .public_reexport_presence(ctx.tcx, item.def_id, item.facade_subject)
+    {
+        PublicReexportPresence::Present => return Ok(()),
+        PublicReexportPresence::Absent => {},
     }
     if ctx
         .effective_visibilities
@@ -2523,20 +2528,19 @@ fn record_suspicious_pub_warning(
         related,
         stale_parent_pub_use,
     } = warning;
-    // `ReexportIndex::has_public_reexport_outside_ancestors` finds a `pub use`
+    // `ReexportIndex::outside_ancestor_reexport` finds a `pub use`
     // outside this item's ancestors that names it, and rustc requires a
     // re-exported declaration to be at least as visible as the re-export
     // (E0364) whether or not that re-export is reachable from outside. Only a
     // parent facade travels with the declaration when the fixers rewrite it, so
     // the finding is reported here without a fix.
-    let public_reexport_constraint = if ctx.reexport_index.has_public_reexport_outside_ancestors(
+    let public_reexport_constraint = match ctx.reexport_index.outside_ancestor_reexport(
         ctx.tcx,
         input.def_id,
         ctx.reexport_index.facade_subject(input.def_id),
     ) {
-        PublicReexportConstraint::PinsDeclaration
-    } else {
-        PublicReexportConstraint::Absent
+        OutsideAncestorReexport::Present => PublicReexportConstraint::PinsDeclaration,
+        OutsideAncestorReexport::Absent => PublicReexportConstraint::Absent,
     };
     let details = suspicious_finding_details(
         ctx,
