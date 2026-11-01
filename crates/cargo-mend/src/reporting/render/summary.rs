@@ -160,7 +160,7 @@ pub(super) fn summary_line(
     compiler_stats: &CompilerStats,
     color_mode: ColorMode,
 ) -> Option<String> {
-    let mut rows = Vec::new();
+    let mut summary_rows = Vec::new();
     let mend_fixables = mend_fixable_counts(report, Severity::Warning);
     let compiler_fixables =
         FixableCategory::for_command(compiler_stats.fixable, CARGO_MEND_FIX_COMPILER);
@@ -175,7 +175,7 @@ pub(super) fn summary_line(
         let n = compiler_stats.warnings;
         let mut fixables = Vec::new();
         compiler_fixables.append_row_entry(&mut fixables);
-        rows.push(SummaryRow {
+        summary_rows.push(SummaryRow {
             count: n,
             description: pluralize(n, "compiler warning", "compiler warnings").to_string(),
             fixables,
@@ -186,14 +186,14 @@ pub(super) fn summary_line(
         let mut fixables = Vec::new();
         mend_fixables.standard.append_row_entry(&mut fixables);
         mend_fixables.pub_use.append_row_entry(&mut fixables);
-        rows.push(SummaryRow {
+        summary_rows.push(SummaryRow {
             count: n,
             description: pluralize(n, "mend warning", "mend warnings").to_string(),
             fixables,
         });
     }
 
-    if rows.is_empty() {
+    if summary_rows.is_empty() {
         if report.summary.errors > 0 {
             return None;
         }
@@ -207,24 +207,32 @@ pub(super) fn summary_line(
     // to the last warning row in `rows` so the single-command convergent option is
     // always one click away.
     if categories > 1
-        && let Some(last) = rows.last_mut()
+        && let Some(summary_row) = summary_rows.last_mut()
     {
-        last.fixables.push(SummaryFixable {
+        summary_row.fixables.push(SummaryFixable {
             count:   total_fixable,
             command: CARGO_MEND_FIX_ALL,
         });
     }
 
-    Some(render_summary_rows(&rows, color_mode))
+    Some(render_summary_rows(&summary_rows, color_mode))
 }
 
-fn render_summary_rows(rows: &[SummaryRow], color_mode: ColorMode) -> String {
-    let count_width = rows.iter().map(|r| digit_count(r.count)).max().unwrap_or(1);
-    let desc_width = rows.iter().map(|r| r.description.len()).max().unwrap_or(0);
-    let fixable_count_width = rows
+fn render_summary_rows(summary_rows: &[SummaryRow], color_mode: ColorMode) -> String {
+    let count_width = summary_rows
         .iter()
-        .flat_map(|r| r.fixables.iter())
-        .map(|f| digit_count(f.count))
+        .map(|summary_row| digit_count(summary_row.count))
+        .max()
+        .unwrap_or(1);
+    let desc_width = summary_rows
+        .iter()
+        .map(|summary_row| summary_row.description.len())
+        .max()
+        .unwrap_or(0);
+    let fixable_count_width = summary_rows
+        .iter()
+        .flat_map(|summary_row| summary_row.fixables.iter())
+        .map(|summary_fixable| digit_count(summary_fixable.count))
         .max()
         .unwrap_or(0);
     let prefix = color::dim(SUMMARY_LABEL, color_mode);
@@ -235,14 +243,14 @@ fn render_summary_rows(rows: &[SummaryRow], color_mode: ColorMode) -> String {
 
     let mut result = String::new();
     let mut first = true;
-    for (i, row) in rows.iter().enumerate() {
+    for (i, summary_row) in summary_rows.iter().enumerate() {
         let leader = if i == 0 { &prefix } else { &indent };
-        let inline = row.fixables.first();
-        let inline_part = inline.map_or_else(String::new, |f| {
+        let inline_summary_fixable = summary_row.fixables.first();
+        let inline_part = inline_summary_fixable.map_or_else(String::new, |summary_fixable| {
             format!(
                 " - {:>width$} fixable with `{}`",
-                f.count,
-                f.command,
+                summary_fixable.count,
+                summary_fixable.command,
                 width = fixable_count_width
             )
         });
@@ -253,15 +261,15 @@ fn render_summary_rows(rows: &[SummaryRow], color_mode: ColorMode) -> String {
         let _ = write!(
             result,
             "{leader} {:>count_width$} {:<desc_width$}{inline_part}",
-            row.count, row.description,
+            summary_row.count, summary_row.description,
         );
-        for f in row.fixables.iter().skip(1) {
+        for summary_fixable in summary_row.fixables.iter().skip(1) {
             result.push('\n');
             let _ = write!(
                 result,
                 "{cont_indent} - {:>width$} fixable with `{}`",
-                f.count,
-                f.command,
+                summary_fixable.count,
+                summary_fixable.command,
                 width = fixable_count_width
             );
         }

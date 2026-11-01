@@ -90,8 +90,8 @@ impl<'a> ModuleFileKind<'a> {
 
 /// The comma-separated `Meta` items inside an attribute list such as
 /// `cfg(...)` or `cfg_attr(...)`.
-pub(crate) fn parse_meta_list(list: &MetaList) -> syn::Result<Punctuated<Meta, Token![,]>> {
-    list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+pub(crate) fn parse_meta_list(meta_list: &MetaList) -> syn::Result<Punctuated<Meta, Token![,]>> {
+    meta_list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
 }
 
 /// Whether `attributes` hold exactly `#[cfg(test)]`.
@@ -100,7 +100,7 @@ pub(crate) fn is_cfg_test(attributes: &[Attribute]) -> bool {
         attribute.path().is_ident("cfg")
             && attribute
                 .parse_args::<Ident>()
-                .is_ok_and(|predicate| predicate == "test")
+                .is_ok_and(|predicate_ident| predicate_ident == "test")
     })
 }
 
@@ -119,8 +119,8 @@ pub(crate) fn trim_leading_self(segments: &[String]) -> &[String] {
 }
 
 fn file_module_path(source_root: &Path, path: &Path) -> Option<Vec<String>> {
-    let relative = path.strip_prefix(source_root).ok()?;
-    let mut result: Vec<String> = relative
+    let relative_path = path.strip_prefix(source_root).ok()?;
+    let mut result: Vec<String> = relative_path
         .parent()
         .into_iter()
         .flat_map(Path::iter)

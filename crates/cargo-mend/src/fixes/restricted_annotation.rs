@@ -57,7 +57,7 @@ impl VisibilityReplacement {
 /// alongside it; every other finding is left alone.
 pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationScan> {
     let root = Path::new(&report.root);
-    let mut fixes = Vec::new();
+    let mut use_fixes = Vec::new();
     let mut rewritten_sites: BTreeSet<String> = BTreeSet::new();
     for finding in &report.findings {
         let replacement = match &finding.item_visibility.narrower_scope {
@@ -82,13 +82,14 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
         // confirms they still say what the report said. It once refused any
         // restricted spelling but `pub(crate)` and `pub(in crate)`, which left
         // every `pub(in crate::a)` narrowing suggested and never written.
-        let (expected_form, expected_annotation) = match &finding.item_visibility.written {
-            WrittenVisibility::Bare => (VisibilityAnnotationForm::Bare, "pub"),
-            WrittenVisibility::Restricted(source) => {
-                (VisibilityAnnotationForm::Restricted, source.as_str())
-            },
-            WrittenVisibility::Unknown => continue,
-        };
+        let (expected_visibility_annotation_form, expected_annotation) =
+            match &finding.item_visibility.written {
+                WrittenVisibility::Bare => (VisibilityAnnotationForm::Bare, "pub"),
+                WrittenVisibility::Restricted(source) => {
+                    (VisibilityAnnotationForm::Restricted, source.as_str())
+                },
+                WrittenVisibility::Unknown => continue,
+            };
         let absolute_path = root.join(&finding.path);
         let source = fs::read_to_string(&absolute_path)
             .with_context(|| format!("failed to read {}", absolute_path.display()))?;
@@ -98,8 +99,12 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
         };
         // `annotation_agreement` guards against source changes since the
         // report was written. Only edit the exact annotation the compiler pass classified.
-        if annotation_agreement(&source, site, expected_form, expected_annotation)
-            == AnnotationAgreement::Changed
+        if annotation_agreement(
+            &source,
+            site,
+            expected_visibility_annotation_form,
+            expected_annotation,
+        ) == AnnotationAgreement::Changed
         {
             continue;
         }
@@ -122,9 +127,9 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
         if !rewritten_sites.insert(format!("{}:{}", finding.path, site.start)) {
             continue;
         }
-        fixes.push(replacement.into_fix(absolute_path, site));
+        use_fixes.push(replacement.into_fix(absolute_path, site));
     }
-    Ok(RestrictedAnnotationScan { fixes })
+    Ok(RestrictedAnnotationScan { fixes: use_fixes })
 }
 
 /// Guards against source changes since the report: edit only the exact annotation classified.
