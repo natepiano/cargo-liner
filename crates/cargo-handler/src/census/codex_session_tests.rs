@@ -7,7 +7,6 @@
 
 use std::io::Write;
 
-use classify::CodexLogEvidence;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use rusqlite::Connection;
@@ -23,11 +22,11 @@ use crate::census::MachineState;
 use crate::census::account::Program;
 use crate::census::accounts::AccountsTable;
 use crate::census::activity::Activity;
+use crate::census::codex::SocketEndpoint;
 use crate::config::AccountsConfig;
 use crate::config::Config;
 use crate::constants::CODEX_AGENT;
 use crate::constants::CODEX_APP_SERVER_ARGUMENT;
-use crate::constants::CODEX_MANAGED_DAEMON_ARGUMENT;
 use crate::constants::CODEX_RESUME_SUBCOMMAND;
 use crate::footer_colors::FooterColors;
 use crate::sort::AccountsSort;
@@ -35,6 +34,7 @@ use crate::sort::SummarySort;
 use crate::summary::SummaryFrame;
 use crate::summary::{self};
 
+const CODEX_MANAGED_DAEMON_ARGUMENT: &str = "--managed-daemon";
 const START: u64 = 1_792_166_400;
 const ID: &str = "01a159cc-91d4-70c3-94a8-9c2a4259cd85";
 const AREA: Rect = Rect::new(0, 0, 200, 25);
@@ -46,6 +46,7 @@ struct SessionFixture {
     processes: Vec<ProcessEntry>,
     threads:   Vec<CodexThread>,
     scanner:   LocalScanner,
+    sockets:   Vec<SocketEndpoint>,
 }
 
 impl SessionFixture {
@@ -83,26 +84,21 @@ impl SessionFixture {
             processes: vec![process],
             threads: vec![thread],
             scanner,
+            sockets: Vec::new(),
         }
     }
 
     fn index(&self) -> PathBuf { self.home.path().join(".codex2/session_index.jsonl") }
 
     fn scan(&mut self) -> Vec<AgentRow> {
-        self.scanner
-            .codex_logs
-            .refresh(&self.processes, Some(self.home.path()));
-        let links = classify::codex_session_links(
+        self.scanner.codex_logs.refresh_with_peers(
             &self.processes,
-            &self.threads,
             Some(self.home.path()),
-            self.scanner.codex_start_window,
-            CodexLogEvidence::Recorded(&self.scanner.codex_logs),
+            &self.sockets,
         );
-        let threads = links
-            .iter()
-            .filter_map(|(pid, link)| link.thread().map(|thread| (*pid, thread)))
-            .collect();
+        self.scanner
+            .resolve_codex_sessions(&self.processes, &self.threads, Some(self.home.path()));
+        let threads = classify::linked_threads(&self.scanner.codex_links);
         let mut rows = classify::agent_rows_with_threads(
             &self.processes,
             &[],
@@ -110,13 +106,8 @@ impl SessionFixture {
             Some(self.home.path()),
             &self.scanner.account_labels,
         );
-        self.scanner.attach_details(
-            &self.processes,
-            &[],
-            &self.threads,
-            Some(self.home.path()),
-            &mut rows,
-        );
+        self.scanner
+            .attach_details(&self.processes, &[], Some(self.home.path()), &mut rows);
         rows
     }
 }
@@ -365,10 +356,17 @@ fn codex_session_app_server_thread_without_dispatch_adds_no_worker_child() {
         claude_pid:  None,
         config_home: fixture.processes[0].config_home.clone(),
     });
-    let mut rows = classify::agent_rows(
+    let mut rows = classify::agent_rows_with_threads(
         &fixture.processes,
         &[],
-        &fixture.threads,
+        &classify::linked_threads(&classify::codex_session_links(
+            &fixture.processes,
+            &fixture.threads,
+            Some(fixture.home.path()),
+            crate::config::CodexStartWindow::default(),
+            &codex::CodexLogs::default(),
+            &codex::ThreadRows::default(),
+        )),
         Some(fixture.home.path()),
         &fixture.scanner.account_labels,
     );
@@ -510,10 +508,16 @@ fn codex_resume_last_uses_the_newest_older_thread_in_its_home_and_directory() {
         .write_all(READ.as_bytes())
         .expect("read activity");
     store_threads(&fixture);
-    let resumed =
-        codex::read_resumed_threads(&fixture.processes[0], &fixture.home.path().join(".codex2"));
+    let records = fixture.scanner.codex_logs.thread_rows(
+        &fixture.processes,
+        Some(fixture.home.path()),
+        fixture.scanner.codex_start_window,
+    );
+    let resumed = records.candidates;
+
     assert_eq!(resumed.len(), 1);
     assert_eq!(resumed[0].rollout, fixture.threads[0].rollout);
+    fixture.threads.clear();
     let rows = fixture.scan();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].name, "resumed designer");
@@ -558,22 +562,10 @@ fn codex_resume_picker_uses_its_child_log_and_tracks_a_thread_switch() {
         .push(CODEX_RESUME_SUBCOMMAND.into());
     fixture.threads[0].created_ms = (START - 86_400) * 1000;
     fixture.threads[0].name = SessionName::Named("morty".into());
-    let mut child = fixture.processes[0].clone();
-    child.pid = 20;
-    child.parent = Some(10);
-    child.arguments = vec![
-        CODEX_AGENT.into(),
-        CODEX_APP_SERVER_ARGUMENT.into(),
-        CODEX_MANAGED_DAEMON_ARGUMENT.into(),
-    ];
-    fixture.processes.push(child);
+    managed_child(&mut fixture);
     store_threads(&fixture);
     let logs = log_database(&fixture);
-    logs.execute(
-        "INSERT INTO logs VALUES (1, ?1, 'pid:20:daemon', ?2)",
-        rusqlite::params![i64::try_from(START).expect("fixture time"), ID],
-    )
-    .expect("thread log");
+    log_thread_at(&logs, 1, 20, ID, START);
     let rows = fixture.scan();
     assert_eq!(rows[0].name, "morty", "the picker resumes an older thread");
     let (summary, _, _) = drawn(rows.clone(), RootWork::Present);
@@ -591,16 +583,8 @@ fn codex_resume_picker_uses_its_child_log_and_tracks_a_thread_switch() {
         0,
         "unchanged logs return no old rows"
     );
-    let next = "01a159cc-91d4-70c3-94a8-9c2a4259cd86";
-    let database = rusqlite::Connection::open(fixture.home.path().join(".codex2/state_6.sqlite"))
-        .expect("thread database");
-    database.execute("INSERT INTO threads SELECT ?1, cwd, created_at_ms, 'summer', first_user_message, replace(rollout_path, ?2, ?1), originator FROM threads WHERE id = ?2",
-        rusqlite::params![next, ID]).expect("second thread");
-    logs.execute(
-        "INSERT INTO logs VALUES (2, ?1, 'pid:20:daemon', ?2)",
-        rusqlite::params![i64::try_from(START + 1).expect("fixture time"), next],
-    )
-    .expect("thread switch");
+    let next = second_thread(&fixture);
+    log_thread_at(&logs, 2, 20, &next, START + 1);
     assert_eq!(
         fixture.scan()[0].name,
         "summer",
@@ -618,11 +602,7 @@ fn codex_log_without_a_process_record_keeps_the_configured_start_window() {
     let mut fixture = SessionFixture::new();
     store_threads(&fixture);
     let logs = log_database(&fixture);
-    logs.execute(
-        "INSERT INTO logs VALUES (1, ?1, 'pid:10:old-process', ?2)",
-        rusqlite::params![i64::try_from(START - 10).expect("fixture time"), ID],
-    )
-    .expect("old log");
+    log_thread_at(&logs, 1, 10, ID, START - 10);
     fixture.threads[0].created_ms += 5000;
     assert_eq!(fixture.scan()[0].name, "database-title");
     assert_eq!(
@@ -654,23 +634,10 @@ fn codex_shared_daemon_never_assigns_its_thread_to_two_tuis() {
         .arguments
         .push(CODEX_RESUME_SUBCOMMAND.into());
     store_threads(&fixture);
-    let mut child = fixture.processes[0].clone();
-    child.pid = 20;
-    child.parent = Some(10);
-    child.arguments = vec![
-        CODEX_AGENT.into(),
-        CODEX_APP_SERVER_ARGUMENT.into(),
-        CODEX_MANAGED_DAEMON_ARGUMENT.into(),
-    ];
-    let mut second = fixture.processes[0].clone();
-    second.pid = 30;
-    fixture.processes.extend([child, second]);
+    managed_child(&mut fixture);
+    second_tui(&mut fixture);
     let logs = log_database(&fixture);
-    logs.execute(
-        "INSERT INTO logs VALUES (1, ?1, 'pid:20:daemon', ?2)",
-        rusqlite::params![i64::try_from(START).expect("fixture time"), ID],
-    )
-    .expect("shared log");
+    log_thread_at(&logs, 1, 20, ID, START);
     assert_eq!(
         fixture
             .scan()
@@ -679,11 +646,7 @@ fn codex_shared_daemon_never_assigns_its_thread_to_two_tuis() {
             .collect::<Vec<_>>(),
         ["pid 10", "app-server", "pid 30"]
     );
-    logs.execute(
-        "INSERT INTO logs VALUES (2, ?1, 'pid:30:tui', ?2)",
-        rusqlite::params![i64::try_from(START).expect("fixture time"), ID],
-    )
-    .expect("direct process log");
+    log_thread_at(&logs, 2, 30, ID, START);
     let rows = fixture.scan();
     assert_eq!(rows[0].name, "pid 10");
     assert_eq!(
@@ -699,7 +662,7 @@ fn log_database(fixture: &SessionFixture) -> Connection {
     connection
         .execute_batch(
             "PRAGMA synchronous = OFF;
-        CREATE TABLE logs (id INTEGER PRIMARY KEY, ts INTEGER, process_uuid TEXT, thread_id TEXT);
+        CREATE TABLE logs (id INTEGER PRIMARY KEY, ts INTEGER, process_uuid TEXT, thread_id TEXT, feedback_log_body TEXT);
         CREATE INDEX idx_logs_ts ON logs(ts DESC);",
         )
         .expect("log table");
@@ -707,16 +670,48 @@ fn log_database(fixture: &SessionFixture) -> Connection {
 }
 
 fn log_thread(logs: &Connection, id: i64, pid: u32, thread: &str) {
+    log_thread_at(logs, id, pid, thread, START);
+}
+
+fn log_thread_at(logs: &Connection, id: i64, pid: u32, thread: &str, timestamp: u64) {
     logs.execute(
-        "INSERT INTO logs VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO logs (id, ts, process_uuid, thread_id, feedback_log_body) VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![
             id,
-            i64::try_from(START).expect("fixture time"),
+            i64::try_from(timestamp).expect("fixture time"),
             format!("pid:{pid}:fixture"),
-            thread
+            thread,
+            format!("app_server.request{{rpc.method=\"thread/resume\" rpc.request_id={id} app_server.connection_id=1 app_server.client_name=\"codex-tui\"}}: composing running thread resume response request_id=ConnectionRequestId {{ connection_id: ConnectionId(1), request_id: Integer({id}) }}")
+
         ],
     )
     .expect("thread log");
+}
+
+fn connect(sockets: &mut Vec<SocketEndpoint>, client: u32, daemon: u32, socket: u64) {
+    sockets.extend([
+        SocketEndpoint {
+            pid: client,
+            socket,
+            peer: socket + 1,
+        },
+        SocketEndpoint {
+            pid:    daemon,
+            socket: socket + 1,
+            peer:   socket,
+        },
+    ]);
+}
+
+fn thread_database(fixture: &SessionFixture) -> Connection {
+    Connection::open(fixture.home.path().join(".codex2/state_6.sqlite")).expect("thread database")
+}
+
+fn second_tui(fixture: &mut SessionFixture) {
+    let mut process = fixture.processes[0].clone();
+    process.pid = 30;
+    fixture.processes.push(process);
+    connect(&mut fixture.sockets, 30, 20, 200);
 }
 
 fn managed_child(fixture: &mut SessionFixture) {
@@ -729,6 +724,7 @@ fn managed_child(fixture: &mut SessionFixture) {
         CODEX_MANAGED_DAEMON_ARGUMENT.into(),
     ];
     fixture.processes.push(child);
+    connect(&mut fixture.sockets, 10, 20, 100);
 }
 
 #[test]
@@ -757,15 +753,14 @@ fn resume_picker_with_a_managed_child_uses_the_child_thread_record() {
 
 fn second_thread(fixture: &SessionFixture) -> String {
     let next = "01a159cc-91d4-70c3-94a8-9c2a4259cd86";
-    let database = rusqlite::Connection::open(fixture.home.path().join(".codex2/state_6.sqlite"))
-        .expect("thread database");
+    let database = thread_database(fixture);
     database.execute("INSERT INTO threads SELECT ?1, cwd, created_at_ms, 'summer', first_user_message, replace(rollout_path, ?2, ?1), originator FROM threads WHERE id = ?2",
         rusqlite::params![next, ID]).expect("second thread");
     next.into()
 }
 
 #[test]
-fn shared_daemon_preserves_start_window_and_argv_names() {
+fn shared_daemon_does_not_use_start_window_or_argv_names() {
     let mut fixture = SessionFixture::new();
     store_threads(&fixture);
     managed_child(&mut fixture);
@@ -776,6 +771,7 @@ fn shared_daemon_preserves_start_window_and_argv_names() {
         .extend([CODEX_RESUME_SUBCOMMAND.into(), ID.into()]);
     second.directory = Some("/other".into());
     fixture.processes.push(second);
+    connect(&mut fixture.sockets, 30, 20, 200);
     let logs = log_database(&fixture);
     log_thread(&logs, 1, 20, ID);
     let rows = fixture.scan();
@@ -784,40 +780,14 @@ fn shared_daemon_preserves_start_window_and_argv_names() {
             .find(|row| row.pid == 10)
             .expect("first TUI")
             .name,
-        "database-title"
+        "pid 10"
     );
     assert_eq!(
         rows.iter()
             .find(|row| row.pid == 30)
             .expect("second TUI")
             .name,
-        "database-title"
-    );
-}
-
-#[test]
-fn shared_daemon_record_stays_ambiguous_after_a_client_exits() {
-    let mut fixture = SessionFixture::new();
-    fixture.threads[0].created_ms = (START - 86_400) * 1000;
-    store_threads(&fixture);
-    managed_child(&mut fixture);
-    let mut second = fixture.processes[0].clone();
-    second.pid = 30;
-    fixture.processes.push(second);
-    let logs = log_database(&fixture);
-    log_thread(&logs, 1, 20, ID);
-    assert_eq!(fixture.scan()[0].name, "pid 10");
-    fixture.processes.retain(|process| process.pid != 30);
-    assert_eq!(
-        fixture.scan()[0].name,
-        "pid 10",
-        "a departed client does not make its shared record exact"
-    );
-    log_thread(&logs, 2, 10, ID);
-    assert_eq!(
-        fixture.scan()[0].name,
-        "database-title",
-        "a new direct record is exact"
+        "pid 30"
     );
 }
 
@@ -866,8 +836,7 @@ fn delayed_thread_row_resolves_without_reading_old_logs() {
     let mut fixture = SessionFixture::new();
     fixture.threads[0].created_ms = (START - 86_400) * 1000;
     store_threads(&fixture);
-    let database = rusqlite::Connection::open(fixture.home.path().join(".codex2/state_6.sqlite"))
-        .expect("thread database");
+    let database = thread_database(&fixture);
     database
         .execute("DELETE FROM threads", [])
         .expect("delayed thread");
@@ -899,8 +868,7 @@ fn linked_thread_uses_current_database_name_and_first_prompt() {
     let logs = log_database(&fixture);
     log_thread(&logs, 1, 10, ID);
     assert_eq!(fixture.scan()[0].name, "database-title");
-    let database = rusqlite::Connection::open(fixture.home.path().join(".codex2/state_6.sqlite"))
-        .expect("thread database");
+    let database = thread_database(&fixture);
     database
         .execute("UPDATE threads SET name = 'renamed'", [])
         .expect("rename");
@@ -912,13 +880,7 @@ fn linked_thread_uses_current_database_name_and_first_prompt() {
         )
         .expect("prompt");
     assert_eq!(fixture.scan()[0].name, "pid 10");
-    let links = classify::codex_session_links(
-        &fixture.processes,
-        &fixture.threads,
-        Some(fixture.home.path()),
-        fixture.scanner.codex_start_window,
-        CodexLogEvidence::Recorded(&fixture.scanner.codex_logs),
-    );
+    let links = &fixture.scanner.codex_links;
     let thread = links
         .get(&10)
         .and_then(classify::CodexSessionLink::thread)
@@ -928,20 +890,17 @@ fn linked_thread_uses_current_database_name_and_first_prompt() {
 }
 
 #[test]
-fn log_scans_resolve_only_live_process_threads_and_reuse_unchanged_rows() {
+fn log_scans_read_only_new_rows_and_keep_current_names() {
     let mut fixture = SessionFixture::new();
     store_threads(&fixture);
     let logs = log_database(&fixture);
     log_thread(&logs, 1, 99, "unrelated-thread");
     log_thread(&logs, 2, 10, ID);
     assert_eq!(fixture.scan()[0].name, "database-title");
-    assert_eq!(fixture.scanner.codex_logs.thread_lookups(), 1);
-    assert_eq!(fixture.scan()[0].name, "database-title");
-    assert_eq!(
-        fixture.scanner.codex_logs.thread_lookups(),
-        0,
-        "an unchanged thread database needs no row lookup"
-    );
+    thread_database(&fixture)
+        .execute("UPDATE threads SET name = 'current name'", [])
+        .expect("current name");
+    assert_eq!(fixture.scan()[0].name, "current name");
     assert_eq!(fixture.scanner.codex_logs.rows_read(), 0);
 }
 
@@ -1009,4 +968,346 @@ fn linked_threads_follow_a_new_database_version_and_a_replaced_file() {
     fs::rename(home.join("replacement.sqlite"), home.join("state_7.sqlite")).expect("replace file");
     assert_eq!(fixture.scan()[0].name, "database-title");
     assert_eq!(fixture.scanner.codex_logs.rows_read(), 0);
+}
+
+/// This process and socket shape comes from the Morty capture on 2026-11-02.
+#[test]
+fn a_detached_daemon_without_an_exact_join_shows_the_pid() {
+    const MORTY: &str = "01a18dbb-7e8f-7641-b3dd-bb2071ab9d7a";
+    let mut fixture = SessionFixture::new();
+    fixture.processes[0].pid = 3_190_832;
+    fixture.processes[0].started = 1_793_630_493;
+    fixture.processes[0]
+        .arguments
+        .push(CODEX_RESUME_SUBCOMMAND.into());
+    fixture.threads[0].created_ms = 1_793_379_237_000;
+    fixture.threads[0].rollout = fixture.home.path().join(format!(
+        ".codex/sessions/2026/10/30/rollout-2026-10-30T12-53-57-{MORTY}.jsonl"
+    ));
+    fixture.threads[0].name = SessionName::Named("morty".into());
+    let mut daemon = fixture.processes[0].clone();
+    daemon.pid = 817_986;
+    daemon.parent = Some(2047);
+    daemon.started = 1_793_536_721;
+    daemon.arguments = vec![
+        CODEX_AGENT.into(),
+        CODEX_APP_SERVER_ARGUMENT.into(),
+        CODEX_MANAGED_DAEMON_ARGUMENT.into(),
+    ];
+    fixture.processes.push(daemon);
+    fixture.sockets = vec![
+        SocketEndpoint {
+            pid:    3_190_832,
+            socket: 339_457_043,
+            peer:   339_444_608,
+        },
+        SocketEndpoint {
+            pid:    817_986,
+            socket: 339_444_608,
+            peer:   339_457_043,
+        },
+    ];
+    store_threads(&fixture);
+    let database = thread_database(&fixture);
+    database.execute_batch("ALTER TABLE threads ADD COLUMN thread_source TEXT; ALTER TABLE threads ADD COLUMN source TEXT; UPDATE threads SET thread_source = 'user', source = 'vscode', originator = 'roster'").expect("captured thread source");
+    let logs = log_database(&fixture);
+    log_thread_at(&logs, 11_129_120, 817_986, MORTY, 1_793_630_496);
+    let mut rows = fixture.scan();
+    assert_eq!(
+        rows.iter()
+            .find(|r| r.pid == 3_190_832)
+            .expect("Morty TUI")
+            .name,
+        "pid 3190832"
+    );
+    rows.retain(|row| row.pid == 3_190_832);
+    let (summary, _, _) = drawn(rows.clone(), RootWork::Present);
+    let (_, _, tile) = drawn(rows, RootWork::Absent);
+    for surface in [summary, tile] {
+        assert!(
+            surface.iter().any(|line| line.contains("pid 3190832")),
+            "{surface:?}"
+        );
+    }
+}
+
+#[test]
+fn two_socket_clients_show_pids_until_an_exact_child_join_exists() {
+    let mut fixture = SessionFixture::new();
+    store_threads(&fixture);
+    managed_child(&mut fixture);
+    second_tui(&mut fixture);
+    fixture.processes[2]
+        .arguments
+        .extend([CODEX_RESUME_SUBCOMMAND.into(), ID.into()]);
+    fixture.processes[2].directory = Some("/other".into());
+    let next = second_thread(&fixture);
+    let logs = log_database(&fixture);
+    log_thread(&logs, 1, 20, &next);
+    let rows = fixture.scan();
+    assert_eq!(
+        rows.iter().find(|r| r.pid == 10).expect("first TUI").name,
+        "pid 10"
+    );
+    assert_eq!(
+        rows.iter().find(|r| r.pid == 30).expect("second TUI").name,
+        "pid 30"
+    );
+    fixture.processes.retain(|process| process.pid != 30);
+    fixture
+        .sockets
+        .retain(|socket| socket.socket != 200 && socket.peer != 200);
+    assert_eq!(
+        fixture.scan()[0].name,
+        "summer",
+        "the remaining socket client owns the daemon"
+    );
+    assert_eq!(fixture.scanner.codex_logs.rows_read(), 0);
+}
+
+#[test]
+fn a_control_client_does_not_make_the_tui_socket_ambiguous() {
+    let mut fixture = SessionFixture::new();
+    fixture.threads[0].created_ms = (START - 86_400) * 1000;
+    fixture.threads[0].name = SessionName::Named("morty".into());
+    managed_child(&mut fixture);
+    let mut tool = fixture.processes[0].clone();
+    tool.pid = 30;
+    tool.name = "python3".into();
+    tool.arguments = vec!["python3".into(), "send.py".into()];
+    fixture.processes.push(tool);
+    connect(&mut fixture.sockets, 30, 20, 200);
+    store_threads(&fixture);
+    let logs = log_database(&fixture);
+    log_thread(&logs, 1, 20, ID);
+    assert_eq!(fixture.scan()[0].name, "morty");
+}
+
+fn selection_request(logs: &Connection, id: i64, at: u64, connection: u64, request: u64) {
+    let body = format!(
+        "app_server.request{{otel.kind=\"server\" rpc.method=\"thread/resume\" rpc.request_id={request} app_server.connection_id={connection} app_server.client_name=\"codex-tui\"}}"
+    );
+    selection_row(logs, id, at, None, &body);
+}
+
+fn selection_response(
+    logs: &Connection,
+    id: i64,
+    thread: &str,
+    at: u64,
+    connection: u64,
+    request: u64,
+) {
+    let body = format!(
+        "composing running thread resume response thread_id={thread} request_id=ConnectionRequestId {{ connection_id: ConnectionId({connection}), request_id: Integer({request}) }} active_turn_present=false active_turn_id=None active_turn_status=None"
+    );
+    selection_row(logs, id, at, Some(thread), &body);
+}
+
+fn selection_row(logs: &Connection, id: i64, at: u64, thread: Option<&str>, body: &str) {
+    logs.execute(
+        "INSERT INTO logs (id, ts, process_uuid, thread_id, feedback_log_body) VALUES (?1, ?2, 'pid:20:fixture', ?3, ?4)",
+        rusqlite::params![id, i64::try_from(at).expect("time"), thread, body],
+    ).expect("selection record");
+}
+
+fn two_connection_fixture() -> (SessionFixture, Connection, String) {
+    let mut fixture = SessionFixture::new();
+    fixture.threads[0].created_ms = (START - 86_400) * 1000;
+    managed_child(&mut fixture);
+    second_tui(&mut fixture);
+    fixture.processes[2].started += 18;
+    store_threads(&fixture);
+    let second = second_thread(&fixture);
+    thread_database(&fixture)
+        .execute(
+            "UPDATE threads SET created_at_ms = ?1",
+            [i64::try_from((START - 86_400) * 1000).expect("time")],
+        )
+        .expect("old threads");
+    fixture.threads.clear();
+    let logs = log_database(&fixture);
+    (fixture, logs, second)
+}
+
+#[test]
+fn a_short_lived_client_cannot_name_a_tui_waiting_in_the_picker() {
+    let (mut fixture, logs, second) = two_connection_fixture();
+    fixture.processes[1].parent = None;
+    selection_request(&logs, 1, START + 3, 4337, 1);
+    selection_response(&logs, 2, ID, START + 3, 4337, 1);
+    selection_request(&logs, 3, START + 24, 4343, 2);
+    selection_response(&logs, 4, &second, START + 24, 4343, 2);
+    let rows = fixture.scan();
+    assert_eq!(rows[0].name, "pid 10");
+    assert_eq!(rows[2].name, "pid 30");
+}
+
+#[test]
+fn a_picker_delay_does_not_pair_clients_by_start_order() {
+    let (mut fixture, logs, second) = two_connection_fixture();
+    fixture.processes[1].parent = None;
+    selection_request(&logs, 1, START + 24, 4342, 1);
+    selection_response(&logs, 2, &second, START + 24, 4342, 1);
+    selection_request(&logs, 3, START + 30, 4337, 2);
+    selection_response(&logs, 4, ID, START + 30, 4337, 2);
+    let rows = fixture.scan();
+    assert_eq!(rows[0].name, "pid 10");
+    assert_eq!(rows[2].name, "pid 30");
+}
+
+#[test]
+fn a_reconnect_does_not_transfer_a_detached_connection_to_a_tui() {
+    let (mut fixture, logs, second) = two_connection_fixture();
+    fixture.processes[1].parent = None;
+    selection_request(&logs, 1, START + 3, 4337, 1);
+    selection_response(&logs, 2, ID, START + 3, 4337, 1);
+    assert_eq!(fixture.scan()[0].name, "pid 10");
+    fixture.sockets.clear();
+    connect(&mut fixture.sockets, 10, 20, 300);
+    selection_request(&logs, 3, START + 30, 4345, 2);
+    selection_response(&logs, 4, &second, START + 30, 4345, 2);
+    assert_eq!(fixture.scan()[0].name, "pid 10");
+}
+
+#[test]
+fn another_clients_resume_cannot_change_a_detached_tuis_name() {
+    let (mut fixture, logs, second) = two_connection_fixture();
+    fixture.processes[1].parent = None;
+    selection_request(&logs, 1, START + 3, 4337, 1);
+    selection_response(&logs, 2, ID, START + 3, 4337, 1);
+    assert_eq!(fixture.scan()[0].name, "pid 10");
+    selection_request(&logs, 3, START + 24, 4342, 2);
+    selection_response(&logs, 4, &second, START + 24, 4342, 2);
+    let rows = fixture.scan();
+    assert_eq!(rows[0].name, "pid 10");
+    assert_eq!(rows[2].name, "pid 30");
+}
+
+#[test]
+fn a_running_tui_changes_threads_only_after_its_child_confirms_resume() {
+    let mut fixture = SessionFixture::new();
+    fixture.threads[0].created_ms = (START - 86_400) * 1000;
+    managed_child(&mut fixture);
+    store_threads(&fixture);
+    let second = second_thread(&fixture);
+    fixture.threads.clear();
+    let logs = log_database(&fixture);
+    selection_request(&logs, 1, START, 4337, 18);
+    selection_response(&logs, 2, ID, START, 4337, 18);
+    assert_eq!(fixture.scan()[0].name, "database-title");
+    selection_request(&logs, 3, START + 1, 4337, 29);
+    assert_eq!(fixture.scan()[0].name, "database-title");
+    selection_response(&logs, 4, &second, START + 1, 4342, 29);
+    assert_eq!(fixture.scan()[0].name, "database-title");
+    selection_response(&logs, 5, &second, START + 1, 4337, 29);
+    assert_eq!(fixture.scan()[0].name, "summer");
+    log_thread_at(&logs, 6, 20, ID, START + 2);
+    logs.execute(
+        "UPDATE logs SET feedback_log_body = 'background activity' WHERE id = 6",
+        [],
+    )
+    .expect("background row");
+    assert_eq!(fixture.scan()[0].name, "summer");
+}
+
+#[test]
+fn an_argv_resume_follows_a_confirmed_in_process_selection() {
+    let mut fixture = SessionFixture::new();
+    fixture.processes[0]
+        .arguments
+        .extend([CODEX_RESUME_SUBCOMMAND.into(), ID.into()]);
+    fixture.threads[0].created_ms = (START - 86_400) * 1000;
+    store_threads(&fixture);
+    let second = second_thread(&fixture);
+    fixture.threads.clear();
+    let logs = log_database(&fixture);
+    assert_eq!(fixture.scan()[0].name, "database-title");
+    let request = "app_server.request{otel.kind=\"server\" otel.name=\"thread/resume\" rpc.system=\"jsonrpc\" rpc.method=\"thread/resume\" rpc.transport=\"in-process\" rpc.request_id=12 app_server.connection_id=0 app_server.api_version=\"v2\" app_server.client_name=\"codex-tui\" app_server.client_version=\"0.166.0\"}: thread resume requested";
+    selection_row(&logs, 1, START + 1, None, request);
+    logs.execute("UPDATE logs SET process_uuid = 'pid:10:fixture'", [])
+        .expect("in-process server");
+    assert_eq!(fixture.scan()[0].name, "database-title");
+    selection_response(&logs, 2, &second, START + 1, 0, 12);
+    logs.execute("UPDATE logs SET process_uuid = 'pid:10:fixture'", [])
+        .expect("in-process response");
+    let rows = fixture.scan();
+    assert_eq!(rows[0].name, "summer");
+    let (summary, _, _) = drawn(rows.clone(), RootWork::Present);
+    let (_, _, tile) = drawn(rows, RootWork::Absent);
+    for surface in [summary, tile] {
+        assert!(
+            surface.iter().any(|line| line.contains("summer")),
+            "{surface:?}"
+        );
+    }
+}
+
+#[test]
+fn background_records_cannot_reverse_a_confirmed_in_process_selection() {
+    let mut fixture = SessionFixture::new();
+    fixture.processes[0]
+        .arguments
+        .extend([CODEX_RESUME_SUBCOMMAND.into(), ID.into()]);
+    fixture.threads[0].created_ms = (START - 86_400) * 1000;
+    store_threads(&fixture);
+    let second = second_thread(&fixture);
+    fixture.threads.clear();
+    let logs = log_database(&fixture);
+    assert_eq!(fixture.scan()[0].name, "database-title");
+    selection_request(&logs, 1, START + 1, 0, 12);
+    selection_response(&logs, 2, &second, START + 1, 0, 12);
+    logs.execute("UPDATE logs SET process_uuid = 'pid:10:fixture'", [])
+        .expect("in-process selection");
+    assert_eq!(fixture.scan()[0].name, "summer");
+    log_thread_at(&logs, 3, 10, ID, START + 2);
+    logs.execute(
+        "UPDATE logs SET feedback_log_body = 'background activity' WHERE id = 3",
+        [],
+    )
+    .expect("background record");
+    assert_eq!(fixture.scan()[0].name, "summer");
+    log_thread_at(&logs, 4, 10, ID, START + 3);
+    logs.execute("UPDATE logs SET feedback_log_body = 'composing running thread resume response request_id=ConnectionRequestId { connection_id: ConnectionId(0), request_id: Integer(99) }' WHERE id = 4", []).expect("unmatched response");
+    assert_eq!(fixture.scan()[0].name, "summer");
+}
+
+#[test]
+fn a_null_log_process_identity_does_not_block_later_records() {
+    let mut fixture = SessionFixture::new();
+    fixture.threads[0].created_ms = (START - 86_400) * 1000;
+    store_threads(&fixture);
+    fixture.threads.clear();
+    let logs = log_database(&fixture);
+    logs.execute(
+        "INSERT INTO logs (id, ts, thread_id) VALUES (1, ?1, ?2)",
+        rusqlite::params![i64::try_from(START).expect("time"), ID],
+    )
+    .expect("null process");
+    log_thread(&logs, 2, 10, ID);
+    assert_eq!(fixture.scan()[0].name, "database-title");
+    assert_eq!(fixture.scan()[0].name, "database-title");
+    assert_eq!(fixture.scanner.codex_logs.rows_read(), 0);
+}
+
+#[test]
+fn an_explicit_resume_id_names_a_non_user_thread() {
+    let mut fixture = SessionFixture::new();
+    fixture.processes[0]
+        .arguments
+        .extend([CODEX_RESUME_SUBCOMMAND.into(), ID.into()]);
+    fixture.threads[0].created_ms = (START - 86_400) * 1000;
+    store_threads(&fixture);
+    thread_database(&fixture).execute_batch("ALTER TABLE threads ADD COLUMN source TEXT; ALTER TABLE threads ADD COLUMN thread_source TEXT; UPDATE threads SET originator = 'codex_mesh', source = 'exec', thread_source = 'agent'").expect("non-user thread");
+    fixture.threads.clear();
+    assert_eq!(fixture.scan()[0].name, "database-title");
+    let rows = fixture.scan();
+    let (summary, _, _) = drawn(rows.clone(), RootWork::Present);
+    let (_, _, tile) = drawn(rows, RootWork::Absent);
+    for surface in [summary, tile] {
+        assert!(
+            surface.iter().any(|line| line.contains("database-title")),
+            "{surface:?}"
+        );
+    }
 }

@@ -47,8 +47,9 @@ use super::account::ConfigHome;
 use super::codex;
 use super::codex::CodexLogs;
 use super::codex::CodexThread;
-use super::codex::LogThreadLink;
 use super::codex::ResumeRequest;
+use super::codex::ThreadLookup;
+use super::codex::ThreadRows;
 use super::tmux;
 use super::transcript::BashCall;
 use super::tree;
@@ -207,24 +208,6 @@ impl SessionRecord {
     }
 }
 
-/// The agents among `processes` that no other agent started, oldest
-/// first, with pid breaking a tie. An interactive Codex is named for its
-/// thread among `codex_threads`, and directories are written against
-/// `home`. A session the Claude desktop app started is launched by the
-/// row standing for the app; every other row is top level, and every
-/// row runs nothing, until the scan says otherwise.
-#[cfg(test)]
-pub(super) fn agent_rows(
-    processes: &[ProcessEntry],
-    sessions: &[SessionRecord],
-    codex_threads: &[CodexThread],
-    home: Option<&Path>,
-    account_labels: &AccountLabels,
-) -> Vec<AgentRow> {
-    let threads = codex_startup_threads(processes, codex_threads, home);
-    agent_rows_with_threads(processes, sessions, &threads, home, account_labels)
-}
-
 /// Classify rows with the thread links resolved for this scan.
 pub(super) fn agent_rows_with_threads(
     processes: &[ProcessEntry],
@@ -307,100 +290,78 @@ pub(super) fn agent_rows_with_threads(
     rows
 }
 
-/// The thread each interactive Codex among `processes` started with,
-/// among `codex_threads`, by pid.
-#[cfg(test)]
-pub(super) fn codex_startup_threads<'a>(
-    processes: &[ProcessEntry],
-    codex_threads: &'a [CodexThread],
-    home: Option<&Path>,
-) -> HashMap<u32, &'a CodexThread> {
-    codex_session_links(
-        processes,
-        codex_threads,
-        home,
-        CodexStartWindow::default(),
-        CodexLogEvidence::Unread,
-    )
-    .into_iter()
-    .filter_map(|(pid, link)| link.thread().map(|thread| (pid, thread)))
-    .collect()
+/// One resolved conversation for a live interactive process.
+#[derive(Clone, Debug)]
+pub(super) enum CodexSessionLink {
+    Named(CodexThread),
+    NoMatch,
 }
 
-/// Synthetic fixtures can classify candidates without reading a process log.
-#[derive(Clone, Copy)]
-pub(super) enum CodexLogEvidence<'a> {
-    #[cfg(test)]
-    Unread,
-    Recorded(&'a CodexLogs),
-}
-
-/// The evidence that assigns a conversation to one interactive process.
-pub(super) enum CodexSessionLink<'a> {
-    ArgvId(&'a CodexThread),
-    LastThread(&'a CodexThread),
-    LogLink(&'a CodexThread),
-    StartWindow(&'a CodexThread),
-    Unnamed,
-}
-
-impl<'a> CodexSessionLink<'a> {
-    pub(super) const fn thread(&self) -> Option<&'a CodexThread> {
+impl CodexSessionLink {
+    pub(super) const fn thread(&self) -> Option<&CodexThread> {
         match self {
-            Self::ArgvId(thread)
-            | Self::LastThread(thread)
-            | Self::LogLink(thread)
-            | Self::StartWindow(thread) => Some(thread),
-            Self::Unnamed => None,
+            Self::Named(thread) => Some(thread),
+            Self::NoMatch => None,
         }
     }
 }
 
-/// Resolve one source for every interactive Codex in this frame.
-pub(super) fn codex_session_links<'a>(
+/// Project the same decisions for classification, names and tiers.
+pub(super) fn linked_threads(links: &HashMap<u32, CodexSessionLink>) -> HashMap<u32, &CodexThread> {
+    links
+        .iter()
+        .filter_map(|(pid, link)| link.thread().map(|thread| (*pid, thread)))
+        .collect()
+}
+
+/// Resolve links once. Unjoined daemon connections cannot use launch guesses.
+pub(super) fn codex_session_links(
     processes: &[ProcessEntry],
-    codex_threads: &'a [CodexThread],
+    codex_threads: &[CodexThread],
     home: Option<&Path>,
     window: CodexStartWindow,
-    logs: CodexLogEvidence<'a>,
-) -> HashMap<u32, CodexSessionLink<'a>> {
+    logs: &CodexLogs,
+    records: &ThreadRows,
+) -> HashMap<u32, CodexSessionLink> {
     let interactive = interactive_codex(&pid_table(processes), processes);
     let startup = startup_threads(&interactive, codex_threads, home, window);
-    let mut matched = HashMap::new();
-    for process in &interactive {
-        let mut candidates = codex_threads
-            .iter()
-            .filter(|thread| thread_matches_home(process, thread, home));
-        let fallback = || {
-            startup
-                .get(&process.pid)
-                .map_or(CodexSessionLink::Unnamed, |thread| {
-                    CodexSessionLink::StartWindow(thread)
-                })
-        };
-        let evidence = match logs {
-            #[cfg(test)]
-            CodexLogEvidence::Unread => LogThreadLink::NoRecord,
-            CodexLogEvidence::Recorded(logs) => logs.link(process, processes, home),
-        };
-        let link = match evidence {
-            LogThreadLink::Linked(thread) => CodexSessionLink::LogLink(thread),
-            LogThreadLink::NoRecord | LogThreadLink::SharedDaemon => {
-                match codex::resume_request(process) {
-                    ResumeRequest::NamedId(id) => candidates
-                        .find(|thread| tree::thread_id(&thread.rollout).as_deref() == Some(id))
-                        .map_or_else(fallback, CodexSessionLink::ArgvId),
-                    ResumeRequest::LastThread => candidates
-                        .filter(|thread| process.directory.as_deref() == Some(thread.cwd.as_path()))
-                        .max_by_key(|thread| (thread.created_ms, &thread.rollout))
-                        .map_or_else(fallback, CodexSessionLink::LastThread),
-                    ResumeRequest::NewSession => fallback(),
-                }
-            },
-        };
-        matched.insert(process.pid, link);
-    }
-    matched
+    interactive
+        .iter()
+        .map(|process| {
+            let mut candidates = codex_threads
+                .iter()
+                .filter(|thread| thread_matches_home(process, thread, home));
+            let logged = logs.link(process, processes, home, records);
+            let resumed = || match codex::resume_request(process) {
+                ResumeRequest::NamedId(id) => codex::session_home(process, home)
+                    .and_then(|account| match records.get(&account, id) {
+                        Some(ThreadLookup::User(thread) | ThreadLookup::NonUser(thread)) => {
+                            Some(thread)
+                        },
+                        Some(ThreadLookup::Missing) | None => None,
+                    })
+                    .or_else(|| {
+                        candidates
+                            .find(|thread| tree::thread_id(&thread.rollout).as_deref() == Some(id))
+                    }),
+                ResumeRequest::LastThread => candidates
+                    .filter(|thread| process.directory.as_deref() == Some(thread.cwd.as_path()))
+                    .max_by_key(|thread| (thread.created_ms, &thread.rollout)),
+                ResumeRequest::NewSession => None,
+            };
+            let thread = logged.or_else(|| {
+                logs.permits_launch_fallback(process, processes)
+                    .then(|| resumed().or_else(|| startup.get(&process.pid).copied()))
+                    .flatten()
+            });
+            (
+                process.pid,
+                thread.map_or(CodexSessionLink::NoMatch, |thread| {
+                    CodexSessionLink::Named(thread.clone())
+                }),
+            )
+        })
+        .collect()
 }
 
 /// The creation times, in unix milliseconds, that a thread must fall in
@@ -959,10 +920,10 @@ mod tests {
     fn natedev_lists_its_sessions_oldest_first() {
         let (processes, sessions) = natedev();
 
-        let rows = agent_rows(
+        let rows = agent_rows_with_threads(
             &processes,
             &sessions,
-            &[],
+            &HashMap::default(),
             Some(Path::new(HOME)),
             &AccountLabels::default(),
         );
@@ -1017,10 +978,10 @@ mod tests {
         let sessions = [session(500, "gone", "idle", HOME)];
 
         assert_eq!(
-            agent_rows(
+            agent_rows_with_threads(
                 &processes,
                 &sessions,
-                &[],
+                &HashMap::default(),
                 Some(Path::new(HOME)),
                 &AccountLabels::default()
             ),
@@ -1041,10 +1002,10 @@ mod tests {
             ..session(500, "", "", HOME)
         }];
 
-        let rows = agent_rows(
+        let rows = agent_rows_with_threads(
             &processes,
             &sessions,
-            &[],
+            &HashMap::default(),
             Some(Path::new(HOME)),
             &AccountLabels::default(),
         );
@@ -1066,10 +1027,10 @@ mod tests {
             session(600, "first", "idle", HOME),
         ];
 
-        let rows = agent_rows(
+        let rows = agent_rows_with_threads(
             &processes,
             &sessions,
-            &[],
+            &HashMap::default(),
             Some(Path::new(HOME)),
             &AccountLabels::default(),
         );
@@ -1085,10 +1046,10 @@ mod tests {
             detailed(900, 1, "codex", 10, &["codex"], "/tmp"),
         ];
 
-        let rows = agent_rows(
+        let rows = agent_rows_with_threads(
             &processes,
             &[],
-            &[],
+            &HashMap::default(),
             Some(Path::new(HOME)),
             &AccountLabels::default(),
         );
@@ -1139,10 +1100,17 @@ mod tests {
             codex_thread_window(&processes, CodexStartWindow::default()),
             Some(99_000..=190_000)
         );
-        let rows = agent_rows(
+        let rows = agent_rows_with_threads(
             &processes,
             &[],
-            &threads,
+            &linked_threads(&codex_session_links(
+                &processes,
+                &threads,
+                Some(Path::new(HOME)),
+                crate::config::CodexStartWindow::default(),
+                &codex::CodexLogs::default(),
+                &codex::ThreadRows::default(),
+            )),
             Some(Path::new(HOME)),
             &AccountLabels::default(),
         );
@@ -1187,10 +1155,10 @@ mod tests {
             session(81_020, "worker", "busy", home),
         ];
 
-        let rows = agent_rows(
+        let rows = agent_rows_with_threads(
             &processes,
             &sessions,
-            &[],
+            &HashMap::default(),
             Some(Path::new(home)),
             &AccountLabels::default(),
         );
@@ -1215,7 +1183,13 @@ mod tests {
             detailed(30, 20, "codex", 30, &["codex", "app-server"], HOME),
         ];
         let sessions = [session(10, "unit", "busy", HOME)];
-        let rows = agent_rows(&processes, &sessions, &[], None, &AccountLabels::default());
+        let rows = agent_rows_with_threads(
+            &processes,
+            &sessions,
+            &HashMap::default(),
+            None,
+            &AccountLabels::default(),
+        );
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1].agent, Agent::CodexThreadHost);
         let state = MachineState::Answered(rows, super::super::HierarchyEdges::default().into());
@@ -1268,10 +1242,10 @@ mod tests {
             session(620, "natedev", "busy", HOME),
         ];
 
-        let rows = agent_rows(
+        let rows = agent_rows_with_threads(
             &processes,
             &sessions,
-            &[],
+            &HashMap::default(),
             Some(Path::new(HOME)),
             &AccountLabels::default(),
         );

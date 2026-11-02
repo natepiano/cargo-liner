@@ -32,9 +32,23 @@ fn database(home: &Path, rollout: &Path, name: &str) {
 fn scan(process: &ProcessEntry, threads: &[CodexThread], home: &Path) -> Vec<AgentRow> {
     let mut scanner = LocalScanner::new(AccountLabels::default());
     let processes = std::slice::from_ref(process);
-    let mut rows =
-        classify::agent_rows(processes, &[], threads, Some(home), &scanner.account_labels);
-    scanner.attach_codex_sessions(processes, threads, Some(home), &mut rows);
+    scanner.codex_links = classify::codex_session_links(
+        processes,
+        threads,
+        Some(home),
+        crate::config::CodexStartWindow::default(),
+        &codex::CodexLogs::default(),
+        &codex::ThreadRows::default(),
+    );
+    let links = classify::linked_threads(&scanner.codex_links);
+    let mut rows = classify::agent_rows_with_threads(
+        processes,
+        &[],
+        &links,
+        Some(home),
+        &scanner.account_labels,
+    );
+    scanner.attach_codex_sessions(processes, Some(home), &mut rows);
     rows
 }
 
@@ -72,11 +86,14 @@ fn resumed_codex_with_shared_rollouts_keeps_its_database_name_and_account() {
         "the other database contains the same thread id"
     );
     assert!(
-        classify::codex_startup_threads(
+        classify::linked_threads(&classify::codex_session_links(
             std::slice::from_ref(&process),
             &foreign,
-            Some(root.path())
-        )
+            Some(root.path()),
+            crate::config::CodexStartWindow::default(),
+            &codex::CodexLogs::default(),
+            &codex::ThreadRows::default(),
+        ))
         .is_empty(),
         "a shared rollout cannot give another account ownership"
     );

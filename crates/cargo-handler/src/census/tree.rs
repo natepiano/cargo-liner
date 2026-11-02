@@ -1199,10 +1199,10 @@ mod tests {
     #[test]
     fn natedev_cells_hold_what_each_agent_runs() {
         let (processes, sessions) = natedev();
-        let mut rows = classify::agent_rows(
+        let mut rows = classify::agent_rows_with_threads(
             &processes,
             &sessions,
-            &[],
+            &HashMap::default(),
             Some(Path::new(HOME)),
             &AccountLabels::default(),
         );
@@ -1297,10 +1297,10 @@ mod tests {
     #[test]
     fn each_tier_reaches_its_row() {
         let (processes, sessions) = natedev();
-        let mut rows = classify::agent_rows(
+        let mut rows = classify::agent_rows_with_threads(
             &processes,
             &sessions,
-            &[],
+            &HashMap::default(),
             Some(Path::new(HOME)),
             &AccountLabels::default(),
         );
@@ -1566,8 +1566,13 @@ mod tests {
             app_server(30, 1, 30, None),
         ];
         let sessions = [session(10, "unit")];
-        let mut rows =
-            classify::agent_rows(&processes, &sessions, &[], None, &AccountLabels::default());
+        let mut rows = classify::agent_rows_with_threads(
+            &processes,
+            &sessions,
+            &HashMap::default(),
+            None,
+            &AccountLabels::default(),
+        );
         // The completed scan can find a tmux launcher even for a transport-only server.
         for row in rows
             .iter_mut()
@@ -1617,10 +1622,10 @@ mod tests {
     #[test]
     fn app_server_thread_ids_survive_tree_flattening_independently_of_their_names() {
         let (processes, sessions) = natedev();
-        let mut rows = classify::agent_rows(
+        let mut rows = classify::agent_rows_with_threads(
             &processes,
             &sessions,
-            &[],
+            &HashMap::default(),
             Some(Path::new(HOME)),
             &AccountLabels::default(),
         );
