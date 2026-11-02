@@ -172,36 +172,13 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 ### Phase 2o — mend --fix keeps the leading :: of a path it shortens  · status: done
 
-**Depends on:** none
+**As-built:** `cargo mend --fix` replaces the whole absolute path, its leading `::` included, when it shortens a path such as `::bevy::picking::events::PointerCancel` to an imported name; the crate builds and nothing rolls back (checkpoint 8b5e6d59). `InlinePathVisitor` (`crates/cargo-mend/src/fixes/inline_path_qualified_type/visitor.rs`) starts the replacement span at `path.span()`, so the `::` is part of it, and ends it at the last identifier, so generic arguments stay. `full_path` keeps the leading `::`, and `resolve_occurrence` (`process.rs`) then resolves the inserted `use` as `::<path>`, so a local import with the same first name cannot capture it. The finding highlight length comes from the replaced byte span. The fixture `absolute_inline_paths_with_glob_prelude_build_after_fix` (`tests/diagnostics/inline_path_fixes.rs`) holds the Hana shape; `absolute_path_replacements_remove_the_anchor_and_keep_generic_arguments` and `absolute_paths_keep_external_identity_and_complete_highlight` pin the span, the anchor and the highlight.
 
-#### Work Order
+**Files:** `crates/cargo-mend/src/fixes/inline_path_qualified_type/{visitor.rs,process.rs,scan.rs}`, `crates/cargo-mend/tests/diagnostics/inline_path_fixes.rs`, `crates/cargo-mend/CHANGELOG.md`.
 
-**Goal:** `cargo mend --fix` never turns an absolute path such as `::dep::events::PointerCancel` into `::PointerCancel`. A path that a glob import already brings into scope becomes the bare name `PointerCancel`, or mend leaves it as written. The crate builds after the fix and nothing rolls back.
+**Gotchas:** an absolute path names an external crate whatever the local imports are; never absolutize it through scope imports.
 
-**Source:** the user, 2026-11-02: "any bug in cargo mend must always be fixed". The tool-based-ui showrunner reported it through the cargo-liner showrunner. In Hana `crates/hana/src/tool/rear_patch_panel/mod.rs:7562` at 7041b2de, in `close_pocket_jack_panel_part`, with `use bevy::prelude::*;` at line 29, mend rewrites `world.trigger(::bevy::picking::events::PointerCancel {` to `world.trigger(::PointerCancel {`. The build fails with E0422 and mend rolls back. Both mend 0.22.3 and 0.23.0-dev reproduce it.
-
-**Reproduction:** `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/2o/fixture/{project,dep}` (a copy; the original stays unchanged). `dep` has `pub mod events { PointerCancel, Pointer }`, `pub mod backend { HitData }`, `pub mod prelude { pub use crate::World; pub use crate::events::*; }`. `project/src/tool.rs` has `use dep::prelude::*;` and `world.trigger(::dep::events::PointerCancel { entity: 1, pointer: ::dep::events::Pointer::new(*pointer), hit: dep::backend::HitData::new(0.0) });`. `cargo mend --fix` gives `error[E0422]: cannot find crate PointerCancel` at `src/tool.rs:6:25`, then a rollback, exit 2. A shape without the `events::*` glob, or without the sibling path that has no `::`, does not reproduce.
-
-**Constraints:**
-- The fix goes where mend builds the shortened path. Do not filter fixes after planning.
-- A path that mend cannot shorten with certainty stays as written.
-- Do not edit or build in any Hana worktree.
-- No test takes a second. Ruling (unit director, 2026-11-02): a cli or diagnostics test that runs real cargo builds has a floor near 2 s; such a test runs mend once.
-
-**Spec:**
-1. A diagnostics fixture with the reproduction shape: a glob re-export in a dependency prelude, a leading `::` path and a sibling path without `::`. `cargo mend --fix` leaves no `::Name` path, the crate builds, and nothing rolls back. The fixture fails on today's code first.
-2. A unit test at the level of the defect that pins the rewrite of a leading `::` path.
-3. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
-
-**Files:**
-- `crates/cargo-mend/src/fixes/` — the fixer that shortens the path
-- `crates/cargo-mend/src/rust_syntax/` — only if path resolution needs a change there
-- `crates/cargo-mend/tests/diagnostics/` — the fixture
-- `crates/cargo-mend/CHANGELOG.md`
-
-**Workers:** 1 writer (impl3) owns the code and the tests.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean on a gate tree; no test takes a second; the spec 1 fixture fails before the repair and passes after it; `cargo mend --fix` on a copy of the reproduction passes. The checkpoint adds a Change-Review line.
+**Ruled out:** filtering fixes after planning.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 
