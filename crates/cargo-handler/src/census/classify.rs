@@ -12,9 +12,8 @@
 //! process, and counts only while that process is alive and is still
 //! Claude Code. A Codex session has no record, so an interactive Codex
 //! is any `codex` process that is not an app server. It is named for the
-//! thread it started with: the first thread an interactive Codex created
-//! in its directory from its start until [`CODEX_THREAD_START_WINDOW`]
-//! later, and before the next one started there. The one app server
+//! thread selected by argv, a log link, or the configured startup window.
+//! The one app server
 //! that counts is the macOS desktop app's, which stands for the app.
 //! Other app servers are retained as transport-only thread hosts so
 //! cross-machine management can place their workers without listing the server.
@@ -46,11 +45,14 @@ use super::account;
 use super::account::AccountLabels;
 use super::account::ConfigHome;
 use super::codex;
+use super::codex::CodexLogs;
 use super::codex::CodexThread;
+use super::codex::LogThreadLink;
 use super::codex::ResumeRequest;
 use super::tmux;
 use super::transcript::BashCall;
 use super::tree;
+use crate::config::CodexStartWindow;
 use crate::constants::CALL_LOOKAHEAD;
 use crate::constants::CALL_LOOKBACK;
 use crate::constants::CLAUDE_AGENT;
@@ -65,7 +67,6 @@ use crate::constants::CODEX_AGENT;
 use crate::constants::CODEX_APP_SERVER_ARGUMENT;
 use crate::constants::CODEX_DESKTOP_APP;
 use crate::constants::CODEX_THREAD_START_SLACK;
-use crate::constants::CODEX_THREAD_START_WINDOW;
 use crate::constants::HOME_ABBREVIATION;
 use crate::constants::MISSING_VALUE;
 use crate::constants::SESSION_ID_PREFIX_LENGTH;
@@ -212,6 +213,7 @@ impl SessionRecord {
 /// `home`. A session the Claude desktop app started is launched by the
 /// row standing for the app; every other row is top level, and every
 /// row runs nothing, until the scan says otherwise.
+#[cfg(test)]
 pub(super) fn agent_rows(
     processes: &[ProcessEntry],
     sessions: &[SessionRecord],
@@ -219,8 +221,19 @@ pub(super) fn agent_rows(
     home: Option<&Path>,
     account_labels: &AccountLabels,
 ) -> Vec<AgentRow> {
-    let table = pid_table(processes);
     let threads = codex_startup_threads(processes, codex_threads, home);
+    agent_rows_with_threads(processes, sessions, &threads, home, account_labels)
+}
+
+/// Classify rows with the thread links resolved for this scan.
+pub(super) fn agent_rows_with_threads(
+    processes: &[ProcessEntry],
+    sessions: &[SessionRecord],
+    threads: &HashMap<u32, &CodexThread>,
+    home: Option<&Path>,
+    account_labels: &AccountLabels,
+) -> Vec<AgentRow> {
+    let table = pid_table(processes);
     let mut rows: Vec<AgentRow> = sessions
         .iter()
         .filter_map(|session| claude_row(&table, session, home, account_labels))
@@ -296,29 +309,96 @@ pub(super) fn agent_rows(
 
 /// The thread each interactive Codex among `processes` started with,
 /// among `codex_threads`, by pid.
+#[cfg(test)]
 pub(super) fn codex_startup_threads<'a>(
     processes: &[ProcessEntry],
     codex_threads: &'a [CodexThread],
     home: Option<&Path>,
 ) -> HashMap<u32, &'a CodexThread> {
+    codex_session_links(
+        processes,
+        codex_threads,
+        home,
+        CodexStartWindow::default(),
+        CodexLogEvidence::Unread,
+    )
+    .into_iter()
+    .filter_map(|(pid, link)| link.thread().map(|thread| (pid, thread)))
+    .collect()
+}
+
+/// Synthetic fixtures can classify candidates without reading a process log.
+#[derive(Clone, Copy)]
+pub(super) enum CodexLogEvidence<'a> {
+    #[cfg(test)]
+    Unread,
+    Recorded(&'a CodexLogs),
+}
+
+/// The evidence that assigns a conversation to one interactive process.
+pub(super) enum CodexSessionLink<'a> {
+    ArgvId(&'a CodexThread),
+    LastThread(&'a CodexThread),
+    LogLink(&'a CodexThread),
+    StartWindow(&'a CodexThread),
+    Unnamed,
+}
+
+impl<'a> CodexSessionLink<'a> {
+    pub(super) const fn thread(&self) -> Option<&'a CodexThread> {
+        match self {
+            Self::ArgvId(thread)
+            | Self::LastThread(thread)
+            | Self::LogLink(thread)
+            | Self::StartWindow(thread) => Some(thread),
+            Self::Unnamed => None,
+        }
+    }
+}
+
+/// Resolve one source for every interactive Codex in this frame.
+pub(super) fn codex_session_links<'a>(
+    processes: &[ProcessEntry],
+    codex_threads: &'a [CodexThread],
+    home: Option<&Path>,
+    window: CodexStartWindow,
+    logs: CodexLogEvidence<'a>,
+) -> HashMap<u32, CodexSessionLink<'a>> {
     let interactive = interactive_codex(&pid_table(processes), processes);
-    let mut matched = startup_threads(&interactive, codex_threads, home);
-    for process in interactive {
+    let startup = startup_threads(&interactive, codex_threads, home, window);
+    let mut matched = HashMap::new();
+    for process in &interactive {
         let mut candidates = codex_threads
             .iter()
             .filter(|thread| thread_matches_home(process, thread, home));
-        let resumed = match codex::resume_request(process) {
-            ResumeRequest::NewSession => None,
-            ResumeRequest::NamedId(id) => {
-                candidates.find(|thread| tree::thread_id(&thread.rollout).as_deref() == Some(id))
-            },
-            ResumeRequest::LastThread => candidates
-                .filter(|thread| process.directory.as_deref() == Some(thread.cwd.as_path()))
-                .max_by_key(|thread| (thread.created_ms, &thread.rollout)),
+        let fallback = || {
+            startup
+                .get(&process.pid)
+                .map_or(CodexSessionLink::Unnamed, |thread| {
+                    CodexSessionLink::StartWindow(thread)
+                })
         };
-        if let Some(thread) = resumed {
-            matched.insert(process.pid, thread);
-        }
+        let evidence = match logs {
+            #[cfg(test)]
+            CodexLogEvidence::Unread => LogThreadLink::NoRecord,
+            CodexLogEvidence::Recorded(logs) => logs.link(process, processes, home),
+        };
+        let link = match evidence {
+            LogThreadLink::Linked(thread) => CodexSessionLink::LogLink(thread),
+            LogThreadLink::NoRecord | LogThreadLink::SharedDaemon => {
+                match codex::resume_request(process) {
+                    ResumeRequest::NamedId(id) => candidates
+                        .find(|thread| tree::thread_id(&thread.rollout).as_deref() == Some(id))
+                        .map_or_else(fallback, CodexSessionLink::ArgvId),
+                    ResumeRequest::LastThread => candidates
+                        .filter(|thread| process.directory.as_deref() == Some(thread.cwd.as_path()))
+                        .max_by_key(|thread| (thread.created_ms, &thread.rollout))
+                        .map_or_else(fallback, CodexSessionLink::LastThread),
+                    ResumeRequest::NewSession => fallback(),
+                }
+            },
+        };
+        matched.insert(process.pid, link);
     }
     matched
 }
@@ -326,11 +406,14 @@ pub(super) fn codex_startup_threads<'a>(
 /// The creation times, in unix milliseconds, that a thread must fall in
 /// to be the one some listed interactive Codex in `processes` started
 /// with; none when there is no such Codex.
-pub(super) fn codex_thread_window(processes: &[ProcessEntry]) -> Option<RangeInclusive<u64>> {
+pub(super) fn codex_thread_window(
+    processes: &[ProcessEntry],
+    window: CodexStartWindow,
+) -> Option<RangeInclusive<u64>> {
     let table = pid_table(processes);
     let windows: Vec<_> = interactive_codex(&table, processes)
         .into_iter()
-        .map(thread_window)
+        .map(|process| thread_window(process, window))
         .collect();
     let from = windows.iter().map(|window| *window.start()).min()?;
     let until = windows.iter().map(|window| *window.end()).max()?;
@@ -346,7 +429,7 @@ pub(super) fn pid_table(processes: &[ProcessEntry]) -> HashMap<u32, &ProcessEntr
 }
 
 /// The `codex` processes under no other agent that are not app servers.
-fn interactive_codex<'a>(
+pub(super) fn interactive_codex<'a>(
     table: &HashMap<u32, &ProcessEntry>,
     processes: &'a [ProcessEntry],
 ) -> Vec<&'a ProcessEntry> {
@@ -360,11 +443,11 @@ fn interactive_codex<'a>(
 
 /// The creation times, in unix milliseconds, of a thread `process`
 /// could have started with: from [`CODEX_THREAD_START_SLACK`] before its
-/// recorded start to [`CODEX_THREAD_START_WINDOW`] after.
-fn thread_window(process: &ProcessEntry) -> RangeInclusive<u64> {
+/// recorded start to the configured window after it.
+fn thread_window(process: &ProcessEntry, window: CodexStartWindow) -> RangeInclusive<u64> {
     let started = process.started.saturating_mul(1_000);
     let slack = u64::try_from(CODEX_THREAD_START_SLACK.as_millis()).unwrap_or(u64::MAX);
-    let window = u64::try_from(CODEX_THREAD_START_WINDOW.as_millis()).unwrap_or(u64::MAX);
+    let window = window.milliseconds();
     started.saturating_sub(slack)..=started.saturating_add(window)
 }
 
@@ -379,6 +462,7 @@ fn startup_threads<'a>(
     codex: &[&ProcessEntry],
     threads: &'a [CodexThread],
     home: Option<&Path>,
+    window: CodexStartWindow,
 ) -> HashMap<u32, &'a CodexThread> {
     let mut first: HashMap<u32, &CodexThread> = HashMap::new();
     for thread in threads {
@@ -386,7 +470,7 @@ fn startup_threads<'a>(
             .iter()
             .filter(|process| {
                 process.directory.as_deref() == Some(thread.cwd.as_path())
-                    && thread_window(process).contains(&thread.created_ms)
+                    && thread_window(process, window).contains(&thread.created_ms)
                     && thread_matches_home(process, thread, home)
             })
             .max_by_key(|process| (process.started, process.pid));
@@ -1051,7 +1135,10 @@ mod tests {
             thread("/tmp", 200_000, Some("too late"), ""),
         ];
 
-        assert_eq!(codex_thread_window(&processes), Some(99_000..=190_000));
+        assert_eq!(
+            codex_thread_window(&processes, CodexStartWindow::default()),
+            Some(99_000..=190_000)
+        );
         let rows = agent_rows(
             &processes,
             &[],

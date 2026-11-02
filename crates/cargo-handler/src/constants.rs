@@ -375,6 +375,20 @@ pub(crate) const CODEX_RESUME_LAST_ARGUMENT: &str = "--last";
 /// `state_<n>.sqlite`, `<n>` counting the versions of its layout, and
 /// the highest `<n>` present is the one Codex writes.
 pub(crate) const CODEX_STATE_PREFIX: &str = "state_";
+/// Start the first log read at the oldest live process, using the time index.
+pub(crate) const CODEX_LOG_INITIAL_QUERY: &str =
+    "SELECT id, ts, process_uuid, thread_id FROM logs INDEXED BY idx_logs_ts WHERE ts >= ?1";
+/// Start the cursor beyond all rows in the first read snapshot.
+pub(crate) const CODEX_LOG_MAX_ID_QUERY: &str = "SELECT coalesce(max(id), 0) FROM logs";
+/// Read each later log row once through the primary key.
+pub(crate) const CODEX_LOG_NEW_QUERY: &str =
+    "SELECT id, ts, process_uuid, thread_id FROM logs WHERE id > ?1 ORDER BY id";
+/// The versioned Codex log database prefix.
+pub(crate) const CODEX_LOG_PREFIX: &str = "logs_";
+/// The process identity prefix in Codex log rows.
+pub(crate) const CODEX_LOG_PROCESS_PREFIX: &str = "pid:";
+/// A managed daemon can serve several interactive clients.
+pub(crate) const CODEX_MANAGED_DAEMON_ARGUMENT: &str = "--managed-daemon";
 /// Extension of Codex's thread database. Its journal files beside it
 /// carry longer ones.
 pub(crate) const CODEX_STATE_EXTENSION: &str = "sqlite";
@@ -395,10 +409,6 @@ pub(crate) const CODEX_LEGACY_THREADS_QUERY: &str = "SELECT cwd, created_at_ms, 
 pub(crate) const CODEX_LAST_THREAD_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, rollout_path FROM threads WHERE cwd = ?1 ORDER BY created_at_ms DESC, id DESC LIMIT 1";
 /// The interactive originator used by older rows without a thread source.
 pub(crate) const CODEX_LEGACY_TUI_ORIGINATOR: &str = "codex-tui";
-/// How long after an interactive Codex starts the thread it starts with
-/// may be created. Codex creates it during startup, after any question
-/// about trusting the directory.
-pub(crate) const CODEX_THREAD_START_WINDOW: Duration = Duration::from_secs(60);
 /// How long before an interactive Codex's recorded start its thread may
 /// be created: the process table counts a start in whole seconds from a
 /// boot time that is itself read in whole seconds.

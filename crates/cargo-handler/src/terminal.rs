@@ -77,6 +77,7 @@ pub(crate) fn run() -> ExitCode {
                     &app.loaded_config.config.accounts,
                     dirs::home_dir().as_deref(),
                 ),
+                app.loaded_config.config.census.codex_thread_start_window,
             ),
             appearance_updates,
         )

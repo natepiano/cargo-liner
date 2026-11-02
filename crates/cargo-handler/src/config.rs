@@ -115,9 +115,24 @@ pub(crate) struct MachinesConfig {
 pub(crate) struct CensusConfig {
     /// One line of shell that prints this machine's schema-3 staff list;
     /// empty disables hierarchy discovery.
-    pub(crate) hierarchy_command: String,
+    pub(crate) hierarchy_command:         String,
     /// Optional command printing stored account roles and usage as JSON.
-    pub(crate) accounts_command:  String,
+    pub(crate) accounts_command:          String,
+    /// Seconds after process startup in which a new Codex thread can match.
+    pub(crate) codex_thread_start_window: CodexStartWindow,
+}
+
+/// The configured span for the Codex startup fallback, in seconds.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(transparent)]
+pub(crate) struct CodexStartWindow(u64);
+
+impl Default for CodexStartWindow {
+    fn default() -> Self { Self(60) }
+}
+
+impl CodexStartWindow {
+    pub(crate) const fn milliseconds(self) -> u64 { self.0.saturating_mul(1000) }
 }
 
 /// `[accounts]`: each agent home this machine runs, mapped to the label its tiles show.
@@ -202,6 +217,7 @@ remote = []
 [census]
 hierarchy_command = \"\"
 accounts_command = \"\"
+codex_thread_start_window = 60
 
 [accounts]
 ";
