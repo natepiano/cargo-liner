@@ -56,6 +56,7 @@ use reporting::ExecutionOutcome;
 use reporting::MendFailure;
 use reporting::OutputFormat;
 use reporting::PassEdits;
+use reporting::Report;
 use reporting::SubtreeReexportEdits;
 use selection::DisplayFilter;
 use selection::Selection;
@@ -133,6 +134,7 @@ const fn compiler_fix_execution(
 }
 
 fn run() -> Result<ExitCode, MendFailure> {
+    let mut executable = compiler::RunningExecutable::open().map_err(MendFailure::Unexpected)?;
     let global = config::load_global_config();
     let after_help = build_diagnostics_help(&global.diagnostics);
     let cli = config::parse(&after_help);
@@ -155,6 +157,9 @@ fn run() -> Result<ExitCode, MendFailure> {
     let output_format = cli.output_format;
     let start = Instant::now();
     let toolchain_probes = compiler::ToolchainProbes::new().map_err(MendFailure::Unexpected)?;
+    let wrapper =
+        compiler::RunWrapper::resolve(cargo_plan.target_directory.as_path(), &mut executable)
+            .map_err(MendFailure::Unexpected)?;
     let mut runner = MendRunner::new(
         &selection,
         &cargo_plan,
@@ -162,6 +167,7 @@ fn run() -> Result<ExitCode, MendFailure> {
         color_mode,
         output_format,
         &toolchain_probes,
+        wrapper,
     );
     let mut outcome = runner.run(operation_mode.clone())?;
     let mut accumulated_notice = outcome.notice.take();
@@ -249,13 +255,17 @@ fn run() -> Result<ExitCode, MendFailure> {
         check_duration,
     )?;
 
-    if outcome.report.outcome() == BuildOutcome::Failed {
-        return Ok(ExitCode::from(EXIT_CODE_ERROR));
+    Ok(report_exit_code(&outcome.report, cli.warning_policy))
+}
+
+fn report_exit_code(report: &Report, warning_policy: WarningPolicy) -> ExitCode {
+    if report.outcome() == BuildOutcome::Failed {
+        return ExitCode::from(EXIT_CODE_ERROR);
     }
-    if cli.warning_policy == WarningPolicy::Fail && outcome.report.has_warnings() {
-        return Ok(ExitCode::from(EXIT_CODE_WARNING));
+    if warning_policy == WarningPolicy::Fail && report.has_warnings() {
+        return ExitCode::from(EXIT_CODE_WARNING);
     }
-    Ok(ExitCode::SUCCESS)
+    ExitCode::SUCCESS
 }
 
 /// Whether the convergence policy schedules another mend pass.
