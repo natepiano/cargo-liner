@@ -1,4 +1,5 @@
 mod cache;
+mod driver_compiler;
 mod execute;
 mod progress;
 mod source_transaction;

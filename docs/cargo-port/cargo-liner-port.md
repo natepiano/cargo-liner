@@ -146,6 +146,30 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **As-built:** a forwarded compiler diagnostic goes through the one owner of the progress line in `crates/cargo-mend/src/compiler/build/progress.rs` (`write_forwarded_output`): erase the line, print the block, add a newline only when the block lacks one, redraw (checkpoint 32316514). The counter runs to the end of the pass, and an unterminated last diagnostic survives the redraw and the cleanup. Live proof: a real cargo-tile mend cell read 85% after the forwarded warning.
 
+### Phase 2k — workspace lint passes on the cargo-berth reanchoring test  · status: done
+
+**As-built:** the last checks of `side_branch_creation_during_stopped_apply_rebase_preserves_checkpoint_capture` (`crates/cargo-berth/tests/support/reanchoring.rs`) moved into `assert_reanchored_checkpoint_is_outstanding`, with every assert and step in the same order and no `allow` or `expect`, so workspace clippy's `too_many_lines` passes again after mend's autofix 46570b43 (checkpoint 806cbc5c). Lifecycle tests 145/145 pass.
+
+### Phase 2l — mend runs in a project that pins a different Rust release  · status: done
+
+**As-built:** `cargo mend` and `cargo mend --fix` compile every driver command with the rustc of the toolchain that built mend, so a project whose `rust-toolchain.toml` pins another Rust release no longer fails with E0514 (checkpoint d0b9c24e). `DriverCompiler` (`crates/cargo-mend/src/compiler/build/driver_compiler.rs`) is the one owner: `for_build()` resolves `<MEND_BUILD_SYSROOT>/bin/rustc` once per run, and `configure(command, wrapper)` sets `RUSTC` and `RUSTC_WORKSPACE_WRAPPER` together and removes the passthrough wrapper. `run_cargo_check` (`execute.rs`) calls it for the check and the fix validation build; no call site sets these variables by hand. A missing rustc in the build sysroot stops mend with an error that names the folder. When the compiler versions differ, Cargo keeps a second set of dependency artifacts in the same target folder; the README and CHANGELOG name this cost.
+
+**Files:** `crates/cargo-mend/src/compiler/build/driver_compiler.rs`, `execute.rs`, `crates/cargo-mend/src/compiler/constants.rs` (`RUSTC_ENV`), `crates/cargo-mend/tests/cli_smoke.rs` (`fix_uses_build_compiler_with_external_path_dependency_and_unusable_project_rustc`), `crates/cargo-mend/README.md`, `crates/cargo-mend/CHANGELOG.md`.
+
+**Gotchas:** a cli or diagnostics test that runs real cargo builds has a floor near 2 s; such a test runs mend once.
+
+**Ruled out:** reinstalling mend on the project's release; changes to Hana, `verify.sh` or a project's toolchain file.
+
+### Phase 2n — mend --fix keeps the imports of a module mounted with #[path]  · status: done
+
+**As-built:** `cargo mend --fix` keeps a module import in a file mounted with `#[path = "…"]`, and the crate builds with nothing rolled back (checkpoint 73a51de7). `support::leaf_is_module` (`crates/cargo-mend/src/fixes/prefer_module_import/support.rs`) decides whether an import leaf names a module through `rust_syntax::ModuleMap::module_ancestors`, which follows `#[path]` mounts and the modules they declare; it no longer walks physical folders. `ModuleMap::declared_module_files` prefers the existing sibling file by default. The fixture `fix_imports_keep_modules_declared_in_path_mounted_test_files` (`tests/diagnostics/import_fixes.rs`) holds both Hana shapes, and `path_mounted_import_resolution_uses_declared_module_paths` pins the module path of a `#[path]` file and of a module it declares.
+
+**Files:** `crates/cargo-mend/src/fixes/prefer_module_import/support.rs`, `crates/cargo-mend/src/rust_syntax/module_map.rs`, `crates/cargo-mend/tests/diagnostics/import_fixes.rs`, `crates/cargo-mend/CHANGELOG.md`.
+
+**Gotchas:** module identity comes from `ModuleMap`, never from folder layout.
+
+**Ruled out:** filtering fixes after planning.
+
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 
 **Depends on:** Phase 2b
@@ -159,7 +183,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 **Constraints:**
 - From phase 2b: a `DiskUsage` reply can change a row from `Visible` to `Deleted` with the byte count still zero (`async_tasks/disk_handlers.rs` `apply_disk_usage` ≈65), so equal bytes do not mean equal visible state. Test that this change draws once and an identical later reply draws nothing.
 - From phase 2d: the row error state for a manifest cargo rejects is a visible input. Test redraws for an unselected row's error, its recovery, and `ProjectDiscovered`.
-- The detail cache owns `Option<DetailCacheKey>` (`tui/panes/data.rs` ≈21). Replace it with a named state that tells cleared details from details current for a key, like the new caches.
+- The detail cache owns `Option<DetailCacheKey>` (`tui/panes/data.rs` ≈21). Replace it with a named state that tells cleared details from details current for a key, like the new caches. The APIs that read or write it (`detail_is_current`, `set_detail_stamp`, `clear_detail_data` in `tui/panes/data.rs`) and their tests take and return that state too, so no caller reads a bare absence.
 - Measure idle CPU only after the startup folder walk, watcher registration and reconciliation, and startup enrichment end (the walk alone uses several cores for tens of seconds in a debug build; scan completion, `dispatch.rs` ≈96, comes before the watcher's Ready, `watcher/runtime.rs` ≈427). Add a named log marker or a repeatable procedure for that point and start both 60 s windows after it.
 - The event loop (`tui/terminal/event_loop.rs`, the `loop` in its run function) calls `ensure_visible_rows_cached`, `ensure_disk_cache`, `ensure_fit_widths_cached`, `ensure_detail_cached` and `draw_frame` on every wakeup. It wakes on input, on each background message, on each CPU pane sample, at least each second (`IDLE_HEARTBEAT`, `tui/app/mod.rs` ≈437), and each 80 ms while a lint, clean or run is live (`ANIMATION_TICK`).
 - `ensure_detail_cached` (`tui/app/navigation/cache.rs`) already skips work with a `DetailCacheKey` of the selected row and `scan.generation()`. Use the same pattern: a typed key of the inputs, not a bool flag set by hand at call sites. That generation alone is not a full key: `update_generations_for_msg` (`tui/app/async_tasks/dispatch.rs` ≈32) leaves it unchanged for an unselected project's `DiskUsage`, and `ProjectStorage` (`scan/background.rs` ≈258) does not touch it. Each cache names its own inputs: list rows, disk totals, column widths and storage. A new cache state is an enum (for example `NotComputed` / `Current(key)`), not a bare `Option<Key>`.
@@ -190,13 +214,12 @@ you need to create a new unit to handle all cargo port enhancements it should be
 - `crates/cargo-port/src/tui/project_list_state.rs` — index upkeep on change
 - `crates/cargo-port/src/tui/app/tree_mutation.rs` — index upkeep on insert, replace, regroup
 - `crates/cargo-port/src/tui/app/async_tasks/dispatch.rs` — generation inputs for the new keys
-- `crates/cargo-port/src/tui/terminal/event_loop_tests.rs` — new; tester
-- `crates/cargo-port/src/tui/project_list/path_index_tests.rs` — new; tester
+- `crates/cargo-port/src/tui/terminal/event_loop_tests.rs` — new
+- `crates/cargo-port/src/tui/project_list/path_index_tests.rs` — new
 - `crates/cargo-port/CHANGELOG.md`
 
 **Workers:** 1 writer (impl4) owns the implementation and every test file; the unit director owns the live CPU measurements (spec 5).
-- `impl` — specs 1–3 and 6, the frame counter, and the two slow interaction tests in `tui/app/mod.rs`; hub: `crates/cargo-port/src/tui/project_list/list.rs`. Not the tester's two files.
-- `test` — spec 4, in `tui/terminal/event_loop_tests.rs` and `tui/project_list/path_index_tests.rs`, registered by `impl`.
+- `impl` — specs 1–4 and 6, the frame counter, the two slow interaction tests in `tui/app/mod.rs`, and the tests in `tui/terminal/event_loop_tests.rs` and `tui/project_list/path_index_tests.rs`; hub: `crates/cargo-port/src/tui/project_list/list.rs`.
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; the idle CPU of spec 5 under 1% of one core on the branch binary; during the build, under 3% of one core and under 2 frames each second with no spinner on screen; the two interaction tests each under one second. The checkpoint adds a Change-Review line.
 

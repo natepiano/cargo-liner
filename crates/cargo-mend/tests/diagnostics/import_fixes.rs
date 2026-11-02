@@ -1,6 +1,57 @@
 use crate::support::*;
 
 #[test]
+fn fix_imports_keep_modules_declared_in_path_mounted_test_files() {
+    let mut batch = DiagnosticBatch::new(
+        "[diagnostics]\nsuspicious_pub = false\nunused_pub = false\nnarrow_to_pub_crate = false\npub_use_outside_subtree = false\n[visibility]\npub_in_path = \"permitted\"\n",
+    );
+    let root = batch.add_member("path_mounted_imports", &[
+        ("Cargo.toml", "[package]\nname = \"path_mounted_imports\"\nversion = \"0.1.0\"\nedition = \"2024\"\nautotests = false\n"),
+        ("src/lib.rs", "mod propagation;\nmod camera_source;\nmod tool;\nmod normal;\n#[cfg(test)] #[path = \"../tests/test_support/mod.rs\"] mod test_support;\n"),
+        ("src/normal.rs", "pub(crate) fn width() -> usize {\n    use std::mem;\n    mem::size_of::<usize>()\n}\n"),
+        ("src/propagation.rs", "#[cfg(test)] #[path = \"../tests/propagation_roles/mod.rs\"] pub(crate) mod phase68_tests;\n"),
+        ("src/camera_source.rs", "#[cfg(test)] #[path = \"../tests/camera_publication/mod.rs\"] mod phase68_tests;\n"),
+        ("src/tool/mod.rs", "#[cfg(test)] #[path = \"../../tests/jack_controls/modulation_mode.rs\"] mod modulation_mode;\n"),
+        ("tests/propagation_roles/mod.rs", "pub(crate) mod support;\n"),
+        ("tests/propagation_roles/support.rs", "pub(crate) fn value() -> usize { 7 }\n"),
+        ("tests/camera_publication/mod.rs", "use crate::propagation::phase68_tests::support;\n#[test] fn publication() { assert_eq!(support::value(), 7); }\n"),
+        ("tests/test_support/mod.rs", "pub(crate) mod slider_reset;\n"),
+        ("tests/test_support/slider_reset.rs", "pub(crate) fn value() -> usize { 11 }\n"),
+        ("tests/jack_controls/modulation_mode.rs", "use crate::test_support::slider_reset;\n#[test] fn reset() { assert_eq!(slider_reset::value(), 11); }\n"),
+    ]);
+    let output = batch
+        .command()
+        .args(["--all-targets", "--fix"])
+        .output()
+        .expect("fix path-mounted imports");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "{}\n{stderr}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    assert!(!stderr.contains("rolled back"), "{stderr}");
+    let normal = fs::read_to_string(root.join("src/normal.rs")).expect("read moved import");
+    assert!(normal.starts_with("use std::mem;"), "{normal}");
+    for (file, import, call) in [
+        (
+            "tests/camera_publication/mod.rs",
+            "use crate::propagation::phase68_tests::support;",
+            "support::value()",
+        ),
+        (
+            "tests/jack_controls/modulation_mode.rs",
+            "use crate::test_support::slider_reset;",
+            "slider_reset::value()",
+        ),
+    ] {
+        let fixed = fs::read_to_string(root.join(file)).expect("read path-mounted test");
+        assert!(fixed.contains(import), "{fixed}");
+        assert!(fixed.contains(call), "{fixed}");
+    }
+}
+
+#[test]
 fn fix_imports_resolve_nested_src_and_custom_path_targets() {
     let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
     let consumer = "use crate::outer::m::{self};\nuse super::m::one;\nuse super::m::two;\npub fn total() -> usize { one() + two() + m::one() }\n";
