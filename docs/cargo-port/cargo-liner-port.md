@@ -218,20 +218,16 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 ### Phase 2s — mend --fix keeps the cfg of an import it moves  · status: done
 
-**Depends on:** none
+#### As-built
 
-**Source:** showrunner, 2026-11-02 10:55. A cargo-mend bug that does not block other work. It runs beside 2q after 2r lands; the files do not overlap.
+When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_at_top`), the moved import keeps every cfg of the items around it. The shared tracker `gate_tracking_visit!` (`fixes/imports/gate_tracking.rs`) collects cfg attributes from items, fn parameters (`PatType`), fields, generics, patterns and the other attribute-bearing expression nodes; `inline_path_qualified_type` uses the same tracker. This fixes the eight `use libproc::…` imports that lost `#[cfg(target_os = "macos")]` in cargo-handler and broke the Linux build.
 
-**Defect:** `cargo mend --fix` on cargo-handler moved eight `use libproc::…` imports out of a `#[cfg(target_os = "macos")]` function to module scope (cargo-handler `census/codex.rs:51-58`). The moved imports lost the cfg, so Linux failed with eight E0433 errors, and mend rolled back. Record with the code before and after: `/tmp/claude/unit/be6481c9-047e-4add-83c1-870d55a33343/phases/60a/evidence/mend-e0433.md`.
+**Files:**
+- `crates/cargo-mend/src/fixes/imports_at_top/in_body_use_finder.rs` — finds in-body imports with their gates
+- `crates/cargo-mend/src/fixes/imports/gate_tracking.rs`, `fixes/imports/mod.rs` — the shared cfg tracker
+- `crates/cargo-mend/src/fixes/imports_at_top/gate_tests.rs` — one regression test per node kind, applied through `imports::apply_fixes`
 
-**Spec:**
-1. When mend moves an import out of an item, the import keeps every cfg of that item. If it cannot keep them, mend leaves the import where it is.
-2. A fixture with a cfg-gated function and a cfg-only dependency. Its test fails on the current code and passes after the fix, in under one second where a unit test can show it.
-3. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
-
-**Files:** the cargo-mend code that moves imports to module scope, and its tests, a new fixture under the cargo-mend test fixtures, `crates/cargo-mend/CHANGELOG.md`.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean.
+**Gotchas:** a new cfg-bearing syn node needs a case in `gate_tracking_visit!`, or the imports under it lose their cfg when they move.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 
@@ -303,6 +299,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 **Constraints:**
 - From phase 3: retained `Deleted` rows and stored dismissals stay reachable through the path index, and each retention change keeps its caches current. The late-reply dismissal guard already exists with a test (`async_tasks/disk_handlers.rs` ≈147); the work is to keep it through a scan replacement. The tester's acceptance case covers a discovery folder removed with two projects below it, a completed rescan, a dismissal, and late replies.
 - Build the rescan fix with a type, not a guard: the rescan keeps each Deleted entry in its root as its own state until `x` (or the close box) dismisses it. A fresh scan that does not find the project does not drop that state.
+- From phase 2q: `ProjectList::apply_expanded` (`tui/project_list/list.rs`) skips expansion targets that are not in the installed tree. Merge the retained Deleted rows into the new roots first, then prune expansion keys and restore the saved expansion targets. Test it with reordered roots and a selected Deleted member under an open group: the row stays visible, the selection stays on it, and the group stays open.
 - Under `NO_COLOR`, write text attributes (strike-through, bold, dim) without colour codes; never send a colour reset that also resets attributes.
 - The sccache popup width is the widest row plus the left and right padding (`tui/sccache/render.rs`), so both sides get the same padding.
 - For "fleet" → "flet", find why one letter goes from the middle of the word first. Where a value must be shortened, shorten it at its end with an ellipsis.
