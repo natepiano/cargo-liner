@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- On Linux, build scripts use the selected compiler's matching libraries, so compiler probes read stdin when a project pins another toolchain.
 - Keep one independent compiler wrapper copy for each mend run, so a reinstall cannot interrupt fix validation.
 - `--fix` removes the leading `::` when it shortens an absolute path to an imported name, so the path still resolves.
 - Use the rustc in mend's build sysroot for analysis and fix validation, including dependency builds. Projects can pin another Rust release without E0514. Different compiler versions keep separate artifact hashes in the same target directory, which increases initial build time and disk use.
