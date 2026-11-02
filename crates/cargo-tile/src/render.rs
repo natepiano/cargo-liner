@@ -17396,7 +17396,10 @@ mod tests {
                 .iter()
                 .filter(|placement| matches!(&placement.content, TileContent::Group(_)))
                 .collect();
-            assert!(!commands.is_empty());
+            assert_ne!(
+                commands,
+                [] as [&tui_pane::TilePlacement<census::process_identity::InvocationId>; 0]
+            );
 
             for placement in commands {
                 let TileContent::Group(id) = &placement.content else {

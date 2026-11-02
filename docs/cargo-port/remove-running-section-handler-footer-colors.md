@@ -1366,47 +1366,72 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Gotchas:** the `WorkerNames` retain set is the dispatch session directories of live worker commands, direct and wrapped. It is not the set of seen run sessions. A retain on seen run sessions alone drops the watches of live workers.
 
-### Phase 54 — Tile hosts draw only frames that change  · status: todo
+### Phase 54 — Tile hosts draw only frames that change  · status: done
 
-**Depends on:** Phase 48, Phase 47
+#### As-built
+
+- `TileGrid` in `tiles/grid.rs` owns the last painted visual state: `LastPainted::{NeverPainted, Painted { visual, summary_frames }}`. `GridVisualState` holds the drawing, the contents, the theme, `BackgroundTransparency` and `FocusedPaneTint`. Only a body paint replaces it; status-only draws and polls with no body leave it as it is. Input (`cell_hit`, `painted_summary_frames`) reads the same record.
+- `TileGrid::visual_repaint()` answers whether the next body differs from the last paint, without consuming the answer. It compares the visible drawing from `visible_drawing(contents, progress)` (`pub(super)`), title ownership, column bands and the appearance inputs. `TileGrid::tick` asks for a repaint only when that answer is `Repaint::Needed`. `draw.rs` returns early when the visible drawing has no pieces and no bands.
+- cargo-handler and cargo-tile `terminal.rs` skip a body frame that `visual_repaint` reports equal and whose content did not change. A theme, transparency or tint change with equal geometry still draws.
+- cargo-handler keeps `DisplayText::AgentAge::next_change` as the one age deadline and adds the next width growth of the shared age column. The width deadline starts from the earliest session start, as `now.max(started).checked_add(seconds)`, so a session start in the future draws only when its age label changes.
+- Measured own CPU-s per minute, installed → branch: Mac handler 0.144 → 0.156, Mac tile 8.384 → 8.637; Linux (load about 100) handler 1.690 → 1.150, tile 19.439 → 18.679.
+
+**Files:**
+- `crates/tui_pane/src/tiles/grid.rs` — `GridVisualState`, `LastPainted`, `visual_repaint`, the appearance enums and their tests.
+- `crates/tui_pane/src/tiles/draw.rs` — draws from `visible_drawing` and records the painted state.
+- `crates/cargo-handler/src/terminal.rs` — the host frame skip, the age width deadline and the timed-body tests.
+- `crates/cargo-tile/src/terminal.rs` — the host frame skip and the appearance-change test.
+- `crates/cargo-handler/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — one Changed line each.
+
+**Binds later work:** A host asks `TileGrid::visual_repaint` before it draws a body; it never compares grid parts by hand. Input reads the grid's last painted record.
+
+**Gotchas:**
+- cargo-tile idles near 8.6 own CPU-s per minute on the Mac and 18.7 on Linux, far above the 0.60 target. The remaining tile census CPU belongs to tile-unit (showrunner, 2026-11-02).
+- A test fixture pid can match an age label in the drawn text; fixture pids start at 4000.
+
+**Ruled out:** a host-side comparison of placements, because column bands, title ownership and motion heights are not in the public placements.
+
+### Phase 60 — A Codex session opened from the resume picker shows its own name  · status: todo
+
+**Depends on:** none. Runs first when work restarts (showrunner, 2026-11-02), beside Phase 54's checks; 57c stays held.
 
 #### Work Order
 
-**Goal:** an idle cargo-handler and an idle cargo-tile draw a frame only when something visible changes, so each idles under 1 % of one core (0.60 own CPU-s per minute at most).
+**Goal:** an interactive Codex session started with a bare `codex resume` (the picker) shows its thread name, for example `morty`, in its tile and in the summary.
 
-**Source:** showrunner ruling, 2026-10-30, on Phase 47's next cut: the tui_pane grid gives one "visual state changed" answer (motion, column bands, titles), a host skips equal frames, and cargo-tile uses it in the same phase so both hosts gain. Unit session `phases/47/impl_summary_test.txt`.
+**Source:** the user, 2026-11-01: "once again a new run of cargo handler does not show the morty session - a continuing bug". Phases 41 and 57d fixed the earlier forms of this report.
+
+**Cause, found by the director on natedev 2026-11-01:**
+- morty runs as pid 817898, argv `codex resume`, `CODEX_HOME=~/.codex2`, cwd `/home/natepiano`. The argv names no thread, so `codex::resume_request` returns `NewSession`.
+- morty's thread `01a18dbb-7e8f-7641-b3dd-bb2071ab9d7a` was created on 2026-10-30. It is outside the 60 s start window, so `codex_startup_threads` finds no thread for the process. A launch by `codex resume <id>` or `codex resume --last` works; a launch through the picker does not.
+- Codex 0.166.0 runs a managed `codex app-server --listen unix:// --managed-daemon` as a child of the TUI (pid 817986 here). That daemon writes `logs_2.sqlite` rows with `process_uuid = 'pid:817986:<uuid>'` and `thread_id = 01a18dbb-…`. This is an exact link from a process to the thread it serves.
 
 **Constraints from prior phases:**
-- Phase 47 release profile, cargo-handler idle, per minute: 1043 body frames cost 1.28 own CPU-s; `TileGrid::tick` (`tiles/grid.rs` ≈2160) asked for 936 of the repaints, one on every tick while `GridMotion` is not `Settled`.
-- The public placements give cell content and `PaneFrame` only; column bands, title ownership and motion heights live in `TileDrawing` and `tiles/draw.rs`, so a host cannot prove from placements alone that a frame is unchanged.
-- Hosts: cargo-handler `terminal.rs` `Ticker::poll_at` ≈383 (`app.tiles.tick()`, Phase 47's display-time state); cargo-tile `terminal.rs` ≈227 and `render.rs` ≈8682.
-- cargo-handler `app.rs`: `PaintedFrame` (≈116) is the retained body frame, and `App::draw` (≈364) reuses it for a status-only draw. The grid's painted record and this body cache must not both own "what was last painted": one owns it, and the other asks it.
-- Phase 47 shipped each session's age deadline: `DisplayText::AgentAge::next_change` (`terminal.rs` ≈123) schedules each age from its own start, and `next_body_change` (≈192) includes managed workers (tests ≈503 and ≈574). Keep that one calculation.
-- Phase 47 Mac measure defect: `proc_pid_rusage` CPU fields on Apple Silicon are 24 MHz mach ticks, not nanoseconds (timebase 125/3, proved 2026-10-31). Phase 47's corrected Mac own CPU-s per minute: branch 0.26, installed 0.91. Linux: branch 1.30, installed 2.71.
-- `tiles/draw.rs` is Phase 48's until its checkpoint; cargo-tile's files may be held by tile-unit: claim through berth (the showrunner tells tile-unit).
-- `draw_tile_grid` (`tiles/draw.rs` ≈384) prepares the measurements before it paints, and records the painted geometry after it paints (`record_painted_cells`, `record_painted_summary_frames`). Phase 9 reads that last painted record for clicks; keep that use.
-- `age_label` (`crates/cargo-handler/src/summary/age.rs` ≈4) writes elapsed whole minutes from each session's own start. So each session's age text changes at its own elapsed-minute boundary, not at one shared wall-clock minute. A label that gains a digit or a `:` part also widens the shared age column (`AgeLayout`, same file). Neither change comes with a census revision.
+- Phase 41: interactive threads are `thread_source = 'user'` with `source` not `'exec'`, or `originator = 'codex-tui'` on old rows. `ThreadsLayout` is chosen once per database open.
+- Phase 57d: a thread belongs to the account home of the database that supplied it. A shared rollout path never sets the account. Names come from the thread's own account index, with the database name as the fallback.
+- CPU first: the census must not get slower. `logs` has no index on `process_uuid` for rows with a thread (`idx_logs_process_uuid_threadless_ts` covers only `thread_id IS NULL`). A full lookup by pid took 1.3 s on natedev's 72 MB log. A newest-first lookup took 13 ms only because the row was recent.
 
 **Spec:**
-1. One owner in `tiles/` gives the visual state of the grid (motion step, column bands, titles, motion heights, and the appearance inputs `tile_background` reads: theme, transparency and tint settings) and answers whether it changed since the last drawn frame. No host compares parts of it by hand. Its last-painted record is the one Phase 9 reads for input.
-2. `TileGrid::tick` asks for a repaint only when that answer is yes.
-3. cargo-handler and cargo-tile each skip a frame whose visual state and content are equal to the last drawn one.
-4. The comparison state changes only after a body frame is painted. Hold it in an explicit enum, for example `LastPainted::{NeverPainted, Painted(..)}`. A poll that draws no body, and a status-only draw, leave it unchanged.
-5. Keep Phase 47's per-session age deadline (`DisplayText::AgentAge::next_change`) as the one calculation. Add the next width growth of the shared age column (`AgeLayout`) to it, so that draw needs no census revision.
-6. Red-first counted tests in tui_pane and in each host: an unchanged settled grid asks for no frame; each motion step, band change and title change asks for one; several polls with no body draw keep the comparison state; status-only draws keep it; fading content with settled geometry still draws each fade step; motion completes after skipped equal frames; age deadlines for sessions with offset starts each draw at their own minute; an age width growth draws with no census revision; a theme, transparency or tint change with equal geometry draws. Each under 1 s.
-7. Live measurement in both hosts, on Linux and on the Mac, before and after, with the Phase 40 paired method: own CPU under 1 % of one core, and no worse than the installed binary. Each run shows live agents, and records the agent and terminal counts the census showed, the window length and the load. On the Mac, convert `proc_pid_rusage` ticks with `mach_timebase_info`.
-8. CHANGELOG: one Changed line in tui_pane, cargo-handler and cargo-tile.
+1. For each interactive Codex whose argv names no thread, the census reads the newest user thread that Codex's log database (`logs_<n>.sqlite`, the highest `<n>`, in the process's own account home) records under the pid of the process or of its app-server child. That thread is the process's thread. The 60 s start window stays as the fallback when the log has no row for those pids.
+2. The log read is incremental: keep the last log `id` read per database, and each scan reads only newer rows. The first read starts at the oldest such process's start time through `idx_logs_ts`. Steady state stays under 1 ms per scan; report the first-read time and the steady time on natedev.
+3. Find whether one managed daemon serves more than one TUI. If it does, tell the TUIs apart (for example by the daemon connection that opened the thread). If they cannot be told apart, leave the rows unnamed: never show a wrong name.
+4. A thread switch inside the TUI (`/resume`) moves the row to the newly logged thread at the next scan.
+5. Red-first tests under 1 s, with fixture `logs` and `threads` tables: a bare `codex resume` with an app-server child shows its thread name; a second resume in the same process shows the newer thread; a scan with no new log rows reads no old rows; a process with no log row keeps the start-window match.
+6. The start window (`CODEX_THREAD_START_WINDOW`, 60 s) moves from `constants.rs` into cargo-handler's `[census]` config, with 60 s as the default (showrunner, 2026-11-02). `CODEX_THREAD_START_SLACK` stays in code: it is the whole-second precision of the process table, not a setting.
+7. CHANGELOG: one Fixed line in cargo-handler.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs` — the visual state owner, the last painted state and their tests
-- `crates/tui_pane/CHANGELOG.md`
-- `crates/cargo-handler/src/terminal.rs`, `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/CHANGELOG.md` — the host frame skip; `app.rs` holds `PaintedFrame`
-- `crates/cargo-handler/src/summary/age.rs` — the age column's next width growth
-- `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/CHANGELOG.md`
+- `crates/cargo-handler/src/constants.rs` — the log database name and queries; the window constant leaves
+- `crates/cargo-handler/src/config.rs` — the start window setting
+- `crates/cargo-handler/src/census/codex.rs` — the incremental log reader
+- `crates/cargo-handler/src/census/classify.rs` — `codex_startup_threads` uses the log link
+- `crates/cargo-handler/src/census/scan.rs` — holds the reader state between scans
+- `crates/cargo-handler/src/census/codex_session_tests.rs` — the tests
+- `crates/cargo-handler/CHANGELOG.md`
 
-**Workers:** 1 writer (`test` seat, which wrote Phase 47).
+**Workers:** 1 writer.
 
-**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-handler`, `verify.sh test cargo-tile`, and `verify.sh lint` for tui_pane, cargo-handler and cargo-tile clean; no test takes a second. Final CPU gate (moved from Phase 47): own CPU under 0.60 CPU-s per minute in the Phase 40 paired method, for cargo-handler and cargo-tile, each on Linux and on the Mac, with live agents. The checkpoint adds a Change-Review line.
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: on natedev, a new cargo-handler run shows `morty` in the cells view for the bare `codex resume` session. The idle CPU is not higher than before. The checkpoint adds a Change-Review line.
 
 ### Phase 58 — The focus tint reaches the frame and stands apart from selection  · status: todo
 
@@ -1892,3 +1917,35 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - `test` — opens as impl: no `tests/` lane; it writes the tests in `summary/accounts_tests.rs` and `summary/accounts_header_sort_tests.rs` from this Spec.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of the accounts table on natedev shows each account's session count, and the count matches the drawn rows for one account. The checkpoint adds a Change-Review line.
+
+### Phase 59 — Shift-left and shift-right move the tile focus  · status: todo
+
+**Depends on:** none.
+
+#### Work Order
+
+**Goal:** wherever shift-up and shift-down move the tile focus, shift-left and shift-right move it to the left and right tile, and the shortcuts overlay shows them in the same rows.
+
+**Source:** the user, 2026-10-31, via the showrunner: "seems as if you should support shift-left and shift-right if you have these up and down - this should go to the end of the list for sure". The showrunner placed it as the last phase.
+
+**Constraints from prior phases:**
+- Phase 57a made cargo-handler default `FocusUp` to `shift-up` and `FocusDown` to `shift-down` (`crates/cargo-handler/src/globals.rs`), because plain `up` and `down` select rows. `FocusLeft` and `FocusRight` stay on plain `left` and `right` there.
+- cargo-tile binds all four focus moves to the plain arrows (`crates/cargo-tile/src/app_global_action.rs`) and has no shift focus keys, so this phase does not change cargo-tile.
+- `TileAction::FocusLeft` and `TileAction::FocusRight` already exist in tui_pane; no new grid action is needed.
+- Keep focus bindings in the default keymap so the user can rebind them. Changed default keys change the overlay captures in `render/mod.rs` (`the_keymap_overlay_opens_on_its_first_screen`, `the_shortcuts_overlay_opens_on_its_first_screen`).
+
+**Spec:**
+1. cargo-handler defaults `FocusLeft` to `shift-left` and `FocusRight` to `shift-right`, the same form as `FocusUp` and `FocusDown`. If the keymap takes more than one default key per action with no new API, plain `left` and `right` stay as a second key; if not, the shift keys replace them, and the summary says so.
+2. The Global Shortcuts and Keymap overlays show the four focus keys in the rows where Phase 57a shows the vertical ones.
+3. Red-first tests under 1 s: each shift arrow moves focus one tile in its direction and stays at the edge; the overlay shows all four focus keys. Update the two overlay captures.
+4. CHANGELOG: one Added line in cargo-handler.
+
+**Files:**
+- `crates/cargo-handler/src/globals.rs` — the defaults and their tests
+- `crates/cargo-handler/src/keymap.rs` — key rows
+- `crates/cargo-handler/src/render/mod.rs` — the overlay captures
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: in cargo-handler on natedev, shift-left and shift-right move the focus, and the shortcuts overlay shows the four focus keys. The checkpoint adds a Change-Review line.

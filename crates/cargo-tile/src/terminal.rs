@@ -210,20 +210,19 @@ impl PollWork<App> for Workers {
             if drain_sccache(app, &self.sccache_replies) {
                 dirty = true;
             }
-            sccache::refresh_if_due(&mut app.sccache, &self.sccache_reads, Instant::now());
+            sccache::refresh_if_due(&mut app.sccache, &self.sccache_reads, now);
             // A finished row walks its grey toward the ground it is
             // drawn on for the configured spell and then goes, taking
             // its cell with it. Nothing external announces either the
             // steps or the moment, so the poll is what carries them.
             if app
                 .roster
-                .advance(Instant::now(), app.loaded_config.config.tiles.fade())
+                .advance(now, app.loaded_config.config.tiles.fade())
             {
                 dirty = true;
             }
-            // A grid in motion repaints every poll until it settles,
-            // which is the one thing here that draws without an event
-            // behind it.
+            // Advance motion even when two polls resolve to equal geometry.
+            // Only a change from the last body paint requests another frame.
             if app.tiles.tick() {
                 self.grid_motion.settle_if_immediate(app);
                 dirty = true;
@@ -364,6 +363,26 @@ mod tests {
     use crate::settings::AssociationSelection;
     use crate::settings::CaptureAssociation;
 
+    #[test]
+    fn idle_visual_tile_draws_an_appearance_change_without_a_scan() {
+        let mut app = App::new_for_test().expect("test app");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).expect("terminal");
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        for _ in 0..2 {
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("frame");
+            app.tiles.settle_for_test();
+        }
+        let mut workers = Workers::new(mpsc::channel().1, mpsc::channel().1, GridMotion::Animated);
+        let tint = tui_pane::focused_pane_tint_enabled();
+        tui_pane::set_focused_pane_tint(!tint);
+        let changed = workers.poll(&mut app, Instant::now());
+        tui_pane::set_focused_pane_tint(tint);
+        assert_eq!(changed, Repaint::Needed, "appearance needs a body frame");
+    }
+
     const FAVORITE_ROW: &str = r#"
 [[favorite]]
 id = "01a03f60-9c14-7b41-8a02-1de4c7c9b332"
@@ -432,6 +451,52 @@ fraying = "leading"
             nested: false,
             command: CommandText::of("cargo", &["test"]),
         }
+    }
+
+    #[test]
+    fn idle_visual_tile_skips_equal_polls_but_keeps_content_fades() {
+        let mut app = App::new_for_test().expect("test app");
+        let process = scan_process(
+            InvocationId::for_test(TEST_INVOCATION_PID),
+            CaptureLookup::Unregistered,
+        );
+        let now = Instant::now();
+        app.roster.observe(
+            vec![CargoGroup {
+                lead:     process,
+                rest:     Vec::new(),
+                ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
+            }],
+            now,
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        for _ in 0..2 {
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("body paint");
+            app.tiles.settle_for_test();
+        }
+        let mut workers = Workers::new(mpsc::channel().1, mpsc::channel().1, GridMotion::Animated);
+        let mut frames = 0;
+        for _ in 0..32 {
+            frames += usize::from(workers.poll(&mut app, now) == Repaint::Needed);
+        }
+        assert_eq!(frames, 0, "unchanged content and geometry skip frames");
+        app.roster.observe(Vec::new(), now);
+        let mut fades = 0;
+        let fade = app.loaded_config.config.tiles.fade();
+        for step in 1..=3 {
+            fades += usize::from(workers.poll(&mut app, now + fade * step / 4) == Repaint::Needed);
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("fade paint");
+            app.tiles.settle_for_test();
+        }
+        assert_eq!(
+            fades, 3,
+            "settled geometry must not suppress fading content"
+        );
     }
 
     /// PID reuse arrives through the channel as a new invocation and a second tile.

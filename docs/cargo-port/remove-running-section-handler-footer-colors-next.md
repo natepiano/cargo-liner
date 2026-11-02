@@ -20,3 +20,9 @@ Tests: one red-first test for each. The checkpoint adds a Change-Review line.
 **Placement (user via showrunner, 2026-10-28: "shared of course so it goes in tui_pane"):** the sampler, `CpuReadout` and the status-bar cell live in tui_pane as one cell that each app places. cargo-handler and cargo-tile put it before Uptime. cargo-port draws its own bar (`crates/cargo-port/src/tui/render.rs:700`, no Uptime); port-unit places the same cell at its bottom left. Export only what those three uses need.
 
 **Design (showrunner):** build it once in the tui_pane status bar where Uptime is drawn (`crates/tui_pane/src/bar/status_line.rs`, the uptime segment); wire it in cargo-handler and cargo-tile; port-unit wires cargo-port. Show the app's own process CPU as a percent of one core, sampled at most once a second from getrusage or /proc/self/stat deltas, at almost no cost. The sampler supplies its next sample deadline to each host's display-time state. A due sample refreshes the status bar without requesting a tile-body frame. Tests prove that sampling and the displayed percent advance while the grid is settled. A typed value `CpuReadout::{Sampling, Percent(..)}`, never a placeholder 0. Red-first tests under 1 s, and a Change-Review line.
+
+### Hierarchy timing values move to cargo-handler's config  · status: next (showrunner 2026-10-31, after current work)
+
+**Source:** the showrunner, 2026-10-31, from Phase 57c: these are configuration values in code.
+
+`census/command_inputs.rs` holds `HIERARCHY_REFRESH_INTERVAL` (30 s), `HIERARCHY_TIMEOUT` (10 s) and the 300 s reuse window. Move all three to cargo-handler's config, next to `hierarchy_command`, with the current values as the defaults. The census reads them from the loaded config; no copy stays in code. Red-first tests under 1 s: each value from config reaches the census, and a missing entry gives the default. The checkpoint adds a Change-Review line only if a user can see the change.

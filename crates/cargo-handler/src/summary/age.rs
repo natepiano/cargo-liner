@@ -14,6 +14,15 @@ pub(crate) fn age_label(seconds: u64) -> String {
     }
 }
 
+/// The next increase in a shared age column's width.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AgeWidthChange {
+    /// No displayed age can gain another column within the clock's range.
+    Stable,
+    /// Seconds until the oldest displayed age gains a column.
+    After(u64),
+}
+
 /// The widest age label in one drawn column.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AgeLayout {
@@ -30,6 +39,32 @@ impl AgeLayout {
                 .max()
                 .unwrap_or(0),
         }
+    }
+
+    /// The oldest label reaches each wider minute, hour or day format first.
+    pub(crate) fn next_width_growth(ages: impl IntoIterator<Item = u64>) -> AgeWidthChange {
+        let Some(oldest) = ages.into_iter().max() else {
+            return AgeWidthChange::Stable;
+        };
+        let mut boundary = [10 * 60, 60 * 60, 10 * 60 * 60, 24 * 60 * 60]
+            .into_iter()
+            .find(|at| *at > oldest);
+        let mut days = 10_u64;
+        while boundary.is_none() {
+            let Some(at) = days.checked_mul(24 * 60 * 60) else {
+                return AgeWidthChange::Stable;
+            };
+            if at > oldest {
+                boundary = Some(at);
+            } else if let Some(next) = days.checked_mul(10) {
+                days = next;
+            } else {
+                return AgeWidthChange::Stable;
+            }
+        }
+        boundary.map_or(AgeWidthChange::Stable, |at| {
+            AgeWidthChange::After(at - oldest)
+        })
     }
 
     /// Cell width of the widest label.
@@ -51,6 +86,34 @@ mod tests {
     const HOUR: u64 = 60 * MINUTE;
     /// Seconds in a day.
     const DAY: u64 = 24 * HOUR;
+
+    #[test]
+    fn shared_age_width_deadline_follows_each_larger_label_format() {
+        for (age, seconds) in [
+            (599, 1),
+            (600, 3000),
+            (3599, 1),
+            (3600, 32400),
+            (35999, 1),
+            (36000, 50400),
+            (86399, 1),
+            (86400, 9 * DAY),
+            (10 * DAY - 1, 1),
+            (100 * DAY - 1, 1),
+        ] {
+            assert_eq!(
+                AgeLayout::next_width_growth([0, age]),
+                AgeWidthChange::After(seconds)
+            );
+            assert!(age_label(age + seconds).len() > age_label(age).len());
+            assert_eq!(age_label(age + seconds - 1).len(), age_label(age).len());
+        }
+        assert_eq!(AgeLayout::next_width_growth([]), AgeWidthChange::Stable);
+        assert_eq!(
+            AgeLayout::next_width_growth([u64::MAX]),
+            AgeWidthChange::Stable
+        );
+    }
 
     /// Every example the column's rule was written against.
     #[test]

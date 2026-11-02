@@ -409,21 +409,17 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
         |content, area| cells.rows_kept(content, area),
     );
     let display = grid.display();
-    if display == GridDisplay::SummaryAlone
-        && (contents == TileGridContents::Hidden || frame_inner(area).is_empty())
-    {
-        grid.record_painted_summary_frames(Vec::new());
-        grid.record_painted_cells(&[]);
+    let drawing = grid.visible_drawing(contents, progress);
+    if drawing.pieces.is_empty() && drawing.column_bands.is_empty() {
+        grid.record_painted_body(drawing, contents, Vec::new());
         return;
     }
     let (widths, demands) = match display {
         GridDisplay::Cells => (&cells_widths, &cells_demands),
         GridDisplay::SummaryAlone => (&alone_widths, &alone_demands),
     };
-    let drawing = grid.drawing_at(area, growth, progress);
     let frames = draw_placements(buffer, area, &drawing, demands, widths, contents, cells);
-    grid.record_painted_cells(&drawing.pieces);
-    grid.record_painted_summary_frames(frames);
+    grid.record_painted_body(drawing, contents, frames);
 }
 
 /// Widths used to measure the display that will be drawn this frame.
@@ -1023,6 +1019,60 @@ mod tests {
     use crate::tiles::grid::PieceHeightSnap;
     use crate::tiles::grid::TilePiece;
     use crate::tiles::grid::TilePlacement;
+
+    #[test]
+    fn hidden_summary_paint_and_polls_keep_the_same_empty_drawing() {
+        let area = Rect::new(0, 0, 80, 24);
+        let cells = StubCells::new([1]);
+        let (mut grid, _) = settled_grid(area, &cells);
+        grid.set_view(TileView::Summary);
+        grid.settle_for_test();
+        let mut buffer = Buffer::empty(area);
+        buffer.set_style(area, Style::default().bg(Color::Magenta));
+        let previous = buffer.clone();
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            STAYING_GROWTH,
+            TileGridContents::Hidden,
+            &cells,
+        );
+        assert_eq!(buffer, previous, "hidden summary leaves the body unchanged");
+        assert_eq!(grid.painted_summary_frames(), [] as [Rect; 0]);
+        assert!(!grid.tick(), "poll uses the same hidden drawing as paint");
+    }
+
+    #[test]
+    fn idle_visual_appearance_change_requests_a_settled_frame() {
+        let area = Rect::new(0, 0, 80, 24);
+        let (mut grid, _) = settled_grid(area, &StubCells::new([1]));
+        assert!(!grid.tick(), "settled paint is current");
+        let tint = crate::focused_pane_tint_enabled();
+        crate::set_focused_pane_tint(!tint);
+        let changed = grid.tick();
+        crate::set_focused_pane_tint(tint);
+        assert!(changed, "tint is part of the painted visual state");
+    }
+
+    #[test]
+    fn idle_visual_theme_and_transparency_changes_need_a_body_paint() {
+        let area = Rect::new(0, 0, 80, 24);
+        let (mut grid, _) = settled_grid(area, &StubCells::new([1]));
+        let transparent = crate::transparent_background();
+        crate::set_transparent_background(!transparent);
+        let transparency_changed = grid.tick();
+        crate::set_transparent_background(transparent);
+        assert!(transparency_changed, "transparency changes the drawn frame");
+        let theme = crate::theme();
+        let mut changed = (*theme).clone();
+        changed.pane_chrome.active_title.color = Color::Rgb(17, 29, 43);
+        crate::set_active_theme(std::sync::Arc::new(changed));
+        let theme_changed = grid.tick();
+        crate::set_active_theme(theme);
+        assert!(theme_changed, "theme changes the drawn frame");
+        assert!(!grid.tick(), "polls did not replace the original paint");
+    }
 
     const FOOT_TEXT: &str = "mem 2.5G";
     const GROUP_TITLE_GLYPHS: &[u8] =
@@ -5892,7 +5942,10 @@ mod tests {
         );
 
         for raw in motion_snapshots() {
-            assert!(!grid.drawing_at(area, growth, raw).pieces.is_empty());
+            assert_ne!(
+                grid.drawing_at(area, growth, raw).pieces,
+                [] as [crate::tiles::grid::TilePiece<u32>; 0]
+            );
             assert_eq!(grid.display(), GridDisplay::SummaryAlone);
         }
         assert!(!buffer_text(&buffer).contains("group body"));
@@ -5941,7 +5994,10 @@ mod tests {
         );
 
         for raw in motion_snapshots() {
-            assert!(!grid.drawing_at(area, growth, raw).pieces.is_empty());
+            assert_ne!(
+                grid.drawing_at(area, growth, raw).pieces,
+                [] as [crate::tiles::grid::TilePiece<u32>; 0]
+            );
             assert_eq!(grid.display(), GridDisplay::SummaryAlone);
         }
         assert!(!buffer_text(&buffer).contains("group body"));
