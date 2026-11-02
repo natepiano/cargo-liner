@@ -310,26 +310,6 @@ fn drain_sccache(app: &mut App, replies: &Receiver<SccacheSummary>) -> bool {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    #[test]
-    fn idle_visual_tile_draws_an_appearance_change_without_a_scan() {
-        let mut app = App::new_for_test().expect("test app");
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).expect("terminal");
-        let keymap = std::rc::Rc::clone(&app.keymap);
-        for _ in 0..2 {
-            terminal
-                .draw(|frame| app.draw(frame, &keymap))
-                .expect("frame");
-            app.tiles.settle_for_test();
-        }
-        let mut workers = Workers::new(mpsc::channel().1, mpsc::channel().1, GridMotion::Animated);
-        let tint = tui_pane::focused_pane_tint_enabled();
-        tui_pane::set_focused_pane_tint(!tint);
-        let changed = workers.poll(&mut app, Instant::now());
-        tui_pane::set_focused_pane_tint(tint);
-        assert_eq!(changed, Repaint::Needed, "appearance needs a body frame");
-    }
-
     use std::fs;
 
     use crossterm::event::KeyCode;
@@ -382,6 +362,26 @@ mod tests {
     use crate::sccache::SccacheServer;
     use crate::settings::AssociationSelection;
     use crate::settings::CaptureAssociation;
+
+    #[test]
+    fn idle_visual_tile_draws_an_appearance_change_without_a_scan() {
+        let mut app = App::new_for_test().expect("test app");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).expect("terminal");
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        for _ in 0..2 {
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("frame");
+            app.tiles.settle_for_test();
+        }
+        let mut workers = Workers::new(mpsc::channel().1, mpsc::channel().1, GridMotion::Animated);
+        let tint = tui_pane::focused_pane_tint_enabled();
+        tui_pane::set_focused_pane_tint(!tint);
+        let changed = workers.poll(&mut app, Instant::now());
+        tui_pane::set_focused_pane_tint(tint);
+        assert_eq!(changed, Repaint::Needed, "appearance needs a body frame");
+    }
 
     const FAVORITE_ROW: &str = r#"
 [[favorite]]

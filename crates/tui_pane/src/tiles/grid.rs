@@ -1017,13 +1017,47 @@ enum CellIdentity<Id> {
     Slot(Slot<Id>),
 }
 
+/// The background mode recorded by a body paint.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BackgroundTransparency {
+    Transparent,
+    Opaque,
+}
+
+impl BackgroundTransparency {
+    fn current() -> Self {
+        if crate::transparent_background() {
+            Self::Transparent
+        } else {
+            Self::Opaque
+        }
+    }
+}
+
+/// The focused pane tint recorded by a body paint.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum FocusedPaneTint {
+    Enabled,
+    Disabled,
+}
+
+impl FocusedPaneTint {
+    fn current() -> Self {
+        if crate::focused_pane_tint_enabled() {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+}
+
 /// Geometry and appearance from one body paint. Input reads these same pieces.
 struct GridVisualState<Id> {
     drawing:     TileDrawing<Id>,
     contents:    crate::TileGridContents,
     theme:       Arc<crate::Theme>,
-    transparent: bool,
-    tint:        bool,
+    transparent: BackgroundTransparency,
+    tint:        FocusedPaneTint,
 }
 
 /// Only a body paint can replace this record.
@@ -2202,8 +2236,8 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         if same_pieces
             && drawing.column_bands == visual.drawing.column_bands
             && visual.theme == crate::theme()
-            && visual.transparent == crate::transparent_background()
-            && visual.tint == crate::focused_pane_tint_enabled()
+            && visual.transparent == BackgroundTransparency::current()
+            && visual.tint == FocusedPaneTint::current()
         {
             Repaint::NotNeeded
         } else {
@@ -2211,7 +2245,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         }
     }
 
-    fn visible_drawing(&self, contents: crate::TileGridContents, progress: u32) -> TileDrawing<Id> {
+    pub(super) fn visible_drawing(
+        &self,
+        contents: crate::TileGridContents,
+        progress: u32,
+    ) -> TileDrawing<Id> {
         if self.display() == GridDisplay::SummaryAlone
             && (contents == TileGridContents::Hidden || crate::frame_inner(self.area).is_empty())
         {
@@ -3358,8 +3396,8 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 drawing,
                 contents,
                 theme: crate::theme(),
-                transparent: crate::transparent_background(),
-                tint: crate::focused_pane_tint_enabled(),
+                transparent: BackgroundTransparency::current(),
+                tint: FocusedPaneTint::current(),
             },
             summary_frames,
         };
@@ -6489,10 +6527,32 @@ fn eased(progress: u32) -> u32 {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::ops::RangeInclusive;
+
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Margin;
+    use ratatui::style::Color;
+
+    use super::*;
+    use crate::TileGridContents;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_CELLS;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_HEIGHT;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_INITIAL_ROWS;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_ROW_STEP;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_ROWS;
+    use crate::tiles::constants::LARGE_CONTENT_TEST_WIDTHS;
+    use crate::tiles::constants::MIN_TILE_HEIGHT;
+    use crate::tiles::constants::SEVEN_CELL_MOVING_ROW_PROBE_COUNT;
+    use crate::tiles::constants::SEVEN_CELL_SETTLED_DRAWN_PROBE_COUNT;
+    use crate::tiles::constants::SEVEN_CELL_SETTLED_KEPT_PROBE_COUNT;
+    use crate::tiles::constants::TILE_BORDER_ROWS;
+    use crate::tiles::constants::TILE_DEMAND_STEP;
+    use crate::tiles::constants::TILE_ROWS_READOUT_HEIGHT;
+
     struct MotionPaintCells(TileDemands<u32>);
 
     impl crate::TileCells<u32> for MotionPaintCells {
-        fn summary_title(&self) -> &str { "summary" }
+        fn summary_title(&self) -> &'static str { "summary" }
         fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> { self.0.clone() }
         fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
     }
@@ -6576,33 +6636,13 @@ mod tests {
         }
         assert_eq!(frames, 0, "equal motion geometry asks for no body frame");
         if let GridMotion::Moving(transition) = &mut grid.motion {
-            transition.started = Instant::now() - std::time::Duration::from_secs(60);
+            transition.started = Instant::now()
+                .checked_sub(std::time::Duration::from_secs(60))
+                .expect("test clock can precede the completed motion");
         }
         assert!(grid.tick(), "the final geometry still needs painting");
         assert!(grid.tick(), "a poll cannot consume an unpainted change");
     }
-
-    use std::ops::RangeInclusive;
-
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Margin;
-    use ratatui::style::Color;
-
-    use super::*;
-    use crate::TileGridContents;
-    use crate::tiles::constants::LARGE_CONTENT_TEST_CELLS;
-    use crate::tiles::constants::LARGE_CONTENT_TEST_HEIGHT;
-    use crate::tiles::constants::LARGE_CONTENT_TEST_INITIAL_ROWS;
-    use crate::tiles::constants::LARGE_CONTENT_TEST_ROW_STEP;
-    use crate::tiles::constants::LARGE_CONTENT_TEST_ROWS;
-    use crate::tiles::constants::LARGE_CONTENT_TEST_WIDTHS;
-    use crate::tiles::constants::MIN_TILE_HEIGHT;
-    use crate::tiles::constants::SEVEN_CELL_MOVING_ROW_PROBE_COUNT;
-    use crate::tiles::constants::SEVEN_CELL_SETTLED_DRAWN_PROBE_COUNT;
-    use crate::tiles::constants::SEVEN_CELL_SETTLED_KEPT_PROBE_COUNT;
-    use crate::tiles::constants::TILE_BORDER_ROWS;
-    use crate::tiles::constants::TILE_DEMAND_STEP;
-    use crate::tiles::constants::TILE_ROWS_READOUT_HEIGHT;
 
     mod motion_rules {
         use super::*;
@@ -7539,7 +7579,7 @@ mod tests {
             |_, content| content.height,
         );
         let drawing = grid.drawing_at(area, growth, PROGRESS_SCALE / 2);
-        assert!(!drawing.pieces.is_empty());
+        assert_ne!(drawing.pieces, [] as [TilePiece<u32>; 0]);
         for piece in &drawing.pieces {
             assert!(piece.placement.frame.clip().height >= 6);
         }
@@ -7604,7 +7644,7 @@ mod tests {
         );
         for progress in [0, PROGRESS_SCALE / 2, PROGRESS_SCALE] {
             let drawing = grid.drawing_at(area, growth, progress);
-            assert!(!drawing.pieces.is_empty());
+            assert_ne!(drawing.pieces, [] as [TilePiece<u32>; 0]);
             for piece in &drawing.pieces {
                 let frame = piece.placement.frame.clip();
                 assert!(frame.height >= floor, "changed layout floor: {frame:?}");
@@ -7703,7 +7743,7 @@ mod tests {
             |_, content| content.height,
         );
         let drawing = grid.drawing_at_with_height_snap(area, growth, progress, &HeightSnap::Off);
-        assert!(!drawing.pieces.is_empty());
+        assert_ne!(drawing.pieces, [] as [TilePiece<u32>; 0]);
         for piece in &drawing.pieces {
             let frame = piece.placement.frame.clip();
             assert!(

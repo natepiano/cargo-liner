@@ -192,14 +192,14 @@ struct DisplayTime {
 
 fn next_body_change(app: &App, now: u64) -> TextChange {
     let mut next = TextChange::Static;
-    let mut ages = Vec::new();
+    let mut session_starts = Vec::new();
     let machines = app
         .census
         .machines(&app.loaded_config.config.machines.remote);
     let placement = AgentPlacement::from_machines(&machines);
     for thread in &placement.threads {
         let child = &thread.owner_row.children[thread.child_index];
-        ages.push(now.saturating_sub(child.started));
+        session_starts.push(child.started);
         next = next.earlier(
             DisplayText::AgentAge {
                 started: child.started,
@@ -209,7 +209,7 @@ fn next_body_change(app: &App, now: u64) -> TextChange {
     }
     for machine in machines {
         for row in machine.state.rows().iter().filter(|row| row.is_visible()) {
-            ages.push(now.saturating_sub(row.started));
+            session_starts.push(row.started);
             next = next.earlier(
                 DisplayText::AgentAge {
                     started: row.started,
@@ -217,7 +217,7 @@ fn next_body_change(app: &App, now: u64) -> TextChange {
                 .next_change(now),
             );
             for child in &row.children {
-                ages.push(now.saturating_sub(child.started));
+                session_starts.push(child.started);
                 next = next.earlier(
                     DisplayText::AgentAge {
                         started: child.started,
@@ -240,8 +240,10 @@ fn next_body_change(app: &App, now: u64) -> TextChange {
             next = next.earlier(DisplayText::Notice.next_change(now));
         }
     }
-    if let AgeWidthChange::After(seconds) = crate::summary::age::AgeLayout::next_width_growth(ages)
-        && let Some(at) = now.checked_add(seconds)
+    if let Some(started) = session_starts.into_iter().min()
+        && let AgeWidthChange::After(seconds) =
+            crate::summary::age::AgeLayout::next_width_growth([now.saturating_sub(started)])
+        && let Some(at) = now.max(started).checked_add(seconds)
     {
         next = next.earlier(TextChange::At(at));
     }
@@ -439,20 +441,6 @@ impl PollWork<App> for Ticker {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    #[test]
-    fn idle_visual_handler_draws_an_appearance_change_without_data() {
-        let mut app = App::new_for_test().expect("test app");
-        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
-        let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
-        let (now, _) = settle_body(&mut app, &mut ticker, 100);
-        assert_eq!(ticker.poll_at(&mut app, now, 100), Repaint::NotNeeded);
-        let tint = tui_pane::focused_pane_tint_enabled();
-        tui_pane::set_focused_pane_tint(!tint);
-        let changed = ticker.poll_at(&mut app, now, 100);
-        tui_pane::set_focused_pane_tint(tint);
-        assert_eq!(changed, Repaint::Needed, "appearance needs a body frame");
-    }
-
     use std::sync::mpsc;
 
     use crossterm::event::KeyCode;
@@ -481,6 +469,20 @@ mod tests {
     use crate::census::accounts::AccountsTable;
     use crate::sort::TreeSort;
     use crate::tiles::TileKey;
+
+    #[test]
+    fn idle_visual_handler_draws_an_appearance_change_without_data() {
+        let mut app = App::new_for_test().expect("test app");
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
+        let (now, _) = settle_body(&mut app, &mut ticker, 100);
+        assert_eq!(ticker.poll_at(&mut app, now, 100), Repaint::NotNeeded);
+        let tint = tui_pane::focused_pane_tint_enabled();
+        tui_pane::set_focused_pane_tint(!tint);
+        let changed = ticker.poll_at(&mut app, now, 100);
+        tui_pane::set_focused_pane_tint(tint);
+        assert_eq!(changed, Repaint::Needed, "appearance needs a body frame");
+    }
 
     #[test]
     fn unchanged_account_failure_needs_no_clock_frame() {
@@ -550,16 +552,16 @@ mod tests {
         );
     }
 
-    /// Freeze Uptime and settle motion, so only a body deadline can draw another body.
+    /// Freeze Uptime and settle motion before checking body deadlines.
     fn settle_body(
         app: &mut App,
         ticker: &mut Ticker,
         at: u64,
     ) -> (Instant, Terminal<TestBackend>) {
         let now = app.started;
+        let keymap = std::rc::Rc::clone(&app.keymap);
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24))
             .expect("test terminal");
-        let keymap = std::rc::Rc::clone(&app.keymap);
         for _ in 0..2 {
             ticker.poll_at(app, now, at);
             terminal
@@ -578,11 +580,11 @@ mod tests {
         at: u64,
         expected: Repaint,
     ) {
+        let keymap = std::rc::Rc::clone(&app.keymap);
         let before = app.full_frame_count();
         let actual = ticker.poll_at(app, now, at);
         assert_eq!(actual, expected, "body repaint at {at}");
         if actual == Repaint::Needed {
-            let keymap = std::rc::Rc::clone(&app.keymap);
             terminal
                 .draw(|frame| app.draw(frame, &keymap))
                 .expect("body frame");
@@ -592,6 +594,108 @@ mod tests {
             usize::from(expected == Repaint::Needed),
             "body layout at {at}"
         );
+    }
+
+    /// Paint one body with the same clock that the ticker uses.
+    fn paint_timed_body(app: &mut App, terminal: &mut Terminal<TestBackend>, at: u64) {
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        terminal
+            .draw(|frame| crate::render::draw_at_for_test(frame, app, &keymap, at))
+            .expect("timed body frame");
+    }
+
+    /// Settle the grid with a controlled renderer clock.
+    fn settle_timed_body(
+        app: &mut App,
+        ticker: &mut Ticker,
+        at: u64,
+    ) -> (Instant, Terminal<TestBackend>) {
+        let now = app.started;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        for _ in 0..2 {
+            ticker.poll_at(app, now, at);
+            paint_timed_body(app, &mut terminal, at);
+            app.tiles.settle_for_test();
+        }
+        (now, terminal)
+    }
+
+    #[test]
+    fn shared_age_column_paints_the_minute_and_width_boundary() {
+        let mut app = App::new_for_test().expect("test app");
+        let rows = [90, 120]
+            .into_iter()
+            .enumerate()
+            .map(|(index, started)| {
+                serde_json::from_value(serde_json::json!({
+                    "agent":"claude", "name":format!("session{index}"), "pid":4000 + index,
+                    "started":started, "process_started":started, "directory":"/fixture",
+                    "desktop":null, "branch":null, "status":"idle", "launched_by":null, "children":[]
+                })).expect("fixture agent")
+            })
+            .collect();
+        app.census.apply(CensusUpdate::Local {
+            rows,
+            hierarchy: HierarchyEdges::default().into(),
+            stage: ScanStage::Completed,
+        });
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
+        let (now, mut terminal) = settle_timed_body(&mut app, &mut ticker, 689);
+        assert_drawn_age(&terminal, "session0", "9");
+        assert_drawn_age(&terminal, "session1", "9");
+        assert_eq!(ticker.poll_at(&mut app, now, 689), Repaint::NotNeeded);
+        assert_eq!(ticker.poll_at(&mut app, now, 690), Repaint::Needed);
+        paint_timed_body(&mut app, &mut terminal, 690);
+        assert_drawn_age(&terminal, "session0", "10");
+        assert_drawn_age(&terminal, "session1", "9");
+        assert_eq!(ticker.poll_at(&mut app, now, 691), Repaint::NotNeeded);
+    }
+
+    fn assert_drawn_age(terminal: &Terminal<TestBackend>, name: &str, age: &str) {
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (buffer.area.y..buffer.area.bottom())
+            .map(|y| {
+                (buffer.area.x..buffer.area.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect();
+        let row = rows
+            .iter()
+            .find(|row| row.contains(name))
+            .expect("drawn session");
+        assert!(
+            row.split_whitespace().any(|word| word == age),
+            "drawn age {age}: {row}"
+        );
+    }
+
+    #[test]
+    fn future_session_start_draws_only_when_its_age_changes() {
+        let mut app = App::new_for_test().expect("test app");
+        let row: AgentRow = serde_json::from_value(serde_json::json!({
+            "agent":"claude", "name":"future", "pid":10,
+            "started":1000, "process_started":1000, "directory":"/fixture",
+            "desktop":null, "branch":null, "status":"idle", "launched_by":null, "children":[]
+        }))
+        .expect("fixture agent");
+        app.census.apply(CensusUpdate::Local {
+            rows:      vec![row],
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Completed,
+        });
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
+        let (now, mut terminal) = settle_timed_body(&mut app, &mut ticker, 100);
+        assert_eq!(next_body_change(&app, 100), TextChange::At(1060));
+        for at in [100, 699, 700, 999, 1000, 1059] {
+            assert_eq!(ticker.poll_at(&mut app, now, at), Repaint::NotNeeded);
+            assert_drawn_age(&terminal, "future", "0");
+        }
+        assert_eq!(ticker.poll_at(&mut app, now, 1060), Repaint::Needed);
+        paint_timed_body(&mut app, &mut terminal, 1060);
+        assert_drawn_age(&terminal, "future", "1");
     }
 
     #[test]
