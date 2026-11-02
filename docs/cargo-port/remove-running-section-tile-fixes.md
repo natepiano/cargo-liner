@@ -2442,3 +2442,46 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - After the change, on each machine: sorted by start `timestamp`, the source-switch reader is first, and no test outside the reader group and the slow set starts before the last slow-set test starts. The reader group still runs one at a time, and a `cargo-tile::shim_modes` test still carries its 30 s `slow-timeout`.
 - The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.
 - The summary gives each test named in Spec items 5 and 6 its quiet natedev time and load, and for any at a second or more, its measured cause, its floor and the fix proposal sent to the showrunner.
+
+### Phase 48 — The p and h shortcuts show with the other global shortcuts  · status: todo
+
+**Depends on:** Phase 39
+
+#### Work Order
+
+**Goal:** The status bar does not show `p process_tree` or `h arguments` in its bottom-right corner. Both shortcuts show with the other global shortcuts, in the `?` shortcuts list. User request, 2026-11-02, through the showrunner.
+
+**Spec:**
+
+1. Remove `p process_tree` and `h arguments` from the status line. `render.rs` adds them through `StatusLineGlobal::app(AppGlobalAction::ProcessTree)` and the arguments entry beside it.
+2. Show both shortcuts in the global shortcuts list, with the labels and descriptions in `app_global_action.rs`.
+3. The `p` and `h` keys keep their current behavior.
+4. Change the status-line tests that expect the two entries. Each Assertion-Change line names the user request as its reason.
+
+**Files:** `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/app_global_action.rs`, and the keymap only if the shortcuts list needs it.
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green; no new test takes 1 s or more.
+- A live shot shows the status bar without the two entries, and the `?` list with both.
+
+### Phase 49 — The summary tile shows free disk space in GiB after mem  · status: todo
+
+**Depends on:** Phase 48
+
+#### Work Order
+
+**Goal:** The summary tile shows the current disk availability in GiB, directly after its mem value. User request, 2026-11-02, through the showrunner.
+
+**Spec:**
+
+1. Read the free space of the file system that holds the working directory. Read it on the census refresh, not on each frame. Name the read cost in the phase notice.
+2. Show the value in GiB after mem, with the same label style as mem.
+3. Linux and macOS both show the value. A failed read shows no disk value; it does not show a placeholder number.
+4. Add tests for the format and the placement at every summary width.
+
+**Files:** the summary tile code in `crates/cargo-tile/src/render.rs` and the census refresh that reads the value.
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green on natedev and the Mac; no new test takes 1 s or more.
+- A live shot shows the disk value in GiB after mem.
+- Idle tile CPU does not rise by more than the spread of 3 live pairs.

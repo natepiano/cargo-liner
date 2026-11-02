@@ -158,6 +158,7 @@ fn cpu_cache_identity_recovery_preserves_detached_credit_and_retained_target() {
     let now = Instant::now();
     let mut samples = Vec::new();
     let mut identities = Vec::new();
+    let mut roster = Roster::new();
     for index in 0..16 {
         // Target argv and the requesting client disappear after the first scan.
         // Later ownership must come from the retained destination.
@@ -187,7 +188,7 @@ fn cpu_cache_identity_recovery_preserves_detached_credit_and_retained_target() {
         );
         assert_eq!(groups.len(), 1, "sample {index}");
         assert_eq!(groups[0].rest, [] as [CargoProcess; 0]);
-        assert_eq!(groups[0].lead.pid, 100);
+        assert_eq!(groups[0].lead.pid, if index < 8 { 100 } else { 10 });
         let identity = groups[0].id();
         assert_eq!(matches!(identity, InvocationId::Captured(_)), index >= 8);
         assert_eq!(sequence.smoothing.invocations.len(), 1);
@@ -207,6 +208,8 @@ fn cpu_cache_identity_recovery_preserves_detached_credit_and_retained_target() {
             Duration::from_millis(100 + index * 200)
         );
         identities.push(identity);
+        roster.observe(groups.clone(), now + Duration::from_secs(index));
+        assert_one_live_key(&mut roster, &identities[0], index);
         samples.push(groups);
     }
     assert!(
@@ -232,6 +235,13 @@ fn cpu_cache_identity_recovery_preserves_detached_credit_and_retained_target() {
             "sample {index}"
         );
     }
+}
+
+fn assert_one_live_key(roster: &mut Roster, key: &InvocationId, sample: u64) {
+    let visible = roster.visible(&[]);
+    assert_eq!(visible.groups().len(), 1, "sample {sample}");
+    assert_eq!(&visible.groups()[0].id, key, "sample {sample}");
+    assert!(!visible.groups()[0].lead.is_ended(), "sample {sample}");
 }
 
 #[test]
@@ -474,14 +484,14 @@ fn assert_shared_target_refusal(command: &str, excluded: &[String]) {
         let mut lead_pids: Vec<_> = groups.iter().map(|group| group.lead.pid).collect();
         lead_pids.sort_unstable();
         let expected_pids: &[u32] = if excluded.is_empty() {
-            &[100, 300]
+            &[30, 100]
         } else {
             &[100]
         };
         assert_eq!(lead_pids, expected_pids, "sample {index}");
         for group in &groups {
             assert_eq!(group.rest, [] as [CargoProcess; 0]);
-            assert!(group.lead.pid == 100 || (excluded.is_empty() && group.lead.pid == 300));
+            assert!(group.lead.pid == 100 || (excluded.is_empty() && group.lead.pid == 30));
             let expected = if index == 0 {
                 Measurement::Unavailable(MeasurementAbsence::FirstObservation)
             } else {
