@@ -162,36 +162,13 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 ### Phase 2n — mend --fix keeps the imports of a module mounted with #[path]  · status: done
 
-**Depends on:** none (runs beside Phase 2l; the file sets do not overlap)
+**As-built:** `cargo mend --fix` keeps a module import in a file mounted with `#[path = "…"]`, and the crate builds with nothing rolled back (checkpoint 73a51de7). `support::leaf_is_module` (`crates/cargo-mend/src/fixes/prefer_module_import/support.rs`) decides whether an import leaf names a module through `rust_syntax::ModuleMap::module_ancestors`, which follows `#[path]` mounts and the modules they declare; it no longer walks physical folders. `ModuleMap::declared_module_files` prefers the existing sibling file by default. The fixture `fix_imports_keep_modules_declared_in_path_mounted_test_files` (`tests/diagnostics/import_fixes.rs`) holds both Hana shapes, and `path_mounted_import_resolution_uses_declared_module_paths` pins the module path of a `#[path]` file and of a module it declares.
 
-#### Work Order
+**Files:** `crates/cargo-mend/src/fixes/prefer_module_import/support.rs`, `crates/cargo-mend/src/rust_syntax/module_map.rs`, `crates/cargo-mend/tests/diagnostics/import_fixes.rs`, `crates/cargo-mend/CHANGELOG.md`.
 
-**Goal:** `cargo mend --fix` keeps a working import in a file mounted with `#[path = "…"]`, and the crate builds after the fix with nothing rolled back.
+**Gotchas:** module identity comes from `ModuleMap`, never from folder layout.
 
-**Source:** the user, through the showrunner, 2026-11-01. In `~/rust/hana_catalyst-hana-migration`, `RUSTUP_TOOLCHAIN=stable verify.sh lint hana_diegetic` stopped with "compiler failed after applying mend fixes; changes were rolled back". All 51 errors (E0432/E0433) are in files mounted with `#[path = "../tests/…"]`. Two examples:
-- `crates/hana_mimesis_tools/tests/camera_publication/mod.rs`, mounted from `src/camera_source.rs` as `pub(crate) mod phase68_tests`. Its `use crate::propagation::phase68_tests::support;` names a `mod support;` inside another `#[path]` module. After the fix, `support::` does not resolve.
-- `crates/hana/tests/jack_controls/modulation_mode.rs`, mounted from `crates/hana/src/tool/` with `#[path = "../../tests/…"]`. Its `use crate::test_support::slider_reset;` is lost, and `slider_reset::` does not resolve.
-
-Log: `/tmp/claude/unit/195cf00e-903b-4aa4-8515-c9b261497d9c/mesh_runs/20261101T071026-445133-d66c.log`.
-
-**Cause:** the fault is older than Phases 2h and 2i. `function_imports.rs` asks `support::leaf_is_module` whether an import names a module. That check walked the physical folders and did not follow `#[path]`, so a module import in a `#[path]` file looked like a function import. The scan then reported it as `PreferModuleImport`, and the fix rewrote it. The repair makes `leaf_is_module` use `rust_syntax::ModuleMap`.
-
-**Constraints:**
-- Do not edit or build in any Hana worktree. The Hana files are read-only evidence.
-- The repair goes where the defect is. If the module path of a `#[path]` file is wrong, fix it in `ModuleMap`. Do not filter fixes after planning.
-- An import mend cannot place with certainty stays as written; the fix is declined and reported once as skipped.
-- Phase 2l owns the mend CHANGELOG. Put this phase's line in the summary; the unit director adds it at the checkpoint.
-- No test takes a second. Ruling (unit director, 2026-11-02): a cli or diagnostics test that runs real cargo builds has a floor near 2 s, like the other mend fix tests (2–4 s). Such a test runs mend once and adds no wait.
-
-**Spec:**
-1. A fixture in `tests/diagnostics/import_fixes.rs` with both Hana shapes: a `#[path = "../tests/…/mod.rs"]` module with its own `mod support;`, imported from a second `#[path]` module; and a `#[path = "../../tests/….rs"]` module mounted from a nested source folder that imports `crate::test_support::<module>` and calls through it. `cargo mend --fix` leaves both imports, the crate builds, and nothing rolls back. The fixture fails on today's code first.
-2. A unit test at the level where the defect lives (`ModuleImports` or `ModuleMap`) that pins the module path of a `#[path]` file and of a module it declares.
-
-**Files:** `crates/cargo-mend/src/fixes/imports/`, `crates/cargo-mend/src/fixes/prefer_module_import/`, `crates/cargo-mend/src/fixes/imports_at_top/`, `crates/cargo-mend/src/rust_syntax/`, `crates/cargo-mend/tests/diagnostics/import_fixes.rs`.
-
-**Workers:** 1 writer (impl4) owns the code and the tests.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean on a gate tree; no test takes a second; the spec 1 fixture fails before the repair and passes after it. The checkpoint adds a Change-Review line.
+**Ruled out:** filtering fixes after planning.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 
