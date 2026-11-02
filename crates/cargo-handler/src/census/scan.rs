@@ -495,12 +495,7 @@ impl LocalScanner {
             };
             let read = self.rollouts.read(&thread.rollout);
             row.activity = read.activity();
-            let Some(id) = tree::thread_id(&thread.rollout) else {
-                continue;
-            };
-            if let Some(codex_home) = codex::session_home(process, home)
-                && let SessionName::Named(name) = self.session_names.name(&codex_home, &id)
-            {
+            if let SessionName::Named(name) = self.session_names.name(thread) {
                 row.name = name;
             }
         }
@@ -1585,7 +1580,7 @@ fn process_children(pid: Pid) -> Vec<Pid> {
 
 /// New macOS descendants are recovered with the bounded full discovery scan.
 #[cfg(not(target_os = "linux"))]
-fn process_children(_: Pid) -> Vec<Pid> { Vec::new() }
+const fn process_children(_: Pid) -> Vec<Pid> { Vec::new() }
 
 #[cfg(target_os = "linux")]
 fn process_revision(pid: Pid) -> ProcessRevision {
@@ -2663,6 +2658,10 @@ mod hierarchy_publication_tests {
 #[cfg(test)]
 #[path = "scan/activity_scan_tests.rs"]
 mod activity_scan_tests;
+
+#[cfg(test)]
+#[path = "scan/codex_home_tests.rs"]
+mod codex_home_tests;
 
 #[cfg(test)]
 #[path = "subagent_activity_tests.rs"]

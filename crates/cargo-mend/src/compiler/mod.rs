@@ -27,4 +27,5 @@ pub(crate) use constants::DIAGNOSTIC_SEVERITY_WARNING_PREFIX;
 pub(crate) use constants::DRIVER_ENV;
 pub(crate) use constants::SOURCE_DIR_SRC;
 pub(crate) use driver::driver_main;
+pub(crate) use persistence::SourceModuleMount;
 pub(crate) use toolchain_probes::ToolchainProbes;

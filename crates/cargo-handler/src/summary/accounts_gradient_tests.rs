@@ -536,12 +536,19 @@ fn reset_shades_keep_saturated_chroma_and_separation_from_plain_text() {
     for variant in theme::builtins() {
         let name = variant.id.as_str().to_owned();
         tui_pane::set_active_theme(Arc::new(variant.theme));
+        let mut drawings = HashMap::new();
         for tint in [false, true] {
             tui_pane::set_focused_pane_tint(tint);
             let text = SessionRowInk::Text.style().fg.expect("plain text ink");
-            let buffer = draw_reset_ranks();
-            let reset_column = locate(&buffer, "resets").column + 5;
-            let positions = reset_rank_positions(&buffer);
+            // Tint settings can resolve to the same grounds on a transparent screen.
+            // Reuse that draw while checking every rank in each case.
+            let grounds = (
+                tui_pane::pane_background(false),
+                tui_pane::pane_background(true),
+            );
+            let buffer = drawings.entry(grounds).or_insert_with(draw_reset_ranks);
+            let reset_column = locate(buffer, "resets").column + 5;
+            let positions = reset_rank_positions(buffer);
             assert_eq!(positions.len(), 256, "{name} tint={tint}: every rank draws");
             for rank in 0..=u8::MAX {
                 let label = format!("rank-{rank:03}");

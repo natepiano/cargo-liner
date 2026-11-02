@@ -1449,70 +1449,130 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 57 — The mouse wheel scrolls the shortcuts overlay in every host  · status: done
 
-**Depends on:** port-unit's Phase 2e (merged; `wheel_framework_overlay` is on main 56ade11c). Showrunner, 2026-10-31: runs before Phase 54. Port-unit's Phase 2e "The shortcuts overlay's wheel scroll lives in tui_pane". Showrunner, 2026-10-30: it returns `OverlayWheel::{Consumed, NoOverlay}`, where `Consumed` covers any wheel step over an open overlay; port-unit, 2026-10-30: `pub fn wheel_framework_overlay<Ctx: SettingsHost>(ctx: &mut Ctx, position: Position, direction: ScrollDirection) -> OverlayWheel` and `pub enum OverlayWheel { Consumed, NoOverlay }`, both exported from the tui_pane crate root; `ScrollDirection` is `tui_pane::ScrollDirection`; `SettingsHost` (`app_settings/navigation.rs`) extends `AppContext`. `Consumed` is any wheel event while Settings, Keymap or GlobalShortcuts is open; the caller applies its own `invert_scroll` first. Port Phase 2e runs after its 2d and 2g; port-unit says if the signature changes. Background: cargo-port's `scroll_modal_overlay_at` (`crates/cargo-port/src/tui/input/dispatch.rs` ≈721) consumes a wheel event over an open overlay even outside its content or when it cannot move (for example `OverlayWheel::{Consumed, NoOverlay}`, with shared tests for those cases)
+#### As-built
+
+- `tui_pane::handle_tile_scroll` now has a `SettingsHost` bound. It calls `wheel_framework_overlay` first and returns when the result is `OverlayWheel::Consumed`.
+- A wheel step over an open Settings, Keymap or GlobalShortcuts overlay never scrolls a tile behind it. The overlay arms live only in `wheel_framework_overlay`; the hosts hold no copy.
+- cargo-tile `App::scroll` calls `tui_pane::handle_tile_scroll`, as cargo-handler already does. Before this, cargo-tile ignored wheel steps.
+- Each host has the test `shortcuts_overlay_wheel_scrolls_and_keeps_tiles_still`. With the `?` overlay open and taller than its viewport, a step down moves the viewport and a step up moves it back. A step with the overlay closed reaches the tile or summary.
+
+**Files:**
+- `crates/tui_pane/src/tiles/host.rs` — `handle_tile_scroll` routes the overlay wheel first.
+- `crates/cargo-tile/src/app.rs` — `scroll` through `handle_tile_scroll`, and the wheel test.
+- `crates/cargo-handler/src/app.rs` — the wheel test, with the `wheel_test_app_with_agents` fixture. The test is split into named helpers to stay under the clippy line limit.
+
+**Binds later work:** cargo-port can move its own overlay wheel arms onto `wheel_framework_overlay`. `handle_tile_scroll` sits beside `content_click` in `tiles/host.rs`. The global shortcuts overlay `row_line` and the handler keymap are shared edit points with this test.
+
+**Gotchas:**
+- The handler wheel test needs several summary rows (`wheel_test_app_with_agents`). With an empty summary, "selection unchanged" passes for the wrong reason.
+- A live cargo-tile capture shows tile rows change with no wheel input, because activity is live. Compare a wheel capture against a no-wheel control.
+
+### Phase 57a — The shortcuts overlay highlights whole rows and shows every focus key  · status: done
+
+#### As-built
+
+- `tui_pane` pads each shortcut key span to the widest displayed key. Selected rows have one highlight width, including rows with no key. `build_lines` computes the width and passes it to `row_line`.
+- cargo-handler defaults `FocusUp` to `shift-up` and `FocusDown` to `shift-down`. The user can rebind both. `up` and `down` still select rows.
+- `selected_shortcut_rows_cover_the_same_width_for_short_and_long_keys` checks the drawn highlight. `shortcuts_overlay_shows_vertical_focus_keys_without_replacing_row_keys` checks focus and row keys.
+- The Keymap and Global Shortcuts screen captures include the focus keys. Live checks passed in both hosts: selected rows cover 46 cells in cargo-tile and 47 cells in cargo-handler. Commit: `772d67d3`.
+
+**Files:**
+
+- `crates/tui_pane/src/overlays/global_shortcuts.rs` — computes the key width and pads each key span.
+- `crates/tui_pane/src/overlays/global_shortcuts_tests.rs` — checks equal selected widths for short and long keys.
+- `crates/cargo-handler/src/globals.rs` — adds the vertical focus defaults and checks them.
+- `crates/cargo-handler/src/keymap.rs` — checks focus and row keys; updates captured key rows.
+- `crates/cargo-handler/src/render/mod.rs` — updates both overlay screen captures.
+- `crates/tui_pane/CHANGELOG.md` — records the selected-row width fix.
+- `crates/cargo-handler/CHANGELOG.md` — records the vertical focus keys.
+
+**Binds later work:** Keep the key width in the overlay layout. Keep focus bindings in the default keymap so users can rebind them.
+
+**Gotchas:**
+
+- Changing default keys can change overlay captures in `render/mod.rs`: `the_keymap_overlay_opens_on_its_first_screen` and `the_shortcuts_overlay_opens_on_its_first_screen`.
+
+### Phase 57d — A Codex session resumed under a second account shows its own name  · status: done
+
+#### As-built
+
+- Each `CodexThread` carries `CodexAccountHome`, the lexical home of the database that supplied it. A shared rollout link does not change its account.
+- `thread_matches_home` matches the process account home to the database account home. A resumed thread from another account does not match, even with the same thread id and rollout path.
+- `SessionNames::name` uses the thread's own account index. If that index has no name, it keeps the database name. `SessionName` distinguishes `Named` from `Unnamed`.
+- `resumed_codex_with_shared_rollouts_keeps_its_database_name_and_account` checks the shared folder, foreign account, database fallback and own index rename. `default_and_named_codex_homes_keep_their_own_threads_with_shared_sessions` checks separate accounts.
+- The Mac suite passed 776 of 776 tests; the slowest took 0.325 s. Lint passed. The live cells view showed `morty idle codex2`. Commit: `449c5b97`.
+
+**Files:**
+
+- `crates/cargo-handler/src/census/classify.rs` — matches threads by their database account home; updates test records.
+- `crates/cargo-handler/src/census/codex.rs` — adds `CodexAccountHome` to database reads and uses `SessionName` for thread names.
+- `crates/cargo-handler/src/census/codex_names.rs` — normalizes names and uses the own account index with a database fallback.
+- `crates/cargo-handler/src/census/codex_label_cut_tests.rs` — gives the label fixture an account home and an unnamed state.
+- `crates/cargo-handler/src/census/codex_session_tests.rs` — updates account fixtures and makes no-name cases explicit.
+- `crates/cargo-handler/src/census/scan.rs` — attaches the resolved name and includes the account-home tests.
+- `crates/cargo-handler/src/census/scan/codex_home_tests.rs` — tests a resumed thread with shared rollouts and separate account databases.
+- `crates/cargo-handler/CHANGELOG.md` — records the resumed-session name fix.
+
+**Binds later work:** Keep account ownership with the source database; never derive it from a shared rollout path. Phase 57c's staff list does not cover standalone sessions, which still need the Codex name readers.
+
+**Gotchas:**
+
+- The activity fixture is explicitly unnamed because the database name is now kept. A fixture that expects a pid must have no database name.
+- The live capture needs the cells view. The summary-only view hides Unassigned.
+
+### Phase 57b — The reset-shade test runs in under a second  · status: done
+
+#### As-built
+
+- `reset_shades_keep_saturated_chroma_and_separation_from_plain_text` reuses each draw within one theme when both pane backgrounds match. The cache is local to the test's theme loop.
+- Every theme, tint case, reset rank and assertion stays. Each case still checks all 256 ranks. Product code is unchanged.
+- The Mac test took 0.375 s, down from 1.0–1.28 s. The full Mac suite passed 775 of 775 tests.
+- Both reviews approved with no findings. Commit: `5c5ddaad`. `Change-Review: none — test speed only`.
+
+**Files:**
+
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — reuses draws by the pair of pane backgrounds within each theme.
+
+**Binds later work:** Keep every case and assertion when reducing test time. If frame size, app data or time varies between cases, include that input in draw reuse or make a separate draw.
+
+**Gotchas:**
+
+- Tint on and off can produce the same pane backgrounds on a transparent screen. A tint flag alone does not identify a distinct draw.
+
+### Phase 57c — cargo-handler reads its staff from the staff list  · status: todo
+
+**Depends on:** none.
 
 #### Work Order
 
-**Goal:** the mouse wheel scrolls the `?` global shortcuts overlay, and the other framework overlays, in cargo-tile and cargo-handler, through the one shared tui_pane function that cargo-port also calls.
+**Goal:** cargo-handler takes managers, members and roles from `~/.claude/scripts/production/staff.py show --json --live` (schema 3) in place of `production_tree.py --json`, with one parser, and stops reading the review pool, which no longer exists.
 
-**Source:** the user (via the showrunner), 2026-10-30, on change review row C119 (Phase 18, merge 2a881055), returned: "it does split but what doesn't work is mouse scrolling on either one - it does work on cargo port - this needs to be shared code". Showrunner: put overlay wheel scrolling in tui_pane so every host gets it from one place, with a test per host; CPU work runs first. When this lands, port-unit moves cargo-port to the shared path and removes its own; the showrunner tells port-unit. The fix returns as a new change review row. Showrunner, 2026-10-30, after the user's no-duplication rule: port-unit moves cargo-port's overlay scroll into one public tui_pane function (`OverlayScroll::{Scrolled, NoOverlay}`) and cargo-port calls it, with no copy left; this phase only wires the hosts to it.
+**Source:** herdr, 2026-10-31: the staff list is live as schema 3, with no `pool` key. The showrunner, 2026-10-31, approved the switch and confirmed schema 3 on natedev and the Mac. The user, 2026-10-31: the review pool is gone.
 
 **Constraints from prior phases:**
-- The runner gives every wheel step to `TerminalApp::scroll` (`crates/tui_pane/src/runner/event_loop.rs` ≈214, `handle_mouse`). The trait default does nothing (`crates/tui_pane/src/runner/app.rs` ≈56).
-- cargo-handler's `scroll` (`crates/cargo-handler/src/app.rs` ≈390) calls `tui_pane::handle_tile_scroll` (`crates/tui_pane/src/tiles/host.rs` ≈164). That function scrolls only a `TilePick::Cell` hit; a `TilePick::OverlayRow` hit does nothing. The click path already handles `TilePick::OverlayRow` through `select_framework_overlay_row` (≈157).
-- cargo-tile does not implement `scroll` (`crates/cargo-tile/src/app.rs`), so its wheel steps do nothing.
-- cargo-port's working path is `scroll_modal_overlay_at` (`crates/cargo-port/src/tui/input/dispatch.rs` ≈705). For the framework overlays it does: `Settings` moves the selection (`NavAction::Up`/`Down`) when the pointer is inside the settings content area; `Keymap` and `GlobalShortcuts` call `viewport_mut().scroll_if_contains(pos, direction)`. It applies cargo-port's own `invert_scroll` before that call (≈651).
-- The framework holds the open overlay (`Framework::overlay`, `crates/tui_pane/src/framework/mod.rs` ≈379) and the panes (`global_shortcuts_pane` ≈101, `keymap_pane`, `settings_pane`).
-- Phase 56 also edits `tiles/host.rs` (`content_click`); this phase runs first.
-- No duplicated state, logic or data: one owner for each fact. The overlay scroll has one owner, the tui_pane function from port-unit's phase. Do not copy its arms.
+- The command stays in the `hierarchy_command` setting; no path in code.
+- Read stdout only. The command prints hundreds of stderr lines (265 on natedev); never show them in the tile or in cargo-handler.
+- One parser: remove the `production_tree.py` shape parser in this phase. If a Mac config can still point at the old command, say so in the notice; the showrunner sets the order.
+- The review pool reader (`REVIEW_POOL_STATE`, `pool.json` in `census/command_inputs.rs`) and its fixtures go too.
+- Standalone sessions are not in the staff list; Phase 57d names them.
 
 **Spec:**
-1. `handle_tile_scroll` calls the shared tui_pane overlay scroll function first. When it returns `OverlayWheel::Consumed`, the step stops there, so a wheel step over an open overlay never scrolls a tile behind it.
-2. cargo-tile implements `scroll` through `handle_tile_scroll`, as cargo-handler does.
-3. Red-first tests, each under 1 s: in cargo-tile and in cargo-handler, with the global shortcuts overlay open and taller than its viewport, a wheel step down moves the overlay viewport and a step up moves it back; a step outside the overlay does not scroll a tile.
+1. At start, run the staff command on natedev and the Mac and confirm schema 3 with no `pool` key.
+2. Parse the schema 3 output into the census hierarchy types; remove the old edge parser and the pool reader.
+3. Measure the CPU time of one staff call against one `production_tree.py --json` call on natedev and the Mac, and name the added cost in the notice. If it is slower at the poll rate, say so before landing.
+4. Move the hierarchy fixtures and tests to the schema 3 shape.
+5. Send the showrunner the exact `hierarchy_command` config line for both machines.
 
 **Files:**
-- `crates/tui_pane/src/tiles/host.rs` — `handle_tile_scroll` calls the shared overlay scroll first
-- `crates/cargo-tile/src/app.rs` — `scroll` through `handle_tile_scroll`
-- `crates/cargo-tile/src/` — one wheel test in a cargo-tile test module
-- `crates/cargo-handler/src/` — one wheel test in a cargo-handler test module
-- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/hierarchy.rs` — the parser
+- `crates/cargo-handler/src/census/command_inputs.rs` — inputs; pool reader removed
+- `crates/cargo-handler/src/census/fixtures/` — hierarchy and pool fixtures
+- `crates/cargo-handler/src/census/*hierarchy*_tests.rs`, `census/probe/hierarchy_transport_tests.rs` — tests
+- `crates/cargo-handler/src/config.rs`, `settings.rs` — setting text only if it names the old command
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: in cargo-tile and cargo-handler, press `?` and scroll the overlay with the wheel. The checkpoint adds a Change-Review line.
-
-### Phase 57a — The shortcuts overlay highlights whole rows and shows every focus key  · status: todo
-
-**Depends on:** Phase 57 (both edit the shortcuts overlay's tests).
-
-#### Work Order
-
-**Goal:** in the `?` global shortcuts overlay, the selected-row highlight has one width on every row, and cargo-handler shows a key for "Focus the tile above" and "Focus the tile below", as cargo-tile does.
-
-**Source:** the showrunner, 2026-10-31, from the Phase 57 design check: "the selected-row highlight ends at the key text, so its width changes per row; it should have one width" and "cargo-handler's overlay shows no key for 'Focus the tile above/below', while cargo-tile shows up/down. Fix each where it lives, in tui_pane if the cause is there."
-
-**Constraints from prior phases:**
-- `row_line` (`crates/tui_pane/src/overlays/global_shortcuts.rs` ≈267) pads the description to `SHORTCUT_DESCRIPTION_WIDTH` but adds the key text with no padding, so the selection style stops at the key's last character. `build_render_inputs` (≈225) computes `content_width` from the rows; the key column width comes from the same rows.
-- cargo-handler's `AppGlobalAction::defaults` (`crates/cargo-handler/src/globals.rs` ≈62) gives `Up`/`Down` to `RowUp`/`RowDown` (Phase 16, row selection), so `FocusUp`/`FocusDown` have no default key. cargo-tile binds them to `up`/`down` (`crates/cargo-tile/src/app_global_action.rs`).
-- `KeyBind::shift` and `KeyBind::ctrl` exist (`crates/tui_pane/src/keymap/key_bind.rs` ≈145, ≈157).
-- Showrunner, 2026-10-31: cargo-handler's focus up/down default to `shift-up` / `shift-down`, set in `AppGlobalAction::defaults` like the other actions so the user can rebind them; `up`/`down` stay on row selection. No cargo-handler or tui_pane default binds `shift-up` or `shift-down` (checked 2026-10-31).
-
-**Spec:**
-1. In tui_pane, `row_line` pads the key span to the overlay's key column width, so the selected row's style covers the same width on every row. The width has one owner: the value the layout already computes.
-2. cargo-handler binds `FocusUp` to `KeyBind::shift(KeyCode::Up)` and `FocusDown` to `KeyBind::shift(KeyCode::Down)` in `defaults`; the captured overlay rows in `crates/cargo-handler/src/keymap.rs` (≈196) show them.
-3. Red-first tests, each under 1 s: in tui_pane, the selected row's styled cells cover the same width for a row with a short key and a row with a long key; in cargo-handler, the overlay rows for focus up and focus down show a key.
-
-**Files:**
-- `crates/tui_pane/src/overlays/global_shortcuts.rs` — pad the key span
-- `crates/tui_pane/src/overlays/global_shortcuts_tests.rs` — highlight-width test
-- `crates/cargo-handler/src/globals.rs` — focus up/down default keys
-- `crates/cargo-handler/src/keymap.rs` — captured overlay rows
-- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md`
-
-**Workers:** 1 writer.
-
-**Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: press `?` in cargo-handler and cargo-tile, move the selection, and see one highlight width and a key on both focus rows. The checkpoint adds a Change-Review line.
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: cargo-handler on natedev with the new setting shows the same managers and members as before. The checkpoint adds a Change-Review line.
 
 ### Phase 55 — Narrow tiles keep tree guides, readable names and one header inset  · status: todo
 

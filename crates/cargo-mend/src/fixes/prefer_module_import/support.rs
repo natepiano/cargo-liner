@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -127,30 +126,8 @@ pub(super) fn leaf_is_module(
     resolves_to_module(crate_sources, absolute_segments, &mut visited)
 }
 
-enum ModuleSegmentSource {
-    File(PathBuf),
-    DirectoryModule(PathBuf),
-    InlineOrReexport,
-}
-
-impl ModuleSegmentSource {
-    fn for_segment(dir: &Path, segment: &str) -> Self {
-        let file = dir.join(format!("{segment}.rs"));
-        let directory_module = dir.join(segment).join("mod.rs");
-        if file.is_file() {
-            Self::File(file)
-        } else if directory_module.is_file() {
-            Self::DirectoryModule(directory_module)
-        } else {
-            Self::InlineOrReexport
-        }
-    }
-}
-
-/// Walks `absolute_segments` from the crate root through file-backed modules,
-/// then through inline `mod` blocks and `use` re-exports inside the last
-/// file-backed module. `visited` holds the paths already under resolution, so a
-/// re-export cycle ends instead of recursing forever.
+/// Resolve declared mounts before checking inline modules and re-exports.
+/// `visited` prevents cycles through re-exports.
 fn resolves_to_module(
     crate_sources: CrateSources<'_>,
     absolute_segments: &[String],
@@ -160,32 +137,15 @@ fn resolves_to_module(
         return false;
     }
 
-    let mut dir = crate_sources.source_root.to_path_buf();
-    let mut module_file = crate_root_file(crate_sources.source_root);
-    let mut module_path: Vec<String> = Vec::new();
-    for (index, segment) in absolute_segments.iter().enumerate() {
-        match ModuleSegmentSource::for_segment(&dir, segment) {
-            ModuleSegmentSource::File(file) | ModuleSegmentSource::DirectoryModule(file) => {
-                module_file = Some(file);
-            },
-            ModuleSegmentSource::InlineOrReexport => {
-                // Without a backing file, resolve the remainder inside the last file-backed module.
-                let remainder = &absolute_segments[index..];
-                return module_file.is_some_and(|module_file| {
-                    declares_module(
-                        crate_sources,
-                        &module_file,
-                        &module_path,
-                        remainder,
-                        visited,
-                    )
-                });
-            },
-        }
-        module_path.push(segment.clone());
-        dir.push(segment);
-    }
-    true
+    crate_sources
+        .sources
+        .module_map(crate_sources.source_root)
+        .module_ancestors(absolute_segments)
+        .any(|(file, module_path)| {
+            let remainder = &absolute_segments[module_path.len()..];
+            remainder.is_empty()
+                || declares_module(crate_sources, file, module_path, remainder, visited)
+        })
 }
 
 /// True when the module defined by `file` — whose absolute path is
@@ -212,13 +172,6 @@ fn declares_module(
     };
     declares_inline_mod_path(syntax, segments)
         || reexports_module(crate_sources, syntax, module_path, segments, visited)
-}
-
-fn crate_root_file(source_root: &Path) -> Option<PathBuf> {
-    ["lib.rs", "main.rs"]
-        .iter()
-        .map(|name| source_root.join(name))
-        .find(|path| path.is_file())
 }
 
 /// True when `syntax` declares `segments` as a chain of nested `mod` items,
@@ -409,6 +362,53 @@ mod tests {
     use super::shorten_module_path;
 
     #[test]
+    fn path_mounted_import_resolution_uses_declared_module_paths() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        for (file, text) in [
+            ("src/lib.rs", "mod propagation;"),
+            (
+                "src/propagation.rs",
+                "#[path = \"../tests/roles/mod.rs\"] mod phase68_tests;",
+            ),
+            ("tests/roles/mod.rs", "pub(crate) mod support;"),
+            (
+                "tests/roles/support.rs",
+                "pub(crate) fn value() -> usize { 7 }",
+            ),
+        ] {
+            let file = dir.path().join(file);
+            std::fs::create_dir_all(
+                file.parent()
+                    .ok_or_else(|| anyhow::anyhow!("source directory"))?,
+            )?;
+            std::fs::write(file, text)?;
+        }
+        let sources = crate::rust_syntax::ParsedSources::default();
+        let source_root = dir.path().join("src");
+        let map = sources.module_map(&source_root);
+        let mounted = vec!["propagation".to_string(), "phase68_tests".to_string()];
+        assert_eq!(
+            map.file_module_path(&source_root, &dir.path().join("tests/roles/mod.rs")),
+            Some(crate::rust_syntax::FileModulePath::Known(mounted.clone())),
+        );
+        let mut child = mounted.clone();
+        child.push("support".to_string());
+        assert_eq!(
+            map.file_module_path(&source_root, &dir.path().join("tests/roles/support.rs")),
+            Some(crate::rust_syntax::FileModulePath::Known(child.clone())),
+        );
+        let crate_sources = super::CrateSources {
+            source_root: &source_root,
+            sources:     &sources,
+        };
+        assert!(super::leaf_is_module(crate_sources, &mounted));
+        assert!(super::leaf_is_module(crate_sources, &child));
+        child.push("value".to_string());
+        assert!(!super::leaf_is_module(crate_sources, &child));
+        Ok(())
+    }
+
+    #[test]
     fn module_resolution_prefers_files_then_directory_modules_then_inline() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         std::fs::create_dir(dir.path().join("child"))?;
@@ -426,6 +426,11 @@ mod tests {
         let child = ["child".to_string(), "leaf".to_string()];
         assert!(!super::leaf_is_module(crate_sources, &child));
         std::fs::remove_file(dir.path().join("child.rs"))?;
+        let sources = crate::rust_syntax::ParsedSources::default();
+        let crate_sources = super::CrateSources {
+            source_root: dir.path(),
+            sources:     &sources,
+        };
         assert!(super::leaf_is_module(crate_sources, &child));
         assert!(super::leaf_is_module(
             crate_sources,

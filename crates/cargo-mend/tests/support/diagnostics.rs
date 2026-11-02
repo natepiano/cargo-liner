@@ -8,8 +8,7 @@ use serde::Deserialize;
 use tempfile::TempDir;
 
 use super::mend_command_for;
-use super::mend_json::expected_summary;
-use super::mend_json::parse_mend_json_output;
+use super::mend_json;
 use super::report::Finding;
 use super::report::Report;
 use super::report::Summary;
@@ -121,7 +120,7 @@ impl DiagnosticBatch {
             "batch diagnostics failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        parse_mend_json_output(&output.stdout)
+        mend_json::parse_mend_json_output(&output.stdout)
     }
 
     /// Retain complete paths while restoring each case's own summary counts.
@@ -161,7 +160,7 @@ impl DiagnosticBatch {
                 .push(finding);
         }
         for report in reports.values_mut() {
-            report.summary = expected_summary(report);
+            report.summary = mend_json::expected_summary(report);
         }
         reports
     }
@@ -192,7 +191,7 @@ pub(crate) fn member_report(report: &Report, member: &str) -> Report {
             fixable_with_fix_pub_use: 0,
         },
     };
-    report.summary = expected_summary(&report);
+    report.summary = mend_json::expected_summary(&report);
     report
 }
 

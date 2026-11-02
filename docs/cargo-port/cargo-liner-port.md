@@ -134,69 +134,41 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **As-built:** under `RecursiveRoot` (macOS) the registration plan in `crates/cargo-port/src/watcher/roots.rs` adds a recursive watch only for a configured root that no other configured root covers, in either root order (checkpoint 95138542). Each configured root stays a discovery boundary (`record_recursive_boundary`); coverage reads only paths that were watched (`recursively_watches`), so a failed parent registration still leaves the covered root watched. `PerFolder` is unchanged. The watcher resolves the cargo home once (`resolve_cargo_home` → `CargoHome::{Directory, Unavailable}`) and passes it to registration, so the registration tests use a test home and do not read the developer's `~/.cargo`. The one-watch-per-path invariant test in `runtime.rs` runs for both backends.
 
-### Phase 2h — mend keeps a re-export another package uses  · status: todo
+### Phase 2h — mend keeps a re-export another package uses  · status: done
 
-**Why:** showrunner 2026-10-31, found during 2g. The subtree re-export planner groups facts and module mounts by crate root (`crates/cargo-mend/src/fixes/subtree_reexport/scan.rs` `resolved_crate_facts` ≈150, mount filter ≈165). When two packages mount one source with `#[path]` and both use a `pub use` in it, a fix planned for one package can delete the export that the other package still names. Same phase: two style nits left open in 2g.
+**As-built:** the subtree re-export planner reads every mount of a physical source that mend can see by syntax, across all packages: `mod` items with or without `#[path]` (also inside function bodies) and `include!` with any path prefix and a literal path (`crates/cargo-mend/src/rust_syntax/module_map.rs`). A shared re-export changes only when every package that uses it gets the same edit (`fixes/subtree_reexport/scan.rs`); otherwise mend keeps it and reports one skipped manual rewrite. A mount mend cannot place (`UnobservedPackageReach::Unresolved`, a non-literal include) gives that package unknown reach, which keeps the re-export. Nested packages under a root package path are told apart by source membership, not a directory prefix. `resolve_visibility_proposals` holds its agreement state in an enum; tui_pane `attract::controller` names are `pub(super)` (checkpoint 44ecc942). Gotchas: a `mod x;` that a fix leaves empty stays; renamed custom macros and attribute or derive macros are outside the mount guarantee; raw identifier spellings are the next mend phase's work. Ruled out: deleting module declarations a fix leaves empty.
 
-**Depends on:** Phase 2g (mount identity `SourceModuleMount`).
+### Phase 2i — mend never writes the same import twice  · status: done
 
-#### Work Order
-
-**Goal:** a subtree re-export fix changes a shared source only when no other package's mount still needs the re-export it removes.
-
-**Constraints:**
-- Fix at the cause: the planner sees every mount of a physical source, across packages, before it removes or moves a re-export. Use 2g's `SourceModuleMount` as the one mount identity; no second mount type.
-- A source with one mount keeps today's behavior and output.
-- No new flag or option.
-
-**Spec:**
-1. For a source mounted by several packages, a re-export edit lands only when every mount that uses the re-export gets the same edit; otherwise mend keeps the re-export and reports it once as manual.
-2. F005: replace the bool accumulator `agreeing` in `resolve_visibility_proposals` (`compiler/persistence/visibility_constraint.rs`) with an enum that names the state.
-3. F006: import `PubUseNarrowingSite` in `visibility_edit_sources` instead of the full `super::schema::PubUseNarrowingSite` path.
-4. **Tests, red on main first, each under one second:** a fixture with two packages that `#[path]`-mount one source holding a `pub use`, where only one package's callers could be redirected; `mend --fix` keeps the re-export and both packages build.
-
-**Files:**
-- `crates/cargo-mend/src/fixes/subtree_reexport/scan.rs`, `crate_files.rs`, `mod.rs` — mount grouping
-- `crates/cargo-mend/src/compiler/persistence/visibility_constraint.rs` — F005, F006
-- `crates/cargo-mend/tests/` — the fixture test
-- `crates/cargo-mend/CHANGELOG.md`
-
-**Workers:** 1 writer (`review` slot, the 2g writer), who also writes the tests.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; the in-repo `mend --fix` step reports no new error.
-
-### Phase 2i — mend never writes the same import twice  · status: todo
-
-**Why:** showrunner 2026-10-31. `mend --fix` on hana's `crates/hana_metrics/src/reading/tests.rs`, which has many `use crate::test_support::<item>;` imports, wrote both `use crate::test_support;` and `use crate::test_support::{self};`. The compile failed with E0252 and mend rolled the fix back. Log: `/tmp/claude-1000/-home-natepiano-worktrees-claude-natedev-builds/51505394-82db-43d3-a528-136f4ee38d7a/scratchpad/mend_dup_import.log`. Cost: one lint wait per hit; nothing is blocked.
-
-**Depends on:** Phase 2g.
-
-#### Work Order
-
-**Goal:** the fixer cannot write an import that names something the module already imports.
-
-**Constraints:**
-- Fix at the cause, by type: the import edits for one module go through one owner that holds the module's import set, so a second spelling of the same name (`use a::b;`, `use a::b::{self};`) is one entry, not two lines. No text check after the fact.
-- Find which fix (or which pair of fixes) writes each line, and name it in the report.
-- Output for every other import shape stays the same.
-
-**Spec:**
-1. Any set of fixes that adds or rewrites imports in one module writes each imported name once.
-2. **Tests, red on main first, each under one second where rustc allows:** a fixture module with several `use crate::m::<item>;` imports that mend rewrites; `mend --fix` leaves exactly one import of `m` and the crate builds.
-3. CHANGELOG: one line.
-
-**Files:**
-- `crates/cargo-mend/src/fixes/` — the import edit owner (the writer names the files)
-- `crates/cargo-mend/tests/` — the fixture test
-- `crates/cargo-mend/CHANGELOG.md`
-
-**Workers:** 1 writer (`review` slot, the mend writer), who also writes the tests.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; the in-repo `mend --fix` step reports no new error.
+**As-built:** every fixer that adds or rewrites a use item (PreferModuleImport, ImportsAtTop, SubtreeReexport caller rewrites, facade redirects) hands its imports to one owner, `ModuleImports` (`crates/cargo-mend/src/fixes/imports/module_imports.rs`, conditions in `import_condition.rs`). It resolves each binding from module paths seeded by Cargo target roots (`rust_syntax::ModuleMap` via `ParsedSources::for_selection`), so equal paths to one module are one binding; identity is scope + target + name, and a public or cfg-gated re-export is kept while a private import is limited to the configurations it does not cover. A file with several module paths stays unresolved and its dependent rewrites are declined. A declined import edit goes back into `subtree_reexport::scan_selection`'s fact-exclusion loop, so the whole re-export change is re-planned without that finding (re-export kept, one skipped report, independent fixes applied). Raw identifier mounts (`r#include!`, `#[r#path]`, `#[r#cfg_attr]`) count; `CrateFiles.modules` keeps the `FileModulePath` enum (checkpoint e7f314d2). Gotchas: the per-fixer `import_plan` dedup is gone; any new fixer that writes imports must go through `ModuleImports`. Ruled out: filtering finished output to drop duplicates.
 
 ### Phase 2j — a mend cell keeps its progress bar after a diagnostic  · status: done
 
 **As-built:** a forwarded compiler diagnostic goes through the one owner of the progress line in `crates/cargo-mend/src/compiler/build/progress.rs` (`write_forwarded_output`): erase the line, print the block, add a newline only when the block lacks one, redraw (checkpoint 32316514). The counter runs to the end of the pass, and an unterminated last diagnostic survives the redraw and the cleanup. Live proof: a real cargo-tile mend cell read 85% after the forwarded warning.
+
+### Phase 2k — workspace lint passes on the cargo-berth reanchoring test  · status: done
+
+**As-built:** the last checks of `side_branch_creation_during_stopped_apply_rebase_preserves_checkpoint_capture` (`crates/cargo-berth/tests/support/reanchoring.rs`) moved into `assert_reanchored_checkpoint_is_outstanding`, with every assert and step in the same order and no `allow` or `expect`, so workspace clippy's `too_many_lines` passes again after mend's autofix 46570b43 (checkpoint 806cbc5c). Lifecycle tests 145/145 pass.
+
+### Phase 2l — mend runs in a project that pins a different Rust release  · status: done
+
+**As-built:** `cargo mend` and `cargo mend --fix` compile every driver command with the rustc of the toolchain that built mend, so a project whose `rust-toolchain.toml` pins another Rust release no longer fails with E0514 (checkpoint d0b9c24e). `DriverCompiler` (`crates/cargo-mend/src/compiler/build/driver_compiler.rs`) is the one owner: `for_build()` resolves `<MEND_BUILD_SYSROOT>/bin/rustc` once per run, and `configure(command, wrapper)` sets `RUSTC` and `RUSTC_WORKSPACE_WRAPPER` together and removes the passthrough wrapper. `run_cargo_check` (`execute.rs`) calls it for the check and the fix validation build; no call site sets these variables by hand. A missing rustc in the build sysroot stops mend with an error that names the folder. When the compiler versions differ, Cargo keeps a second set of dependency artifacts in the same target folder; the README and CHANGELOG name this cost.
+
+**Files:** `crates/cargo-mend/src/compiler/build/driver_compiler.rs`, `execute.rs`, `crates/cargo-mend/src/compiler/constants.rs` (`RUSTC_ENV`), `crates/cargo-mend/tests/cli_smoke.rs` (`fix_uses_build_compiler_with_external_path_dependency_and_unusable_project_rustc`), `crates/cargo-mend/README.md`, `crates/cargo-mend/CHANGELOG.md`.
+
+**Gotchas:** a cli or diagnostics test that runs real cargo builds has a floor near 2 s; such a test runs mend once.
+
+**Ruled out:** reinstalling mend on the project's release; changes to Hana, `verify.sh` or a project's toolchain file.
+
+### Phase 2n — mend --fix keeps the imports of a module mounted with #[path]  · status: done
+
+**As-built:** `cargo mend --fix` keeps a module import in a file mounted with `#[path = "…"]`, and the crate builds with nothing rolled back (checkpoint 73a51de7). `support::leaf_is_module` (`crates/cargo-mend/src/fixes/prefer_module_import/support.rs`) decides whether an import leaf names a module through `rust_syntax::ModuleMap::module_ancestors`, which follows `#[path]` mounts and the modules they declare; it no longer walks physical folders. `ModuleMap::declared_module_files` prefers the existing sibling file by default. The fixture `fix_imports_keep_modules_declared_in_path_mounted_test_files` (`tests/diagnostics/import_fixes.rs`) holds both Hana shapes, and `path_mounted_import_resolution_uses_declared_module_paths` pins the module path of a `#[path]` file and of a module it declares.
+
+**Files:** `crates/cargo-mend/src/fixes/prefer_module_import/support.rs`, `crates/cargo-mend/src/rust_syntax/module_map.rs`, `crates/cargo-mend/tests/diagnostics/import_fixes.rs`, `crates/cargo-mend/CHANGELOG.md`.
+
+**Gotchas:** module identity comes from `ModuleMap`, never from folder layout.
+
+**Ruled out:** filtering fixes after planning.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 
@@ -211,7 +183,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 **Constraints:**
 - From phase 2b: a `DiskUsage` reply can change a row from `Visible` to `Deleted` with the byte count still zero (`async_tasks/disk_handlers.rs` `apply_disk_usage` ≈65), so equal bytes do not mean equal visible state. Test that this change draws once and an identical later reply draws nothing.
 - From phase 2d: the row error state for a manifest cargo rejects is a visible input. Test redraws for an unselected row's error, its recovery, and `ProjectDiscovered`.
-- The detail cache owns `Option<DetailCacheKey>` (`tui/panes/data.rs` ≈21). Replace it with a named state that tells cleared details from details current for a key, like the new caches.
+- The detail cache owns `Option<DetailCacheKey>` (`tui/panes/data.rs` ≈21). Replace it with a named state that tells cleared details from details current for a key, like the new caches. The APIs that read or write it (`detail_is_current`, `set_detail_stamp`, `clear_detail_data` in `tui/panes/data.rs`) and their tests take and return that state too, so no caller reads a bare absence.
 - Measure idle CPU only after the startup folder walk, watcher registration and reconciliation, and startup enrichment end (the walk alone uses several cores for tens of seconds in a debug build; scan completion, `dispatch.rs` ≈96, comes before the watcher's Ready, `watcher/runtime.rs` ≈427). Add a named log marker or a repeatable procedure for that point and start both 60 s windows after it.
 - The event loop (`tui/terminal/event_loop.rs`, the `loop` in its run function) calls `ensure_visible_rows_cached`, `ensure_disk_cache`, `ensure_fit_widths_cached`, `ensure_detail_cached` and `draw_frame` on every wakeup. It wakes on input, on each background message, on each CPU pane sample, at least each second (`IDLE_HEARTBEAT`, `tui/app/mod.rs` ≈437), and each 80 ms while a lint, clean or run is live (`ANIMATION_TICK`).
 - `ensure_detail_cached` (`tui/app/navigation/cache.rs`) already skips work with a `DetailCacheKey` of the selected row and `scan.generation()`. Use the same pattern: a typed key of the inputs, not a bool flag set by hand at call sites. That generation alone is not a full key: `update_generations_for_msg` (`tui/app/async_tasks/dispatch.rs` ≈32) leaves it unchanged for an unselected project's `DiskUsage`, and `ProjectStorage` (`scan/background.rs` ≈258) does not touch it. Each cache names its own inputs: list rows, disk totals, column widths and storage. A new cache state is an enum (for example `NotComputed` / `Current(key)`), not a bare `Option<Key>`.
@@ -242,13 +214,12 @@ you need to create a new unit to handle all cargo port enhancements it should be
 - `crates/cargo-port/src/tui/project_list_state.rs` — index upkeep on change
 - `crates/cargo-port/src/tui/app/tree_mutation.rs` — index upkeep on insert, replace, regroup
 - `crates/cargo-port/src/tui/app/async_tasks/dispatch.rs` — generation inputs for the new keys
-- `crates/cargo-port/src/tui/terminal/event_loop_tests.rs` — new; tester
-- `crates/cargo-port/src/tui/project_list/path_index_tests.rs` — new; tester
+- `crates/cargo-port/src/tui/terminal/event_loop_tests.rs` — new
+- `crates/cargo-port/src/tui/project_list/path_index_tests.rs` — new
 - `crates/cargo-port/CHANGELOG.md`
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — specs 1–3 and 6, the frame counter, and the two slow interaction tests in `tui/app/mod.rs`; hub: `crates/cargo-port/src/tui/project_list/list.rs`. Not the tester's two files.
-- `test` — spec 4, in `tui/terminal/event_loop_tests.rs` and `tui/project_list/path_index_tests.rs`, registered by `impl`.
+**Workers:** 1 writer (impl4) owns the implementation and every test file; the unit director owns the live CPU measurements (spec 5).
+- `impl` — specs 1–4 and 6, the frame counter, the two slow interaction tests in `tui/app/mod.rs`, and the tests in `tui/terminal/event_loop_tests.rs` and `tui/project_list/path_index_tests.rs`; hub: `crates/cargo-port/src/tui/project_list/list.rs`.
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; the idle CPU of spec 5 under 1% of one core on the branch binary; during the build, under 3% of one core and under 2 frames each second with no spinner on screen; the two interaction tests each under one second. The checkpoint adds a Change-Review line.
 
@@ -282,7 +253,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 7. CHANGELOG: one line for each of the four fixes in `crates/cargo-port/CHANGELOG.md`.
 
 **Files:**
-- `crates/cargo-port/src/tui/app/async_tasks/tree.rs` — rescan keeps Deleted entries
+- `crates/cargo-port/src/tui/app/async_tasks/tree.rs` — rescan keeps Deleted entries (entry point `prepare_rescan`)
 - `crates/cargo-port/src/tui/app/async_tasks/dispatch.rs` — the completed scan result keeps Deleted entries
 - `crates/cargo-port/src/tui/app/async_tasks/disk_handlers.rs` — late replies after dismiss
 - `crates/cargo-port/src/tui/app/async_tasks/deleted_rescan_tests.rs` — new; tester

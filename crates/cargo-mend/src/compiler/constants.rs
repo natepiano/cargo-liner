@@ -79,6 +79,7 @@ pub(crate) const DRIVER_ENV: &str = "MEND_DRIVER";
 pub(super) const DRIVER_ENV_ENABLED: &str = "1";
 pub(super) const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
 pub(super) const PASSTHROUGH_RUSTC_WRAPPER_ENV: &str = "MEND_PASSTHROUGH_RUSTC_WRAPPER";
+pub(super) const RUSTC_ENV: &str = "RUSTC";
 pub(super) const RUSTC_WORKSPACE_WRAPPER_ENV: &str = "RUSTC_WORKSPACE_WRAPPER";
 pub(super) const SCOPE_FINGERPRINT_ENV: &str = "MEND_SCOPE_FINGERPRINT";
 

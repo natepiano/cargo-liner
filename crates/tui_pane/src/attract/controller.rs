@@ -204,7 +204,7 @@ pub enum AdjustedAttractParameterSets {
 
 impl AdjustedAttractParameterSets {
     /// Reader-facing names of the parameter sets adjusted during restore.
-    pub(crate) const fn names(self) -> &'static str {
+    pub(super) const fn names(self) -> &'static str {
         match self {
             Self::MovingBand => "moving band",
             Self::MovingText => "moving text",

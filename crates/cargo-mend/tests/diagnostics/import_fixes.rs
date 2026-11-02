@@ -1,6 +1,281 @@
 use crate::support::*;
 
 #[test]
+fn fix_imports_keep_modules_declared_in_path_mounted_test_files() {
+    let mut batch = DiagnosticBatch::new(
+        "[diagnostics]\nsuspicious_pub = false\nunused_pub = false\nnarrow_to_pub_crate = false\npub_use_outside_subtree = false\n[visibility]\npub_in_path = \"permitted\"\n",
+    );
+    let root = batch.add_member("path_mounted_imports", &[
+        ("Cargo.toml", "[package]\nname = \"path_mounted_imports\"\nversion = \"0.1.0\"\nedition = \"2024\"\nautotests = false\n"),
+        ("src/lib.rs", "mod propagation;\nmod camera_source;\nmod tool;\nmod normal;\n#[cfg(test)] #[path = \"../tests/test_support/mod.rs\"] mod test_support;\n"),
+        ("src/normal.rs", "pub(crate) fn width() -> usize {\n    use std::mem;\n    mem::size_of::<usize>()\n}\n"),
+        ("src/propagation.rs", "#[cfg(test)] #[path = \"../tests/propagation_roles/mod.rs\"] pub(crate) mod phase68_tests;\n"),
+        ("src/camera_source.rs", "#[cfg(test)] #[path = \"../tests/camera_publication/mod.rs\"] mod phase68_tests;\n"),
+        ("src/tool/mod.rs", "#[cfg(test)] #[path = \"../../tests/jack_controls/modulation_mode.rs\"] mod modulation_mode;\n"),
+        ("tests/propagation_roles/mod.rs", "pub(crate) mod support;\n"),
+        ("tests/propagation_roles/support.rs", "pub(crate) fn value() -> usize { 7 }\n"),
+        ("tests/camera_publication/mod.rs", "use crate::propagation::phase68_tests::support;\n#[test] fn publication() { assert_eq!(support::value(), 7); }\n"),
+        ("tests/test_support/mod.rs", "pub(crate) mod slider_reset;\n"),
+        ("tests/test_support/slider_reset.rs", "pub(crate) fn value() -> usize { 11 }\n"),
+        ("tests/jack_controls/modulation_mode.rs", "use crate::test_support::slider_reset;\n#[test] fn reset() { assert_eq!(slider_reset::value(), 11); }\n"),
+    ]);
+    let output = batch
+        .command()
+        .args(["--all-targets", "--fix"])
+        .output()
+        .expect("fix path-mounted imports");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "{}\n{stderr}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    assert!(!stderr.contains("rolled back"), "{stderr}");
+    let normal = fs::read_to_string(root.join("src/normal.rs")).expect("read moved import");
+    assert!(normal.starts_with("use std::mem;"), "{normal}");
+    for (file, import, call) in [
+        (
+            "tests/camera_publication/mod.rs",
+            "use crate::propagation::phase68_tests::support;",
+            "support::value()",
+        ),
+        (
+            "tests/jack_controls/modulation_mode.rs",
+            "use crate::test_support::slider_reset;",
+            "slider_reset::value()",
+        ),
+    ] {
+        let fixed = fs::read_to_string(root.join(file)).expect("read path-mounted test");
+        assert!(fixed.contains(import), "{fixed}");
+        assert!(fixed.contains(call), "{fixed}");
+    }
+}
+
+#[test]
+fn fix_imports_resolve_nested_src_and_custom_path_targets() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
+    let consumer = "use crate::outer::m::{self};\nuse super::m::one;\nuse super::m::two;\npub fn total() -> usize { one() + two() + m::one() }\n";
+    let mut consumers = Vec::new();
+    for (name, manifest, root_file, declaration) in [
+        (
+            "nested_src",
+            "[package]\nname = \"nested_src\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            "src/main.rs",
+            "pub mod m;\n#[path = \"src/consumer.rs\"] pub mod consumer;\n",
+        ),
+        (
+            "custom_root",
+            "[package]\nname = \"custom_root\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[[bin]]\nname = \"custom_root\"\npath = \"entry/start.rs\"\n",
+            "entry/start.rs",
+            "pub mod m;\n#[path = \"src/consumer.rs\"] pub mod consumer;\n",
+        ),
+    ] {
+        let root = batch.add_member(name, &[
+            ("Cargo.toml", manifest),
+            (root_file, "#[path = \"../src/outer/mod.rs\"] mod outer;\nfn main() { assert_eq!(outer::consumer::total(), 4); }\n"),
+            ("src/outer/mod.rs", declaration),
+            ("src/outer/m.rs", "pub fn one() -> usize { 1 }\npub fn two() -> usize { 2 }\n"),
+            ("src/outer/src/consumer.rs", consumer),
+        ]);
+        consumers.push(root.join("src/outer/src/consumer.rs"));
+    }
+    let output = batch
+        .command()
+        .arg("--fix")
+        .output()
+        .expect("fix target-root imports");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for path in consumers {
+        let fixed = fs::read_to_string(path).expect("read target-root consumer");
+        assert!(fixed.contains("use crate::outer::m::{self};"), "{fixed}");
+        assert_eq!(fixed.matches("use ").count(), 1, "{fixed}");
+        assert!(fixed.contains("m::two()"), "{fixed}");
+    }
+}
+
+#[test]
+fn fix_imports_decline_conflicting_shared_file_mounts() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
+    let shared = "use super::m::one;\nuse super::m::two;\npub fn total() -> usize { use super::m::{self}; one() + two() + m::one() }\n";
+    let root = batch.add_member("shared_mounts", &[
+        ("src/main.rs", "mod alpha;\nmod beta;\nfn main() { assert_eq!(alpha::consumer::total(), 4); assert_eq!(beta::consumer::total(), 8); }\n"),
+        ("src/alpha/mod.rs", "pub mod m { pub fn one() -> usize { 1 } pub fn two() -> usize { 2 } }\n#[path = \"../shared.rs\"] pub mod consumer;\n"),
+        ("src/beta/mod.rs", "pub mod m { pub fn one() -> usize { 2 } pub fn two() -> usize { 4 } }\n#[path = \"../shared.rs\"] pub mod consumer;\n"),
+        ("src/shared.rs", shared),
+    ]);
+    let output = batch
+        .command()
+        .arg("--fix")
+        .output()
+        .expect("fix shared-mount imports");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fixed = fs::read_to_string(root.join("src/shared.rs")).expect("read shared file");
+    assert_eq!(
+        fixed, shared,
+        "mount-dependent imports and references must be deferred together"
+    );
+}
+
+#[test]
+fn fix_imports_preserve_public_test_reexport() {
+    let mut batch = DiagnosticBatch::new(
+        "[diagnostics]\nsuspicious_pub = false\nunused_pub = false\nnarrow_to_pub_crate = false\npub_use_outside_subtree = false\n[visibility]\npub_in_path = \"permitted\"\nallow_pub_mod = [\"public_test_binding/src/main.rs\"]\n",
+    );
+    let root = batch.add_member("public_test_binding", &[
+        ("src/main.rs", "pub mod m;\nmod consumer;\nfn main() { assert_eq!(consumer::total(), 3); }\n#[cfg(test)] #[test] fn reexport_is_reachable_outside_consumer() { assert_eq!(consumer::m::one(), 1); }\n"),
+        ("src/m.rs", "pub fn one() -> usize { 1 }\npub fn two() -> usize { 2 }\n"),
+        ("src/consumer.rs", "#[cfg(test)] pub use crate::m::{self};\nuse crate::m::one;\nuse crate::m::two;\npub fn total() -> usize { one() + two() }\n"),
+    ]);
+    let output = batch
+        .command()
+        .arg("--all-targets")
+        .arg("--fix")
+        .output()
+        .expect("fix conditional reexport imports");
+    assert!(
+        output.status.success(),
+        "normal and test builds must compile: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fixed =
+        fs::read_to_string(root.join("src/consumer.rs")).expect("read conditional reexport");
+    assert!(
+        fixed.contains("#[cfg(test)] pub use crate::m::{self};"),
+        "{fixed}"
+    );
+    assert_eq!(fixed.matches("use ").count(), 2, "{fixed}");
+    assert!(
+        fixed.contains("m::one()") && fixed.contains("m::two()"),
+        "{fixed}"
+    );
+    // The retained export keeps exactly its original test gate; the private
+    // import supplies only the normal build, without widening the public API.
+}
+
+#[test]
+fn fix_imports_resolve_relative_and_crate_paths_to_one_module() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
+    let consumer = "use crate::outer::m::{self};\nuse super::m::one;\nuse super::m::two;\npub fn total() -> usize { one() + two() + m::one() }\n";
+    let root = batch.add_member(
+        "relative_module",
+        &[
+            (
+                "src/main.rs",
+                "mod outer;\nfn main() { assert_eq!(outer::consumer::total(), 4); }\n",
+            ),
+            ("src/outer/mod.rs", "pub mod m;\npub mod consumer;\n"),
+            (
+                "src/outer/m.rs",
+                "pub fn one() -> usize { 1 }\npub fn two() -> usize { 2 }\n",
+            ),
+            ("src/outer/consumer.rs", consumer),
+        ],
+    );
+    let output = batch
+        .command()
+        .arg("--fix")
+        .output()
+        .expect("fix relative import fixture");
+    assert!(
+        output.status.success(),
+        "relative and crate imports must compile together: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fixed =
+        fs::read_to_string(root.join("src/outer/consumer.rs")).expect("read fixed consumer");
+    assert!(fixed.contains("use crate::outer::m::{self};"), "{fixed}");
+    assert!(!fixed.contains("use super::m;"), "{fixed}");
+    assert_eq!(fixed.matches("use ").count(), 1, "{fixed}");
+    assert!(fixed.contains("m::two()"), "{fixed}");
+}
+
+#[test]
+fn fix_imports_ungated_module_covers_kept_test_import() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
+    let root = batch.add_member("gated_module", &[
+        ("src/main.rs", "mod m;\nmod consumer;\nfn main() { assert_eq!(consumer::total(), 3); }\n"),
+        ("src/m.rs", "pub fn one() -> usize { 1 }\npub fn two() -> usize { 2 }\n"),
+        ("src/consumer.rs", "#[cfg(test)] use crate::m::{self};\nuse crate::m::one;\nuse crate::m::two;\npub fn total() -> usize { one() + two() }\n#[cfg(test)] mod tests { #[test] fn total_uses_the_shared_module() { assert_eq!(super::total(), 3); assert_eq!(super::m::one(), 1); } }\n"),
+    ]);
+    let output = batch
+        .command()
+        .arg("--all-targets")
+        .arg("--fix")
+        .output()
+        .expect("fix test-target import fixture");
+    assert!(
+        output.status.success(),
+        "the normal and test builds must both compile: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fixed = fs::read_to_string(root.join("src/consumer.rs")).expect("read gated consumer");
+    assert_eq!(fixed.matches("use ").count(), 1, "{fixed}");
+    assert!(!fixed.contains("#[cfg(test)] use"), "{fixed}");
+    assert!(fixed.contains("m::one()"), "{fixed}");
+    assert!(fixed.contains("m::two()"), "{fixed}");
+    assert!(fixed.contains("#[cfg(test)] mod tests"), "{fixed}");
+}
+
+#[test]
+fn fix_imports_each_module_once_across_function_rewrites_and_moves() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
+    let mut consumers = Vec::new();
+    for (name, module_import) in [
+        ("existing_grouped_self", "use crate::m::{self};\n"),
+        ("moved_grouped_self", ""),
+    ] {
+        let local_import = if module_import.is_empty() {
+            "use crate::m::{self};"
+        } else {
+            ""
+        };
+        let source = format!(
+            "{module_import}use crate::m::one;\nuse crate::m::two;\nuse crate::m::three;\n\n\
+             pub fn total() -> usize {{ {local_import} one() + two() + three() + m::one() }}\n"
+        );
+        let root = batch.add_member(name, &[
+            ("src/main.rs", "mod m;\nmod consumer;\nfn main() { assert_eq!(consumer::total(), 7); }\n"),
+            ("src/m.rs", "pub fn one() -> usize { 1 }\npub fn two() -> usize { 2 }\npub fn three() -> usize { 3 }\n"),
+            ("src/consumer.rs", &source),
+        ]);
+        consumers.push(root.join("src/consumer.rs"));
+    }
+    let output = batch
+        .command()
+        .arg("--fix")
+        .output()
+        .expect("fix import batch");
+    assert!(
+        output.status.success(),
+        "fixed crates must compile without duplicate imports: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    for consumer in consumers {
+        let source = fs::read_to_string(consumer).expect("read fixed imports");
+        assert_eq!(source.matches("use crate::m").count(), 1, "{source}");
+        assert!(source.contains("m::two()"), "{source}");
+        assert!(source.contains("m::three()"), "{source}");
+        assert!(!source.contains("use crate::m::one;"), "{source}");
+        assert!(!source.contains("use crate::m::two;"), "{source}");
+        assert!(!source.contains("use crate::m::three;"), "{source}");
+    }
+}
+
+#[test]
 fn fix_rewrites_local_crate_import() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
