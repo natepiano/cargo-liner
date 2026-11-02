@@ -1,18 +1,15 @@
 //! Reading the threads interactive Codex sessions started, from the
 //! `threads` table of Codex's database `~/.codex/state_<n>.sqlite`.
 //!
-//! An interactive `codex` hands its threads to an app server -- since
-//! Codex 0.157 a daemon every `codex` on the machine shares -- so the
-//! `codex` process holds no file that names its thread. What ties the
-//! two together is where and when: Codex records each thread's
-//! directory, creation time and the program that started it, and a
-//! `codex` creates its first thread in its own directory as it starts.
-//! [`classify`](super::classify) makes that match; this module reads
-//! the rows it matches against.
+//! Log rows identify resumed threads by process. A managed daemon can serve
+//! several clients. Only a daemon with one current client supplies an exact link.
+//! The startup window remains the fallback when no log link exists.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::ops::RangeInclusive;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -20,16 +17,24 @@ use rusqlite::Connection;
 use rusqlite::Error;
 use rusqlite::OpenFlags;
 use rusqlite::OptionalExtension;
+use rusqlite::Row;
 use rusqlite::params;
 
 use super::account::ConfigHome;
 use super::account::Program;
+use super::classify;
 use super::classify::ProcessEntry;
 use super::codex_names::SessionName;
 use crate::constants::CODEX_DIRNAME;
 use crate::constants::CODEX_LAST_THREAD_QUERY;
 use crate::constants::CODEX_LEGACY_THREADS_QUERY;
 use crate::constants::CODEX_LEGACY_TUI_ORIGINATOR;
+use crate::constants::CODEX_LOG_INITIAL_QUERY;
+use crate::constants::CODEX_LOG_MAX_ID_QUERY;
+use crate::constants::CODEX_LOG_NEW_QUERY;
+use crate::constants::CODEX_LOG_PREFIX;
+use crate::constants::CODEX_LOG_PROCESS_PREFIX;
+use crate::constants::CODEX_MANAGED_DAEMON_ARGUMENT;
 use crate::constants::CODEX_PROMPT_LABEL_MAX;
 use crate::constants::CODEX_RESUME_LAST_ARGUMENT;
 use crate::constants::CODEX_RESUME_SUBCOMMAND;
@@ -105,16 +110,7 @@ fn query_last_thread(path: &Path, cwd: &Path) -> rusqlite::Result<Option<CodexTh
         .query_row(
             CODEX_LAST_THREAD_QUERY,
             params![cwd.to_string_lossy()],
-            |row| {
-                Ok(CodexThread {
-                    account_home: account_home.clone(),
-                    cwd:          PathBuf::from(row.get::<_, String>(0)?),
-                    created_ms:   u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default(),
-                    name:         SessionName::from(row.get::<_, Option<String>>(2)?),
-                    first_prompt: row.get(3)?,
-                    rollout:      PathBuf::from(row.get::<_, String>(4)?),
-                })
-            },
+            |row| decode_thread(row, &account_home),
         )
         .optional()
 }
@@ -216,16 +212,7 @@ fn query_threads_by_id(
     let mut statement = connection.prepare(CODEX_THREAD_BY_ID_QUERY)?;
     let mut threads = HashMap::new();
     for id in ids {
-        let found = statement.query_row(params![id], |row| {
-            Ok(CodexThread {
-                account_home: account_home.clone(),
-                cwd:          PathBuf::from(row.get::<_, String>(0)?),
-                created_ms:   u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default(),
-                name:         SessionName::from(row.get::<_, Option<String>>(2)?),
-                first_prompt: row.get(3)?,
-                rollout:      PathBuf::from(row.get::<_, String>(4)?),
-            })
-        });
+        let found = statement.query_row(params![id], |row| decode_thread(row, &account_home));
         match found {
             Ok(thread) => {
                 threads.insert(id.clone(), thread);
@@ -235,6 +222,18 @@ fn query_threads_by_id(
         }
     }
     Ok(threads)
+}
+
+/// Decode the shared column order of every thread query.
+fn decode_thread(row: &Row<'_>, account: &CodexAccountHome) -> rusqlite::Result<CodexThread> {
+    Ok(CodexThread {
+        account_home: account.clone(),
+        cwd:          PathBuf::from(row.get::<_, String>(0)?),
+        created_ms:   u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default(),
+        name:         SessionName::from(row.get::<_, Option<String>>(2)?),
+        first_prompt: row.get(3)?,
+        rollout:      PathBuf::from(row.get::<_, String>(4)?),
+    })
 }
 
 /// The database at `path`, opened read-only, waiting on a writer for at
@@ -250,6 +249,11 @@ fn open_read_only(path: &Path) -> rusqlite::Result<Connection> {
 
 /// The `state_<n>.sqlite` in `codex_dir` with the highest `<n>`.
 fn state_database(codex_dir: &Path) -> Option<PathBuf> {
+    versioned_database(codex_dir, CODEX_STATE_PREFIX)
+}
+
+/// Select the highest database version without following account-home links.
+fn versioned_database(codex_dir: &Path, prefix: &str) -> Option<PathBuf> {
     fs::read_dir(codex_dir)
         .ok()?
         .filter_map(Result::ok)
@@ -261,13 +265,511 @@ fn state_database(codex_dir: &Path) -> Option<PathBuf> {
             let version: u32 = path
                 .file_stem()?
                 .to_str()?
-                .strip_prefix(CODEX_STATE_PREFIX)?
+                .strip_prefix(prefix)?
                 .parse()
                 .ok()?;
             Some((version, path))
         })
         .max_by_key(|(version, _)| *version)
         .map(|(_, path)| path)
+}
+
+/// A log link can be absent, exact, or unsafe because the daemon has clients.
+pub(super) enum LogThreadLink<'a> {
+    Linked(&'a CodexThread),
+    NoRecord,
+    SharedDaemon,
+}
+
+/// Retained log cursors and process links, separated by lexical account home.
+#[derive(Debug, Default)]
+pub(super) struct CodexLogs {
+    databases: HashMap<PathBuf, LogDatabase>,
+}
+
+impl CodexLogs {
+    /// Advance each account log once. Unchanged logs return no old rows.
+    pub(super) fn refresh(&mut self, processes: &[ProcessEntry], home: Option<&Path>) {
+        let homes = log_clients(processes, home);
+        self.databases
+            .retain(|account, _| homes.contains_key(account));
+        for (account, clients) in homes {
+            if self.refresh_account(&account, &clients).is_err() {
+                self.databases.remove(&account);
+            }
+        }
+    }
+
+    fn refresh_account(&mut self, account: &Path, clients: &LogClients) -> rusqlite::Result<()> {
+        let metadata = account
+            .metadata()
+            .map_err(|_| Error::InvalidPath(account.to_owned()))?;
+        let directory_stamp = (metadata.mtime(), metadata.mtime_nsec());
+        let retained = self.databases.get(account);
+        let thread_path = if let Some(database) = retained
+            && database.directory_stamp == directory_stamp
+        {
+            database.thread_path.clone()
+        } else {
+            state_database(account).ok_or_else(|| Error::InvalidPath(account.to_owned()))?
+        };
+        let path = if let Some(database) = retained
+            && database.directory_stamp == directory_stamp
+        {
+            database.path.clone()
+        } else {
+            versioned_database(account, CODEX_LOG_PREFIX)
+                .ok_or_else(|| Error::InvalidPath(account.to_owned()))?
+        };
+        let metadata = path
+            .metadata()
+            .map_err(|_| Error::InvalidPath(path.clone()))?;
+        let identity = (metadata.dev(), metadata.ino());
+        if retained.is_none_or(|database| database.path != path || database.identity != identity) {
+            let database = LogDatabase::open(
+                account,
+                path,
+                identity,
+                directory_stamp,
+                clients.oldest_start,
+            )?;
+            self.databases.insert(account.to_owned(), database);
+        }
+        if let Some(database) = self.databases.get_mut(account) {
+            database.directory_stamp = directory_stamp;
+            database.refresh_thread_database(thread_path)?;
+            database.advance(clients)?;
+        }
+        Ok(())
+    }
+
+    /// Choose the newest exact record across the process and its children.
+    pub(super) fn link<'a>(
+        &'a self,
+        process: &ProcessEntry,
+        processes: &[ProcessEntry],
+        home: Option<&Path>,
+    ) -> LogThreadLink<'a> {
+        let Some(account) = session_home(process, home) else {
+            return LogThreadLink::NoRecord;
+        };
+        let Some(database) = self.databases.get(&account) else {
+            return LogThreadLink::NoRecord;
+        };
+        let sources = std::iter::once(process).chain(processes.iter().filter(|child| {
+            child.parent == Some(process.pid)
+                && child.is_codex()
+                && child.is_app_server()
+                && session_home(child, home).as_ref() == Some(&account)
+        }));
+        let mut latest = None;
+        let mut ambiguity = LogThreadLink::NoRecord;
+        for source in sources {
+            let Some(record) = database.latest.get(&source.pid) else {
+                continue;
+            };
+            if record.logged_at < source.started.max(process.started) {
+                continue;
+            }
+            match record.ownership {
+                LogOwnership::SharedDaemon => ambiguity = LogThreadLink::SharedDaemon,
+                LogOwnership::Exact
+                    if database.user_thread(&record.thread_id).is_some()
+                        && latest.is_none_or(|kept: &LoggedThread| kept.id < record.id) =>
+                {
+                    latest = Some(record);
+                },
+                LogOwnership::Exact | LogOwnership::AwaitingSnapshot => {},
+            }
+        }
+        latest
+            .and_then(|record| database.user_thread(&record.thread_id))
+            .map_or(ambiguity, LogThreadLink::Linked)
+    }
+
+    #[cfg(test)]
+    pub(super) fn thread_lookups(&self) -> usize {
+        self.databases
+            .values()
+            .map(|database| database.thread_lookups)
+            .sum()
+    }
+
+    #[cfg(test)]
+    pub(super) fn rows_read(&self) -> usize {
+        self.databases
+            .values()
+            .map(|database| database.rows_read)
+            .sum()
+    }
+}
+
+/// The processes whose records can name a live interactive client.
+struct LogClients {
+    oldest_start: u64,
+    processes:    HashMap<u32, LogProcess>,
+}
+
+struct LogProcess {
+    started:   u64,
+    ownership: LogOwnership,
+}
+
+/// Ambiguity belongs to the record, even after a client exits.
+#[derive(Clone, Copy, Debug)]
+enum LogOwnership {
+    Exact,
+    SharedDaemon,
+    AwaitingSnapshot,
+}
+
+fn log_clients(processes: &[ProcessEntry], home: Option<&Path>) -> HashMap<PathBuf, LogClients> {
+    let table = classify::pid_table(processes);
+    let interactive = classify::interactive_codex(&table, processes);
+    let mut homes = HashMap::<PathBuf, LogClients>::new();
+    for process in interactive {
+        if let Some(account) = session_home(process, home) {
+            let clients = homes.entry(account).or_insert_with(|| LogClients {
+                oldest_start: process.started,
+                processes:    HashMap::new(),
+            });
+            clients.oldest_start = clients.oldest_start.min(process.started);
+            clients.processes.insert(
+                process.pid,
+                LogProcess {
+                    started:   process.started,
+                    ownership: LogOwnership::Exact,
+                },
+            );
+        }
+    }
+    for (account, clients) in &mut homes {
+        let client_count = clients.processes.len();
+        let children: Vec<_> = processes
+            .iter()
+            .filter(|child| {
+                child.is_codex()
+                    && child.is_app_server()
+                    && child
+                        .parent
+                        .is_some_and(|parent| clients.processes.contains_key(&parent))
+                    && session_home(child, home).as_ref() == Some(account)
+            })
+            .collect();
+        for child in children {
+            // A managed daemon supplies an exact link only for one current client.
+            let ownership = if client_count > 1
+                && child
+                    .arguments
+                    .iter()
+                    .any(|arg| arg == CODEX_MANAGED_DAEMON_ARGUMENT)
+            {
+                LogOwnership::SharedDaemon
+            } else {
+                LogOwnership::Exact
+            };
+            clients.processes.insert(
+                child.pid,
+                LogProcess {
+                    started: child.started,
+                    ownership,
+                },
+            );
+        }
+    }
+    homes
+}
+
+/// The first read uses process time. Later reads use the retained primary key.
+#[derive(Debug)]
+enum LogCursor {
+    FromProcessStart(u64),
+    AfterId(i64),
+}
+
+#[derive(Debug)]
+struct LoggedThread {
+    id:        i64,
+    logged_at: u64,
+    thread_id: String,
+    ownership: LogOwnership,
+}
+
+/// A missing row can arrive after its log record commits.
+#[derive(Debug)]
+enum LoggedThreadKind {
+    User(CodexThread),
+    Other,
+    Unresolved,
+}
+
+/// Open databases and resolved identities for one version of an account log.
+#[derive(Debug)]
+struct LogDatabase {
+    path:            PathBuf,
+    identity:        (u64, u64),
+    directory_stamp: (i64, i64),
+    logs:            Connection,
+    threads:         Connection,
+    thread_path:     PathBuf,
+    thread_identity: (u64, u64),
+    layout:          ThreadsLayout,
+    account:         CodexAccountHome,
+    cursor:          LogCursor,
+    latest:          HashMap<u32, LoggedThread>,
+    pending:         Vec<(u32, LoggedThread)>,
+    unseen:          Vec<(u32, LoggedThread)>,
+    known:           HashMap<String, LoggedThreadKind>,
+    thread_revision: ThreadRevision,
+    rows_read:       usize,
+    #[cfg(test)]
+    thread_lookups:  usize,
+}
+
+/// SQLite changes this value when another connection commits.
+#[derive(Debug, Default, PartialEq)]
+enum ThreadRevision {
+    #[default]
+    Unread,
+    Read(i64),
+}
+
+impl LogDatabase {
+    fn open(
+        account: &Path,
+        path: PathBuf,
+        identity: (u64, u64),
+        directory_stamp: (i64, i64),
+        start: u64,
+    ) -> rusqlite::Result<Self> {
+        let state =
+            state_database(account).ok_or_else(|| Error::InvalidPath(account.to_owned()))?;
+        let metadata = state
+            .metadata()
+            .map_err(|_| Error::InvalidPath(state.clone()))?;
+        let thread_identity = (metadata.dev(), metadata.ino());
+        let threads = open_read_only(&state)?;
+        let layout = ThreadsLayout::read(&threads)?;
+        Ok(Self {
+            logs: open_read_only(&path)?,
+            path,
+            identity,
+            directory_stamp,
+            threads,
+            thread_path: state,
+            thread_identity,
+            layout,
+            account: CodexAccountHome::from(account),
+            cursor: LogCursor::FromProcessStart(start),
+            latest: HashMap::new(),
+            pending: Vec::new(),
+            unseen: Vec::new(),
+            known: HashMap::new(),
+            thread_revision: ThreadRevision::Unread,
+            rows_read: 0,
+            #[cfg(test)]
+            thread_lookups: 0,
+        })
+    }
+
+    /// Reopen the selected thread database after a version or file change.
+    fn refresh_thread_database(&mut self, path: PathBuf) -> rusqlite::Result<()> {
+        let metadata = path
+            .metadata()
+            .map_err(|_| Error::InvalidPath(path.clone()))?;
+        let identity = (metadata.dev(), metadata.ino());
+        if self.thread_path != path || self.thread_identity != identity {
+            let threads = open_read_only(&path)?;
+            let layout = ThreadsLayout::read(&threads)?;
+            self.threads = threads;
+            self.layout = layout;
+            self.thread_path = path;
+            self.thread_identity = identity;
+            self.known.clear();
+            self.thread_revision = ThreadRevision::Unread;
+        }
+        Ok(())
+    }
+
+    fn advance(&mut self, clients: &LogClients) -> rusqlite::Result<()> {
+        #[cfg(test)]
+        {
+            self.thread_lookups = 0;
+        }
+        self.latest.retain(|pid, record| {
+            clients
+                .processes
+                .get(pid)
+                .is_some_and(|process| record.logged_at >= process.started)
+        });
+        self.pending.retain(|(pid, record)| {
+            clients
+                .processes
+                .get(pid)
+                .is_some_and(|process| record.logged_at >= process.started)
+        });
+        for (pid, record) in self
+            .latest
+            .iter_mut()
+            .chain(self.pending.iter_mut().map(|(pid, record)| (&*pid, record)))
+        {
+            if clients
+                .processes
+                .get(pid)
+                .is_some_and(|process| matches!(process.ownership, LogOwnership::SharedDaemon))
+            {
+                record.ownership = LogOwnership::SharedDaemon;
+            }
+        }
+        // Retain an unknown pid until the next process snapshot can identify it.
+        for (pid, mut record) in self.unseen.drain(..) {
+            if let Some(process) = clients.processes.get(&pid)
+                && record.logged_at >= process.started
+            {
+                record.ownership = process.ownership;
+                self.pending.push((pid, record));
+            }
+        }
+        self.read_new(clients)?;
+        self.refresh_threads()?;
+        let mut unresolved = Vec::new();
+        for (pid, record) in self.pending.drain(..) {
+            match self.known.get(&record.thread_id) {
+                Some(LoggedThreadKind::User(_)) => {
+                    if self.latest.get(&pid).is_none_or(|kept| kept.id < record.id) {
+                        self.latest.insert(pid, record);
+                    }
+                },
+                Some(LoggedThreadKind::Other) => {},
+                Some(LoggedThreadKind::Unresolved) | None => unresolved.push((pid, record)),
+            }
+        }
+        self.pending = unresolved;
+        Ok(())
+    }
+
+    fn read_new(&mut self, clients: &LogClients) -> rusqlite::Result<()> {
+        self.rows_read = 0;
+        let (query, after) = match self.cursor {
+            LogCursor::FromProcessStart(start) => (
+                CODEX_LOG_INITIAL_QUERY,
+                i64::try_from(start).unwrap_or(i64::MAX),
+            ),
+            LogCursor::AfterId(id) => (CODEX_LOG_NEW_QUERY, id),
+        };
+        let snapshot = self.logs.unchecked_transaction()?;
+        let mut last_id = match self.cursor {
+            LogCursor::AfterId(id) => id,
+            LogCursor::FromProcessStart(_) => {
+                snapshot.query_row(CODEX_LOG_MAX_ID_QUERY, [], |row| row.get(0))?
+            },
+        };
+        let mut statement = snapshot.prepare_cached(query)?;
+        let mut rows = statement.query([after])?;
+        while let Some(row) = rows.next()? {
+            self.rows_read += 1;
+            let id: i64 = row.get(0)?;
+            last_id = last_id.max(id);
+            let Ok(process) = row.get_ref(2)?.as_str() else {
+                continue;
+            };
+            let Some(pid) = process
+                .strip_prefix(CODEX_LOG_PROCESS_PREFIX)
+                .and_then(|process| process.split_once(':'))
+                .and_then(|(pid, _)| pid.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            let client = clients.processes.get(&pid);
+            let logged_at = u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default();
+            if client.is_some_and(|client| logged_at < client.started) {
+                continue;
+            }
+            let Some(thread_id) = row.get::<_, Option<String>>(3)? else {
+                continue;
+            };
+            let record = LoggedThread {
+                id,
+                logged_at,
+                thread_id,
+                ownership: client.map_or(LogOwnership::AwaitingSnapshot, |client| client.ownership),
+            };
+            if client.is_some() {
+                self.pending.push((pid, record));
+            } else {
+                self.unseen.push((pid, record));
+            }
+        }
+        drop(rows);
+        drop(statement);
+        snapshot.commit()?;
+        self.cursor = LogCursor::AfterId(last_id);
+        Ok(())
+    }
+
+    fn refresh_threads(&mut self) -> rusqlite::Result<()> {
+        let revision = ThreadRevision::Read(self.threads.query_row(
+            "PRAGMA data_version",
+            [],
+            |row| row.get(0),
+        )?);
+        if revision != self.thread_revision {
+            self.known.clear();
+            self.thread_revision = revision;
+        }
+        let ids: HashSet<_> = self
+            .latest
+            .values()
+            .chain(self.pending.iter().map(|(_, record)| record))
+            .map(|record| record.thread_id.as_str())
+            .collect();
+        self.known.retain(|id, _| ids.contains(id.as_str()));
+        if ids.iter().all(|id| {
+            matches!(
+                self.known.get(*id),
+                Some(LoggedThreadKind::User(_) | LoggedThreadKind::Other)
+            )
+        }) {
+            return Ok(());
+        }
+        let user_query = format!("{} AND id = ?4", self.layout.query());
+        let mut users = self.threads.prepare_cached(&user_query)?;
+        let mut any_thread = self.threads.prepare_cached(CODEX_THREAD_BY_ID_QUERY)?;
+        for id in ids {
+            if matches!(
+                self.known.get(id),
+                Some(LoggedThreadKind::User(_) | LoggedThreadKind::Other)
+            ) {
+                continue;
+            }
+            #[cfg(test)]
+            {
+                self.thread_lookups += 1;
+            }
+            let user = users
+                .query_row(
+                    params![CODEX_LEGACY_TUI_ORIGINATOR, 0, i64::MAX, id],
+                    |row| decode_thread(row, &self.account),
+                )
+                .optional()?;
+            let kind = if let Some(thread) = user {
+                LoggedThreadKind::User(thread)
+            } else if any_thread.exists([id])? {
+                LoggedThreadKind::Other
+            } else {
+                LoggedThreadKind::Unresolved
+            };
+            self.known.insert(id.to_owned(), kind);
+        }
+        Ok(())
+    }
+
+    fn user_thread(&self, id: &str) -> Option<&CodexThread> {
+        match self.known.get(id)? {
+            LoggedThreadKind::User(thread) => Some(thread),
+            LoggedThreadKind::Other | LoggedThreadKind::Unresolved => None,
+        }
+    }
 }
 
 /// Which columns identify interactive threads in a database.
@@ -310,14 +812,7 @@ fn query_threads(path: &Path, created: &RangeInclusive<u64>) -> rusqlite::Result
     let until = i64::try_from(*created.end()).unwrap_or(i64::MAX);
     statement
         .query_map(params![CODEX_LEGACY_TUI_ORIGINATOR, from, until], |row| {
-            Ok(CodexThread {
-                account_home: account_home.clone(),
-                cwd:          PathBuf::from(row.get::<_, String>(0)?),
-                created_ms:   u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default(),
-                name:         SessionName::from(row.get::<_, Option<String>>(2)?),
-                first_prompt: row.get(3)?,
-                rollout:      PathBuf::from(row.get::<_, String>(4)?),
-            })
+            decode_thread(row, &account_home)
         })?
         .collect()
 }
