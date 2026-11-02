@@ -1,0 +1,12 @@
+[package]
+authors.workspace    = true
+description          = "Named executable fixtures shared by process census tests"
+edition.workspace    = true
+license.workspace    = true
+name                 = "census-test-support"
+publish              = false
+repository.workspace = true
+version              = "0.1.0-dev"
+
+[lints]
+workspace = true

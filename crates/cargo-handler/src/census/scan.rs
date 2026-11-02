@@ -1979,6 +1979,8 @@ mod tests {
     #[cfg(unix)]
     use std::process::Child;
 
+    #[cfg(unix)]
+    use census_test_support::StdinEchoExecutable;
     use chrono::DateTime;
     use serde_json::json;
     use tempfile::TempDir;
@@ -2034,32 +2036,6 @@ mod tests {
         }
     }
 
-    /// A single-program executable retains its copied name after exec.
-    #[cfg(unix)]
-    fn copied_agent_executable(directory: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let binary = directory.join("codex");
-        #[cfg(target_os = "macos")]
-        fs::copy("/bin/cat", &binary)?;
-        #[cfg(not(target_os = "macos"))]
-        {
-            // Python retains the executable name; multicall coreutils changes it to cat.
-            let python = Command::new("python3")
-                .args(["-c", "import sys; print(sys.executable)"])
-                .output()?;
-            fs::copy(String::from_utf8(python.stdout)?.trim(), &binary)?;
-        }
-        #[cfg(target_os = "macos")]
-        assert!(
-            Command::new("/usr/bin/codesign")
-                .args(["--force", "--sign", "-"])
-                .arg(&binary)
-                .status()?
-                .success(),
-            "the copied system fixture needs a valid local signature"
-        );
-        Ok(binary)
-    }
-
     #[cfg(unix)]
     fn agent_reply(
         input: &mut impl std::io::Write,
@@ -2074,16 +2050,14 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn same_pid_exec_launcher(binary: &Path, directory: &Path) -> Command {
-        #[cfg(target_os = "macos")]
-        let launcher = "import os,sys; print('launcher',flush=True); sys.stdin.readline(); os.chdir(sys.argv[2]); print('moved',flush=True); sys.stdin.readline(); print('executing',flush=True); os.execv(sys.argv[1],[sys.argv[1]])";
-        #[cfg(not(target_os = "macos"))]
-        let launcher = "import os,sys; print('launcher',flush=True); sys.stdin.readline(); os.chdir(sys.argv[2]); print('moved',flush=True); sys.stdin.readline(); print('executing',flush=True); os.execv(sys.argv[1],[sys.argv[1],'-u','-c',\"import sys; [print(line.rstrip(),flush=True) for line in sys.stdin]\"])";
+    fn same_pid_exec_launcher(binary: &StdinEchoExecutable, directory: &Path) -> Command {
+        let launcher = "import os,sys; print('launcher',flush=True); sys.stdin.readline(); os.chdir(sys.argv[2]); print('moved',flush=True); sys.stdin.readline(); print('executing',flush=True); os.execv(sys.argv[1],[sys.argv[1],*sys.argv[3:]])";
         let mut command = Command::new("python3");
         command
             .args(["-u", "-c", launcher])
-            .arg(binary)
+            .arg(binary.path())
             .arg(directory)
+            .args(binary.arguments())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
         command
@@ -2101,8 +2075,11 @@ mod tests {
             }
         }
         let directory = tempfile::tempdir()?;
-        let binary = copied_agent_executable(directory.path())?;
-        let mut child = ChildUntilDrop(same_pid_exec_launcher(&binary, directory.path()).spawn()?);
+        let executable =
+            census_test_support::StdinEchoExecutable::copy_to(directory.path(), "codex")?;
+        let binary = executable.path();
+        let mut child =
+            ChildUntilDrop(same_pid_exec_launcher(&executable, directory.path()).spawn()?);
         let mut input = child.0.stdin.take().ok_or("child stdin")?;
         let mut output = std::io::BufReader::new(child.0.stdout.take().ok_or("child stdout")?);
         let mut line = String::new();

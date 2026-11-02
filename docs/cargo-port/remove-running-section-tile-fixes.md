@@ -1379,6 +1379,20 @@ Port of the directory header rule (whole path; GUID middle cut; middle cut; last
 
 Showrunner request (2026-10-29): the 36m merge tree fails `census::scan::refresh_worker_tests::a_shell_execing_cargo_enters_the_retained_discoverys_census` on natedev with ENOENT, because the test copies `/bin/cat` and NixOS has no `/bin/cat`. The test finds its program on PATH, with no absolute tool path, and passes on natedev and on the Mac. Work order: phases/41/implementation_prompt.md.
 
+### Phase 41c — The exec census tests pass on the GitHub macOS runner  · status: done
+
+**Goal:** Main CI is red on macOS: `a_shell_execing_cargo_enters_the_retained_discoverys_census` (`crates/cargo-tile/src/census/refresh_worker_tests.rs:267`) sees `Python`, not `cargo`. On the runner, `python3` is a Homebrew framework launcher that execs `Python.app`, so the copied fixture runs as `Python` (run 41138166229; diagnosis `phases/ci_python/answer.md`). The handler fixed its copy of this fixture in d2483f13 (`copied_agent_executable`, `same_pid_exec_launcher` in `crates/cargo-handler/src/census/scan.rs`): `/bin/cat` with codesign on macOS, `python3`'s `sys.executable` elsewhere.
+
+**Spec:**
+1. One fixture for both crates (showrunner, 2026-10-31: "use one form, no second helper if it can be shared"; user rule 2026-10-30: no duplication). A new dev-only crate `crates/census-test-support` (`publish = false`, as `cargo-berth-test-support`) owns the copied executable (named by the caller) and the platform's exec payload arguments. cargo-tile's test and cargo-handler's test both use it, and the handler's two helpers go.
+2. Every assertion of both tests stays as it is.
+
+**Tests:** both tests pass on natedev (NixOS) and on the Mac; the GitHub macOS job proves the Homebrew case.
+
+**Files:** `crates/census-test-support/` (new), `Cargo.toml` (workspace dependency), `crates/cargo-tile/Cargo.toml`, `crates/cargo-handler/Cargo.toml`, `crates/cargo-tile/src/census/refresh_worker_tests.rs`, `crates/cargo-handler/src/census/scan.rs`, `Cargo.lock`.
+
+**Phase 43 note:** Phase 43's tree changes this fixture another way (copied `/bin/sh` on Linux). At its merge, Phase 43 takes this phase's fixture and drops its own.
+
 ### Phase 44 — A captured command shows once, with the work under it  · status: done
 
 **Depends on:** Phase 38
