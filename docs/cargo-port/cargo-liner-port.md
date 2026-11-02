@@ -192,22 +192,13 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 ### Phase 2r — a build-script probe through the mend wrapper reads its input  · status: done
 
-**Source:** showrunner, 2026-11-02 10:40, a blocking cargo-mend bug (user rule: mend bugs come first). In cables-unit's lint of hana (installed mend 149827ba, `--no-cache`), the rustix 1.1.4 build script panicked at `build.rs:283:64`: `unwrap()` on `Err(Os { code: 32, BrokenPipe })`. Mend then reported "compiler failed while validating this crate". Log: `/tmp/claude/delegate/fc206247-76c0-4607-b268-025299592a62/phases/stall/evidence/mend-brokenpipe-1ce7.log`.
+**As-built:** on Linux, a build script under mend starts stable rustc (checkpoint 90886cda). rustup puts the pinned toolchain's lib folder on `LD_LIBRARY_PATH`, and cargo puts the selected compiler's rustlib folder there. Both come before rustc's RUNPATH, and neither holds the matching libLLVM, so rustc died at load before it read stdin (the rustix broken pipe, the libc libLLVM error and the autocfg "could not execute rustc"). `DriverCompiler` (`crates/cargo-mend/src/compiler/build/driver_compiler.rs`) holds `runtime_libraries` (`sysroot/lib`) on Linux. `DriverCompiler::configure` puts that folder first on the cargo command's `LD_LIBRARY_PATH` and keeps the inherited entries after it (from the command's env, else the process env). Only that Linux step can fail; on macOS `configure` returns `()`. `RunWrapper` (`execute.rs`) calls `DriverCompiler::for_build()?.configure(command, &self.path)`. `build_script_starts_compiler_with_its_runtime_libraries`, `build_script_compiler_probe_reads_stdin` (a probe larger than a pipe buffer, `PROBE_PAYLOAD_SIZE`) and `compiler_library_path_preserves_command_paths` pin it.
 
-**Cause known so far:** rustix's `can_compile` spawns `$RUSTC_WRAPPER $RUSTC --crate-type=rlib --emit=metadata --target <t> -o <out> -` with a piped stdin, then writes the probe source to it. EPIPE means the wrapper process (or what it runs) exited before it read stdin. A direct run of the same wrapper copy, with and without `MEND_PASSTHROUGH_RUSTC_WRAPPER=sccache`, read stdin and exited 0. So the early exit needs the environment of the real mend run.
+**Files:** `crates/cargo-mend/src/compiler/build/{driver_compiler.rs,execute.rs}`, `crates/cargo-mend/CHANGELOG.md`.
 
-**Second symptom (showrunner, 10:35 run):** the libc 0.2.186 build script (build.rs:219) could not start stable rustc: "libLLVM.so.23.1-rust-1.99.1-stable: cannot open shared object file". The file exists, and rustc's RUNPATH is `$ORIGIN/../lib`. So under mend, the loader path has an entry ahead of RUNPATH that holds a `librustc_driver` without its libLLVM. The rustix broken pipe is the same fault: rustc died at load before it read stdin. Log: `/tmp/claude/delegate/fc206247-76c0-4607-b268-025299592a62/phases/cable-stall/lint-b109-cargo-mend.log`.
+**Gotchas:** a step that can fail only on Linux makes Mac clippy flag `unnecessary_wraps` on a shared function; keep the fallible part in a Linux-only function.
 
-**Spec:**
-1. Reproduce: find the invocation and environment in which the mend wrapper exits before it reads stdin. Record the cause.
-   Fix both symptoms at the cause. Add a test that a build script can start stable rustc under mend.
-2. Fix it in cargo-mend where the defect lives. A wrapper invocation that compiles from stdin reads its input, or hands stdin to the compiler, on every path.
-3. A regression test, under one second, fails before the fix and passes after it.
-4. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
-
-**Files:** `crates/cargo-mend/src/compiler/` (driver, probes, wrapper setup), `crates/cargo-mend/src/main.rs` only if the cause is there, the tests next to the changed code, `crates/cargo-mend/CHANGELOG.md`.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; the regression test fails on 149827ba and passes on the branch.
+**Ruled out:** a stdin change in the wrapper: the wrapper already reads stdin, and rustc failed at load.
 
 ### Phase 2q — tui_pane owns the expand/collapse model for cargo-port and cargo-handler  · status: todo
 
@@ -254,6 +245,8 @@ you need to create a new unit to handle all cargo port enhancements it should be
 **Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-port` and `verify.sh lint` clean on a gate tree; cargo-port's existing expand and collapse tests unchanged; no test takes a second. The notice carries `Change-Review: none` because nothing visible changes.
 
 ### Phase 2s — mend --fix keeps the cfg of an import it moves  · status: todo
+
+**Depends on:** none
 
 **Source:** showrunner, 2026-11-02 10:55. A cargo-mend bug that does not block other work. It runs beside 2q after 2r lands; the files do not overlap.
 
