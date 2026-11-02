@@ -38,7 +38,7 @@ pub fn blend_color(color: Color, toward: Color, alpha: u8) -> Color {
 
 /// The channel rounding and alpha scale of a colour blend.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BlendRounding {
+pub(crate) enum BlendRounding {
     /// Preserve the ordinary 255-step blend, truncating fractional channels.
     Truncate,
     /// Round toward `color` so entry ink meets its readability floor.
@@ -50,7 +50,7 @@ pub enum BlendRounding {
 /// Blend two colours using the selected channel rounding and alpha scale.
 /// Named colours and terminal defaults follow [`blend_color`]'s rules.
 #[must_use]
-pub fn blend_color_with_rounding(
+pub(crate) fn blend_color_with_rounding(
     color: Color,
     toward: Color,
     alpha: u8,

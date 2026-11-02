@@ -37,7 +37,6 @@ use super::grid::TileDemands;
 use super::grid::TileDrawing;
 use super::grid::TileGrid;
 use super::growth::TileGrowth;
-use crate::BlendRounding;
 use crate::GridLines;
 use crate::PaneBorders;
 use crate::PaneChrome;
@@ -45,7 +44,6 @@ use crate::PaneFrame;
 use crate::PaneFrameLabel;
 #[cfg(test)]
 use crate::blend_color;
-use crate::blend_color_with_rounding;
 use crate::default_pane_chrome;
 use crate::draw_clipped;
 use crate::error_color;
@@ -54,6 +52,8 @@ use crate::label_color;
 use crate::screen_ground;
 use crate::success_color;
 use crate::text_default;
+use crate::theme;
+use crate::theme::BlendRounding;
 use crate::title_color;
 
 /// Whether the cells are drawn with what is in them.
@@ -101,7 +101,7 @@ impl CellFadeProgress {
     /// Apply this ink state using its own blend scale and channel rounding.
     #[must_use]
     pub fn color(self, color: Color, ground: Color) -> Color {
-        blend_color_with_rounding(color, ground, self.amount, self.rounding)
+        theme::blend_color_with_rounding(color, ground, self.amount, self.rounding)
     }
 
     /// The amount on the zero-to-255 blend scale.
