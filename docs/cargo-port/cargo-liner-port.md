@@ -152,38 +152,13 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 ### Phase 2l — mend runs in a project that pins a different Rust release  · status: done
 
-**Depends on:** none (runs beside Phase 2n; the file sets do not overlap)
+**As-built:** `cargo mend` and `cargo mend --fix` compile every driver command with the rustc of the toolchain that built mend, so a project whose `rust-toolchain.toml` pins another Rust release no longer fails with E0514 (checkpoint d0b9c24e). `DriverCompiler` (`crates/cargo-mend/src/compiler/build/driver_compiler.rs`) is the one owner: `for_build()` resolves `<MEND_BUILD_SYSROOT>/bin/rustc` once per run, and `configure(command, wrapper)` sets `RUSTC` and `RUSTC_WORKSPACE_WRAPPER` together and removes the passthrough wrapper. `run_cargo_check` (`execute.rs`) calls it for the check and the fix validation build; no call site sets these variables by hand. A missing rustc in the build sysroot stops mend with an error that names the folder. When the compiler versions differ, Cargo keeps a second set of dependency artifacts in the same target folder; the README and CHANGELOG name this cost.
 
-#### Work Order
+**Files:** `crates/cargo-mend/src/compiler/build/driver_compiler.rs`, `execute.rs`, `crates/cargo-mend/src/compiler/constants.rs` (`RUSTC_ENV`), `crates/cargo-mend/tests/cli_smoke.rs` (`fix_uses_build_compiler_with_external_path_dependency_and_unusable_project_rustc`), `crates/cargo-mend/README.md`, `crates/cargo-mend/CHANGELOG.md`.
 
-**Goal:** `cargo mend` and `cargo mend --fix` work in a project whose `rust-toolchain.toml` pins a Rust release other than the one mend was built with. Today the installed mend (built on stable 1.99.1) fails with E0514 in Hana, which pins 1.99.0.
+**Gotchas:** a cli or diagnostics test that runs real cargo builds has a floor near 2 s; such a test runs mend once.
 
-**Source:** the user, through the showrunner, 2026-11-01: "yes you need to fix mend for sure". The showrunner reproduced it in a scratch crate pinned to 1.99.0 with a path dependency outside the workspace. With `RUSTUP_TOOLCHAIN=stable` the same crate passes.
-
-**Cause:** mend runs `cargo check` with itself as `RUSTC_WORKSPACE_WRAPPER` (`run_cargo_check`, `crates/cargo-mend/src/compiler/build/execute.rs` ≈268). Workspace members compile in mend's driver, which links the rustc libraries of the toolchain that built mend. Dependencies compile with the project's rustc. Crate metadata records the exact rustc that wrote it, so the driver refuses each dependency that another release wrote (E0514). The doc comment on `run_cargo_check` already names this case.
-
-**Design:** each cargo command whose compiles go through mend's driver uses one compiler: the rustc of the toolchain that built mend. That is the toolchain whose `librustc_driver` mend loads (`MEND_BUILD_SYSROOT` from `build.rs`; the run path points at the same folder). Set Cargo's `RUSTC` to `<build sysroot>/bin/rustc`, so the choice does not depend on rustup or on a channel name. One owner makes this choice once per run and applies it to each such command (the check, the build that validates applied fixes, and any other driver build). No call site sets it by hand. Commands that do not run the driver (for example `cargo fix` for compiler fixes) keep the project's rustc.
-- Same release: Cargo's fingerprint keys on the rustc version, not its path, so today's artifacts stay and nothing rebuilds.
-- Different release: Cargo keeps a second set of dependency artifacts in the same target folder under their own hashes. The README and CHANGELOG name this cost.
-- No rustc in the build sysroot: mend stops with an error that names the folder, not a compiler crash.
-
-**Constraints:**
-- The fix is in mend. Do not change Hana, `verify.sh` or any project's toolchain file. Reinstalling mend on 1.99.0 is ruled out.
-- Do not edit or build in any Hana worktree.
-- No toolchain name or version in code; the sysroot comes from the build.
-- The `run_cargo_check` doc comment and the README toolchain section (≈139–149) state the new behavior. This phase owns the mend CHANGELOG; Phase 2n adds its own line at its checkpoint.
-- No test takes a second. Ruling (unit director, 2026-11-02): a cli or diagnostics test that runs real cargo builds has a floor near 2 s, like the other mend fix tests (2–4 s). Such a test runs mend once and adds no wait.
-
-**Spec:**
-1. A unit test of the owner: each driver command it configures gets `RUSTC` set to the build sysroot's rustc, and a command that does not run the driver is unchanged.
-2. A CLI test in `tests/cli_smoke.rs`: the project's rustc is not mend's (for example, a `RUSTC` in the caller's environment that refuses to run), and `cargo mend` still passes on a fixture with a path dependency outside its workspace.
-3. Live proof on natedev, in a scratch crate outside the repo (made with `scratch.py`) pinned to 1.99.0 with a path dependency outside its workspace: the dev mend passes where the installed mend fails with E0514.
-
-**Files:** `crates/cargo-mend/src/compiler/build/`, `crates/cargo-mend/src/compiler/constants.rs`, `crates/cargo-mend/README.md`, `crates/cargo-mend/CHANGELOG.md`, `crates/cargo-mend/tests/cli_smoke.rs`.
-
-**Workers:** 1 writer (impl3) owns the code, the tests and the live proof.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean on a gate tree; no test takes a second; the live proof of spec 3. The checkpoint adds a Change-Review line.
+**Ruled out:** reinstalling mend on the project's release; changes to Hana, `verify.sh` or a project's toolchain file.
 
 ### Phase 2n — mend --fix keeps the imports of a module mounted with #[path]  · status: done
 
@@ -231,7 +206,7 @@ Log: `/tmp/claude/unit/195cf00e-903b-4aa4-8515-c9b261497d9c/mesh_runs/20261101T0
 **Constraints:**
 - From phase 2b: a `DiskUsage` reply can change a row from `Visible` to `Deleted` with the byte count still zero (`async_tasks/disk_handlers.rs` `apply_disk_usage` ≈65), so equal bytes do not mean equal visible state. Test that this change draws once and an identical later reply draws nothing.
 - From phase 2d: the row error state for a manifest cargo rejects is a visible input. Test redraws for an unselected row's error, its recovery, and `ProjectDiscovered`.
-- The detail cache owns `Option<DetailCacheKey>` (`tui/panes/data.rs` ≈21). Replace it with a named state that tells cleared details from details current for a key, like the new caches.
+- The detail cache owns `Option<DetailCacheKey>` (`tui/panes/data.rs` ≈21). Replace it with a named state that tells cleared details from details current for a key, like the new caches. The APIs that read or write it (`detail_is_current`, `set_detail_stamp`, `clear_detail_data` in `tui/panes/data.rs`) and their tests take and return that state too, so no caller reads a bare absence.
 - Measure idle CPU only after the startup folder walk, watcher registration and reconciliation, and startup enrichment end (the walk alone uses several cores for tens of seconds in a debug build; scan completion, `dispatch.rs` ≈96, comes before the watcher's Ready, `watcher/runtime.rs` ≈427). Add a named log marker or a repeatable procedure for that point and start both 60 s windows after it.
 - The event loop (`tui/terminal/event_loop.rs`, the `loop` in its run function) calls `ensure_visible_rows_cached`, `ensure_disk_cache`, `ensure_fit_widths_cached`, `ensure_detail_cached` and `draw_frame` on every wakeup. It wakes on input, on each background message, on each CPU pane sample, at least each second (`IDLE_HEARTBEAT`, `tui/app/mod.rs` ≈437), and each 80 ms while a lint, clean or run is live (`ANIMATION_TICK`).
 - `ensure_detail_cached` (`tui/app/navigation/cache.rs`) already skips work with a `DetailCacheKey` of the selected row and `scan.generation()`. Use the same pattern: a typed key of the inputs, not a bool flag set by hand at call sites. That generation alone is not a full key: `update_generations_for_msg` (`tui/app/async_tasks/dispatch.rs` ≈32) leaves it unchanged for an unselected project's `DiskUsage`, and `ProjectStorage` (`scan/background.rs` ≈258) does not touch it. Each cache names its own inputs: list rows, disk totals, column widths and storage. A new cache state is an enum (for example `NotComputed` / `Current(key)`), not a bare `Option<Key>`.
@@ -262,13 +237,12 @@ Log: `/tmp/claude/unit/195cf00e-903b-4aa4-8515-c9b261497d9c/mesh_runs/20261101T0
 - `crates/cargo-port/src/tui/project_list_state.rs` — index upkeep on change
 - `crates/cargo-port/src/tui/app/tree_mutation.rs` — index upkeep on insert, replace, regroup
 - `crates/cargo-port/src/tui/app/async_tasks/dispatch.rs` — generation inputs for the new keys
-- `crates/cargo-port/src/tui/terminal/event_loop_tests.rs` — new; tester
-- `crates/cargo-port/src/tui/project_list/path_index_tests.rs` — new; tester
+- `crates/cargo-port/src/tui/terminal/event_loop_tests.rs` — new
+- `crates/cargo-port/src/tui/project_list/path_index_tests.rs` — new
 - `crates/cargo-port/CHANGELOG.md`
 
 **Workers:** 1 writer (impl4) owns the implementation and every test file; the unit director owns the live CPU measurements (spec 5).
-- `impl` — specs 1–3 and 6, the frame counter, and the two slow interaction tests in `tui/app/mod.rs`; hub: `crates/cargo-port/src/tui/project_list/list.rs`. Not the tester's two files.
-- `test` — spec 4, in `tui/terminal/event_loop_tests.rs` and `tui/project_list/path_index_tests.rs`, registered by `impl`.
+- `impl` — specs 1–4 and 6, the frame counter, the two slow interaction tests in `tui/app/mod.rs`, and the tests in `tui/terminal/event_loop_tests.rs` and `tui/project_list/path_index_tests.rs`; hub: `crates/cargo-port/src/tui/project_list/list.rs`.
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; the idle CPU of spec 5 under 1% of one core on the branch binary; during the build, under 3% of one core and under 2 frames each second with no spinner on screen; the two interaction tests each under one second. The checkpoint adds a Change-Review line.
 
