@@ -54,7 +54,7 @@ use super::activity::RunRecords;
 use super::activity::TranscriptRead;
 use super::branch;
 use super::classify;
-use super::classify::CodexLogEvidence;
+use super::classify::CodexSessionLink;
 use super::classify::HeldSession;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
@@ -148,6 +148,7 @@ pub(super) struct LocalScanner {
     session_names:       SessionNames,
     /// Each Codex account log advances from its retained row id.
     codex_logs:          CodexLogs,
+    codex_links:         HashMap<u32, CodexSessionLink>,
     codex_start_window:  CodexStartWindow,
     transcript_activity: HashMap<PathBuf, TranscriptRead>,
     subagent_activity:   HashMap<PathBuf, TranscriptRead>,
@@ -251,18 +252,9 @@ impl LocalScanner {
         mut publish: impl FnMut(ScanStage, Vec<AgentRow>),
         read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
     ) {
+        self.resolve_codex_sessions(processes, codex_threads, home);
         let mut rows = startup_log::startup_stage("classify_agents", || {
-            let links = classify::codex_session_links(
-                processes,
-                codex_threads,
-                home,
-                self.codex_start_window,
-                CodexLogEvidence::Recorded(&self.codex_logs),
-            );
-            let threads = links
-                .iter()
-                .filter_map(|(pid, link)| link.thread().map(|thread| (*pid, thread)))
-                .collect();
+            let threads = classify::linked_threads(&self.codex_links);
             classify::agent_rows_with_threads(
                 processes,
                 sessions,
@@ -279,6 +271,31 @@ impl LocalScanner {
         self.publication = LocalPublication::CompletedAnswerPublished;
     }
 
+    /// Read current thread rows and resolve one map for this scan.
+    fn resolve_codex_sessions(
+        &mut self,
+        processes: &[ProcessEntry],
+        threads: &[CodexThread],
+        home: Option<&Path>,
+    ) {
+        let records = startup_log::startup_stage("codex_thread_ids", || {
+            self.codex_logs
+                .thread_rows(processes, home, self.codex_start_window)
+        });
+        self.codex_links = classify::codex_session_links(
+            processes,
+            if threads.is_empty() {
+                &records.candidates
+            } else {
+                threads
+            },
+            home,
+            self.codex_start_window,
+            &self.codex_logs,
+            &records,
+        );
+    }
+
     /// A scanner of the user running this process.
     pub(super) fn new(account_labels: AccountLabels) -> Self {
         Self {
@@ -292,6 +309,7 @@ impl LocalScanner {
             rollouts: Rollouts::default(),
             session_names: super::codex_names::SessionNames::default(),
             codex_logs: codex::CodexLogs::default(),
+            codex_links: HashMap::new(),
             codex_start_window: crate::config::CodexStartWindow::default(),
             transcript_activity: HashMap::new(),
             subagent_activity: HashMap::new(),
@@ -334,39 +352,8 @@ impl LocalScanner {
         });
         let processes =
             startup_log::startup_stage("process_table", || self.processes.read(&sessions));
-        startup_log::startup_stage("codex_logs", || {
-            let started = std::time::Instant::now();
-            self.codex_logs.refresh(&processes, home.as_deref());
-            startup_log::startup_event(&format!(
-                "codex_log_read elapsed_us={}",
-                started.elapsed().as_micros()
-            ));
-        });
-        // Codex's database is opened only while an interactive Codex runs,
-        // and read only for the span its threads could have been created in.
-        let codex_threads = startup_log::startup_stage("codex_sqlite", || {
-            let mut threads = Vec::new();
-            let homes: HashSet<_> = processes
-                .iter()
-                .filter(|process| process.is_codex())
-                .filter_map(|process| codex::session_home(process, home.as_deref()))
-                .collect();
-            for codex_home in homes {
-                if let Some(window) =
-                    classify::codex_thread_window(&processes, self.codex_start_window)
-                {
-                    threads.extend(codex::read_threads(&codex_home, &window));
-                }
-                let resumed = processes
-                    .iter()
-                    .filter(|process| {
-                        codex::session_home(process, home.as_deref()).as_ref() == Some(&codex_home)
-                    })
-                    .flat_map(|process| codex::read_resumed_threads(process, &codex_home));
-                threads.extend(resumed);
-            }
-            threads
-        });
+        self.codex_logs.refresh(&processes, home.as_deref());
+        let codex_threads = Vec::new();
         self.scan_stages_with(
             &processes,
             &sessions,
@@ -374,13 +361,7 @@ impl LocalScanner {
             home.as_deref(),
             publish,
             |scanner, rows| {
-                scanner.attach_details(
-                    &processes,
-                    &sessions,
-                    &codex_threads,
-                    home.as_deref(),
-                    rows,
-                );
+                scanner.attach_details(&processes, &sessions, home.as_deref(), rows);
             },
         );
     }
@@ -390,7 +371,6 @@ impl LocalScanner {
         &mut self,
         processes: &[ProcessEntry],
         sessions: &[SessionRecord],
-        codex_threads: &[CodexThread],
         home: Option<&Path>,
         rows: &mut [AgentRow],
     ) {
@@ -400,7 +380,7 @@ impl LocalScanner {
             .map(|home| PacerHistory::read(&home.join(CODEX_PACER_STATE)))
             .unwrap_or_default();
         let service_tiers = startup_log::startup_stage("codex_service_tiers", || {
-            self.codex_tiers(processes, codex_threads, &pacer, home)
+            self.codex_tiers(processes, &pacer)
         });
         for row in rows.iter_mut() {
             if let Some(tier) = service_tiers.get(&row.pid) {
@@ -452,7 +432,7 @@ impl LocalScanner {
             })
             .unwrap_or_default()
         });
-        self.attach_codex_sessions(processes, codex_threads, home, rows);
+        self.attach_codex_sessions(processes, home, rows);
         self.rollouts.forget_unread();
         let dispatches = startup_log::startup_stage("worker_dispatches", || {
             worker_dispatches(processes, &mut self.worker_names, &mut self.worker_commands)
@@ -499,17 +479,9 @@ impl LocalScanner {
     fn attach_codex_sessions(
         &mut self,
         processes: &[ProcessEntry],
-        threads: &[CodexThread],
         home: Option<&Path>,
         rows: &mut [AgentRow],
     ) {
-        let startup = classify::codex_session_links(
-            processes,
-            threads,
-            home,
-            self.codex_start_window,
-            CodexLogEvidence::Recorded(&self.codex_logs),
-        );
         let homes: HashSet<_> = processes
             .iter()
             .filter(|process| process.is_codex())
@@ -527,7 +499,8 @@ impl LocalScanner {
             }
             row.activity = AgentActivity::Idle;
             row.name = format!("pid {}", row.pid);
-            let Some(thread) = startup
+            let Some(thread) = self
+                .codex_links
                 .get(&row.pid)
                 .and_then(classify::CodexSessionLink::thread)
             else {
@@ -671,22 +644,14 @@ impl LocalScanner {
     fn codex_tiers(
         &mut self,
         processes: &[ProcessEntry],
-        codex_threads: &[CodexThread],
         pacer: &PacerHistory,
-        home: Option<&Path>,
     ) -> HashMap<u32, ServiceTier> {
-        let startup = classify::codex_session_links(
-            processes,
-            codex_threads,
-            home,
-            self.codex_start_window,
-            CodexLogEvidence::Recorded(&self.codex_logs),
-        );
         processes
             .iter()
             .filter(|process| process.is_codex() && !process.is_app_server())
             .map(|process| {
-                let thread = startup
+                let thread = self
+                    .codex_links
                     .get(&process.pid)
                     .and_then(classify::CodexSessionLink::thread);
                 let rollout = thread.map(|thread| self.rollouts.read(&thread.rollout));
@@ -2320,6 +2285,7 @@ mod tests {
             rollouts:            Rollouts::default(),
             session_names:       super::super::codex_names::SessionNames::default(),
             codex_logs:          codex::CodexLogs::default(),
+            codex_links:         HashMap::new(),
             codex_start_window:  crate::config::CodexStartWindow::default(),
             transcript_activity: HashMap::new(),
             subagent_activity:   HashMap::new(),
@@ -2930,10 +2896,10 @@ mod process_cache_tests {
             now + PROCESS_RECOVERY_INTERVAL.saturating_sub(Duration::from_millis(1)),
         );
         assert!(
-            !classify::agent_rows(
+            !classify::agent_rows_with_threads(
                 &before,
                 std::slice::from_ref(&session),
-                &[],
+                &HashMap::default(),
                 None,
                 &AccountLabels::default()
             )
@@ -2943,8 +2909,13 @@ mod process_cache_tests {
         );
         assert_eq!(census.discoveries, 1);
         let recovered = census.read_at(&[], now + PROCESS_RECOVERY_INTERVAL);
-        let shown =
-            classify::agent_rows(&recovered, &[session], &[], None, &AccountLabels::default());
+        let shown = classify::agent_rows_with_threads(
+            &recovered,
+            &[session],
+            &HashMap::default(),
+            None,
+            &AccountLabels::default(),
+        );
         assert!(
             shown
                 .iter()

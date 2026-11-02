@@ -51,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Codex sessions that use a detached daemon show their thread names through their socket connection.
+
 - Codex sessions opened from the resume picker show their own thread names and follow thread switches.
 - Resumed Codex sessions keep their own account and name when account homes share a sessions directory.
 - Release subagent and worker directory watches and cached records when their sessions leave the census.

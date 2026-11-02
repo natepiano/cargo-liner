@@ -186,6 +186,7 @@ impl RolloutRead {
                     break;
                 }
                 offset += bytes as u64;
+                let text = std::str::from_utf8(&line).unwrap_or_default();
                 if [
                     CODEX_SESSION_META_LINE.as_bytes(),
                     CODEX_EVENT_LINE.as_bytes(),
@@ -193,7 +194,7 @@ impl RolloutRead {
                     CODEX_RESPONSE_LINE.as_bytes(),
                 ]
                 .iter()
-                .any(|marker| line.windows(marker.len()).any(|part| part == *marker))
+                .any(|marker| std::str::from_utf8(marker).is_ok_and(|marker| text.contains(marker)))
                 {
                     self.take(&line);
                 }
