@@ -136,8 +136,8 @@ stability guarantee and `cargo-mend` is sensitive to the exact rustc version use
 
 ### Compatibility
 
-`cargo-mend` links against the compiler internals of the toolchain that builds it, so releases are
-tied to a specific rustc version. Build and run each release with its matching toolchain:
+`cargo-mend` links against the compiler internals of the toolchain that builds it.
+Build each release with a compatible rustc version:
 
 | `cargo-mend`  | rustc     |
 |---------------|-----------|
@@ -145,9 +145,18 @@ tied to a specific rustc version. Build and run each release with its matching t
 | 0.17-0.22.1   | 1.97-1.98 |
 | 0.16.x        | 1.96      |
 
-Install the `rustc-dev` component, then install `cargo-mend` with the stable toolchain plus
-`RUSTC_BOOTSTRAP=1`. Nightly-built binaries can fail against stable projects with `E0514`
-because `cargo-mend` links against `rustc_driver`.
+Install the `rustc-dev` component, then install `cargo-mend` with the stable toolchain and
+`RUSTC_BOOTSTRAP=1`.
+
+Projects can pin a different Rust release in `rust-toolchain.toml`.
+For analysis and fix validation, mend sets Cargo's `RUSTC` to the rustc executable in its build sysroot.
+Workspace members and dependencies then use the same compiler as mend's linked `rustc_driver`.
+The build sysroot must still contain `bin/rustc`; mend reports that folder if the compiler is missing.
+Commands without the mend driver, including `cargo fix` for compiler fixes, keep the project's compiler.
+
+Cargo reuses artifacts when the compiler version matches the project's version.
+When the versions differ, Cargo builds another set of dependency artifacts under separate hashes in the same target directory.
+This can increase the first run's time and disk use.
 
 ```bash
 rustup component add rustc-dev
