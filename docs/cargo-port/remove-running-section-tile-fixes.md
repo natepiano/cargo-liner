@@ -1395,12 +1395,6 @@ Showrunner request (2026-10-29): the 36m merge tree fails `census::scan::refresh
 
 **Phase 43 note:** Phase 43's tree changes this fixture another way (copied `/bin/sh` on Linux). At its merge, Phase 43 takes this phase's fixture and drops its own.
 
-### Phase 41d — census-test-support has a lib test for the merge gate  · status: todo
-
-**Depends on:** Phase 41c
-
-The merge gate runs `cargo nextest run --workspace --lib -E 'package(census-test-support)'`, and nextest exits 4 with "no tests to run" (showrunner, 2026-10-31). One lib test: `StdinEchoExecutable::copy_to` makes a copy that runs with `arguments()` and echoes stdin; Linux and macOS, under 1 s. The gate does not change.
-
 ### Phase 44 — A captured command shows once, with the work under it  · status: done
 
 **Depends on:** Phase 38
