@@ -14,12 +14,13 @@ use crate::census::InvocationId;
 use crate::census::Measurement;
 use crate::census::ProcessOwner;
 use crate::census::RowProvenance;
-use crate::census::RunStart;
 use crate::census::VisibleParent;
 use crate::census::command_text::CommandText;
 use crate::census::invocation_cpu_accounting::MeasurementAbsence;
 use crate::census::process_identity::CaptureMembership;
+use crate::census::scan::InvocationExecution;
 use crate::census::scan::InvocationResourceUse;
+use crate::census::scan::OriginStart;
 use crate::constants::COMMAND_COLUMN;
 use crate::constants::CPU_COLUMN;
 use crate::constants::TABLE_HEADERS;
@@ -70,15 +71,17 @@ fn collision_roster() -> Roster {
 fn invocation(pid: u32, marker: &str) -> CargoProcess {
     CargoProcess {
         invocation_id: InvocationId::for_test(pid),
+        execution: InvocationExecution::Command,
         capture_membership: CaptureMembership::Outside,
         provenance: RowProvenance::Uncaptured(ProcessOwner::Unavailable),
         path: "/fixture/readout".to_owned(),
         directory_identity: WorkingDirectoryIdentity::Absolute("/fixture/readout".into()),
         pid,
         parent: VisibleParent::None,
-        start: "11:04".to_owned(),
-        started: RunStart::Known(0),
-        duration: "00:18".to_owned(),
+        origin_start: OriginStart::Process {
+            epoch:   0,
+            elapsed: std::time::Duration::from_secs(1),
+        },
         resource_use: InvocationResourceUse {
             cpu:      Measurement::Reading(12.0),
             memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),

@@ -2871,8 +2871,8 @@ impl<'a> ProcessRowValues<'a> {
             cells: [
                 process.pid.to_string(),
                 parent_text(process),
-                process.start.clone(),
-                process.duration.clone(),
+                process.start(),
+                process.duration(),
                 cpu,
                 memory,
                 state,
@@ -4754,7 +4754,7 @@ fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: PinnedGroup<'_>) -> Vec<Pa
     for group in &mut groups {
         group
             .rows
-            .sort_by_key(|row| (row.process.started, row.process.pid));
+            .sort_by_key(|row| (row.process.started(), row.process.pid));
     }
     // The lead finds its group the way a row does, first compatible in
     // arrival order, so an owner-only lead pins the group it joined even
@@ -4771,7 +4771,7 @@ fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: PinnedGroup<'_>) -> Vec<Pa
             .rows
             .first()
             .map_or((RunStart::Unavailable, u32::MAX), |row| {
-                (row.process.started, row.process.pid)
+                (row.process.started(), row.process.pid)
             })
     });
     for group in groups.iter_mut().chain(pinned.iter_mut()) {
@@ -5131,20 +5131,14 @@ fn displayed_subcommand_name(command: &CommandText) -> CommandName {
     }
 }
 
-/// A missing CPU sample leaves the cell empty until a reading arrives.
+/// The display boundary distinguishes measured resources from live absence states.
 fn cpu_text(reading: Measurement<f32>) -> String {
-    match reading.map(census::scan::cpu_label) {
-        Measurement::Reading(value) => value,
-        Measurement::Unavailable(_) => String::new(),
-    }
+    census::invocation_cpu_accounting::LiveResources::from(reading).text(census::scan::cpu_label)
 }
 
-/// Missing resident-memory readings occupy no cells.
+/// Resident memory retains its unavailable reason through the display boundary.
 fn memory_text(reading: Measurement<u64>) -> String {
-    match reading {
-        Measurement::Reading(bytes) => memory_label(bytes),
-        Measurement::Unavailable(_) => String::new(),
-    }
+    census::invocation_cpu_accounting::LiveResources::from(reading).text(memory_label)
 }
 
 /// The parsed word fixes both its wrap boundary and its permitted cut.
@@ -5909,7 +5903,7 @@ enum InvocationProgressOwnership {
     EnclosingInvocation,
 }
 
-const fn progress_ownership(row: &TrackedRow) -> InvocationProgressOwnership {
+fn progress_ownership(row: &TrackedRow) -> InvocationProgressOwnership {
     if matches!(row.process.provenance, RowProvenance::Enclosing(_))
         || !matches!(
             row.process.capture_membership,
@@ -6165,6 +6159,44 @@ pub(crate) fn summary_cpu_for_test(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use tempfile::tempdir;
+
+    use crate::census::scan::CensusSequence;
+    use crate::census::scan::tests::ShellRun;
+    #[test]
+    fn a_live_capture_row_draws_its_executors_resource_readings() {
+        let run = ShellRun::new();
+        let root = tempdir().expect("capture root");
+        let capture = ShellRun::capture(root.path());
+        let now = Instant::now();
+        let groups = run.working_groups(&capture, now);
+        let mut roster = Roster::new();
+        roster.observe(groups, now);
+        let area = ratatui::layout::Rect::new(0, 0, 180, 12);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        draw_cell_for_test(&mut buffer, &roster, &TileContent::Summary, area, 4);
+        let lines: Vec<String> = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let text = lines.join("\n");
+        let header = lines
+            .iter()
+            .find(|line| line.contains("cpu") && line.contains("command"))
+            .expect("summary header");
+        let row = lines
+            .iter()
+            .find(|line| line.split_whitespace().next() == Some("100"))
+            .expect("live row");
+        assert_eq!(
+            crate::census::measurement_cell(header, row, "cpu", &text),
+            "100%"
+        );
+        assert_eq!(
+            crate::census::measurement_cell(header, row, "mem", &text),
+            "0.1G"
+        );
+    }
+
     mod entry_ink_tests {
         use tui_pane::PaneFrame;
         use tui_pane::Theme;
@@ -6643,6 +6675,8 @@ mod tests {
     use std::time::Duration;
     use std::time::Instant;
 
+    use chrono::Local;
+    use chrono::TimeZone;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Cell;
@@ -6677,8 +6711,9 @@ mod tests {
     use crate::census::process_identity::CaptureMembership;
     use crate::census::process_identity::RunId;
     use crate::census::scan::AncestryWalk;
-    use crate::census::scan::CensusSequence;
     use crate::census::scan::Compiler;
+    use crate::census::scan::InvocationExecution;
+    use crate::census::scan::OriginStart;
     use crate::census::scan::ProcessField;
     use crate::census::scan::ProcessObservation;
     use crate::census::scan::ProcessObservations;
@@ -8353,7 +8388,7 @@ mod tests {
         let runs = header.find("runs").expect("runs header");
         let row = text
             .lines()
-            .find(|line| line.split_whitespace().next() == Some("172047"))
+            .find(|line| line.split_whitespace().next() == Some("172043"))
             .expect("dispatched process row");
         assert!(
             row.contains("[ci] cargo nextest run --profile ci --all-features --workspace --tests"),
@@ -8361,7 +8396,7 @@ mod tests {
         );
         assert_eq!(row[runs..].trim(), "2", "{text}");
         assert!(
-            !text.contains("172043") && !text.contains("172044"),
+            !text.contains("172047") && !text.contains("172044"),
             "{text}"
         );
     }
@@ -8528,7 +8563,7 @@ mod tests {
             lead.parent = VisibleParent::Ancestor(parent);
             lead.resource_use.cpu = Measurement::Reading(200.0);
             lead.resource_use.memory = Measurement::Reading(0);
-            lead.duration = "03:46:52".to_string();
+            lead.origin_start = display_clock(11, 4, 13_612);
             lead.path = format!("~/work/{pid}");
             lead.directory_identity = WorkingDirectoryIdentity::Absolute(lead.path.clone().into());
             let mut group = cargo_group(lead);
@@ -12197,10 +12232,7 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(vec![group], now);
         roster.observe(vec![], now);
-        roster.advance(
-            now + std::time::Duration::from_secs(1),
-            std::time::Duration::from_secs(4),
-        );
+        roster.advance(now + Duration::from_secs(1), Duration::from_secs(4));
         let sccache = SccacheStats::new();
         let area = Rect::new(0, 0, 160, 30);
         let growth = TileGrowth {
@@ -12932,7 +12964,10 @@ mod tests {
     fn a_parent_precedes_its_child_inside_an_unpinned_directory() {
         let lead = row_at("~/lead", None);
         let mut parent = same_second("~/other", 500);
-        parent.process.started = RunStart::Known(200);
+        parent.process.origin_start = OriginStart::Process {
+            epoch:   200,
+            elapsed: Duration::from_secs(18),
+        };
         let mut child = same_second("~/other", 400);
         child.process.parent = VisibleParent::Invocation {
             id:  parent.process.invocation_id.clone(),
@@ -13097,6 +13132,18 @@ mod tests {
     /// The working directory the gauge tests head their group with.
     const GAUGE_PATH: &str = "~/rust/cargo-tile";
 
+    /// Use one clock for the local start and elapsed display fixture.
+    fn display_clock(hour: u32, minute: u32, elapsed: u64) -> OriginStart {
+        let local = Local
+            .with_ymd_and_hms(2020, 1, 1, hour, minute, 0)
+            .single()
+            .expect("fixture local time");
+        OriginStart::Process {
+            epoch:   u64::try_from(local.timestamp()).expect("fixture epoch"),
+            elapsed: Duration::from_secs(elapsed),
+        }
+    }
+
     /// A row whose command line is long enough to outrun the column it
     /// is drawn in.
     fn long_row() -> TrackedRow {
@@ -13114,8 +13161,7 @@ mod tests {
         row.process.pid = pid;
         row.process.invocation_id = InvocationId::for_test(pid);
         row.process.parent = VisibleParent::Ancestor(parent);
-        row.process.start = "17:18".to_string();
-        row.process.duration = "01:12".to_string();
+        row.process.origin_start = display_clock(17, 18, 72);
         row.process.resource_use.cpu = Measurement::Reading(1177.0);
         row.process.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 2);
         row.process.resource_use.compiler = CompilerObservation::Running(Compiler {
@@ -13322,11 +13368,11 @@ mod tests {
         roster.observe(
             vec![
                 CargoGroup {
-                    lead:     lead.process,
-                    rest:     vec![later.process],
+                    lead:     lead.process.clone(),
+                    rest:     vec![later.process.clone()],
                     ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
                 },
-                cargo_group(visible.process),
+                cargo_group(visible.process.clone()),
             ],
             Instant::now(),
         );
@@ -13805,12 +13851,12 @@ mod tests {
     #[test]
     fn two_row_render_samples_keep_memory_aligned() {
         let mut build = row(None);
+        build.process.origin_start = display_clock(11, 4, 18);
         build.process.resource_use.memory = Measurement::Reading(322_122_547);
         let mut test = row(None);
         test.process.pid = 41_234;
         test.process.invocation_id = InvocationId::for_test(41_234);
-        test.process.start = "11:05".to_string();
-        test.process.duration = "00:08".to_string();
+        test.process.origin_start = display_clock(11, 5, 8);
         test.process.resource_use.cpu = Measurement::Reading(5.0);
         test.process.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 124 / 10);
         test.process.command = CommandText::of("cargo", &["test"]);
@@ -13952,12 +13998,14 @@ mod tests {
             ),
             pid:                  41233,
             invocation_id:        InvocationId::for_test(41233),
+            execution:            InvocationExecution::Command,
             capture_membership:   CaptureMembership::Outside,
             provenance:           RowProvenance::Uncaptured(ProcessOwner::Unavailable),
             parent:               VisibleParent::None,
-            start:                "11:04".to_string(),
-            started:              RunStart::Known(started),
-            duration:             "00:18".to_string(),
+            origin_start:         OriginStart::Process {
+                epoch:   started,
+                elapsed: Duration::from_secs(18),
+            },
             resource_use:         InvocationResourceUse {
                 cpu:      Measurement::Reading(12.0),
                 memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
@@ -14408,12 +14456,11 @@ mod tests {
             ),
             pid,
             invocation_id: InvocationId::for_test(pid),
+            execution: InvocationExecution::Command,
             capture_membership: CaptureMembership::Outside,
             provenance: RowProvenance::Uncaptured(ProcessOwner::Unavailable),
             parent: VisibleParent::None,
-            start: "11:04".to_string(),
-            started: RunStart::Known(0),
-            duration: "00:18".to_string(),
+            origin_start: display_clock(11, 4, 18),
             resource_use: InvocationResourceUse {
                 cpu:      Measurement::Reading(12.0),
                 memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
@@ -15661,12 +15708,15 @@ mod tests {
         // Give both render inputs the same clock instead of the fixture's process epoch
         // and registration discovery time, which describe unrelated instants.
         for group in &mut groups {
-            group.lead.started = RunStart::Known(u64::from(group.lead.pid));
+            group.lead.origin_start = OriginStart::Process {
+                epoch:   u64::from(group.lead.pid),
+                elapsed: Duration::from_secs(18),
+            };
         }
         assert_eq!(groups.len(), 2);
         let own_row = &groups
             .iter()
-            .find(|group| group.lead.pid == 41)
+            .find(|group| group.lead.pid == 40)
             .expect("own writer")
             .lead;
         let RowProvenance::Direct(context) = &own_row.provenance else {
@@ -15859,9 +15909,7 @@ mod tests {
     #[test]
     fn unavailable_start_sorts_deterministically_and_renders_its_duration() {
         let mut unavailable = same_second("/unknown/start", 40);
-        unavailable.process.started = RunStart::Unavailable;
-        unavailable.process.start = UNRESOLVED_TIME.into();
-        unavailable.process.duration = UNRESOLVED_TIME.into();
+        unavailable.process.origin_start = OriginStart::Unavailable;
         let known = started_at("/known/start", None, 100);
         let rows = [&unavailable, &known];
         let groups = group_by_path(&rows, PinnedGroup::Unpinned);
@@ -16479,7 +16527,7 @@ mod tests {
             sorted.first().map(|group| group
                 .rows
                 .iter()
-                .map(|row| row.process.started)
+                .map(|row| row.process.started())
                 .collect::<Vec<RunStart>>()),
             Some(vec![RunStart::Known(100), RunStart::Known(160)])
         );
@@ -17002,8 +17050,8 @@ mod tests {
         );
         roster.observe(vec![cargo_group(lead)], now);
         roster.advance(
-            now + std::time::Duration::from_secs(1),
-            std::time::Duration::from_secs(DEFAULT_FADE_SECONDS),
+            now + Duration::from_secs(1),
+            Duration::from_secs(DEFAULT_FADE_SECONDS),
         );
         let sccache = SccacheStats::new();
         let cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
@@ -17014,10 +17062,10 @@ mod tests {
             CellReadoutFade::Unfaded,
             "a live lead holds the cell ink"
         );
-        roster.observe(Vec::new(), now + std::time::Duration::from_secs(1));
+        roster.observe(Vec::new(), now + Duration::from_secs(1));
         roster.advance(
-            now + std::time::Duration::from_secs(2),
-            std::time::Duration::from_secs(DEFAULT_FADE_SECONDS),
+            now + Duration::from_secs(2),
+            Duration::from_secs(DEFAULT_FADE_SECONDS),
         );
         let group = &roster.groups()[0];
         let rows: Vec<_> = group.rows().collect();
@@ -17051,8 +17099,8 @@ mod tests {
         );
         roster.observe(Vec::new(), now);
         roster.advance(
-            now + std::time::Duration::from_secs(1),
-            std::time::Duration::from_secs(DEFAULT_FADE_SECONDS),
+            now + Duration::from_secs(1),
+            Duration::from_secs(DEFAULT_FADE_SECONDS),
         );
         let hidden = hidden_commands();
         let visible = roster.visible(&hidden);
@@ -17093,7 +17141,7 @@ mod tests {
                 rest:     vec![invocation(4300, &["check"])],
                 ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
             }],
-            now + std::time::Duration::from_secs(1),
+            now + Duration::from_secs(1),
         );
         let cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
         assert_eq!(
@@ -17227,7 +17275,10 @@ mod tests {
                         process.directory_identity = WorkingDirectoryIdentity::Absolute(
                             format!("/test-home/work-{group_index}/dir-{directory_index}").into(),
                         );
-                        process.started = RunStart::Known(u64::from(directory_index));
+                        process.origin_start = OriginStart::Process {
+                            epoch:   u64::from(directory_index),
+                            elapsed: Duration::from_secs(18),
+                        };
                         process
                     })
                     .collect();
@@ -18139,7 +18190,7 @@ mod tests {
         let mut row = row(None);
         row.process.pid = 359_829;
         row.process.invocation_id = InvocationId::for_test(359_829);
-        row.process.duration = "18s".to_string();
+        row.process.origin_start = display_clock(11, 4, 18);
         row.process.command = CommandText::of("cargo", &["metadata"]);
         let rows = [&row];
         let interior_width: u16 = 30;

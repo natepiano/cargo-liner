@@ -578,7 +578,7 @@ def cpu_readings_in_frame(rendered: str, writers: tuple[StartedWriter, ...]
                           ) -> list[tuple[StartedWriter, int]]:
     readings = []
     for writer in writers:
-        pid = (writer[1] / 'cargo-pid').read_text()
+        pid = str(writer[0].pid)
         rows = [line for line in rendered.splitlines() if writer[1].name in line
                 and re.match(r'^\s*│\s*' + pid + r'\s', line)]
         if not rows:
@@ -600,7 +600,7 @@ def cpu_readings_in_frame(rendered: str, writers: tuple[StartedWriter, ...]
 
 def cpu_rows_are_ready(rendered: str, writers: tuple[StartedWriter, ...]) -> bool:
     for writer in writers:
-        pid = (writer[1] / 'cargo-pid').read_text()
+        pid = str(writer[0].pid)
         rows = [line for line in rendered.splitlines() if writer[1].name in line
                 and re.match(r'^\s*│\s*' + pid + r'\s', line)]
         if not rows or any(len(re.findall(r'\d+%', row)) != 1 for row in rows):
@@ -1051,8 +1051,8 @@ def assert_cpu_attribution(frames: list[tuple[int, int, str]], writer: StartedWr
         expected[scan.number] = oracle.observe(scan)
     by_number = {scan.number: scan for scan in scans}
     compiler = int((root / 'cpu-server/compiler-pid').read_text())
-    requester = int((writer[1] / 'cargo-pid').read_text())
-    other = int((unrelated[1] / 'cargo-pid').read_text())
+    requester = writer[0].pid
+    other = unrelated[0].pid
     for number, _, rendered in frames:
         scan = by_number[number]
         compiler_owners = {pid for pid, groups in scan.counters.items()
@@ -1072,8 +1072,8 @@ def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter, rendere
         rendered = wait_for_cpu_rows(writers)
     record_timestamp('CPU rows')
     compiler = int((root / 'cpu-server/compiler-pid').read_text())
-    requester = int((writer[1] / 'cargo-pid').read_text())
-    other = int((unrelated[1] / 'cargo-pid').read_text())
+    requester = writer[0].pid
+    other = unrelated[0].pid
     ownership = FixtureCpuOwnership.observe(requester, other, compiler)
     terminal_frames.take_completed()
     terminal_frames.take_cpu_completed()
@@ -1413,7 +1413,7 @@ def assert_child_family(parent: StartedWriter, child: RegistrationCarrier,
         assert len(matching) == 1, 'source change duplicates an invocation\n' + rendered
         rows[writer[0].pid] = matching[0]
     parent_row, child_row = rows[parent[0].pid], rows[child[0].pid]
-    parent_pid = (parent[1] / 'cargo-pid').read_text()
+    parent_pid = str(parent[0].pid)
     assert re.match(r'^\s*│\s*' + parent_pid + r'\s', parent_row), rendered
     assert re.match(r'^\s*│\s*' + str(child[0].pid) + r'\s+' + parent_pid + r'\s',
                     child_row), rendered
@@ -1908,7 +1908,7 @@ IFS= read -r notification < "$OBSERVED/notification"
         elif scenario in ('locale', 'quiet-json-long'):
             marker_is_ready = blocked_invocation_in_rendered(marker, rendered)
             if scenario == 'quiet-json-long':
-                cargo_pid = (first[1] / 'cargo-pid').read_text().strip()
+                cargo_pid = str(first[0].pid)
                 marker_is_ready = marker_is_ready and native_invocation_is_ready(
                     marker, cargo_pid, rendered)
         elif scenario == 'child-source-switch':
@@ -1929,10 +1929,10 @@ IFS= read -r notification < "$OBSERVED/notification"
         assert_settings_scroll()
     if scenario == 'quiet-json-long':
         quiet_writer = required(quiet_writer, 'quiet-json-long setup does not assign quiet_writer')
-        cargo_pid = (quiet_writer[1] / 'cargo-pid').read_text()
+        cargo_pid = str(quiet_writer[0].pid)
         rows = [line for line in invocation_cell_lines(rendered) if quiet_writer[1].name in line]
         assert len(rows) == 1, 'quiet JSON produces multiple invocation rows\n' + rendered
-        cargo_pid = (quiet_writer[1] / 'cargo-pid').read_text()
+        cargo_pid = str(quiet_writer[0].pid)
         assert re.match(r'^\s*│\s*' + cargo_pid + r'\s', rows[0]), rendered
         assert 'cargo check ' + quiet_writer[1].name in rows[0], rendered
         assert 'blocked' in rows[0], rendered

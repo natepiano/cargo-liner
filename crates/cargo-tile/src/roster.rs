@@ -34,14 +34,18 @@ use crate::render::SessionColumnWidths;
 use crate::render::VisibleCommandText;
 use crate::theme;
 
-/// Whether a retained row still runs or is fading from its first missing scan.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RowLifetime {
-    /// The latest scan still carries this invocation.
-    Live,
-    /// The invocation left the scan at this instant.
-    Finished(Instant),
-}
+#[path = "roster/invocation_continuity.rs"]
+mod invocation_continuity;
+#[path = "roster/invocation_owners.rs"]
+mod invocation_owners;
+
+use std::ops::Deref;
+use std::ops::DerefMut;
+
+use invocation_continuity::InvocationCompletion;
+use invocation_continuity::InvocationContinuity;
+use invocation_continuity::InvocationSnapshot;
+use invocation_owners::InvocationOwners;
 
 /// Each row decides its entry only when its command text reaches the screen.
 #[derive(Clone, Copy)]
@@ -129,24 +133,23 @@ pub(crate) enum ParentFamily {
 #[derive(Clone)]
 pub(crate) struct TrackedRow {
     /// The invocation as the last scan that carried it described it.
-    pub(crate) process: CargoProcess,
     /// Whether the row still runs or is fading from a recorded finish.
-    lifetime:           RowLifetime,
+    continuity:    InvocationContinuity,
     /// How far through the fade the row stands, on the alpha scale
     /// [`blend_color`](tui_pane::blend_color) reads: zero while it
     /// runs, [`u8::MAX`] once it has reached the ground and is about to
     /// be let go of.
-    faded:              RowFade,
+    faded:         RowFade,
     /// Shared with snapshots so only visible command text decides the entry.
-    entry:              Rc<Cell<CellEntry>>,
+    entry:         Rc<Cell<CellEntry>>,
     /// The roster owns time; rows and snapshots only borrow its current frame.
-    clock:              RosterClock,
+    clock:         RosterClock,
     /// The family this invocation heads, where it has cargo running
     /// under it, as an index into the palette.
-    family:             FamilyHead,
+    family:        FamilyHead,
     /// The family of the cargo this invocation is running under, which
     /// is the index that cargo's own row carries.
-    parent_family:      ParentFamily,
+    parent_family: ParentFamily,
 }
 
 #[cfg(test)]
@@ -160,8 +163,7 @@ impl TrackedRow {
     /// Bind a newly observed row to the roster's frame clock.
     fn with_clock(process: CargoProcess, clock: RosterClock) -> Self {
         Self {
-            process,
-            lifetime: RowLifetime::Live,
+            continuity: InvocationContinuity::new(process, clock.0.get()),
             faded: RowFade::Retained(0),
             entry: Rc::new(Cell::new(CellEntry::AwaitingText)),
             clock,
@@ -172,10 +174,24 @@ impl TrackedRow {
             parent_family: ParentFamily::NoFamily,
         }
     }
+}
 
+impl Deref for TrackedRow {
+    type Target = InvocationSnapshot;
+    fn deref(&self) -> &Self::Target { self.continuity.snapshot() }
+}
+
+impl DerefMut for TrackedRow {
+    fn deref_mut(&mut self) -> &mut Self::Target { self.continuity.snapshot_mut() }
+}
+
+impl TrackedRow {
     /// Whether the process behind this row has stopped.
     pub(crate) const fn is_ended(&self) -> bool {
-        matches!(self.lifetime, RowLifetime::Finished(_))
+        matches!(
+            self.continuity.completion(),
+            InvocationCompletion::Finished(_)
+        )
     }
 
     /// Ink for a retained reading or a command-cell painting snapshot.
@@ -252,9 +268,8 @@ impl TrackedRow {
     pub(crate) const fn parent_family(&self) -> ParentFamily { self.parent_family }
 
     /// Take the scan's account of a process that is still running.
-    fn refresh(&mut self, process: CargoProcess) {
-        self.process = process;
-        self.lifetime = RowLifetime::Live;
+    fn refresh(&mut self, process: CargoProcess, now: Instant) {
+        self.continuity.refresh(process, now);
         self.faded = RowFade::Retained(0);
         if matches!(self.entry.get(), CellEntry::Brighten { .. }) {
             self.entry.set(CellEntry::MainFade);
@@ -263,11 +278,7 @@ impl TrackedRow {
 
     /// Stamp the row as finished, leaving an earlier stamp alone so the
     /// fade runs from when it actually stopped.
-    const fn finish(&mut self, now: Instant) {
-        if matches!(self.lifetime, RowLifetime::Live) {
-            self.lifetime = RowLifetime::Finished(now);
-        }
-    }
+    fn finish(&mut self, now: Instant) { self.continuity.finish(now); }
 
     /// Move the fade on, reporting whether it went anywhere.
     ///
@@ -295,7 +306,7 @@ impl TrackedRow {
     /// `fade` of nothing gives on the poll that stamps the row -- there
     /// is no travel to make, and the row goes on that same poll.
     fn faded_at(&self, now: Instant, fade: Duration) -> u8 {
-        let RowLifetime::Finished(ended) = self.lifetime else {
+        let InvocationCompletion::Finished(ended) = self.continuity.completion() else {
             return 0;
         };
         let elapsed = now.duration_since(ended);
@@ -316,7 +327,7 @@ impl TrackedRow {
 
     /// Whether the row has been finished for longer than `fade`.
     fn is_expired(&self, now: Instant, fade: Duration) -> bool {
-        matches!(self.lifetime, RowLifetime::Finished(ended) if now.duration_since(ended) >= fade)
+        matches!(self.continuity.completion(), InvocationCompletion::Finished(ended) if now.duration_since(ended) >= fade)
     }
 }
 
@@ -336,16 +347,17 @@ pub(crate) struct TrackedGroup {
 }
 
 impl TrackedGroup {
-    /// New rows share the roster's frame time, including children arriving later.
-    fn with_clock(group: CargoGroup, clock: RosterClock) -> Self {
+    /// New rows share the roster's frame time, including children that arrive later.
+    fn with_clock(group: CargoGroup, clock: &RosterClock) -> Self {
+        let lead = TrackedRow::with_clock(group.lead, clock.clone());
         Self {
-            id:       group.id(),
-            rest:     group
+            id: lead.continuity.key().clone(),
+            lead,
+            rest: group
                 .rest
                 .into_iter()
                 .map(|process| TrackedRow::with_clock(process, clock.clone()))
                 .collect(),
-            lead:     TrackedRow::with_clock(group.lead, clock),
             ancestry: group.ancestry,
         }
     }
@@ -382,15 +394,15 @@ impl TrackedGroup {
     /// and stay where they sat: a sub-command finishing should fade out
     /// of the place it occupied, not pull the rows under it upward.
     fn refresh(&mut self, group: CargoGroup, now: Instant) {
-        self.lead.refresh(group.lead);
+        self.lead.refresh(group.lead, now);
         self.ancestry = group.ancestry;
         let mut arriving = group.rest;
         for tracked in &mut self.rest {
             match arriving
                 .iter()
-                .position(|process| process.invocation_id == tracked.process.invocation_id)
+                .position(|process| tracked.process.invocation_id == process.invocation_id)
             {
-                Some(index) => tracked.refresh(arriving.remove(index)),
+                Some(index) => tracked.refresh(arriving.remove(index), now),
                 None => tracked.finish(now),
             }
         }
@@ -510,9 +522,9 @@ impl TrackedGroup {
     /// Earliest visible invocation start, with pid breaking ties.
     fn began(&self) -> (RunStart, u32) {
         self.rows()
-            .map(|row| (row.process.started, row.process.pid))
+            .map(|row| (row.process.started(), row.process.pid))
             .min()
-            .unwrap_or((self.lead.process.started, self.lead.process.pid))
+            .unwrap_or_else(|| (self.lead.process.started(), self.lead.process.pid))
     }
 }
 
@@ -522,6 +534,7 @@ pub(crate) struct Roster {
     /// Groups in scan order -- newest command first -- with finished
     /// ones held in place until they expire.
     groups:        Vec<TrackedGroup>,
+    owners:        InvocationOwners,
     /// The only frame-time owner for rows and their painting snapshots.
     clock:         RosterClock,
     /// The scan last folded in, kept so an identical one can be
@@ -549,6 +562,7 @@ impl Roster {
     pub(crate) fn new() -> Self {
         Self {
             groups:        Vec::new(),
+            owners:        InvocationOwners::default(),
             clock:         RosterClock(Rc::new(Cell::new(Instant::now()))),
             last:          Vec::new(),
             families:      HashMap::new(),
@@ -604,23 +618,41 @@ impl Roster {
     /// A group the scan still carries keeps its place: the display is
     /// ordered by when a command started, and re-sorting on every scan
     /// would shuffle tiles under the reader for no reason.
-    pub(crate) fn observe(&mut self, scan: Vec<CargoGroup>, now: Instant) -> bool {
+    pub(crate) fn observe(&mut self, mut scan: Vec<CargoGroup>, now: Instant) -> bool {
         if scan == self.last {
-            return false;
+            let mut changed = false;
+            for row in self.groups.iter_mut().flat_map(TrackedGroup::rows_mut) {
+                changed |= row.continuity.advance_retained_clock(now);
+            }
+            return changed;
         }
         self.clock.0.set(now);
         self.last.clone_from(&scan);
-        let arriving: Vec<InvocationId> = scan.iter().map(CargoGroup::id).collect();
+        let mut rows: Vec<_> = scan
+            .iter_mut()
+            .flat_map(|group| std::iter::once(&mut group.lead).chain(&mut group.rest))
+            .collect();
+        let aliases = self.owners.resolve(&mut rows);
+        for row in rows {
+            if let VisibleParent::Invocation { id, .. } = &mut row.parent
+                && let Some(key) = aliases.get(id)
+            {
+                id.clone_from(key);
+            }
+        }
+        let mut arriving = HashSet::new();
         for group in scan {
-            match self
+            if let Some(tracked) = self
                 .groups
                 .iter_mut()
-                .find(|tracked| tracked.id == group.id())
+                .find(|tracked| tracked.id == group.lead.invocation_id)
             {
-                Some(tracked) => tracked.refresh(group, now),
-                None => self
-                    .groups
-                    .push(TrackedGroup::with_clock(group, self.clock.clone())),
+                arriving.insert(tracked.id.clone());
+                tracked.refresh(group, now);
+            } else {
+                let tracked = TrackedGroup::with_clock(group, &self.clock);
+                arriving.insert(tracked.id.clone());
+                self.groups.push(tracked);
             }
         }
         for tracked in &mut self.groups {
@@ -628,6 +660,13 @@ impl Roster {
                 tracked.finish(now);
             }
         }
+        let keys = self
+            .groups
+            .iter()
+            .flat_map(TrackedGroup::rows)
+            .map(|row| row.process.invocation_id.clone())
+            .collect();
+        self.owners.retain(&keys);
         true
     }
 
@@ -759,6 +798,139 @@ impl VisibleRoster {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
+    use crate::census::scan::CensusSequence;
+    use crate::census::scan::ProcessObservations;
+    use crate::census::scan::tests::FixtureExecution;
+    use crate::census::scan::tests::ShellRun;
+    #[test]
+    fn an_exited_executor_keeps_its_key_and_last_valid_work_reading()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let run = ShellRun::new();
+        let root = tempdir()?;
+        let capture = ShellRun::capture(root.path());
+        let mut sequence = CensusSequence::default();
+        let first = sequence.sample_capture(&run.records(FixtureExecution::Working), &capture);
+        assert_eq!(first.len(), 1);
+        let key = first[0].id();
+        let mut roster = Roster::new();
+        let now = Instant::now();
+        roster.observe(first, now);
+        let active = roster.visible(&[]).groups()[0]
+            .lead
+            .process
+            .subtree_resource_use
+            .clone();
+        assert_eq!(active.cpu, Measurement::Reading(61.0));
+        assert_eq!(active.memory, Measurement::Reading(135 * 1024 * 1024));
+        let mut unreadable =
+            sequence.sample_capture(&run.records(FixtureExecution::Working), &capture);
+        unreadable[0].lead.resource_use.cpu =
+            Measurement::Unavailable(MeasurementAbsence::ReadFailed);
+        unreadable[0].lead.resource_use.memory =
+            Measurement::Unavailable(MeasurementAbsence::ReadFailed);
+        unreadable[0].lead.subtree_resource_use = unreadable[0].lead.resource_use.clone();
+        roster.observe(unreadable, now + Duration::from_millis(500));
+        assert_eq!(
+            roster.visible(&[]).groups()[0]
+                .lead
+                .process
+                .resource_use
+                .cpu,
+            Measurement::Unavailable(MeasurementAbsence::ReadFailed)
+        );
+        roster.observe(
+            sequence.sample_capture(&run.records(FixtureExecution::OriginOnly), &capture),
+            now + Duration::from_secs(1),
+        );
+        let draining = roster.visible(&[]);
+        assert_eq!(draining.groups().len(), 1);
+        assert_eq!(draining.groups()[0].id, key);
+        assert_eq!(
+            draining.groups()[0].lead.process.subtree_resource_use,
+            active
+        );
+        assert!(!draining.groups()[0].lead.is_ended());
+        roster.observe(Vec::new(), now + Duration::from_secs(2));
+        let ended = roster.visible(&[]);
+        assert_eq!(ended.groups()[0].id, key);
+        assert_eq!(ended.groups()[0].lead.process.subtree_resource_use, active);
+        assert!(ended.groups()[0].lead.is_ended());
+        Ok(())
+    }
+
+    #[test]
+    fn an_unproven_registration_fallback_does_not_restore_live_cpu()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let run = ShellRun::new();
+        let root = tempdir()?;
+        let capture = ShellRun::capture(root.path());
+        let mut sequence = CensusSequence::default();
+        let mut roster = Roster::new();
+        let now = Instant::now();
+        let working = sequence.sample_capture(&run.records(FixtureExecution::Working), &capture);
+        let key = working[0].id();
+        assert_eq!(working[0].lead.resource_use.cpu, Measurement::Reading(61.0));
+        roster.observe(working, now);
+        roster.observe(
+            sequence.sample_capture(&ProcessObservations::default(), &capture),
+            now + Duration::from_secs(1),
+        );
+        let visible = roster.visible(&[]);
+        assert_eq!(visible.groups().len(), 1);
+        let row = &visible.groups()[0].lead;
+        assert_eq!(visible.groups()[0].id, key);
+        assert!(!row.is_ended());
+        assert_eq!(
+            row.process.resource_use.cpu,
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+        assert_eq!(
+            row.process.resource_use.memory,
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+        assert_eq!(
+            row.process.subtree_resource_use.cpu,
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repair_continuity_new_capture_proofs_alias_the_same_live_origin()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let run = ShellRun::new();
+        let first_root = tempdir()?;
+        let second_root = tempdir()?;
+        let mut sequence = CensusSequence::default();
+        let first = sequence.sample_capture(
+            &run.records(FixtureExecution::Working),
+            &ShellRun::capture(first_root.path()),
+        );
+        let key = first[0].id();
+        let mut roster = Roster::new();
+        let now = Instant::now();
+        roster.observe(first, now);
+        for generation in ["replacement", "next"] {
+            let mut groups = sequence.sample_capture(
+                &run.records(FixtureExecution::Working),
+                &ShellRun::capture(second_root.path()),
+            );
+            let InvocationId::Captured(proof) = &mut groups[0].lead.invocation_id else {
+                return Err("verified capture identity".into());
+            };
+            proof.generation = generation.to_owned();
+            roster.observe(groups, now + Duration::from_secs(1));
+            let visible = roster.visible(&[]);
+            assert_eq!(visible.groups().len(), 1);
+            assert_eq!(visible.groups()[0].id, key);
+            assert_eq!(visible.groups()[0].lead.process.pid, 100);
+            assert!(!visible.groups()[0].lead.is_ended());
+        }
+        Ok(())
+    }
+
     use ratatui::style::Color;
     use sysinfo::Pid;
 
@@ -775,7 +947,9 @@ mod tests {
     use crate::census::process_identity::ProcessIdentities;
     use crate::census::process_identity::ProcessIdentity;
     use crate::census::scan::AncestryWalk;
+    use crate::census::scan::InvocationExecution;
     use crate::census::scan::InvocationResourceUse;
+    use crate::census::scan::OriginStart;
     use crate::constants::DEFAULT_FADE_SECONDS;
     use crate::constants::DEFAULT_HIDDEN_COMMANDS;
     use crate::constants::MIN_FINISHED_ROW_CONTRAST;
@@ -1166,13 +1340,16 @@ mod tests {
         let mut roster = Roster::new();
         let mut registration = family(10, &[12]);
         registration.lead.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
-        registration.lead.started = RunStart::Unavailable;
+        registration.lead.origin_start = OriginStart::Unavailable;
         roster.observe(vec![registration.clone()], start());
         let identity = roster.visible(&[]).groups()[0].id.clone();
         let family = roster.visible(&[]).groups()[0].lead.family();
         let mut process = registration.clone();
         process.lead.pid = 11;
-        process.lead.started = RunStart::Known(100);
+        process.lead.origin_start = OriginStart::Process {
+            epoch:   100,
+            elapsed: Duration::from_secs(0),
+        };
         process.lead.managed = Measurement::Reading(1);
         process.rest[0].parent = VisibleParent::Invocation {
             id:  identity.clone(),
@@ -1190,6 +1367,109 @@ mod tests {
         }
     }
 
+    #[test]
+    fn repair_continuity_a_registration_keeps_the_kernel_origin_duration() {
+        let now = start();
+        let mut first = group(100, &[]);
+        first.lead.origin_start = OriginStart::Process {
+            epoch:   100,
+            elapsed: Duration::from_secs(7),
+        };
+        first.lead.execution = InvocationExecution::Executing {
+            origin:   LifetimeEvidence::Available(ProcessLifetime::for_test(100)),
+            executor: ProcessIdentity::Known {
+                pid:      300,
+                lifetime: ProcessLifetime::for_test(300),
+            },
+        };
+        let mut fallback = first.clone();
+        fallback.lead.execution = InvocationExecution::AwaitingExecutor(
+            LifetimeEvidence::Available(ProcessLifetime::for_test(100)),
+        );
+        fallback.lead.origin_start = OriginStart::Registration {
+            epoch:   103,
+            elapsed: Duration::from_secs(7),
+        };
+        let mut roster = Roster::new();
+        roster.observe(vec![first], now);
+        roster.observe(vec![fallback], now + Duration::from_secs(3));
+        let visible = roster.visible(&[]);
+        assert_eq!(
+            visible.groups()[0].lead.process.started(),
+            RunStart::Known(100)
+        );
+        assert_eq!(visible.groups()[0].lead.process.duration(), "00:10");
+    }
+
+    #[test]
+    fn identical_unavailable_scans_advance_the_retained_origin_clock() {
+        let now = start();
+        let mut scan = group(100, &[]);
+        scan.lead.execution = InvocationExecution::RegistrationOnly;
+        scan.lead.origin_start = OriginStart::Registration {
+            epoch:   100,
+            elapsed: Duration::ZERO,
+        };
+        let mut roster = Roster::new();
+        assert!(roster.observe(vec![scan.clone()], now));
+        let identity = roster.visible(&[]).groups()[0].id.clone();
+        scan.lead.origin_start = OriginStart::Unavailable;
+        assert!(roster.observe(vec![scan.clone()], now + Duration::from_millis(100)));
+        for refresh in 2..=9 {
+            assert!(!roster.observe(
+                vec![scan.clone()],
+                now + Duration::from_millis(refresh * 100)
+            ));
+        }
+        assert_eq!(
+            roster.visible(&[]).groups()[0].lead.process.duration(),
+            "00:00"
+        );
+        assert!(roster.observe(vec![scan.clone()], now + Duration::from_secs(1)));
+        let visible = roster.visible(&[]);
+        assert_eq!(visible.groups()[0].id, identity);
+        assert_eq!(
+            visible.groups()[0].lead.process.started(),
+            RunStart::Known(100)
+        );
+        assert_eq!(visible.groups()[0].lead.process.duration(), "00:01");
+        assert!(!roster.observe(vec![scan], now + Duration::from_millis(1100)));
+    }
+
+    #[test]
+    fn repair_continuity_an_unreadable_origin_birth_keeps_draining_work() {
+        let mut first = group(100, &[]);
+        first.lead.execution = InvocationExecution::Executing {
+            origin:   LifetimeEvidence::Available(ProcessLifetime::for_test(100)),
+            executor: ProcessIdentity::Known {
+                pid:      300,
+                lifetime: ProcessLifetime::for_test(300),
+            },
+        };
+        first.lead.resource_use.cpu = Measurement::Reading(77.0);
+        first.lead.resource_use.memory = Measurement::Reading(1234);
+        first.lead.subtree_resource_use = first.lead.resource_use.clone();
+        let mut fallback = first.clone();
+        fallback.lead.execution =
+            InvocationExecution::AwaitingExecutor(LifetimeEvidence::Unavailable);
+        fallback.lead.resource_use.cpu = Measurement::Reading(0.0);
+        fallback.lead.resource_use.memory = Measurement::Reading(1);
+        fallback.lead.subtree_resource_use = fallback.lead.resource_use.clone();
+        let mut roster = Roster::new();
+        roster.observe(vec![first.clone()], start());
+        roster.observe(vec![fallback], start());
+        let visible = roster.visible(&[]);
+        assert!(!visible.groups()[0].lead.is_ended());
+        assert_eq!(
+            visible.groups()[0].lead.process.resource_use,
+            first.lead.resource_use
+        );
+        assert_eq!(
+            visible.groups()[0].lead.process.subtree_resource_use,
+            first.lead.subtree_resource_use
+        );
+    }
+
     /// A process row carrying nothing but the pid the tests key on.
     fn process(pid: u32) -> CargoProcess {
         CargoProcess {
@@ -1199,12 +1479,14 @@ mod tests {
             ),
             pid,
             invocation_id: InvocationId::for_test(pid),
+            execution: InvocationExecution::Command,
             capture_membership: CaptureMembership::Outside,
             provenance: RowProvenance::Uncaptured(ProcessOwner::Unavailable),
             parent: VisibleParent::None,
-            start: "10:00".to_string(),
-            started: RunStart::Known(0),
-            duration: "00:01".to_string(),
+            origin_start: OriginStart::Process {
+                epoch:   0,
+                elapsed: Duration::from_secs(1),
+            },
             resource_use: InvocationResourceUse {
                 cpu:      Measurement::Reading(0.0),
                 memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
@@ -1277,9 +1559,15 @@ mod tests {
     /// The same group with start times stamped on it, lead first --
     /// what the cells are ordered by.
     fn started(mut group: CargoGroup, lead: u64, rest: &[u64]) -> CargoGroup {
-        group.lead.started = RunStart::Known(lead);
+        group.lead.origin_start = OriginStart::Process {
+            epoch:   lead,
+            elapsed: Duration::from_secs(1),
+        };
         for (row, start) in group.rest.iter_mut().zip(rest) {
-            row.started = RunStart::Known(*start);
+            row.origin_start = OriginStart::Process {
+                epoch:   *start,
+                elapsed: Duration::from_secs(1),
+            };
         }
         group
     }

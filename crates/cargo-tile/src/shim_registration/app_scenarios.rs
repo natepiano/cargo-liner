@@ -463,7 +463,7 @@ fn mixed_v2_v3_captures_render_blocked_rows_without_rewriting_publications() {
         ("cargo-tile-v2", 200, "older-command"),
     ];
     let (root, capture, publications) = published_capture(&entries);
-    let rows = [("cargo-tile-v3", 101, "current-command"), entries[1]];
+    let rows = [("cargo-tile-v3", 100, "current-command"), entries[1]];
     let argv = ["cargo", "build", "current-command"].map(OsString::from);
     let mut parent = ProcessObservation::cargo(100, &argv);
     parent.directory = ProcessField::Observed(Path::new("/writer/project"));
@@ -486,7 +486,7 @@ fn mixed_v2_v3_captures_render_blocked_rows_without_rewriting_publications() {
         assert_current_process(
             &groups
                 .iter()
-                .find(|group| group.lead.pid == 101)
+                .find(|group| group.lead.pid == 100)
                 .expect("v3 cargo child discovered independently of registration PID")
                 .lead,
         );
@@ -533,7 +533,7 @@ fn mixed_v2_v3_captures_render_blocked_rows_without_rewriting_publications() {
 }
 
 fn assert_current_process(row: &CargoProcess) {
-    assert_eq!(row.pid, 101);
+    assert_eq!(row.pid, 100);
     assert_eq!(row.managed, Measurement::Reading(0));
     assert_eq!(row.resource_use.compiler, CompilerObservation::None);
     assert_eq!(
@@ -569,7 +569,7 @@ fn assert_mixed_command_pane(
             group
                 .rest
                 .iter()
-                .find(|row| row.pid == 101)
+                .find(|row| row.pid == 100)
                 .expect("v3 cargo child in shared family"),
         );
         for row in &group.rest {

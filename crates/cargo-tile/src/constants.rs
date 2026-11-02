@@ -654,7 +654,9 @@ pub(crate) const CARGO_NAME: &str = "cargo";
 /// is the real binary, whatever else it may be, and is moved aside
 /// rather than overwritten.
 pub(crate) const SHIM_MARKER: &str = "cargo-tile-capture-shim";
-/// Native runner executable shared by the entry protocol and census recognition.
+/// The shell that forwards a captured command.
+pub(crate) const CAPTURE_SHELL_NAME: &str = "sh";
+/// The native capture entry owns this executable name.
 pub(crate) const CAPTURE_RUNNER_NAME: &str = "cargo-tile-capture";
 /// Entry argument that selects native output capture.
 pub(crate) const CAPTURE_SHIM_ARGUMENT: &str = "--capture-shim";

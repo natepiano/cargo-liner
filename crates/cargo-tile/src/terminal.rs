@@ -339,7 +339,6 @@ mod tests {
     use crate::census::Measurement;
     use crate::census::ProcessOwner;
     use crate::census::RowProvenance;
-    use crate::census::RunStart;
     use crate::census::SelectedProof;
     use crate::census::VisibleParent;
     use crate::census::command_text::CommandText;
@@ -347,7 +346,9 @@ mod tests {
     use crate::census::invocation_cpu_accounting::MeasurementAbsence;
     use crate::census::process_identity::CaptureMembership;
     use crate::census::process_identity::ProcessIdentity;
+    use crate::census::scan::InvocationExecution;
     use crate::census::scan::InvocationResourceUse;
+    use crate::census::scan::OriginStart;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::TEST_INVOCATION_PID;
     use crate::constants::TEST_REPLACEMENT_LIFETIME;
@@ -411,12 +412,14 @@ fraying = "leading"
             directory_identity: WorkingDirectoryIdentity::Absolute("/runner/project".into()),
             pid: 11,
             invocation_id,
+            execution: InvocationExecution::Command,
             capture_membership: CaptureMembership::Outside,
             provenance: RowProvenance::Uncaptured(ProcessOwner::Unavailable),
             parent: VisibleParent::None,
-            start: "10:00".to_owned(),
-            started: RunStart::Known(0),
-            duration: "00:01".to_owned(),
+            origin_start: OriginStart::Process {
+                epoch:   0,
+                elapsed: std::time::Duration::from_secs(1),
+            },
             resource_use: InvocationResourceUse {
                 cpu:      Measurement::Reading(0.0),
                 memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
