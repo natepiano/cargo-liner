@@ -22,6 +22,7 @@ use super::commit_file;
 use super::git_command;
 use super::journal_events;
 use super::json_output;
+use super::loose_refs;
 use super::reanchoring_templates;
 use super::reanchoring_templates::CheckpointPlacement;
 use super::reanchoring_templates::DRAINED_SPLIT_RETENTION_CHECKPOINT;
@@ -1686,7 +1687,7 @@ fn assert_final_checkpoint(fixture: &RewriteFixture, id: &str, tip: &str, trunk:
 }
 
 fn retained_tip(fixture: &RewriteFixture, id: &str) -> String {
-    super::loose_refs::read_loose_ref(fixture.root(), &format!("{RETENTION_REF_PREFIX}{id}"))
+    loose_refs::read_loose_ref(fixture.root(), &format!("{RETENTION_REF_PREFIX}{id}"))
 }
 
 fn read_state<T: serde::de::DeserializeOwned>(root: &Path) -> T {

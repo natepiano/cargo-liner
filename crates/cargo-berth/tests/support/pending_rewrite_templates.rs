@@ -14,6 +14,8 @@ use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::TemplateBuildTiming;
 use cargo_berth_test_support::deferring_run_scope;
 
+use super::gate_templates;
+
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
 const GIT: GitDriver = GitDriver {
     executable:          BERTH_EXECUTABLE,
@@ -215,7 +217,7 @@ fn build_two_pending_ordered_rewrites(root: &Path) {
 }
 
 fn deferred_pair(repository: &Path) -> PendingPair<'_> {
-    super::gate_templates::build_scratch_repository(repository);
+    gate_templates::build_scratch_repository(repository);
     let initialized = run_berth(repository, &["init", "--json"]);
     assert!(
         initialized.status.success(),
@@ -396,7 +398,7 @@ fn reservation_id(output: &Output) -> String {
 fn json_output(output: &Output) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("command should print JSON")
 }
-fn set_gate_mode(root: &Path, mode: &str) { super::gate_templates::set_gate_mode(root, mode); }
+fn set_gate_mode(root: &Path, mode: &str) { gate_templates::set_gate_mode(root, mode); }
 fn git(root: &Path, args: &[&str]) { GIT.run(root, args); }
 fn git_stdout(root: &Path, args: &[&str]) -> String { GIT.stdout(root, args) }
 fn run_berth(root: &Path, args: &[&str]) -> Output {
