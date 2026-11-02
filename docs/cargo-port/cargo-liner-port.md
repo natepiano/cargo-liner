@@ -182,39 +182,13 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 ### Phase 2p — one mend run uses one wrapper, also across a reinstall  · status: done
 
-**Depends on:** none
+**As-built:** one `cargo mend` run uses one rustc wrapper from start to end, so a reinstall of cargo-mend during a run has no effect on it (checkpoint 11eb5b33). `run()` (`crates/cargo-mend/src/main.rs`) opens `RunningExecutable` as its first action, before cargo metadata: `/proc/self/exe` on Linux, `env::current_exe()` elsewhere. The open handle keeps the old inode after an install replaces the path. `RunWrapper::resolve` (`crates/cargo-mend/src/compiler/build/execute.rs`) reads the revision from that handle and reuses a valid independent copy, or copies one from the handle (FICLONE on Linux, else a byte copy). `MendRunner` carries the one `RunWrapper` by value through analysis, cache recovery and fix validation. `wrapper_alias` returns `Result`; a wrapper that cannot be made is an error that names the cause, and `RunWrapper::configure` refuses a missing copy, so cargo never gets a path that does not exist. `run_wrapper_resolves_open_executable_after_source_replacement_and_removal` and `run_wrapper_stays_the_same_after_source_replacement_and_removal` pin the reinstall case without running cargo.
 
-#### Work Order
+**Files:** `crates/cargo-mend/src/compiler/build/{execute.rs,mod.rs}`, `crates/cargo-mend/src/compiler/mod.rs`, `crates/cargo-mend/src/main.rs`, `crates/cargo-mend/src/fixes/runner/{mend_runner.rs,execute.rs}`, `crates/cargo-mend/CHANGELOG.md`.
 
-**Goal:** A `cargo mend` run uses the same compiler wrapper from start to end. A reinstall of `cargo-mend` while a run is in progress has no effect on that run: the validation compile still runs, and nothing rolls back for that reason.
+**Gotchas:** the lint assertion guard reads `Assertion-Change:` lines from the phase work-order file and the commit message, not from the plan; an `Option` to `Result` signature change reads to it as a removed assertion. Open follow-ups F004 (copy-failure test repeats the staging path rule) and F005 (help and build-info need read access to the executable) are in `docs/cargo-port/cargo-liner-port-next.md`.
 
-**Source:** the user, 2026-11-02: "any bug in cargo mend must always be fixed". The showrunner relayed a tile-unit report (Phase 42 lint run 20261102T081026). The 2o install replaced `~/.cargo/bin/cargo-mend` at 08:13:46 while tile's mend run was in progress. The validation compile then ran `/home/natepiano/.cargo/bin/cargo-mend (deleted)` as the rustc wrapper, failed with os error 2, and mend rolled back its fixes. Cause, read by the showrunner: `run_cargo_check` (`crates/cargo-mend/src/compiler/build/execute.rs:269`) calls `env::current_exe()` for each cargo check. On Linux that reads `/proc/self/exe`, which names `<path> (deleted)` after a reinstall. `wrapper_alias` (line 311) then fails at `WrapperExecutableRevision::read`, and line 276 falls back to the deleted path.
-
-**Constraints:**
-- Resolve the wrapper once for the run, and pass it as a value to every cargo invocation of that run. Do not keep it in a global.
-- The wrapper copy holds the bytes of the running executable, not what the install path holds now. On Linux, copy from `/proc/self/exe`, which still opens the old inode.
-- Never give cargo a wrapper path that does not exist. When no wrapper can be made, stop with an error that names the cause.
-- Keep the copy rules of `wrapper_alias`: an independent inode, no hard link, no symlink.
-- No test takes a second, and no new test runs cargo.
-
-**Spec:**
-1. A unit test that fails on today's code: it resolves the wrapper, replaces or removes the source executable, and shows that the second cargo invocation of the run gets the same existing wrapper.
-2. The repair in `crates/cargo-mend/src/compiler/build/`.
-3. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
-
-**Files:**
-- `crates/cargo-mend/src/compiler/build/` — wrapper resolution and the cargo check runner
-- `crates/cargo-mend/src/compiler/mod.rs`, `crates/cargo-mend/src/main.rs` — create the run's wrapper owner
-- `crates/cargo-mend/src/fixes/runner/mend_runner.rs`, `crates/cargo-mend/src/fixes/runner/execute.rs` — keep the owner across analysis and fix validation
-- `crates/cargo-mend/CHANGELOG.md`
-
-Assertion-Change: crates/cargo-mend/src/compiler/build/execute.rs::wrapper_alias_replaces_legacy_hard_links_and_reuses_the_copy — wrapper_alias returns Result, so Some(alias) became `?` and the same alias comparison
-Assertion-Change: crates/cargo-mend/src/compiler/build/execute.rs::wrapper_alias_replaces_a_legacy_symlink_with_the_retained_build — wrapper_alias returns Result; the alias check now uses `?`
-Assertion-Change: crates/cargo-mend/src/compiler/build/execute.rs::failed_wrapper_copy_keeps_the_published_executable — replace_wrapper_alias takes the open executable, so the test opens the kept source write-only to make the copy itself fail; it also checks the staging file is gone
-
-**Workers:** 1 writer (impl3) owns the code and the tests.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean on a gate tree; no test takes a second; the spec 1 test fails before the repair and passes after it. The checkpoint adds a Change-Review line.
+**Ruled out:** a global wrapper path; falling back to the install path when the copy fails; copying from the install path after cargo metadata.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 
