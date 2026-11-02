@@ -132,6 +132,23 @@ const DRY_RUN_FLAG: &str = "--dry-run";
 const EXPECTED_DRY_RUN_SUMMARY: &str = "would apply 1";
 const READ_HELPERS_EXPECTATION: &str = "read helpers";
 const EXPECTED_PUBLIC_INTERNAL_FUNCTION: &str = "pub fn internal_fn()";
+const COMPILER_PROJECT_DIRECTORY: &str = "project";
+const COMPILER_SOURCE_DIRECTORIES: [&str; 2] = ["project/src", "dependency/src"];
+const COMPILER_PROJECT_MANIFEST_PATH: &str = "project/Cargo.toml";
+const COMPILER_PROJECT_MANIFEST: &str = "[package]\nname = \"compiler_selection\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\
+     [workspace]\n[dependencies]\noutside_dependency = { path = \"../dependency\" }\n";
+const COMPILER_DEPENDENCY_MANIFEST_PATH: &str = "dependency/Cargo.toml";
+const COMPILER_DEPENDENCY_MANIFEST: &str = "[package]\nname = \"outside_dependency\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[workspace]\n";
+const COMPILER_DEPENDENCY_LIBRARY_PATH: &str = "dependency/src/lib.rs";
+const COMPILER_DEPENDENCY_LIBRARY_SOURCE: &str = "pub fn value() -> u32 { 7 }\n";
+const COMPILER_PROJECT_LIBRARY_PATH: &str = "project/src/lib.rs";
+const COMPILER_PROJECT_LIBRARY_SOURCE: &str =
+    "mod helpers;\npub fn exported() -> u32 { helpers::value() }\n";
+const COMPILER_PROJECT_HELPERS_PATH: &str = "project/src/helpers.rs";
+const COMPILER_PROJECT_HELPERS_SOURCE: &str =
+    "pub fn value() -> u32 { outside_dependency::value() }\n";
+const MISSING_PROJECT_RUSTC_PATH: &str = "missing-project-rustc";
+const FIXED_COMPILER_HELPER_PREFIX: &str = "pub(crate) fn value()";
 const MIN_ACCEPTED_EXIT_CODE: i32 = 0;
 const MAX_ACCEPTED_EXIT_CODE: i32 = 2;
 
@@ -315,6 +332,59 @@ fn version_flag_prints_version_and_exits_successfully() {
 
     let stdout = String::from_utf8(output.stdout).expect(DECODE_STDOUT_EXPECTATION);
     assert_eq!(stdout, format!("mend {}\n", env!("CARGO_PKG_VERSION")));
+}
+
+fn run_with_refusing_project_rustc(args: &[&str]) -> TempDir {
+    let fixture = tempdir().expect("create compiler selection fixture");
+    for directory in COMPILER_SOURCE_DIRECTORIES {
+        fs::create_dir_all(fixture.path().join(directory))
+            .expect("create fixture source directory");
+    }
+    fs::write(
+        fixture.path().join(COMPILER_PROJECT_MANIFEST_PATH),
+        COMPILER_PROJECT_MANIFEST,
+    )
+    .expect("write project manifest");
+    fs::write(
+        fixture.path().join(COMPILER_DEPENDENCY_MANIFEST_PATH),
+        COMPILER_DEPENDENCY_MANIFEST,
+    )
+    .expect("write dependency manifest");
+    fs::write(
+        fixture.path().join(COMPILER_DEPENDENCY_LIBRARY_PATH),
+        COMPILER_DEPENDENCY_LIBRARY_SOURCE,
+    )
+    .expect("write dependency source");
+    fs::write(
+        fixture.path().join(COMPILER_PROJECT_LIBRARY_PATH),
+        COMPILER_PROJECT_LIBRARY_SOURCE,
+    )
+    .expect("write project source");
+    fs::write(
+        fixture.path().join(COMPILER_PROJECT_HELPERS_PATH),
+        COMPILER_PROJECT_HELPERS_SOURCE,
+    )
+    .expect("write helper source");
+    let output = mend_command()
+        .current_dir(fixture.path().join(COMPILER_PROJECT_DIRECTORY))
+        .env("RUSTC", fixture.path().join(MISSING_PROJECT_RUSTC_PATH))
+        .args(args)
+        .output()
+        .expect("run mend with an unusable project compiler");
+    assert!(
+        output.status.success(),
+        "mend must use its build compiler for dependencies and driver commands: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fixture
+}
+
+#[test]
+fn fix_uses_build_compiler_with_external_path_dependency_and_unusable_project_rustc() {
+    let fixture = run_with_refusing_project_rustc(&[FIX_FLAG]);
+    let helper = fs::read_to_string(fixture.path().join(COMPILER_PROJECT_HELPERS_PATH))
+        .expect("read fixed helper source");
+    assert!(helper.starts_with(FIXED_COMPILER_HELPER_PREFIX), "{helper}");
 }
 
 #[test]
