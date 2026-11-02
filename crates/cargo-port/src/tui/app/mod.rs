@@ -1714,13 +1714,13 @@ mod tests {
             );
 
             assert!(
-                app.project_list.expanded.contains(&ExpandKey::Node(0)),
+                app.project_list.expanded.is_open(&ExpandKey::Node(0), 0),
                 "the root re-expands from its pending target"
             );
             assert!(
                 app.project_list
                     .expanded
-                    .contains(&ExpandKey::WorktreeGroup(0, 1, 0)),
+                    .is_open(&ExpandKey::WorktreeGroup(0, 1, 0), 2),
                 "the linked worktree's named group re-expands at depth"
             );
             assert!(
@@ -5492,7 +5492,7 @@ mod tests {
                 vec![inline_group(vec![make_member("core", &member)])],
             );
             let mut app = make_app(&[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.ensure_visible_rows_cached();
             app.project_list.move_down();
             let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
@@ -5825,7 +5825,7 @@ mod tests {
                 false,
                 Some(primary.as_path()),
             )))]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             render_ui(&mut app);
 
             app.project_list
@@ -6875,7 +6875,7 @@ mod tests {
                 vec![super::make_vendored(Some(name), "~/app/vendor/helper")],
             );
             let mut app = make_app(&[RootItem::Rust(RustProject::Package(package))]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             assert_name_fit_matches_frame(&mut app, &format!("{name} (v)"));
         }
 
@@ -6894,7 +6894,7 @@ mod tests {
                 RustProject::Workspace(workspace),
                 Vec::new(),
             ))]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             assert_name_fit_matches_frame(&mut app, name);
         }
 
@@ -6931,7 +6931,7 @@ mod tests {
                 RustProject::Package(primary),
                 vec![RustProject::Package(linked)],
             ))]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             let (buffer, widths) = super::render_tree_buffer(&mut app);
             let (column, _) = find_text_cell(&buffer, linked_name)
                 .expect("linked package worktree should render");
@@ -6960,7 +6960,7 @@ mod tests {
                 super::apply_items(&mut app, &items);
                 let deleted_path = if delete_member { &member } else { &root };
                 mark_deleted(&mut app, deleted_path);
-                app.project_list.expanded.insert(ExpandKey::Node(0));
+                app.project_list.expanded.expand(ExpandKey::Node(0), 0);
                 app.ensure_visible_rows_cached();
                 app.ensure_disk_cache();
                 app.ensure_fit_widths_cached();
@@ -7321,7 +7321,7 @@ mod tests {
                 RustProject::Package(primary),
                 vec![RustProject::Package(linked)],
             ))]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             for appearance in [Appearance::Dark, Appearance::Light] {
                 let _theme = ActiveThemeOverride::set(appearance);
@@ -7372,7 +7372,7 @@ mod tests {
                 RustProject::Package(primary),
                 vec![RustProject::Package(linked)],
             ))]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             for appearance in [Appearance::Dark, Appearance::Light] {
                 let _theme = ActiveThemeOverride::set(appearance);
                 let (buffer, _) = super::render_tree_buffer(&mut app);
@@ -7414,7 +7414,7 @@ mod tests {
             let (mut checkout, repo) = make_git_info(None);
             checkout.status = GitStatus::Unreadable;
             super::apply_git_info(&mut app, &linked_path, (checkout, repo));
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             for appearance in [Appearance::Dark, Appearance::Light] {
                 let _theme = ActiveThemeOverride::set(appearance);
                 let (buffer, _) = super::render_tree_buffer(&mut app);
@@ -8772,7 +8772,7 @@ mod tests {
 
             let mut app = make_app(&[workspace, member.clone()]);
             apply_items(&mut app, &[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.project_list
                 .select_project_in_tree(member.path(), false);
 
@@ -9649,7 +9649,10 @@ mod tests {
             ]
             .into();
 
-            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![root]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(rows.len(), 8, "expected 8 rows, got: {rows:?}");
             assert!(matches!(rows[0], VisibleRow::Root { node_index: 0 }));
@@ -9704,7 +9707,7 @@ mod tests {
             let mut app = make_app(&[make_project(None, "~/ws")]);
             app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             app.handle_bg_msg(BackgroundMsg::LintStatus {
                 path:   test_path("~/ws_feat"),
@@ -9758,7 +9761,7 @@ mod tests {
             );
             let root = make_workspace_worktrees_item(primary, Vec::new());
             let mut app = make_app(&[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             let rendered = rendered_root_name_cells(&mut app);
 
@@ -9806,7 +9809,7 @@ mod tests {
                 ExpandKey::WorktreeGroup(0, 1, 0),
             ]
             .into();
-            list.expanded = original.clone();
+            list.expanded = tui_pane::ExpansionModel::from_open_keys(original.clone());
 
             // The primary `Node` and `Worktree(0, 0)` share `~/ws`; the variant tag
             // keeps them distinct rather than collapsing to a single target.
@@ -9817,7 +9820,14 @@ mod tests {
             // freshly built (identical) tree restores exactly the same keys.
             let mut rebuilt = as_entries(vec![linked_workspace_worktrees_fixture()]);
             rebuilt.apply_expanded(&targets);
-            assert_eq!(rebuilt.expanded, original);
+            assert_eq!(
+                rebuilt
+                    .expanded
+                    .open_keys()
+                    .cloned()
+                    .collect::<HashSet<_>>(),
+                original
+            );
         }
 
         #[test]
@@ -9825,13 +9835,20 @@ mod tests {
             // A target whose path is gone (project removed since the last run) is
             // silently dropped, and the surviving target still applies.
             let mut list = as_entries(vec![linked_workspace_worktrees_fixture()]);
-            list.expanded = [ExpandKey::Node(0)].into();
+            list.expanded = tui_pane::ExpansionModel::from_open_keys([ExpandKey::Node(0)]);
             let mut targets = list.export_expanded();
             targets.push(ExpandTarget::Root(AbsolutePath::from("/nonexistent/gone")));
 
             let mut rebuilt = as_entries(vec![linked_workspace_worktrees_fixture()]);
             rebuilt.apply_expanded(&targets);
-            assert_eq!(rebuilt.expanded, [ExpandKey::Node(0)].into());
+            assert_eq!(
+                rebuilt
+                    .expanded
+                    .open_keys()
+                    .cloned()
+                    .collect::<HashSet<_>>(),
+                [ExpandKey::Node(0)].into()
+            );
         }
 
         #[test]
@@ -9938,7 +9955,10 @@ mod tests {
             };
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(vec![build_root()]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![build_root()]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(rows.len(), 3, "got: {rows:?}");
             assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -9947,8 +9967,10 @@ mod tests {
 
             let expanded2: HashSet<ExpandKey> =
                 [ExpandKey::Node(0), ExpandKey::Worktree(0, 0)].into();
-            let rows2 =
-                super::as_entries(vec![build_root()]).compute_visible_rows(&expanded2, true);
+            let rows2 = super::as_entries(vec![build_root()]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded2.iter().cloned()),
+                true,
+            );
             assert_eq!(rows2.len(), 3, "no extra rows for non-workspace worktree");
         }
 
@@ -9963,7 +9985,10 @@ mod tests {
             );
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![root]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(
                 rows,
@@ -9996,7 +10021,10 @@ mod tests {
             );
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![root]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(
                 rows,
@@ -10028,7 +10056,7 @@ mod tests {
                 ],
             );
             let mut app = make_app(&[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             let rendered = rendered_root_name_cells(&mut app);
 
@@ -10055,7 +10083,7 @@ mod tests {
                 )],
             );
             let mut app = make_app(&[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             let rendered = rendered_root_name_cells(&mut app);
 
@@ -10080,7 +10108,7 @@ mod tests {
                 .at_path_mut(test_path("~/old_app").as_path())
                 .expect("linked worktree should exist")
                 .visibility = Deleted;
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             let rendered = rendered_root_name_cells(&mut app);
 
@@ -10108,7 +10136,10 @@ mod tests {
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
 
             let items = vec![root.clone()];
-            let rows = super::as_entries(items).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(items).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
             assert_eq!(rows.len(), 3, "root + 2 worktree entries");
 
             let mut items = vec![root];
@@ -10120,7 +10151,10 @@ mod tests {
                 .at_path_mut(&linked_path)
                 .expect("linked worktree should exist")
                 .visibility = Dismissed;
-            let rows = super::as_entries(items).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(items).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
             assert_eq!(
                 rows.len(),
                 1,
@@ -10579,7 +10613,10 @@ mod tests {
                 .visibility = Deleted;
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(items.clone()).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(items.clone()).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(items[0].visibility(), crate::project::Visibility::Visible);
             assert_eq!(rows.len(), 3, "deleted linked worktree should still render");
@@ -10606,7 +10643,10 @@ mod tests {
                 .visibility = Deleted;
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(items.clone()).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(items.clone()).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(items[0].visibility(), Deleted);
             assert_eq!(
@@ -10637,7 +10677,10 @@ mod tests {
                 .visibility = Dismissed;
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(items.clone()).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(items.clone()).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(items[0].visibility(), Dismissed);
             assert!(
@@ -10821,7 +10864,10 @@ mod tests {
             );
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![root]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(rows.len(), 3, "got: {rows:?}");
             assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -10858,7 +10904,10 @@ mod tests {
             let root = RootItem::Rust(RustProject::Workspace(ws));
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![root]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(rows.len(), 3, "got: {rows:?}");
             assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -10886,7 +10935,10 @@ mod tests {
             let root = RootItem::Rust(RustProject::Workspace(ws));
 
             let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![root]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(rows.len(), 2, "got: {rows:?}");
             assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -10910,7 +10962,10 @@ mod tests {
             let root = RootItem::Rust(RustProject::Workspace(ws));
             let expanded: HashSet<ExpandKey> =
                 [ExpandKey::Node(0), ExpandKey::Member(0, 0, 0)].into();
-            let rows = super::as_entries(vec![root]).compute_visible_rows(&expanded, true);
+            let rows = super::as_entries(vec![root]).compute_visible_rows(
+                &tui_pane::ExpansionModel::from_open_keys(expanded.iter().cloned()),
+                true,
+            );
 
             assert_eq!(rows.len(), 3, "got: {rows:?}");
             assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -10938,7 +10993,7 @@ mod tests {
             let mut app = make_app(&[make_workspace_project(Some("ws"), "~/ws")]);
             apply_items(&mut app, std::slice::from_ref(&root));
 
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.project_list.recompute_visibility(true);
             let rendered = rendered_root_name_cells(&mut app);
             assert!(
@@ -10950,7 +11005,9 @@ mod tests {
                 "collapsed member should hide vendored child rows: {rendered:?}"
             );
 
-            app.project_list.expanded.insert(ExpandKey::Member(0, 0, 0));
+            app.project_list
+                .expanded
+                .expand(ExpandKey::Member(0, 0, 0), 0);
             app.project_list.recompute_visibility(true);
             let rendered = rendered_root_name_cells(&mut app);
             assert!(
@@ -10985,8 +11042,10 @@ mod tests {
             let mut app = make_app(&[make_workspace_project(Some("bevy_hana"), "~/ws")]);
             apply_items(&mut app, std::slice::from_ref(&root));
 
-            app.project_list.expanded.insert(ExpandKey::Node(0));
-            app.project_list.expanded.insert(ExpandKey::Member(0, 0, 0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
+            app.project_list
+                .expanded
+                .expand(ExpandKey::Member(0, 0, 0), 0);
             app.project_list.recompute_visibility(true);
 
             let rendered = rendered_root_name_cells(&mut app);
@@ -11037,8 +11096,10 @@ mod tests {
                 1,
             );
 
-            app.project_list.expanded.insert(ExpandKey::Node(0));
-            app.project_list.expanded.insert(ExpandKey::Member(0, 0, 0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
+            app.project_list
+                .expanded
+                .expand(ExpandKey::Member(0, 0, 0), 0);
             app.project_list.recompute_visibility(true);
 
             let rendered = rendered_root_name_cells(&mut app);
@@ -11529,7 +11590,7 @@ mod tests {
 
             let mut app = make_app(&[workspace, member.clone()]);
             apply_items(&mut app, &[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.ensure_visible_rows_cached();
             app.project_list
                 .select_project_in_tree(member.path(), false);
@@ -14666,7 +14727,7 @@ mod tests {
                     first_line: error.into(),
                 }),
             );
-            app.project_list.expanded.remove(&ExpandKey::Node(0));
+            app.project_list.expanded.collapse(ExpandKey::Node(0), 0);
             app.project_list
                 .recompute_visibility(app.config.include_non_rust().includes_non_rust());
             assert_eq!(
@@ -14674,7 +14735,7 @@ mod tests {
                 1,
                 "collapsed group shows its manifest failure"
             );
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.project_list
                 .recompute_visibility(app.config.include_non_rust().includes_non_rust());
             assert_eq!(
@@ -16254,7 +16315,7 @@ mod tests {
                 )])],
             );
             let mut app = make_app(&[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
             deliver_metadata(
                 &mut app,
@@ -16312,8 +16373,10 @@ mod tests {
             let new_member =
                 test_path("/__cargo_port_never_real/hana_feature/demos/wasm_node_demo");
             let mut app = make_app(&[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
-            app.project_list.expanded.insert(ExpandKey::Worktree(0, 1));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
+            app.project_list
+                .expanded
+                .expand(ExpandKey::Worktree(0, 1), 0);
 
             deliver_metadata(
                 &mut app,
@@ -16363,7 +16426,7 @@ mod tests {
             let mut app = make_app(&[make_workspace_project(None, "~/ws")]);
             app.config.current_mut().lint.enabled = LintIndicator::Enabled;
             apply_items(&mut app, &[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.ensure_visible_rows_cached();
 
             app.project_list
@@ -16720,7 +16783,7 @@ mod tests {
 
             let mut app = make_app(&[]);
             apply_items(&mut app, &[root]);
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.ensure_visible_rows_cached();
 
             assert_eq!(
@@ -17072,7 +17135,7 @@ mod tests {
             let mut app = make_app(&[]);
             apply_items(&mut app, &[primary_item]);
 
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.ensure_visible_rows_cached();
             assert_eq!(
                 app.visible_rows(),
@@ -17151,7 +17214,7 @@ mod tests {
             let mut app = make_app(&[]);
             apply_items(&mut app, &[primary_item]);
 
-            app.project_list.expanded.insert(ExpandKey::Node(0));
+            app.project_list.expanded.expand(ExpandKey::Node(0), 0);
             app.ensure_visible_rows_cached();
             assert_eq!(
                 app.visible_rows(),

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Use the shared `tui_pane` expansion model and keys for the project list; preserve its navigation and saved expansion state.
+
 - The settings, keymap and global shortcuts overlays scroll by the mouse wheel through `tui_pane`; modal capture and scroll inversion stay the same.
 - On macOS, reuse recursive watches for overlapping roots while preserving discovery boundaries and failed-parent fallback; resolve watcher Cargo home once and isolate registration tests from the developer's home.
 

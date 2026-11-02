@@ -41,14 +41,23 @@ pub(in crate::tui) enum ExpandTarget {
     WorktreeMember(AbsolutePath),
 }
 
-/// Every expandable container in the current tree paired with its
-/// restart-stable identity. One pass serves both directions:
-/// [`ProjectList::export_expanded`] projects the live `expanded` keys to
-/// targets for saving, and [`ProjectList::apply_expanded`] resolves saved
-/// targets back to keys for restoring. The gates mirror
-/// [`ProjectList::expand_key_for_row`], so the keys produced here are exactly
-/// the ones the expansion set can hold.
+/// The key layout for visible rows or the existing bulk expansion command.
+#[derive(Clone, Copy)]
+pub(super) enum ExpansionKeyLayout {
+    VisibleRows,
+    WorktreeContainers,
+}
+
+/// Pair the visible expansion keys with their identities for persistence.
 pub(super) fn collect_expandable_targets(list: &ProjectList) -> Vec<(ExpandKey, ExpandTarget)> {
+    collect_expansion_containers(list, ExpansionKeyLayout::VisibleRows)
+}
+
+/// Enumerate containers once for either application key layout.
+pub(super) fn collect_expansion_containers(
+    list: &ProjectList,
+    layout: ExpansionKeyLayout,
+) -> Vec<(ExpandKey, ExpandTarget)> {
     let mut out = Vec::new();
     for (ni, entry) in list.iter().enumerate() {
         let item = &entry.root_item;
@@ -77,7 +86,10 @@ pub(super) fn collect_expandable_targets(list: &ProjectList) -> Vec<(ExpandKey, 
                     }
                 }
             },
-            RootItem::Worktrees(worktree_group) if worktree_group.renders_as_group() => {
+            RootItem::Worktrees(worktree_group)
+                if worktree_group.renders_as_group()
+                    || matches!(layout, ExpansionKeyLayout::WorktreeContainers) =>
+            {
                 for (wi, worktree_entry) in worktree_group.iter_entries().enumerate() {
                     if worktree_entry_has_children(worktree_entry) {
                         out.push((

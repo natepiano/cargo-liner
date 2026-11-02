@@ -291,7 +291,6 @@ pub(super) fn project_roots_title(body: &str, max_width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
 
     use tui_pane::PaneTitleCount;
 
@@ -339,7 +338,10 @@ mod tests {
             workspace_worktree_group("/workspace/rust/bravo", "/workspace/rust/bravo_feature"),
             package("/workspace/rust/charlie"),
         ]);
-        list.expanded = HashSet::from([ExpandKey::Node(1), ExpandKey::Worktree(1, 0)]);
+        list.expanded = tui_pane::ExpansionModel::from_open_keys([
+            ExpandKey::Node(1),
+            ExpandKey::Worktree(1, 0),
+        ]);
         list.recompute_visibility(true);
         list.set_cursor(3);
 

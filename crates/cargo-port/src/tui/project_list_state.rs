@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
 
 use indexmap::IndexMap;
+use tui_pane::ExpansionModel;
 
 use super::app::FinderState;
 use super::app::SelectionPaths;
@@ -47,7 +47,7 @@ pub(super) struct ProjectList {
     pub(super) roots:               IndexMap<AbsolutePath, ProjectEntry>,
     pub(super) paths:               SelectionPaths,
     pub(super) sync:                SelectionSync,
-    pub(super) expanded:            HashSet<ExpandKey>,
+    pub(super) expanded:            ExpansionModel<ExpandKey>,
     pub(super) finder:              FinderState,
     pub(super) cached_visible_rows: Vec<VisibleRow>,
     pub(super) cached_root_sorted:  Vec<u64>,

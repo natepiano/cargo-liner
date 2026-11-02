@@ -4,6 +4,7 @@ mod action_enum;
 mod bindings;
 mod builder;
 mod constants;
+mod expansion_action;
 mod global_action;
 mod globals;
 mod help_rows;
@@ -35,6 +36,7 @@ pub use builder::KeymapBuilder;
     reason = "re-exported at crate root for callers naming the typestate"
 )]
 pub use builder::Registering;
+pub use expansion_action::ExpansionAction;
 pub use global_action::FrameworkGlobalShortcutPresentation;
 pub use global_action::FrameworkGlobalShortcutVisibility;
 pub use global_action::GlobalAction;
