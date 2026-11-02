@@ -1393,47 +1393,24 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 60 — A Codex session opened from the resume picker shows its own name  · status: done
 
-**Depends on:** none. Runs first when work restarts (showrunner, 2026-11-02), beside Phase 54's checks; 57c stays held.
+#### As-built
 
-#### Work Order
+- `census/codex.rs` reads Codex's log database (`logs_<n>.sqlite`, the highest `<n>` in the process's account home) and links an interactive Codex process to the thread its records name. The records come from the process's own pid or from its managed app-server child. The read is incremental: the first read starts at the oldest process start through `idx_logs_ts`, and later reads use the log id cursor.
+- `census/classify.rs` chooses the thread in this order: the newest exact log record, the argv thread id, `resume --last`, then the start window. A shared managed daemon gives no log link for any client, and it never removes an argv or start-window name.
+- A record from a pid not yet in the process snapshot is kept until the next snapshot checks its pid and start time (F013). A new or replaced thread database is reopened (F014).
+- The start window moved from `constants.rs` to `[census] codex_thread_start_window` in the config, with 60 s as the default.
+- Tests name the thread for five launch forms: a new session, `codex resume <id>`, `codex resume --last`, a bare `codex resume` with the managed child, and `/resume` inside the TUI.
+- Measured: release CPU 0.79 → 0.75 CPU-s per 30 s; first log read about 50 ms on the scan thread; steady reads 98–495 µs.
 
-**Goal:** an interactive Codex session started with a bare `codex resume` (the picker) shows its thread name, for example `morty`, in its tile and in the summary.
+#### Known limits
 
-**Source:** the user, 2026-11-01: "once again a new run of cargo handler does not show the morty session - a continuing bug". Phases 41 and 57d fixed the earlier forms of this report.
+- When a second TUI uses another TUI's child daemon, logs a thread and exits before the next scan, that thread can go to the TUI that stays (showrunner ruling).
+- A TUI that uses a detached daemon (under `systemd --user`) is not linked. morty is this form; Phase 60a links it.
 
-**Cause, found by the director on natedev 2026-11-01:**
-- morty runs as pid 817898, argv `codex resume`, `CODEX_HOME=~/.codex2`, cwd `/home/natepiano`. The argv names no thread, so `codex::resume_request` returns `NewSession`.
-- morty's thread `01a18dbb-7e8f-7641-b3dd-bb2071ab9d7a` was created on 2026-10-30. It is outside the 60 s start window, so `codex_startup_threads` finds no thread for the process. A launch by `codex resume <id>` or `codex resume --last` works; a launch through the picker does not.
-- Codex 0.166.0 runs a managed `codex app-server --listen unix:// --managed-daemon` as a child of the TUI (pid 817986 here). That daemon writes `logs_2.sqlite` rows with `process_uuid = 'pid:817986:<uuid>'` and `thread_id = 01a18dbb-…`. This is an exact link from a process to the thread it serves.
+#### Gotchas
 
-**Constraints from prior phases:**
-- Phase 41: interactive threads are `thread_source = 'user'` with `source` not `'exec'`, or `originator = 'codex-tui'` on old rows. `ThreadsLayout` is chosen once per database open.
-- Phase 57d: a thread belongs to the account home of the database that supplied it. A shared rollout path never sets the account. Names come from the thread's own account index, with the database name as the fallback.
-- CPU first: the census must not get slower. `logs` has no index on `process_uuid` for rows with a thread (`idx_logs_process_uuid_threadless_ts` covers only `thread_id IS NULL`). A full lookup by pid took 1.3 s on natedev's 72 MB log. A newest-first lookup took 13 ms only because the row was recent.
-
-**Spec:**
-1. For each interactive Codex whose argv names no thread, the census reads the newest user thread that Codex's log database (`logs_<n>.sqlite`, the highest `<n>`, in the process's own account home) records under the pid of the process or of its app-server child. That thread is the process's thread. The 60 s start window stays as the fallback when the log has no row for those pids.
-2. The log read is incremental: keep the last log `id` read per database, and each scan reads only newer rows. The first read starts at the oldest such process's start time through `idx_logs_ts`. Steady state stays under 1 ms per scan; report the first-read time and the steady time on natedev.
-3. Find whether one managed daemon serves more than one TUI. If it does, tell the TUIs apart (for example by the daemon connection that opened the thread). If they cannot be told apart, leave the rows unnamed: never show a wrong name.
-4. A thread switch inside the TUI (`/resume`) moves the row to the newly logged thread at the next scan.
-5. Red-first tests under 1 s, with fixture `logs` and `threads` tables: a bare `codex resume` with an app-server child shows its thread name; a second resume in the same process shows the newer thread; a scan with no new log rows reads no old rows; a process with no log row keeps the start-window match.
-6. The start window (`CODEX_THREAD_START_WINDOW`, 60 s) moves from `constants.rs` into cargo-handler's `[census]` config, with 60 s as the default (showrunner, 2026-11-02). `CODEX_THREAD_START_SLACK` stays in code: it is the whole-second precision of the process table, not a setting.
-7. CHANGELOG: one Fixed line in cargo-handler.
-
-**Files:**
-- `crates/cargo-handler/src/constants.rs` — the log database name and queries; the window constant leaves
-- `crates/cargo-handler/src/config.rs` — the start window setting
-- `crates/cargo-handler/src/census/codex.rs` — the incremental log reader
-- `crates/cargo-handler/src/census/classify.rs` — `codex_startup_threads` uses the log link
-- `crates/cargo-handler/src/census/scan.rs` — holds the reader state between scans
-- `crates/cargo-handler/src/census/codex_session_tests.rs` — the tests
-- `crates/cargo-handler/CHANGELOG.md`
-
-**Workers:** 1 writer.
-
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: on natedev, a new cargo-handler run shows `morty` in the cells view for the bare `codex resume` session. The idle CPU is not higher than before. The checkpoint adds a Change-Review line.
-
-**Outcome (2026-11-02):** tests pass for all five launch forms, and the idle CPU did not rise (0.79 → 0.75 CPU-s per 30 s). The live morty gate was not met: morty now uses a detached managed daemon under `systemd --user`, not a child of its TUI. The phase landed by the three-repair-round rule (showrunner); Phase 60a takes the live gate. Known limit (showrunner ruling): when a second TUI uses another TUI's child daemon, logs a thread and exits before the next scan, that thread can go to the TUI that stays.
+- The live gate failed because the fixtures modelled only a daemon that is the TUI's child. Build a fixture from a capture of the real process tree.
+- The phase landed by the three-repair-round rule.
 
 ### Phase 60a — A Codex session that uses a detached daemon shows its own name  · status: todo
 
