@@ -31,6 +31,7 @@ use tui_pane::KeymapEditContext;
 use tui_pane::KeymapError;
 use tui_pane::KeymapUiContext;
 use tui_pane::NoToastAction;
+use tui_pane::Repaint;
 use tui_pane::ScrollDirection;
 use tui_pane::SettingStep;
 use tui_pane::SettingsHost;
@@ -369,6 +370,7 @@ impl TerminalApp for App {
             && self.framework.overlay().is_none();
         if matches!(self.frame_request, FrameRequest::StatusClock)
             && stable_layers
+            && self.tiles.visual_repaint() == Repaint::NotNeeded
             && let PaintedFrame::Current {
                 buffer,
                 toast_change: painted_toast_change,
@@ -681,6 +683,40 @@ mod tests {
             &first.content[23 * 80..],
             &terminal.backend().buffer().content[23 * 80..],
             "the status clock changes"
+        );
+    }
+
+    #[test]
+    fn idle_visual_status_frames_leave_the_grid_paint_record_unchanged() {
+        let mut app = App::new_for_test().expect("test app");
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("body");
+        for _ in 0..4 {
+            app.request_clock_frame();
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("status");
+            assert_eq!(app.tiles.visual_repaint(), tui_pane::Repaint::NotNeeded);
+        }
+        assert_eq!(app.full_frames, 1, "status draws reuse the body");
+        let tint = tui_pane::focused_pane_tint_enabled();
+        tui_pane::set_focused_pane_tint(!tint);
+        app.request_clock_frame();
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("appearance body");
+        let frames = app.full_frames;
+        let current = app.tiles.visual_repaint();
+        tui_pane::set_focused_pane_tint(tint);
+        assert_eq!(frames, 2, "a clock request cannot hide a body change");
+        assert_eq!(
+            current,
+            tui_pane::Repaint::NotNeeded,
+            "body paint commits appearance"
         );
     }
 
