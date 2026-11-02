@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Use the rustc in mend's build sysroot for analysis and fix validation, including dependency builds. Projects can pin another Rust release without E0514. Different compiler versions keep separate artifact hashes in the same target directory, which increases initial build time and disk use.
+- Fixed cargo mend --fix removing module imports from files mounted with #[path].
 - `--fix` never writes the same import twice: every fixer's imports go through one owner, which keeps equal paths to one module as one binding, keeps a public or cfg-gated re-export, and declines a whole re-export change when any of its edits cannot be placed. Raw identifier spellings (`r#include!`, `#[r#path]`, `#[r#cfg_attr]`) now count as module mounts.
 - Keep mend’s progress counter running after forwarded compiler diagnostics.
 - Keep a shared source’s re-export when another package mounts it without authorizing the same rewrite; report the kept re-export as a skipped manual rewrite.

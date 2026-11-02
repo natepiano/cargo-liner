@@ -185,7 +185,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean on a gate tree; no test takes a second; the live proof of spec 3. The checkpoint adds a Change-Review line.
 
-### Phase 2n — mend --fix keeps the imports of a module mounted with #[path]  · status: todo
+### Phase 2n — mend --fix keeps the imports of a module mounted with #[path]  · status: done
 
 **Depends on:** none (runs beside Phase 2l; the file sets do not overlap)
 
