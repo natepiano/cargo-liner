@@ -29,6 +29,7 @@ use serde_json::to_string;
 
 use super::cache;
 use super::cache::AnalysisCache;
+use super::driver_compiler::DriverCompiler;
 use super::progress::CargoProgress;
 use super::progress::ProgressActivity;
 use super::progress::ProgressDisplay;
@@ -59,8 +60,6 @@ use crate::compiler::constants::CONFIG_JSON_ENV;
 use crate::compiler::constants::CONFIG_ROOT_ENV;
 use crate::compiler::constants::DRIVER_ENV;
 use crate::compiler::constants::DRIVER_ENV_ENABLED;
-use crate::compiler::constants::PASSTHROUGH_RUSTC_WRAPPER_ENV;
-use crate::compiler::constants::RUSTC_WORKSPACE_WRAPPER_ENV;
 use crate::compiler::constants::SCOPE_FINGERPRINT_ENV;
 use crate::compiler::constants::WRAPPER_ALIAS_STAGING_EXTENSION;
 use crate::compiler::constants::WRAPPER_DIR_NAME;
@@ -253,18 +252,11 @@ const fn driver_setup_failure(error: Error) -> MendFailure {
     })
 }
 
-/// Runs `cargo check` with `RUSTC_WORKSPACE_WRAPPER` pointing to the mend binary.
+/// Run analysis and fix validation with mend as `RUSTC_WORKSPACE_WRAPPER`.
 ///
-/// The wrapper uses nightly's `rustc_driver::run_compiler` to analyze workspace members,
-/// while dependencies are compiled by the project's default toolchain (typically stable).
-/// This relies on nightly's `rustc_driver` being able to read `.rmeta` files produced by
-/// stable — which works across close toolchain versions but is not guaranteed by rustc.
-///
-/// If a future rustc update breaks `.rmeta` compatibility between the mend binary's
-/// toolchain and the project's default, this function would need to force the mend
-/// binary's toolchain for the entire `cargo check` (via `RUSTUP_TOOLCHAIN`) and isolate
-/// artifacts in a separate target directory (via `CARGO_TARGET_DIR`) to avoid corrupting
-/// the project's build cache. See git history for the prior toolchain-selection design.
+/// `DriverCompiler` sets the workspace wrapper and selects rustc from the build sysroot together.
+/// This prevents metadata mismatches when the project selects another compiler release.
+/// Cargo retains artifacts for each compiler in the same target directory under separate hashes.
 fn run_cargo_check(
     cargo_plan: &CargoCheckPlan,
     loaded_config: &LoadedConfig,
@@ -282,7 +274,7 @@ fn run_cargo_check(
 
     let wrapper =
         wrapper_alias(cargo_plan.target_directory.as_path(), &current_exe).unwrap_or(current_exe);
-    configure_rustc_wrapper(&mut command, &wrapper);
+    DriverCompiler::for_build()?.configure(&mut command, &wrapper);
     toolchain_probes.configure(&mut command);
 
     command
@@ -433,24 +425,6 @@ fn copy_wrapper_executable(source: &Path, destination: &Path) -> io::Result<()> 
     // On macOS std::fs::copy first uses fclonefileat (clonefile), with a
     // copyfile fallback off APFS. The staging path is absent to permit cloning.
     fs::copy(source, destination).map(drop)
-}
-
-/// Installs mend as the workspace wrapper, leaving any ambient `RUSTC_WRAPPER`
-/// in place.
-///
-/// The workspace slot is the one cargo records in a unit's fingerprint, so it is
-/// the only slot in which [`wrapper_alias`] can do its job. Taking the plain
-/// `RUSTC_WRAPPER` slot instead leaves the alias unfingerprinted, and a freshly
-/// installed mend then finds every unit up to date and produces no analysis.
-///
-/// It is also the narrower slot: it wraps workspace members and not their
-/// dependencies, which are the only crates mend analyzes. Cargo invokes the two
-/// wrappers outermost-first, so a user's `RUSTC_WRAPPER` keeps caching
-/// dependency builds and mend runs beneath it for workspace members.
-fn configure_rustc_wrapper(command: &mut Command, current_exe: &Path) {
-    command
-        .env(RUSTC_WORKSPACE_WRAPPER_ENV, current_exe)
-        .env_remove(PASSTHROUGH_RUSTC_WRAPPER_ENV);
 }
 
 fn scope_fingerprint_for(cargo_plan: &CargoCheckPlan) -> String {
