@@ -1406,7 +1406,7 @@ Showrunner request (2026-10-29): the 36m merge tree fails `census::scan::refresh
 - **Acceptance:** a red-first test built from the real argv shape above (`cargo-tile-capture --capture-shim <path>/cargo nextest run …` with a busy child) shows one summary row with the full command and the child's cpu and mem; main fails it; each test under 1 s. Live check vs main on natedev under a real `cargo nextest run`: one row per command, the cpu column not 0% while the child works.
 - **Files:** decided by the cause; expected `crates/cargo-tile/src/census/scan.rs` and the summary row code in `crates/cargo-tile/src/render.rs` / `roster.rs`. Not `crates/tui_pane/src/tiles/draw.rs` or `tiles/grid.rs` (handler unit).
 
-### Phase 44b — A captured command keeps one row from its start  · status: todo
+### Phase 44b — A captured command keeps one row from its start  · status: done
 
 **Depends on:** Phase 44
 
@@ -1448,6 +1448,36 @@ Showrunner decision (2026-10-31): Phase 43 stays off main after repair round 3 o
 - **Goal:** the Phase 43 CPU cut, built on Phase 44b's tree and its process identity model.
 - **Spec:** reuse only the parts of the Phase 43 copy that fit the 44b model. The model says if the transient launcher row is kept, or why base shows it in error.
 - **Acceptance:** CPU lower than base in both orders at comparable load; no live count worse than main, the transient launcher row included. 3 repair rounds, same landing rule.
+
+#### Work Order
+
+**Goal:** the reader uses less CPU than main 44b (c1136812) under load, with the 44b process identity model and the same screen.
+
+**Spec:**
+1. **Model first.** Write `phases/43a/cpu_model.md` before any code change. It names each repeated cost in the Phase 43 profile (`phases/43/profile_base.md`, `profile_cut.md`), the one record that holds each fact, and how the 44b identity owners (`roster/invocation_owners.rs`, `roster/invocation_continuity.rs`) carry it. It says if the transient launcher row is kept, or why base shows it in error.
+2. **Reuse.** Port only the Phase 43 cuts (copy `/tmp/claude/scratch/phase-tile-unit-43-5qlvls/src`, base 2e0cc5a) that fit the model. Each cut keeps its rule in the types.
+3. **Same screen.** Main's layout, colors, fades, deadlines and rows stay as they are. After a build ends, the cargo child row keeps its CPU.
+4. **CPU proof.** One live pair is noise. Measure at least 3 base/cut pairs, in both orders, at comparable load. Report the median change and the spread. A gain smaller than the spread is not a gain. Report idle tile CPU in CPU-s/min (Mac 8.4, natedev 14-19 today).
+
+**Files:**
+- `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/src/roster.rs`
+- `crates/cargo-tile/src/roster/invocation_continuity.rs`
+- `crates/cargo-tile/src/roster/invocation_owners.rs`
+- `crates/cargo-tile/src/terminal.rs`
+- `crates/cargo-tile/src/main.rs`
+- `crates/cargo-tile/src/census/scan.rs`
+- `crates/cargo-tile/src/census/cpu_observation.rs`
+
+**Workers:** 1 writer (`impl`).
+
+**Constraints from prior phases:** work in a new isolated copy cloned from the unit branch at c1136812. Every assertion on main stays. No test of 1 s or more. No new allow or expect.
+
+**Acceptance gate:**
+- The CPU proof in Spec item 4: the median change is a fall larger than the spread.
+- New logic has tests, red on the base first, each under 1 s.
+- `verify.sh test cargo-tile`, `verify.sh test tui_pane` and `verify.sh lint cargo-tile` green.
+- A live check against main: no live count worse than main, the transient launcher row and the cargo child row's CPU after a build ends included.
 
 ### Phase 45 — A new cell's text brightens from 75% to its final color  · status: merged into Phase 42
 
@@ -2458,7 +2488,9 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 3. The `p` and `h` keys keep their current behavior.
 4. Change the status-line tests that expect the two entries. Each Assertion-Change line names the user request as its reason.
 
-**Files:** `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/app_global_action.rs`, and the keymap only if the shortcuts list needs it.
+**Files:**
+- `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/src/app_global_action.rs`
 
 **Acceptance gate:**
 - `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green; no new test takes 1 s or more.
@@ -2479,9 +2511,36 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 3. Linux and macOS both show the value. A failed read shows no disk value; it does not show a placeholder number.
 4. Add tests for the format and the placement at every summary width.
 
-**Files:** the summary tile code in `crates/cargo-tile/src/render.rs` and the census refresh that reads the value.
+**Files:**
+- `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/src/census/scan.rs`
 
 **Acceptance gate:**
 - `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green on natedev and the Mac; no new test takes 1 s or more.
 - A live shot shows the disk value in GiB after mem.
 - Idle tile CPU does not rise by more than the spread of 3 live pairs.
+
+### Phase 50 — A CI nextest run shows its progress meter  · status: todo
+
+**Depends on:** Phase 49
+
+#### Work Order
+
+**Goal:** A `[ci]` cell for a GitHub runner's `cargo nextest run` shows the same progress meter as a local nextest run. User report, 2026-11-02, through the showrunner: the hana-linux-2 runner's `[ci] cargo nextest run --workspace` row (runs 1, 28:59) showed no meter.
+
+**Spec:**
+
+1. Find the cause first, on a live runner job. Check the capture registration of the runner's shim call, the capture read, and the cell's meter rule. Record the cause in `phases/50/cause.md`.
+2. Fix the cause where it lives: the shim, the capture read, or the render.
+3. Add a test that fails on the current tree: a dispatched CI nextest with a capture shows its meter. Extend `a_long_ci_cell_draws_its_dispatched_nextests_runs` or add one beside it.
+4. A local nextest keeps its current meter.
+
+**Files:**
+- `crates/cargo-tile/src/cargo-capture-shim.sh`
+- `crates/cargo-tile/src/progress/capture_read.rs`
+- `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/src/census/scan.rs`
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green; no new test takes 1 s or more.
+- A live shot of a runner nextest job shows the meter in its `[ci]` cell.
