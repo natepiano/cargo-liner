@@ -99,6 +99,7 @@ impl MendRunner<'_> {
             output_mode,
             self.color_mode,
             self.toolchain_probes,
+            &self.wrapper,
         )?;
         // Create `ParsedSources` after `compiler::run_selection` because `cargo fix`
         // may rewrite files during that check.

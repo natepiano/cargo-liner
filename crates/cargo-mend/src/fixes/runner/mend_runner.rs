@@ -5,6 +5,7 @@ use anyhow::Result;
 use super::CheckedSelection;
 use super::session_snapshot::SessionSnapshot;
 use crate::compiler;
+use crate::compiler::RunWrapper;
 use crate::compiler::ToolchainProbes;
 use crate::config::LoadedConfig;
 use crate::config::OperationMode;
@@ -35,6 +36,7 @@ pub(super) enum NextAnalysis {
 }
 
 pub(crate) struct MendRunner<'a> {
+    pub(super) wrapper:          RunWrapper,
     pub(super) next_analysis:    NextAnalysis,
     pub(super) toolchain_probes: &'a ToolchainProbes,
     pub(super) selection:        &'a Selection,
@@ -56,8 +58,10 @@ impl<'a> MendRunner<'a> {
         color_mode: ColorMode,
         output_format: OutputFormat,
         toolchain_probes: &'a ToolchainProbes,
+        wrapper: RunWrapper,
     ) -> Self {
         Self {
+            wrapper,
             next_analysis: NextAnalysis::Required,
             toolchain_probes,
             selection,
