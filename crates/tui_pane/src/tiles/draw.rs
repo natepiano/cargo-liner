@@ -42,6 +42,7 @@ use crate::PaneBorders;
 use crate::PaneChrome;
 use crate::PaneFrame;
 use crate::PaneFrameLabel;
+#[cfg(test)]
 use crate::blend_color;
 use crate::default_pane_chrome;
 use crate::draw_clipped;
@@ -51,6 +52,8 @@ use crate::label_color;
 use crate::screen_ground;
 use crate::success_color;
 use crate::text_default;
+use crate::theme;
+use crate::theme::BlendRounding;
 use crate::title_color;
 
 /// Whether the cells are drawn with what is in them.
@@ -71,16 +74,39 @@ pub enum TileGridContents {
 /// How far a cell's ink has travelled toward its ground.
 /// Zero retains the ink; [`u8::MAX`] reaches the ground.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CellFadeProgress(u8);
+pub struct CellFadeProgress {
+    amount:   u8,
+    rounding: BlendRounding,
+}
 
 impl CellFadeProgress {
     /// Name an amount on the same scale as [`crate::blend_color`].
     #[must_use]
-    pub const fn new(amount: u8) -> Self { Self(amount) }
+    pub const fn new(amount: u8) -> Self {
+        Self {
+            amount,
+            rounding: BlendRounding::Truncate,
+        }
+    }
+
+    /// Entry ink rounds toward its colour on the 256-step brighten scale.
+    #[must_use]
+    pub const fn brightening(amount: u8) -> Self {
+        Self {
+            amount,
+            rounding: BlendRounding::TowardColor,
+        }
+    }
+
+    /// Apply this ink state using its own blend scale and channel rounding.
+    #[must_use]
+    pub fn color(self, color: Color, ground: Color) -> Color {
+        theme::blend_color_with_rounding(color, ground, self.amount, self.rounding)
+    }
 
     /// The amount on the zero-to-255 blend scale.
     #[must_use]
-    pub const fn amount(self) -> u8 { self.0 }
+    pub const fn amount(self) -> u8 { self.amount }
 }
 
 /// Whether a cell's foot follows its contents toward the cell's ground.
@@ -195,7 +221,7 @@ impl CellReadoutInk {
         };
         for span in &mut line.spans {
             let ink = line.style.patch(span.style).fg.unwrap_or_else(text_default);
-            span.style = span.style.fg(blend_color(ink, ground, progress.amount()));
+            span.style = span.style.fg(progress.color(ink, ground));
         }
         line
     }
@@ -217,7 +243,10 @@ impl CellReadout {
             extent: cells.content_extent(content),
             ink:    match cells.readout_fade(content) {
                 CellReadoutFade::Unfaded => CellReadoutInk::Unfaded,
-                CellReadoutFade::Fading(progress) => CellReadoutInk::Fading { progress, ground },
+                CellReadoutFade::Fading(_) => CellReadoutInk::Fading {
+                    progress: cells.readout_progress(content),
+                    ground,
+                },
             },
         }
     }
@@ -295,6 +324,15 @@ pub trait TileCells<Id> {
     /// Existing cell providers retain their original readout inks.
     fn readout_fade(&self, _content: &TileContent<Id>) -> CellReadoutFade {
         CellReadoutFade::Unfaded
+    }
+
+    /// Fade amount and blend rule shared with the cell's text.
+    /// Providers with entry brightening can preserve its channel rounding here.
+    fn readout_progress(&self, content: &TileContent<Id>) -> CellFadeProgress {
+        match self.readout_fade(content) {
+            CellReadoutFade::Unfaded => CellFadeProgress::new(0),
+            CellReadoutFade::Fading(progress) => progress,
+        }
     }
 
     /// Set frame-wide content widths before demand and allocation measurements.

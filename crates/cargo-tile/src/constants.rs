@@ -174,10 +174,12 @@ pub(crate) const SUMMARY_WITHOUT_ROWS_READOUT_WIDTH: u16 = 28;
 pub(crate) const DEFAULT_FADE_SECONDS: u64 = 3;
 /// Distance between fade alpha levels that keep built-in ink contrast monotone.
 pub(crate) const FADE_ALPHA_STEP: u8 = 2;
-/// First-paint fade beyond which a delayed cell holds final ink until expiry.
-/// Full ink meets the three-quarter readability floor on every channel without
-/// truncating blends; cells already readable on entry keep their ordinary fade.
+/// First-text fade beyond which a delayed row starts its entry at three-quarter ink.
+/// The same limit sets the brighten's starting ground contribution: 64 of 256,
+/// rounded toward the ink. Rows already this readable keep their ordinary fade.
 pub(crate) const CELL_ENTRY_FADE_LIMIT: u8 = 63;
+/// Time for delayed command text to brighten from three-quarter to full ink.
+pub(crate) const CELL_BRIGHTEN_DURATION: Duration = Duration::from_millis(250);
 /// Contrast floor for a finished row through the first half of its fade.
 #[cfg(test)]
 pub(crate) const MIN_FINISHED_ROW_CONTRAST: f64 = 3.0;
