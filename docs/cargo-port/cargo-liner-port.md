@@ -202,47 +202,19 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 ### Phase 2q — tui_pane owns the expand/collapse model for cargo-port and cargo-handler  · status: done
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
-
-**Goal:** cargo-port's expand/collapse model and its keys move into `tui_pane` as one copy. cargo-port's project list uses it and behaves exactly as today. cargo-handler Phase 45 then uses the same model for its parent/child rows.
-
-**Source:** the user approved this phase through the showrunner, 2026-11-02. The user's words in handler, 2026-10-29: "rows should expand and collapse the way they do in cargo ports project list - in handler where wehave parent child relationships drawn - by default we should show just the first level of expansion". handler-unit gave its row shape on 2026-11-02 (below).
-
-**State model (write and keep this first):**
-- **Expand key:** a value of the app's key type `K` (`Eq + Hash + Clone`) that names one row that can have children. cargo-port: today's `ExpandKey` (`crates/cargo-port/src/tui/project_list/visible_rows.rs:22`, index-based). cargo-handler: `RowIdentity` (machine, pid) in `cargo-handler` `census/placement.rs`.
-- **Default rule:** a function of the row's depth that says open or closed. cargo-port: closed at every depth. cargo-handler: depth 0 open, deeper rows closed.
-- **Open rows:** a row is open when its override says so, else when its default says so. The model holds one record: the overrides, `K` to open or closed. No second record holds the same fact.
-- **Operations:** expand (override to open), collapse (override to closed), toggle (flip the effective state), expand-all (every expandable row open), collapse-all (every expandable row closed), reset (drop every override), retain (drop the overrides of keys no longer in the tree, after a rebuild).
-- **Collapse on a closed or leaf row** moves the selection to the row's parent and collapses the parent, as the project list does today. The app supplies the parent of a row through a trait; the model does not know the app's row kinds.
-- **Keys and actions:** the expand, collapse, expand-all and collapse-all actions and their default key bindings live in `tui_pane`, so both apps use the same keys.
-
-**Constraints:**
-- One copy: after the move, cargo-port has no second expand state or second implementation of an operation.
-- cargo-port behaves exactly as today: the same rows open after every key, the same selection after collapse, the same rows after a rescan. Its existing tests pass unchanged, with no weaker check.
-- Public in `tui_pane` only what cargo-port and cargo-handler call. Keep the rest `pub(crate)` or private.
-- cargo-port's row kinds (project, group, member, worktree, vendored) stay in cargo-port behind the trait.
-- No test takes a second.
-
-**Spec:**
-1. The model type in `tui_pane` with the operations above, generic over `K`, with the default rule as a value given at construction.
-2. The tree trait that an app implements: expandable rows with key and depth, and the parent of a row.
-3. The actions and default key bindings in `tui_pane`; cargo-port's project list binds them.
-4. cargo-port's project list uses the model: `ProjectListState.expanded`, `selection.rs`, the expand and collapse code in `list.rs`, `app/navigation/expand.rs`, and `visible_rows.rs` read it.
-5. Unit tests in `tui_pane` for each operation and for both default rules (all closed; depth 0 open), with string or integer keys.
-6. CHANGELOG lines in `crates/tui_pane` and `crates/cargo-port` if they keep one.
+`tui_pane::expansion` holds one expand/collapse model for tree lists. `ExpansionModel<K>` stores one override map (`K` to `ExpansionState::{Open, Closed}`) plus a default rule `fn(usize) -> bool` by depth; a row is open when its override says so, else when its default says so. Operations: `expand`, `collapse`, `toggle`, `expand_all`, `collapse_all`, `reset`, `retain`, `from_open_keys`/`open_keys`, and `collapse_row`, which on a closed or leaf row selects the parent and collapses it. Mutations return `ExpansionChange::{Changed, Unchanged}`. The app supplies its rows through the `ExpansionTree` trait (`RowExpansion` with key and depth, `RowParent`); cargo-port's row kinds stay in cargo-port. The expansion actions and their default keys (`EXPANSION_VIM_EXTRAS`) live in `tui_pane`. cargo-port's project list keeps its state in `ProjectListState.expanded: ExpansionModel<ExpandKey>`, closed at every depth, and behaves as before.
 
 **Files:**
-- `crates/tui_pane/src/` — the new module (writer names it) and its `lib.rs` export; the keymap actions
-- `crates/cargo-port/src/tui/project_list/` — `selection.rs`, `list.rs`, `visible_rows.rs`, `mod.rs`
-- `crates/cargo-port/src/tui/project_list_state.rs`, `crates/cargo-port/src/tui/app/navigation/expand.rs`, `crates/cargo-port/src/tui/interaction.rs`
-- cargo-port keymap and action files that bind expand and collapse (writer lists them)
-- approved during the phase: `crates/cargo-port/src/tui/panes/project_list/{tree_rows.rs,tree_render.rs}`, `crates/cargo-port/src/tui/app/async_tasks/{tree.rs,dispatch.rs}`, `crates/cargo-port/src/tui/app/mod.rs` (test type-only conversions), `crates/cargo-port/src/tui/keymap/`, `crates/cargo-port/src/tui/integration/framework_keymap/project_list_pane.rs`, both CHANGELOGs
+- `crates/tui_pane/src/expansion.rs` — the model, the tree trait, the result types and their unit tests
+- `crates/tui_pane/src/keymap/expansion_action.rs`, `keymap/constants.rs` — shared actions and bindings
+- `crates/cargo-port/src/tui/project_list/{list.rs,selection.rs,visible_rows.rs,expand_state.rs}` — the project list through the model
+- `crates/cargo-port/src/tui/app/navigation/expand.rs`, `tui/keymap/`, `tui/project_list_state.rs` — callers and bindings
 
-**Workers:** 1 writer (impl) owns the code and the tests.
+**Binds later work:** cargo-handler's parent/child rows use `ExpansionModel` with depth 0 open (handler-unit). After a roots change, `ProjectList::replace_roots_from` calls `expanded.retain` with the live expandable keys.
 
-**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-port` and `verify.sh lint` clean on a gate tree; cargo-port's existing expand and collapse tests unchanged; no test takes a second. The notice carries `Change-Review: none` because nothing visible changes.
+**Gotchas:** a test that compares expansion through `open_keys()` changes assertion shape and needs an `Assertion-Change:` line.
 
 ### Phase 2s — mend --fix keeps the cfg of an import it moves  · status: done
 
@@ -282,6 +254,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 - A root path lookup already uses `IndexMap::get`; `ProjectList::at_path` and its siblings (`tui/project_list/list.rs` ≈325 onward) still search descendants (members, worktrees, vendored packages) in a line. The index must stay valid after an insert, a replace, a regroup and a rescan (`tui/project_list_state.rs`, `tui/app/tree_mutation.rs`). `compute_disk_cache` (`tui/panes/project_list/disk.rs` ≈172) calls `visible_row_disk_usage` for each visible row, which calls `at_path`, and clones the sorted vector once for each child node. The render calls `at_path` per row (`tui/panes/project_list/tree_rows.rs` ≈393).
 - A visible clock, spinner or animation still moves at its own rate (`App::animation_timeout`, `tui/app/mod.rs` ≈436, 80 ms); a frame for it is a change. The build budget of under 2 frames each second applies while cargo runs in a project and no spinner or animation is on screen.
 - The event loop logs only slow frames today, so frame rate needs a counter of drawn frames (for example a perf-log line each second with the count), not a count of slow-frame lines.
+- From phase 2q: `ProjectListState.expanded` is a `tui_pane::ExpansionModel<ExpandKey>` (`crates/tui_pane/src/expansion.rs`). After `ProjectList::replace_roots_from` swaps the roots and the path index, it must still call `expanded.retain` with the keys of the live expandable rows (project rows and worktree containers), so no stale key stays open.
 - The Deleted mark, dismiss and all row content stay the same; this phase changes when work runs, not what is drawn.
 - Phase 2's full suite on natedev had two tests over one second: `tui::app::tests::interaction::project_list_renders_framework_overflow_affordance` (1.141 s) and `tui::app::tests::interaction::selection_row_highlight_covers_ansi_colored_log_text` (1.081 s). Both draw frames; this phase brings each under one second.
 
