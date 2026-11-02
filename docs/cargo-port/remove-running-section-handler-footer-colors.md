@@ -1391,7 +1391,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Ruled out:** a host-side comparison of placements, because column bands, title ownership and motion heights are not in the public placements.
 
-### Phase 60 — A Codex session opened from the resume picker shows its own name  · status: todo
+### Phase 60 — A Codex session opened from the resume picker shows its own name  · status: done
 
 **Depends on:** none. Runs first when work restarts (showrunner, 2026-11-02), beside Phase 54's checks; 57c stays held.
 
@@ -1432,6 +1432,86 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 **Workers:** 1 writer.
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: on natedev, a new cargo-handler run shows `morty` in the cells view for the bare `codex resume` session. The idle CPU is not higher than before. The checkpoint adds a Change-Review line.
+
+**Outcome (2026-11-02):** tests pass for all five launch forms, and the idle CPU did not rise (0.79 → 0.75 CPU-s per 30 s). The live morty gate was not met: morty now uses a detached managed daemon under `systemd --user`, not a child of its TUI. The phase landed by the three-repair-round rule (showrunner); Phase 60a takes the live gate. Known limit (showrunner ruling): when a second TUI uses another TUI's child daemon, logs a thread and exits before the next scan, that thread can go to the TUI that stays.
+
+### Phase 60a — A Codex session that uses a detached daemon shows its own name  · status: todo
+
+**Depends on:** Phase 60. Runs first, before Phases 61, 58, 55 and 56 (showrunner, 2026-11-02).
+
+#### Work Order
+
+**Goal:** morty, and every interactive Codex session that uses a detached managed daemon, shows its thread name in its tile and in the summary. The Phase 60 log reader also becomes simpler.
+
+**Source:** the user, 2026-11-01: "once again a new run of cargo handler does not show the morty session - a continuing bug". The user, 2026-11-02, on the seven /simplify items: "okay i want you to add these things - they all sound proper to me".
+
+**Cause, found in the Phase 60 live check:** morty runs as pid 3190832, argv `codex resume`, `CODEX_HOME=~/.codex2`. Its managed daemon is pid 817986 under `systemd --user` (pid 2047), not a child of the TUI. The Phase 60 reader looks only at the TUI and its app-server children, so it finds no record for morty.
+
+**Spec:**
+1. State model first, in this section, for showrunner review before code: each state of a process-to-thread link, the one record that holds it, and every path that creates or changes it. Two records never hold the same fact.
+2. Part 1, the seven /simplify items, with no change to any name shown:
+   1. The log reader yields only pid → thread id. The existing codex_sqlite stage resolves those ids with the argv ids in one by-id query. Remove the reader's own thread connection, layout, name cache and retry list.
+   2. Ownership is a process property: keep raw records per pid, and decide shared-daemon ownership at link time. Remove `LogOwnership`, the unseen/pending split and the rewrite loop. One `app_server_children` helper replaces the two child filters.
+   3. Resolve links once per scan and pass one map to classify, names and tiers. `link` returns `Option<&CodexThread>`. Remove `SharedDaemon` and the link source names that nothing reads.
+   4. Remove the test-only `CodexLogEvidence::Unread` and the `#[cfg(test)]` wrappers `agent_rows` and `codex_startup_threads`.
+   5. Return early when the account directory stamp is unchanged. Use one `read_dir` pass, `FileRevision::of`, and one shared `FileIdentity::read`. Merge the open and reopen functions.
+   6. No transaction around the single steady SELECT. Remove the duplicate log read timing.
+   7. Tests use the shared fixture helpers. Merge the two client-exits-stays-ambiguous tests.
+3. Part 2: link a TUI to the thread of a detached daemon it is connected to. Find the evidence from a capture of morty's real process tree and its daemon connection (for example the TUI's unix socket peer). Do not use an invented layout. When the evidence cannot name one client, leave the row unnamed: never show a wrong name.
+4. Tests under 1 s: keep the five launch-form tests of Phase 60 with their asserted names. Add the detached-daemon form as the sixth, built from the capture.
+5. CHANGELOG: one Fixed line in cargo-handler.
+
+**Files:** `crates/cargo-handler/src/census/{codex.rs, classify.rs, scan.rs, codex_session_tests.rs}`, `crates/cargo-handler/CHANGELOG.md`.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: on natedev, a new cargo-handler run shows `morty` by name in the cells view; the notice states the result. The idle CPU is not higher than Phase 60's. The checkpoint adds a Change-Review line.
+
+### Phase 61 — The accounts table drops the read column  · status: todo
+
+**Depends on:** none (showrunner approved as next, 2026-11-02).
+
+#### Work Order
+
+**Goal:** cargo-handler's accounts table matches the accounts board, which drops its read column (accounts-unit 101s). The JSON keeps `read_at` and `read_ok`.
+
+**Spec:**
+1. Remove `AccountsColumn::Read`, its header, its sort, and `ACCOUNT_READ_DOT` if nothing else uses it.
+2. Update the column tests in `summary/accounts_tests.rs` and `summary/accounts_header_sort_tests.rs`; each Assertion-Change line names the removed column.
+3. CHANGELOG: one Changed line in cargo-handler.
+
+**Files:** `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/constants.rs`, the accounts tests, `crates/cargo-handler/CHANGELOG.md`.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean. This change is visible: shots of the accounts table, a design check line, and a Change-Review line.
+
+### Phase 45 — Handler rows expand and collapse like the cargo-port project list  · status: todo
+
+**Depends on:** port-unit phase 2q (the cargo-port expand/collapse model moves into `tui_pane`). Starts after that merges.
+
+#### Work Order
+
+**Goal:** rows with parent and child relations in cargo-handler expand and collapse the same way as cargo-port's project list.
+
+**Source:** the user, 2026-10-29 04:23: "rows should expand and collapse the way they do in cargo ports project list - in handler where wehave parent child relationships drawn - by default we should show just the first level of expansion".
+
+**State model (sent to port-unit 2026-11-02):**
+1. The rows form a forest. A root row is a session that heads its own hierarchy. A child row is an agent that a live session manages or launched.
+2. The expand key is `RowIdentity` (machine, pid). Depth has no fixed limit; live trees reach four levels.
+3. Default: root rows are open, so their direct children show. Every row below the root starts closed. A new row gets the default for its depth.
+4. The user's open or closed choice is an override, keyed by the expand key, held in one record. When a row leaves the forest, its override is dropped; a row that comes back gets the default.
+5. A refresh can move a row to a new parent; its override follows its key.
+
+**Spec:**
+1. Use the `tui_pane` model from port 2q: expand, collapse, toggle, expand-all, collapse-all and reset to default, with the same keys as the cargo-port project list.
+2. Collapse on a closed child moves the selection to its parent.
+3. Tests under 1 s for the default, each operation, a row that leaves and comes back, and a row that moves parent.
+4. CHANGELOG: one Added line in cargo-handler.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean. This change is visible: shots, a design check line, and a Change-Review line.
 
 ### Phase 58 — The focus tint reaches the frame and stands apart from selection  · status: todo
 
