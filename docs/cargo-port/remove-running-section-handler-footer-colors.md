@@ -1368,45 +1368,28 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 54 — Tile hosts draw only frames that change  · status: done
 
-**Depends on:** Phase 48, Phase 47
+#### As-built
 
-#### Work Order
-
-**Goal:** an idle cargo-handler and an idle cargo-tile draw a frame only when something visible changes, so each idles under 1 % of one core (0.60 own CPU-s per minute at most).
-
-**Source:** showrunner ruling, 2026-10-30, on Phase 47's next cut: the tui_pane grid gives one "visual state changed" answer (motion, column bands, titles), a host skips equal frames, and cargo-tile uses it in the same phase so both hosts gain. Unit session `phases/47/impl_summary_test.txt`.
-
-**Constraints from prior phases:**
-- Phase 47 release profile, cargo-handler idle, per minute: 1043 body frames cost 1.28 own CPU-s; `TileGrid::tick` (`tiles/grid.rs` ≈2160) asked for 936 of the repaints, one on every tick while `GridMotion` is not `Settled`.
-- The public placements give cell content and `PaneFrame` only; column bands, title ownership and motion heights live in `TileDrawing` and `tiles/draw.rs`, so a host cannot prove from placements alone that a frame is unchanged.
-- Hosts: cargo-handler `terminal.rs` `Ticker::poll_at` ≈383 (`app.tiles.tick()`, Phase 47's display-time state); cargo-tile `terminal.rs` ≈227 and `render.rs` ≈8682.
-- cargo-handler `app.rs`: `PaintedFrame` (≈116) is the retained body frame, and `App::draw` (≈364) reuses it for a status-only draw. The grid's painted record and this body cache must not both own "what was last painted": one owns it, and the other asks it.
-- Phase 47 shipped each session's age deadline: `DisplayText::AgentAge::next_change` (`terminal.rs` ≈123) schedules each age from its own start, and `next_body_change` (≈192) includes managed workers (tests ≈503 and ≈574). Keep that one calculation.
-- Phase 47 Mac measure defect: `proc_pid_rusage` CPU fields on Apple Silicon are 24 MHz mach ticks, not nanoseconds (timebase 125/3, proved 2026-10-31). Phase 47's corrected Mac own CPU-s per minute: branch 0.26, installed 0.91. Linux: branch 1.30, installed 2.71.
-- `tiles/draw.rs` is Phase 48's until its checkpoint; cargo-tile's files may be held by tile-unit: claim through berth (the showrunner tells tile-unit).
-- `draw_tile_grid` (`tiles/draw.rs` ≈384) prepares the measurements before it paints, and records the painted geometry after it paints (`record_painted_cells`, `record_painted_summary_frames`). Phase 9 reads that last painted record for clicks; keep that use.
-- `age_label` (`crates/cargo-handler/src/summary/age.rs` ≈4) writes elapsed whole minutes from each session's own start. So each session's age text changes at its own elapsed-minute boundary, not at one shared wall-clock minute. A label that gains a digit or a `:` part also widens the shared age column (`AgeLayout`, same file). Neither change comes with a census revision.
-
-**Spec:**
-1. One owner in `tiles/` gives the visual state of the grid (motion step, column bands, titles, motion heights, and the appearance inputs `tile_background` reads: theme, transparency and tint settings) and answers whether it changed since the last drawn frame. No host compares parts of it by hand. Its last-painted record is the one Phase 9 reads for input.
-2. `TileGrid::tick` asks for a repaint only when that answer is yes.
-3. cargo-handler and cargo-tile each skip a frame whose visual state and content are equal to the last drawn one.
-4. The comparison state changes only after a body frame is painted. Hold it in an explicit enum, for example `LastPainted::{NeverPainted, Painted(..)}`. A poll that draws no body, and a status-only draw, leave it unchanged.
-5. Keep Phase 47's per-session age deadline (`DisplayText::AgentAge::next_change`) as the one calculation. Add the next width growth of the shared age column (`AgeLayout`) to it, so that draw needs no census revision.
-6. Red-first counted tests in tui_pane and in each host: an unchanged settled grid asks for no frame; each motion step, band change and title change asks for one; several polls with no body draw keep the comparison state; status-only draws keep it; fading content with settled geometry still draws each fade step; motion completes after skipped equal frames; age deadlines for sessions with offset starts each draw at their own minute; an age width growth draws with no census revision; a theme, transparency or tint change with equal geometry draws. Each under 1 s.
-7. Live measurement in both hosts, on Linux and on the Mac, before and after, with the Phase 40 paired method: own CPU under 1 % of one core, and no worse than the installed binary. Each run shows live agents, and records the agent and terminal counts the census showed, the window length and the load. On the Mac, convert `proc_pid_rusage` ticks with `mach_timebase_info`.
-8. CHANGELOG: one Changed line in tui_pane, cargo-handler and cargo-tile.
+- `TileGrid` in `tiles/grid.rs` owns the last painted visual state: `LastPainted::{NeverPainted, Painted { visual, summary_frames }}`. `GridVisualState` holds the drawing, the contents, the theme, `BackgroundTransparency` and `FocusedPaneTint`. Only a body paint replaces it; status-only draws and polls with no body leave it as it is. Input (`cell_hit`, `painted_summary_frames`) reads the same record.
+- `TileGrid::visual_repaint()` answers whether the next body differs from the last paint, without consuming the answer. It compares the visible drawing from `visible_drawing(contents, progress)` (`pub(super)`), title ownership, column bands and the appearance inputs. `TileGrid::tick` asks for a repaint only when that answer is `Repaint::Needed`. `draw.rs` returns early when the visible drawing has no pieces and no bands.
+- cargo-handler and cargo-tile `terminal.rs` skip a body frame that `visual_repaint` reports equal and whose content did not change. A theme, transparency or tint change with equal geometry still draws.
+- cargo-handler keeps `DisplayText::AgentAge::next_change` as the one age deadline and adds the next width growth of the shared age column. The width deadline starts from the earliest session start, as `now.max(started).checked_add(seconds)`, so a session start in the future draws only when its age label changes.
+- Measured own CPU-s per minute, installed → branch: Mac handler 0.144 → 0.156, Mac tile 8.384 → 8.637; Linux (load about 100) handler 1.690 → 1.150, tile 19.439 → 18.679.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs` — the visual state owner, the last painted state and their tests
-- `crates/tui_pane/CHANGELOG.md`
-- `crates/cargo-handler/src/terminal.rs`, `crates/cargo-handler/src/app.rs`, `crates/cargo-handler/CHANGELOG.md` — the host frame skip; `app.rs` holds `PaintedFrame`
-- `crates/cargo-handler/src/summary/age.rs` — the age column's next width growth
-- `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/CHANGELOG.md`
+- `crates/tui_pane/src/tiles/grid.rs` — `GridVisualState`, `LastPainted`, `visual_repaint`, the appearance enums and their tests.
+- `crates/tui_pane/src/tiles/draw.rs` — draws from `visible_drawing` and records the painted state.
+- `crates/cargo-handler/src/terminal.rs` — the host frame skip, the age width deadline and the timed-body tests.
+- `crates/cargo-tile/src/terminal.rs` — the host frame skip and the appearance-change test.
+- `crates/cargo-handler/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — one Changed line each.
 
-**Workers:** 1 writer (`test` seat, which wrote Phase 47).
+**Binds later work:** A host asks `TileGrid::visual_repaint` before it draws a body; it never compares grid parts by hand. Input reads the grid's last painted record.
 
-**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-handler`, `verify.sh test cargo-tile`, and `verify.sh lint` for tui_pane, cargo-handler and cargo-tile clean; no test takes a second. Final CPU gate (moved from Phase 47): own CPU under 0.60 CPU-s per minute in the Phase 40 paired method, for cargo-handler and cargo-tile, each on Linux and on the Mac, with live agents. The checkpoint adds a Change-Review line.
+**Gotchas:**
+- cargo-tile idles near 8.6 own CPU-s per minute on the Mac and 18.7 on Linux, far above the 0.60 target. The remaining tile census CPU belongs to tile-unit (showrunner, 2026-11-02).
+- A test fixture pid can match an age label in the drawn text; fixture pids start at 4000.
+
+**Ruled out:** a host-side comparison of placements, because column bands, title ownership and motion heights are not in the public placements.
 
 ### Phase 60 — A Codex session opened from the resume picker shows its own name  · status: todo
 
