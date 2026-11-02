@@ -244,7 +244,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-port` and `verify.sh lint` clean on a gate tree; cargo-port's existing expand and collapse tests unchanged; no test takes a second. The notice carries `Change-Review: none` because nothing visible changes.
 
-### Phase 2s — mend --fix keeps the cfg of an import it moves  · status: todo
+### Phase 2s — mend --fix keeps the cfg of an import it moves  · status: done
 
 **Depends on:** none
 

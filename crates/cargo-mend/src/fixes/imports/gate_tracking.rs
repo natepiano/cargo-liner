@@ -1,26 +1,15 @@
-//! One definition of where `#[cfg]` gates live in a syn tree.
+//! Track enclosing cfg conditions through each parsed source node.
 //!
-//! Two visitors used to track gates by hand, each overriding its own set of
-//! `visit_*` methods, and both missed the same node: a gate written on a
-//! statement attaches to the statement's expression, so
-//! `#[cfg(test)] app.init_resource::<Injected>();` reported no gate and the
-//! synthesized `use crate::reporter::Injected;` landed ungated (E0432 in any
-//! build where the item is configured out).
-//!
-//! The list of nodes is now single. syn's `Visit` dispatches every
-//! attribute-bearing node through one of nine entry points — `visit_item` calls
-//! `visit_item_fn`, `visit_stmt` calls `visit_local`, and so on — so
-//! [`gate_tracking_visit`] overrides those nine and every finer-grained
-//! override a visitor writes for its own work inherits the gate already pushed
-//! above it. A visitor opts in by implementing [`GateTracking`] and invoking the
-//! macro inside its `impl Visit`; it cannot cover a different set of nodes than
-//! its sibling.
+//! Visitors use one shared traversal to preserve conditions on generated imports.
+//! Each override restores the outer conditions after it visits the node.
 
 use syn::Attribute;
 use syn::ForeignItem;
 use syn::ImplItem;
 use syn::Item;
+use syn::Pat;
 use syn::TraitItem;
+use syn::Type;
 
 use super::ConditionalAttributes;
 
@@ -110,90 +99,98 @@ pub(in crate::fixes) fn foreign_item_attributes(foreign_item: &ForeignItem) -> &
     }
 }
 
-/// Emit the `syn::Visit` overrides that keep a [`GateTracking`] visitor's gate
-/// set in step with the traversal. Invoke once inside `impl Visit for`; the
-/// visitor's own overrides for finer-grained nodes (`visit_item_fn`,
-/// `visit_expr_path`) run underneath these and see the gates already pushed.
-///
-/// `visit_stmt` deliberately reports nothing for `Stmt::Expr` and `Stmt::Item`:
-/// those attributes belong to the expression and the item, which `visit_expr`
-/// and `visit_item` push in turn. Pushing here as well would render the same
-/// `#[cfg]` twice on a synthesized import.
+/// Attributes on patterns, including expression nodes used as patterns.
+/// Function arguments reach `PatType` directly instead of passing through `Pat`.
+pub(in crate::fixes) fn pattern_attributes(pattern: &Pat) -> &[Attribute] {
+    match pattern {
+        Pat::Const(node) => &node.attrs,
+        Pat::Guard(node) => &node.attrs,
+        Pat::Ident(node) => &node.attrs,
+        Pat::Lit(node) => &node.attrs,
+        Pat::Macro(node) => &node.attrs,
+        Pat::Or(node) => &node.attrs,
+        Pat::Paren(node) => &node.attrs,
+        Pat::Path(node) => &node.attrs,
+        Pat::Range(node) => &node.attrs,
+        Pat::Reference(node) => &node.attrs,
+        Pat::Rest(node) => &node.attrs,
+        Pat::Slice(node) => &node.attrs,
+        Pat::Struct(node) => &node.attrs,
+        Pat::Tuple(node) => &node.attrs,
+        Pat::TupleStruct(node) => &node.attrs,
+        Pat::Type(node) => &node.attrs,
+        Pat::Wild(node) => &node.attrs,
+        _ => &[],
+    }
+}
+
+/// Type nodes can contain expressions through array lengths and generic arguments.
+/// Syn currently parses their own attribute lists as empty.
+pub(in crate::fixes) fn type_attributes(ty: &Type) -> &[Attribute] {
+    match ty {
+        Type::Array(node) => &node.attrs,
+        Type::FnPtr(node) => &node.attrs,
+        Type::Group(node) => &node.attrs,
+        Type::ImplTrait(node) => &node.attrs,
+        Type::Infer(node) => &node.attrs,
+        Type::Macro(node) => &node.attrs,
+        Type::Never(node) => &node.attrs,
+        Type::Paren(node) => &node.attrs,
+        Type::Path(node) => &node.attrs,
+        Type::Ptr(node) => &node.attrs,
+        Type::Reference(node) => &node.attrs,
+        Type::Slice(node) => &node.attrs,
+        Type::TraitObject(node) => &node.attrs,
+        Type::Tuple(node) => &node.attrs,
+        _ => &[],
+    }
+}
+
+/// Generate the shared gate traversal inside an implementation of `Visit`.
+/// Each gate belongs to one entry point, even when syn shares concrete node types.
 macro_rules! gate_tracking_visit {
     () => {
-        fn visit_item(&mut self, node: &syn::Item) {
-            let previous_gates = crate::fixes::imports::GateTracking::push_gates(
-                self,
-                crate::fixes::imports::item_gate_attributes(node),
-            );
-            syn::visit::visit_item(self, node);
-            crate::fixes::imports::GateTracking::restore_gates(self, previous_gates);
-        }
-
-        fn visit_impl_item(&mut self, node: &syn::ImplItem) {
-            let previous_gates = crate::fixes::imports::GateTracking::push_gates(
-                self,
-                crate::fixes::imports::impl_item_attributes(node),
-            );
-            syn::visit::visit_impl_item(self, node);
-            crate::fixes::imports::GateTracking::restore_gates(self, previous_gates);
-        }
-
-        fn visit_trait_item(&mut self, node: &syn::TraitItem) {
-            let previous_gates = crate::fixes::imports::GateTracking::push_gates(
-                self,
-                crate::fixes::imports::trait_item_attributes(node),
-            );
-            syn::visit::visit_trait_item(self, node);
-            crate::fixes::imports::GateTracking::restore_gates(self, previous_gates);
-        }
-
-        fn visit_foreign_item(&mut self, node: &syn::ForeignItem) {
-            let previous_gates = crate::fixes::imports::GateTracking::push_gates(
-                self,
-                crate::fixes::imports::foreign_item_attributes(node),
-            );
-            syn::visit::visit_foreign_item(self, node);
-            crate::fixes::imports::GateTracking::restore_gates(self, previous_gates);
-        }
-
-        fn visit_stmt(&mut self, node: &syn::Stmt) {
-            let attributes = match node {
+        crate::fixes::imports::gate_tracking_visit! {
+            @nodes
+            visit_item(Item, node) => crate::fixes::imports::item_gate_attributes(node);
+            visit_impl_item(ImplItem, node) => crate::fixes::imports::impl_item_attributes(node);
+            visit_trait_item(TraitItem, node) => crate::fixes::imports::trait_item_attributes(node);
+            visit_foreign_item(ForeignItem, node) => crate::fixes::imports::foreign_item_attributes(node);
+            visit_expr(Expr, node) => crate::fixes::imports::expr_attributes(node);
+            visit_type(Type, node) => crate::fixes::imports::type_attributes(node);
+            visit_pat(Pat, node) => crate::fixes::imports::pattern_attributes(node);
+            visit_stmt(Stmt, node) => match node {
                 syn::Stmt::Local(local) => local.attrs.as_slice(),
                 syn::Stmt::Macro(stmt_macro) => stmt_macro.attrs.as_slice(),
                 syn::Stmt::Expr(..) | syn::Stmt::Item(..) => &[],
             };
-            let previous_gates = crate::fixes::imports::GateTracking::push_gates(self, attributes);
-            syn::visit::visit_stmt(self, node);
-            crate::fixes::imports::GateTracking::restore_gates(self, previous_gates);
+            visit_fn_arg(FnArg, node) => match node {
+                syn::FnArg::Receiver(receiver) => receiver.attrs.as_slice(),
+                syn::FnArg::Typed(typed) => typed.attrs.as_slice(),
+            };
+            visit_generic_param(GenericParam, node) => match node {
+                syn::GenericParam::Lifetime(lifetime) => lifetime.attrs.as_slice(),
+                syn::GenericParam::Type(ty) => ty.attrs.as_slice(),
+                syn::GenericParam::Const(constant) => constant.attrs.as_slice(),
+            };
+            visit_field(Field, node) => &node.attrs;
+            visit_field_value(FieldValue, node) => &node.attrs;
+            visit_field_pat(FieldPat, node) => &node.attrs;
+            visit_variant(Variant, node) => &node.attrs;
+            visit_arm(Arm, node) => &node.attrs;
+            visit_named_arg(NamedArg, node) => &node.attrs;
+            visit_variadic(Variadic, node) => &node.attrs;
+            visit_predicate_type(PredicateType, node) => &node.attrs;
         }
-
-        fn visit_expr(&mut self, node: &syn::Expr) {
-            let previous_gates = crate::fixes::imports::GateTracking::push_gates(
-                self,
-                crate::fixes::imports::expr_attributes(node),
-            );
-            syn::visit::visit_expr(self, node);
-            crate::fixes::imports::GateTracking::restore_gates(self, previous_gates);
-        }
-
-        fn visit_field(&mut self, node: &syn::Field) {
-            let previous_gates = crate::fixes::imports::GateTracking::push_gates(self, &node.attrs);
-            syn::visit::visit_field(self, node);
-            crate::fixes::imports::GateTracking::restore_gates(self, previous_gates);
-        }
-
-        fn visit_variant(&mut self, node: &syn::Variant) {
-            let previous_gates = crate::fixes::imports::GateTracking::push_gates(self, &node.attrs);
-            syn::visit::visit_variant(self, node);
-            crate::fixes::imports::GateTracking::restore_gates(self, previous_gates);
-        }
-
-        fn visit_arm(&mut self, node: &syn::Arm) {
-            let previous_gates = crate::fixes::imports::GateTracking::push_gates(self, &node.attrs);
-            syn::visit::visit_arm(self, node);
-            crate::fixes::imports::GateTracking::restore_gates(self, previous_gates);
-        }
+    };
+    (@nodes $($method:ident($kind:ident, $node:ident) => $attributes:expr;)+) => {
+        $(
+            fn $method(&mut self, $node: &syn::$kind) {
+                let previous_gates = crate::fixes::imports::GateTracking::push_gates(self, $attributes);
+                syn::visit::$method(self, $node);
+                crate::fixes::imports::GateTracking::restore_gates(self, previous_gates);
+            }
+        )+
     };
 }
 
