@@ -321,7 +321,7 @@ mod tests {
             ..Package::default()
         }));
         let mut app = crate::tui::test_support::make_app(&[project]);
-        app.project_list.expanded.insert(ExpandKey::Node(0));
+        app.project_list.expanded.expand(ExpandKey::Node(0), 0);
 
         let _ = app.handle_bg_msg(BackgroundMsg::Submodules {
             path:       project_path.clone(),

@@ -1,14 +1,5 @@
 use tui_pane::Action;
-
-tui_pane::action_enum! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub enum ProjectListAction {
-        ExpandAll   => ("expand_all",   "expand all", "Expand all");
-        CollapseAll => ("collapse_all", "collapse all", "Collapse all");
-        ExpandRow   => ("expand_row",   "expand row", "Expand row");
-        CollapseRow => ("collapse_row", "collapse row", "Collapse row");
-    }
-}
+pub use tui_pane::ExpansionAction as ProjectListAction;
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

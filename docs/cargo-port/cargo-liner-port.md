@@ -200,7 +200,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Ruled out:** a stdin change in the wrapper: the wrapper already reads stdin, and rustc failed at load.
 
-### Phase 2q — tui_pane owns the expand/collapse model for cargo-port and cargo-handler  · status: todo
+### Phase 2q — tui_pane owns the expand/collapse model for cargo-port and cargo-handler  · status: done
 
 **Depends on:** none
 
