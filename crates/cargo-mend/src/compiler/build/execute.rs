@@ -171,7 +171,10 @@ impl RunWrapper {
             "the retained mend wrapper is missing: {}",
             self.path.display()
         );
-        DriverCompiler::for_build()?.configure(command, &self.path);
+        let compiler = DriverCompiler::for_build()?;
+        #[cfg(target_os = "linux")]
+        compiler.configure_runtime_libraries(command)?;
+        compiler.configure(command, &self.path);
         Ok(())
     }
 }

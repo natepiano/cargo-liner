@@ -190,6 +190,84 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **Ruled out:** a global wrapper path; falling back to the install path when the copy fails; copying from the install path after cargo metadata.
 
+### Phase 2r — a build-script probe through the mend wrapper reads its input  · status: done
+
+**Source:** showrunner, 2026-11-02 10:40, a blocking cargo-mend bug (user rule: mend bugs come first). In cables-unit's lint of hana (installed mend 149827ba, `--no-cache`), the rustix 1.1.4 build script panicked at `build.rs:283:64`: `unwrap()` on `Err(Os { code: 32, BrokenPipe })`. Mend then reported "compiler failed while validating this crate". Log: `/tmp/claude/delegate/fc206247-76c0-4607-b268-025299592a62/phases/stall/evidence/mend-brokenpipe-1ce7.log`.
+
+**Cause known so far:** rustix's `can_compile` spawns `$RUSTC_WRAPPER $RUSTC --crate-type=rlib --emit=metadata --target <t> -o <out> -` with a piped stdin, then writes the probe source to it. EPIPE means the wrapper process (or what it runs) exited before it read stdin. A direct run of the same wrapper copy, with and without `MEND_PASSTHROUGH_RUSTC_WRAPPER=sccache`, read stdin and exited 0. So the early exit needs the environment of the real mend run.
+
+**Second symptom (showrunner, 10:35 run):** the libc 0.2.186 build script (build.rs:219) could not start stable rustc: "libLLVM.so.23.1-rust-1.99.1-stable: cannot open shared object file". The file exists, and rustc's RUNPATH is `$ORIGIN/../lib`. So under mend, the loader path has an entry ahead of RUNPATH that holds a `librustc_driver` without its libLLVM. The rustix broken pipe is the same fault: rustc died at load before it read stdin. Log: `/tmp/claude/delegate/fc206247-76c0-4607-b268-025299592a62/phases/cable-stall/lint-b109-cargo-mend.log`.
+
+**Spec:**
+1. Reproduce: find the invocation and environment in which the mend wrapper exits before it reads stdin. Record the cause.
+   Fix both symptoms at the cause. Add a test that a build script can start stable rustc under mend.
+2. Fix it in cargo-mend where the defect lives. A wrapper invocation that compiles from stdin reads its input, or hands stdin to the compiler, on every path.
+3. A regression test, under one second, fails before the fix and passes after it.
+4. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
+
+**Files:** `crates/cargo-mend/src/compiler/` (driver, probes, wrapper setup), `crates/cargo-mend/src/main.rs` only if the cause is there, the tests next to the changed code, `crates/cargo-mend/CHANGELOG.md`.
+
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; the regression test fails on 149827ba and passes on the branch.
+
+### Phase 2q — tui_pane owns the expand/collapse model for cargo-port and cargo-handler  · status: todo
+
+**Depends on:** none
+
+#### Work Order
+
+**Goal:** cargo-port's expand/collapse model and its keys move into `tui_pane` as one copy. cargo-port's project list uses it and behaves exactly as today. cargo-handler Phase 45 then uses the same model for its parent/child rows.
+
+**Source:** the user approved this phase through the showrunner, 2026-11-02. The user's words in handler, 2026-10-29: "rows should expand and collapse the way they do in cargo ports project list - in handler where wehave parent child relationships drawn - by default we should show just the first level of expansion". handler-unit gave its row shape on 2026-11-02 (below).
+
+**State model (write and keep this first):**
+- **Expand key:** a value of the app's key type `K` (`Eq + Hash + Clone`) that names one row that can have children. cargo-port: today's `ExpandKey` (`crates/cargo-port/src/tui/project_list/visible_rows.rs:22`, index-based). cargo-handler: `RowIdentity` (machine, pid) in `cargo-handler` `census/placement.rs`.
+- **Default rule:** a function of the row's depth that says open or closed. cargo-port: closed at every depth. cargo-handler: depth 0 open, deeper rows closed.
+- **Open rows:** a row is open when its override says so, else when its default says so. The model holds one record: the overrides, `K` to open or closed. No second record holds the same fact.
+- **Operations:** expand (override to open), collapse (override to closed), toggle (flip the effective state), expand-all (every expandable row open), collapse-all (every expandable row closed), reset (drop every override), retain (drop the overrides of keys no longer in the tree, after a rebuild).
+- **Collapse on a closed or leaf row** moves the selection to the row's parent and collapses the parent, as the project list does today. The app supplies the parent of a row through a trait; the model does not know the app's row kinds.
+- **Keys and actions:** the expand, collapse, expand-all and collapse-all actions and their default key bindings live in `tui_pane`, so both apps use the same keys.
+
+**Constraints:**
+- One copy: after the move, cargo-port has no second expand state or second implementation of an operation.
+- cargo-port behaves exactly as today: the same rows open after every key, the same selection after collapse, the same rows after a rescan. Its existing tests pass unchanged, with no weaker check.
+- Public in `tui_pane` only what cargo-port and cargo-handler call. Keep the rest `pub(crate)` or private.
+- cargo-port's row kinds (project, group, member, worktree, vendored) stay in cargo-port behind the trait.
+- No test takes a second.
+
+**Spec:**
+1. The model type in `tui_pane` with the operations above, generic over `K`, with the default rule as a value given at construction.
+2. The tree trait that an app implements: expandable rows with key and depth, and the parent of a row.
+3. The actions and default key bindings in `tui_pane`; cargo-port's project list binds them.
+4. cargo-port's project list uses the model: `ProjectListState.expanded`, `selection.rs`, the expand and collapse code in `list.rs`, `app/navigation/expand.rs`, and `visible_rows.rs` read it.
+5. Unit tests in `tui_pane` for each operation and for both default rules (all closed; depth 0 open), with string or integer keys.
+6. CHANGELOG lines in `crates/tui_pane` and `crates/cargo-port` if they keep one.
+
+**Files:**
+- `crates/tui_pane/src/` — the new module (writer names it) and its `lib.rs` export; the keymap actions
+- `crates/cargo-port/src/tui/project_list/` — `selection.rs`, `list.rs`, `visible_rows.rs`, `mod.rs`
+- `crates/cargo-port/src/tui/project_list_state.rs`, `crates/cargo-port/src/tui/app/navigation/expand.rs`, `crates/cargo-port/src/tui/interaction.rs`
+- cargo-port keymap and action files that bind expand and collapse (writer lists them)
+- approved during the phase: `crates/cargo-port/src/tui/panes/project_list/{tree_rows.rs,tree_render.rs}`, `crates/cargo-port/src/tui/app/async_tasks/{tree.rs,dispatch.rs}`, `crates/cargo-port/src/tui/app/mod.rs` (test type-only conversions), `crates/cargo-port/src/tui/keymap/`, `crates/cargo-port/src/tui/integration/framework_keymap/project_list_pane.rs`, both CHANGELOGs
+
+**Workers:** 1 writer (impl) owns the code and the tests.
+
+**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-port` and `verify.sh lint` clean on a gate tree; cargo-port's existing expand and collapse tests unchanged; no test takes a second. The notice carries `Change-Review: none` because nothing visible changes.
+
+### Phase 2s — mend --fix keeps the cfg of an import it moves  · status: todo
+
+**Source:** showrunner, 2026-11-02 10:55. A cargo-mend bug that does not block other work. It runs beside 2q after 2r lands; the files do not overlap.
+
+**Defect:** `cargo mend --fix` on cargo-handler moved eight `use libproc::…` imports out of a `#[cfg(target_os = "macos")]` function to module scope (cargo-handler `census/codex.rs:51-58`). The moved imports lost the cfg, so Linux failed with eight E0433 errors, and mend rolled back. Record with the code before and after: `/tmp/claude/unit/be6481c9-047e-4add-83c1-870d55a33343/phases/60a/evidence/mend-e0433.md`.
+
+**Spec:**
+1. When mend moves an import out of an item, the import keeps every cfg of that item. If it cannot keep them, mend leaves the import where it is.
+2. A fixture with a cfg-gated function and a cfg-only dependency. Its test fails on the current code and passes after the fix, in under one second where a unit test can show it.
+3. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
+
+**Files:** the cargo-mend code that moves imports to module scope, and its tests, a new fixture under the cargo-mend test fixtures, `crates/cargo-mend/CHANGELOG.md`.
+
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean.
+
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 
 **Depends on:** Phase 2b
