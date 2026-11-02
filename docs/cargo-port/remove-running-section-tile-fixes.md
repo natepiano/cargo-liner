@@ -1453,6 +1453,33 @@ Showrunner decision (2026-10-31): Phase 43 stays off main after repair round 3 o
 
 User, 2026-10-30: this work goes in Phase 42, and Phase 42 does not hold full ink. Its Work Order is now in Phase 42.
 
+### Phase 43b — Census CPU falls toward its goal  · status: todo
+
+**Depends on:** Phase 43a
+
+**Work Order.** Showrunner, 2026-11-02, from handler Phase 54 checks. cargo-tile census CPU on release pairs, in CPU-s/min, has a goal of 0.60. Mac: 8.38 before, 8.64 now. Linux at load about 100: 19.44 before, 18.68 now. All of it is census work. First priority after 43a.
+
+- **Goal:** census CPU moves toward 0.60 CPU-s/min on both machines.
+- **Spec:** use the 43a reader CPU model; one record holds each fact. Find the census cost first (per scan, per process), then remove the waste.
+- **Acceptance:** release-pair CPU-s/min on the Mac and on Linux, before and after, on the same workload; each test under 1 s.
+
+### Phase 43c — No cargo-tile test takes a second or more  · status: todo
+
+**Depends on:** Phase 43b
+
+**Work Order.** Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests take 1.03 s to 2.90 s: in `shim_registration::reader_scenarios`, `shim_registration::installed`, and `progress::capture::incomplete_registration_inventory_sweeps_any_sampled_proven_pair`. Names and times: handler Phase 54 Mac log. natedev also shows `reader_scenarios` tests at 1.2 to 2.3 s (2026-11-02 runs).
+
+- **Goal:** every cargo-tile test runs under 1 s on the Mac and on natedev.
+- **Acceptance:** the Mac and natedev suites show no test at 1 s or more; no assertion is weakened.
+
+### Phase 43d — Capture text and constants follow the style guide  · status: todo
+
+**Depends on:** Phase 43c
+
+**Work Order.** Showrunner, 2026-11-02, from handler Phase 54 checks: `crates/cargo-tile/src/census/command_text.rs:600-602` (`_capture_parent`, the `From` impl) and `crates/cargo-tile/src/constants.rs:655` (the `CAPTURE_*` order).
+
+- **Acceptance:** the phase style review passes for both sites; the suite passes.
+
 ### Phase 43 — The reader uses less CPU under load  · status: held; continues as Phase 43a
 
 **Depends on:** Phase 32m
