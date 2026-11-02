@@ -31,6 +31,8 @@
 //!
 //! [`Block`]: ratatui::widgets::Block
 
+use std::cell::RefCell;
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::Margin;
 use ratatui::layout::Rect;
@@ -48,6 +50,7 @@ use ratatui::symbols::line::VERTICAL_LEFT;
 use ratatui::symbols::line::VERTICAL_RIGHT;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use ratatui::text::Text;
 use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthStr;
 
@@ -143,12 +146,118 @@ impl PaneFrame {
     /// Whether the pane is drawn exactly where it was laid out.
     const fn is_still(self) -> bool { self.shift == 0 && within(self.rect, self.clip) }
 
+    /// Consume a text-visibility proof only if a nonblank grapheme of `text`
+    /// will reach the destination through the current pane's copy mapping.
+    ///
+    /// Call immediately before painting this left-aligned text into `area`.
+    /// Scratch-buffer contents on a motion clip's border are excluded, just as
+    /// in the copy itself. Outside `draw_clipped`, the buffer bounds apply.
+    pub fn with_visible_text(buffer: &Buffer, area: Rect, text: &Text<'_>, visible: impl FnOnce()) {
+        for (line, y) in text.lines.iter().zip(area.top()..area.bottom()) {
+            let mut x = area.left();
+            for grapheme in line.styled_graphemes(Style::default()) {
+                let width =
+                    u16::try_from(UnicodeWidthStr::width(grapheme.symbol)).unwrap_or(u16::MAX);
+                let end = x.saturating_add(width);
+                if end > area.right() {
+                    break;
+                }
+                if width > 0
+                    && grapheme.symbol.chars().any(|ch| !ch.is_whitespace())
+                    && TextDestinationScope::copies_fragment(buffer.area, x, y, end)
+                {
+                    visible();
+                    return;
+                }
+                x = end;
+            }
+        }
+    }
+
+    /// Source row copied to this destination row, excluding motion clip borders.
+    fn copied_source_row(self, y: u16) -> Option<u16> {
+        let source = i32::from(y)
+            .checked_sub(self.shift)
+            .and_then(|row| u16::try_from(row).ok())?;
+        if source < self.rect.top() || source >= self.rect.bottom() {
+            return None;
+        }
+        let source_is_inside = source > self.rect.top()
+            && source < self.rect.bottom().saturating_sub(BORDER_LINE_WIDTH);
+        let target_is_clip_border =
+            y == self.clip.top() || y == self.clip.bottom().saturating_sub(BORDER_LINE_WIDTH);
+        if source_is_inside && target_is_clip_border {
+            return None;
+        }
+        Some(source)
+    }
+
     /// Where the row at `y` lands once the shift is applied, or `None`
     /// when that carries it off the buffer entirely.
     fn shifted_row(self, y: u16) -> Option<u16> {
         i32::from(y)
             .checked_add(self.shift)
             .and_then(|row| u16::try_from(row).ok())
+    }
+}
+
+/// One enclosing copy that command text must survive on its way to the screen.
+struct TextDestination {
+    frame:   PaneFrame,
+    visible: Rect,
+}
+
+thread_local! {
+    /// The stack owns all enclosing mappings; an empty stack means direct paint.
+    static TEXT_DESTINATIONS: RefCell<Vec<TextDestination>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Keep each enclosing copy in the visibility proof, restoring it on unwinding.
+struct TextDestinationScope;
+
+impl TextDestinationScope {
+    /// Push only the mapping calculated by the destination copy boundary.
+    fn enter(destination: &ClippedPaneDestination<'_>) -> Self {
+        TEXT_DESTINATIONS.with_borrow_mut(|destinations| {
+            destinations.push(TextDestination {
+                frame:   destination.frame,
+                visible: destination.visible,
+            });
+        });
+        Self
+    }
+
+    /// Whether this entire grapheme survives every copy, innermost first.
+    fn copies_fragment(buffer: Rect, x: u16, mut y: u16, end: u16) -> bool {
+        if x < buffer.left() || end > buffer.right() || y < buffer.top() || y >= buffer.bottom() {
+            return false;
+        }
+        TEXT_DESTINATIONS.with_borrow(|destinations| {
+            for destination in destinations.iter().rev() {
+                let TextDestination { frame, visible } = destination;
+                let Some(target) = frame.shifted_row(y) else {
+                    return false;
+                };
+                if x < visible.left()
+                    || end > visible.right()
+                    || target < visible.top()
+                    || target >= visible.bottom()
+                    || frame.copied_source_row(target) != Some(y)
+                {
+                    return false;
+                }
+                y = target;
+            }
+            true
+        })
+    }
+}
+
+impl Drop for TextDestinationScope {
+    fn drop(&mut self) {
+        TEXT_DESTINATIONS.with_borrow_mut(|destinations| {
+            destinations.pop();
+        });
     }
 }
 
@@ -243,6 +352,7 @@ fn draw_at_destination(
     draw: impl FnOnce(&mut Buffer, Rect),
 ) {
     let frame = destination.frame;
+    let _text_destination = TextDestinationScope::enter(&destination);
     let inner = frame.inner();
     if inner.is_empty() {
         return;
@@ -288,24 +398,10 @@ fn blit(destination: ClippedPaneDestination<'_>, scratch: &Buffer) {
         frame,
         visible,
     } = destination;
-    let (rect, clip) = (frame.rect, frame.clip);
     for y in visible.top()..visible.bottom() {
-        let Some(source) = i32::from(y)
-            .checked_sub(frame.shift)
-            .and_then(|row| u16::try_from(row).ok())
-        else {
+        let Some(source) = frame.copied_source_row(y) else {
             continue;
         };
-        if source < rect.top() || source >= rect.bottom() {
-            continue;
-        }
-        let source_is_inside =
-            source > rect.top() && source < rect.bottom().saturating_sub(BORDER_LINE_WIDTH);
-        let target_is_clip_border =
-            y == clip.top() || y == clip.bottom().saturating_sub(BORDER_LINE_WIDTH);
-        if source_is_inside && target_is_clip_border {
-            continue;
-        }
         for x in visible.left()..visible.right() {
             buffer[(x, y)] = scratch[(x, source)].clone();
         }

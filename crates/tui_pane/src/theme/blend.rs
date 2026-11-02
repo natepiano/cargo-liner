@@ -33,13 +33,36 @@ use super::constants::COLOR_DISTANCE_SIDE_WEIGHT;
 /// end, because there is nothing to work a mixture out against.
 #[must_use]
 pub fn blend_color(color: Color, toward: Color, alpha: u8) -> Color {
+    blend_color_with_rounding(color, toward, alpha, BlendRounding::Truncate)
+}
+
+/// The channel rounding and alpha scale of a colour blend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlendRounding {
+    /// Preserve the ordinary 255-step blend, truncating fractional channels.
+    Truncate,
+    /// Round toward `color` so entry ink meets its readability floor.
+    /// Zero leaves `color` unchanged; other alphas contribute `(alpha + 1) / 256`
+    /// of `toward`, making alpha 63 exactly one quarter and 31 one eighth.
+    TowardColor,
+}
+
+/// Blend two colours using the selected channel rounding and alpha scale.
+/// Named colours and terminal defaults follow [`blend_color`]'s rules.
+#[must_use]
+pub fn blend_color_with_rounding(
+    color: Color,
+    toward: Color,
+    alpha: u8,
+    rounding: BlendRounding,
+) -> Color {
     let (Some(from), Some(to)) = (channels(color), channels(toward)) else {
         return color;
     };
     Color::Rgb(
-        mix(from.0, to.0, alpha),
-        mix(from.1, to.1, alpha),
-        mix(from.2, to.2, alpha),
+        mix(from.0, to.0, alpha, rounding),
+        mix(from.1, to.1, alpha, rounding),
+        mix(from.2, to.2, alpha, rounding),
     )
 }
 
@@ -79,10 +102,21 @@ fn squared(from: u8, to: u8) -> u32 {
 }
 
 /// One channel of `from` carried `alpha` of the way to `to`.
-fn mix(from: u8, to: u8, alpha: u8) -> u8 {
-    let whole = u32::from(u8::MAX);
-    let rest = u32::from(u8::MAX.saturating_sub(alpha));
-    let mixed = (u32::from(from) * rest + u32::from(to) * u32::from(alpha)) / whole;
+fn mix(from: u8, to: u8, alpha: u8, rounding: BlendRounding) -> u8 {
+    let (whole, amount, round_up) = match rounding {
+        BlendRounding::Truncate => (u32::from(u8::MAX), u32::from(alpha), false),
+        BlendRounding::TowardColor => (
+            u32::from(u8::MAX) + 1,
+            if alpha == 0 { 0 } else { u32::from(alpha) + 1 },
+            from > to,
+        ),
+    };
+    let numerator = u32::from(from) * (whole - amount) + u32::from(to) * amount;
+    let mixed = if round_up {
+        numerator.div_ceil(whole)
+    } else {
+        numerator / whole
+    };
     u8::try_from(mixed).unwrap_or(u8::MAX)
 }
 
@@ -149,6 +183,28 @@ fn indexed_channels(index: u8) -> Option<(u8, u8, u8)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entry_blends_round_toward_the_ink_at_exact_quarters() {
+        let ink = Color::Rgb(219, 200, 180);
+        let ground = Color::Rgb(20, 40, 60);
+        assert_eq!(
+            blend_color_with_rounding(ink, ground, 63, BlendRounding::TowardColor),
+            Color::Rgb(170, 160, 150)
+        );
+        assert_eq!(
+            blend_color_with_rounding(ink, ground, 31, BlendRounding::TowardColor),
+            Color::Rgb(195, 180, 165)
+        );
+        assert_eq!(
+            blend_color_with_rounding(ground, ink, 63, BlendRounding::TowardColor),
+            Color::Rgb(69, 80, 90)
+        );
+        assert_eq!(
+            blend_color_with_rounding(ink, ground, 0, BlendRounding::TowardColor),
+            ink
+        );
+    }
 
     /// Where [`Color::Cyan`] sits in the sixteen, which is the entry a
     /// blend against it reads.

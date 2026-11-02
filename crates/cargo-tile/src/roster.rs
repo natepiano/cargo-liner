@@ -27,9 +27,11 @@ use crate::census::RunStart;
 use crate::census::VisibleParent;
 use crate::census::scan;
 use crate::census::scan::AncestryWalk;
+use crate::constants::CELL_BRIGHTEN_DURATION;
 use crate::constants::CELL_ENTRY_FADE_LIMIT;
 use crate::constants::FADE_ALPHA_STEP;
 use crate::render::SessionColumnWidths;
+use crate::render::VisibleCommandText;
 use crate::theme;
 
 /// Whether a retained row still runs or is fading from its first missing scan.
@@ -41,15 +43,67 @@ enum RowLifetime {
     Finished(Instant),
 }
 
-/// A command cell's first paint, independent of when its process finished.
+/// Each row decides its entry only when its command text reaches the screen.
 #[derive(Clone, Copy)]
 enum CellEntry {
-    /// Layout has not painted this row's command cell yet.
-    AwaitingPaint,
+    /// No command fragment from this row has survived pane clipping yet.
+    AwaitingText,
     /// This row was readable when first painted and keeps the ordinary fade.
     MainFade,
-    /// First paint was delayed; hold final ink until the ordinary expiry.
-    ReadableStart,
+    /// Delayed text brightens from three-quarter ink before rejoining its lifetime.
+    Brighten {
+        started:  Instant,
+        endpoint: BrightenEndpoint,
+    },
+}
+
+/// Full entry ink must reach visible text before ordinary fading resumes.
+#[derive(Clone, Copy)]
+enum BrightenEndpoint {
+    AwaitingPaint,
+    Painted,
+}
+
+/// One frame time, shared by the roster and its painted snapshots.
+#[derive(Clone)]
+struct RosterClock(Rc<Cell<Instant>>);
+
+/// Ordinary lifetime ink and entry ink use their own rounding rules.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RowInk {
+    Ordinary(u8),
+    Brighten(u8),
+}
+
+impl RowInk {
+    /// The ground contribution used by both painting and the cell readout.
+    pub(crate) const fn fade(self) -> u8 {
+        match self {
+            Self::Ordinary(fade) | Self::Brighten(fade) => fade,
+        }
+    }
+}
+
+impl From<u8> for RowInk {
+    fn from(faded: u8) -> Self { Self::Ordinary(faded) }
+}
+
+/// Painting can preview entry ink without losing the row's original fade.
+#[derive(Clone, Copy)]
+enum RowFade {
+    /// Roster and summary reads use the unchanged lifetime fade.
+    Retained(u8),
+    /// A command-cell snapshot previews entry ink against this original fade.
+    ForPainting(u8),
+}
+
+impl RowFade {
+    /// The lifetime fade, also used to classify the first visible command text.
+    const fn original(self) -> u8 {
+        match self {
+            Self::Retained(faded) | Self::ForPainting(faded) => faded,
+        }
+    }
 }
 
 /// Whether an invocation heads a family whose children share its colour.
@@ -82,9 +136,11 @@ pub(crate) struct TrackedRow {
     /// [`blend_color`](tui_pane::blend_color) reads: zero while it
     /// runs, [`u8::MAX`] once it has reached the ground and is about to
     /// be let go of.
-    faded:              u8,
-    /// Shared with frame snapshots so only the first actual paint sets the start.
+    faded:              RowFade,
+    /// Shared with snapshots so only visible command text decides the entry.
     entry:              Rc<Cell<CellEntry>>,
+    /// The roster owns time; rows and snapshots only borrow its current frame.
+    clock:              RosterClock,
     /// The family this invocation heads, where it has cargo running
     /// under it, as an index into the palette.
     family:             FamilyHead,
@@ -93,14 +149,22 @@ pub(crate) struct TrackedRow {
     parent_family:      ParentFamily,
 }
 
+#[cfg(test)]
 impl From<CargoProcess> for TrackedRow {
-    /// A row for a process the current scan carries.
     fn from(process: CargoProcess) -> Self {
+        Self::with_clock(process, RosterClock(Rc::new(Cell::new(Instant::now()))))
+    }
+}
+
+impl TrackedRow {
+    /// Bind a newly observed row to the roster's frame clock.
+    fn with_clock(process: CargoProcess, clock: RosterClock) -> Self {
         Self {
             process,
             lifetime: RowLifetime::Live,
-            faded: 0,
-            entry: Rc::new(Cell::new(CellEntry::AwaitingPaint)),
+            faded: RowFade::Retained(0),
+            entry: Rc::new(Cell::new(CellEntry::AwaitingText)),
+            clock,
             // Stamped by the roster once the whole scan is in: which
             // colours are free is a question about every group at
             // once, not about this row.
@@ -108,31 +172,76 @@ impl From<CargoProcess> for TrackedRow {
             parent_family: ParentFamily::NoFamily,
         }
     }
-}
 
-impl TrackedRow {
     /// Whether the process behind this row has stopped.
     pub(crate) const fn is_ended(&self) -> bool {
         matches!(self.lifetime, RowLifetime::Finished(_))
     }
 
-    /// How far the row's text has been carried toward the ground.
-    pub(crate) const fn faded(&self) -> u8 { self.faded }
+    /// Ink for a retained reading or a command-cell painting snapshot.
+    pub(crate) fn ink(&self) -> RowInk {
+        match self.faded {
+            RowFade::Retained(faded) => RowInk::Ordinary(faded),
+            RowFade::ForPainting(_) => self.preview_ink(self.clock.0.get()),
+        }
+    }
 
-    /// Ink fade for an actual command-cell paint, leaving roster timing intact.
-    fn painted_fade(&self) -> u8 {
-        match self.entry.get() {
-            CellEntry::AwaitingPaint => {
-                if self.faded > CELL_ENTRY_FADE_LIMIT && self.faded < u8::MAX {
-                    self.entry.set(CellEntry::ReadableStart);
-                    0
-                } else {
-                    self.entry.set(CellEntry::MainFade);
-                    self.faded
-                }
+    /// How far the row's text has been carried toward the ground.
+    pub(crate) fn faded(&self) -> u8 { self.ink().fade() }
+
+    /// Preview the candidate ink without consuming this row's entry decision.
+    fn painted_fade(&self) -> u8 { self.painted_ink().fade() }
+
+    /// The same ink state feeds visible text and its readout.
+    pub(crate) fn painted_ink(&self) -> RowInk { self.preview_ink(self.clock.0.get()) }
+
+    /// One pure preview serves the painted snapshot, readout and repaint decision.
+    fn preview_ink(&self, now: Instant) -> RowInk {
+        let entry = match self.entry.get() {
+            CellEntry::AwaitingText => self.first_text_entry(now),
+            decided => decided,
+        };
+        match entry {
+            CellEntry::Brighten { started, .. } => {
+                let remaining =
+                    CELL_BRIGHTEN_DURATION.saturating_sub(now.saturating_duration_since(started));
+                let alpha = remaining.as_micros() * (u128::from(CELL_ENTRY_FADE_LIMIT) + 1)
+                    / CELL_BRIGHTEN_DURATION.as_micros();
+                RowInk::Brighten(
+                    u8::try_from(alpha.saturating_sub(1)).unwrap_or(CELL_ENTRY_FADE_LIMIT),
+                )
             },
-            CellEntry::MainFade => self.faded,
-            CellEntry::ReadableStart => 0,
+            CellEntry::AwaitingText | CellEntry::MainFade => {
+                RowInk::Ordinary(self.faded.original())
+            },
+        }
+    }
+
+    /// Classify the row's original fade, including on a painted snapshot.
+    const fn first_text_entry(&self, now: Instant) -> CellEntry {
+        let faded = self.faded.original();
+        if faded > CELL_ENTRY_FADE_LIMIT && faded < u8::MAX {
+            CellEntry::Brighten {
+                started:  now,
+                endpoint: BrightenEndpoint::AwaitingPaint,
+            }
+        } else {
+            CellEntry::MainFade
+        }
+    }
+
+    /// Only layout's proof of surviving command text can decide this row's entry.
+    pub(crate) fn show_command_text(&self, _: VisibleCommandText) {
+        let now = self.clock.0.get();
+        if matches!(self.entry.get(), CellEntry::AwaitingText) {
+            self.entry.set(self.first_text_entry(now));
+        } else if let CellEntry::Brighten { started, .. } = self.entry.get()
+            && self.preview_ink(now).fade() == 0
+        {
+            self.entry.set(CellEntry::Brighten {
+                started,
+                endpoint: BrightenEndpoint::Painted,
+            });
         }
     }
 
@@ -146,8 +255,8 @@ impl TrackedRow {
     fn refresh(&mut self, process: CargoProcess) {
         self.process = process;
         self.lifetime = RowLifetime::Live;
-        self.faded = 0;
-        if matches!(self.entry.get(), CellEntry::ReadableStart) {
+        self.faded = RowFade::Retained(0);
+        if matches!(self.entry.get(), CellEntry::Brighten { .. }) {
             self.entry.set(CellEntry::MainFade);
         }
     }
@@ -165,10 +274,19 @@ impl TrackedRow {
     /// A row that has not stopped has nothing to move: the whole travel
     /// is measured from the stamp [`finish`](Self::finish) left.
     fn advance(&mut self, now: Instant, fade: Duration) -> bool {
+        let before = self.painted_fade();
         let faded = self.faded_at(now, fade);
-        let moved = faded != self.faded;
-        self.faded = faded;
-        moved
+        let moved = faded != self.faded.original();
+        self.faded = RowFade::Retained(faded);
+        if let CellEntry::Brighten {
+            started,
+            endpoint: BrightenEndpoint::Painted,
+        } = self.entry.get()
+            && now.saturating_duration_since(started) > CELL_BRIGHTEN_DURATION
+        {
+            self.entry.set(CellEntry::MainFade);
+        }
+        moved || before != self.preview_ink(now).fade()
     }
 
     /// Where the fade stands at `now`.
@@ -217,28 +335,30 @@ pub(crate) struct TrackedGroup {
     ancestry:        AncestryWalk<Ancestor>,
 }
 
-impl From<CargoGroup> for TrackedGroup {
-    /// Track a group the current scan has just turned up.
-    fn from(group: CargoGroup) -> Self {
+impl TrackedGroup {
+    /// New rows share the roster's frame time, including children arriving later.
+    fn with_clock(group: CargoGroup, clock: RosterClock) -> Self {
         Self {
             id:       group.id(),
-            lead:     TrackedRow::from(group.lead),
-            rest:     group.rest.into_iter().map(TrackedRow::from).collect(),
+            rest:     group
+                .rest
+                .into_iter()
+                .map(|process| TrackedRow::with_clock(process, clock.clone()))
+                .collect(),
+            lead:     TrackedRow::with_clock(group.lead, clock),
             ancestry: group.ancestry,
         }
     }
-}
 
-impl TrackedGroup {
     /// Apply a delayed first paint only to drawn ink, not retention or summaries.
     /// Ordinary cells borrow the snapshot without copying their process data.
     pub(crate) fn for_painting(&self) -> Cow<'_, Self> {
-        if self.rows().all(|row| row.painted_fade() == row.faded) {
+        if self.rows().all(|row| row.painted_fade() == row.faded()) {
             return Cow::Borrowed(self);
         }
         let mut group = self.clone();
         for row in group.rows_mut() {
-            row.faded = row.painted_fade();
+            row.faded = RowFade::ForPainting(row.faded.original());
         }
         Cow::Owned(group)
     }
@@ -274,7 +394,11 @@ impl TrackedGroup {
                 None => tracked.finish(now),
             }
         }
-        self.rest.extend(arriving.into_iter().map(TrackedRow::from));
+        self.rest.extend(
+            arriving
+                .into_iter()
+                .map(|process| TrackedRow::with_clock(process, self.lead.clock.clone())),
+        );
     }
 
     /// Stamp the whole group as finished.
@@ -398,6 +522,8 @@ pub(crate) struct Roster {
     /// Groups in scan order -- newest command first -- with finished
     /// ones held in place until they expire.
     groups:        Vec<TrackedGroup>,
+    /// The only frame-time owner for rows and their painting snapshots.
+    clock:         RosterClock,
     /// The scan last folded in, kept so an identical one can be
     /// recognised and skipped. With nothing building, the display has no
     /// reason to repaint four times a second.
@@ -423,6 +549,7 @@ impl Roster {
     pub(crate) fn new() -> Self {
         Self {
             groups:        Vec::new(),
+            clock:         RosterClock(Rc::new(Cell::new(Instant::now()))),
             last:          Vec::new(),
             families:      HashMap::new(),
             column_widths: crate::render::SessionColumnWidths::machine(),
@@ -481,6 +608,7 @@ impl Roster {
         if scan == self.last {
             return false;
         }
+        self.clock.0.set(now);
         self.last.clone_from(&scan);
         let arriving: Vec<InvocationId> = scan.iter().map(CargoGroup::id).collect();
         for group in scan {
@@ -490,7 +618,9 @@ impl Roster {
                 .find(|tracked| tracked.id == group.id())
             {
                 Some(tracked) => tracked.refresh(group, now),
-                None => self.groups.push(TrackedGroup::from(group)),
+                None => self
+                    .groups
+                    .push(TrackedGroup::with_clock(group, self.clock.clone())),
             }
         }
         for tracked in &mut self.groups {
@@ -597,6 +727,7 @@ impl Roster {
         for group in &mut self.groups {
             changed |= group.advance(now, fade);
         }
+        self.clock.0.set(now);
         changed
     }
 }
