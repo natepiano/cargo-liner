@@ -1412,7 +1412,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - The live gate failed because the fixtures modelled only a daemon that is the TUI's child. Build a fixture from a capture of the real process tree.
 - The phase landed by the three-repair-round rule.
 
-### Phase 60a — A Codex session that uses a detached daemon shows its own name  · status: todo
+### Phase 60a — A Codex session that uses a detached daemon shows its own name  · status: done
 
 **Depends on:** Phase 60. Runs first, before Phases 61, 58, 55 and 56 (showrunner, 2026-11-02).
 
@@ -1442,7 +1442,56 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: on natedev, a new cargo-handler run shows `morty` by name in the cells view; the notice states the result. The idle CPU is not higher than Phase 60's. The checkpoint adds a Change-Review line.
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: with two TUIs on one daemon, a `/resume` cannot retain an old name or show another TUI's name. An unresolved TUI shows its pid. The notice states the result. The socket stage stays under 1 ms. The idle CPU is not higher than Phase 60's. The checkpoint adds a Change-Review line.
+
+### Phase 60b — A Codex window with no proven thread shows its herdr name  · status: todo
+
+**Depends on:** Phase 60a. Runs next, before Phases 61, 58, 55 and 56 (showrunner, 2026-11-02).
+
+#### Work Order
+
+**Goal:** a Codex window whose thread is not proven shows the name of the herdr tab or pane that holds it, in place of its pid. A proven thread name still comes first.
+
+**Source:** the user, 2026-11-02, via the showrunner: "get the name from the herdr window then". This reverses the earlier "no herdr follow-up" ruling.
+
+**Evidence, read-only, 2026-11-02:** morty is pid 2719866 on the shared daemon 817986, so design A shows `pid 2719866`. `herdr pane process-info --pane w18:p4` gives `shell_pid` 3189699 and foreground pid 2719866. The snapshot gives that pane tab `w18:t4` with label `morty`, and terminal title `morty | natepiano`.
+
+**State model:**
+
+1. The herdr record owns each pane's id, tab label, pane name, shell pid and foreground pids. cargo-handler reads it and stores no copy that outlives a scan.
+2. A Codex pid links to a pane when the pid is the pane's foreground pid or a descendant of the pane's shell pid. The process table gives the ancestry.
+3. `CodexSessionLink` keeps one decision per TUI, in this order: a proven thread name, then the herdr name, then the pid. The herdr name is a third variant, not a thread.
+4. A pane with more than one Codex window gives no herdr name to any of them. The pid shows for each one.
+
+**Carried from 60a (first, before the herdr work):** 60a landed after its third repair round. Its open socket findings come first here (Astra review, /tmp/claude/astra/20261102T191610Z-3732506/review.md):
+- F002 and F013: the socket stage must stay under 1 ms. Replace the inode cache and the `/proc/net/unix` check with one fresh `AF_UNIX` sock_diag dump per scan that requests `UDIAG_SHOW_PEER`. Read multipart replies through `NLMSG_DONE`. Treat an incomplete dump as unknown.
+- F018: a cached `NoPeer` answer must not outlive a later connection. 60a reverted its `/proc/net/unix` check because it cost about 570 us per scan. The fresh dump fixes this.
+- F019: `ENOENT` from an `AF_UNIX` query is not `NoPeer`. An unchanged TCP socket must not cause a query on each scan.
+- Test: a persistent TCP socket across full refreshes, and a datagram peer change.
+- Measure the release build: 3 runs of 1,000 scans, with wall time and thread CPU time. Report p50, p95, p99, max and the count over 1 ms.
+
+**Spec:**
+1. Read herdr through its socket API. Take the socket path from herdr's own environment or config. Hard-code no path.
+2. Read herdr only when a Codex window has no proven thread. Cache by pane revision. Herdr absent or unreadable: show the pid, with no error.
+3. The name is the pane name when the user set one, else the tab label. Strip the terminal title suffix. Never use the title text when a label exists.
+4. Tests under 1 s: proven thread over herdr name; herdr name over pid; two Codex windows in one pane show pids; herdr absent shows the pid; a reused pid gets no stale name.
+5. CHANGELOG: one Added line in cargo-handler.
+
+**Files:**
+- `crates/cargo-handler/src/census/codex/mod.rs`
+- `crates/cargo-handler/src/census/codex/socket.rs`
+- `crates/cargo-handler/src/census/codex/socket_tests.rs`
+- `crates/cargo-handler/src/census/herdr.rs`
+- `crates/cargo-handler/src/census/herdr_tests.rs`
+- `crates/cargo-handler/src/census/mod.rs`
+- `crates/cargo-handler/src/census/classify.rs`
+- `crates/cargo-handler/src/census/scan.rs`
+- `crates/cargo-handler/src/constants.rs`
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live, read-only: the user's morty pid 2719866 shows `morty`. Never type into, signal or stop a user pane or process. The idle CPU is not higher than Phase 60a's (3 pairs, median and spread). The checkpoint adds a Change-Review line.
 
 ### Phase 61 — The accounts table drops the read column  · status: todo
 

@@ -81,10 +81,10 @@ fn fixture() -> (Vec<ProcessEntry>, Vec<SessionRecord>) {
 }
 
 fn classified(processes: &[ProcessEntry], sessions: &[SessionRecord]) -> Vec<AgentRow> {
-    let mut rows = classify::agent_rows(
+    let mut rows = classify::agent_rows_with_threads(
         processes,
         sessions,
-        &[],
+        &HashMap::default(),
         Some(Path::new("/home/fixture")),
         &AccountLabels::default(),
     );

@@ -659,10 +659,10 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
         status:     Some("busy".to_string()),
         entrypoint: None,
     }];
-    let manager_rows = classify::agent_rows(
+    let manager_rows = classify::agent_rows_with_threads(
         &manager_processes,
         &sessions,
-        &[],
+        &HashMap::default(),
         None,
         &AccountLabels::default(),
     );
@@ -675,8 +675,13 @@ pub(crate) fn mesh_worker_fixture() -> (super::MachineState, super::MachineState
             &["codex", "app-server", "--listen", "stdio://"],
         ),
     ];
-    let mut worker_rows =
-        classify::agent_rows(&processes, &[], &[], None, &AccountLabels::default());
+    let mut worker_rows = classify::agent_rows_with_threads(
+        &processes,
+        &[],
+        &HashMap::default(),
+        None,
+        &AccountLabels::default(),
+    );
     let sources = TreeSources {
         threads: HashMap::from([(
             30,
