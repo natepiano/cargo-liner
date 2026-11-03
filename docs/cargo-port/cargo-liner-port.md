@@ -229,7 +229,7 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 
 **Gotchas:** a new cfg-bearing syn node needs a case in `gate_tracking_visit!`, or the imports under it lose their cfg when they move.
 
-### Phase 2t — mend --fix never writes a path into a struct pattern or struct literal field  · status: todo
+### Phase 2t — mend --fix never writes a path into a struct pattern or struct literal field  · status: done
 
 #### Work Order
 
@@ -256,6 +256,33 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 **Workers:** 1 writer owns the code and the tests.
 
 **Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second; the red tests fail on the pre-fix tree and pass after; the summary names each of the 13 errors' cause or says which cause it shares.
+- Director gate (showrunner, 2026-11-03): the new mend binary runs `mend --all-targets --workspace --fix` on a copy of hana ad937ff7ec plus the demo Phase 28 changes, with no rollback, and `cargo check --workspace --all-targets` on the fixed copy gives 0 errors.
+
+### Phase 2u — mend --fix never adds an import that a glob already brings  · status: todo
+
+#### Work Order
+
+**Goal:** `mend --fix` on the hana copy from Phase 2t adds no import that rustc reports as unused, so `verify.sh lint hana`, which denies warnings, passes.
+
+**Source:** showrunner, 2026-11-03, from the Phase 2t director gate: on the fixed hana copy, `cargo check` gives one new warning, `unused import: bevy::ecs::system::RunSystemOnce`. `mend --fix` added `use bevy::ecs::system::RunSystemOnce as _;` to `crates/hana/tests/arrange_glyph/envelope.rs`, which already has `use super::*;`. Hana stays blocked until this phase lands.
+
+**Constraints:**
+- The fixed and clean hana copies are in the director's scratchpad; the director gives their paths. Read `/home/natepiano/rust/tool-based-ui-demo` only; never edit, build or lint in it.
+- Find the fix that writes the import from the code and the hana file before any change.
+- An import that a fix adds must not duplicate a name or a trait (`as _`) that a glob import in the same module already brings.
+
+**Spec:**
+1. **Red first:** the smallest fixture through the real fix path that adds the duplicate import, with a check that the output has no unused import.
+2. Fix the cause in the fix that writes the import.
+3. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/` — the fix that adds the import, and its tests
+- `crates/cargo-mend/CHANGELOG.md`
+
+**Workers:** 1 writer owns the code and the tests.
+
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second; the red test fails on the pre-fix tree and passes after. Director gate: the new mend binary runs `--fix` on a clean copy of the Phase 2t hana tree with no rollback, and `cargo check --workspace --all-targets` on the fixed copy gives 0 errors and 0 warnings.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: done
 
@@ -288,7 +315,7 @@ The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame 
 
 **Constraints:**
 - Draw with the public `Terminal::draw` when the frame key says a draw is due; remove the per-frame candidate `Terminal<TestBackend>`. Do not expand the frame key.
-- Classify each frame as `Drawn` or `Unchanged` by its completed buffer and `get_cursor_position` compared with one retained screen. ratatui-core 0.1.2 keeps `Frame::cursor_position` crate-private and has no public cursor visibility, so do not compare visibility and do not patch ratatui.
+- Classify each frame as `Drawn` or `Unchanged` by its completed buffer compared with one retained screen. Never call `get_cursor_position`: with `CrosstermBackend` it queries the terminal and waits for a reply, which adds a round trip to each frame and exits cargo-port in a terminal that does not reply. cargo-port sets no cursor, so the buffer is the whole screen. ratatui-core 0.1.2 keeps `Frame::cursor_position` crate-private; do not patch ratatui.
 - Keep the frame key, the draw-on-change tests, every existing assertion and the F015 fixed-time test source. The frame counter counts only `Drawn` frames.
 - No new allocation for each frame in the draw path.
 
