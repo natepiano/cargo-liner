@@ -13,7 +13,6 @@ use std::time::Instant;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use sysinfo::Pid;
 use tempfile::TempDir;
@@ -810,16 +809,7 @@ fn draw_summary(app: &App, height: u16) -> String {
 
 fn draw_content(app: &App, content: &TileContent, height: u16) -> String {
     let inner = Rect::new(0, 0, 298, height);
-    let mut buffer = Buffer::empty(inner);
-    render::draw_cell_for_test(&mut buffer, &app.roster, content, inner, 4);
-    (0..height)
-        .map(|y| {
-            (0..inner.width)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    render::cell_lines_for_test(&app.roster, content, inner, 4).join("\n")
 }
 
 fn assert_capture_rows(rendered: &str, entries: &[(&str, u32, &str)]) {

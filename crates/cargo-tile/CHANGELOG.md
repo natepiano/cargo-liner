@@ -62,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The settings overlay's two Commands lists are typed in: Enter opens `excluded` or `hidden` as text, entries separated by commas or spaces, Enter again writes `config.toml` and applies it on the spot -- the scan picks up `excluded` on its next pass -- and Esc leaves the list as it was.
 
 ### Changed
+- A command cell names its account and directory in its top border, as in `┌ [natepiano] ~/rust/hana ─`; the body row that held them shows one more process row.
 - Skip equal tile frames while preserving content fades and appearance changes.
 - Hidden cargo commands stay hidden while busy, including nested subtrees and their readings; the setting is renamed to `commands.hidden`, with `hidden_when_idle` accepted as a fallback.
 - A nested cargo borrowing an unverified driver capture leaves the reading in the driver's cell heading and on its summary row, once per invocation.
