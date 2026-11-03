@@ -1690,40 +1690,51 @@ Assertion-Change: crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs:
 
 - Tint on and off can produce the same pane backgrounds on a transparent screen. A tint flag alone does not identify a distinct draw.
 
-### Phase 57c — cargo-handler reads its staff from the staff list  · status: todo
+### Phase 57c — cargo-handler reads its staff from the staff file  · status: todo
 
 **Depends on:** none.
 
 #### Work Order
 
-**Goal:** cargo-handler takes managers, members and roles from `~/.claude/scripts/production/staff.py show --json --live` (schema 3) in place of `production_tree.py --json`, with one parser, and stops reading the review pool, which no longer exists.
+**Goal:** cargo-handler takes managers, members, roles and names from the staff file, read directly, in place of a command. A live session or Codex worker shows its staff name first.
 
-**Source:** herdr, 2026-10-31: the staff list is live as schema 3, with no `pool` key. The showrunner, 2026-10-31, approved the switch and confirmed schema 3 on natedev and the Mac. The user, 2026-10-31: the review pool is gone.
+**Source:** the user, 2026-11-02, via the showrunner: "why don't you just read the staff document - it should be sub millisecond to read / eventually i do want to track other agents - between the staff page and the herdr commands we should be able to get answers much faster / herdr shouldn't focus on making staff fast - we should just read the staff page directly". The showrunner ruled the design the same day. It replaces the earlier `staff.py show --json --live` plan.
+
+**Evidence, read-only, 2026-11-02:** `~/.local/state/staff/staff.json` is 109 KB, schema 2, with key `rows`. It holds 394 rows: 322 `worker`, 65 `unit`, 7 `showrunner`. Each row has `id`, `kind`, `name`, `parent` and `current_session`. The Mac has no staff file.
+
+**State model:**
+
+1. The staff file owns each row's id, kind, name, parent and current session. cargo-handler keeps one parsed copy and the file's mtime.
+2. The census owns liveness. A row is live when a live Claude process's session id, or a proven Codex thread id, equals the row's `current_session`.
+3. A changed mtime replaces the parsed copy. An unchanged mtime reuses it. A missing or unreadable file gives no staff names, with no error.
+4. Name order: staff name, then proven thread name from the Codex logs, then herdr name, then pid.
 
 **Constraints from prior phases:**
-- The command stays in the `hierarchy_command` setting; no path in code.
-- Read stdout only. The command prints hundreds of stderr lines (265 on natedev); never show them in the tile or in cargo-handler.
-- One parser: remove the `production_tree.py` shape parser in this phase. If a Mac config can still point at the old command, say so in the notice; the showrunner sets the order.
-- The review pool reader (`REVIEW_POOL_STATE`, `pool.json` in `census/command_inputs.rs`) and its fixtures go too.
-- Standalone sessions are not in the staff list; Phase 57d names them.
+- The branch carries a wip parser for `staff.py show --json --live` (schema 3, commit e8e8ed8e). Replace it. Drop the `hierarchy_command` setting and every command run for the hierarchy.
+- The review pool reader (`REVIEW_POOL_STATE`, `pool.json` in `census/command_inputs.rs`) and its fixtures go.
+- One parser. Remove the `production_tree.py` shape parser.
+- The staff file path is a config value, never in code.
 
 **Spec:**
-1. At start, run the staff command on natedev and the Mac and confirm schema 3 with no `pool` key.
-2. Parse the schema 3 output into the census hierarchy types; remove the old edge parser and the pool reader.
-3. Measure the CPU time of one staff call against one `production_tree.py --json` call on natedev and the Mac, and name the added cost in the notice. If it is slower at the poll rate, say so before landing.
-4. Move the hierarchy fixtures and tests to the schema 3 shape.
-5. Send the showrunner the exact `hierarchy_command` config line for both machines.
+1. Read the staff file from a config path. Parse schema 2 into the census hierarchy types. Refuse another schema with no names and no error row.
+2. Read the file again only when its mtime changes.
+3. Join liveness from the census, per State model item 2.
+4. Put the staff name first in the name order in `classify.rs`.
+5. Tests under 1 s: schema 2 parse; mtime reuse and reload; a missing file; a live join by Claude session id and by Codex thread id; a dead row is not drawn; name order with all four sources.
+6. Measure the staff stage on natedev: 30 samples, with the median, p95 and max. The median must be under 1 ms.
+7. CHANGELOG: one Changed line in cargo-handler.
 
 **Files:**
 - `crates/cargo-handler/src/census/hierarchy.rs` — the parser
-- `crates/cargo-handler/src/census/command_inputs.rs` — inputs; pool reader removed
-- `crates/cargo-handler/src/census/fixtures/` — hierarchy and pool fixtures
+- `crates/cargo-handler/src/census/command_inputs.rs` — inputs; command and pool reader removed
+- `crates/cargo-handler/src/census/fixtures/` — staff, hierarchy and pool fixtures
 - `crates/cargo-handler/src/census/*hierarchy*_tests.rs`, `census/probe/hierarchy_transport_tests.rs` — tests
-- `crates/cargo-handler/src/config.rs`, `settings.rs` — setting text only if it names the old command
+- `crates/cargo-handler/src/config.rs`, `settings.rs` — the staff file path setting
+- `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: cargo-handler on natedev with the new setting shows the same managers and members as before. The checkpoint adds a Change-Review line.
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Staff stage median under 1 ms over 30 samples. Live on natedev: the same managers and members as before, and live workers show their staff names. The Mac shows the other name sources with no error. The checkpoint adds a Change-Review line.
 
 ### Phase 55 — Narrow tiles keep tree guides, readable names and one header inset  · status: todo
 
@@ -1877,10 +1888,10 @@ Assertion-Change: crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs:
 
 **Goal:** every cargo-handler test that takes over one second runs under one second.
 
-**Source:** Phase 40's full test run, 2026-10-29: three existing tests took 1.46 s (gradient), 1.27 s (busy ink) and 1.04 s (codex tier). Phase 43's full run, 2026-10-29: five more took 1.0–1.6 s (`render::selected_ink_tests::selected_row_inks_keep_glyph_contrast_for_sessions_roles_accounts_and_both_timer_states`, `…_in_default_light`, `…every_default_dark_roles_ink_keeps_coverage_and_hue_on_tinted_remembered_selection`, `…every_default_dark_sessions_ink_keeps_coverage_and_hue_on_tinted_remembered_selection`, `agent_cell::tests::design_ink_tests::tree_role_and_account_words_meet_contrast_on_every_tile_ground`); showrunner put them here, after 47, 48 and 43: cause found first, no rerun, no load blame. Phase 25's Codex slow test (showrunner, 2026-10-24: 1.510 s in the phase 30 full suite at high machine load) moved here on 2026-10-30. Standing rule: no test takes a second; a slow test is a defect to fix, never to rerun.
+**Source:** Phase 40's full test run, 2026-10-29: three existing tests took 1.46 s (gradient), 1.27 s (busy ink) and 1.04 s (codex tier). Phase 43's full run, 2026-10-29: five more took 1.0–1.6 s (`render::selected_ink_tests::selected_row_inks_keep_glyph_contrast_for_sessions_roles_accounts_and_both_timer_states`, `…_in_default_light`, `…every_default_dark_roles_ink_keeps_coverage_and_hue_on_tinted_remembered_selection`, `…every_default_dark_sessions_ink_keeps_coverage_and_hue_on_tinted_remembered_selection`, `agent_cell::tests::design_ink_tests::tree_role_and_account_words_meet_contrast_on_every_tile_ground`); showrunner put them here, after 47, 48 and 43: cause found first, no rerun, no load blame. Phase 25's Codex slow test (showrunner, 2026-10-24: 1.510 s in the phase 30 full suite at high machine load) moved here on 2026-10-30. Phase 45's full run 12dd, 2026-11-03, at high machine load: two more took 1.308 s (pinned accounts) and 1.044 s (high-contrast light ink); alone they took 0.047 s and 0.110 s, and a later full run gave 0.112 s and 0.278 s (showrunner put them here). Standing rule: no test takes a second; a slow test is a defect to fix, never to rerun.
 
 **Constraints from prior phases:**
-- The nine tests, all under `crates/cargo-handler/src/`:
+- The eleven tests, all under `crates/cargo-handler/src/`:
   - `reset_shades_keep_saturated_chroma_and_separation_from_plain_text` (`summary/accounts_gradient_tests.rs` ≈532)
   - `busy_status_words_share_one_drawn_ink_across_row_kinds_and_frame_changes` (`agent_cell/tests/design_ink_tests.rs` ≈99)
   - `tree_role_and_account_words_meet_contrast_on_every_tile_ground` (`agent_cell/tests/design_ink_tests.rs` ≈336)
@@ -1890,22 +1901,25 @@ Assertion-Change: crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs:
   - `every_default_dark_sessions_ink_keeps_coverage_and_hue_on_tinted_remembered_selection` (`render/selected_ink_tests.rs` ≈984)
   - `codex_session_fast_tier_draws_on_summary_tree_and_unassigned_accounts` (`census/codex_session_tests.rs` ≈291)
   - `codex_resume_last_uses_the_newest_older_thread_in_its_home_and_directory` (`census/codex_session_tests.rs` ≈447, module `census::scan::codex_session_tests`)
+  - `pinned_accounts_require_headers_and_one_body_line` (`render/pinned_accounts_tests.rs`)
+  - `selected_row_inks_keep_glyph_contrast_in_high_contrast_light` (`render/selected_ink_tests.rs`)
 - Find each by name in a `verify.sh test cargo-handler` run's timing output. Fix each at its cause (the work it repeats, a real sleep, a fixture built per case), never by weakening an assert.
 - A test that runs under a second alone but over a second in the full suite is still a defect. There is no exemption for a test that is fast alone.
 
 **Spec:**
-1. Run the suite, name all nine tests and measure each alone and in the full suite.
+1. Run the suite, name all eleven tests and measure each alone and in the full suite.
 2. Cut each at its cause; keep every assert.
 3. Show each test's time before and after, alone and in the full suite.
 
 **Files:**
 - `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the gradient test
 - `crates/cargo-handler/src/agent_cell/tests/design_ink_tests.rs` — the busy ink and tree contrast tests
-- `crates/cargo-handler/src/render/selected_ink_tests.rs` — the four selected-row ink tests
+- `crates/cargo-handler/src/render/selected_ink_tests.rs` — the five selected-row ink tests
+- `crates/cargo-handler/src/render/pinned_accounts_tests.rs` — the pinned accounts test
 - `crates/cargo-handler/src/census/codex_session_tests.rs` — the Codex tier test
 
 **Workers:** 2 writers.
-- `palette` — the gradient, design-ink and selected-ink test files.
+- `palette` — the gradient, design-ink, selected-ink and pinned accounts test files.
 - `census` — `census/codex_session_tests.rs`, both Codex tests.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean with no test over one second; lint clean. Change-Review: none (test time only).
