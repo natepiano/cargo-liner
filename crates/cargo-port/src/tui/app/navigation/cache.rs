@@ -9,6 +9,7 @@ use crate::tui::columns::LintColumnStatus;
 use crate::tui::panes;
 use crate::tui::panes::DetailCacheKey;
 use crate::tui::project_list::VisibleRow;
+use crate::tui::project_list_state::FitWidthsCacheKey;
 use crate::tui::render;
 
 impl App {
@@ -21,6 +22,17 @@ impl App {
     pub(in crate::tui) fn visible_rows(&self) -> &[VisibleRow] { self.project_list.visible_rows() }
 
     pub(in crate::tui) fn ensure_fit_widths_cached(&mut self) {
+        let desired = FitWidthsCacheKey {
+            presentation:     self.project_row_presentation().width_inputs(),
+            summary_bytes:    self.project_list.visible_project_disk_usage(),
+            visible_rows:     self.visible_rows().to_vec(),
+            include_non_rust: self.config.include_non_rust().includes_non_rust(),
+            lint_enabled:     self.config.lint_enabled(),
+            storage:          self.project_list.project_storage(),
+        };
+        if self.project_list.fit_widths_state.is_current(&desired) {
+            return;
+        }
         let root_labels = self
             .project_list
             .resolved_root_labels(self.config.include_non_rust().includes_non_rust());
@@ -43,12 +55,16 @@ impl App {
                 columns::display_width(&render::format_bytes(bytes)),
             );
         }
-        self.project_list.set_fit_widths(widths);
+        self.project_list.set_fit_widths(desired, widths);
     }
 
     pub(in crate::tui) fn ensure_disk_cache(&mut self) {
-        let (root_sorted, child_sorted) = panes::compute_disk_cache(&self.project_list);
-        self.project_list.set_disk_caches(root_sorted, child_sorted);
+        let desired = self.project_list.disk_cache_key();
+        if self.project_list.disk_cache_state.is_current(&desired) {
+            return;
+        }
+        let sorted = panes::compute_disk_cache(&desired);
+        self.project_list.set_disk_cache(desired, sorted);
     }
 
     /// Ensure per-pane data on `PaneManager` is up to date for the selected

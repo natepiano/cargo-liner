@@ -19,7 +19,7 @@ pub(in crate::tui) struct DetailCacheKey {
 /// per-pane content slots and update this store's `detail_stamp`
 /// in lockstep.
 pub(in crate::tui) struct PaneDataStore {
-    detail_stamp:  Option<DetailCacheKey>,
+    detail_stamp:  DetailCacheState,
     #[cfg(test)]
     detail_builds: u64,
 }
@@ -27,7 +27,7 @@ pub(in crate::tui) struct PaneDataStore {
 impl PaneDataStore {
     pub(super) const fn new() -> Self {
         Self {
-            detail_stamp:               None,
+            detail_stamp:               DetailCacheState::Cleared,
             #[cfg(test)]
             detail_builds:              0,
         }
@@ -36,14 +36,14 @@ impl PaneDataStore {
     /// True when the stored detail matches `desired` — caller can skip
     /// rebuilding. A desired key of `None` matches a cleared store.
     pub(in crate::tui) fn detail_is_current(&self, desired: Option<DetailCacheKey>) -> bool {
-        self.detail_stamp == desired
+        self.detail_stamp == DetailCacheState::from(desired)
     }
 
     /// Internal: write the stamp. Called only by `Panes::set_detail_data`
     /// / `Panes::clear_detail_data` so the detail-set "all five together"
     /// invariant survives.
-    pub(super) const fn set_detail_stamp(&mut self, stamp: Option<DetailCacheKey>) {
-        self.detail_stamp = stamp;
+    pub(super) fn set_detail_stamp(&mut self, stamp: Option<DetailCacheKey>) {
+        self.detail_stamp = DetailCacheState::from(stamp);
         #[cfg(test)]
         {
             self.detail_builds += 1;
@@ -56,4 +56,15 @@ impl PaneDataStore {
     /// on a cache hit.
     #[cfg(test)]
     pub const fn detail_build_count(&self) -> u64 { self.detail_builds }
+}
+
+/// Cleared panes are current for no selection; selected details name their inputs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DetailCacheState {
+    Cleared,
+    Current(DetailCacheKey),
+}
+
+impl From<Option<DetailCacheKey>> for DetailCacheState {
+    fn from(key: Option<DetailCacheKey>) -> Self { key.map_or(Self::Cleared, Self::Current) }
 }

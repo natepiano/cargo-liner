@@ -229,7 +229,7 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 
 **Gotchas:** a new cfg-bearing syn node needs a case in `gate_tracking_visit!`, or the imports under it lose their cfg when they move.
 
-### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
+### Phase 3 — cargo-port draws a frame only when something changed  · status: done
 
 **Depends on:** Phase 2b
 
@@ -300,6 +300,7 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 - From phase 3: retained `Deleted` rows and stored dismissals stay reachable through the path index, and each retention change keeps its caches current. The late-reply dismissal guard already exists with a test (`async_tasks/disk_handlers.rs` ≈147); the work is to keep it through a scan replacement. The tester's acceptance case covers a discovery folder removed with two projects below it, a completed rescan, a dismissal, and late replies.
 - Build the rescan fix with a type, not a guard: the rescan keeps each Deleted entry in its root as its own state until `x` (or the close box) dismisses it. A fresh scan that does not find the project does not drop that state.
 - From phase 2q: `ProjectList::apply_expanded` (`tui/project_list/list.rs`) skips expansion targets that are not in the installed tree. Merge the retained Deleted rows into the new roots first, then prune expansion keys and restore the saved expansion targets. Test it with reordered roots and a selected Deleted member under an open group: the row stays visible, the selection stays on it, and the group stays open.
+- From phase 3: the indexed path lookup in `ProjectList` (`tui/project_list/list.rs` ≈446) returns one `None` for an unknown path and for a stored index route that no longer points at a project. Return a named result (an enum) so the two outcomes differ, and make each caller handle both. Add one test for each outcome in `tui/project_list/path_index_tests.rs`. This phase changes the retained rows in that index, so the stale-route outcome is reachable here.
 - Under `NO_COLOR`, write text attributes (strike-through, bold, dim) without colour codes; never send a colour reset that also resets attributes.
 - The sccache popup width is the widest row plus the left and right padding (`tui/sccache/render.rs`), so both sides get the same padding.
 - For "fleet" → "flet", find why one letter goes from the middle of the word first. Where a value must be shortened, shorten it at its end with an ellipsis.
@@ -319,7 +320,7 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 - `crates/cargo-port/src/tui/app/async_tasks/disk_handlers.rs` — late replies after dismiss
 - `crates/cargo-port/src/tui/app/async_tasks/deleted_rescan_tests.rs` — new; tester
 - `crates/cargo-port/src/tui/terminal/no_color_tests.rs` — new; tester
-- `crates/cargo-port/src/tui/project_list/` — the Deleted entry state, if the root type holds it
+- `crates/cargo-port/src/tui/project_list/` — the Deleted entry state, if the root type holds it; the named indexed lookup result and its tests in `path_index_tests.rs`
 - `crates/cargo-port/src/tui/terminal/` — NO_COLOR attribute output
 - `crates/cargo-port/src/tui/sccache/render.rs` — popup width
 - `crates/cargo-port/src/tui/panes/` — the Git pane value fit, once the cause is found
@@ -330,3 +331,33 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 - `test` — spec 5, in `tui/app/async_tasks/deleted_rescan_tests.rs` and `tui/terminal/no_color_tests.rs`, plus the sccache and Git pane cases in test modules beside those files, each named in the tester's first board post; `impl` registers them.
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; the live check and the four shots of spec 6, with a design check pass. The checkpoint adds a Change-Review line for each visible fix.
+
+### Phase 5 — A CPU sample costs only the CPU pane  · status: todo
+
+**Depends on:** Phase 3
+
+#### Work Order
+
+**Goal:** a CPU pane sample that changes nothing else does not render every pane. Idle CPU on the branch binary is not above main's.
+
+**Source:** phase 3 review (event_loop.rs ≈285): on a CPU-only wake, the frame check allocates a backend, renders the whole UI to a candidate buffer and clones it. Phase 3's release idle measure (3 pairs, one scratch project): main 0.217/0.183/0.217% of one core, branch 0.267/0.250/0.250%. The median change (+0.033 points) is inside main's spread (0.034), so the cause is not proven. Astra's advice: `/tmp/claude/astra/20261102T204624Z-1292297/review.md`.
+
+**Constraints:**
+- Find the cost first. Measure one CPU-only wake on the branch (render calls, time) before any change. Repair only when 3 live pairs show a change above the spread.
+- Phase 3 already makes an identical CPU sample return false in `CpuPane::tick` (`tui/panes/cpu/pane.rs` ≈122).
+- A partial render applies only to an isolated CPU change with stable geometry. Do a full render for the first frame, a layout change (the core count changes the layout, `render.rs` ≈169), any other pending change, and an active overlay or toast.
+- For a partial render, keep the last frame's screen, clear the CPU rect, and render it through `render_panes` with a CPU-only layout; the framework draws borders and dividers (`tui_pane` `framework/render.rs` ≈122). Keep the other cells, the cursor and the equality check.
+
+**Spec:**
+1. A CPU-only wake renders the CPU pane only, or draws nothing when its visible rows did not change.
+2. **Tests, red first, each under one second,** through the production frame path with CPU samples on a channel and a fixed time, counting pane render calls: a visible CPU change renders no other pane and draws once; a change in a hidden core row draws nothing; the buffer and cursor equal a full render; a layout change and a popup over the CPU pane each do a full render.
+3. **Live CPU measure:** 3 idle pairs, main against the branch, with the method in `docs/cargo-port/as-built/overview.md`.
+
+**Files:**
+- `crates/cargo-port/src/tui/terminal/event_loop.rs` and `event_loop_tests.rs` — the CPU-only frame path and its tests
+- `crates/cargo-port/src/tui/panes/cpu/` — the CPU pane render, if needed
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer (impl4) owns the code and the tests; the unit director owns the live measure.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; branch idle CPU not above main's beyond the spread over 3 pairs.

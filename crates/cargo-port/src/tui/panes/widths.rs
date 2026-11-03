@@ -53,6 +53,10 @@ pub(in crate::tui) fn compute_project_list_widths(
     lint_column: LintColumnStatus,
     generation: u64,
 ) -> ProjectListWidths {
+    #[cfg(test)]
+    entries
+        .fit_width_builds
+        .set(entries.fit_width_builds.get() + 1);
     let mut widths = ProjectListWidths::new(lint_column);
     for (index, entry) in entries.iter().enumerate() {
         observe_item_fit_widths(&mut widths, entries, metadata, entry, &root_labels[index]);

@@ -121,6 +121,13 @@ pub(super) enum StartupEffect {
     Suppressed,
 }
 
+/// The service profile owns the source of storage and sccache replies.
+#[cfg(test)]
+pub(super) enum BackgroundQuerySource {
+    System,
+    QueuedReplies,
+}
+
 impl StartupEffect {
     const fn runs(self) -> bool { matches!(self, Self::Real) }
 }
@@ -136,6 +143,14 @@ pub struct StartupServices {
 }
 
 impl StartupServices {
+    #[cfg(test)]
+    pub(super) const fn background_query_source(&self) -> BackgroundQuerySource {
+        match self.profile {
+            StartupProfile::Production => BackgroundQuerySource::System,
+            StartupProfile::QuietUnitTest(_) => BackgroundQuerySource::QueuedReplies,
+        }
+    }
+
     fn new(profile: StartupProfile) -> Self {
         Self {
             profile,
