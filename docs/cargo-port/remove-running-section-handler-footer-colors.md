@@ -1444,45 +1444,23 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: with two TUIs on one daemon, a `/resume` cannot retain an old name or show another TUI's name. An unresolved TUI shows its pid. The notice states the result. The socket stage stays under 1 ms. The idle CPU is not higher than Phase 60's. The checkpoint adds a Change-Review line.
 
-### Phase 60b — A Codex window with no proven thread shows its herdr name  · status: todo
+### Phase 60b — A Codex window with no proven thread shows its herdr name  · status: done
 
-**Depends on:** Phase 60a. Runs next, before Phases 61, 58, 55 and 56 (showrunner, 2026-11-02).
+#### As-built
 
-#### Work Order
+- `census/herdr.rs` reads herdr through its socket API. The socket path comes from `HERDR_SOCKET_PATH` in a pane process's environment, with no path in code.
+- A background worker subscribes to herdr and keeps one shared snapshot of panes. A signal tells the scan that the snapshot changed. The scan does not copy each process.
+- The first probe waits at most 100 ms (`HERDR_INITIAL_TIMEOUT`). A failed subscription retries every 500 ms (`HERDR_SUBSCRIPTION_RETRY`) and drops stale names.
+- A Codex pid links to a pane when it is the pane's foreground pid or a descendant of the pane's shell pid. A pane with more than one Codex window gives no name.
+- Name order: proven thread name, then the pane name or tab label, then the pid. The ` | ` suffix is cut only from a terminal title.
+- `attach_codex_names` runs once per scan.
+- Measured on natedev: the herdr stage median is 11.9 µs wall over 30 samples (p95 33.8 µs, max 168 µs). Idle CPU over 3 pairs against Phase 60a changed by a median of -0.11 s, which is inside the 0.34 s spread.
+- Live, read-only: the user's morty window shows `morty`.
 
-**Goal:** a Codex window whose thread is not proven shows the name of the herdr tab or pane that holds it, in place of its pid. A proven thread name still comes first.
+#### Gotchas
 
-**Source:** the user, 2026-11-02, via the showrunner: "get the name from the herdr window then". This reverses the earlier "no herdr follow-up" ruling.
-
-**Evidence, read-only, 2026-11-02:** morty is pid 2719866 on the shared daemon 817986, so design A shows `pid 2719866`. `herdr pane process-info --pane w18:p4` gives `shell_pid` 3189699 and foreground pid 2719866. The snapshot gives that pane tab `w18:t4` with label `morty`, and terminal title `morty | natepiano`.
-
-**State model:**
-
-1. The herdr record owns each pane's id, tab label, pane name, shell pid and foreground pids. cargo-handler reads it and stores no copy that outlives a scan.
-2. A Codex pid links to a pane when the pid is the pane's foreground pid or a descendant of the pane's shell pid. The process table gives the ancestry.
-3. `CodexSessionLink` keeps one decision per TUI, in this order: a proven thread name, then the herdr name, then the pid. The herdr name is a third variant, not a thread.
-4. A pane with more than one Codex window gives no herdr name to any of them. The pid shows for each one.
-
-**Spec:**
-1. Read herdr through its socket API. Take the socket path from herdr's own environment or config. Hard-code no path.
-2. Read herdr only when a Codex window has no proven thread. Cache by pane revision. Herdr absent or unreadable: show the pid, with no error.
-3. The name is the pane name when the user set one, else the tab label. Strip the terminal title suffix. Never use the title text when a label exists.
-4. Tests under 1 s: proven thread over herdr name; herdr name over pid; two Codex windows in one pane show pids; herdr absent shows the pid; a reused pid gets no stale name.
-5. CHANGELOG: one Added line in cargo-handler.
-
-**Files:**
-- `crates/cargo-handler/src/census/codex.rs`
-- `crates/cargo-handler/src/census/herdr.rs`
-- `crates/cargo-handler/src/census/herdr_tests.rs`
-- `crates/cargo-handler/src/census/mod.rs`
-- `crates/cargo-handler/src/census/classify.rs`
-- `crates/cargo-handler/src/census/scan.rs`
-- `crates/cargo-handler/src/constants.rs`
-- `crates/cargo-handler/CHANGELOG.md`
-
-**Workers:** 1 writer.
-
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live, read-only: the user's morty pid 2719866 shows `morty`. Never type into, signal or stop a user pane or process. The idle CPU is not higher than Phase 60a's (3 pairs, median and spread). The checkpoint adds a Change-Review line.
+- The first code review found 5 defects, 2 blocking (a blocking probe, a stale subscription, the title cut, a copy of each process, names attached more than once). Repair 1 fixed all five.
+- A `Change-Review:` text must not hold a pipe character. An empty checkpoint carried the corrected line.
 
 ### Phase 61 — The accounts table drops the read column  · status: todo
 
@@ -1503,61 +1481,26 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean. This change is visible: shots of the accounts table, a design check line, and a Change-Review line.
 
-### Phase 45 — Handler rows expand and collapse like the cargo-port project list  · status: todo
+### Phase 45 — Handler rows expand and collapse like the cargo-port project list  · status: done
 
-**Depends on:** port-unit phase 2q (the cargo-port expand/collapse model moves into `tui_pane`). Starts after that merges.
+#### As-built
 
-#### Work Order
+- `expansion.rs` holds the expand state on the `tui_pane` model from port 2q. Root rows start open and deeper rows start closed. The user's choice is an override keyed by the row's identity.
+- Keys match the cargo-port project list: Right and Left open and close, Enter toggles, `=` opens all, `-` closes all, `0` resets to the default. Left on a closed child moves the selection to its parent.
+- A row's identity is machine and pid. A legacy row with no pid gets its owner and its place in census order. Sorts and filters keep each choice and the selection on the same row.
+- An override is dropped when its row leaves the forest. A row that moves to a new parent keeps its override.
+- Tests cover the default, each operation, a row that leaves and returns, a row that moves parent, and equal start times under a sort. 841 tests pass in 0.92 s with no cache.
+- Live shots on natedev show the default, Right, Left, collapse all and expand all.
 
-**Goal:** rows with parent and child relations in cargo-handler expand and collapse the same way as cargo-port's project list.
+#### Known limits
 
-**Source:** the user, 2026-10-29 04:23: "rows should expand and collapse the way they do in cargo ports project list - in handler where wehave parent child relationships drawn - by default we should show just the first level of expansion".
+- The live census had no rows below depth one during the shots. Tests cover the closed default for deeper rows.
 
-**State model (sent to port-unit 2026-11-02):**
-1. The rows form a forest. A root row is a session that heads its own hierarchy. A child row is an agent that a live session manages or launched.
-2. The expand key is `RowIdentity` (machine, pid). Depth has no fixed limit; live trees reach four levels.
-3. Default: root rows are open, so their direct children show. Every row below the root starts closed. A new row gets the default for its depth.
-4. The user's open or closed choice is an override, keyed by the expand key, held in one record. When a row leaves the forest, its override is dropped; a row that comes back gets the default.
-5. A refresh can move a row to a new parent; its override follows its key.
+#### Gotchas
 
-**Spec:**
-1. Use the `tui_pane` model from port 2q: expand, collapse, toggle, expand-all, collapse-all and reset to default, with the same keys as the cargo-port project list.
-2. Collapse on a closed child moves the selection to its parent.
-3. Tests under 1 s for the default, each operation, a row that leaves and comes back, and a row that moves parent.
-4. CHANGELOG: one Added line in cargo-handler.
-
-**Files:**
-- `crates/cargo-handler/src/app.rs`
-- `crates/cargo-handler/src/globals.rs`
-- `crates/cargo-handler/src/terminal.rs`
-- `crates/cargo-handler/src/keymap.rs`
-- `crates/cargo-handler/src/agent_cell.rs`
-- `crates/cargo-handler/src/tiles.rs`
-- `crates/cargo-handler/src/interaction.rs`
-- `crates/cargo-handler/src/constants.rs`
-- `crates/cargo-handler/src/summary/mod.rs`
-- `crates/cargo-handler/src/census/tree.rs`
-- `crates/cargo-handler/src/expansion.rs`
-- `crates/cargo-handler/src/expansion_tests.rs`
-- `crates/cargo-handler/CHANGELOG.md`
-
-
-
-Phase 45 assertion migrations:
-
-Assertion-Change: crates/cargo-handler/src/agent_cell.rs::a_cell_draws_its_header_and_what_its_agent_runs — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
-Assertion-Change: crates/cargo-handler/src/agent_cell.rs::each_top_level_agent_holds_the_sessions_it_opened — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
-Assertion-Change: crates/cargo-handler/src/agent_cell.rs::conflicting_and_cyclic_edges_form_one_deterministic_forest — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
-Assertion-Change: crates/cargo-handler/src/agent_cell/tests/activity_tests.rs::activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_ids — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
-Assertion-Change: crates/cargo-handler/src/agent_cell/tests/sort_tests.rs::default_tree_sort_preserves_phase_one_rows_rails_and_hues — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
-Assertion-Change: crates/cargo-handler/src/agent_cell/tests/sort_tests.rs::assert_column_keeps_subtrees_and_hues — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
-Assertion-Change: crates/cargo-handler/src/agent_cell/tests/tree_tests.rs::a_compressed_showrunner_starts_with_aligned_tree_columns — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
-Assertion-Change: crates/cargo-handler/src/agent_cell/tests/tree_tests.rs::work_lines_nest_below_their_member_and_skip_process_and_session_nodes — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
-Assertion-Change: crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs::unassigned_rows_are_flat_with_blank_roles_and_nested_work_rails — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
-
-**Workers:** 1 writer.
-
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean. This change is visible: shots, a design check line, and a Change-Review line.
+- After `-` every tile shows only roots, so all names fit and every tile changes to the full view with the session heading. This is the shared view rule, not a defect.
+- The disk sweeper deletes a release binary soon after a build. Build and copy the binary in one detached step.
+- Two render tests took over 1 s in one full run at high machine load. Phase 50 holds them.
 
 ### Phase 58 — The focus tint reaches the frame and stands apart from selection  · status: todo
 
@@ -2089,8 +2032,3 @@ Assertion-Change: crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs:
 **Workers:** 1 writer.
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: in cargo-handler on natedev, shift-left and shift-right move the focus, and the shortcuts overlay shows the four focus keys. The checkpoint adds a Change-Review line.
-
-Assertion-Change: crates/cargo-handler/src/render/narrow_width_tests.rs::growth_app — Change the End offset from 66 to 67. The selectable root adds one row.
-
-Assertion-Change: crates/cargo-handler/src/render/pinned_accounts_tests.rs::pinned_accounts_missed_click_keeps_selection_and_retired_surface_stays_gone — Add the preferred surface argument. Preserve the assertion that the retired row remains Gone.
-Assertion-Change: crates/cargo-handler/src/render/pinned_accounts_tests.rs::pinned_accounts_named_states_distinguish_empty_cells_rows_and_retired_content — Add the preferred surface argument. Preserve the assertions for Found(Summary) and Gone.
