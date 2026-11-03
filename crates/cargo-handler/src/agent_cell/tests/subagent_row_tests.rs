@@ -357,7 +357,8 @@ fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
         LineSubject::Agent(RoleLabel::Stated(HierarchyRole::Impl)),
         LineSubject::Agent(RoleLabel::ReviewFallback),
     ]) {
-        cell.lines.push(TreeLine {
+        cell.lines.push(TreeLine::new(TreeLineContent {
+            expansion: TreeMarker::Leaf,
             dispatch_label: DispatchLabel::Original,
             machine: "natedev",
             location: SessionLocation::SameMachine,
@@ -366,10 +367,11 @@ fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
             rails: Vec::new(),
             branch: Branch::Last,
             subject,
-        });
+        }));
     }
     let thread = child(0, ChildKind::Thread, None, "managed worker", MINUTE);
-    cell.lines.push(TreeLine {
+    cell.lines.push(TreeLine::new(TreeLineContent {
+        expansion:      TreeMarker::Leaf,
         dispatch_label: DispatchLabel::Original,
         machine:        "natedev",
         location:       SessionLocation::SameMachine,
@@ -378,7 +380,7 @@ fn unassigned_and_unlabeled_role_cells_ignore_the_retired_footer_color() {
         rails:          Vec::new(),
         branch:         Branch::Last,
         subject:        LineSubject::ManagedThread(&thread, HierarchyRole::Test),
-    });
+    }));
     let rect = area(104, 12);
     let colors = FooterColors::parse("role.unassigned=purple\nrole.worker=bright-cyan");
     let mut buffer = Buffer::empty(rect);

@@ -225,7 +225,7 @@ impl WorkerDispatch {
 }
 
 /// The agent family is part of the worker identity.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WorkerIdentity {
     CodexThread(String),

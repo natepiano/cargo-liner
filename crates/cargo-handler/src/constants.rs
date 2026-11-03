@@ -109,14 +109,14 @@ pub(crate) const TREE_SESSION_HEADER: &str = "session";
 pub(crate) const TREE_STATUS_HEADER: &str = "status";
 /// Leads a session in an agent cell's tree that has a later session
 /// beside it.
-pub(crate) const TREE_BRANCH: &str = "├─ ";
+pub(crate) const TREE_BRANCH: &str = "├── ";
 /// Leads the last session its launcher opened in an agent cell's tree.
-pub(crate) const TREE_LAST_BRANCH: &str = "└─ ";
+pub(crate) const TREE_LAST_BRANCH: &str = "└── ";
 /// Carries a level's line of an agent cell's tree down past a line
 /// that does not branch at it.
-pub(crate) const TREE_RAIL: &str = "│  ";
+pub(crate) const TREE_RAIL: &str = "│ ";
 /// Stands for a level of an agent cell's tree whose line has ended.
-pub(crate) const TREE_SPACE: &str = "   ";
+pub(crate) const TREE_SPACE: &str = "  ";
 /// Rows the note standing in for an empty tree takes.
 pub(crate) const NOTHING_RUNNING_HEIGHT: u16 = 1;
 /// What an agent cell says in place of its tree when the agent is

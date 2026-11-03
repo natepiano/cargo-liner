@@ -169,7 +169,7 @@ fn assert_core_columns(text: &[String], width: u16) {
 
 fn assert_width(width: u16) {
     let mut app = fixture(6);
-    let buffer = paint(&mut app, width, 50);
+    let buffer = paint(&mut app, width, 62);
     let placements = app
         .tiles
         .placements(app.selection_area, app.loaded_config.config.tiles.growth());
@@ -230,14 +230,95 @@ fn assert_width(width: u16) {
     );
 }
 
+/// Height 50 keeps the tiles and accounts while narrow tiles overflow their work rows.
+fn assert_constrained_width(width: u16) {
+    let mut app = fixture(6);
+    let buffer = paint(&mut app, width, 50);
+    let placements = app
+        .tiles
+        .placements(app.selection_area, app.loaded_config.config.tiles.growth());
+    let groups: Vec<_> = placements
+        .iter()
+        .filter(|tile| matches!(tile.content, TileContent::Group(_)))
+        .collect();
+    assert_eq!(groups.len(), 6, "all six tiles at {width}x50");
+    for tile in &groups {
+        let area = tile.frame.inner().intersection(tile.frame.clip());
+        let text = lines(&buffer, area);
+        assert!(
+            tile.frame.clip().width >= CORE_WIDTH,
+            "core width: {text:?}"
+        );
+        let header = text
+            .iter()
+            .find(|line| line.contains("session") && line.contains("status"))
+            .expect("whole core headers at height 50");
+        assert!(header.contains("role"), "core role header: {text:?}");
+        if width <= 50 {
+            assert!(
+                text.iter().any(|line| line.contains("▼ long-ses…")),
+                "the truncated root remains visible: {text:?}"
+            );
+            assert!(
+                (3..=4).contains(&area.height),
+                "the constrained tile has three or four rows: {text:?}"
+            );
+            assert_eq!(
+                text.iter().any(|line| line.contains("review")),
+                area.height == 4,
+                "four rows show the review; three rows show only the root: {text:?}"
+            );
+            assert!(
+                !text.iter().any(|line| line.contains("1:00")),
+                "the timer also overflows: {text:?}"
+            );
+        } else {
+            assert_core_columns(&text, width);
+        }
+    }
+    let summary = placements
+        .iter()
+        .find(|tile| matches!(tile.content, TileContent::Summary))
+        .expect("summary at height 50");
+    let text = lines(&buffer, summary.frame.inner()).join("\n");
+    for number in text
+        .split_whitespace()
+        .filter(|word| word.chars().all(|ch| ch.is_ascii_digit()))
+    {
+        if number.len() >= 5 {
+            assert!(
+                (1_107_201..=1_107_206).any(|pid| number == pid.to_string()),
+                "a pid must be whole at {width}: {number:?}: {text}"
+            );
+        }
+    }
+    for label in LABELS {
+        assert!(
+            text.contains(label),
+            "account {label} remains visible at {width}x50: {text}"
+        );
+    }
+    assert!(
+        text.contains(ERROR),
+        "the error remains visible at {width}x50: {text}"
+    );
+}
+
 #[test]
-fn narrow_grid_at_200_keeps_core_headers_and_optional_type() { assert_width(200); }
+fn narrow_grid_at_200_keeps_core_headers_and_optional_type() { assert_constrained_width(200); }
 #[test]
-fn narrow_grid_at_80_keeps_core_headers_and_accounts() { assert_width(80); }
+fn narrow_grid_at_80_keeps_core_headers_and_accounts() { assert_constrained_width(80); }
 #[test]
-fn narrow_grid_at_50_keeps_cells_and_core_headers() { assert_width(50); }
+fn narrow_grid_at_50_keeps_cells_and_core_headers() { assert_constrained_width(50); }
 #[test]
-fn narrow_grid_at_40_keeps_cells_and_core_headers() { assert_width(40); }
+fn narrow_grid_at_40_keeps_cells_and_core_headers() { assert_constrained_width(40); }
+
+#[test]
+fn grid_at_height_62_keeps_all_work_rows_and_accounts() {
+    for width in [200, 80, 50, 40] {
+        assert_width(width);
+    }
+}
 
 #[test]
 fn narrow_summary_34_by_50_omits_undrawable_sessions_and_keeps_six_accounts() {
@@ -480,7 +561,7 @@ fn growth_app() -> (App, crate::interaction::SelectionSurface) {
         .expect("growth selection");
     state.set_area(Rect::new(0, 0, 80, 5));
     state.navigate(NavAction::End);
-    assert_eq!(state.viewport().scroll_offset(), 66);
+    assert_eq!(state.viewport().scroll_offset(), 67);
     (app, surface)
 }
 

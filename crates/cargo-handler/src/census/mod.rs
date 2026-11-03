@@ -91,7 +91,7 @@ use crate::constants::FAST_TIER_LABEL;
 use crate::constants::LOCAL_MACHINE_FALLBACK;
 
 /// The program a census row represents, including transport-only worker hosts.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Agent {
     /// A Claude Code session.
@@ -166,7 +166,7 @@ impl From<&str> for ServiceTier {
 }
 
 /// A Claude Code session's stable identity, absent for other agents or old probes.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq, Serialize)]
 #[serde(untagged)]
 pub(crate) enum SessionIdentity {
     /// No Claude Code session record identifies this row.
