@@ -1464,7 +1464,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 61 — The handler accounts table matches the accounts board  · status: todo
 
-**Depends on:** the accounts-unit change that gives each role on an account its own row, on main. Runs first when the cargo pause lifts and that hash is on main. If the pause lifts first, Phase 57c runs, and this phase starts beside it when the hash arrives (showrunner, 2026-11-03).
+**Depends on:** the accounts-unit change that gives each role on an account its own row. It is on the `~/.claude` main as cc740e532. Starts beside Phase 62 when the cargo pause lifts; the two phases share no file (showrunner, 2026-11-03).
 
 #### Work Order
 
@@ -1499,7 +1499,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 62 — A worker that waits on a detached run shows in its unit's tree  · status: todo
 
-**Depends on:** none. Runs after Phase 61 (unit director, 2026-11-03: a wrong status ranks above the click feature in Phase 63).
+**Depends on:** none. Starts first when the cargo pause lifts, with Phase 61 beside it (showrunner, 2026-11-03).
 
 #### Work Order
 
@@ -1535,7 +1535,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 63 — A click on a row's open/close marker toggles that row  · status: todo
 
-**Depends on:** Phase 45 (done). Runs after Phase 62. If the cargo pause lifts before the accounts per-role hash is on main, it runs beside Phase 57c (showrunner, 2026-11-03).
+**Depends on:** Phase 45 (done). Runs after Phase 62, or beside Phase 57c (showrunner, 2026-11-03). Showrunner ruling: the marker-only toggle stands.
 
 #### Work Order
 
