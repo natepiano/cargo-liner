@@ -1772,7 +1772,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Source:** the user, 2026-11-02, via the showrunner: "why don't you just read the staff document - it should be sub millisecond to read / eventually i do want to track other agents - between the staff page and the herdr commands we should be able to get answers much faster / herdr shouldn't focus on making staff fast - we should just read the staff page directly". The showrunner ruled the design the same day. It replaces the earlier `staff.py show --json --live` plan.
 
-**Evidence, read-only, 2026-11-02:** `~/.local/state/staff/staff.json` is 109 KB, schema 2, with key `rows`. It holds 394 rows: 322 `worker`, 65 `unit`, 7 `showrunner`. Each row has `id`, `kind`, `name`, `parent` and `current_session`. The Mac has no staff file.
+**Evidence, read-only, 2026-11-02:** `~/.local/state/staff/staff.json` is 109 KB, schema 2, with key `rows`. It holds 394 rows: 322 `worker`, 65 `unit`, 7 `showrunner`. From 2026-11-03 (staff owner sdlc, `~/.claude` main da268842c), one row has kind `agent` (morty). The reader accepts `agent` and keeps a row of an unknown kind out of the tree, never failing the whole read. Each row has `id`, `kind`, `name`, `parent` and `current_session`. The Mac has no staff file.
 
 **State model:**
 
