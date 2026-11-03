@@ -1614,21 +1614,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 ### Phase 47 — A command cell's account and directory are its border title  · status: done
 
-**Goal:** A command cell names its account and directory in its top border (`┌ [natepiano] ~/rust/hana ─`), and the body row that held them goes to the cell's content. From the user (2026-10-31): "when am i going to get my user and directory moved to the cell title". This was built on the Phase 28 tree (`CommandTitle` in `render/mod.rs` at `refs/tile-unit/p28-snapshot-1322`) and left with it on 2026-10-29; Phase 36m ported only the directory cut rule.
-
-**Spec:**
-1. The cell's heading text (account tag, then the directory, cut by Phase 36m's rule) is the border title through `TileCells::group_title` (`TileGroupTitle::Titled`), in the heading's ink and fade. The body draws no heading row. The summary and its `summary` title do not change.
-2. The cut fits the title room (frame width minus the corners and the title's spaces), not the body width.
-3. One owner computes the heading text for a cell; the title reads it. No second copy of the fitted text or of the fade (user rule 2026-10-30: no duplication). A per-frame cache only when a measurement names its cost.
-4. A cell's demand counts one row less. Live fill must not fall below main: the Phase 28 tree lost fill here, so the live capture compares columns that end above the foot against main.
-
-**Tests:** `a_command_cell_names_its_directory_in_its_border`; `a_cell_title_cuts_the_directory_by_the_header_rule_at_title_width`; `a_command_cell_draws_no_heading_row_in_its_body`; the Phase 36m header tests move to the title.
-
-**Live check:** 393 x 89 on natedev against main: one title per cell, no heading row in a body, fill equal or better.
-
-**Files:** `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`.
-
-**Depends on:** Phase 42 (both change `render.rs`).
+**As built** (checkpoint `ac47cbba`, merged as main `2fb29335c`, 2026-11-03): a command cell names its account tag and directory in its top border through `TileGroupTitle::Titled`. The body draws no lead heading row, so the cell shows one more process row. One account decision, `TableAccountHeadings`, feeds the title and any nested body heading. The directory cut fits the title room. A nested directory keeps its body heading. Live at 393x89 against main: 8 of 8 command cells have one title, no lead heading stays in a body, and process rows stay 17 of 17 with no clipped cell.
 
 ### Phase 46 — Enter shows the focused cell on the full screen, and Esc returns to the grid  · status: todo
 
