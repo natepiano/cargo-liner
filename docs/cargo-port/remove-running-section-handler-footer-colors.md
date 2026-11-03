@@ -1463,13 +1463,6 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 3. `CodexSessionLink` keeps one decision per TUI, in this order: a proven thread name, then the herdr name, then the pid. The herdr name is a third variant, not a thread.
 4. A pane with more than one Codex window gives no herdr name to any of them. The pid shows for each one.
 
-**Carried from 60a (first, before the herdr work):** 60a landed after its third repair round. Its open socket findings come first here (Astra review, /tmp/claude/astra/20261102T191610Z-3732506/review.md):
-- F002 and F013: the socket stage must stay under 1 ms. Replace the inode cache and the `/proc/net/unix` check with one fresh `AF_UNIX` sock_diag dump per scan that requests `UDIAG_SHOW_PEER`. Read multipart replies through `NLMSG_DONE`. Treat an incomplete dump as unknown.
-- F018: a cached `NoPeer` answer must not outlive a later connection. 60a reverted its `/proc/net/unix` check because it cost about 570 us per scan. The fresh dump fixes this.
-- F019: `ENOENT` from an `AF_UNIX` query is not `NoPeer`. An unchanged TCP socket must not cause a query on each scan.
-- Test: a persistent TCP socket across full refreshes, and a datagram peer change.
-- Measure the release build: 3 runs of 1,000 scans, with wall time and thread CPU time. Report p50, p95, p99, max and the count over 1 ms.
-
 **Spec:**
 1. Read herdr through its socket API. Take the socket path from herdr's own environment or config. Hard-code no path.
 2. Read herdr only when a Codex window has no proven thread. Cache by pane revision. Herdr absent or unreadable: show the pid, with no error.
@@ -1478,9 +1471,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 5. CHANGELOG: one Added line in cargo-handler.
 
 **Files:**
-- `crates/cargo-handler/src/census/codex/mod.rs`
-- `crates/cargo-handler/src/census/codex/socket.rs`
-- `crates/cargo-handler/src/census/codex/socket_tests.rs`
+- `crates/cargo-handler/src/census/codex.rs`
 - `crates/cargo-handler/src/census/herdr.rs`
 - `crates/cargo-handler/src/census/herdr_tests.rs`
 - `crates/cargo-handler/src/census/mod.rs`

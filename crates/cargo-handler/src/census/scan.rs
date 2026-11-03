@@ -60,7 +60,6 @@ use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 use super::codex;
 use super::codex::CodexLogs;
-use super::codex::CodexThread;
 use super::codex_names::SessionName;
 use super::codex_names::SessionNames;
 use super::desktop;
@@ -152,6 +151,7 @@ pub(super) struct LocalScanner {
     session_names:       SessionNames,
     /// Each Codex account log advances from its retained row id.
     codex_logs:          CodexLogs,
+    herdr:               super::herdr::HerdrNames,
     codex_links:         HashMap<u32, CodexSessionLink>,
     codex_start_window:  CodexStartWindow,
     transcript_activity: HashMap<PathBuf, TranscriptRead>,
@@ -231,7 +231,6 @@ impl LocalScanner {
         &mut self,
         processes: &[ProcessEntry],
         sessions: &[SessionRecord],
-        codex_threads: &[CodexThread],
         home: Option<&Path>,
         mut publish: impl FnMut(Vec<AgentRow>),
         read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
@@ -239,7 +238,6 @@ impl LocalScanner {
         self.scan_stages_with(
             processes,
             sessions,
-            codex_threads,
             home,
             |_, rows| publish(rows),
             read_details,
@@ -251,7 +249,6 @@ impl LocalScanner {
         &mut self,
         processes: &[ProcessEntry],
         sessions: &[SessionRecord],
-        _: &[CodexThread],
         home: Option<&Path>,
         mut publish: impl FnMut(ScanStage, Vec<AgentRow>),
         read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
@@ -268,9 +265,11 @@ impl LocalScanner {
             )
         });
         if matches!(self.publication, LocalPublication::FirstAnswerPending) {
+            self.attach_codex_names(&mut rows);
             publish(ScanStage::Classified, rows.clone());
         }
         startup_log::startup_stage("details", || read_details(self, &mut rows));
+        self.attach_codex_names(&mut rows);
         publish(ScanStage::Completed, rows);
         self.publication = LocalPublication::CompletedAnswerPublished;
     }
@@ -283,6 +282,9 @@ impl LocalScanner {
         });
         self.codex_links =
             classify::codex_session_links(processes, home, &self.codex_logs, &records);
+        startup_log::startup_stage("herdr_names", || {
+            self.herdr.refresh(processes, &mut self.codex_links);
+        });
     }
 
     /// A scanner of the user running this process.
@@ -298,6 +300,10 @@ impl LocalScanner {
             rollouts: Rollouts::default(),
             session_names: super::codex_names::SessionNames::default(),
             codex_logs: codex::CodexLogs::default(),
+            #[cfg(not(test))]
+            herdr: super::herdr::HerdrNames::default(),
+            #[cfg(test)]
+            herdr: super::herdr::HerdrNames::isolated(),
             codex_links: HashMap::new(),
             codex_start_window: crate::config::CodexStartWindow::default(),
             transcript_activity: HashMap::new(),
@@ -328,6 +334,8 @@ impl LocalScanner {
     pub(super) fn scan(&mut self) -> Vec<AgentRow> {
         let mut rows = Vec::new();
         self.scan_staged(|_, answer| rows = answer);
+        self.herdr.finish_initial(&mut self.codex_links);
+        self.attach_codex_names(&mut rows);
         rows
     }
 
@@ -342,11 +350,9 @@ impl LocalScanner {
         let processes =
             startup_log::startup_stage("process_table", || self.processes.read(&sessions));
         self.codex_logs.refresh(&processes, home.as_deref());
-        let codex_threads = Vec::new();
         self.scan_stages_with(
             &processes,
             &sessions,
-            &codex_threads,
             home.as_deref(),
             publish,
             |scanner, rows| {
@@ -487,7 +493,6 @@ impl LocalScanner {
                 continue;
             }
             row.activity = AgentActivity::Idle;
-            row.name = format!("pid {}", row.pid);
             let Some(thread) = self
                 .codex_links
                 .get(&row.pid)
@@ -497,8 +502,22 @@ impl LocalScanner {
             };
             let read = self.rollouts.read(&thread.rollout);
             row.activity = read.activity();
-            if let SessionName::Named(name) = self.session_names.name(thread) {
-                row.name = name;
+        }
+    }
+
+    /// This stage owns the fallback name in each interactive census row.
+    fn attach_codex_names(&self, rows: &mut [AgentRow]) {
+        for row in rows.iter_mut().filter(|row| row.agent == Agent::Codex) {
+            match self.codex_links.get(&row.pid) {
+                Some(CodexSessionLink::Named(thread)) => {
+                    row.name = match self.session_names.name(thread) {
+                        SessionName::Named(name) => name,
+                        SessionName::Unnamed => format!("pid {}", row.pid),
+                    };
+                },
+                Some(CodexSessionLink::HerdrName(name)) => row.name.clone_from(name),
+                Some(CodexSessionLink::NoMatch) => row.name = format!("pid {}", row.pid),
+                None => {},
             }
         }
     }
@@ -1991,6 +2010,7 @@ mod tests {
     use crate::census::Account;
     use crate::census::RoleFallback;
     use crate::census::SessionIdentity;
+    use crate::census::herdr::HerdrNames;
     use crate::census::hierarchy::ReviewerPools;
 
     #[test]
@@ -2266,6 +2286,7 @@ mod tests {
             rollouts:            Rollouts::default(),
             session_names:       super::super::codex_names::SessionNames::default(),
             codex_logs:          codex::CodexLogs::default(),
+            herdr:               HerdrNames::isolated(),
             codex_links:         HashMap::new(),
             codex_start_window:  crate::config::CodexStartWindow::default(),
             transcript_activity: HashMap::new(),
@@ -2278,6 +2299,28 @@ mod tests {
             desktop_source:      DesktopSource::Windows(Vec::new()),
             desktops:            None,
         }
+    }
+
+    #[test]
+    fn the_census_name_stage_keeps_the_herdr_name_in_the_wire_row() {
+        let mut scanner = scanner();
+        let processes = vec![entry(2, 1, "codex", 20, &["codex"])];
+        let mut rows = classify::agent_rows_with_threads(
+            &processes,
+            &[],
+            &HashMap::new(),
+            None,
+            &AccountLabels::default(),
+        );
+        scanner
+            .codex_links
+            .insert(2, CodexSessionLink::HerdrName("morty".into()));
+        scanner.attach_codex_names(&mut rows);
+        assert_eq!(rows[0].name, "morty");
+        scanner.attach_codex_sessions(&processes, None, &mut rows);
+        scanner.attach_codex_names(&mut rows);
+        let wire = serde_json::to_value(&rows).expect("census wire rows");
+        assert_eq!(wire[0]["name"], "morty");
     }
 
     /// A process with its command line read.
@@ -2593,7 +2636,6 @@ mod hierarchy_publication_tests {
             runner,
             move |answers| {
                 LocalScanner::new(AccountLabels::default()).scan_stages_with(
-                    &[],
                     &[],
                     &[],
                     None,

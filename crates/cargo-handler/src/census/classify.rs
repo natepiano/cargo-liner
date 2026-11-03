@@ -290,6 +290,7 @@ pub(super) fn agent_rows_with_threads(
 #[derive(Clone, Debug)]
 pub(super) enum CodexSessionLink {
     Named(CodexThread),
+    HerdrName(String),
     NoMatch,
 }
 
@@ -297,7 +298,7 @@ impl CodexSessionLink {
     pub(super) const fn thread(&self) -> Option<&CodexThread> {
         match self {
             Self::Named(thread) => Some(thread),
-            Self::NoMatch => None,
+            Self::HerdrName(_) | Self::NoMatch => None,
         }
     }
 }
@@ -310,7 +311,7 @@ pub(super) fn linked_threads(links: &HashMap<u32, CodexSessionLink>) -> HashMap<
         .collect()
 }
 
-/// Resolve only process-proven log links. Unproven sessions show their pid.
+/// Resolve process-proven log links. Herdr can name an unproven session later.
 pub(super) fn codex_session_links(
     processes: &[ProcessEntry],
     home: Option<&Path>,
