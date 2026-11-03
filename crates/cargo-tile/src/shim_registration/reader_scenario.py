@@ -1431,7 +1431,9 @@ def assert_child_family(parent: StartedWriter, child: RegistrationCarrier,
     starts = tuple(row[child_header.index('start'):child_header.index('dur')].strip()
                    for row in (parent_row, child_row))
     assert all(starts), 'start cells are absent\n' + rendered
-    headings = tuple(line.strip() for line in command_lines
+    # The lead directory is the border title immediately above the table labels.
+    heading_lines = lines[child_header_line - 1:]
+    headings = tuple(line.strip() for line in heading_lines
                      if work.name in line or Path(os.fsdecode(child[3][5])).name in line)
     assert len(headings) == 2, 'source change loses a directory heading\n' + rendered
     return family, starts, headings

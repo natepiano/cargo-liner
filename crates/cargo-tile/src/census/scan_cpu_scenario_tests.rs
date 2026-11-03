@@ -602,17 +602,7 @@ fn assert_nested_render(
         AccountName::Unavailable => capture.root_status[0].root.uid.to_string(),
     };
     let area = ratatui::layout::Rect::new(0, 0, 200, 20);
-    let mut buffer = ratatui::buffer::Buffer::empty(area);
-    render::draw_cell_for_test(
-        &mut buffer,
-        roster,
-        &TileContent::Group(group.id()),
-        area,
-        4,
-    );
-    let lines: Vec<String> = (0..area.height)
-        .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
-        .collect();
+    let lines = render::cell_lines_for_test(roster, &TileContent::Group(group.id()), area, 4);
     let text = lines.join("\n");
     for command in [
         "cargo build probe-carrier",

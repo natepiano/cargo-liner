@@ -5535,17 +5535,7 @@ pub(crate) mod tests {
         assert_eq!(roster.groups()[0].rows().count(), 1 + group.rest.len());
         assert_eq!(roster.tiled_ids(&[]), [group.id()]);
         let area = ratatui::layout::Rect::new(0, 0, 160, 24);
-        let mut buffer = ratatui::buffer::Buffer::empty(area);
-        crate::render::draw_cell_for_test(
-            &mut buffer,
-            &roster,
-            &TileContent::Group(group.id()),
-            area,
-            4,
-        );
-        (0..area.height)
-            .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
-            .collect()
+        crate::render::cell_lines_for_test(&roster, &TileContent::Group(group.id()), area, 4)
     }
 
     #[test]
@@ -5665,19 +5655,13 @@ pub(crate) mod tests {
             assert_eq!(roster.groups().len(), 1);
             assert_eq!(roster.groups()[0].rows().count(), 1);
             let area = ratatui::layout::Rect::new(0, 0, 160, 12);
-            let mut buffer = ratatui::buffer::Buffer::empty(area);
-            crate::render::draw_cell_for_test(
-                &mut buffer,
+            let text = crate::render::cell_lines_for_test(
                 &roster,
                 &TileContent::Group(identity.clone()),
                 area,
                 4,
-            );
-            let text: String = buffer
-                .content()
-                .iter()
-                .map(ratatui::buffer::Cell::symbol)
-                .collect();
+            )
+            .join("\n");
             assert_eq!(text.matches("~/project").count(), 1, "{text}");
             assert_eq!(text.matches("cargo build").count(), 1, "{text}");
             assert_eq!(text.matches("blocked").count(), 1, "{text}");
