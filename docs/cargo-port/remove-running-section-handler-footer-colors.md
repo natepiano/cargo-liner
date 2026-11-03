@@ -1533,15 +1533,19 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: a shot of a unit tile on natedev with a worker row that shows `waiting` or a gate step during a live detached run, a design check line, and a Change-Review line.
 
-### Phase 63 — A click on a row's open/close marker toggles that row  · status: todo
+### Phase 63 — Expand and collapse by mouse and by depth keys  · status: todo
 
-**Depends on:** Phase 45 (done). Runs after Phase 62, or beside Phase 57c (showrunner, 2026-11-03). Showrunner ruling: the marker-only toggle stands.
+**Depends on:** Phase 45 (done). Runs after Phase 62, or beside Phase 57c (showrunner, 2026-11-03). Showrunner rulings: the marker-only toggle stands; the C185 depth keys fold into this phase, because both change the same open-row state.
 
 #### Work Order
 
-**Goal:** a left click on a row's `▶` or `▼` marker opens or closes that row, the same as Right and Left.
+**Goal:** a left click on a row's `▶` or `▼` marker opens or closes that row, the same as Right and Left. The digit keys show the focused tile to a depth, and `-` closes every tile to its roots and first level.
 
 **Source:** the user, via the showrunner, 2026-11-03: "expand collapse should respond to mouse clicks also". Showrunner ruling: a click on the marker toggles the row; match cargo-port's project list if it takes clicks.
+
+**Source (depth keys):** the user, change review C185 on Phase 45, 2026-11-03: "works: - should just close to showing the root and first level - also for the focused cell, the numbers should show up to that level - 1 will show root and first 2 will show root 1 and 2, and so on - the numbers up to 9 should work - 0 should collapse to the root".
+
+**Key check (main ff9c2b2fc):** no cargo-handler key takes `1` to `9`. `0` is `ResetExpansion` and `-` is `CollapseAll` (`globals.rs` ≈43, ≈93, ≈175, ≈179); this phase changes both. cargo-handler's tile removal is Shift-Delete, so no tile key takes a digit or `-`. In cargo-tile, a separate app, `-` is `RemoveTile` and `+` is `AddTile` (`cargo-tile/src/app_global_action.rs` ≈64); this phase does not change cargo-tile. `1` to `3` are attract-screen keys in `tui_pane` (`attract/moving_band.rs` ≈140); they act only while the attract screen replaces the grid, when no tile has focus.
 
 **cargo-port (main ff9c2b2fc):** a left click on a project list row selects it and toggles its expansion (`tui/interaction.rs` `handle_click` → `toggle_selected_project_expansion`). The click is on the whole row.
 
@@ -1551,19 +1555,25 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 1. Phase 45's `HandlerExpansion` keeps the open and closed choices. A click changes it only through the same operation that Right and Left use.
 2. A marker hit is part of the painted frame: the row identity and the marker's two cells. A click on a leaf row's lead does nothing more than select.
 3. A marker click also selects the row, as Phase 16's click does.
+4. Each tile has a depth level, `DepthLevel::{Through(n), All}` with n from 0 to 9. The default is `Through(1)`: the roots and the first level show, the same as today's default. A row at depth d is open when d < n. `All` opens every row.
+5. A digit key n sets the focused tile to `Through(n)` and clears that tile's row choices. `=` sets every tile to `All`. `-` sets every tile to `Through(1)`. `0` is `Through(0)`: only roots show. A new row in a tile follows that tile's level.
+6. A row choice (Right, Left, Enter, a marker click) wins over its tile's level until the next level key for that tile.
 
 **Spec:**
 1. Record each painted row's marker cells beside its row span in `SurfaceSelection` (`interaction.rs`). Compute them from `TreeLine::lead` (`agent_cell.rs`), the same text that draws the marker.
 2. Extend `RowClick` with an outcome for a marker hit, for example `RowClick::Toggled(RowIdentity)`. Keep one click dispatcher and one hit test (Phase 16 binds).
 3. On a marker hit, select the row and apply the toggle that Enter applies.
 4. Tests under 1 s: a click on `▶` opens the row; a click on `▼` closes it; a click on the name only selects; a click on a leaf row's lead only selects; a click on a scrolled tile hits the painted row.
-5. CHANGELOG: one Added line in cargo-handler.
+5. Replace `ResetExpansion` with one action per digit key, 0 to 9, for the focused tile. `-` keeps `CollapseAll` and now closes to `Through(1)`. The default `Through(1)` gives the same view as today's reset. The shortcuts overlay shows the digits as one row if the overlay can group them; else ten rows.
+6. The level lives in cargo-handler's `expansion.rs`. Do not add it to the shared `tui_pane` expansion model: cargo-port has no consumer for it.
+7. Tests under 1 s: `1`, `2` and `9` show the focused tile to that depth and leave other tiles as they are; `0` shows only roots; `-` closes every tile to the first level; a new deep row follows its tile's level; a row choice wins over the level until the next level key; the key table maps each digit.
+8. CHANGELOG: one Added line and one Changed line (`-` and `0`) in cargo-handler.
 
-**Files:** `crates/cargo-handler/src/interaction.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/app/expansion.rs`, their tests, `crates/cargo-handler/CHANGELOG.md`.
+**Files:** `crates/cargo-handler/src/interaction.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/expansion.rs`, `crates/cargo-handler/src/globals.rs`, `crates/cargo-handler/src/expansion_tests.rs`, their tests, `crates/cargo-handler/CHANGELOG.md`.
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: shots on natedev before and after a marker click, a design check line, and a Change-Review line.
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: shots on natedev before and after a marker click, and after `0`, `2` and `-`; a design check line; and Change-Review lines for the marker click and the depth keys.
 
 ### Phase 64 — A one-shot probe waits for herdr pane names  · status: todo
 
