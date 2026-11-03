@@ -1393,47 +1393,24 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 60 — A Codex session opened from the resume picker shows its own name  · status: done
 
-**Depends on:** none. Runs first when work restarts (showrunner, 2026-11-02), beside Phase 54's checks; 57c stays held.
+#### As-built
 
-#### Work Order
+- `census/codex.rs` reads Codex's log database (`logs_<n>.sqlite`, the highest `<n>` in the process's account home) and links an interactive Codex process to the thread its records name. The records come from the process's own pid or from its managed app-server child. The read is incremental: the first read starts at the oldest process start through `idx_logs_ts`, and later reads use the log id cursor.
+- `census/classify.rs` chooses the thread in this order: the newest exact log record, the argv thread id, `resume --last`, then the start window. A shared managed daemon gives no log link for any client, and it never removes an argv or start-window name.
+- A record from a pid not yet in the process snapshot is kept until the next snapshot checks its pid and start time (F013). A new or replaced thread database is reopened (F014).
+- The start window moved from `constants.rs` to `[census] codex_thread_start_window` in the config, with 60 s as the default.
+- Tests name the thread for five launch forms: a new session, `codex resume <id>`, `codex resume --last`, a bare `codex resume` with the managed child, and `/resume` inside the TUI.
+- Measured: release CPU 0.79 → 0.75 CPU-s per 30 s; first log read about 50 ms on the scan thread; steady reads 98–495 µs.
 
-**Goal:** an interactive Codex session started with a bare `codex resume` (the picker) shows its thread name, for example `morty`, in its tile and in the summary.
+#### Known limits
 
-**Source:** the user, 2026-11-01: "once again a new run of cargo handler does not show the morty session - a continuing bug". Phases 41 and 57d fixed the earlier forms of this report.
+- When a second TUI uses another TUI's child daemon, logs a thread and exits before the next scan, that thread can go to the TUI that stays (showrunner ruling).
+- A TUI that uses a detached daemon (under `systemd --user`) is not linked. morty is this form; Phase 60a links it.
 
-**Cause, found by the director on natedev 2026-11-01:**
-- morty runs as pid 817898, argv `codex resume`, `CODEX_HOME=~/.codex2`, cwd `/home/natepiano`. The argv names no thread, so `codex::resume_request` returns `NewSession`.
-- morty's thread `01a18dbb-7e8f-7641-b3dd-bb2071ab9d7a` was created on 2026-10-30. It is outside the 60 s start window, so `codex_startup_threads` finds no thread for the process. A launch by `codex resume <id>` or `codex resume --last` works; a launch through the picker does not.
-- Codex 0.166.0 runs a managed `codex app-server --listen unix:// --managed-daemon` as a child of the TUI (pid 817986 here). That daemon writes `logs_2.sqlite` rows with `process_uuid = 'pid:817986:<uuid>'` and `thread_id = 01a18dbb-…`. This is an exact link from a process to the thread it serves.
+#### Gotchas
 
-**Constraints from prior phases:**
-- Phase 41: interactive threads are `thread_source = 'user'` with `source` not `'exec'`, or `originator = 'codex-tui'` on old rows. `ThreadsLayout` is chosen once per database open.
-- Phase 57d: a thread belongs to the account home of the database that supplied it. A shared rollout path never sets the account. Names come from the thread's own account index, with the database name as the fallback.
-- CPU first: the census must not get slower. `logs` has no index on `process_uuid` for rows with a thread (`idx_logs_process_uuid_threadless_ts` covers only `thread_id IS NULL`). A full lookup by pid took 1.3 s on natedev's 72 MB log. A newest-first lookup took 13 ms only because the row was recent.
-
-**Spec:**
-1. For each interactive Codex whose argv names no thread, the census reads the newest user thread that Codex's log database (`logs_<n>.sqlite`, the highest `<n>`, in the process's own account home) records under the pid of the process or of its app-server child. That thread is the process's thread. The 60 s start window stays as the fallback when the log has no row for those pids.
-2. The log read is incremental: keep the last log `id` read per database, and each scan reads only newer rows. The first read starts at the oldest such process's start time through `idx_logs_ts`. Steady state stays under 1 ms per scan; report the first-read time and the steady time on natedev.
-3. Find whether one managed daemon serves more than one TUI. If it does, tell the TUIs apart (for example by the daemon connection that opened the thread). If they cannot be told apart, leave the rows unnamed: never show a wrong name.
-4. A thread switch inside the TUI (`/resume`) moves the row to the newly logged thread at the next scan.
-5. Red-first tests under 1 s, with fixture `logs` and `threads` tables: a bare `codex resume` with an app-server child shows its thread name; a second resume in the same process shows the newer thread; a scan with no new log rows reads no old rows; a process with no log row keeps the start-window match.
-6. The start window (`CODEX_THREAD_START_WINDOW`, 60 s) moves from `constants.rs` into cargo-handler's `[census]` config, with 60 s as the default (showrunner, 2026-11-02). `CODEX_THREAD_START_SLACK` stays in code: it is the whole-second precision of the process table, not a setting.
-7. CHANGELOG: one Fixed line in cargo-handler.
-
-**Files:**
-- `crates/cargo-handler/src/constants.rs` — the log database name and queries; the window constant leaves
-- `crates/cargo-handler/src/config.rs` — the start window setting
-- `crates/cargo-handler/src/census/codex.rs` — the incremental log reader
-- `crates/cargo-handler/src/census/classify.rs` — `codex_startup_threads` uses the log link
-- `crates/cargo-handler/src/census/scan.rs` — holds the reader state between scans
-- `crates/cargo-handler/src/census/codex_session_tests.rs` — the tests
-- `crates/cargo-handler/CHANGELOG.md`
-
-**Workers:** 1 writer.
-
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: on natedev, with two TUIs on one daemon, a /resume in one TUI moves that TUI's name, and no TUI ever shows a wrong name; the notice states the result. Morty by name on a shared daemon depends on the user's answer about a Codex feature request. The socket stage stays under 1 ms on the final design. CPU: at least 3 live pairs against Phase 60, with the median change and the spread; the idle CPU is not higher. The checkpoint adds a Change-Review line.
-
-**Outcome (2026-11-02):** tests pass for all five launch forms, and the idle CPU did not rise (0.79 → 0.75 CPU-s per 30 s). The live morty gate was not met: morty now uses a detached managed daemon under `systemd --user`, not a child of its TUI. The phase landed by the three-repair-round rule (showrunner); Phase 60a takes the live gate. Known limit (showrunner ruling): when a second TUI uses another TUI's child daemon, logs a thread and exits before the next scan, that thread can go to the TUI that stays.
+- The live gate failed because the fixtures modelled only a daemon that is the TUI's child. Build a fixture from a capture of the real process tree.
+- The phase landed by the three-repair-round rule.
 
 ### Phase 60a — A Codex session that uses a detached daemon shows its own name  · status: done
 
@@ -1447,31 +1424,18 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Cause, found in the Phase 60 live check:** morty runs as pid 3190832, argv `codex resume`, `CODEX_HOME=~/.codex2`. Its managed daemon is pid 817986 under `systemd --user` (pid 2047), not a child of the TUI. The Phase 60 reader looks only at the TUI and its app-server children, so it finds no record for morty.
 
-**State model:**
-
-1. The process table owns each live process: pid, start time, account home, argv, cwd and parent. A new process creates an entry. Exit removes it. A reused pid has a new start time. Shared rollout paths never merge account homes.
-2. `AccountFiles` owns the selected log and thread database paths and the account directory revision. One directory read selects both versions after that revision changes. `LogDatabase` owns the selected log file identity and connection. A replaced log resets its cursor. The thread stage opens the selected thread database on each scan.
-3. `LogDatabase` owns its cursor and raw records: source pid, timestamp, log id and thread id. The cursor starts at the oldest TUI start time, then advances by id. New rows change the records. An unchanged log returns no old rows. The log reader stores no thread names, ownership flags or retry list.
-4. A raw record can precede its process snapshot. The next snapshot checks its pid and start time. Exit or pid reuse removes stale records. A daemon restart has a new process identity.
-5. `SocketSnapshot` owns the current set of interactive TUI peers of each daemon. Linux caches socket peers by inode, connected and unconnected, and reads peers once per scan. Each scan reads the current descriptors. Disconnect, exit, pid reuse or daemon restart removes stale peers. Unreadable TUI sockets prevent a decision for that account. A socket with no peer is not an endpoint.
-6. The same socket rule applies to child and detached daemons. Non-TUI clients, including `send.py`, do not affect the TUI count. Linux reads `UNIX_DIAG_PEER` through sock_diag netlink. macOS reads socket descriptors through libproc. Neither read starts a process.
-6a. A thread name comes only from a confirmed thread-selection event: a codex-tui `thread/start` or `thread/resume` request and its success response, matched by daemon, `app_server.connection_id` and request id. A connection names a TUI only through an exact join of that connection to the TUI process. Connection order, a start window and a single connected TUI are not a join (showrunner, 2026-11-02, design A after the Astra review). A TUI on its own child daemon owns that daemon's connections, which is an exact join. With no exact join, the TUI shows its pid. A wrong name is never shown.
-7. `ThreadRows` owns current answers for requested thread ids: missing, non-user or user. One database connection resolves log and argv ids per account. Each scan retries missing rows and reads current names. A new or replaced thread database supplies the next answer.
-8. `CodexSessionLink` owns one resolved decision per TUI: named thread or pid. Resolve this map once per scan. Use the newest confirmed selection event that joins exactly to the TUI. On a child daemon, the argv resume id and the start window still apply when no event exists. On a shared daemon, no argv or start-window inference applies: no exact join gives the pid. A new confirmed event changes the linked thread.
-9. Classification, names and tiers read the same link map. The internal `link` adapter returns `Option<&CodexThread>`. Missing rows and socket ambiguity stay in their own records. No public API changes.
-
 **Spec:**
 1. State model first, in this section, for showrunner review before code: each state of a process-to-thread link, the one record that holds it, and every path that creates or changes it. Two records never hold the same fact.
 2. Part 1, the seven /simplify items, with no change to any name shown:
    1. The log reader yields only pid → thread id. The existing codex_sqlite stage resolves those ids with the argv ids in one by-id query. Remove the reader's own thread connection, layout, name cache and retry list.
-   2. Ownership is a process property: keep raw records per pid, and decide shared-daemon ownership at link time. Remove `LogOwnership`, the unseen/pending split and the rewrite loop. One socket relation replaces the two child filters.
+   2. Ownership is a process property: keep raw records per pid, and decide shared-daemon ownership at link time. Remove `LogOwnership`, the unseen/pending split and the rewrite loop. One `app_server_children` helper replaces the two child filters.
    3. Resolve links once per scan and pass one map to classify, names and tiers. `link` returns `Option<&CodexThread>`. Remove `SharedDaemon` and the link source names that nothing reads.
    4. Remove the test-only `CodexLogEvidence::Unread` and the `#[cfg(test)]` wrappers `agent_rows` and `codex_startup_threads`.
    5. Return early when the account directory stamp is unchanged. Use one `read_dir` pass, `FileRevision::of`, and one shared `FileIdentity::read`. Merge the open and reopen functions.
    6. No transaction around the single steady SELECT. Remove the duplicate log read timing.
    7. Tests use the shared fixture helpers. Merge the two client-exits-stays-ambiguous tests.
 3. Part 2: link a TUI to the thread of a detached daemon it is connected to. Find the evidence from a capture of morty's real process tree and its daemon connection (for example the TUI's unix socket peer). Do not use an invented layout. When the evidence cannot name one client, leave the row unnamed: never show a wrong name.
-4. Tests under 1 s: keep the five launch-form tests of Phase 60 with their asserted names. Add the detached-daemon form, built from the capture. Add the Astra counterexamples on a shared daemon: a short-lived client, a picker delay, a reconnect, and a resume by another client. Each shows the pid or the right name, never a wrong name.
+4. Tests under 1 s: keep the five launch-form tests of Phase 60 with their asserted names. Add the detached-daemon form as the sixth, built from the capture.
 5. CHANGELOG: one Fixed line in cargo-handler.
 
 **Files:** `crates/cargo-handler/src/census/{codex.rs, classify.rs, scan.rs, codex_session_tests.rs}`, `crates/cargo-handler/CHANGELOG.md`.
@@ -1499,13 +1463,6 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 3. `CodexSessionLink` keeps one decision per TUI, in this order: a proven thread name, then the herdr name, then the pid. The herdr name is a third variant, not a thread.
 4. A pane with more than one Codex window gives no herdr name to any of them. The pid shows for each one.
 
-**Carried from 60a (first, before the herdr work):** 60a landed after its third repair round. Its open socket findings come first here (Astra review, /tmp/claude/astra/20261102T191610Z-3732506/review.md):
-- F002 and F013: the socket stage must stay under 1 ms. Replace the inode cache and the `/proc/net/unix` check with one fresh `AF_UNIX` sock_diag dump per scan that requests `UDIAG_SHOW_PEER`. Read multipart replies through `NLMSG_DONE`. Treat an incomplete dump as unknown.
-- F018: a cached `NoPeer` answer must not outlive a later connection. 60a reverted its `/proc/net/unix` check because it cost about 570 us per scan. The fresh dump fixes this.
-- F019: `ENOENT` from an `AF_UNIX` query is not `NoPeer`. An unchanged TCP socket must not cause a query on each scan.
-- Test: a persistent TCP socket across full refreshes, and a datagram peer change.
-- Measure the release build: 3 runs of 1,000 scans, with wall time and thread CPU time. Report p50, p95, p99, max and the count over 1 ms.
-
 **Spec:**
 1. Read herdr through its socket API. Take the socket path from herdr's own environment or config. Hard-code no path.
 2. Read herdr only when a Codex window has no proven thread. Cache by pane revision. Herdr absent or unreadable: show the pid, with no error.
@@ -1514,9 +1471,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 5. CHANGELOG: one Added line in cargo-handler.
 
 **Files:**
-- `crates/cargo-handler/src/census/codex/mod.rs`
-- `crates/cargo-handler/src/census/codex/socket.rs`
-- `crates/cargo-handler/src/census/codex/socket_tests.rs`
+- `crates/cargo-handler/src/census/codex.rs`
 - `crates/cargo-handler/src/census/herdr.rs`
 - `crates/cargo-handler/src/census/herdr_tests.rs`
 - `crates/cargo-handler/src/census/mod.rs`
@@ -1570,6 +1525,35 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 2. Collapse on a closed child moves the selection to its parent.
 3. Tests under 1 s for the default, each operation, a row that leaves and comes back, and a row that moves parent.
 4. CHANGELOG: one Added line in cargo-handler.
+
+**Files:**
+- `crates/cargo-handler/src/app.rs`
+- `crates/cargo-handler/src/globals.rs`
+- `crates/cargo-handler/src/terminal.rs`
+- `crates/cargo-handler/src/keymap.rs`
+- `crates/cargo-handler/src/agent_cell.rs`
+- `crates/cargo-handler/src/tiles.rs`
+- `crates/cargo-handler/src/interaction.rs`
+- `crates/cargo-handler/src/constants.rs`
+- `crates/cargo-handler/src/summary/mod.rs`
+- `crates/cargo-handler/src/census/tree.rs`
+- `crates/cargo-handler/src/expansion.rs`
+- `crates/cargo-handler/src/expansion_tests.rs`
+- `crates/cargo-handler/CHANGELOG.md`
+
+
+
+Phase 45 assertion migrations:
+
+Assertion-Change: crates/cargo-handler/src/agent_cell.rs::a_cell_draws_its_header_and_what_its_agent_runs — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell.rs::each_top_level_agent_holds_the_sessions_it_opened — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell.rs::conflicting_and_cyclic_edges_form_one_deterministic_forest — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell/tests/activity_tests.rs::activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_ids — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell/tests/sort_tests.rs::default_tree_sort_preserves_phase_one_rows_rails_and_hues — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell/tests/sort_tests.rs::assert_column_keeps_subtrees_and_hues — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell/tests/tree_tests.rs::a_compressed_showrunner_starts_with_aligned_tree_columns — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell/tests/tree_tests.rs::work_lines_nest_below_their_member_and_skip_process_and_session_nodes — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs::unassigned_rows_are_flat_with_blank_roles_and_nested_work_rails — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
 
 **Workers:** 1 writer.
 
@@ -2091,3 +2075,8 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 **Workers:** 1 writer.
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: in cargo-handler on natedev, shift-left and shift-right move the focus, and the shortcuts overlay shows the four focus keys. The checkpoint adds a Change-Review line.
+
+Assertion-Change: crates/cargo-handler/src/render/narrow_width_tests.rs::growth_app — Change the End offset from 66 to 67. The selectable root adds one row.
+
+Assertion-Change: crates/cargo-handler/src/render/pinned_accounts_tests.rs::pinned_accounts_missed_click_keeps_selection_and_retired_surface_stays_gone — Add the preferred surface argument. Preserve the assertion that the retired row remains Gone.
+Assertion-Change: crates/cargo-handler/src/render/pinned_accounts_tests.rs::pinned_accounts_named_states_distinguish_empty_cells_rows_and_retired_content — Add the preferred surface argument. Preserve the assertions for Found(Summary) and Gone.

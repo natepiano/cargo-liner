@@ -39,7 +39,8 @@ unicode-width        = { workspace = true }
 tui_pane = { workspace = true, features = ["backdrop"] }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+census-test-support = { workspace = true }
+tempfile            = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Safe typed per-process libproc reads retain precise births, current names and cwd.

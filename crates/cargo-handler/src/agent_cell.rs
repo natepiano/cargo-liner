@@ -10,6 +10,8 @@ use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::iter;
 use std::num::NonZeroU64;
+use std::ops::Deref;
+use std::ops::DerefMut;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Alignment;
@@ -19,11 +21,18 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
+use tui_pane::RowParent;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::Viewport;
 use tui_pane::label_color;
 use tui_pane::text_default;
 
+use crate::app::expansion::ExpansionKey;
+use crate::app::expansion::HandlerExpansion;
+use crate::app::expansion::HandlerTree;
+use crate::app::expansion::HandlerTreeRow;
+use crate::app::expansion::RowVisibility;
+use crate::app::expansion::TreeMarker;
 use crate::census;
 use crate::census::Account;
 use crate::census::AccountColumn;
@@ -145,6 +154,8 @@ enum SessionLocation {
 /// The subject whose values a tree line draws.
 #[derive(Clone, Copy, Debug)]
 enum LineSubject<'a> {
+    /// The selectable root whose location appears in the tile heading.
+    TileRoot(RoleLabel),
     /// A listed agent opened or managed by a member of this tile.
     Agent(RoleLabel),
     /// A top-level session in the flat unassigned pool.
@@ -158,6 +169,31 @@ enum LineSubject<'a> {
 /// One member or work item, with the rails leading to it in the tree.
 #[derive(Clone, Debug)]
 struct TreeLine<'a> {
+    identity: SelectedRow,
+    content:  TreeLineContent<'a>,
+}
+
+impl<'a> TreeLine<'a> {
+    fn new(content: TreeLineContent<'a>) -> Self {
+        Self {
+            identity: content.selection_identity(0),
+            content,
+        }
+    }
+}
+
+impl<'a> Deref for TreeLine<'a> {
+    type Target = TreeLineContent<'a>;
+    fn deref(&self) -> &Self::Target { &self.content }
+}
+
+impl DerefMut for TreeLine<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.content }
+}
+
+/// Presentation values for one member or work item.
+#[derive(Clone, Debug)]
+struct TreeLineContent<'a> {
     /// The responsibility of a launcher folded into this thread.
     dispatch_label: DispatchLabel<'a>,
     machine:        &'a str,
@@ -167,6 +203,7 @@ struct TreeLine<'a> {
     rails:          Vec<Rail>,
     branch:         Branch,
     subject:        LineSubject<'a>,
+    expansion:      TreeMarker,
 }
 
 /// Whether an ancestor's vertical rail continues past this line.
@@ -294,8 +331,10 @@ struct ResolvedStatus {
 /// A work row paired with its classified role in the tree.
 #[derive(Clone, Copy, Debug)]
 struct Work<'a> {
-    child: &'a ChildRow,
-    kind:  WorkKind<'a>,
+    child:        &'a ChildRow,
+    kind:         WorkKind<'a>,
+    /// Position in the owning session's census children.
+    census_index: usize,
 }
 
 impl<'a> Work<'a> {
@@ -425,7 +464,7 @@ impl SessionHeaderLead {
     fn width(self) -> u16 {
         match self {
             Self::OverBranch => summary::cell_width(TREE_BRANCH),
-            Self::Flush => 0,
+            Self::Flush => summary::cell_width(TREE_SPACE),
         }
     }
 }
@@ -853,37 +892,24 @@ impl AgentTile<'_> {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn named_row_identities(&self) -> Vec<(String, SelectedRow)> {
+        let lines = match self {
+            Self::Agent(entry) => &entry.lines,
+            Self::Unassigned(entry) => &entry.lines,
+        };
+        lines
+            .iter()
+            .map(|line| (line.name(), line.identity.clone()))
+            .collect()
+    }
+
     pub(crate) fn row_identities(&self) -> Vec<crate::interaction::RowIdentity> {
         let lines = match self {
             Self::Agent(entry) => &entry.lines,
             Self::Unassigned(entry) => &entry.lines,
         };
-        let mut legacy_counts: Vec<(SelectedRow, usize)> = Vec::new();
-        lines
-            .iter()
-            .map(|line| {
-                let mut identity = line.selection_identity(0);
-                if matches!(identity, SelectedRow::LegacyWork { .. }) {
-                    // Only indistinguishable legacy work needs an occurrence rank.
-                    // Unrelated rows must not change a legacy row's identity.
-                    let occurrence = if let Some((_, count)) = legacy_counts
-                        .iter_mut()
-                        .find(|(previous, _)| previous == &identity)
-                    {
-                        let occurrence = *count;
-                        *count += 1;
-                        occurrence
-                    } else {
-                        legacy_counts.push((identity.clone(), 1));
-                        0
-                    };
-                    if let SelectedRow::LegacyWork { ordinal, .. } = &mut identity {
-                        *ordinal = occurrence;
-                    }
-                }
-                identity
-            })
-            .collect()
+        lines.iter().map(|line| line.identity.clone()).collect()
     }
 
     pub(crate) fn set_viewport(&self, viewport: &Viewport) {
@@ -1042,7 +1068,7 @@ pub(crate) fn shared_tree_metrics(
     result
 }
 
-impl TreeLine<'_> {
+impl TreeLineContent<'_> {
     fn selection_identity(&self, ordinal: usize) -> crate::interaction::RowIdentity {
         if let DispatchLabel::Worker(dispatch) = self.dispatch_label {
             return SelectedRow::Seat {
@@ -1052,60 +1078,142 @@ impl TreeLine<'_> {
             };
         }
         let child = match self.subject {
-            LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 return SelectedRow::session(self.machine, self.row);
             },
             LineSubject::ManagedThread(child, _) => child,
             LineSubject::Work(work) => work.child,
         };
-        if let WorkerDispatch::Worker(dispatch) = &child.dispatch {
-            return SelectedRow::Seat {
-                machine: self.machine.to_owned(),
-                seat:    dispatch.seat().to_owned(),
-                worker:  census::worker_identity(dispatch),
-            };
-        }
-        if let WorkIdentity::Recorded(id) = &child.work_id {
-            return SelectedRow::Subagent {
-                machine: self.machine.to_owned(),
-                owner:   RowOwner {
-                    pid:     self.row.pid,
-                    started: self.row.process_started,
-                },
-                id:      id.clone(),
-            };
-        }
-        if let CodexThreadId::Recorded(id) = &child.thread_id {
-            return SelectedRow::Thread {
-                machine: self.machine.to_owned(),
-                id:      id.clone(),
-            };
-        }
-        if matches!(child.kind, ChildKind::Shell(_))
-            && let Some(pid) = child.pid
-        {
-            return SelectedRow::Shell {
-                machine: self.machine.to_owned(),
-                pid,
-                started: child.started,
-            };
-        }
-        SelectedRow::LegacyWork {
-            machine: self.machine.to_owned(),
-            owner: RowOwner {
-                pid:     self.row.pid,
-                started: self.row.process_started,
+        work_selection_identity(self.machine, self.row, child, self.dispatch_label, ordinal)
+    }
+}
+
+/// Identify work from recorded data or its census occurrence.
+fn work_selection_identity(
+    machine: &str,
+    row: &AgentRow,
+    child: &ChildRow,
+    dispatch_label: DispatchLabel<'_>,
+    ordinal: usize,
+) -> SelectedRow {
+    if let DispatchLabel::Worker(dispatch) = dispatch_label {
+        return SelectedRow::Seat {
+            machine: machine.to_owned(),
+            seat:    dispatch.seat().to_owned(),
+            worker:  census::worker_identity(dispatch),
+        };
+    }
+    if let WorkerDispatch::Worker(dispatch) = &child.dispatch {
+        return SelectedRow::Seat {
+            machine: machine.to_owned(),
+            seat:    dispatch.seat().to_owned(),
+            worker:  census::worker_identity(dispatch),
+        };
+    }
+    if let WorkIdentity::Recorded(id) = &child.work_id {
+        return SelectedRow::Subagent {
+            machine: machine.to_owned(),
+            owner:   RowOwner {
+                pid:     row.pid,
+                started: row.process_started,
             },
-            kind: crate::interaction::LegacyWorkKind::from(&child.kind),
+            id:      id.clone(),
+        };
+    }
+    if let CodexThreadId::Recorded(id) = &child.thread_id {
+        return SelectedRow::Thread {
+            machine: machine.to_owned(),
+            id:      id.clone(),
+        };
+    }
+    if matches!(child.kind, ChildKind::Shell(_))
+        && let Some(pid) = child.pid
+    {
+        return SelectedRow::Shell {
+            machine: machine.to_owned(),
+            pid,
             started: child.started,
-            ordinal,
-        }
+        };
+    }
+    SelectedRow::LegacyWork {
+        machine: machine.to_owned(),
+        owner: RowOwner {
+            pid:     row.pid,
+            started: row.process_started,
+        },
+        kind: crate::interaction::LegacyWorkKind::from(&child.kind),
+        started: child.started,
+        ordinal,
+    }
+}
+
+/// Work identities assigned in census order before tree sorting.
+struct CensusWorkIdentities<'a> {
+    by_owner: HashMap<RowIdentity<'a>, Vec<SelectedRow>>,
+}
+
+impl<'a> CensusWorkIdentities<'a> {
+    fn for_placement(placement: &AgentPlacement<'a>) -> Self {
+        Self::new(
+            placement,
+            placement
+                .rows
+                .iter()
+                .map(|row| (row.identity, row.row))
+                .chain(
+                    placement
+                        .threads
+                        .iter()
+                        .map(|thread| (thread.owner, thread.owner_row)),
+                ),
+        )
     }
 
+    fn new(
+        placement: &AgentPlacement<'a>,
+        rows: impl IntoIterator<Item = (RowIdentity<'a>, &'a AgentRow)>,
+    ) -> Self {
+        let mut by_owner = HashMap::new();
+        for (owner, row) in rows {
+            by_owner.entry(owner).or_insert_with(|| {
+                let mut counts = HashMap::new();
+                row.children
+                    .iter()
+                    .map(|child| {
+                        let mut identity = work_selection_identity(
+                            owner.machine,
+                            row,
+                            child,
+                            placement.dispatch_label(child),
+                            0,
+                        );
+                        if matches!(identity, SelectedRow::LegacyWork { .. }) {
+                            let count = counts.entry(identity.clone()).or_insert(0);
+                            if let SelectedRow::LegacyWork { ordinal, .. } = &mut identity {
+                                *ordinal = *count;
+                            }
+                            *count += 1;
+                        }
+                        identity
+                    })
+                    .collect()
+            });
+        }
+        Self { by_owner }
+    }
+
+    fn work(&self, owner: RowIdentity<'a>, census_index: usize) -> SelectedRow {
+        self.by_owner[&owner][census_index].clone()
+    }
+}
+
+impl TreeLine<'_> {
     /// The name, with its machine when it differs from the heading.
     fn name(&self) -> String {
         let original = match self.subject {
-            LineSubject::Agent(_) | LineSubject::UnassignedSession => &self.row.name,
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                &self.row.name
+            },
             LineSubject::ManagedThread(child, _) => &child.name,
             LineSubject::Work(work) => &work.child.name,
         };
@@ -1133,17 +1241,29 @@ impl TreeLine<'_> {
 
     /// Tree rails and the branch preceding this name.
     fn lead(&self) -> String {
+        let ending = match (self.branch, self.expansion) {
+            (Branch::Flat, TreeMarker::Open) => "▼ ",
+            (Branch::Flat, TreeMarker::Closed) => "▶ ",
+            (Branch::Flat, TreeMarker::Leaf) => "  ",
+            (Branch::Middle, TreeMarker::Open) => "├─▼ ",
+            (Branch::Middle, TreeMarker::Closed) => "├─▶ ",
+            (Branch::Last, TreeMarker::Open) => "└─▼ ",
+            (Branch::Last, TreeMarker::Closed) => "└─▶ ",
+            _ => self.branch.glyph(),
+        };
         self.rails
             .iter()
             .map(|&rail| rail.glyph())
-            .chain(iter::once(self.branch.glyph()))
+            .chain(iter::once(ending))
             .collect()
     }
 
     /// The start of this subject, rather than its carrier process.
     const fn started(&self) -> u64 {
-        match self.subject {
-            LineSubject::Agent(_) | LineSubject::UnassignedSession => self.row.started,
+        match self.content.subject {
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                self.content.row.started
+            },
             LineSubject::ManagedThread(child, _) => child.started,
             LineSubject::Work(work) => work.child.started,
         }
@@ -1151,21 +1271,26 @@ impl TreeLine<'_> {
 
     /// Work without its own recorded account uses the owning session's account.
     const fn account(&self) -> &Account {
-        match self.subject {
-            LineSubject::Agent(_) | LineSubject::UnassignedSession => &self.row.account,
+        match self.content.subject {
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                &self.content.row.account
+            },
             LineSubject::ManagedThread(child, _) => &child.account,
-            LineSubject::Work(work) => work.account(&self.row.account),
+            LineSubject::Work(work) => work.account(&self.content.row.account),
         }
     }
 
     /// The tier follows the account rather than a thread's activity.
     const fn service_tier(&self) -> ServiceTier {
-        match self.subject {
-            LineSubject::Agent(_) | LineSubject::UnassignedSession => self.row.service_tier,
+        match self.content.subject {
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                self.content.row.service_tier
+            },
             LineSubject::ManagedThread(child, _)
             | LineSubject::Work(Work {
                 child,
                 kind: WorkKind::Thread,
+                ..
             }) => child.service_tier,
             LineSubject::Work(_) => ServiceTier::Unrecorded,
         }
@@ -1173,13 +1298,14 @@ impl TreeLine<'_> {
 
     /// The program whose account this line names.
     const fn program(&self) -> Agent {
-        match self.subject {
-            LineSubject::Agent(_)
+        match self.content.subject {
+            LineSubject::TileRoot(_)
+            | LineSubject::Agent(_)
             | LineSubject::UnassignedSession
             | LineSubject::Work(Work {
                 kind: WorkKind::Shell(_) | WorkKind::Subagent(_),
                 ..
-            }) => self.row.agent,
+            }) => self.content.row.agent,
             LineSubject::ManagedThread(_, _)
             | LineSubject::Work(Work {
                 kind: WorkKind::Thread,
@@ -1198,7 +1324,7 @@ impl TreeLine<'_> {
                     LineKind::UnassignedSession
                 }
             },
-            LineSubject::Agent(role) => LineKind::Session(role),
+            LineSubject::TileRoot(role) | LineSubject::Agent(role) => LineKind::Session(role),
             LineSubject::ManagedThread(
                 ChildRow {
                     worker_task: WorkerTask::Reviewer { .. },
@@ -1213,6 +1339,7 @@ impl TreeLine<'_> {
                         ..
                     },
                 kind: WorkKind::Thread,
+                ..
             }) => LineKind::Worker(WorkerRoleSource::resolve(WorkerRoleInput::ReviewerLease)),
             LineSubject::ManagedThread(_, role) => {
                 LineKind::Worker(WorkerRoleSource::resolve(WorkerRoleInput::Hierarchy(role)))
@@ -1297,7 +1424,8 @@ impl TreeLine<'_> {
                     kind: WorkKind::Subagent(_),
                     ..
                 }) => "subagent",
-                LineSubject::Agent(_)
+                LineSubject::TileRoot(_)
+                | LineSubject::Agent(_)
                 | LineSubject::UnassignedSession
                 | LineSubject::ManagedThread(_, _)
                 | LineSubject::Work(Work {
@@ -1315,7 +1443,10 @@ impl TreeLine<'_> {
                     .into_owned(),
             },
             TreeColumn::Branch | TreeColumn::Directory
-                if matches!(self.subject, LineSubject::Work(_)) =>
+                if matches!(
+                    self.subject,
+                    LineSubject::TileRoot(_) | LineSubject::Work(_)
+                ) =>
             {
                 MISSING_VALUE.to_string()
             },
@@ -1346,7 +1477,7 @@ impl TreeLine<'_> {
     /// Resolve a shell's clock once so text and ink cannot disagree.
     fn status(&self, now: u64) -> ResolvedStatus {
         let (text, role) = match self.subject {
-            LineSubject::Agent(_) | LineSubject::UnassignedSession => (
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => (
                 summary::status_text(self.row).to_owned(),
                 summary::status_role(self.row),
             ),
@@ -1354,6 +1485,7 @@ impl TreeLine<'_> {
             | LineSubject::Work(Work {
                 child,
                 kind: WorkKind::Thread | WorkKind::Subagent(_),
+                ..
             }) => (
                 child.activity.text().to_owned(),
                 thread_status_role(child.activity),
@@ -1361,6 +1493,7 @@ impl TreeLine<'_> {
             LineSubject::Work(Work {
                 child,
                 kind: WorkKind::Shell(_),
+                ..
             }) => {
                 let state = ShellState::resolve(
                     match child.kind {
@@ -1434,7 +1567,11 @@ fn work_branches<'a>(
                     branches.extend(descendants);
                 } else {
                     branches.push(WorkBranch {
-                        work:     Work { child, kind },
+                        work:     Work {
+                            child,
+                            kind,
+                            census_index: offset + index,
+                        },
                         branches: descendants,
                     });
                 }
@@ -1448,6 +1585,7 @@ fn work_branches<'a>(
 
 /// Cells from the placement shared with the summary.
 pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<AgentEntry<'a>> {
+    let identities = CensusWorkIdentities::for_placement(placement);
     let mut cells = Vec::new();
     let mut descendants = 0;
     for (ordinal, root) in placement.roots().into_iter().enumerate() {
@@ -1456,6 +1594,7 @@ pub(crate) fn cell_order_placed<'a>(placement: &AgentPlacement<'a>) -> Vec<Agent
         let mut lines = Vec::new();
         let context = TreeBuild {
             placement,
+            identities: &identities,
             heading: machine,
             order: SiblingOrder::Default,
             hues: HueAssignment::DefaultOrder,
@@ -1667,8 +1806,8 @@ pub(crate) fn group_tiles<'a>(
 }
 
 /// A flat root retains its own session values and preassigned hue.
-const fn unassigned_line<'a>(entry: &AgentEntry<'a>) -> TreeLine<'a> {
-    TreeLine {
+fn unassigned_line<'a>(entry: &AgentEntry<'a>) -> TreeLine<'a> {
+    TreeLine::new(TreeLineContent {
         dispatch_label: DispatchLabel::Original,
         machine:        entry.machine,
         location:       SessionLocation::SameMachine,
@@ -1677,7 +1816,15 @@ const fn unassigned_line<'a>(entry: &AgentEntry<'a>) -> TreeLine<'a> {
         rails:          Vec::new(),
         branch:         Branch::Flat,
         subject:        LineSubject::UnassignedSession,
-    }
+        expansion:      TreeMarker::Leaf,
+    })
+}
+
+/// A tile root keeps its accepted role and uses the heading's location.
+fn tile_root_line<'a>(entry: &AgentEntry<'a>) -> TreeLine<'a> {
+    let mut root = unassigned_line(entry);
+    root.subject = LineSubject::TileRoot(entry.role_label);
+    root
 }
 
 /// Whether this traversal assigns colors or preserves the default traversal's colors.
@@ -1722,13 +1869,15 @@ impl SiblingOrder {
 /// Inputs shared while building one tile's hierarchy.
 struct TreeBuild<'p, 'a> {
     /// The accepted forest and its dispatch joins.
-    placement: &'p AgentPlacement<'a>,
+    placement:  &'p AgentPlacement<'a>,
+    /// Census identities shared by every sorted traversal.
+    identities: &'p CensusWorkIdentities<'a>,
     /// Machine named by the tile heading, for remote suffixes.
-    heading:   &'a str,
+    heading:    &'a str,
     /// The default traversal or the selected sibling comparator.
-    order:     SiblingOrder,
+    order:      SiblingOrder,
     /// Assign hues on the first traversal and preserve them on reordering.
-    hues:      HueAssignment<'p, 'a>,
+    hues:       HueAssignment<'p, 'a>,
 }
 
 impl<'a> TreeBuild<'_, 'a> {
@@ -1739,12 +1888,13 @@ impl<'a> TreeBuild<'_, 'a> {
         row: &'a AgentRow,
         subject: LineSubject<'a>,
         hue: SessionHue,
+        selection: SelectedRow,
     ) -> TreeLine<'a> {
-        TreeLine {
+        let content = TreeLineContent {
             dispatch_label: match subject {
-                LineSubject::Agent(_) | LineSubject::UnassignedSession => {
-                    self.placement.row_dispatch_label(identity)
-                },
+                LineSubject::TileRoot(_)
+                | LineSubject::Agent(_)
+                | LineSubject::UnassignedSession => self.placement.row_dispatch_label(identity),
                 LineSubject::ManagedThread(child, _) => self.placement.dispatch_label(child),
                 LineSubject::Work(work) => self.placement.dispatch_label(work.child),
             },
@@ -1759,7 +1909,14 @@ impl<'a> TreeBuild<'_, 'a> {
             rails: Vec::new(),
             branch: Branch::Last,
             subject,
-        }
+            expansion: TreeMarker::Leaf,
+        };
+        let identity = if matches!(content.dispatch_label, DispatchLabel::Worker(_)) {
+            content.selection_identity(0)
+        } else {
+            selection
+        };
+        TreeLine { identity, content }
     }
 }
 
@@ -1782,6 +1939,7 @@ fn sort_cells<'a>(
     sorts: &HashMap<AgentCell, TreeSort>,
     now: u64,
 ) {
+    let identities = CensusWorkIdentities::for_placement(placement);
     let hues: HashMap<_, _> = cells
         .iter()
         .flat_map(|entry| {
@@ -1801,6 +1959,7 @@ fn sort_cells<'a>(
         }
         let context = TreeBuild {
             placement,
+            identities: &identities,
             heading: entry.machine,
             order: SiblingOrder::Selected {
                 sort: entry.sort,
@@ -1843,6 +2002,7 @@ fn lines_of<'a>(
                 row.row,
                 LineSubject::Agent(placement.role_label(row.identity)),
                 Vec::new(),
+                SelectedRow::session(row.identity.machine, row.row),
             )
         })
         .chain(
@@ -1857,6 +2017,7 @@ fn lines_of<'a>(
                         thread.owner_row,
                         LineSubject::ManagedThread(child, thread.role),
                         Vec::new(),
+                        context.identities.work(thread.owner, thread.child_index),
                     )
                 }),
         )
@@ -1871,20 +2032,34 @@ fn lines_of<'a>(
                         owner.row,
                         LineSubject::Work(branch.work),
                         branch.branches,
+                        context.identities.work(parent, branch.work.census_index),
                     )
                 }),
         );
     }
     siblings.sort_by(
-        |(left_id, left_row, left_subject, _), (right_id, right_row, right_subject, _)| {
+        |(left_id, left_row, left_subject, _, left_selection),
+         (right_id, right_row, right_subject, _, right_selection)| {
             context.order.compare(
-                &context.tree_line(*left_id, left_row, *left_subject, parent_hue),
-                &context.tree_line(*right_id, right_row, *right_subject, parent_hue),
+                &context.tree_line(
+                    *left_id,
+                    left_row,
+                    *left_subject,
+                    parent_hue,
+                    left_selection.clone(),
+                ),
+                &context.tree_line(
+                    *right_id,
+                    right_row,
+                    *right_subject,
+                    parent_hue,
+                    right_selection.clone(),
+                ),
             )
         },
     );
     let count = siblings.len();
-    for (index, (identity, row, subject, branches)) in siblings.into_iter().enumerate() {
+    for (index, (identity, row, subject, branches, selection)) in siblings.into_iter().enumerate() {
         let branch = if index + 1 == count {
             Branch::Last
         } else {
@@ -1897,13 +2072,13 @@ fn lines_of<'a>(
         } else {
             parent_hue
         };
-        let mut line = context.tree_line(identity, row, subject, hue);
+        let mut line = context.tree_line(identity, row, subject, hue, selection);
         line.rails.clone_from(rails);
         line.branch = branch;
         lines.push(line);
         rails.push(branch.rail());
         match subject {
-            LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
                 lines_of(context, identity, rails, agents, hue, lines);
             },
             LineSubject::Work(_) => {
@@ -1922,7 +2097,9 @@ fn line_order<'a>(
     subject: LineSubject<'_>,
 ) -> (u64, &'a str, u32) {
     let (started, pid) = match subject {
-        LineSubject::Agent(_) | LineSubject::UnassignedSession => (row.started, row.pid),
+        LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+            (row.started, row.pid)
+        },
         LineSubject::ManagedThread(child, _) => (child.started, child.pid.unwrap_or(identity.pid)),
         LineSubject::Work(work) => (work.child.started, work.child.pid.unwrap_or(identity.pid)),
     };
@@ -1961,22 +2138,21 @@ fn append_work<'a>(
     hue: SessionHue,
     lines: &mut Vec<TreeLine<'a>>,
 ) {
-    let placement = context.placement;
-    let heading = context.heading;
+    let owner = RowIdentity {
+        machine,
+        pid: row.pid,
+    };
+    let line = |work: Work<'a>| {
+        context.tree_line(
+            owner,
+            row,
+            LineSubject::Work(work),
+            hue,
+            context.identities.work(owner, work.census_index),
+        )
+    };
     if let SiblingOrder::Selected { .. } = context.order {
-        branches.sort_by(|left, right| {
-            let line = |work: Work<'a>| TreeLine {
-                dispatch_label: placement.dispatch_label(work.child),
-                machine,
-                location: SessionLocation::SameMachine,
-                row,
-                hue,
-                rails: Vec::new(),
-                branch: Branch::Last,
-                subject: LineSubject::Work(work),
-            };
-            context.order.compare(&line(left.work), &line(right.work))
-        });
+        branches.sort_by(|left, right| context.order.compare(&line(left.work), &line(right.work)));
     }
     let count = branches.len();
     for (index, work_branch) in branches.into_iter().enumerate() {
@@ -1985,20 +2161,10 @@ fn append_work<'a>(
         } else {
             Branch::Middle
         };
-        lines.push(TreeLine {
-            dispatch_label: placement.dispatch_label(work_branch.work.child),
-            machine,
-            location: if machine == heading {
-                SessionLocation::SameMachine
-            } else {
-                SessionLocation::AnotherMachine
-            },
-            row,
-            hue,
-            rails: rails.clone(),
-            branch,
-            subject: LineSubject::Work(work_branch.work),
-        });
+        let mut work_line = line(work_branch.work);
+        work_line.rails.clone_from(rails);
+        work_line.branch = branch;
+        lines.push(work_line);
         rails.push(branch.rail());
         append_work(
             context,
@@ -2951,6 +3117,81 @@ fn time_left_label(left: u64) -> String {
 /// The same activity colors used for a Claude session's busy and idle states.
 const fn thread_status_role(state: AgentActivity) -> Role { state.color_role() }
 
+impl AgentTile<'_> {
+    /// Apply expansion after sorting and color assignment.
+    pub(crate) fn apply_expansion(&mut self, expansion: &HandlerExpansion) {
+        let lines = match self {
+            Self::Agent(entry) => {
+                entry.lines.insert(0, tile_root_line(entry));
+                &mut entry.lines
+            },
+            Self::Unassigned(entry) => &mut entry.lines,
+        };
+        let tree = expansion_tree(lines);
+        let mut visibility = tree.visibility(expansion);
+        lines.retain_mut(|line| match visibility.next() {
+            Some(RowVisibility::Visible(marker)) => {
+                line.expansion = marker;
+                true
+            },
+            _ => false,
+        });
+    }
+
+    /// Describe the complete sorted forest before visibility filtering.
+    pub(crate) fn expansion_tree(&self) -> HandlerTree {
+        match self {
+            Self::Agent(entry) => {
+                let mut lines = vec![tile_root_line(entry)];
+                lines.extend(entry.lines.iter().cloned());
+                expansion_tree(&lines)
+            },
+            Self::Unassigned(entry) => expansion_tree(&entry.lines),
+        }
+    }
+}
+
+fn expansion_tree(lines: &[TreeLine<'_>]) -> HandlerTree {
+    let mut ancestors = Vec::new();
+    let mut rows = Vec::new();
+    for line in lines {
+        let depth = if matches!(line.branch, Branch::Flat) {
+            0
+        } else {
+            line.rails.len() + 1
+        };
+        ancestors.truncate(depth);
+        let key = match line.subject {
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                ExpansionKey::process(line.machine, line.row.pid)
+            },
+            LineSubject::ManagedThread(child, _) | LineSubject::Work(Work { child, .. }) => {
+                child.pid.map_or_else(
+                    || ExpansionKey::Work(line.identity.clone()),
+                    |pid| ExpansionKey::process(line.machine, pid),
+                )
+            },
+        };
+        rows.push(HandlerTreeRow {
+            identity: line.identity.clone(),
+            key,
+            depth,
+            parent: ancestors
+                .last()
+                .copied()
+                .map_or(RowParent::Root, RowParent::Parent),
+        });
+        ancestors.push(rows.len() - 1);
+    }
+    crate::app::expansion::HandlerTree::new(rows)
+}
+
+/// Build complete trees for census pruning.
+pub(crate) fn tile_order_for_expansion<'a>(placement: &AgentPlacement<'a>) -> Vec<AgentTile<'a>> {
+    let agents = cell_order_placed(placement);
+    group_tiles(placement, &agents, &HashMap::new(), 0)
+}
+
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
@@ -3158,11 +3399,22 @@ mod tests {
             lines: {
                 let mut lines = Vec::new();
                 let placement = AgentPlacement::from_machines(&[]);
+                let identities = CensusWorkIdentities::new(
+                    &placement,
+                    [(
+                        RowIdentity {
+                            machine: "natedev",
+                            pid:     row.pid,
+                        },
+                        row,
+                    )],
+                );
                 let context = TreeBuild {
-                    placement: &placement,
-                    heading:   "natedev",
-                    order:     SiblingOrder::Default,
-                    hues:      HueAssignment::DefaultOrder,
+                    placement:  &placement,
+                    identities: &identities,
+                    heading:    "natedev",
+                    order:      SiblingOrder::Default,
+                    hues:       HueAssignment::DefaultOrder,
                 };
                 append_work(
                     &context,
@@ -3279,11 +3531,11 @@ mod tests {
                 " pid 3266367 · claude · thinking · 23:00 · natedev · berth_fix",
                 " ~/rust/tool-based-ui-trunk",
                 " launched by boss of bosses",
-                "    session                                                                                                                                        type      role    status   age ▼",
-                " ├─ Launch the Phase 1 implementation seat                                                                                                         shell             running     12",
-                " │  └─ tool-based-ui-trunk-impl                                                                                                                              worker  idle        11",
-                " └─ Review the permission queue                                                                                                                    subagent          idle         5",
-                "    └─ cargo nextest run -p hana_video --no-fail-fast -- permission_queue                                                                          shell             running      0",
+                "     session                                                                                                                                       type      role    status   age ▼",
+                " ├── Launch the Phase 1 implementation seat                                                                                                        shell             running     12",
+                " │ └── tool-based-ui-trunk-impl                                                                                                                              worker  idle        11",
+                " └── Review the permission queue                                                                                                                   subagent          idle         5",
+                "   └── cargo nextest run -p hana_video --no-fail-fast -- permission_queue                                                                          shell             running      0",
             ]
         );
         let heading = " pid 3266367 · claude · thinking · 23:00 · natedev · berth_fix";
@@ -4162,14 +4414,19 @@ mod tests {
                     "boss of bosses",
                     None,
                     vec![
-                        hung("├─ ", "trunk"),
-                        hung("│  └─ ", "under trunk"),
-                        hung("└─ ", "arrange"),
+                        hung("├── ", "trunk"),
+                        hung("│ └── ", "under trunk"),
+                        hung("└── ", "arrange"),
                     ]
                 ),
                 ("natedev", "enh/handler", None, vec![]),
                 ("natedev", "orphan", None, vec![]),
-                ("natedev", "left", Some("right"), vec![hung("└─ ", "right")]),
+                (
+                    "natedev",
+                    "left",
+                    Some("right"),
+                    vec![hung("└── ", "right")]
+                ),
                 ("mac", "natemccoy-30", None, vec![]),
             ]
         );
@@ -4362,9 +4619,9 @@ mod tests {
                 (
                     line.machine,
                     match line.subject {
-                        LineSubject::Agent(_) | LineSubject::UnassignedSession => {
-                            line.row.name.as_str()
-                        },
+                        LineSubject::TileRoot(_)
+                        | LineSubject::Agent(_)
+                        | LineSubject::UnassignedSession => line.row.name.as_str(),
                         LineSubject::Work(work) => work.child.name.as_str(),
                         LineSubject::ManagedThread(child, _) => child.name.as_str(),
                     },
@@ -4467,8 +4724,9 @@ mod tests {
                 .iter()
                 .map(|line| (
                     match line.subject {
-                        LineSubject::Agent(_) | LineSubject::UnassignedSession =>
-                            line.row.name.as_str(),
+                        LineSubject::TileRoot(_)
+                        | LineSubject::Agent(_)
+                        | LineSubject::UnassignedSession => line.row.name.as_str(),
                         LineSubject::Work(work) => work.child.name.as_str(),
                         LineSubject::ManagedThread(child, _) => child.name.as_str(),
                     },
@@ -4730,7 +4988,7 @@ mod tests {
                 .iter()
                 .map(|session| (session.lead(), session.row.name.as_str()))
                 .collect::<Vec<_>>(),
-            [("├─ ".to_string(), "b"), ("└─ ".to_string(), "worker")]
+            [("├── ".to_string(), "b"), ("└── ".to_string(), "worker")]
         );
         let mut identities: Vec<_> = cells
             .iter()

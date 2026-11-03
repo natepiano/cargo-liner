@@ -1379,6 +1379,22 @@ Port of the directory header rule (whole path; GUID middle cut; middle cut; last
 
 Showrunner request (2026-10-29): the 36m merge tree fails `census::scan::refresh_worker_tests::a_shell_execing_cargo_enters_the_retained_discoverys_census` on natedev with ENOENT, because the test copies `/bin/cat` and NixOS has no `/bin/cat`. The test finds its program on PATH, with no absolute tool path, and passes on natedev and on the Mac. Work order: phases/41/implementation_prompt.md.
 
+### Phase 41c — The exec census tests pass on the GitHub macOS runner  · status: done
+
+**Depends on:** Phase 41
+
+**Goal:** Main CI is red on macOS: `a_shell_execing_cargo_enters_the_retained_discoverys_census` (`crates/cargo-tile/src/census/refresh_worker_tests.rs:267`) sees `Python`, not `cargo`. On the runner, `python3` is a Homebrew framework launcher that execs `Python.app`, so the copied fixture runs as `Python` (run 41138166229; diagnosis `phases/ci_python/answer.md`). The handler fixed its copy of this fixture in d2483f13 (`copied_agent_executable`, `same_pid_exec_launcher` in `crates/cargo-handler/src/census/scan.rs`): `/bin/cat` with codesign on macOS, `python3`'s `sys.executable` elsewhere.
+
+**Spec:**
+1. One fixture for both crates (showrunner, 2026-10-31: "use one form, no second helper if it can be shared"; user rule 2026-10-30: no duplication). A new dev-only crate `crates/census-test-support` (`publish = false`, as `cargo-berth-test-support`) owns the copied executable (named by the caller) and the platform's exec payload arguments. cargo-tile's test and cargo-handler's test both use it, and the handler's two helpers go.
+2. Every assertion of both tests stays as it is.
+
+**Tests:** both tests pass on natedev (NixOS) and on the Mac; the GitHub macOS job proves the Homebrew case.
+
+**Files:** `crates/census-test-support/` (new), `Cargo.toml` (workspace dependency), `crates/cargo-tile/Cargo.toml`, `crates/cargo-handler/Cargo.toml`, `crates/cargo-tile/src/census/refresh_worker_tests.rs`, `crates/cargo-handler/src/census/scan.rs`, `Cargo.lock`.
+
+**Phase 43 note:** Phase 43's tree changes this fixture another way (copied `/bin/sh` on Linux). At its merge, Phase 43 takes this phase's fixture and drops its own.
+
 ### Phase 44 — A captured command shows once, with the work under it  · status: done
 
 **Depends on:** Phase 38
@@ -1390,11 +1406,111 @@ Showrunner request (2026-10-29): the 36m merge tree fails `census::scan::refresh
 - **Acceptance:** a red-first test built from the real argv shape above (`cargo-tile-capture --capture-shim <path>/cargo nextest run …` with a busy child) shows one summary row with the full command and the child's cpu and mem; main fails it; each test under 1 s. Live check vs main on natedev under a real `cargo nextest run`: one row per command, the cpu column not 0% while the child works.
 - **Files:** decided by the cause; expected `crates/cargo-tile/src/census/scan.rs` and the summary row code in `crates/cargo-tile/src/render.rs` / `roster.rs`. Not `crates/tui_pane/src/tiles/draw.rs` or `tiles/grid.rs` (handler unit).
 
+### Phase 44b — A captured command keeps one row from its start  · status: done
+
+**Depends on:** Phase 44
+
+**Work Order.** Phase 44 design check, 2026-10-31 (`phases/44/live/design_check.txt`, shot `phases/44/live/shot44.early.png`; build 4e99762d). About 1.8 s after a captured `cargo nextest run` starts, its row for the shim pid freezes and goes grey, and a new live row with the same pid and the same text appears. The 3 s departure fade keeps both on screen. The cell does the same: a grey departing cell and a live cell, both for that pid. The row identity changes when the capture shim hands over to the real cargo.
+
+A second cold job showed no grey copy, but for 0.27 s its row showed the child pid 1501410 instead of the shim pid. Main is worse at a captured start: a bare shim row plus the real row, two cells, for the whole job (`shot44.main_early.png`). Both are the same fault: the identity is chosen by which side of the hand-over the scan saw first.
+
+The same job showed the branch's dur about 6 s less than main's: the branch counts from the real cargo's start, main from the shim's. The user started the command when the shim started, so the row's start and dur come from the invocation's first process (the shim). A test checks it.
+
+**Measured with the wrong shim.** Until 2026-10-31 12:55 EDT every natedev toolchain had shim v4 with its native runner (`cargo-tile-capture`), from the dropped Phase 28 tree; main installs v3. The design check above ran with that runner in front of cargo. Re-measure the hand-over with main's v3 shim first; the fix targets what v3 shows.
+
+- **Goal:** a captured command has one row and one cell from its first frame to its end, in the summary and in the grid.
+- **Spec:** find what in the row key changes at the hand-over (for example the identity derived from the shim argv before the real cargo argv or its capture record is seen, then from them after). Fix it by type: the invocation's identity is one value that is fixed at its first sighting and does not depend on which side of the hand-over the scan saw first. No procedural filter that hides the departing copy.
+- **Acceptance:** a red-first test that takes two scans of one shim pid, before and after the hand-over, and shows one row and no departure; main and 4e99762d fail it; each test under 1 s. Live check on natedev under a real `cargo nextest run` from a cold build: no grey copy of the row or the cell in the first 10 s.
+**Process identity model** (written before any 44b code; 44b and 43a share it):
+
+Model for 44b and 43a; no product change. Source: `6cadd2bd901e5d24ca6198ccc6e84ff04331bb60`. References below are under `crates/cargo-tile/src/`.
+
+**Measured v3 fault (2026-10-31, `phases/44b/`).** At 393×89, cold nextest produced two summary rows for shim **479130** from +1.084 to +3.636 s. The old row froze at `00:01`, blank CPU, `0.0G`, and faded; the live row advanced to `00:09` by +9.979 s with both resources blank. Child cargo test **486265** reached **78%**, `0.0G` at that frame. Thus the fault also exists with main’s v3 shell shim. Full per-frame evidence: `live_v3_captured/first_10s_rows.jsonl`; key qualifications and all row ranges: `measurement_summary.md`.
+
+**Owner and key.** The invocation’s origin owns the row: the shell shim for captured v3, otherwise the first real command process. Keep its PID as the displayed PID. A forwarding launcher, exec replacement, or real cargo executor is an execution role of that origin, not another invocation. An application boundary or independent nested cargo starts a distinct invocation, shown under its parent. One continuity owner allocates one private, immutable `InvocationKey` for the origin at first sighting. Index boot-qualified process lifetime and verified capture generation/root as aliases to that owner; neither is a replacement row key. If birth is unavailable, retain the continuous-observation identity; later proof enriches evidence without changing the key. PID reuse after a proved lifetime change gets a new key. The same key selects the summary row and its detailed cell.
+
+**Lifecycle and fields.** `InvocationState` has explicit `Starting`, `Running`, `Draining`, and `Finished` payloads. First origin sighting starts the row; a proved forwarding/dispatch chain supplies its executor. Executor exit with capture plumbing still present enters Draining. End of all execution evidence enters Finished once and starts one fade. No transition changes key or start. Start is the origin’s kernel start; duration advances from it until finish, then freezes. An unavailable origin time has a named visible state; registration publication is not silently substituted. Live CPU and memory cover the assigned invocation work, including its helper processes. Independent child buckets remain disjoint; the parent summary uses their subtree total once. Draining retains the last valid work reading as retained; Finished keeps that final snapshot.
+
+**Type guarantee.** The continuity owner alone constructs keys and owns lifecycle/resources; aliases store references, not copied state. Roster updates that owner’s row instead of creating a new row for another executor. `LiveResources` names `Reading`, `Sampling`, or `Unavailable(reason)`; render keeps main's rule that `Sampling` and `Unavailable` draw no placeholder (no new column words in 44b). With one continuity owner, a live row takes its executor's reading, so a live invocation whose executor has a reading never shows blank. Start time comes only from the origin: its process, or the registration the v3 shim writes at its own start, typed by source; `Unavailable` only when neither gives one (director rulings 2026-10-31). `Finished` owns the retained snapshot and fade time. These are proposed guarantees: current `InvocationResourceUse` (`census/scan.rs:134`) and `Measurement` (`census/invocation_cpu_accounting.rs:86`) permit unavailable readings; `render.rs:5065` and :5073 turn them into blanks.
+
+**Current boundaries to replace.** `InvocationId::{Process,Captured}` (`census/process_identity.rs:77`) allows process/capture identity replacement. `CargoTransport` and `cargo_split` (`census/command_text.rs:591`, :616) need one origin/forwarding classification for v3 and v4. `Census::prepare` (:1250), `cargo_process_role` (:1287), `collapse_shims` (:2032), `direct_capture` (:2486), `identify_captures` (:2524), and `groups` (:2672) in `census/scan.rs` must consume that continuity. `row` (:3154), `registration_timing` (:3252), and `registration_row` (:3279) must use its timing/resources. `TrackedRow::refresh` (`roster.rs:146`), `RowLifetime` (:37), and `Roster::observe` (:480) must retain it through executor changes. 43a reuses this path; it adds no second identity or launcher filter.
+
+**Phase 43 verdict.** Job a ended at 8.708 s. At 9–11 s base retained **833543**, `00:04`, **61%**, `0.2G`; cut showed **833530**, same duration/memory, **blank CPU**. Its executable role is unproved; it is not recorded launcher **832776**. Base’s extra launcher 832776 beside child 833543 at 5 s is wrong if both forward one invocation. Keep a second row only for a proved independent invocation, not to reproduce base’s defect.
+
+- **Files:** decided by the cause; expected `crates/cargo-tile/src/census/scan.rs`, `census/command_text.rs`, `roster.rs`. Not `crates/tui_pane/src/tiles/` (handler unit).
+
+### Phase 43a — The reader uses less CPU, on one process identity  · status: todo
+
+**Depends on:** Phase 44b
+
+Showrunner decision (2026-10-31): Phase 43 stays off main after repair round 3 of 3. Its cut used 56% less CPU in both orders (base44 16.6% vs 7.2%, one-minute load 65-78, not equal), but its live check failed: after a build ends, the cut shows a different process row with a blank CPU where base44 keeps the cargo child row with its CPU, and it drops a transient launcher row that base44 shows (`phases/43/live/live_reply_r3.txt`). The Phase 43 copy and its measurements are kept.
+
+- **Goal:** the Phase 43 CPU cut, built on Phase 44b's tree and its process identity model.
+- **Spec:** reuse only the parts of the Phase 43 copy that fit the 44b model. The model says if the transient launcher row is kept, or why base shows it in error.
+- **Acceptance:** CPU lower than base in both orders at comparable load; no live count worse than main, the transient launcher row included. 3 repair rounds, same landing rule.
+
+#### Work Order
+
+**Goal:** the reader uses less CPU than main 44b (c1136812) under load, with the 44b process identity model and the same screen.
+
+**Spec:**
+1. **Model first.** Write `phases/43a/cpu_model.md` before any code change. It names each repeated cost in the Phase 43 profile (`phases/43/profile_base.md`, `profile_cut.md`), the one record that holds each fact, and how the 44b identity owners (`roster/invocation_owners.rs`, `roster/invocation_continuity.rs`) carry it. It says if the transient launcher row is kept, or why base shows it in error.
+2. **Reuse.** Port only the Phase 43 cuts (copy `/tmp/claude/scratch/phase-tile-unit-43-5qlvls/src`, base 2e0cc5a) that fit the model. Each cut keeps its rule in the types.
+3. **Same screen.** Main's layout, colors, fades, deadlines and rows stay as they are. After a build ends, the cargo child row keeps its CPU.
+4. **CPU proof.** One live pair is noise. Measure at least 3 base/cut pairs, in both orders, at comparable load. Report the median change and the spread. A gain smaller than the spread is not a gain. Report idle tile CPU in CPU-s/min (Mac 8.4, natedev 14-19 today).
+
+**Files:**
+- `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/src/roster.rs`
+- `crates/cargo-tile/src/roster/invocation_continuity.rs`
+- `crates/cargo-tile/src/roster/invocation_owners.rs`
+- `crates/cargo-tile/src/terminal.rs`
+- `crates/cargo-tile/src/main.rs`
+- `crates/cargo-tile/src/census/scan.rs`
+- `crates/cargo-tile/src/census/cpu_observation.rs`
+
+**Workers:** 1 writer (`impl`).
+
+**Constraints from prior phases:** work in a new isolated copy cloned from the unit branch at c1136812. Every assertion on main stays. No test of 1 s or more. No new allow or expect.
+
+**Acceptance gate:**
+- The CPU proof in Spec item 4: the median change is a fall larger than the spread.
+- New logic has tests, red on the base first, each under 1 s.
+- `verify.sh test cargo-tile`, `verify.sh test tui_pane` and `verify.sh lint cargo-tile` green.
+- A live check against main: no live count worse than main, the transient launcher row and the cargo child row's CPU after a build ends included.
+
 ### Phase 45 — A new cell's text brightens from 75% to its final color  · status: merged into Phase 42
 
 User, 2026-10-30: this work goes in Phase 42, and Phase 42 does not hold full ink. Its Work Order is now in Phase 42.
 
-### Phase 43 — The reader uses less CPU under load  · status: todo
+### Phase 43b — Census CPU falls toward its goal  · status: todo
+
+**Depends on:** Phase 43a
+
+**Work Order.** Showrunner, 2026-11-02, from handler Phase 54 checks. cargo-tile census CPU on release pairs, in CPU-s/min, has a goal of 0.60. Mac: 8.38 before, 8.64 now. Linux at load about 100: 19.44 before, 18.68 now. All of it is census work. First priority after 43a.
+
+- **Goal:** census CPU moves toward 0.60 CPU-s/min on both machines.
+- **Spec:** use the 43a reader CPU model; one record holds each fact. Find the census cost first (per scan, per process), then remove the waste.
+- **Acceptance:** release-pair CPU-s/min on the Mac and on Linux, before and after, on the same workload; each test under 1 s.
+
+### Phase 43c — No cargo-tile test takes a second or more  · status: todo
+
+**Depends on:** Phase 43b
+
+**Work Order.** Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests take 1.03 s to 2.90 s: in `shim_registration::reader_scenarios`, `shim_registration::installed`, and `progress::capture::incomplete_registration_inventory_sweeps_any_sampled_proven_pair`. Names and times: handler Phase 54 Mac log. natedev also shows `reader_scenarios` tests at 1.2 to 2.3 s (2026-11-02 runs).
+
+- **Goal:** every cargo-tile test runs under 1 s on the Mac and on natedev.
+- **Acceptance:** the Mac and natedev suites show no test at 1 s or more; no assertion is weakened.
+
+### Phase 43d — Capture text and constants follow the style guide  · status: todo
+
+**Depends on:** Phase 43c
+
+**Work Order.** Showrunner, 2026-11-02, from handler Phase 54 checks: `crates/cargo-tile/src/census/command_text.rs:600-602` (`_capture_parent`, the `From` impl) and `crates/cargo-tile/src/constants.rs:655` (the `CAPTURE_*` order).
+
+- **Acceptance:** the phase style review passes for both sites; the suite passes.
+
+### Phase 43 — The reader uses less CPU under load  · status: held; continues as Phase 43a
 
 **Depends on:** Phase 32m
 
@@ -1496,23 +1612,9 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 **Files:** `crates/cargo-tile/src/roster.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/tui_pane/src/pane/frame.rs`. Not `crates/tui_pane/src/tiles/draw.rs` or `tiles/grid.rs`: the handler unit's equal-frame phase owns them (showrunner, 2026-10-30).
 
-### Phase 47 — A command cell's account and directory are its border title  · status: todo
+### Phase 47 — A command cell's account and directory are its border title  · status: done
 
-**Goal:** A command cell names its account and directory in its top border (`┌ [natepiano] ~/rust/hana ─`), and the body row that held them goes to the cell's content. From the user (2026-10-31): "when am i going to get my user and directory moved to the cell title". This was built on the Phase 28 tree (`CommandTitle` in `render/mod.rs` at `refs/tile-unit/p28-snapshot-1322`) and left with it on 2026-10-29; Phase 36m ported only the directory cut rule.
-
-**Spec:**
-1. The cell's heading text (account tag, then the directory, cut by Phase 36m's rule) is the border title through `TileCells::group_title` (`TileGroupTitle::Titled`), in the heading's ink and fade. The body draws no heading row. The summary and its `summary` title do not change.
-2. The cut fits the title room (frame width minus the corners and the title's spaces), not the body width.
-3. One owner computes the heading text for a cell; the title reads it. No second copy of the fitted text or of the fade (user rule 2026-10-30: no duplication). A per-frame cache only when a measurement names its cost.
-4. A cell's demand counts one row less. Live fill must not fall below main: the Phase 28 tree lost fill here, so the live capture compares columns that end above the foot against main.
-
-**Tests:** `a_command_cell_names_its_directory_in_its_border`; `a_cell_title_cuts_the_directory_by_the_header_rule_at_title_width`; `a_command_cell_draws_no_heading_row_in_its_body`; the Phase 36m header tests move to the title.
-
-**Live check:** 393 x 89 on natedev against main: one title per cell, no heading row in a body, fill equal or better.
-
-**Files:** `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`.
-
-**Depends on:** Phase 42 (both change `render.rs`).
+**As built** (checkpoint `ac47cbba`, merged as main `2fb29335c`, 2026-11-03): a command cell names its account tag and directory in its top border through `TileGroupTitle::Titled`. The body draws no lead heading row, so the cell shows one more process row. One account decision, `TableAccountHeadings`, feeds the title and any nested body heading. The directory cut fits the title room. A nested directory keeps its body heading. Live at 393x89 against main: 8 of 8 command cells have one title, no lead heading stays in a body, and process rows stay 17 of 17 with no clipped cell.
 
 ### Phase 46 — Enter shows the focused cell on the full screen, and Esc returns to the grid  · status: todo
 
@@ -2356,3 +2458,98 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - After the change, on each machine: sorted by start `timestamp`, the source-switch reader is first, and no test outside the reader group and the slow set starts before the last slow-set test starts. The reader group still runs one at a time, and a `cargo-tile::shim_modes` test still carries its 30 s `slow-timeout`.
 - The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.
 - The summary gives each test named in Spec items 5 and 6 its quiet natedev time and load, and for any at a second or more, its measured cause, its floor and the fix proposal sent to the showrunner.
+
+### Phase 48 — The p and h shortcuts show with the other global shortcuts  · status: todo
+
+**Depends on:** Phase 39
+
+#### Work Order
+
+**Goal:** The status bar does not show `p process_tree` or `h arguments` in its bottom-right corner. Both shortcuts show with the other global shortcuts, in the `?` shortcuts list. User request, 2026-11-02, through the showrunner.
+
+**Spec:**
+
+1. Remove `p process_tree` and `h arguments` from the status line. `render.rs` adds them through `StatusLineGlobal::app(AppGlobalAction::ProcessTree)` and the arguments entry beside it.
+2. Show both shortcuts in the global shortcuts list, with the labels and descriptions in `app_global_action.rs`.
+3. The `p` and `h` keys keep their current behavior.
+4. Change the status-line tests that expect the two entries. Each Assertion-Change line names the user request as its reason.
+
+**Files:**
+- `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/src/app_global_action.rs`
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green; no new test takes 1 s or more.
+- A live shot shows the status bar without the two entries, and the `?` list with both.
+
+### Phase 49 — The summary tile shows free disk space in GiB after mem  · status: todo
+
+**Depends on:** Phase 48
+
+#### Work Order
+
+**Goal:** The summary tile shows the current disk availability in GiB, directly after its mem value. User request, 2026-11-02, through the showrunner.
+
+**Spec:**
+
+1. Read the free space of the file system that holds the working directory. Read it on the census refresh, not on each frame. Name the read cost in the phase notice.
+2. Show the value in GiB after mem, with the same label style as mem.
+3. Linux and macOS both show the value. A failed read shows no disk value; it does not show a placeholder number.
+4. Add tests for the format and the placement at every summary width.
+
+**Files:**
+- `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/src/census/scan.rs`
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green on natedev and the Mac; no new test takes 1 s or more.
+- A live shot shows the disk value in GiB after mem.
+- Idle tile CPU does not rise by more than the spread of 3 live pairs.
+
+### Phase 50 — A CI nextest run shows its progress meter  · status: in progress
+
+**Depends on:** none. The showrunner put it before 43b, P47, P46, 48 and 49, beside 43a: a user sees this defect in a feature that worked.
+
+#### Work Order
+
+**Goal:** A `[ci]` cell for a GitHub runner's `cargo nextest run` shows the same progress meter as a local nextest run. User report, 2026-11-02, through the showrunner: the hana-linux-2 runner's `[ci] cargo nextest run --workspace` row (runs 1, 28:59) showed no meter.
+
+**Spec:**
+
+1. Find the cause first, on a live runner job. Check the capture registration of the runner's shim call, the capture read, and the cell's meter rule. Record the cause in `phases/50/cause.md`.
+2. Fix the cause where it lives: the shim, the capture read, or the render.
+3. Add a test that fails on the current tree: a dispatched CI nextest with a capture shows its meter. Extend `a_long_ci_cell_draws_its_dispatched_nextests_runs` or add one beside it.
+4. A local nextest keeps its current meter.
+
+**Files:**
+- `crates/cargo-tile/src/cargo-capture-shim.sh`
+- `crates/cargo-tile/src/progress/capture_read.rs`
+- `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/src/census/scan.rs`
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green; no new test takes 1 s or more.
+- A live shot of a runner nextest job shows the meter in its `[ci]` cell.
+
+### Phase 51 — A reader scenario ends its fake cargo processes  · status: todo
+
+**Depends on:** none. It starts when the showrunner lifts the cargo pause for it.
+
+#### Work Order
+
+**Goal:** A reader scenario leaves no fake cargo process when it ends, fails or is killed. From the builds showrunner, 2026-11-02: a fake `cargo build probe-first-.tmptzAS15` from `reader_scenario.py` ran on the Mac for 54 hours and showed in the user's tile grid. It started on 2026-10-31 at 16:23 EDT. Its log reads "Blocking waiting for file lock on build directory".
+
+**Spec:**
+
+1. Find how the scenario ended without its cleanup. The `finally` block releases writers through trigger files, and the writers run in their own sessions (`start_new_session=True`). A killed scenario runs no `finally`.
+2. Make each writer's process group end when its scenario ends, also on SIGKILL. Fix it where the writers start, not with a sweep after the fact.
+3. A normal end keeps its current release order and its time.
+4. Add a test: kill the scenario with SIGKILL while a writer waits; no writer process stays. The test takes less than 1 s.
+
+**Files:**
+- `crates/cargo-tile/src/shim_registration/reader_scenario.py`
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green on natedev and the Mac; no new test takes 1 s or more.
+- After the Mac pass, no process from a scenario folder stays on the Mac.

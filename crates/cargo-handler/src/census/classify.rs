@@ -12,7 +12,7 @@
 //! process, and counts only while that process is alive and is still
 //! Claude Code. A Codex session has no record, so an interactive Codex
 //! is any `codex` process that is not an app server. It is named for the
-//! thread selected by argv, a log link, or the configured startup window.
+//! thread proved by its own log record or its child daemon's log record.
 //! The one app server
 //! that counts is the macOS desktop app's, which stands for the app.
 //! Other app servers are retained as transport-only thread hosts so
@@ -44,15 +44,11 @@ use super::SessionIdentity;
 use super::account;
 use super::account::AccountLabels;
 use super::account::ConfigHome;
-use super::codex;
 use super::codex::CodexLogs;
 use super::codex::CodexThread;
-use super::codex::ResumeRequest;
-use super::codex::ThreadLookup;
 use super::codex::ThreadRows;
 use super::tmux;
 use super::transcript::BashCall;
-use super::tree;
 use crate::config::CodexStartWindow;
 use crate::constants::CALL_LOOKAHEAD;
 use crate::constants::CALL_LOOKBACK;
@@ -294,6 +290,7 @@ pub(super) fn agent_rows_with_threads(
 #[derive(Clone, Debug)]
 pub(super) enum CodexSessionLink {
     Named(CodexThread),
+    HerdrName(String),
     NoMatch,
 }
 
@@ -301,7 +298,7 @@ impl CodexSessionLink {
     pub(super) const fn thread(&self) -> Option<&CodexThread> {
         match self {
             Self::Named(thread) => Some(thread),
-            Self::NoMatch => None,
+            Self::HerdrName(_) | Self::NoMatch => None,
         }
     }
 }
@@ -314,52 +311,22 @@ pub(super) fn linked_threads(links: &HashMap<u32, CodexSessionLink>) -> HashMap<
         .collect()
 }
 
-/// Resolve links once. Unjoined daemon connections cannot use launch guesses.
+/// Resolve process-proven log links. Herdr can name an unproven session later.
 pub(super) fn codex_session_links(
     processes: &[ProcessEntry],
-    codex_threads: &[CodexThread],
     home: Option<&Path>,
-    window: CodexStartWindow,
     logs: &CodexLogs,
     records: &ThreadRows,
 ) -> HashMap<u32, CodexSessionLink> {
-    let interactive = interactive_codex(&pid_table(processes), processes);
-    let startup = startup_threads(&interactive, codex_threads, home, window);
-    interactive
-        .iter()
+    interactive_codex(&pid_table(processes), processes)
+        .into_iter()
         .map(|process| {
-            let mut candidates = codex_threads
-                .iter()
-                .filter(|thread| thread_matches_home(process, thread, home));
-            let logged = logs.link(process, processes, home, records);
-            let resumed = || match codex::resume_request(process) {
-                ResumeRequest::NamedId(id) => codex::session_home(process, home)
-                    .and_then(|account| match records.get(&account, id) {
-                        Some(ThreadLookup::User(thread) | ThreadLookup::NonUser(thread)) => {
-                            Some(thread)
-                        },
-                        Some(ThreadLookup::Missing) | None => None,
-                    })
-                    .or_else(|| {
-                        candidates
-                            .find(|thread| tree::thread_id(&thread.rollout).as_deref() == Some(id))
-                    }),
-                ResumeRequest::LastThread => candidates
-                    .filter(|thread| process.directory.as_deref() == Some(thread.cwd.as_path()))
-                    .max_by_key(|thread| (thread.created_ms, &thread.rollout)),
-                ResumeRequest::NewSession => None,
-            };
-            let thread = logged.or_else(|| {
-                logs.permits_launch_fallback(process, processes)
-                    .then(|| resumed().or_else(|| startup.get(&process.pid).copied()))
-                    .flatten()
-            });
-            (
-                process.pid,
-                thread.map_or(CodexSessionLink::NoMatch, |thread| {
+            let link = logs
+                .link(process, processes, home, records)
+                .map_or(CodexSessionLink::NoMatch, |thread| {
                     CodexSessionLink::Named(thread.clone())
-                }),
-            )
+                });
+            (process.pid, link)
         })
         .collect()
 }
@@ -410,44 +377,6 @@ fn thread_window(process: &ProcessEntry, window: CodexStartWindow) -> RangeInclu
     let slack = u64::try_from(CODEX_THREAD_START_SLACK.as_millis()).unwrap_or(u64::MAX);
     let window = window.milliseconds();
     started.saturating_sub(slack)..=started.saturating_add(window)
-}
-
-/// The thread each Codex in `codex` started with, by pid.
-///
-/// A thread belongs to the Codex in its directory that started last
-/// before it within [`thread_window`], so a Codex that resumed an old
-/// thread, and so created none, does not take the first thread of one
-/// started after it. Of the threads a Codex owns, the first is the one
-/// it started with.
-fn startup_threads<'a>(
-    codex: &[&ProcessEntry],
-    threads: &'a [CodexThread],
-    home: Option<&Path>,
-    window: CodexStartWindow,
-) -> HashMap<u32, &'a CodexThread> {
-    let mut first: HashMap<u32, &CodexThread> = HashMap::new();
-    for thread in threads {
-        let owner = codex
-            .iter()
-            .filter(|process| {
-                process.directory.as_deref() == Some(thread.cwd.as_path())
-                    && thread_window(process, window).contains(&thread.created_ms)
-                    && thread_matches_home(process, thread, home)
-            })
-            .max_by_key(|process| (process.started, process.pid));
-        if let Some(owner) = owner {
-            let kept = first.entry(owner.pid).or_insert(thread);
-            if thread.created_ms < kept.created_ms {
-                *kept = thread;
-            }
-        }
-    }
-    first
-}
-
-/// Match the lexical account home; shared sessions symlinks must not merge accounts.
-fn thread_matches_home(process: &ProcessEntry, thread: &CodexThread, home: Option<&Path>) -> bool {
-    codex::session_home(process, home).is_some_and(|home| thread.account_home.as_ref() == home)
 }
 
 /// The row for `session`, when its process is alive, is Claude Code,
@@ -519,9 +448,7 @@ fn desktop_app_row(
 
 /// The row for `process`, when it is an interactive Codex under no other
 /// agent, the desktop app's app server, or an unlisted app-server thread host.
-/// An interactive Codex is named for
-/// `thread`, the one it started with, else for its command line after
-/// `codex`, else for its pid.
+/// An interactive Codex uses its proven thread label, else its pid.
 fn codex_row(
     table: &HashMap<u32, &ProcessEntry>,
     process: &ProcessEntry,
@@ -557,9 +484,7 @@ fn codex_row(
     } else if let Some(label) = thread.and_then(CodexThread::label) {
         label
     } else {
-        process
-            .arguments_label()
-            .unwrap_or_else(|| format!("pid {}", process.pid))
+        format!("pid {}", process.pid)
     };
     Some(AgentRow {
         agent,
@@ -944,7 +869,7 @@ mod tests {
                 "enh/handler",
                 "soft body physics investigation",
                 "tool-based-ui-arrange",
-                "--model gpt-5",
+                "pid 4000020",
             ]
         );
         assert!(rows.iter().all(|row| row.launched_by.is_none()));
@@ -1058,13 +983,9 @@ mod tests {
         assert_eq!(rows[0].directory, "/tmp");
     }
 
-    /// Each interactive Codex is named for the first thread created in
-    /// its directory after it started: a renamed thread by its name, one
-    /// with no name by its first prompt. A Codex that resumed a thread
-    /// does not take the thread of one started after it, a delegate's
-    /// Codex takes none, and a Codex with no thread keeps its pid.
+    /// An unproven interactive Codex shows its pid, including the resume picker.
     #[test]
-    fn an_interactive_codex_is_named_for_the_thread_it_started() {
+    fn unproven_interactive_codex_sessions_do_not_get_start_window_names() {
         let work = "/home/natepiano/rust/handler";
         let mut processes = [
             process(1, 0, "systemd", 0),
@@ -1080,22 +1001,6 @@ mod tests {
                 process.config_home = ConfigHome::Default(Program::Codex);
             }
         }
-        let thread = |cwd: &str, created_ms, name: Option<&str>, prompt: &str| CodexThread {
-            account_home: codex::CodexAccountHome::from(Path::new(HOME).join(".codex").as_path()),
-            cwd: PathBuf::from(cwd),
-            created_ms,
-            name: crate::census::codex_names::SessionName::from(name.map(str::to_string)),
-            first_prompt: prompt.to_string(),
-            rollout: PathBuf::from(format!("{HOME}/.codex/sessions/{created_ms}.jsonl")),
-        };
-        let threads = [
-            thread(work, 111_800, Some("codex test"), ""),
-            thread(work, 150_000, Some("after /new"), ""),
-            thread(HOME, 121_500, None, "fix the\nbuild"),
-            thread(HOME, 126_000, Some("delegate"), ""),
-            thread("/tmp", 200_000, Some("too late"), ""),
-        ];
-
         assert_eq!(
             codex_thread_window(&processes, CodexStartWindow::default()),
             Some(99_000..=190_000)
@@ -1105,20 +1010,15 @@ mod tests {
             &[],
             &linked_threads(&codex_session_links(
                 &processes,
-                &threads,
                 Some(Path::new(HOME)),
-                crate::config::CodexStartWindow::default(),
-                &codex::CodexLogs::default(),
-                &codex::ThreadRows::default(),
+                &CodexLogs::default(),
+                &ThreadRows::default(),
             )),
             Some(Path::new(HOME)),
             &AccountLabels::default(),
         );
 
-        assert_eq!(
-            names(&rows),
-            ["resume", "codex test", "fix the build", "pid 40"]
-        );
+        assert_eq!(names(&rows), ["pid 10", "pid 20", "pid 30", "pid 40"]);
     }
 
     /// The Mac as `ps` showed it: the desktop app running its Codex app

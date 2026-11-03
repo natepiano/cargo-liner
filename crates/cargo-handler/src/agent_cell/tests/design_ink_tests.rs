@@ -70,7 +70,8 @@ fn busy_frame(ground: Color, activity: Activity, colors: &FooterColors) -> Buffe
         ..agent(30, "managed-session", MINUTE, None)
     };
     let mut entry = entry(&root, None);
-    entry.lines.push(TreeLine {
+    entry.lines.push(TreeLine::new(TreeLineContent {
+        expansion:      TreeMarker::Leaf,
         dispatch_label: DispatchLabel::Original,
         machine:        "natedev",
         location:       SessionLocation::SameMachine,
@@ -79,7 +80,7 @@ fn busy_frame(ground: Color, activity: Activity, colors: &FooterColors) -> Buffe
         rails:          Vec::new(),
         branch:         Branch::Last,
         subject:        LineSubject::Agent(RoleLabel::Unlabeled),
-    });
+    }));
     let rect = area(180, 15);
     let mut buffer = Buffer::empty(rect);
     buffer.set_style(rect, Style::default().bg(ground));
@@ -290,7 +291,8 @@ fn check_role_and_account_cells(ground: Color) {
         .collect();
     let mut cell = entry(&root, None);
     for (index, member) in members.iter().enumerate() {
-        cell.lines.push(TreeLine {
+        cell.lines.push(TreeLine::new(TreeLineContent {
+            expansion:      TreeMarker::Leaf,
             dispatch_label: DispatchLabel::Original,
             machine:        "natedev",
             location:       SessionLocation::SameMachine,
@@ -299,7 +301,7 @@ fn check_role_and_account_cells(ground: Color) {
             rails:          Vec::new(),
             branch:         Branch::Last,
             subject:        LineSubject::Agent(roles[index % roles.len()].0),
-        });
+        }));
     }
     let rect = area(180, 20);
     let mut buffer = Buffer::empty(rect);

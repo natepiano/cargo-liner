@@ -81,14 +81,14 @@ pub(crate) enum SelectedSpan {
 }
 
 /// Owning process generation of a work row.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct RowOwner {
     pub(crate) pid:     u32,
     pub(crate) started: u64,
 }
 
 /// Legacy work identity excludes changing observations such as a countdown.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum LegacyWorkKind {
     Shell,
     Subagent(SubagentRole),
@@ -114,7 +114,7 @@ impl From<&ChildKind> for LegacyWorkKind {
 }
 
 /// Owned identity of a row, independent of its label, index and current tile.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum RowIdentity {
     Session {
         machine: String,
@@ -408,7 +408,7 @@ impl SurfaceSelection {
             .map_or(SelectedSpan::NoRows, |(_, span)| SelectedSpan::Row(*span))
     }
 
-    fn select(&mut self, identity: &RowIdentity) {
+    pub(crate) fn select(&mut self, identity: &RowIdentity) {
         if let Some(index) = self
             .rows
             .iter()
@@ -562,7 +562,26 @@ pub(crate) struct Selections {
 }
 
 impl Selections {
-    pub(crate) fn containing(&self, identity: &RowIdentity) -> RowLocation {
+    pub(crate) fn containing(
+        &self,
+        preferred: &SelectableSurface,
+        identity: &RowIdentity,
+    ) -> RowLocation {
+        if let SelectableSurface::Surface(surface) = preferred
+            && self.surface(surface).map_or(false, |state| {
+                state.rows.iter().any(|(row, _)| row.continues(identity))
+            })
+        {
+            return RowLocation::Found(surface.clone());
+        }
+        if self
+            .surface(&SelectionSurface::Summary)
+            .map_or(false, |state| {
+                state.rows.iter().any(|(row, _)| row.continues(identity))
+            })
+        {
+            return RowLocation::Found(SelectionSurface::Summary);
+        }
         self.surfaces
             .iter()
             .find(|(_, state)| state.rows.iter().any(|(row, _)| row.continues(identity)))
@@ -572,8 +591,12 @@ impl Selections {
     }
 
     /// Move the active cursor with its exact row across surfaces.
-    pub(crate) fn follow_focused(&mut self, identity: &RowIdentity) -> RowLocation {
-        let RowLocation::Found(destination) = self.containing(identity) else {
+    pub(crate) fn follow_focused(
+        &mut self,
+        preferred: &SelectableSurface,
+        identity: &RowIdentity,
+    ) -> RowLocation {
+        let RowLocation::Found(destination) = self.containing(preferred, identity) else {
             return RowLocation::Gone;
         };
         match self.surface_mut(&destination) {
@@ -606,6 +629,14 @@ impl Selections {
             .filter_map(|(surface, state)| match state.selection() {
                 TileSelection::Row(row) => Some((surface.clone(), row)),
                 TileSelection::NoRows => None,
+            })
+            .filter(|(origin, row)| {
+                !rows.iter().any(|(surface, identities)| {
+                    surface == origin
+                        && identities
+                            .iter()
+                            .any(|(identity, _)| identity.continues(row))
+                })
             })
             .collect();
         self.surfaces

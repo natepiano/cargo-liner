@@ -280,17 +280,11 @@ fn versioned_database(codex_dir: &Path, prefix: &str) -> Option<PathBuf> {
         .map(|(_, path)| path)
 }
 
-mod socket;
-
-#[cfg(test)]
-pub(super) use socket::SocketEndpoint;
-use socket::SocketSnapshot;
-
 /// The current database answer for a requested thread.
 #[derive(Debug)]
 pub(super) enum ThreadLookup {
     User(CodexThread),
-    NonUser(CodexThread),
+    NonUser,
     Missing,
 }
 
@@ -311,37 +305,17 @@ impl ThreadRows {
 #[derive(Debug, Default)]
 pub(super) struct CodexLogs {
     databases: HashMap<PathBuf, LogDatabase>,
-    sockets:   SocketSnapshot,
 }
 
 impl CodexLogs {
-    /// Read socket ownership and advance each account log once.
+    /// Advance each account log once.
     pub(super) fn refresh(&mut self, processes: &[ProcessEntry], home: Option<&Path>) {
-        let started = std::time::Instant::now();
-        self.sockets.refresh(processes, home);
-        startup_log::startup_event(&format!(
-            "codex_socket_read elapsed_us={} sock_diag_queries={}",
-            started.elapsed().as_micros(),
-            self.sockets.query_count()
-        ));
         let started = std::time::Instant::now();
         self.refresh_logs(processes, home);
         startup_log::startup_event(&format!(
             "codex_log_read elapsed_us={}",
             started.elapsed().as_micros()
         ));
-    }
-
-    #[cfg(test)]
-    pub(super) fn refresh_with_peers(
-        &mut self,
-        processes: &[ProcessEntry],
-        home: Option<&Path>,
-        endpoints: &[SocketEndpoint],
-    ) {
-        self.sockets
-            .replace(processes, home, endpoints, &HashSet::new());
-        self.refresh_logs(processes, home);
     }
 
     fn refresh_logs(&mut self, processes: &[ProcessEntry], home: Option<&Path>) {
@@ -422,7 +396,7 @@ impl CodexLogs {
         rows
     }
 
-    /// Select exact process records and confirmed selections from an exclusive child daemon.
+    /// Select records from this process or its child daemon.
     pub(super) fn link<'a>(
         &self,
         process: &ProcessEntry,
@@ -440,28 +414,20 @@ impl CodexLogs {
                 record.logged_at >= process.started
                     && processes.iter().any(|source| {
                         record.belongs_to(source)
-                            && (source.pid == process.pid
-                                || (source.parent == Some(process.pid)
-                                    && self.sockets.clients(source.pid) == [process.pid]))
+                            && match record.selection.proof {
+                                SelectionProof::InProcessSnapshot => source.pid == process.pid,
+                                SelectionProof::MatchedResponse => {
+                                    source.pid == process.pid || source.parent == Some(process.pid)
+                                },
+                            }
                     })
             })
             .filter_map(|record| match rows.get(&account, &record.thread_id) {
                 Some(ThreadLookup::User(thread)) => Some((record.id, thread)),
-                Some(ThreadLookup::Missing | ThreadLookup::NonUser(_)) | None => None,
+                Some(ThreadLookup::Missing | ThreadLookup::NonUser) | None => None,
             })
             .max_by_key(|(id, _)| *id)
             .map(|(_, thread)| thread)
-    }
-
-    pub(super) fn permits_launch_fallback(
-        &self,
-        process: &ProcessEntry,
-        processes: &[ProcessEntry],
-    ) -> bool {
-        !matches!(
-            self.sockets.relation(process, processes),
-            socket::ClientDaemonLink::Unresolved
-        )
     }
 
     #[cfg(test)]
@@ -516,7 +482,7 @@ fn read_current_threads(
                 if row.get::<_, bool>(5)? {
                     Ok(ThreadLookup::User(decode_thread(row, &owner)?))
                 } else {
-                    Ok(ThreadLookup::NonUser(decode_thread(row, &owner)?))
+                    Ok(ThreadLookup::NonUser)
                 }
             })
             .optional()?
@@ -687,17 +653,59 @@ fn log_request_id(body: &str, key: &str) -> Option<String> {
     }
 }
 
-/// Only a matched success response confirms a daemon selection.
+/// The evidence that binds a selection to its log process.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ConfirmedConnection(u64);
+enum SelectionProof {
+    MatchedResponse,
+    InProcessSnapshot,
+}
+
+#[derive(Debug)]
+struct ConfirmedSelection {
+    connection: u64,
+    request:    String,
+    proof:      SelectionProof,
+}
+
+impl ConfirmedSelection {
+    fn snapshot(identity: &str, body: &str, thread: &str) -> Option<Self> {
+        if !body.contains("rpc.transport=\"in-process\"")
+            || !body.contains(&format!("shell_snapshot{{thread_id={thread}}}"))
+            || !body.contains("}: Shell snapshot successfully created:")
+        {
+            return None;
+        }
+        let request = SelectionRequest::request(identity, body)?;
+        Some(Self {
+            connection: request.connection,
+            request:    request.request,
+            proof:      SelectionProof::InProcessSnapshot,
+        })
+    }
+
+    fn rejects_older_request(&self, other: &Self) -> bool {
+        match (
+            self.request
+                .strip_prefix("integer:")
+                .and_then(|id| id.parse::<u64>().ok()),
+            other
+                .request
+                .strip_prefix("integer:")
+                .and_then(|id| id.parse::<u64>().ok()),
+        ) {
+            (Some(previous), Some(current)) => previous > current,
+            _ => false,
+        }
+    }
+}
 
 #[derive(Debug)]
 struct LoggedThread {
-    pid:        u32,
-    id:         i64,
-    logged_at:  u64,
-    thread_id:  String,
-    connection: ConfirmedConnection,
+    pid:       u32,
+    id:        i64,
+    logged_at: u64,
+    thread_id: String,
+    selection: ConfirmedSelection,
 }
 
 impl LoggedThread {
@@ -819,26 +827,40 @@ impl LogDatabase {
             if let Some(request) = SelectionRequest::request(&identity, &body) {
                 self.requests.entry(request).or_insert(logged_at);
             }
-            let connection = match SelectionRequest::response(&identity, &body) {
-                Some(request) if self.requests.remove(&request).is_some() => {
-                    ConfirmedConnection(request.connection)
-                },
-                _ => continue,
-            };
             let Some(thread_id) = row.get::<_, Option<String>>(3)? else {
                 continue;
+            };
+            let selection = match SelectionRequest::response(&identity, &body) {
+                Some(request) if self.requests.remove(&request).is_some() => ConfirmedSelection {
+                    connection: request.connection,
+                    request:    request.request,
+                    proof:      SelectionProof::MatchedResponse,
+                },
+                _ => match ConfirmedSelection::snapshot(&identity, &body, &thread_id) {
+                    Some(selection) => {
+                        self.requests.remove(&SelectionRequest {
+                            daemon:     identity.clone(),
+                            connection: selection.connection,
+                            request:    selection.request.clone(),
+                        });
+                        selection
+                    },
+                    None => continue,
+                },
             };
             let record = LoggedThread {
                 pid,
                 id,
                 logged_at,
                 thread_id,
-                connection,
+                selection,
             };
             let records = self.records.entry(pid).or_default();
-            let kept = records.iter_mut().find(|r| r.connection == connection);
+            let kept = records
+                .iter_mut()
+                .find(|r| r.selection.connection == record.selection.connection);
             if let Some(kept) = kept {
-                if kept.id < record.id {
+                if kept.id < record.id && !kept.selection.rejects_older_request(&record.selection) {
                     *kept = record;
                 }
             } else {
@@ -1261,5 +1283,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "../codex_label_cut_tests.rs"]
+#[path = "codex_label_cut_tests.rs"]
 mod label_cut_tests;

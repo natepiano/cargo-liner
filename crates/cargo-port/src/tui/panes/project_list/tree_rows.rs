@@ -337,7 +337,7 @@ fn tree_prefix(project_list: &ProjectList, tree_row: &TreeRow, later_rows: &[Tre
 
     let row_segment_index = lineage.len() - 1;
     let expansion = match project_list.expand_key_for_row(*row) {
-        Some(key) if project_list.expanded.contains(&key) => TreeRowExpansion::Expanded,
+        Some(key) if project_list.expanded.is_open(&key, 0) => TreeRowExpansion::Expanded,
         Some(_) => TreeRowExpansion::Collapsed,
         None => TreeRowExpansion::Leaf,
     };
@@ -355,7 +355,10 @@ fn root_prefix(project_list: &ProjectList, row: VisibleRow) -> &'static str {
     if !item.has_children() {
         return PREFIX_ROOT_LEAF;
     }
-    if project_list.expanded.contains(&ExpandKey::Node(node_index)) {
+    if project_list
+        .expanded
+        .is_open(&ExpandKey::Node(node_index), 0)
+    {
         PREFIX_ROOT_EXPANDED
     } else {
         PREFIX_ROOT_COLLAPSED
@@ -1605,7 +1608,7 @@ mod tests {
         assert_eq!(worktree_entry_disk_bytes(&group, 1), Some(linked_bytes));
         assert_eq!(group.disk_usage_bytes(), Some(primary_bytes + linked_bytes));
 
-        list.expanded.insert(ExpandKey::Node(1));
+        list.expanded.expand(ExpandKey::Node(1), 0);
         list.recompute_visibility(true);
         let (expanded, _) = disk::compute_disk_cache(&list);
 

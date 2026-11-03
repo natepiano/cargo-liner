@@ -109,14 +109,14 @@ pub(crate) const TREE_SESSION_HEADER: &str = "session";
 pub(crate) const TREE_STATUS_HEADER: &str = "status";
 /// Leads a session in an agent cell's tree that has a later session
 /// beside it.
-pub(crate) const TREE_BRANCH: &str = "├─ ";
+pub(crate) const TREE_BRANCH: &str = "├── ";
 /// Leads the last session its launcher opened in an agent cell's tree.
-pub(crate) const TREE_LAST_BRANCH: &str = "└─ ";
+pub(crate) const TREE_LAST_BRANCH: &str = "└── ";
 /// Carries a level's line of an agent cell's tree down past a line
 /// that does not branch at it.
-pub(crate) const TREE_RAIL: &str = "│  ";
+pub(crate) const TREE_RAIL: &str = "│ ";
 /// Stands for a level of an agent cell's tree whose line has ended.
-pub(crate) const TREE_SPACE: &str = "   ";
+pub(crate) const TREE_SPACE: &str = "  ";
 /// Rows the note standing in for an empty tree takes.
 pub(crate) const NOTHING_RUNNING_HEIGHT: u16 = 1;
 /// What an agent cell says in place of its tree when the agent is
@@ -595,9 +595,13 @@ pub(crate) const WORKER_DOCUMENT_EXTENSION: &str = "json";
 /// Markdown heading opening for a pooled review job.
 pub(crate) const REVIEW_JOB_HEADING: &str = "# ";
 
-/// The netlink message that requests Unix socket details.
-#[cfg(target_os = "linux")]
-pub(crate) const CODEX_SOCK_DIAG_BY_FAMILY: u16 = 20;
-/// Request the Unix socket peer attribute.
-#[cfg(target_os = "linux")]
-pub(crate) const CODEX_UNIX_DIAG_SHOW_PEER: u32 = 4;
+/// Herdr exports its API address to pane processes.
+pub(crate) const HERDR_SOCKET_VARIABLE: &str = "HERDR_SOCKET_PATH";
+/// Bound the initial probe wait for the background worker.
+pub(crate) const HERDR_INITIAL_TIMEOUT: Duration = Duration::from_millis(100);
+/// The worker retries failed subscriptions without blocking a scan.
+pub(crate) const HERDR_SUBSCRIPTION_RETRY: Duration = Duration::from_millis(500);
+/// Bound each herdr API read and write.
+pub(crate) const HERDR_READ_TIMEOUT: Duration = Duration::from_millis(100);
+/// Bound each herdr API answer.
+pub(crate) const HERDR_ANSWER_LIMIT: u64 = 4 * 1024 * 1024;

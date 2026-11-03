@@ -60,7 +60,6 @@ use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 use super::codex;
 use super::codex::CodexLogs;
-use super::codex::CodexThread;
 use super::codex_names::SessionName;
 use super::codex_names::SessionNames;
 use super::desktop;
@@ -148,6 +147,7 @@ pub(super) struct LocalScanner {
     session_names:       SessionNames,
     /// Each Codex account log advances from its retained row id.
     codex_logs:          CodexLogs,
+    herdr:               super::herdr::HerdrNames,
     codex_links:         HashMap<u32, CodexSessionLink>,
     codex_start_window:  CodexStartWindow,
     transcript_activity: HashMap<PathBuf, TranscriptRead>,
@@ -227,7 +227,6 @@ impl LocalScanner {
         &mut self,
         processes: &[ProcessEntry],
         sessions: &[SessionRecord],
-        codex_threads: &[CodexThread],
         home: Option<&Path>,
         mut publish: impl FnMut(Vec<AgentRow>),
         read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
@@ -235,7 +234,6 @@ impl LocalScanner {
         self.scan_stages_with(
             processes,
             sessions,
-            codex_threads,
             home,
             |_, rows| publish(rows),
             read_details,
@@ -247,12 +245,11 @@ impl LocalScanner {
         &mut self,
         processes: &[ProcessEntry],
         sessions: &[SessionRecord],
-        codex_threads: &[CodexThread],
         home: Option<&Path>,
         mut publish: impl FnMut(ScanStage, Vec<AgentRow>),
         read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
     ) {
-        self.resolve_codex_sessions(processes, codex_threads, home);
+        self.resolve_codex_sessions(processes, home);
         let mut rows = startup_log::startup_stage("classify_agents", || {
             let threads = classify::linked_threads(&self.codex_links);
             classify::agent_rows_with_threads(
@@ -264,36 +261,26 @@ impl LocalScanner {
             )
         });
         if matches!(self.publication, LocalPublication::FirstAnswerPending) {
+            self.attach_codex_names(&mut rows);
             publish(ScanStage::Classified, rows.clone());
         }
         startup_log::startup_stage("details", || read_details(self, &mut rows));
+        self.attach_codex_names(&mut rows);
         publish(ScanStage::Completed, rows);
         self.publication = LocalPublication::CompletedAnswerPublished;
     }
 
     /// Read current thread rows and resolve one map for this scan.
-    fn resolve_codex_sessions(
-        &mut self,
-        processes: &[ProcessEntry],
-        threads: &[CodexThread],
-        home: Option<&Path>,
-    ) {
+    fn resolve_codex_sessions(&mut self, processes: &[ProcessEntry], home: Option<&Path>) {
         let records = startup_log::startup_stage("codex_thread_ids", || {
             self.codex_logs
                 .thread_rows(processes, home, self.codex_start_window)
         });
-        self.codex_links = classify::codex_session_links(
-            processes,
-            if threads.is_empty() {
-                &records.candidates
-            } else {
-                threads
-            },
-            home,
-            self.codex_start_window,
-            &self.codex_logs,
-            &records,
-        );
+        self.codex_links =
+            classify::codex_session_links(processes, home, &self.codex_logs, &records);
+        startup_log::startup_stage("herdr_names", || {
+            self.herdr.refresh(processes, &mut self.codex_links);
+        });
     }
 
     /// A scanner of the user running this process.
@@ -309,6 +296,10 @@ impl LocalScanner {
             rollouts: Rollouts::default(),
             session_names: super::codex_names::SessionNames::default(),
             codex_logs: codex::CodexLogs::default(),
+            #[cfg(not(test))]
+            herdr: super::herdr::HerdrNames::default(),
+            #[cfg(test)]
+            herdr: super::herdr::HerdrNames::isolated(),
             codex_links: HashMap::new(),
             codex_start_window: crate::config::CodexStartWindow::default(),
             transcript_activity: HashMap::new(),
@@ -317,7 +308,6 @@ impl LocalScanner {
             worker_names: WorkerNames::default(),
             worker_commands: WorkerCommands::default(),
             session_roots: SessionRoots::production(),
-
             processes: ProcessCensus::default(),
             run_records: activity::RunRecords::default(),
             desktop_source: DesktopSource::System,
@@ -339,6 +329,8 @@ impl LocalScanner {
     pub(super) fn scan(&mut self) -> Vec<AgentRow> {
         let mut rows = Vec::new();
         self.scan_staged(|_, answer| rows = answer);
+        self.herdr.finish_initial(&mut self.codex_links);
+        self.attach_codex_names(&mut rows);
         rows
     }
 
@@ -353,11 +345,9 @@ impl LocalScanner {
         let processes =
             startup_log::startup_stage("process_table", || self.processes.read(&sessions));
         self.codex_logs.refresh(&processes, home.as_deref());
-        let codex_threads = Vec::new();
         self.scan_stages_with(
             &processes,
             &sessions,
-            &codex_threads,
             home.as_deref(),
             publish,
             |scanner, rows| {
@@ -498,7 +488,6 @@ impl LocalScanner {
                 continue;
             }
             row.activity = AgentActivity::Idle;
-            row.name = format!("pid {}", row.pid);
             let Some(thread) = self
                 .codex_links
                 .get(&row.pid)
@@ -508,8 +497,22 @@ impl LocalScanner {
             };
             let read = self.rollouts.read(&thread.rollout);
             row.activity = read.activity();
-            if let SessionName::Named(name) = self.session_names.name(thread) {
-                row.name = name;
+        }
+    }
+
+    /// This stage owns the fallback name in each interactive census row.
+    fn attach_codex_names(&self, rows: &mut [AgentRow]) {
+        for row in rows.iter_mut().filter(|row| row.agent == Agent::Codex) {
+            match self.codex_links.get(&row.pid) {
+                Some(CodexSessionLink::Named(thread)) => {
+                    row.name = match self.session_names.name(thread) {
+                        SessionName::Named(name) => name,
+                        SessionName::Unnamed => format!("pid {}", row.pid),
+                    };
+                },
+                Some(CodexSessionLink::HerdrName(name)) => row.name.clone_from(name),
+                Some(CodexSessionLink::NoMatch) => row.name = format!("pid {}", row.pid),
+                None => {},
             }
         }
     }
@@ -1978,6 +1981,8 @@ mod tests {
     #[cfg(unix)]
     use std::process::Child;
 
+    #[cfg(unix)]
+    use census_test_support::StdinEchoExecutable;
     use chrono::DateTime;
     use serde_json::json;
     use tempfile::TempDir;
@@ -1986,6 +1991,7 @@ mod tests {
     use crate::census::Account;
     use crate::census::RoleFallback;
     use crate::census::SessionIdentity;
+    use crate::census::herdr::HerdrNames;
 
     #[test]
     fn idle_verification_arguments_are_checked_once_per_process() {
@@ -2032,32 +2038,6 @@ mod tests {
         }
     }
 
-    /// A single-program executable retains its copied name after exec.
-    #[cfg(unix)]
-    fn copied_agent_executable(directory: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let binary = directory.join("codex");
-        #[cfg(target_os = "macos")]
-        fs::copy("/bin/cat", &binary)?;
-        #[cfg(not(target_os = "macos"))]
-        {
-            // Python retains the executable name; multicall coreutils changes it to cat.
-            let python = Command::new("python3")
-                .args(["-c", "import sys; print(sys.executable)"])
-                .output()?;
-            fs::copy(String::from_utf8(python.stdout)?.trim(), &binary)?;
-        }
-        #[cfg(target_os = "macos")]
-        assert!(
-            Command::new("/usr/bin/codesign")
-                .args(["--force", "--sign", "-"])
-                .arg(&binary)
-                .status()?
-                .success(),
-            "the copied system fixture needs a valid local signature"
-        );
-        Ok(binary)
-    }
-
     #[cfg(unix)]
     fn agent_reply(
         input: &mut impl std::io::Write,
@@ -2072,16 +2052,14 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn same_pid_exec_launcher(binary: &Path, directory: &Path) -> Command {
-        #[cfg(target_os = "macos")]
-        let launcher = "import os,sys; print('launcher',flush=True); sys.stdin.readline(); os.chdir(sys.argv[2]); print('moved',flush=True); sys.stdin.readline(); print('executing',flush=True); os.execv(sys.argv[1],[sys.argv[1]])";
-        #[cfg(not(target_os = "macos"))]
-        let launcher = "import os,sys; print('launcher',flush=True); sys.stdin.readline(); os.chdir(sys.argv[2]); print('moved',flush=True); sys.stdin.readline(); print('executing',flush=True); os.execv(sys.argv[1],[sys.argv[1],'-u','-c',\"import sys; [print(line.rstrip(),flush=True) for line in sys.stdin]\"])";
+    fn same_pid_exec_launcher(binary: &StdinEchoExecutable, directory: &Path) -> Command {
+        let launcher = "import os,sys; print('launcher',flush=True); sys.stdin.readline(); os.chdir(sys.argv[2]); print('moved',flush=True); sys.stdin.readline(); print('executing',flush=True); os.execv(sys.argv[1],[sys.argv[1],*sys.argv[3:]])";
         let mut command = Command::new("python3");
         command
             .args(["-u", "-c", launcher])
-            .arg(binary)
+            .arg(binary.path())
             .arg(directory)
+            .args(binary.arguments())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
         command
@@ -2099,8 +2077,11 @@ mod tests {
             }
         }
         let directory = tempfile::tempdir()?;
-        let binary = copied_agent_executable(directory.path())?;
-        let mut child = ChildUntilDrop(same_pid_exec_launcher(&binary, directory.path()).spawn()?);
+        let executable =
+            census_test_support::StdinEchoExecutable::copy_to(directory.path(), "codex")?;
+        let binary = executable.path();
+        let mut child =
+            ChildUntilDrop(same_pid_exec_launcher(&executable, directory.path()).spawn()?);
         let mut input = child.0.stdin.take().ok_or("child stdin")?;
         let mut output = std::io::BufReader::new(child.0.stdout.take().ok_or("child stdout")?);
         let mut line = String::new();
@@ -2285,6 +2266,7 @@ mod tests {
             rollouts:            Rollouts::default(),
             session_names:       super::super::codex_names::SessionNames::default(),
             codex_logs:          codex::CodexLogs::default(),
+            herdr:               HerdrNames::isolated(),
             codex_links:         HashMap::new(),
             codex_start_window:  crate::config::CodexStartWindow::default(),
             transcript_activity: HashMap::new(),
@@ -2297,6 +2279,28 @@ mod tests {
             desktop_source: DesktopSource::Windows(Vec::new()),
             desktops:       None,
         }
+    }
+
+    #[test]
+    fn the_census_name_stage_keeps_the_herdr_name_in_the_wire_row() {
+        let mut scanner = scanner();
+        let processes = vec![entry(2, 1, "codex", 20, &["codex"])];
+        let mut rows = classify::agent_rows_with_threads(
+            &processes,
+            &[],
+            &HashMap::new(),
+            None,
+            &AccountLabels::default(),
+        );
+        scanner
+            .codex_links
+            .insert(2, CodexSessionLink::HerdrName("morty".into()));
+        scanner.attach_codex_names(&mut rows);
+        assert_eq!(rows[0].name, "morty");
+        scanner.attach_codex_sessions(&processes, None, &mut rows);
+        scanner.attach_codex_names(&mut rows);
+        let wire = serde_json::to_value(&rows).expect("census wire rows");
+        assert_eq!(wire[0]["name"], "morty");
     }
 
     /// A process with its command line read.
@@ -2611,7 +2615,6 @@ mod hierarchy_publication_tests {
             runner,
             move |answers| {
                 LocalScanner::new(AccountLabels::default()).scan_stages_with(
-                    &[],
                     &[],
                     &[],
                     None,

@@ -30,30 +30,7 @@ impl ResolvedKeymap {
     /// The built-in default keymap matching the current hardcoded bindings.
     pub(crate) fn defaults() -> Self {
         Self {
-            project_list: ScopeMap::from([
-                (
-                    KeyBind::from(KeyCode::Char('=')),
-                    ProjectListAction::ExpandAll,
-                ),
-                (
-                    KeyBind::from(KeyCode::Char('-')),
-                    ProjectListAction::CollapseAll,
-                ),
-                // ExpandRow / CollapseRow are pane-scope actions routed through
-                // the pane-scope match in `handle_normal_key`. Bare Right / Left
-                // are already mapped to NavAction::Right / ::Left in the
-                // framework keymap, so the pane-scope defaults bind ExpandRow /
-                // CollapseRow to Shift+Right / Shift+Left to avoid colliding
-                // with the navigation defaults.
-                (
-                    KeyBind::from_parts(KeyCode::Right, KeyModifiers::SHIFT),
-                    ProjectListAction::ExpandRow,
-                ),
-                (
-                    KeyBind::from_parts(KeyCode::Left, KeyModifiers::SHIFT),
-                    ProjectListAction::CollapseRow,
-                ),
-            ]),
+            project_list: ScopeMap::from(ProjectListAction::key_bindings(KeyModifiers::SHIFT)),
             package:      ScopeMap::from([(
                 KeyBind::from(KeyCode::Enter),
                 PackageAction::Activate,

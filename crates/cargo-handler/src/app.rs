@@ -8,6 +8,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use std::time::Instant;
 
+use expansion::HandlerExpansion;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
@@ -75,6 +76,9 @@ use crate::theme::StartupThemeNotes;
 use crate::tiles::AgentCell;
 use crate::tiles::TileGrid;
 use crate::tiles::TileKey;
+
+#[path = "expansion.rs"]
+pub(crate) mod expansion;
 
 /// The attract screen, sharing the handler's optional startup timing log.
 pub(crate) type Attract = tui_pane::Attract<StartupProbe>;
@@ -148,6 +152,7 @@ pub(crate) struct App {
     /// Per-root preferences, discarded when that root leaves the census.
     pub(crate) selection_area:    Rect,
     pub(crate) selections:        Selections,
+    pub(crate) expansion:         HandlerExpansion,
     pub(crate) tree_sorts:        HashMap<TileKey, TreeSort>,
     pub(crate) tree_layouts:      HashMap<TileKey, TreeMetrics>,
     /// The summary allocation retained for header clicks until the next paint.
@@ -205,6 +210,7 @@ impl App {
         let placement = AgentPlacement::from_machines(&machines);
         let keys = agent_cell::tile_keys(&placement);
         self.tree_sorts.retain(|id, _| keys.contains(id));
+        self.expansion.retain(&placement);
     }
 
     /// Build the app with the grid focused and the keymap loaded.
@@ -259,6 +265,7 @@ impl App {
             tiles: TileGrid::new(),
             selections: crate::interaction::Selections::default(),
             selection_area: Rect::ZERO,
+            expansion: expansion::HandlerExpansion::default(),
             tree_sorts: HashMap::new(),
             tree_layouts: HashMap::new(),
             painted_summary: std::cell::RefCell::new(PaintedSummary::NotDrawn),

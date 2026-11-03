@@ -358,7 +358,7 @@ fn activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_
     let text = lines(&buffer).join("\n");
     assert!(text.contains("fix · Repair the widget"), "{text}");
     assert!(
-        text.contains("└─ test"),
+        text.contains("└── test"),
         "the unreadable task still has its hierarchy role: {text}"
     );
     assert!(
@@ -475,7 +475,8 @@ fn shell_running_uses_agent_running_ink_while_timers_keep_shell_ink() {
         ..agent(10, "shell-owner", HOUR, None)
     };
     let mut cell = entry(&owner, None);
-    cell.lines.push(TreeLine {
+    cell.lines.push(TreeLine::new(TreeLineContent {
+        expansion:      TreeMarker::Leaf,
         dispatch_label: DispatchLabel::Original,
         machine:        "natedev",
         location:       SessionLocation::SameMachine,
@@ -484,7 +485,7 @@ fn shell_running_uses_agent_running_ink_while_timers_keep_shell_ink() {
         rails:          Vec::new(),
         branch:         Branch::Last,
         subject:        LineSubject::Agent(RoleLabel::Unlabeled),
-    });
+    }));
     for width in [180, 65] {
         let buffer = drawn_among(&cell, &[], width);
         let agent_status = status_at(&buffer, "running-agent");

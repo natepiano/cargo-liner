@@ -112,7 +112,6 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
     super::LocalScanner::new(AccountLabels::default()).scan_stages(
         &processes,
         &sessions,
-        &[],
         Some(Path::new("/home/test")),
         |rows| {
             sender
@@ -187,7 +186,6 @@ fn later_scans_publish_completed_rows_without_a_classified_refresh() {
     scanner.scan_stages(
         &processes,
         &sessions,
-        &[],
         None,
         |rows| first_answers.push(rows),
         |_, rows| rows[0].branch = Some("main".to_string()),
@@ -198,7 +196,6 @@ fn later_scans_publish_completed_rows_without_a_classified_refresh() {
     scanner.scan_stages(
         &processes,
         &sessions,
-        &[],
         None,
         |rows| sender.send(rows).expect("the census receiver remains open"),
         |_, rows| {

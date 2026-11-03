@@ -141,6 +141,7 @@ use crate::constants::APP_VERSION;
 use crate::constants::ATTRACT_NOTE_LABEL;
 use crate::constants::BYTES_PER_GIBIBYTE;
 use crate::constants::COMMAND_COLUMN;
+use crate::constants::COMMAND_TITLE_PADDING;
 use crate::constants::COMPILER_COLUMN;
 use crate::constants::CONTENT_RIGHT_INSET;
 use crate::constants::CPU_COLUMN;
@@ -195,6 +196,7 @@ use crate::roster::FamilyHead;
 use crate::roster::ParentFamily;
 #[cfg(test)]
 use crate::roster::Roster;
+use crate::roster::RowInk;
 use crate::roster::TrackedGroup;
 use crate::roster::TrackedRow;
 use crate::roster::VisibleRoster;
@@ -378,6 +380,51 @@ fn draw_visible_panes(
 /// Summary frames resolved and painted by this draw's grid snapshot.
 struct DrawnSummaryFrames(Vec<Rect>);
 
+/// One draw owns its fitted title until the grid consumes it for that border.
+enum DrawnCommandTitle {
+    Untitled,
+    Titled {
+        id:   InvocationId,
+        line: Line<'static>,
+    },
+}
+
+impl DrawnCommandTitle {
+    fn for_table(
+        groups: &[PathGroup<'_>],
+        pinned: PinnedGroup<'_>,
+        width: u16,
+        layout: &CellTableLayout,
+        headings: &TableAccountHeadings,
+    ) -> Self {
+        match pinned {
+            PinnedGroup::Lead(lead)
+                if width >= cell_width(COMMAND_TITLE_PADDING).saturating_mul(2) =>
+            {
+                groups
+                    .iter()
+                    .find(|group| group.heading == DirectoryHeading::Border)
+                    .map_or(Self::Untitled, |group| Self::Titled {
+                        id:   lead.invocation_id.clone(),
+                        line: headings.border_title(group, width, layout),
+                    })
+            },
+            PinnedGroup::Lead(_) | PinnedGroup::Unpinned => Self::Untitled,
+        }
+    }
+
+    /// Transfer the owned line only to the command whose draw produced it.
+    fn take_for(&mut self, id: &InvocationId) -> Option<Line<'static>> {
+        match std::mem::replace(self, Self::Untitled) {
+            Self::Titled { id: drawn, line } if &drawn == id => Some(line),
+            other => {
+                *self = other;
+                None
+            },
+        }
+    }
+}
+
 /// What the tile grid's cells hold, borrowed out of [`App`] for one
 /// frame.
 struct Cells<'a> {
@@ -390,6 +437,8 @@ struct Cells<'a> {
     row_uses: RefCell<HashMap<(CellRowIdentity, u16), PreparedCellRows>>,
     /// Intrinsic column inputs shared by every allocation in this frame.
     grids:    FrameColumnGrids,
+    /// The title produced by the current command draw, handed to its border.
+    title:    RefCell<DrawnCommandTitle>,
 }
 
 impl<'a> Cells<'a> {
@@ -418,6 +467,7 @@ impl<'a> Cells<'a> {
         Self {
             sccache,
             row_uses: RefCell::new(HashMap::new()),
+            title: RefCell::new(DrawnCommandTitle::Untitled),
             grids: FrameColumnGrids::for_frame(&roster, view, height),
             roster,
         }
@@ -445,6 +495,10 @@ impl<'a> Cells<'a> {
 
 impl TileCells<InvocationId> for Cells<'_> {
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
+
+    fn group_title(&self, id: &InvocationId) -> Option<Line<'static>> {
+        self.title.borrow_mut().take_for(id)
+    }
 
     fn prepare_frame(&self, allocations: impl FnOnce() -> Vec<(TileContent, Rect)>) {
         self.grids.summary.0.row_end.set(TableRowEnd::Unreserved);
@@ -567,24 +621,31 @@ impl TileCells<InvocationId> for Cells<'_> {
     }
 
     fn readout_fade(&self, content: &TileContent) -> CellReadoutFade {
-        let faded = match content {
-            TileContent::Summary => {
-                let rows = summary_rows(&self.roster);
-                heading_fade(&rows)
-            },
-            TileContent::Group(id) => {
-                let Some(group) = self.roster.groups().iter().find(|group| &group.id == id) else {
-                    return CellReadoutFade::Unfaded;
-                };
-                let group = group.for_painting();
-                let rows: Vec<_> = group.rows().collect();
-                group_fade(&group, &rows)
-            },
-            TileContent::Empty(_) => return CellReadoutFade::Unfaded,
-        };
-        match faded {
+        match self.readout_progress(content).amount() {
             0 => CellReadoutFade::Unfaded,
             amount => CellReadoutFade::Fading(CellFadeProgress::new(amount)),
+        }
+    }
+
+    fn readout_progress(&self, content: &TileContent) -> CellFadeProgress {
+        match content {
+            TileContent::Summary => {
+                let rows = summary_rows(&self.roster);
+                CellFadeProgress::new(heading_fade(&rows))
+            },
+            TileContent::Group(id) => self
+                .roster
+                .groups()
+                .iter()
+                .find(|group| &group.id == id)
+                .and_then(|group| {
+                    group
+                        .rows()
+                        .map(TrackedRow::painted_ink)
+                        .min_by_key(|ink| ink.fade())
+                })
+                .map_or_else(|| CellFadeProgress::new(0), RowInk::progress),
+            TileContent::Empty(_) => CellFadeProgress::new(0),
         }
     }
 
@@ -638,7 +699,8 @@ impl TileCells<InvocationId> for Cells<'_> {
     }
 
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, ground: Color) {
-        frame_draw_contents(buffer, &self.roster, content, inner, ground, &self.grids);
+        *self.title.borrow_mut() =
+            frame_draw_contents(buffer, &self.roster, content, inner, ground, &self.grids);
     }
 
     fn summary_labels(&self, rect: Rect) -> Vec<PaneFrameLabel> {
@@ -868,11 +930,17 @@ enum TableHeightUse {
     EmptyTable,
     NoReadableColumns,
     ProcessRows {
-        groups:     Vec<Vec<u16>>,
+        groups:     Vec<DirectoryRowHeights>,
         body_rows:  u16,
         gap_rows:   u16,
         exact_rows: usize,
     },
+}
+
+/// Height prefixes share the group's heading placement with painting.
+struct DirectoryRowHeights {
+    heading: DirectoryHeading,
+    rows:    Vec<u16>,
 }
 
 impl TableHeightUse {
@@ -894,7 +962,7 @@ impl TableHeightUse {
             }
         });
         let mut process_rows = 0_usize;
-        let groups: Vec<Vec<u16>> = groups
+        let groups: Vec<DirectoryRowHeights> = groups
             .iter()
             .map(|group| {
                 let mut prefix = vec![0_u16];
@@ -905,12 +973,20 @@ impl TableHeightUse {
                     used = used.saturating_add(lines);
                     prefix.push(used);
                 }
-                prefix
+                DirectoryRowHeights {
+                    heading: group.heading,
+                    rows:    prefix,
+                }
             })
             .collect();
         let body_rows = groups
             .iter()
-            .map(|rows| GROUP_HEADER_HEIGHT.saturating_add(*rows.last().unwrap_or(&0)))
+            .map(|group| {
+                group
+                    .heading
+                    .rows()
+                    .saturating_add(*group.rows.last().unwrap_or(&0))
+            })
             .fold(0, u16::saturating_add);
         let gap_rows = u16::try_from(groups.len().saturating_sub(1))
             .unwrap_or(u16::MAX)
@@ -919,8 +995,9 @@ impl TableHeightUse {
             .saturating_add(process_rows)
             .saturating_add(
                 groups
-                    .len()
-                    .saturating_mul(usize::from(GROUP_HEADER_HEIGHT)),
+                    .iter()
+                    .map(|group| usize::from(group.heading.rows()))
+                    .sum::<usize>(),
             )
             .saturating_add(
                 groups
@@ -987,20 +1064,20 @@ impl TableHeightUse {
                 };
                 let mut remaining = available;
                 let mut visible = 0_usize;
-                for (index, rows) in groups.iter().enumerate() {
+                for (index, group) in groups.iter().enumerate() {
                     let gap = if separators.before(index) {
                         GROUP_GAP_HEIGHT
                     } else {
                         0
                     };
-                    if remaining < gap.saturating_add(GROUP_HEADER_HEIGHT).saturating_add(1) {
+                    if remaining < gap.saturating_add(group.heading.rows()).saturating_add(1) {
                         break;
                     }
                     visible += 1;
                     remaining = remaining
                         .saturating_sub(gap)
-                        .saturating_sub(GROUP_HEADER_HEIGHT)
-                        .saturating_sub(*rows.last().unwrap_or(&0));
+                        .saturating_sub(group.heading.rows())
+                        .saturating_sub(*group.rows.last().unwrap_or(&0));
                 }
                 if visible < groups.len() && visible > 1 {
                     let spare =
@@ -1461,7 +1538,7 @@ fn grouped_table_height(groups: &[PathGroup<'_>], layout: &CellTableLayout) -> u
                 .iter()
                 .map(|row| usize::from(process_row_lines(row, layout)))
                 .sum();
-            usize::from(GROUP_HEADER_HEIGHT).saturating_add(lines)
+            usize::from(group.heading.rows()).saturating_add(lines)
         })
         .sum();
     usize::from(TABLE_HEADER_HEIGHT)
@@ -1478,6 +1555,40 @@ pub(crate) fn draw_cell_for_test(
     inner: Rect,
     content_rows: usize,
 ) {
+    draw_cell_and_title_for_test(buffer, roster, content, inner, content_rows);
+}
+
+/// Read the border title and body produced by the same cell draw.
+#[cfg(test)]
+pub(crate) fn cell_lines_for_test(
+    roster: &Roster,
+    content: &TileContent,
+    inner: Rect,
+    content_rows: usize,
+) -> Vec<String> {
+    let mut buffer = Buffer::empty(inner);
+    let title = draw_cell_and_title_for_test(&mut buffer, roster, content, inner, content_rows);
+    let mut lines = Vec::new();
+    if let DrawnCommandTitle::Titled { line, .. } = title {
+        lines.push(line.to_string());
+    }
+    lines.extend((inner.y..inner.bottom()).map(|y| {
+        (inner.x..inner.right())
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>()
+    }));
+    lines
+}
+
+#[cfg(test)]
+fn draw_cell_and_title_for_test(
+    buffer: &mut Buffer,
+    roster: &Roster,
+    content: &TileContent,
+    inner: Rect,
+    content_rows: usize,
+) -> DrawnCommandTitle {
+    let mut title = DrawnCommandTitle::Untitled;
     tui_pane::draw_tile_cell(
         buffer,
         content,
@@ -1485,7 +1596,7 @@ pub(crate) fn draw_cell_for_test(
         content_rows,
         inner.width,
         |buffer, inner| {
-            draw_contents(
+            title = draw_contents(
                 buffer,
                 roster,
                 content,
@@ -1496,6 +1607,7 @@ pub(crate) fn draw_cell_for_test(
             );
         },
     );
+    title
 }
 
 /// Draw cell contents through the same visible roster boundary as a frame.
@@ -1508,7 +1620,7 @@ fn draw_contents(
     ground: Color,
     hidden_commands: &[String],
     view: &CommandView,
-) {
+) -> DrawnCommandTitle {
     let visible = roster.clone().visible(hidden_commands);
     let roster = &visible;
     frame_draw_contents(
@@ -1518,7 +1630,7 @@ fn draw_contents(
         inner,
         ground,
         &FrameColumnGrids::for_frame(roster, view, u16::MAX),
-    );
+    )
 }
 
 fn frame_draw_contents(
@@ -1528,13 +1640,16 @@ fn frame_draw_contents(
     inner: Rect,
     ground: Color,
     grids: &FrameColumnGrids,
-) {
+) -> DrawnCommandTitle {
     match content {
-        TileContent::Summary => frame_draw_summary(buffer, roster, inner, ground, &grids.summary.0),
-        TileContent::Group(id) => {
-            frame_draw_group(buffer, roster, id, inner, ground, &grids.commands.0);
+        TileContent::Summary => {
+            frame_draw_summary(buffer, roster, inner, ground, &grids.summary.0);
+            DrawnCommandTitle::Untitled
         },
-        TileContent::Empty(_) => {},
+        TileContent::Group(id) => {
+            frame_draw_group(buffer, roster, id, inner, ground, &grids.commands.0)
+        },
+        TileContent::Empty(_) => DrawnCommandTitle::Untitled,
     }
 }
 
@@ -1702,9 +1817,9 @@ fn frame_draw_group(
     inner: Rect,
     ground: Color,
     grid: &FrameTableColumnGrid,
-) {
+) -> DrawnCommandTitle {
     let Some(group) = roster.groups().iter().find(|group| &group.id == id) else {
-        return;
+        return DrawnCommandTitle::Untitled;
     };
 
     let group = group.for_painting();
@@ -1735,7 +1850,7 @@ fn frame_draw_group(
         height: inner.height.saturating_sub(used),
         ..inner
     };
-    // The command's directory stays above its invocation table.
+    // The lead directory names the border; other directories remain beside their rows.
     let table_grid = table_grid_after_ancestry(grid, used);
     frame_draw_process_table(
         buffer,
@@ -1744,7 +1859,7 @@ fn frame_draw_group(
         ground,
         PinnedGroup::Lead(&group.lead.process),
         &table_grid,
-    );
+    )
 }
 
 /// A table without its Short ancestry block retains the first row's parent link.
@@ -2422,7 +2537,7 @@ fn ancestry_rows(
     wrapped_command(
         ancestor_command_words(ancestor, Style::default()),
         room,
-        cut_mark_style(Color::Reset, 0),
+        cut_mark_style(Color::Reset, 0_u8),
     )
     .lines
     .len()
@@ -2609,9 +2724,26 @@ impl GroupingIdentity<'_> {
     }
 }
 
+/// A command's lead directory names its border; other directories label body rows.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum DirectoryHeading {
+    Body,
+    Border,
+}
+
+impl DirectoryHeading {
+    const fn rows(self) -> u16 {
+        match self {
+            Self::Body => GROUP_HEADER_HEIGHT,
+            Self::Border => 0,
+        }
+    }
+}
+
 /// Invocations sharing an account, root incarnation and absolute working directory,
 /// joined by uncaptured invocations whose process owner is that account.
 struct PathGroup<'a> {
+    heading:  DirectoryHeading,
     /// Display text never participates in membership or pin selection. A captured
     /// member replaces an owner-only identity, so it names the group's root.
     identity: GroupingIdentity<'a>,
@@ -2863,8 +2995,8 @@ impl<'a> ProcessRowValues<'a> {
             cells: [
                 process.pid.to_string(),
                 parent_text(process),
-                process.start.clone(),
-                process.duration.clone(),
+                process.start(),
+                process.duration(),
                 cpu,
                 memory,
                 state,
@@ -3052,10 +3184,10 @@ fn possible_frame_rows<'a>(groups: &[PathGroup<'a>], height: u16) -> Vec<&'a Tra
     let mut remaining = height.saturating_sub(TABLE_HEADER_HEIGHT);
     let mut rows = Vec::new();
     for group in groups {
-        if remaining <= GROUP_HEADER_HEIGHT {
+        if remaining <= group.heading.rows() {
             break;
         }
-        remaining = remaining.saturating_sub(GROUP_HEADER_HEIGHT);
+        remaining = remaining.saturating_sub(group.heading.rows());
         for row in &group.rows {
             if remaining == 0 {
                 break;
@@ -3864,10 +3996,10 @@ fn table_needs_continuation(
     let mut remaining = area.height.saturating_sub(TABLE_HEADER_HEIGHT);
     let groups = group_by_path(rows, pinned);
     for group in groups {
-        if remaining <= GROUP_HEADER_HEIGHT {
+        if remaining <= group.heading.rows() {
             return true;
         }
-        remaining = remaining.saturating_sub(GROUP_HEADER_HEIGHT);
+        remaining = remaining.saturating_sub(group.heading.rows());
         for row in group.rows {
             if remaining == 0 {
                 return true;
@@ -3902,7 +4034,7 @@ struct PreparedProcessRows {
 #[derive(Clone)]
 struct CachedProcessRow {
     process:      CargoProcess,
-    faded:        u8,
+    faded:        RowInk,
     cells:        [Text<'static>; TABLE_HEADERS.len()],
     lines:        u16,
     widths:       Vec<u16>,
@@ -3914,7 +4046,7 @@ struct CachedProcessRow {
 impl CachedProcessRow {
     fn matches(&self, row: &TrackedRow, layout: &CellTableLayout, hides_parent: bool) -> bool {
         self.process == row.process
-            && self.faded == row.faded()
+            && self.faded == row.ink()
             && self.widths == layout.column_widths
             && self.columns == layout.columns
             && self.ground == layout.ground
@@ -4181,12 +4313,25 @@ impl CellTableLayout {
     fn ink(&self, color: Color, faded: u8) -> Color { blend_color(color, self.ground, faded) }
 }
 
+impl RowInk {
+    /// Text and readouts carry one blend rule with their fade amount.
+    const fn progress(self) -> CellFadeProgress {
+        match self {
+            Self::Ordinary(amount) => CellFadeProgress::new(amount),
+            Self::Brighten(amount) => CellFadeProgress::brightening(amount),
+        }
+    }
+
+    fn color(self, color: Color, ground: Color) -> Color { self.progress().color(color, ground) }
+}
+
 /// How far the least-faded of `rows` has travelled, which is what
 /// anything standing over them fades with: a heading or a column label
 /// holds its colour while a single row under it is still running.
-fn heading_fade(rows: &[&TrackedRow]) -> u8 {
-    rows.iter().map(|row| row.faded()).min().unwrap_or_default()
-}
+fn heading_fade(rows: &[&TrackedRow]) -> u8 { minimum_fade(rows.iter().map(|row| row.faded())) }
+
+/// Shared ink follows the least-faded row supplied by its view.
+fn minimum_fade(fades: impl Iterator<Item = u8>) -> u8 { fades.min().unwrap_or_default() }
 
 /// The cell's shared ink follows its rows and the command owning it.
 fn group_fade(group: &TrackedGroup, rows: &[&TrackedRow]) -> u8 {
@@ -4220,7 +4365,7 @@ fn apply_planned_row_readings(
             reading.invocation == row.source.process.invocation_id
                 && reading.pid == row.source.process.pid
         }) {
-            let muted = Style::default().fg(layout.ink(label_color(), row.source.faded()));
+            let muted = Style::default().fg(row.source.ink().color(label_color(), layout.ground));
             row.cells[CPU_COLUMN] =
                 Text::from(Span::styled(cpu_text(reading.resources.cpu), muted));
             row.cells[MEMORY_COLUMN] =
@@ -4288,10 +4433,10 @@ fn frame_draw_process_table(
     ground: Color,
     pinned: PinnedGroup<'_>,
     grid: &FrameTableColumnGrid,
-) {
+) -> DrawnCommandTitle {
     if rows.is_empty() {
         draw_empty_process_table(buffer, area, grid.kind);
-        return;
+        return DrawnCommandTitle::Untitled;
     }
 
     // One column-label row for the whole cell. Every group's table is
@@ -4303,14 +4448,6 @@ fn frame_draw_process_table(
         ..indented(area)
     };
     let faded = heading_fade(rows);
-    if layout.columns.is_empty() {
-        Paragraph::new(Line::from(Span::styled(
-            ELISION,
-            column_header_style(&layout, faded),
-        )))
-        .render(header_area, buffer);
-        return;
-    }
     let groups = group_by_path(rows, pinned);
     let mut drawn_groups: Vec<Vec<LaidOutProcessRow<'_>>> = groups
         .iter()
@@ -4323,13 +4460,28 @@ fn frame_draw_process_table(
         })
         .collect();
     let available_height = area.height.saturating_sub(TABLE_HEADER_HEIGHT);
-    let mut plan = planned_table_rows(&drawn_groups, available_height, grid.separation, &layout);
+    let mut plan = planned_table_rows(
+        &drawn_groups,
+        &groups,
+        available_height,
+        grid.separation,
+        &layout,
+    );
     let headings = TableAccountHeadings::of(
         &groups[..plan.visible_group_count],
         cleared(area)
             .width
             .saturating_sub(cell_width(SECTION_HEADER_INDENT)),
     );
+    let title = DrawnCommandTitle::for_table(&groups, pinned, area.width, &layout, &headings);
+    if layout.columns.is_empty() {
+        Paragraph::new(Line::from(Span::styled(
+            ELISION,
+            column_header_style(&layout, faded),
+        )))
+        .render(header_area, buffer);
+        return title;
+    }
     apply_planned_row_readings(&mut drawn_groups, &mut plan, &layout, grid);
     Table::new(Vec::<Row>::new(), layout.constraints.iter().copied())
         .header(column_header(&layout, faded, &plan))
@@ -4381,6 +4533,7 @@ fn frame_draw_process_table(
         };
         mark_table_continuation(buffer, area, &layout, continuation, faded);
     }
+    title
 }
 
 /// Process identities receiving at least one visible line in this viewport.
@@ -4493,6 +4646,7 @@ impl ProcessTablePlan<'_> {
 #[derive(Clone)]
 struct CachedTablePlan {
     rows:                Vec<Vec<(InvocationId, u32)>>,
+    headings:            Vec<DirectoryHeading>,
     widths:              Vec<u16>,
     columns:             Vec<usize>,
     height:              u16,
@@ -4507,6 +4661,7 @@ struct CachedTablePlan {
 
 fn planned_table_rows<'a>(
     groups: &[Vec<LaidOutProcessRow<'a>>],
+    directories: &[PathGroup<'_>],
     height: u16,
     separation: DirectorySeparation,
     layout: &CellTableLayout,
@@ -4525,8 +4680,10 @@ fn planned_table_rows<'a>(
                 .collect()
         })
         .collect();
+    let headings: Vec<_> = directories.iter().map(|group| group.heading).collect();
     if let Some(cached) = layout.prepared_plans.borrow().iter().find(|cached| {
         cached.rows == identities
+            && cached.headings == headings
             && cached.widths == layout.column_widths
             && cached.columns == layout.columns
             && cached.height == height
@@ -4552,7 +4709,7 @@ fn planned_table_rows<'a>(
             header_and_value_visibility: cached.labels,
         };
     }
-    let plan = process_table_plan(groups, height, separation);
+    let plan = process_table_plan(groups, directories, height, separation);
     let visible = match &plan.visible_rows {
         PlannedVisibleRows::NoProcessRows => Vec::new(),
         PlannedVisibleRows::ProcessRows(rows) => groups
@@ -4565,6 +4722,7 @@ fn planned_table_rows<'a>(
     };
     layout.prepared_plans.borrow_mut().push(CachedTablePlan {
         rows: identities,
+        headings,
         widths: layout.column_widths.clone(),
         columns: layout.columns.clone(),
         height,
@@ -4582,13 +4740,15 @@ fn planned_table_rows<'a>(
 /// Choose visible row identities and all inter-directory gaps before drawing.
 fn process_table_plan<'a>(
     groups: &[Vec<LaidOutProcessRow<'a>>],
+    directories: &[PathGroup<'_>],
     available_height: u16,
     separation: DirectorySeparation,
 ) -> ProcessTablePlan<'a> {
     let all_groups_height = groups
         .iter()
-        .map(|rows| {
-            GROUP_HEADER_HEIGHT.saturating_add(
+        .zip(directories)
+        .map(|(rows, group)| {
+            group.heading.rows().saturating_add(
                 rows.iter()
                     .map(|row| row.lines)
                     .fold(0, u16::saturating_add),
@@ -4616,19 +4776,19 @@ fn process_table_plan<'a>(
     let mut visible_group_count = 0;
     let mut visible_rows = Vec::new();
     let mut header_and_value_visibility = [false; TABLE_HEADERS.len()];
-    for (index, rows) in groups.iter().enumerate() {
+    for (index, (rows, group)) in groups.iter().zip(directories).enumerate() {
         let gap = if separators.before(index) {
             GROUP_GAP_HEIGHT
         } else {
             0
         };
-        if remaining < gap.saturating_add(GROUP_HEADER_HEIGHT).saturating_add(1) {
+        if remaining < gap.saturating_add(group.heading.rows()).saturating_add(1) {
             break;
         }
         visible_group_count += 1;
         remaining = remaining
             .saturating_sub(gap)
-            .saturating_sub(GROUP_HEADER_HEIGHT);
+            .saturating_sub(group.heading.rows());
         for row in rows {
             if remaining == 0 {
                 break;
@@ -4709,6 +4869,7 @@ fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: PinnedGroup<'_>) -> Vec<Pa
             continue;
         }
         groups.push(PathGroup {
+            heading: DirectoryHeading::Body,
             identity,
             path: &row.process.path,
             rows: vec![row],
@@ -4733,7 +4894,7 @@ fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: PinnedGroup<'_>) -> Vec<Pa
     for group in &mut groups {
         group
             .rows
-            .sort_by_key(|row| (row.process.started, row.process.pid));
+            .sort_by_key(|row| (row.process.started(), row.process.pid));
     }
     // The lead finds its group the way a row does, first compatible in
     // arrival order, so an owner-only lead pins the group it joined even
@@ -4750,7 +4911,7 @@ fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: PinnedGroup<'_>) -> Vec<Pa
             .rows
             .first()
             .map_or((RunStart::Unavailable, u32::MAX), |row| {
-                (row.process.started, row.process.pid)
+                (row.process.started(), row.process.pid)
             })
     });
     for group in groups.iter_mut().chain(pinned.iter_mut()) {
@@ -4780,7 +4941,8 @@ fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: PinnedGroup<'_>) -> Vec<Pa
     // Whatever the rest sort to, the pinned directory heads the cell.
     // The others keep the order they had under it, so a group that
     // comes and goes moves nothing but itself.
-    if let Some(group) = pinned {
+    if let Some(mut group) = pinned {
+        group.heading = DirectoryHeading::Border;
         groups.insert(0, group);
     }
     groups
@@ -4827,6 +4989,23 @@ impl TableAccountHeadings {
         }
         group.fitted_heading(width)
     }
+    /// Fit the existing directory heading and reading to the top border's room.
+    fn border_title(
+        &self,
+        group: &PathGroup<'_>,
+        width: u16,
+        layout: &CellTableLayout,
+    ) -> Line<'static> {
+        let padding = cell_width(COMMAND_TITLE_PADDING);
+        let room = width.saturating_sub(padding.saturating_mul(2));
+        let mut spans = vec![Span::styled(
+            format!("{COMMAND_TITLE_PADDING}{}", self.heading(group, room)),
+            Style::default().fg(layout.ink(accent_color(), heading_fade(&group.rows))),
+        )];
+        spans.extend(heading_gauge(group, width.saturating_sub(padding), layout));
+        spans.push(Span::raw(COMMAND_TITLE_PADDING));
+        Line::from(spans)
+    }
 }
 
 /// Result of drawing one working-directory group into its remaining table area.
@@ -4850,23 +5029,51 @@ enum TableContinuation {
     RowsWereOmitted,
 }
 
+/// One process row's position inside the visible table, before pane clipping.
+struct TableRowPlacement<'a, 'row> {
+    row:           &'a LaidOutProcessRow<'row>,
+    first_line:    u16,
+    visible_lines: u16,
+}
+
+/// The single placement calculation used by continuation and visibility checks.
+fn table_row_placements<'a, 'row>(
+    rows: &'a [LaidOutProcessRow<'row>],
+    visible_lines: u16,
+) -> impl Iterator<Item = TableRowPlacement<'a, 'row>> {
+    rows.iter().scan(0u16, move |first_line, row| {
+        let placement = TableRowPlacement {
+            row,
+            first_line: *first_line,
+            visible_lines: row.lines.min(visible_lines.saturating_sub(*first_line)),
+        };
+        *first_line = first_line.saturating_add(row.lines);
+        Some(placement)
+    })
+}
+
 /// Classify a vertical cut and ask the wrapper for its final visible command row.
-fn table_continuation(rows: &[LaidOutProcessRow<'_>], visible_lines: u16) -> TableContinuation {
-    let mut used = 0u16;
-    for row in rows {
-        if used >= visible_lines {
+fn table_continuation<'a, 'row: 'a>(
+    placements: impl Iterator<Item = TableRowPlacement<'a, 'row>>,
+) -> TableContinuation {
+    for placement in placements {
+        if placement.visible_lines == 0 {
             return TableContinuation::RowsWereOmitted;
         }
-        if used.saturating_add(row.lines) > visible_lines {
-            let first_hidden_line = usize::from(visible_lines.saturating_sub(used));
+        if placement.visible_lines < placement.row.lines {
             return TableContinuation::CommandWasCut {
-                line: row.cut_command_continuation(first_hidden_line),
+                line: placement
+                    .row
+                    .cut_command_continuation(usize::from(placement.visible_lines)),
             };
         }
-        used = used.saturating_add(row.lines);
     }
     TableContinuation::FullyDrawn
 }
+
+/// A command fragment whose layout survives the current pane's copy mapping.
+/// The private constructor is used only inside `PaneFrame::with_visible_text`.
+pub(crate) struct VisibleCommandText(());
 
 /// Draw one working directory's header and table into the top of `area`.
 fn draw_path_group(
@@ -4877,27 +5084,30 @@ fn draw_path_group(
     rows: Vec<LaidOutProcessRow<'_>>,
     headings: &TableAccountHeadings,
 ) -> PathGroupDraw {
-    let faded = heading_fade(&group.rows);
-    let heading_area = cleared(area);
-    let heading_room = heading_area
-        .width
-        .saturating_sub(cell_width(SECTION_HEADER_INDENT));
-    let heading_text = headings.heading(group, heading_room);
-    let mut heading = vec![
-        Span::raw(SECTION_HEADER_INDENT),
-        Span::styled(
-            heading_text,
-            Style::default().fg(layout.ink(accent_color(), faded)),
-        ),
-    ];
-    heading.extend(heading_gauge(group, heading_area.width, layout));
-    Paragraph::new(Line::from(heading)).render(
-        Rect {
-            height: GROUP_HEADER_HEIGHT.min(area.height),
-            ..heading_area
-        },
-        buffer,
-    );
+    let heading_rows = group.heading.rows();
+    if group.heading == DirectoryHeading::Body {
+        let faded = heading_fade(&group.rows);
+        let heading_area = cleared(area);
+        let heading_room = heading_area
+            .width
+            .saturating_sub(cell_width(SECTION_HEADER_INDENT));
+        let heading_text = headings.heading(group, heading_room);
+        let mut heading = vec![
+            Span::raw(SECTION_HEADER_INDENT),
+            Span::styled(
+                heading_text,
+                Style::default().fg(layout.ink(accent_color(), faded)),
+            ),
+        ];
+        heading.extend(heading_gauge(group, heading_area.width, layout));
+        Paragraph::new(Line::from(heading)).render(
+            Rect {
+                height: GROUP_HEADER_HEIGHT.min(area.height),
+                ..heading_area
+            },
+            buffer,
+        );
+    }
 
     // No header on this table: the column labels are drawn once for the
     // whole cell by `draw_process_table`, over these same constraints.
@@ -4907,8 +5117,29 @@ fn draw_path_group(
         .iter()
         .map(|drawn| drawn.lines)
         .fold(0, u16::saturating_add);
-    let table_height = area.height.saturating_sub(GROUP_HEADER_HEIGHT).min(lines);
-    let continuation = table_continuation(&rows, table_height);
+    let table_height = area.height.saturating_sub(heading_rows).min(lines);
+    let continuation = table_continuation(table_row_placements(&rows, table_height).inspect(
+        |placement| {
+            if layout.kind != TableKind::Command {
+                return;
+            }
+            let row = placement.row;
+            let command_area = layout.command_area(Rect {
+                y: area
+                    .y
+                    .saturating_add(heading_rows)
+                    .saturating_add(placement.first_line),
+                height: placement.visible_lines,
+                ..area
+            });
+            tui_pane::PaneFrame::with_visible_text(
+                buffer,
+                command_area,
+                &row.cells[COMMAND_COLUMN],
+                || row.source.show_command_text(VisibleCommandText(())),
+            );
+        },
+    ));
     Table::new(
         rows.into_iter().map(|drawn| drawn.into_table_row(layout)),
         layout.constraints.iter().copied(),
@@ -4916,7 +5147,7 @@ fn draw_path_group(
     .column_spacing(layout.column_spacing)
     .render(
         Rect {
-            y: area.y.saturating_add(GROUP_HEADER_HEIGHT),
+            y: area.y.saturating_add(heading_rows),
             height: table_height,
             ..indented(area)
         },
@@ -4924,7 +5155,7 @@ fn draw_path_group(
     );
 
     PathGroupDraw {
-        height: GROUP_HEADER_HEIGHT.saturating_add(table_height),
+        height: heading_rows.saturating_add(table_height),
         continuation,
     }
 }
@@ -5061,20 +5292,14 @@ fn displayed_subcommand_name(command: &CommandText) -> CommandName {
     }
 }
 
-/// A missing CPU sample leaves the cell empty until a reading arrives.
+/// The display boundary distinguishes measured resources from live absence states.
 fn cpu_text(reading: Measurement<f32>) -> String {
-    match reading.map(census::scan::cpu_label) {
-        Measurement::Reading(value) => value,
-        Measurement::Unavailable(_) => String::new(),
-    }
+    census::invocation_cpu_accounting::LiveResources::from(reading).text(census::scan::cpu_label)
 }
 
-/// Missing resident-memory readings occupy no cells.
+/// Resident memory retains its unavailable reason through the display boundary.
 fn memory_text(reading: Measurement<u64>) -> String {
-    match reading {
-        Measurement::Reading(bytes) => memory_label(bytes),
-        Measurement::Unavailable(_) => String::new(),
-    }
+    census::invocation_cpu_accounting::LiveResources::from(reading).text(memory_label)
 }
 
 /// The parsed word fixes both its wrap boundary and its permitted cut.
@@ -5366,12 +5591,13 @@ fn cut_command_unit(word: StyledCommandWord, room: u16) -> CutCommandUnit {
 }
 
 /// The common neutral ink of cut marks, faded on the row's own ground.
-fn cut_mark_ink(ground: Color, faded: u8) -> Color {
-    blend_color(secondary_text_color(), ground, faded)
-}
+fn cut_mark_ink(ground: Color, faded: u8) -> Color { cut_ink(ground, RowInk::Ordinary(faded)) }
 
-fn cut_mark_style(ground: Color, faded: u8) -> Style {
-    Style::default().fg(cut_mark_ink(ground, faded))
+/// Parsed command marks and their ordinary fade share one ink calculation.
+fn cut_ink(ground: Color, ink: RowInk) -> Color { ink.color(secondary_text_color(), ground) }
+
+fn cut_mark_style(ground: Color, faded: impl Into<RowInk>) -> Style {
+    Style::default().fg(cut_ink(ground, faded.into()))
 }
 
 /// Cells one displayed command takes before wrapping.
@@ -5474,7 +5700,7 @@ impl LaidOutProcessRow<'_> {
         wrapped_command(
             words,
             self.command_width,
-            cut_mark_style(self.ground, self.source.faded()),
+            cut_mark_style(self.ground, self.source.ink()),
         )
         .into_rows(visible_lines)
         .pop()
@@ -5489,7 +5715,7 @@ fn process_command_words(
     program: Style,
     arguments: Style,
     ground: Color,
-    faded: u8,
+    faded: RowInk,
 ) -> Vec<StyledCommandWord> {
     let mut spans = Vec::new();
     let profile = profile_label(command);
@@ -5524,7 +5750,7 @@ fn command_cell(row: &TrackedRow, layout: &CellTableLayout) -> Text<'static> {
         wrapped_command(
             spans,
             command_width,
-            cut_mark_style(layout.ground, row.faded()),
+            cut_mark_style(layout.ground, row.ink()),
         )
         .into_text()
     }
@@ -5536,9 +5762,9 @@ fn styled_process_command_words(
     view: &CommandView,
     ground: Color,
 ) -> Vec<StyledCommandWord> {
-    let muted = Style::default().fg(blend_color(label_color(), ground, row.faded()));
+    let muted = Style::default().fg(row.ink().color(label_color(), ground));
     let process = &row.process;
-    let faded = row.faded();
+    let faded = row.ink();
     let program = if row.is_ended() {
         muted
     } else {
@@ -5607,8 +5833,8 @@ fn process_row<'a>(row: &'a TrackedRow, layout: &CellTableLayout) -> LaidOutProc
 
     let values = ProcessRowValues::for_use(row, &layout.view, ProcessValueUse::SelectRows);
     let process = &values.source.process;
-    let faded = row.faded();
-    let muted = Style::default().fg(layout.ink(label_color(), faded));
+    let faded = row.ink();
+    let muted = Style::default().fg(faded.color(label_color(), layout.ground));
     let command = command_cell(row, layout);
     let lines = u16::try_from(command.height()).unwrap_or(u16::MAX).max(1);
     let pid = number_text_if_fits(
@@ -5704,7 +5930,7 @@ fn pid_style(row: &TrackedRow, layout: &CellTableLayout, links: &AllocationFamil
         FamilyHead::Heads(family) => theme::family_color(family),
         FamilyHead::NoChildren => text_default(),
     };
-    Style::default().fg(layout.ink(color, row.faded()))
+    Style::default().fg(row.ink().color(color, layout.ground))
 }
 
 /// The `parent` cell's style: the family colour of the cargo named,
@@ -5725,7 +5951,7 @@ fn parent_style(
         ParentFamily::Member(family) => theme::family_color(family),
         ParentFamily::NoFamily => text_default(),
     };
-    Style::default().fg(layout.ink(color, row.faded()))
+    Style::default().fg(row.ink().color(color, layout.ground))
 }
 
 /// Solved widths for every constraint, matching [`Table`]'s layout.
@@ -5763,13 +5989,13 @@ fn state_cell(row: &TrackedRow, layout: &CellTableLayout) -> Line<'static> {
     {
         return Line::from(Span::styled(
             percent_reading(progress),
-            Style::default().fg(layout.ink(
+            Style::default().fg(row.ink().color(
                 if row.is_ended() {
                     label_color()
                 } else {
                     success_color()
                 },
-                row.faded(),
+                layout.ground,
             )),
         ))
         .right_aligned();
@@ -5783,7 +6009,7 @@ fn state_cell(row: &TrackedRow, layout: &CellTableLayout) -> Line<'static> {
     // getting somewhere.
     Line::from(Span::styled(
         STATE_BLOCKED,
-        Style::default().fg(layout.ink(warning_color(), row.faded())),
+        Style::default().fg(row.ink().color(warning_color(), layout.ground)),
     ))
     .right_aligned()
 }
@@ -5838,7 +6064,7 @@ enum InvocationProgressOwnership {
     EnclosingInvocation,
 }
 
-const fn progress_ownership(row: &TrackedRow) -> InvocationProgressOwnership {
+fn progress_ownership(row: &TrackedRow) -> InvocationProgressOwnership {
     if matches!(row.process.provenance, RowProvenance::Enclosing(_))
         || !matches!(
             row.process.capture_membership,
@@ -5912,14 +6138,13 @@ fn heading_gauge(
         .saturating_mul(progress.done)
         .checked_div(progress.total)
         .unwrap_or_default();
-    let faded = row.faded();
     let filled_color = if row.is_ended() {
         label_color()
     } else {
         success_color()
     };
-    let style = Style::default().fg(layout.ink(filled_color, faded));
-    let empty = Style::default().fg(layout.ink(label_color(), faded));
+    let style = Style::default().fg(row.ink().color(filled_color, layout.ground));
+    let empty = Style::default().fg(row.ink().color(label_color(), layout.ground));
     let mut spans = Vec::new();
     if let Some(label) = label {
         spans.push(Span::raw(" "));
@@ -5965,14 +6190,13 @@ fn compiler_reading(
     row: &TrackedRow,
     layout: &CellTableLayout,
 ) -> Line<'static> {
-    let faded = row.faded();
     let driver = if row.is_ended() {
         label_color()
     } else {
         success_color()
     };
-    let name = Style::default().fg(layout.ink(driver, faded));
-    let count = Style::default().fg(layout.ink(label_color(), faded));
+    let name = Style::default().fg(row.ink().color(driver, layout.ground));
+    let count = Style::default().fg(row.ink().color(label_color(), layout.ground));
     match compiler {
         CompilerObservation::Unknown | CompilerObservation::None => Line::default(),
         CompilerObservation::Running(compiler) => Line::from(vec![
@@ -6096,18 +6320,69 @@ pub(crate) fn summary_cpu_for_test(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use tempfile::tempdir;
+
+    use crate::census::scan::CensusSequence;
+    use crate::census::scan::tests::ShellRun;
+    #[test]
+    fn a_live_capture_row_draws_its_executors_resource_readings() {
+        let run = ShellRun::new();
+        let root = tempdir().expect("capture root");
+        let capture = ShellRun::capture(root.path());
+        let now = Instant::now();
+        let groups = run.working_groups(&capture, now);
+        let mut roster = Roster::new();
+        roster.observe(groups, now);
+        let area = ratatui::layout::Rect::new(0, 0, 180, 12);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        draw_cell_for_test(&mut buffer, &roster, &TileContent::Summary, area, 4);
+        let lines: Vec<String> = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let text = lines.join("\n");
+        let header = lines
+            .iter()
+            .find(|line| line.contains("cpu") && line.contains("command"))
+            .expect("summary header");
+        let row = lines
+            .iter()
+            .find(|line| line.split_whitespace().next() == Some("100"))
+            .expect("live row");
+        assert_eq!(
+            crate::census::measurement_cell(header, row, "cpu", &text),
+            "100%"
+        );
+        assert_eq!(
+            crate::census::measurement_cell(header, row, "mem", &text),
+            "0.1G"
+        );
+    }
+
     mod entry_ink_tests {
+        use tui_pane::PaneFrame;
         use tui_pane::Theme;
 
         use super::*;
 
+        /// The process ink alone, or the command ink beside it, in this fixture.
+        #[derive(Clone, Copy)]
+        enum EntryTestInk {
+            Process(Color),
+            Command(Color),
+        }
+
         struct EntryTestTheme(Arc<Theme>);
 
         impl EntryTestTheme {
-            fn install() -> Self {
+            fn install(ink: EntryTestInk) -> Self {
                 let previous = tui_pane::theme();
                 let mut theme = (*previous).clone();
-                theme.text.default.color = Color::Rgb(220, 200, 180);
+                theme.text.default.color = match ink {
+                    EntryTestInk::Process(color) | EntryTestInk::Command(color) => color,
+                };
+                if let EntryTestInk::Command(color) = ink {
+                    theme.semantic.label.color = color;
+                }
                 tui_pane::set_active_theme(Arc::new(theme));
                 Self(previous)
             }
@@ -6123,11 +6398,9 @@ mod tests {
             roster
         }
 
-        fn drawn_entry_ink(roster: &Roster) -> Result<Color, &'static str> {
-            let area = Rect::new(0, 0, 200, 12);
-            let mut buffer = Buffer::empty(area);
+        fn draw_entry(buffer: &mut Buffer, roster: &Roster, area: Rect) {
             draw_group(
-                &mut buffer,
+                buffer,
                 roster,
                 &roster.groups()[0].id,
                 area,
@@ -6135,19 +6408,268 @@ mod tests {
                 &[],
                 CommandView::long(),
             );
-            for y in 0..area.height {
-                let line = buffer_line(&buffer, y);
-                if let Some(x) = line.find("382001") {
-                    let x = u16::try_from(x).map_err(|_| "pid outside terminal")?;
+        }
+
+        fn drawn_entry_ink(roster: &Roster) -> Result<Color, &'static str> {
+            let area = Rect::new(0, 0, 200, 12);
+            let mut buffer = Buffer::empty(area);
+            draw_entry(&mut buffer, roster, area);
+            command_ink(&buffer, "382001")
+        }
+
+        /// Read command ink after both table layout and pane clipping have run.
+        fn entry_frame(roster: &Roster, frame: PaneFrame) -> Buffer {
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 202, 10));
+            tui_pane::draw_clipped(&mut buffer, frame, |target, inner| {
+                draw_entry(target, roster, inner);
+            });
+            buffer
+        }
+
+        fn command_ink(buffer: &Buffer, command: &str) -> Result<Color, &'static str> {
+            for y in buffer.area.top()..buffer.area.bottom() {
+                let line = buffer_line(buffer, y);
+                if let Some(x) = line.find(command) {
+                    let x = u16::try_from(x).map_err(|_| "command outside terminal")?;
                     return Ok(buffer[(x, y)].fg);
                 }
             }
-            Err("new command must draw its pid")
+            Err("command text is clipped")
+        }
+
+        #[test]
+        fn a_header_only_entry_waits_for_its_first_visible_command_text() -> Result<(), &'static str>
+        {
+            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            roster.advance(now + Duration::from_millis(1580), Duration::from_secs(3));
+            assert_eq!(roster.groups()[0].lead.faded(), 62);
+            let rect = Rect::new(0, 0, 202, 8);
+            let clip = Rect::new(0, 0, 202, 10);
+            let header = entry_frame(&roster, tui_pane::PaneFrame::shifted(rect, 7, clip));
+            assert!(buffer_line(&header, 8).contains("command"));
+            assert_eq!(
+                command_ink(&header, "cargo check"),
+                Err("command text is clipped")
+            );
+            roster.advance(now + Duration::from_millis(1650), Duration::from_secs(3));
+            assert_eq!(roster.groups()[0].lead.faded(), 68);
+            let visible = tui_pane::PaneFrame::shifted(rect, 5, clip);
+            assert_eq!(
+                command_ink(&entry_frame(&roster, visible), "cargo check")?,
+                Color::Rgb(170, 160, 150)
+            );
+            for (millis, expected) in [
+                (1775, Color::Rgb(195, 180, 165)),
+                (1900, Color::Rgb(220, 200, 180)),
+                (2850, Color::Rgb(52, 65, 79)),
+                (3099, Color::Rgb(20, 40, 60)),
+            ] {
+                roster.advance(now + Duration::from_millis(millis), Duration::from_secs(3));
+                assert_eq!(
+                    command_ink(&entry_frame(&roster, visible), "cargo check")?,
+                    expected
+                );
+            }
+            roster.advance(now + Duration::from_millis(3100), Duration::from_secs(3));
+            assert_eq!(roster.groups().len(), 0, "main's deadline stays unchanged");
+            Ok(())
+        }
+
+        #[test]
+        fn command_text_drawn_only_in_scratch_does_not_decide_entry() -> Result<(), &'static str> {
+            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            roster.advance(now + Duration::from_millis(1580), Duration::from_secs(3));
+            let rect = Rect::new(0, 0, 202, 8);
+            let clipped = entry_frame(
+                &roster,
+                tui_pane::PaneFrame::shifted(rect, 0, Rect::new(0, 0, 202, 3)),
+            );
+            assert_eq!(
+                command_ink(&clipped, "cargo check"),
+                Err("command text is clipped")
+            );
+            roster.advance(now + Duration::from_millis(1650), Duration::from_secs(3));
+            let visible = tui_pane::PaneFrame::new(rect);
+            assert_eq!(
+                command_ink(&entry_frame(&roster, visible), "cargo check")?,
+                Color::Rgb(170, 160, 150)
+            );
+            // Paint the brighten endpoint before checking the resumed lifetime fade.
+            roster.advance(now + Duration::from_millis(2850), Duration::from_secs(3));
+            entry_frame(&roster, visible);
+            roster.advance(now + Duration::from_millis(3099), Duration::from_secs(3));
+            assert_eq!(
+                command_ink(&entry_frame(&roster, visible), "cargo check")?,
+                Color::Rgb(20, 40, 60)
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_hidden_child_keeps_its_own_first_text_decision() -> Result<(), &'static str> {
+            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let now = Instant::now();
+            let mut roster = Roster::new();
+            let mut group = cargo_group(invocation(382_001, &["check"]));
+            group.rest.push(invocation(382_002, &["build"]));
+            roster.observe(vec![group], now);
+            let lead_only = tui_pane::PaneFrame::new(Rect::new(0, 0, 202, 4));
+            let first = entry_frame(&roster, lead_only);
+            assert_eq!(
+                command_ink(&first, "cargo check")?,
+                Color::Rgb(220, 200, 180)
+            );
+            assert_eq!(
+                command_ink(&first, "cargo build"),
+                Err("command text is clipped")
+            );
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            roster.advance(now + Duration::from_millis(1650), Duration::from_secs(3));
+            let visible = tui_pane::PaneFrame::new(Rect::new(0, 0, 202, 8));
+            let revealed = entry_frame(&roster, visible);
+            assert_eq!(
+                command_ink(&revealed, "cargo check")?,
+                Color::Rgb(166, 157, 148)
+            );
+            assert_eq!(
+                command_ink(&revealed, "cargo build")?,
+                Color::Rgb(170, 160, 150)
+            );
+            // Paint the brighten endpoint before checking the resumed lifetime fade.
+            roster.advance(now + Duration::from_millis(2850), Duration::from_secs(3));
+            entry_frame(&roster, visible);
+            roster.advance(now + Duration::from_millis(3099), Duration::from_secs(3));
+            assert_eq!(
+                command_ink(&entry_frame(&roster, visible), "cargo build")?,
+                Color::Rgb(20, 40, 60)
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn entry_ink_and_readout_queries_do_not_consume_first_text() -> Result<(), &'static str> {
+            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            roster.advance(now + Duration::from_millis(1580), Duration::from_secs(3));
+            let stats = SccacheStats::new();
+            let cells = Cells::new(&roster, &[], CommandView::long(), &stats);
+            assert_eq!(
+                cells.readout_fade(&TileContent::Group(roster.groups()[0].id.clone())),
+                CellReadoutFade::Fading(CellFadeProgress::new(62))
+            );
+            assert_eq!(roster.groups()[0].for_painting().lead.faded(), 62);
+            roster.advance(now + Duration::from_millis(1650), Duration::from_secs(3));
+            let content = TileContent::Group(roster.groups()[0].id.clone());
+            let cells = Cells::new(&roster, &[], CommandView::long(), &stats);
+            assert_eq!(
+                cells.readout_fade(&content),
+                CellReadoutFade::Fading(CellFadeProgress::new(63))
+            );
+            assert_eq!(roster.groups()[0].for_painting().lead.faded(), 63);
+            let visible = tui_pane::PaneFrame::new(Rect::new(0, 0, 202, 8));
+            assert_eq!(
+                command_ink(&entry_frame(&roster, visible), "cargo check")?,
+                Color::Rgb(170, 160, 150)
+            );
+            assert_eq!(
+                cells.readout_fade(&content),
+                CellReadoutFade::Fading(CellFadeProgress::new(63))
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_readout_captured_before_first_text_uses_the_same_entry_preview()
+        -> Result<(), &'static str> {
+            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            roster.advance(now + Duration::from_millis(1650), Duration::from_secs(3));
+            let stats = SccacheStats::new();
+            let cells = Cells::new(&roster, &[], CommandView::long(), &stats);
+            let content = TileContent::Group(roster.groups()[0].id.clone());
+            // Production captures the readout before drawing the command cell.
+            let readout = cells.readout_fade(&content);
+            let preview = roster.groups()[0].for_painting().lead.faded();
+            let frame = PaneFrame::new(Rect::new(0, 0, 202, 8));
+            let drawn = entry_frame(&roster, frame);
+            assert_eq!(preview, 63);
+            assert_eq!(readout, CellReadoutFade::Fading(CellFadeProgress::new(63)));
+            assert_eq!(
+                command_ink(&drawn, "cargo check")?,
+                Color::Rgb(170, 160, 150)
+            );
+            assert_eq!(cells.readout_fade(&content), readout);
+            Ok(())
+        }
+
+        #[test]
+        fn text_clipped_by_an_enclosing_pane_keeps_its_first_text_pending()
+        -> Result<(), &'static str> {
+            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            roster.advance(now + Duration::from_millis(1580), Duration::from_secs(3));
+            let area = Rect::new(0, 0, 204, 10);
+            let inner = PaneFrame::new(Rect::new(1, 1, 202, 8));
+            let outer = PaneFrame::shifted(area, 0, Rect::new(0, 0, 204, 4));
+            let mut clipped = Buffer::empty(area);
+            tui_pane::draw_clipped(&mut clipped, outer, |target, _| {
+                tui_pane::draw_clipped(target, inner, |target, content| {
+                    draw_entry(target, &roster, content);
+                });
+            });
+            assert_eq!(
+                command_ink(&clipped, "cargo check"),
+                Err("command text is clipped")
+            );
+            roster.advance(now + Duration::from_millis(1650), Duration::from_secs(3));
+            let mut visible = Buffer::empty(area);
+            tui_pane::draw_clipped(&mut visible, PaneFrame::new(area), |target, _| {
+                tui_pane::draw_clipped(target, inner, |target, content| {
+                    draw_entry(target, &roster, content);
+                });
+            });
+            assert_eq!(
+                command_ink(&visible, "cargo check")?,
+                Color::Rgb(170, 160, 150)
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn first_text_below_the_entry_threshold_keeps_mains_fade() -> Result<(), &'static str> {
+            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            roster.advance(now + Duration::from_millis(1580), Duration::from_secs(3));
+            let visible = tui_pane::PaneFrame::new(Rect::new(0, 0, 202, 8));
+            assert_eq!(
+                command_ink(&entry_frame(&roster, visible), "cargo check")?,
+                Color::Rgb(171, 161, 150)
+            );
+            roster.advance(now + Duration::from_millis(1650), Duration::from_secs(3));
+            assert_eq!(
+                command_ink(&entry_frame(&roster, visible), "cargo check")?,
+                Color::Rgb(166, 157, 148)
+            );
+            Ok(())
         }
 
         #[test]
         fn a_new_live_cell_starts_at_its_final_text_ink() -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install();
+            let _theme = EntryTestTheme::install(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(220, 200, 180));
@@ -6158,17 +6680,19 @@ mod tests {
 
         #[test]
         fn a_short_lived_cells_first_text_starts_readable() -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install();
+            let _theme = EntryTestTheme::install(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             // The command ends while its cell is still waiting to be painted.
             roster.observe(Vec::new(), now + Duration::from_millis(100));
             roster.advance(now + Duration::from_millis(2600), Duration::from_secs(3));
-            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(220, 200, 180));
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(170, 160, 150));
+            roster.advance(now + Duration::from_millis(2725), Duration::from_secs(3));
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(195, 180, 165));
             roster.advance(now + Duration::from_millis(2850), Duration::from_secs(3));
             assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(220, 200, 180));
             roster.advance(now + Duration::from_millis(3099), Duration::from_secs(3));
-            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(220, 200, 180));
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(20, 40, 60));
             roster.advance(now + Duration::from_millis(3100), Duration::from_secs(3));
             assert_eq!(roster.groups().len(), 0, "main's deadline is unchanged");
             Ok(())
@@ -6177,23 +6701,114 @@ mod tests {
         #[test]
         fn a_delayed_cells_ink_meets_the_floor_on_fractional_channels() -> Result<(), &'static str>
         {
-            let _theme = EntryTestTheme::install();
-            let mut theme = (*tui_pane::theme()).clone();
-            theme.text.default.color = Color::Rgb(219, 200, 180);
-            tui_pane::set_active_theme(Arc::new(theme));
+            let _theme = EntryTestTheme::install(EntryTestInk::Process(Color::Rgb(219, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             roster.observe(Vec::new(), now + Duration::from_millis(100));
             roster.advance(now + Duration::from_millis(2600), Duration::from_secs(3));
-            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(219, 200, 180));
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(170, 160, 150));
+            // Paint the brighten endpoint before checking the resumed lifetime fade.
+            roster.advance(now + Duration::from_millis(2850), Duration::from_secs(3));
+            drawn_entry_ink(&roster)?;
             roster.advance(now + Duration::from_millis(3099), Duration::from_secs(3));
-            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(219, 200, 180));
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(20, 40, 60));
+            Ok(())
+        }
+
+        #[test]
+        fn a_brighten_paints_full_ink_when_a_poll_crosses_its_endpoint() -> Result<(), &'static str>
+        {
+            let _theme = EntryTestTheme::install(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            let fade = Duration::from_secs(100);
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            let first = now + Duration::from_secs(52);
+            roster.advance(first, fade);
+            drawn_entry_ink(&roster)?;
+            roster.advance(first + Duration::from_millis(231), fade);
+            drawn_entry_ink(&roster)?;
+            roster.advance(first + Duration::from_millis(251), fade);
+            assert_eq!(
+                drawn_entry_ink(&roster)?,
+                Color::Rgb(220, 200, 180),
+                "the first poll past 250 ms must paint the brighten endpoint"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_brightening_readout_matches_fractional_text_channels() -> Result<(), &'static str> {
+            let _theme = EntryTestTheme::install(EntryTestInk::Process(Color::Rgb(150, 190, 180)));
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            roster.advance(now + Duration::from_millis(2600), Duration::from_secs(3));
+            let stats = SccacheStats::new();
+            let cells = Cells::new(&roster, &[], CommandView::long(), &stats);
+            let (grid, buffer) = settled_buffer_with_cells(&cells, Rect::new(0, 0, 200, 24));
+            let placement = grid
+                .placements(
+                    buffer.area,
+                    TileGrowth {
+                        initial_rows:  12,
+                        fill:          TileFill::Redistribute,
+                        widen_summary: false,
+                    },
+                )
+                .into_iter()
+                .find(|p| matches!(p.content, TileContent::Group(_)))
+                .ok_or("command cell missing")?;
+            let inner = placement.frame.inner();
+            let text = (inner.top()..inner.bottom())
+                .find_map(|y| {
+                    let line = buffer_line(&buffer, y);
+                    line.find("382001")
+                        .map(|x| buffer[(cell_width(&line[..x]), y)].fg)
+                })
+                .ok_or("command text missing")?;
+            let mut readouts = Vec::new();
+            for y in inner.top()..inner.bottom() {
+                let line = buffer_line(&buffer, y);
+                if let Some(x) = line.find("r/c: ") {
+                    let x = cell_width(&line[..x + "r/c: ".len()]);
+                    readouts.push(buffer[(x, y)].fg);
+                }
+            }
+            assert!(
+                readouts.contains(&text),
+                "a cell readout shares text's exact RGB: {text:?}, {readouts:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_brighten_requests_only_its_changed_frames() -> Result<(), &'static str> {
+            let _theme = EntryTestTheme::install(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            let fade = Duration::from_secs(100);
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            let first_text = now + Duration::from_secs(52);
+            roster.advance(first_text, fade);
+            assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(170, 160, 150));
+            let mut frames = 0;
+            for millis in (8..=384).step_by(8) {
+                if roster.advance(first_text + Duration::from_millis(millis), fade) {
+                    frames += 1;
+                    drawn_entry_ink(&roster)?;
+                }
+            }
+            // 31 changing entry frames, then one return to the ordinary fade.
+            assert_eq!(frames, 32);
+            assert_eq!(roster.groups()[0].lead.faded(), 68);
+            assert!(!roster.advance(first_text + Duration::from_millis(385), fade));
             Ok(())
         }
 
         #[test]
         fn an_already_drawn_cells_finished_ink_keeps_mains_fade() -> Result<(), &'static str> {
-            let _theme = EntryTestTheme::install();
+            let _theme = EntryTestTheme::install(EntryTestInk::Process(Color::Rgb(220, 200, 180)));
             let now = Instant::now();
             let mut roster = entry_roster(now);
             assert_eq!(drawn_entry_ink(&roster)?, Color::Rgb(220, 200, 180));
@@ -6221,6 +6836,8 @@ mod tests {
     use std::time::Duration;
     use std::time::Instant;
 
+    use chrono::Local;
+    use chrono::TimeZone;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Cell;
@@ -6255,8 +6872,9 @@ mod tests {
     use crate::census::process_identity::CaptureMembership;
     use crate::census::process_identity::RunId;
     use crate::census::scan::AncestryWalk;
-    use crate::census::scan::CensusSequence;
     use crate::census::scan::Compiler;
+    use crate::census::scan::InvocationExecution;
+    use crate::census::scan::OriginStart;
     use crate::census::scan::ProcessField;
     use crate::census::scan::ProcessObservation;
     use crate::census::scan::ProcessObservations;
@@ -6803,7 +7421,7 @@ mod tests {
         );
         lead.resource_use.cpu = Measurement::Reading(0.0);
         let roster = roster_with_ancestry(lead, vec![], vec![]);
-        let area = Rect::new(0, 0, 40, 4);
+        let area = Rect::new(0, 0, 40, 3);
         let mut buffer = Buffer::empty(area);
         draw_contents(
             &mut buffer,
@@ -6920,13 +7538,14 @@ mod tests {
             })
             .expect("runner cell");
         let text = placement_text(terminal.backend().buffer(), cell);
-        assert_eq!(text.matches("83.7%").count(), 1, "{text}");
+        let framed = framed_placement_text(terminal.backend().buffer(), cell);
+        assert_eq!(framed.matches("83.7%").count(), 1, "{text}");
         let owner = text
             .lines()
             .find(|line| line.contains("741928") && line.contains("clippy"))
             .expect("owner row");
         assert!(!owner.contains("83.7%"), "{text}");
-        assert!(text.lines().nth(1).unwrap().contains("83.7%"), "{text}");
+        assert!(framed.lines().next().unwrap().contains("83.7%"), "{text}");
         let child = text
             .lines()
             .find(|line| line.contains("742007") && line.contains("check"))
@@ -7050,7 +7669,7 @@ mod tests {
                 })
                 .expect("one-row cell");
             let text = placement_text(terminal.backend().buffer(), cell);
-            assert_eq!(cell.frame.inner().height, 4, "{text}");
+            assert_eq!(cell.frame.inner().height, 3, "{text}");
             assert!(text.contains(command), "{text}");
             assert!(!text.contains("cargo …"), "{text}");
         }
@@ -7120,7 +7739,9 @@ mod tests {
         let text = placements
             .iter()
             .filter_map(|cell| match cell.content {
-                TileContent::Group(_) => Some(placement_text(terminal.backend().buffer(), cell)),
+                TileContent::Group(_) => {
+                    Some(framed_placement_text(terminal.backend().buffer(), cell))
+                },
                 TileContent::Summary | TileContent::Empty(_) => None,
             })
             .collect::<Vec<_>>();
@@ -7931,7 +8552,7 @@ mod tests {
         let runs = header.find("runs").expect("runs header");
         let row = text
             .lines()
-            .find(|line| line.split_whitespace().next() == Some("172047"))
+            .find(|line| line.split_whitespace().next() == Some("172043"))
             .expect("dispatched process row");
         assert!(
             row.contains("[ci] cargo nextest run --profile ci --all-features --workspace --tests"),
@@ -7939,7 +8560,7 @@ mod tests {
         );
         assert_eq!(row[runs..].trim(), "2", "{text}");
         assert!(
-            !text.contains("172043") && !text.contains("172044"),
+            !text.contains("172047") && !text.contains("172044"),
             "{text}"
         );
     }
@@ -8106,7 +8727,7 @@ mod tests {
             lead.parent = VisibleParent::Ancestor(parent);
             lead.resource_use.cpu = Measurement::Reading(200.0);
             lead.resource_use.memory = Measurement::Reading(0);
-            lead.duration = "03:46:52".to_string();
+            lead.origin_start = display_clock(11, 4, 13_612);
             lead.path = format!("~/work/{pid}");
             lead.directory_identity = WorkingDirectoryIdentity::Absolute(lead.path.clone().into());
             let mut group = cargo_group(lead);
@@ -9040,7 +9661,7 @@ mod tests {
             let commands: Vec<_> = blocked
                 .lines()
                 .skip_while(|line| *line != header)
-                .skip(2)
+                .skip(1)
                 .take_while(|line| !line.contains("content rows:"))
                 .map(|line| line.chars().skip(command_at).collect::<String>())
                 .filter(|line| !line.trim().is_empty())
@@ -9251,8 +9872,9 @@ mod tests {
                 })
                 .expect("nested cell");
             let text = placement_text(terminal.backend().buffer(), cell);
-            assert_eq!(text.matches("83.7%").count(), 1, "{text}");
-            assert!(text.lines().nth(1).unwrap().contains("83.7%"), "{text}");
+            let framed = framed_placement_text(terminal.backend().buffer(), cell);
+            assert_eq!(framed.matches("83.7%").count(), 1, "{framed}");
+            assert!(framed.lines().next().unwrap().contains("83.7%"), "{framed}");
             assert!(text.lines().next().unwrap().contains("mem"), "{text}");
             for line in text.lines().filter(|line| {
                 line.trim_start().starts_with(&pid.to_string())
@@ -9397,10 +10019,7 @@ mod tests {
         source.process.resource_use.cpu =
             Measurement::Unavailable(MeasurementAbsence::FirstObservation);
         let buffer = measurement_row_buffer(&source, TableKind::Command);
-        assert_eq!(
-            cpu_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
-            ""
-        );
+        assert_eq!(cpu_cell_text(&buffer, TABLE_HEADER_HEIGHT), "");
     }
 
     #[test]
@@ -9457,7 +10076,7 @@ mod tests {
             vec![],
             vec![ancestor(100, "claude"), ancestor(102, "bash")],
         );
-        let area = Rect::new(0, 0, 160, 3);
+        let area = Rect::new(0, 0, 160, 2);
         let mut buffer = Buffer::empty(area);
         draw_group(
             &mut buffer,
@@ -9469,7 +10088,7 @@ mod tests {
             CommandView::short(),
         );
         assert!(buffer_line(&buffer, 0).contains("parent"));
-        assert!(buffer_line(&buffer, 2).contains("102"));
+        assert!(buffer_line(&buffer, 1).contains("102"));
     }
 
     #[test]
@@ -10094,7 +10713,7 @@ mod tests {
             .expect("one-row cell");
         let text = placement_text(terminal.backend().buffer(), whole);
         assert!(text.contains("[release] cargo build"), "{text}");
-        assert_eq!(whole.frame.inner().height, 4, "{text}");
+        assert_eq!(whole.frame.inner().height, 3, "{text}");
         let cut = placements
             .iter()
             .find(|placement| {
@@ -10383,7 +11002,8 @@ mod tests {
 
     #[test]
     fn a_summarys_separators_take_a_column_mates_spare_row() {
-        for (commands, height, whole) in [(3, 27, true), (4, 35, true), (4, 33, false)] {
+        // Each command moved one heading row into its border; the summary is unchanged.
+        for (commands, height, whole) in [(3, 24, true), (4, 31, true), (4, 29, false)] {
             let roster = directory_rich_roster(&vec![1; commands]);
             let area = Rect::new(0, 0, 40, height);
             let (grid, buffer) = settled_cells_buffer(&roster, area);
@@ -11113,7 +11733,7 @@ mod tests {
             pid: parent.pid,
         };
         let roster = roster_with_ancestry(driver, vec![child, parent], vec![]);
-        for height in [4, 12] {
+        for height in [3, 12] {
             let area = Rect::new(0, 0, 160, height);
             let mut buffer = Buffer::empty(area);
             draw_group(
@@ -11129,7 +11749,7 @@ mod tests {
             let parent_row = lines.iter().position(|line| line.contains("4200"));
             let child_row = lines.iter().position(|line| line.contains("cargo check"));
             assert!(parent_row.is_some(), "{height}: {lines:#?}");
-            if height == 4 {
+            if height == 3 {
                 assert!(child_row.is_none(), "{lines:#?}");
                 let y = u16::try_from(parent_row.unwrap()).unwrap();
                 assert_eq!(
@@ -11338,7 +11958,8 @@ mod tests {
                 area,
                 Color::Reset,
             );
-            let text = buffer_rows(&buffer).join("\n");
+            let title = cells.group_title(&group.id).expect("command title");
+            let text = format!("{title}\n{}", buffer_rows(&buffer).join("\n"));
             assert_eq!(text.matches(reading).count(), 1);
         }
     }
@@ -11758,7 +12379,7 @@ mod tests {
                     .iter()
                     .position(|line| line.contains("pid") && line.contains("command"))
                     .unwrap();
-                let row = &rows[header_y + 2];
+                let row = &rows[header_y + 1];
                 assert!(
                     row.contains(if shell_between { "200" } else { "100" }),
                     "{rows:#?}"
@@ -11775,10 +12396,7 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(vec![group], now);
         roster.observe(vec![], now);
-        roster.advance(
-            now + std::time::Duration::from_secs(1),
-            std::time::Duration::from_secs(4),
-        );
+        roster.advance(now + Duration::from_secs(1), Duration::from_secs(4));
         let sccache = SccacheStats::new();
         let area = Rect::new(0, 0, 160, 30);
         let growth = TileGrowth {
@@ -12166,7 +12784,7 @@ mod tests {
                     assert_eq!(drawn, name, "{view:?}/{kind:?}");
                     assert_eq!(
                         buffer[(x, 2)].fg,
-                        cut_mark_style(Color::Reset, 0)
+                        cut_mark_style(Color::Reset, 0_u8)
                             .fg
                             .expect("the mark has ink")
                     );
@@ -12491,7 +13109,7 @@ mod tests {
             pid: lead.pid,
         };
         let roster = roster_with_ancestry(lead, vec![child], vec![]);
-        let area = Rect::new(0, 0, 160, 3);
+        let area = Rect::new(0, 0, 160, 2);
         let mut buffer = Buffer::empty(area);
         draw_contents(
             &mut buffer,
@@ -12502,15 +13120,18 @@ mod tests {
             &[],
             CommandView::long(),
         );
-        assert!(buffer_line(&buffer, 2).contains("500"));
-        assert!(buffer_line(&buffer, 2).contains("cargo nextest run"));
+        assert!(buffer_line(&buffer, 1).contains("500"));
+        assert!(buffer_line(&buffer, 1).contains("cargo nextest run"));
     }
 
     #[test]
     fn a_parent_precedes_its_child_inside_an_unpinned_directory() {
         let lead = row_at("~/lead", None);
         let mut parent = same_second("~/other", 500);
-        parent.process.started = RunStart::Known(200);
+        parent.process.origin_start = OriginStart::Process {
+            epoch:   200,
+            elapsed: Duration::from_secs(18),
+        };
         let mut child = same_second("~/other", 400);
         child.process.parent = VisibleParent::Invocation {
             id:  parent.process.invocation_id.clone(),
@@ -12636,6 +13257,7 @@ mod tests {
             CommandView::long(),
         );
         let group = PathGroup {
+            heading:  DirectoryHeading::Body,
             identity: GroupingIdentity::from(&row.process),
             path:     GAUGE_PATH,
             rows:     rows.to_vec(),
@@ -12675,6 +13297,18 @@ mod tests {
     /// The working directory the gauge tests head their group with.
     const GAUGE_PATH: &str = "~/rust/cargo-tile";
 
+    /// Use one clock for the local start and elapsed display fixture.
+    fn display_clock(hour: u32, minute: u32, elapsed: u64) -> OriginStart {
+        let local = Local
+            .with_ymd_and_hms(2020, 1, 1, hour, minute, 0)
+            .single()
+            .expect("fixture local time");
+        OriginStart::Process {
+            epoch:   u64::try_from(local.timestamp()).expect("fixture epoch"),
+            elapsed: Duration::from_secs(elapsed),
+        }
+    }
+
     /// A row whose command line is long enough to outrun the column it
     /// is drawn in.
     fn long_row() -> TrackedRow {
@@ -12692,8 +13326,7 @@ mod tests {
         row.process.pid = pid;
         row.process.invocation_id = InvocationId::for_test(pid);
         row.process.parent = VisibleParent::Ancestor(parent);
-        row.process.start = "17:18".to_string();
-        row.process.duration = "01:12".to_string();
+        row.process.origin_start = display_clock(17, 18, 72);
         row.process.resource_use.cpu = Measurement::Reading(1177.0);
         row.process.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 2);
         row.process.resource_use.compiler = CompilerObservation::Running(Compiler {
@@ -12854,7 +13487,7 @@ mod tests {
                 TileContent::Summary,
                 TileContent::Group(roster.groups()[0].id.clone()),
             ] {
-                for height in [3, 4, 8, 16] {
+                for height in [2, 3, 4, 8, 16] {
                     let area = Rect::new(0, 0, width, height);
                     let mut buffer = Buffer::empty(area);
                     cells.draw(&mut buffer, &content, area, Color::Reset);
@@ -12866,7 +13499,12 @@ mod tests {
                             buffer_line(&buffer, y)
                         );
                     }
-                    if height == 3 {
+                    if height
+                        == match content {
+                            TileContent::Summary => 3,
+                            _ => 2,
+                        }
+                    {
                         assert!(
                             buffer_rows(&buffer)
                                 .iter()
@@ -12900,11 +13538,11 @@ mod tests {
         roster.observe(
             vec![
                 CargoGroup {
-                    lead:     lead.process,
-                    rest:     vec![later.process],
+                    lead:     lead.process.clone(),
+                    rest:     vec![later.process.clone()],
                     ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
                 },
-                cargo_group(visible.process),
+                cargo_group(visible.process.clone()),
             ],
             Instant::now(),
         );
@@ -12915,7 +13553,7 @@ mod tests {
             cells.draw(
                 &mut buffer,
                 &TileContent::Group(group.id.clone()),
-                Rect::new(0, u16::try_from(index).unwrap() * 4, 200, 3),
+                Rect::new(0, u16::try_from(index).unwrap() * 4, 200, 2),
                 Color::Reset,
             );
         }
@@ -12960,8 +13598,8 @@ mod tests {
             hidden.find("command").expect("hidden command"),
             visible.find("command").expect("visible command")
         );
-        assert!(buffer_line(&buffer, 2).contains("4100"));
-        assert!(!buffer_line(&buffer, 2).contains("4101"));
+        assert!(buffer_line(&buffer, 1).contains("4100"));
+        assert!(!buffer_line(&buffer, 1).contains("4101"));
     }
 
     #[test]
@@ -13131,12 +13769,26 @@ mod tests {
         buffer
     }
 
-    /// Read the invocation below the column labels and directory heading.
+    fn measurement_heading(row: &TrackedRow, kind: TableKind) -> String {
+        match kind {
+            TableKind::Command => command_title_tests::title_for(row, 118).to_string(),
+            TableKind::Summary => {
+                buffer_line(&measurement_row_buffer(row, kind), TABLE_HEADER_HEIGHT)
+            },
+        }
+    }
+
+    fn measurement_row_y(kind: TableKind) -> u16 {
+        TABLE_HEADER_HEIGHT
+            + match kind {
+                TableKind::Summary => DirectoryHeading::Body.rows(),
+                TableKind::Command => DirectoryHeading::Border.rows(),
+            }
+    }
+
+    /// Read the invocation below its body labels.
     fn measurement_row_text(row: &TrackedRow, kind: TableKind) -> String {
-        buffer_line(
-            &measurement_row_buffer(row, kind),
-            TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT,
-        )
+        buffer_line(&measurement_row_buffer(row, kind), measurement_row_y(kind))
     }
 
     /// Locate CPU by the drawn column labels so markers in other cells cannot pass.
@@ -13326,7 +13978,7 @@ mod tests {
             for kind in [TableKind::Command, TableKind::Summary] {
                 let buffer = measurement_row_buffer(&row, kind);
                 assert_eq!(
-                    memory_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
+                    memory_cell_text(&buffer, measurement_row_y(kind)),
                     expected,
                     "{kind:?}"
                 );
@@ -13351,7 +14003,7 @@ mod tests {
                 let buffer = measurement_row_buffer(&row, kind);
 
                 assert_eq!(
-                    cpu_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
+                    cpu_cell_text(&buffer, measurement_row_y(kind)),
                     "",
                     "{reason:?} in {kind:?}"
                 );
@@ -13372,7 +14024,7 @@ mod tests {
                 let buffer = measurement_row_buffer(&row, kind);
 
                 assert_eq!(
-                    cpu_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
+                    cpu_cell_text(&buffer, measurement_row_y(kind)),
                     expected,
                     "{reading} in {kind:?}"
                 );
@@ -13383,12 +14035,12 @@ mod tests {
     #[test]
     fn two_row_render_samples_keep_memory_aligned() {
         let mut build = row(None);
+        build.process.origin_start = display_clock(11, 4, 18);
         build.process.resource_use.memory = Measurement::Reading(322_122_547);
         let mut test = row(None);
         test.process.pid = 41_234;
         test.process.invocation_id = InvocationId::for_test(41_234);
-        test.process.start = "11:05".to_string();
-        test.process.duration = "00:08".to_string();
+        test.process.origin_start = display_clock(11, 5, 8);
         test.process.resource_use.cpu = Measurement::Reading(5.0);
         test.process.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 124 / 10);
         test.process.command = CommandText::of("cargo", &["test"]);
@@ -13468,7 +14120,7 @@ mod tests {
         for kind in [TableKind::Command, TableKind::Summary] {
             let buffer = measurement_row_buffer(&row, kind);
             let header = buffer_line(&buffer, 0);
-            let text = buffer_line(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT);
+            let text = buffer_line(&buffer, measurement_row_y(kind));
             for column in [CPU_COLUMN, MEMORY_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN] {
                 let Some(start) = header.find(TABLE_HEADERS[column]) else {
                     assert!(matches!(column, COMPILER_COLUMN | MANAGED_COLUMN));
@@ -13530,12 +14182,14 @@ mod tests {
             ),
             pid:                  41233,
             invocation_id:        InvocationId::for_test(41233),
+            execution:            InvocationExecution::Command,
             capture_membership:   CaptureMembership::Outside,
             provenance:           RowProvenance::Uncaptured(ProcessOwner::Unavailable),
             parent:               VisibleParent::None,
-            start:                "11:04".to_string(),
-            started:              RunStart::Known(started),
-            duration:             "00:18".to_string(),
+            origin_start:         OriginStart::Process {
+                epoch:   started,
+                elapsed: Duration::from_secs(18),
+            },
             resource_use:         InvocationResourceUse {
                 cpu:      Measurement::Reading(12.0),
                 memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
@@ -13986,12 +14640,11 @@ mod tests {
             ),
             pid,
             invocation_id: InvocationId::for_test(pid),
+            execution: InvocationExecution::Command,
             capture_membership: CaptureMembership::Outside,
             provenance: RowProvenance::Uncaptured(ProcessOwner::Unavailable),
             parent: VisibleParent::None,
-            start: "11:04".to_string(),
-            started: RunStart::Known(0),
-            duration: "00:18".to_string(),
+            origin_start: display_clock(11, 4, 18),
             resource_use: InvocationResourceUse {
                 cpu:      Measurement::Reading(12.0),
                 memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
@@ -14591,7 +15244,7 @@ mod tests {
                     let buffer = group_cpu_buffer(samples, kind);
 
                     assert_eq!(
-                        cpu_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
+                        cpu_cell_text(&buffer, measurement_row_y(kind)),
                         "",
                         "{reason:?} at member {unknown} in {kind:?}"
                     );
@@ -14608,7 +15261,7 @@ mod tests {
                 let buffer = group_cpu_buffer(samples.map(Measurement::Reading), kind);
 
                 assert_eq!(
-                    cpu_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
+                    cpu_cell_text(&buffer, measurement_row_y(kind)),
                     expected,
                     "{samples:?} in {kind:?}"
                 );
@@ -15103,19 +15756,20 @@ mod tests {
     ) -> String {
         let area = Rect::new(0, 0, 140, 16);
         let mut buffer = Buffer::empty(area);
-        draw_process_table(
+        let title = frame_draw_process_table(
             &mut buffer,
             area,
             rows,
-            kind,
             Color::Reset,
             pinned,
-            CommandView::long(),
+            &FrameTableColumnGrid::of(rows, kind, CommandView::long()),
         );
-        (0..area.height)
-            .map(|y| buffer_line(&buffer, y))
-            .collect::<Vec<_>>()
-            .join("\n")
+        let mut lines = match title {
+            DrawnCommandTitle::Untitled => Vec::new(),
+            DrawnCommandTitle::Titled { line, .. } => vec![line.to_string()],
+        };
+        lines.extend((0..area.height).map(|y| buffer_line(&buffer, y)));
+        lines.join("\n")
     }
 
     /// Each component must distinguish groups while the other two remain equal.
@@ -15239,12 +15893,15 @@ mod tests {
         // Give both render inputs the same clock instead of the fixture's process epoch
         // and registration discovery time, which describe unrelated instants.
         for group in &mut groups {
-            group.lead.started = RunStart::Known(u64::from(group.lead.pid));
+            group.lead.origin_start = OriginStart::Process {
+                epoch:   u64::from(group.lead.pid),
+                elapsed: Duration::from_secs(18),
+            };
         }
         assert_eq!(groups.len(), 2);
         let own_row = &groups
             .iter()
-            .find(|group| group.lead.pid == 41)
+            .find(|group| group.lead.pid == 40)
             .expect("own writer")
             .lead;
         let RowProvenance::Direct(context) = &own_row.provenance else {
@@ -15437,9 +16094,7 @@ mod tests {
     #[test]
     fn unavailable_start_sorts_deterministically_and_renders_its_duration() {
         let mut unavailable = same_second("/unknown/start", 40);
-        unavailable.process.started = RunStart::Unavailable;
-        unavailable.process.start = UNRESOLVED_TIME.into();
-        unavailable.process.duration = UNRESOLVED_TIME.into();
+        unavailable.process.origin_start = OriginStart::Unavailable;
         let known = started_at("/known/start", None, 100);
         let rows = [&unavailable, &known];
         let groups = group_by_path(&rows, PinnedGroup::Unpinned);
@@ -15448,7 +16103,7 @@ mod tests {
         for kind in [TableKind::Command, TableKind::Summary] {
             let buffer = measurement_row_buffer(&unavailable, kind);
             let header = buffer_line(&buffer, 0);
-            let text = buffer_line(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT);
+            let text = buffer_line(&buffer, measurement_row_y(kind));
             let start = header
                 .find(TABLE_HEADERS[DURATION_COLUMN])
                 .expect("duration column");
@@ -15463,8 +16118,7 @@ mod tests {
         let mut row = row_at("/writer-home/project", None);
         row.process.provenance = RowProvenance::Direct(capture_context());
         for kind in [TableKind::Command, TableKind::Summary] {
-            let buffer = measurement_row_buffer(&row, kind);
-            let heading = buffer_line(&buffer, TABLE_HEADER_HEIGHT);
+            let heading = measurement_heading(&row, kind);
             assert_eq!(heading.trim(), "[runner-one] /writer-home/project");
         }
     }
@@ -15688,11 +16342,7 @@ mod tests {
         }
         row.process.provenance = RowProvenance::Uncaptured(ProcessOwner::Unavailable);
         for kind in [TableKind::Command, TableKind::Summary] {
-            let buffer = measurement_row_buffer(&row, kind);
-            assert_eq!(
-                buffer_line(&buffer, TABLE_HEADER_HEIGHT).trim(),
-                "unavailable"
-            );
+            assert_eq!(measurement_heading(&row, kind).trim(), "unavailable");
         }
     }
 
@@ -16057,7 +16707,7 @@ mod tests {
             sorted.first().map(|group| group
                 .rows
                 .iter()
-                .map(|row| row.process.started)
+                .map(|row| row.process.started())
                 .collect::<Vec<RunStart>>()),
             Some(vec![RunStart::Known(100), RunStart::Known(160)])
         );
@@ -16580,8 +17230,8 @@ mod tests {
         );
         roster.observe(vec![cargo_group(lead)], now);
         roster.advance(
-            now + std::time::Duration::from_secs(1),
-            std::time::Duration::from_secs(DEFAULT_FADE_SECONDS),
+            now + Duration::from_secs(1),
+            Duration::from_secs(DEFAULT_FADE_SECONDS),
         );
         let sccache = SccacheStats::new();
         let cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
@@ -16592,10 +17242,10 @@ mod tests {
             CellReadoutFade::Unfaded,
             "a live lead holds the cell ink"
         );
-        roster.observe(Vec::new(), now + std::time::Duration::from_secs(1));
+        roster.observe(Vec::new(), now + Duration::from_secs(1));
         roster.advance(
-            now + std::time::Duration::from_secs(2),
-            std::time::Duration::from_secs(DEFAULT_FADE_SECONDS),
+            now + Duration::from_secs(2),
+            Duration::from_secs(DEFAULT_FADE_SECONDS),
         );
         let group = &roster.groups()[0];
         let rows: Vec<_> = group.rows().collect();
@@ -16629,8 +17279,8 @@ mod tests {
         );
         roster.observe(Vec::new(), now);
         roster.advance(
-            now + std::time::Duration::from_secs(1),
-            std::time::Duration::from_secs(DEFAULT_FADE_SECONDS),
+            now + Duration::from_secs(1),
+            Duration::from_secs(DEFAULT_FADE_SECONDS),
         );
         let hidden = hidden_commands();
         let visible = roster.visible(&hidden);
@@ -16671,7 +17321,7 @@ mod tests {
                 rest:     vec![invocation(4300, &["check"])],
                 ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
             }],
-            now + std::time::Duration::from_secs(1),
+            now + Duration::from_secs(1),
         );
         let cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
         assert_eq!(
@@ -16805,7 +17455,10 @@ mod tests {
                         process.directory_identity = WorkingDirectoryIdentity::Absolute(
                             format!("/test-home/work-{group_index}/dir-{directory_index}").into(),
                         );
-                        process.started = RunStart::Known(u64::from(directory_index));
+                        process.origin_start = OriginStart::Process {
+                            epoch:   u64::from(directory_index),
+                            elapsed: Duration::from_secs(18),
+                        };
                         process
                     })
                     .collect();
@@ -16883,10 +17536,20 @@ mod tests {
 
     /// Text inside one tile placement.
     fn placement_text(buffer: &Buffer, placement: &TilePlacement<InvocationId>) -> String {
-        let inner = placement.frame.inner();
-        (inner.top()..inner.bottom())
+        rectangle_text(buffer, placement.frame.inner())
+    }
+
+    /// Include the border when checking a command's heading and progress.
+    fn framed_placement_text(buffer: &Buffer, placement: &TilePlacement<InvocationId>) -> String {
+        let mut frame = placement.frame.rect();
+        frame.height = frame.height.saturating_sub(1);
+        rectangle_text(buffer, frame)
+    }
+
+    fn rectangle_text(buffer: &Buffer, area: Rect) -> String {
+        (area.top()..area.bottom())
             .map(|y| {
-                (inner.left()..inner.right())
+                (area.left()..area.right())
                     .map(|x| buffer[(x, y)].symbol())
                     .collect::<String>()
             })
@@ -17026,11 +17689,11 @@ mod tests {
         assert_eq!(
             visible,
             vec![
-                vec![4100],
+                vec![4100, 4101],
                 vec![4200, 4201],
-                vec![4300],
+                vec![4300, 4301],
                 vec![4400, 4401, 4402],
-                vec![4500],
+                vec![4500, 4501],
                 vec![4600, 4601, 4602]
             ]
         );
@@ -17040,7 +17703,8 @@ mod tests {
     #[test]
     fn a_summary_hiding_a_directory_leaves_no_blank_row_above_its_foot() {
         let roster = directory_rich_roster(&[4, 5, 4, 5, 4, 5]);
-        let area = Rect::new(0, 0, 64, 49);
+        // Six command headings left this single column; keep its original content budget.
+        let area = Rect::new(0, 0, 64, 43);
         let (production, without_report) = row_report_comparison(&roster, area);
         let former =
             blank_rows_beside_hidden_content(&roster, &without_report.0, &without_report.1, area);
@@ -17080,7 +17744,7 @@ mod tests {
     #[test]
     fn a_command_cell_leaves_no_spare_row_while_a_column_mate_is_short() {
         let roster = directory_rich_roster(&[4, 5, 4, 5, 4, 5]);
-        let area = Rect::new(0, 0, 200, 50);
+        let area = Rect::new(0, 0, 200, 47);
         let target = TileContent::Group(roster.groups()[0].id.clone());
         let (production, without_report) = row_report_comparison(&roster, area);
         let former =
@@ -17109,7 +17773,7 @@ mod tests {
     #[test]
     fn a_lone_ancestry_row_goes_to_a_mates_next_process_step() {
         let roster = ancestry_transfer_roster(2);
-        let area = Rect::new(0, 0, 80, 19);
+        let area = Rect::new(0, 0, 80, 17);
         let (grid, buffer) = settled_cells_buffer(&roster, area);
         let placements = grid.placements(
             area,
@@ -17132,8 +17796,8 @@ mod tests {
             })
             .expect("the process-row recipient is placed");
 
-        assert_eq!(placement_content_rows(donor), 3);
-        assert_eq!(placement_content_rows(recipient), 5);
+        assert_eq!(placement_content_rows(donor), 2);
+        assert_eq!(placement_content_rows(recipient), 4);
         assert!(!placement_text(&buffer, donor).contains("7000"));
         assert!(placement_text(&buffer, recipient).contains("7202"));
     }
@@ -17141,7 +17805,7 @@ mod tests {
     #[test]
     fn an_unusable_lone_row_draws_ancestry_without_a_blank_foot_row() {
         let roster = ancestry_transfer_roster(1);
-        let area = Rect::new(0, 0, 80, 19);
+        let area = Rect::new(0, 0, 80, 17);
         let (grid, buffer) = settled_cells_buffer(&roster, area);
         let donor = grid
             .placements(
@@ -17158,7 +17822,7 @@ mod tests {
             })
             .expect("the ancestry cell is placed");
 
-        assert_eq!(placement_content_rows(&donor), 4);
+        assert_eq!(placement_content_rows(&donor), 3);
         let content_area = Rect {
             height: placement_content_rows(&donor),
             ..donor.frame.inner()
@@ -17170,7 +17834,7 @@ mod tests {
                 content_rows_drawn(&roster, content, content_area, &hidden, CommandView::long()),
                 content_rows_kept(&roster, content, content_area, &hidden, CommandView::long()),
             ),
-            (4, 3)
+            (3, 2)
         );
         assert!(placement_text(&buffer, &donor).contains("7000"));
         assert!(!has_blank_row_above_foot(&buffer, &donor));
@@ -17239,7 +17903,8 @@ mod tests {
     #[test]
     fn a_short_command_cell_takes_the_row_its_column_mate_cannot_use() {
         let roster = directory_rich_roster(&[2, 4, 6, 3, 5, 4]);
-        let area = Rect::new(0, 0, 126, 60);
+        // Six command headings left this single column; keep its original content budget.
+        let area = Rect::new(0, 0, 126, 54);
         let target = TileContent::Group(roster.groups()[3].id.clone());
         let (production, without_report) = row_report_comparison(&roster, area);
         let former =
@@ -17427,11 +18092,15 @@ mod tests {
                     })
                     .unwrap();
                 assert!(
-                    lines[header + 1].contains("cargo-liner"),
+                    framed_placement_text(&buffer, placement)
+                        .lines()
+                        .next()
+                        .unwrap()
+                        .contains("cargo-liner"),
                     "{area:?}: {lines:#?}"
                 );
-                assert!(lines[header + 2].contains(&pid), "{area:?}: {lines:#?}");
-                assert!(lines[header + 2].contains("cargo"), "{area:?}: {lines:#?}");
+                assert!(lines[header + 1].contains(&pid), "{area:?}: {lines:#?}");
+                assert!(lines[header + 1].contains("cargo"), "{area:?}: {lines:#?}");
                 assert!(
                     lines
                         .last()
@@ -17720,7 +18389,7 @@ mod tests {
         let mut row = row(None);
         row.process.pid = 359_829;
         row.process.invocation_id = InvocationId::for_test(359_829);
-        row.process.duration = "18s".to_string();
+        row.process.origin_start = display_clock(11, 4, 18);
         row.process.command = CommandText::of("cargo", &["metadata"]);
         let rows = [&row];
         let interior_width: u16 = 30;
@@ -18048,7 +18717,7 @@ mod tests {
 
     #[test]
     fn a_whole_command_keeps_its_free_cells_before_a_table_continuation_mark() {
-        let area = Rect::new(0, 0, 198, 6);
+        let area = Rect::new(0, 0, 198, 5);
         let mut buffer = Buffer::empty(area);
         let mut lead = same_second("/workspace/project", 1_881_177);
         lead.process.command = CommandText::of("cargo", &["nextest", "run"]);
@@ -18082,10 +18751,10 @@ mod tests {
             CommandView::long(),
         );
 
-        let command = table_column_text(&buffer, &layout, COMMAND_COLUMN, 5);
+        let command = table_column_text(&buffer, &layout, COMMAND_COLUMN, 4);
         assert!(command.starts_with("cargo check"), "{command:?}");
         assert_eq!(
-            buffer[(area.right() - CONTENT_RIGHT_INSET - 1, 5)].symbol(),
+            buffer[(area.right() - CONTENT_RIGHT_INSET - 1, 4)].symbol(),
             ELISION
         );
         assert!(
@@ -18093,60 +18762,12 @@ mod tests {
                 .chars()
                 .all(|character| character == ' ')
         );
-        assert!(buffer_line(&buffer, 4).contains("/workspace/later"));
-        assert_ne!(buffer_line(&buffer, 5), "");
+        assert!(buffer_line(&buffer, 3).contains("/workspace/later"));
+        assert_ne!(buffer_line(&buffer, 4), "");
     }
 
     #[test]
     fn a_whole_longest_command_marks_later_rows_without_using_a_free_row() {
-        let area = Rect::new(0, 0, 62, 4);
-        let mut buffer = Buffer::empty(area);
-        let mut lead = same_second("/workspace/project", 2_398_793);
-        lead.process.parent = VisibleParent::Ancestor(2_398_735);
-        lead.process.resource_use.cpu = Measurement::Reading(1192.0);
-        lead.process.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 98 / 10);
-        lead.process.command = CommandText::of("cargo", &["nextest", "run"]);
-        lead.process.managed = Measurement::Reading(2);
-        let later = same_second("/workspace/later", 2_614_582);
-        let rows = [&lead, &later];
-        let layout = CellTableLayout::of(
-            &rows,
-            TableKind::Command,
-            area,
-            Color::Reset,
-            CommandView::long(),
-        );
-
-        draw_process_table(
-            &mut buffer,
-            area,
-            &rows,
-            TableKind::Command,
-            Color::Reset,
-            PinnedGroup::Lead(&lead.process),
-            CommandView::long(),
-        );
-
-        assert_eq!(
-            layout.column_width(COMMAND_COLUMN),
-            cell_width("cargo nextest run").saturating_add(TABLE_CONTINUATION_CLEARANCE)
-        );
-        assert_eq!(
-            table_column_text(&buffer, &layout, COMMAND_COLUMN, 2).trim_end(),
-            "cargo nextest run"
-        );
-        assert_eq!(
-            buffer[(area.right() - CONTENT_RIGHT_INSET - 1, 2)].symbol(),
-            ELISION
-        );
-        assert_eq!(
-            table_column_text(&buffer, &layout, COMMAND_COLUMN, 3).trim(),
-            ""
-        );
-    }
-
-    #[test]
-    fn a_whole_longest_command_keeps_its_last_letter_when_no_row_is_free() {
         let area = Rect::new(0, 0, 62, 3);
         let mut buffer = Buffer::empty(area);
         let mut lead = same_second("/workspace/project", 2_398_793);
@@ -18180,11 +18801,59 @@ mod tests {
             cell_width("cargo nextest run").saturating_add(TABLE_CONTINUATION_CLEARANCE)
         );
         assert_eq!(
-            table_column_text(&buffer, &layout, COMMAND_COLUMN, 2).trim_end(),
+            table_column_text(&buffer, &layout, COMMAND_COLUMN, 1).trim_end(),
             "cargo nextest run"
         );
         assert_eq!(
-            buffer[(area.right() - CONTENT_RIGHT_INSET - 1, 2)].symbol(),
+            buffer[(area.right() - CONTENT_RIGHT_INSET - 1, 1)].symbol(),
+            ELISION
+        );
+        assert_eq!(
+            table_column_text(&buffer, &layout, COMMAND_COLUMN, 2).trim(),
+            ""
+        );
+    }
+
+    #[test]
+    fn a_whole_longest_command_keeps_its_last_letter_when_no_row_is_free() {
+        let area = Rect::new(0, 0, 62, 2);
+        let mut buffer = Buffer::empty(area);
+        let mut lead = same_second("/workspace/project", 2_398_793);
+        lead.process.parent = VisibleParent::Ancestor(2_398_735);
+        lead.process.resource_use.cpu = Measurement::Reading(1192.0);
+        lead.process.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 98 / 10);
+        lead.process.command = CommandText::of("cargo", &["nextest", "run"]);
+        lead.process.managed = Measurement::Reading(2);
+        let later = same_second("/workspace/later", 2_614_582);
+        let rows = [&lead, &later];
+        let layout = CellTableLayout::of(
+            &rows,
+            TableKind::Command,
+            area,
+            Color::Reset,
+            CommandView::long(),
+        );
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows,
+            TableKind::Command,
+            Color::Reset,
+            PinnedGroup::Lead(&lead.process),
+            CommandView::long(),
+        );
+
+        assert_eq!(
+            layout.column_width(COMMAND_COLUMN),
+            cell_width("cargo nextest run").saturating_add(TABLE_CONTINUATION_CLEARANCE)
+        );
+        assert_eq!(
+            table_column_text(&buffer, &layout, COMMAND_COLUMN, 1).trim_end(),
+            "cargo nextest run"
+        );
+        assert_eq!(
+            buffer[(area.right() - CONTENT_RIGHT_INSET - 1, 1)].symbol(),
             ELISION
         );
     }
@@ -18937,6 +19606,128 @@ mod tests {
             })
             .collect()
     }
+    mod command_title_tests {
+        use super::*;
+
+        #[test]
+        fn a_border_title_uses_the_bodys_account_decision() {
+            let mut lead = row_at("~/short", None);
+            let mut other = row_at("~/long-directory-name/project", None);
+            let mut context = capture_context();
+            context.account.name = AccountName::Resolved("natepiano".into());
+            lead.process.provenance = RowProvenance::Direct(context.clone());
+            other.process.provenance = RowProvenance::Direct(context);
+            other.process.pid += 1;
+            other.process.invocation_id = InvocationId::for_test(other.process.pid);
+            let rows = [&lead, &other];
+            let area = Rect::new(0, 0, 40, 12);
+            let mut buffer = Buffer::empty(area);
+            let mut title = frame_draw_process_table(
+                &mut buffer,
+                area,
+                &rows,
+                Color::Reset,
+                PinnedGroup::Lead(&lead.process),
+                &FrameTableColumnGrid::of(&rows, TableKind::Command, CommandView::long()),
+            );
+            let title = title.take_for(&lead.process.invocation_id).unwrap();
+            let body = buffer_rows(&buffer).join("\n");
+            assert!(body.contains("~/long-directory-name/project"), "{body}");
+            assert!(!body.contains("[natepiano]"), "{body}");
+            assert_eq!(title.to_string(), " ~/short ");
+        }
+
+        pub(super) fn title_for(row: &TrackedRow, width: u16) -> Line<'static> {
+            let mut roster = Roster::new();
+            roster.observe(vec![cargo_group(row.process.clone())], Instant::now());
+            let stats = SccacheStats::default();
+            let cells = Cells::new(&roster, &[], CommandView::long(), &stats);
+            let area = Rect::new(0, 0, width.saturating_add(2), 6);
+            cells.draw(
+                &mut Buffer::empty(area),
+                &TileContent::Group(row.process.invocation_id.clone()),
+                area,
+                Color::Reset,
+            );
+            cells
+                .group_title(&row.process.invocation_id)
+                .expect("a command has a border title")
+        }
+
+        #[test]
+        fn a_command_cell_names_its_directory_in_its_border() {
+            let mut row = row_at("~/rust/hana", None);
+            let mut context = capture_context();
+            context.account.name = AccountName::Resolved("natepiano".into());
+            row.process.provenance = RowProvenance::Direct(context);
+            let title = title_for(&row, 80);
+            assert_eq!(title.to_string(), " [natepiano] ~/rust/hana ");
+            assert_eq!(title.spans[0].style.fg, Some(accent_color()));
+            let mut roster = Roster::new();
+            roster.observe(vec![cargo_group(row.process.clone())], Instant::now());
+            let area = Rect::new(0, 0, 160, 20);
+            let (grid, buffer) = settled_cells_buffer(&roster, area);
+            let cell = grid
+                .placements(area, TileGrowth::default())
+                .into_iter()
+                .find(|cell| matches!(cell.content, TileContent::Group(_)))
+                .expect("the command cell is placed");
+            let framed = framed_placement_text(&buffer, &cell);
+            assert!(
+                framed
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .contains(" [natepiano] ~/rust/hana "),
+                "{framed}"
+            );
+            assert!(
+                !placement_text(&buffer, &cell).contains("~/rust/hana"),
+                "{framed}"
+            );
+        }
+
+        #[test]
+        fn a_cell_title_cuts_the_directory_by_the_header_rule_at_title_width() {
+            let row = row_at("/very-long-parent/component", None);
+            for (room, expected) in [
+                (24, "/very-l…parent/component"),
+                (11, "…/component"),
+                (8, "…mponent"),
+            ] {
+                let title = title_for(&row, room);
+                assert_eq!(title.to_string(), format!(" {expected} "));
+                assert!(title.width() <= usize::from(room + 2));
+            }
+        }
+
+        #[test]
+        fn a_command_cell_draws_no_heading_row_in_its_body() {
+            let row = row_at("/a/unique-directory", None);
+            let mut roster = Roster::new();
+            roster.observe(vec![cargo_group(row.process.clone())], Instant::now());
+            let stats = SccacheStats::default();
+            let cells = Cells::new(&roster, &[], CommandView::long(), &stats);
+            let content = TileContent::Group(row.process.invocation_id.clone());
+            let area = Rect::new(0, 0, 120, 6);
+            let mut buffer = Buffer::empty(area);
+            cells.draw(&mut buffer, &content, area, Color::Reset);
+            let lines = buffer_rows(&buffer);
+            assert!(
+                !lines
+                    .iter()
+                    .any(|line| line.contains("/a/unique-directory")),
+                "{lines:#?}"
+            );
+            assert!(
+                lines[usize::from(TABLE_HEADER_HEIGHT)].contains("cargo build"),
+                "{lines:#?}"
+            );
+            let demand = cells.demands(&[(content, area.width)]);
+            assert_eq!(demand.groups[0].rows, usize::from(TABLE_HEADER_HEIGHT) + 1);
+        }
+    }
+
     mod directory_header_tests {
         use super::*;
 
@@ -18944,37 +19735,18 @@ mod tests {
         fn a_directory_header_keeps_a_long_path_that_fits_the_inner_width() {
             let path = "/tmp/claude/11a8e01e-1234-5678-9012-123456789012/scratchpad/clone88ci";
             let row = same_second(path, 40);
-            let area = Rect::new(0, 0, 100, 6);
-            let mut buffer = Buffer::empty(area);
-            draw_process_table(
-                &mut buffer,
-                area,
-                &[&row],
-                TableKind::Command,
-                Color::Reset,
-                PinnedGroup::Unpinned,
-                CommandView::long(),
+            assert_eq!(
+                command_title_tests::title_for(&row, 96).to_string().trim(),
+                path
             );
-            assert_eq!(buffer_line(&buffer, TABLE_HEADER_HEIGHT).trim(), path);
         }
 
         #[test]
         fn a_directory_header_fills_its_inner_width_by_shortening_a_guid() {
             let path = "/tmp/claude/11a8e01e-1234-5678-9012-123456789012/scratchpad/clone88ci";
             let row = same_second(path, 40);
-            let area = Rect::new(0, 0, 52, 6);
-            let mut buffer = Buffer::empty(area);
-            draw_process_table(
-                &mut buffer,
-                area,
-                &[&row],
-                TableKind::Command,
-                Color::Reset,
-                PinnedGroup::Unpinned,
-                CommandView::long(),
-            );
             assert_eq!(
-                buffer_line(&buffer, TABLE_HEADER_HEIGHT).trim(),
+                command_title_tests::title_for(&row, 50).to_string().trim(),
                 "/tmp/claude/11a8e01e…56789012/scratchpad/clone88ci"
             );
         }
@@ -19076,9 +19848,10 @@ mod tests {
 
         fn fitted_path(path: &str, room: u16) -> String {
             let row = row_at(path, None);
-            let rows = [&row];
-            let groups = group_by_path(&rows, PinnedGroup::Unpinned);
-            groups[0].fitted_heading(room)
+            command_title_tests::title_for(&row, room)
+                .to_string()
+                .trim()
+                .to_string()
         }
     }
 }

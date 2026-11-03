@@ -159,8 +159,8 @@ pub(crate) const READER_TIMESTAMPS_ENV: &str = "CARGO_TILE_READER_TIMESTAMPS";
 /// `tiles.widen_summary` when `config.toml` says nothing: the summary
 /// stays in its own column.
 pub(crate) const DEFAULT_WIDEN_SUMMARY: bool = false;
-/// Shortest useful height for one command cell, including its frame.
-pub(crate) const MIN_CELL_HEIGHT: u16 = 6;
+/// A command cell needs its labels, command and readout between its borders.
+pub(crate) const MIN_CELL_HEIGHT: u16 = 5;
 /// Narrowest useful width for one command cell, including its frame.
 pub(crate) const MIN_CELL_WIDTH: u16 = 40;
 /// Width at which a summary memory foot leaves room for the content-rows readout only.
@@ -174,10 +174,12 @@ pub(crate) const SUMMARY_WITHOUT_ROWS_READOUT_WIDTH: u16 = 28;
 pub(crate) const DEFAULT_FADE_SECONDS: u64 = 3;
 /// Distance between fade alpha levels that keep built-in ink contrast monotone.
 pub(crate) const FADE_ALPHA_STEP: u8 = 2;
-/// First-paint fade beyond which a delayed cell holds final ink until expiry.
-/// Full ink meets the three-quarter readability floor on every channel without
-/// truncating blends; cells already readable on entry keep their ordinary fade.
+/// First-text fade beyond which a delayed row starts its entry at three-quarter ink.
+/// The same limit sets the brighten's starting ground contribution: 64 of 256,
+/// rounded toward the ink. Rows already this readable keep their ordinary fade.
 pub(crate) const CELL_ENTRY_FADE_LIMIT: u8 = 63;
+/// Time for delayed command text to brighten from three-quarter to full ink.
+pub(crate) const CELL_BRIGHTEN_DURATION: Duration = Duration::from_millis(250);
 /// Contrast floor for a finished row through the first half of its fade.
 #[cfg(test)]
 pub(crate) const MIN_FINISHED_ROW_CONTRAST: f64 = 3.0;
@@ -211,6 +213,9 @@ pub(crate) const ELISION: &str = "\u{2026}";
 /// command it is on every row it draws. The leading space holds the
 /// word off the corner glyph the title is set against.
 pub(crate) const SUMMARY_CELL_TITLE: &str = " summary ";
+
+/// Space between a command border title and the surrounding rule.
+pub(crate) const COMMAND_TITLE_PADDING: &str = " ";
 /// The capture-installation card describes the work it starts.
 pub(crate) const CAPTURE_PROGRESS_TITLE: &str = "Capturing cargo progress";
 /// Delimiters around a command's non-default build profile.
@@ -652,7 +657,9 @@ pub(crate) const CARGO_NAME: &str = "cargo";
 /// is the real binary, whatever else it may be, and is moved aside
 /// rather than overwritten.
 pub(crate) const SHIM_MARKER: &str = "cargo-tile-capture-shim";
-/// Native runner executable shared by the entry protocol and census recognition.
+/// The shell that forwards a captured command.
+pub(crate) const CAPTURE_SHELL_NAME: &str = "sh";
+/// The native capture entry owns this executable name.
 pub(crate) const CAPTURE_RUNNER_NAME: &str = "cargo-tile-capture";
 /// Entry argument that selects native output capture.
 pub(crate) const CAPTURE_SHIM_ARGUMENT: &str = "--capture-shim";

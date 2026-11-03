@@ -13,7 +13,6 @@ use std::time::Instant;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use sysinfo::Pid;
 use tempfile::TempDir;
@@ -463,7 +462,7 @@ fn mixed_v2_v3_captures_render_blocked_rows_without_rewriting_publications() {
         ("cargo-tile-v2", 200, "older-command"),
     ];
     let (root, capture, publications) = published_capture(&entries);
-    let rows = [("cargo-tile-v3", 101, "current-command"), entries[1]];
+    let rows = [("cargo-tile-v3", 100, "current-command"), entries[1]];
     let argv = ["cargo", "build", "current-command"].map(OsString::from);
     let mut parent = ProcessObservation::cargo(100, &argv);
     parent.directory = ProcessField::Observed(Path::new("/writer/project"));
@@ -486,7 +485,7 @@ fn mixed_v2_v3_captures_render_blocked_rows_without_rewriting_publications() {
         assert_current_process(
             &groups
                 .iter()
-                .find(|group| group.lead.pid == 101)
+                .find(|group| group.lead.pid == 100)
                 .expect("v3 cargo child discovered independently of registration PID")
                 .lead,
         );
@@ -533,7 +532,7 @@ fn mixed_v2_v3_captures_render_blocked_rows_without_rewriting_publications() {
 }
 
 fn assert_current_process(row: &CargoProcess) {
-    assert_eq!(row.pid, 101);
+    assert_eq!(row.pid, 100);
     assert_eq!(row.managed, Measurement::Reading(0));
     assert_eq!(row.resource_use.compiler, CompilerObservation::None);
     assert_eq!(
@@ -569,7 +568,7 @@ fn assert_mixed_command_pane(
             group
                 .rest
                 .iter()
-                .find(|row| row.pid == 101)
+                .find(|row| row.pid == 100)
                 .expect("v3 cargo child in shared family"),
         );
         for row in &group.rest {
@@ -810,16 +809,7 @@ fn draw_summary(app: &App, height: u16) -> String {
 
 fn draw_content(app: &App, content: &TileContent, height: u16) -> String {
     let inner = Rect::new(0, 0, 298, height);
-    let mut buffer = Buffer::empty(inner);
-    render::draw_cell_for_test(&mut buffer, &app.roster, content, inner, 4);
-    (0..height)
-        .map(|y| {
-            (0..inner.width)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    render::cell_lines_for_test(&app.roster, content, inner, 4).join("\n")
 }
 
 fn assert_capture_rows(rendered: &str, entries: &[(&str, u32, &str)]) {
