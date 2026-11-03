@@ -33,16 +33,14 @@ fn scan(process: &ProcessEntry, home: &Path) -> Vec<AgentRow> {
     let mut scanner = LocalScanner::new(AccountLabels::default());
     let processes = std::slice::from_ref(process);
     scanner.codex_logs.refresh(processes, Some(home));
-    scanner.resolve_codex_sessions(processes, Some(home));
-    let links = classify::linked_threads(&scanner.codex_links);
-    let mut rows = classify::agent_rows_with_threads(
+    let mut rows = Vec::new();
+    scanner.scan_stages_with(
         processes,
         &[],
-        &links,
         Some(home),
-        &scanner.account_labels,
+        |_, answer| rows = answer,
+        |scanner, rows| scanner.attach_codex_sessions(processes, Some(home), rows),
     );
-    scanner.attach_codex_sessions(processes, Some(home), &mut rows);
     rows
 }
 

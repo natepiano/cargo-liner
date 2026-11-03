@@ -22,6 +22,7 @@ use crate::census::MachineState;
 use crate::census::account::Program;
 use crate::census::accounts::AccountsTable;
 use crate::census::activity::Activity;
+use crate::census::codex::CodexThread;
 use crate::config::AccountsConfig;
 use crate::config::Config;
 use crate::constants::CODEX_AGENT;
@@ -91,18 +92,16 @@ impl SessionFixture {
         self.scanner
             .codex_logs
             .refresh(&self.processes, Some(self.home.path()));
-        self.scanner
-            .resolve_codex_sessions(&self.processes, Some(self.home.path()));
-        let threads = classify::linked_threads(&self.scanner.codex_links);
-        let mut rows = classify::agent_rows_with_threads(
+        let mut rows = Vec::new();
+        self.scanner.scan_stages_with(
             &self.processes,
             &[],
-            &threads,
             Some(self.home.path()),
-            &self.scanner.account_labels,
+            |_, answer| rows = answer,
+            |scanner, rows| {
+                scanner.attach_details(&self.processes, &[], Some(self.home.path()), rows);
+            },
         );
-        self.scanner
-            .attach_details(&self.processes, &[], Some(self.home.path()), &mut rows);
         rows
     }
 }

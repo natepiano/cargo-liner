@@ -598,3 +598,10 @@ pub(crate) const CLAUDE_PLAN_PERMISSION_ARGUMENT: &str = "--permission-mode=plan
 pub(crate) const WORKER_DOCUMENT_EXTENSION: &str = "json";
 /// Markdown heading opening for a pooled review job.
 pub(crate) const REVIEW_JOB_HEADING: &str = "# ";
+
+/// Herdr exports its API address to pane processes.
+pub(crate) const HERDR_SOCKET_VARIABLE: &str = "HERDR_SOCKET_PATH";
+/// Bound the silent fallback when the herdr API does not answer.
+pub(crate) const HERDR_READ_TIMEOUT: Duration = Duration::from_millis(100);
+/// Bound each herdr API answer.
+pub(crate) const HERDR_ANSWER_LIMIT: u64 = 4 * 1024 * 1024;

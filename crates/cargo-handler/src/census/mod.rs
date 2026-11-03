@@ -26,6 +26,7 @@ mod claude_seat_tests;
 pub(crate) mod codex;
 mod codex_names;
 pub(crate) mod desktop;
+mod herdr;
 pub(crate) mod hierarchy;
 #[cfg(test)]
 mod incremental_read_tests;

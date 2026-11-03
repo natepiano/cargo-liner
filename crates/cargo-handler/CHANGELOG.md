@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Codex windows without a proven thread show their herdr pane name or tab label.
+
 - Shift-Up and Shift-Down focus the tile above and below.
 - Shell rows for sleep commands show timer in the role column.
 - A tile with a selected row shows it and the total in its foot, `content rows: 3 of 12`; the number follows every selection move and scroll.
