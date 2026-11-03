@@ -1612,7 +1612,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 **Files:** `crates/cargo-tile/src/roster.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/tui_pane/src/pane/frame.rs`. Not `crates/tui_pane/src/tiles/draw.rs` or `tiles/grid.rs`: the handler unit's equal-frame phase owns them (showrunner, 2026-10-30).
 
-### Phase 47 — A command cell's account and directory are its border title  · status: todo
+### Phase 47 — A command cell's account and directory are its border title  · status: in progress
 
 **Goal:** A command cell names its account and directory in its top border (`┌ [natepiano] ~/rust/hana ─`), and the body row that held them goes to the cell's content. From the user (2026-10-31): "when am i going to get my user and directory moved to the cell title". This was built on the Phase 28 tree (`CommandTitle` in `render/mod.rs` at `refs/tile-unit/p28-snapshot-1322`) and left with it on 2026-10-29; Phase 36m ported only the directory cut rule.
 
@@ -2520,9 +2520,9 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - A live shot shows the disk value in GiB after mem.
 - Idle tile CPU does not rise by more than the spread of 3 live pairs.
 
-### Phase 50 — A CI nextest run shows its progress meter  · status: todo
+### Phase 50 — A CI nextest run shows its progress meter  · status: in progress
 
-**Depends on:** Phase 49
+**Depends on:** none. The showrunner put it before 43b, P47, P46, 48 and 49, beside 43a: a user sees this defect in a feature that worked.
 
 #### Work Order
 
@@ -2544,3 +2544,26 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 **Acceptance gate:**
 - `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green; no new test takes 1 s or more.
 - A live shot of a runner nextest job shows the meter in its `[ci]` cell.
+
+### Phase 51 — A reader scenario ends its fake cargo processes  · status: todo
+
+**Depends on:** none. It starts when the showrunner lifts the cargo pause for it.
+
+#### Work Order
+
+**Goal:** A reader scenario leaves no fake cargo process when it ends, fails or is killed. From the builds showrunner, 2026-11-02: a fake `cargo build probe-first-.tmptzAS15` from `reader_scenario.py` ran on the Mac for 54 hours and showed in the user's tile grid. It started on 2026-10-31 at 16:23 EDT. Its log reads "Blocking waiting for file lock on build directory".
+
+**Spec:**
+
+1. Find how the scenario ended without its cleanup. The `finally` block releases writers through trigger files, and the writers run in their own sessions (`start_new_session=True`). A killed scenario runs no `finally`.
+2. Make each writer's process group end when its scenario ends, also on SIGKILL. Fix it where the writers start, not with a sweep after the fact.
+3. A normal end keeps its current release order and its time.
+4. Add a test: kill the scenario with SIGKILL while a writer waits; no writer process stays. The test takes less than 1 s.
+
+**Files:**
+- `crates/cargo-tile/src/shim_registration/reader_scenario.py`
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green on natedev and the Mac; no new test takes 1 s or more.
+- After the Mac pass, no process from a scenario folder stays on the Mac.
