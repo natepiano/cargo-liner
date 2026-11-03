@@ -1565,6 +1565,41 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: shots on natedev before and after a marker click, a design check line, and a Change-Review line.
 
+### Phase 64 — A one-shot probe waits for herdr pane names  · status: todo
+
+**Depends on:** Phase 62, because both phases change `census/scan.rs`. Runs beside Phase 61 or Phase 63; they share no file with it (showrunner, 2026-11-03).
+
+#### Work Order
+
+**Goal:** `cargo-handler probe` on a loaded host shows a herdr-named Codex window by its name on each run, so a remote cell no longer changes between the name and `pid N`.
+
+**Source:** the showrunner, 2026-11-03, 15:47 EST. On natedev at load average 47 with the installed build 9bb05b8be, three `cargo-handler probe` runs took 6.5 s, 11.0 s and 2.4 s. Runs 1 and 2 showed morty (pid 2719866) as `pid 2719866`. Run 3 showed `morty`. A remote cell runs `ssh <host> cargo-handler probe` on each poll, and each run is a new process.
+
+**Cause (main ff9c2b2fc):**
+1. `Scanner::scan` (`scan.rs` ≈334) calls `HerdrNames::finish_initial` (`herdr.rs` ≈246) once.
+2. `finish_initial` waits only `HERDR_INITIAL_TIMEOUT` (100 ms, `constants.rs` ≈605) for the herdr worker's first answer. When the answer is late, the row keeps `pid N`.
+3. The TUI reads the late answer on a later scan. A one-shot probe has no later scan, so the late name is lost.
+4. The worker sends one `NameAnswer` after each refresh, also when it finds no names. Its socket operations use `HERDR_READ_TIMEOUT` (100 ms, `constants.rs` ≈609).
+
+**State model:**
+1. The herdr worker owns the pane names. `InitialAnswer::{Pending, Ready}` records whether the scan has the answer for its generation.
+2. The TUI path keeps the 100 ms wait. A late answer arrives on a later scan, as today.
+3. The probe path waits until the answer for its own generation arrives, or until a probe bound ends. After the bound, the row shows `pid N`.
+4. A herdr that is not running gives an answer or ends the wait at once. It never makes the probe wait the full bound.
+
+**Spec:**
+1. Give `finish_initial` a typed wait, for example `InitialWait::{Startup, Probe}`. Do not use a bare duration argument. The probe's `Scanner` uses `Probe`, and the TUI uses `Startup`.
+2. Add one constant for the probe bound beside `HERDR_INITIAL_TIMEOUT`. Choose its value from the measured probe times, and write the reason in the doc comment.
+3. Check whether `HERDR_READ_TIMEOUT` also drops names under load. If it does, the probe path uses a longer read timeout through the same typed wait. Record the measurement in the as-built.
+4. Tests under 1 s, with a controlled answer channel and no real sleeps: an answer after 100 ms reaches the probe; the TUI path returns at 100 ms; a herdr that is not running ends the probe wait at once; an answer of an older generation does not count.
+5. CHANGELOG: one Fixed line in cargo-handler.
+
+**Files:** `crates/cargo-handler/src/census/herdr.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/src/census/herdr_tests.rs`, `crates/cargo-handler/CHANGELOG.md`.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live check on natedev under load: five `cargo-handler probe` runs each show a herdr-named Codex window by its name. Take the window's pid from the probe's own output, and never type into or signal that window. Add a Change-Review line.
+
 ### Phase 45 — Handler rows expand and collapse like the cargo-port project list  · status: done
 
 #### As-built
