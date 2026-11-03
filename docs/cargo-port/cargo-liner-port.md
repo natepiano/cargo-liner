@@ -229,59 +229,109 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 
 **Gotchas:** a new cfg-bearing syn node needs a case in `gate_tracking_visit!`, or the imports under it lose their cfg when they move.
 
+### Phase 2t — mend --fix never writes a path into a struct pattern or struct literal field  · status: todo
+
+#### Work Order
+
+**Goal:** `verify.sh lint hana` passes with cargo-mend 0.23.0-dev on the hana tree that 0.22.3 passes; no mend rewrite gives code that does not compile.
+
+**Source:** showrunner, 2026-11-03, from hana: cargo-mend 0.23.0-dev broke `verify.sh lint hana` on `init/catalyst` ad937ff7ec plus demo Phase 28. Its rewrites gave 13 compile errors in 4 test files (`crates/hana/tests/frame_time_cables.rs`, `cable_motion/opened_routes.rs`, `cable_motion/patch_stubs.rs`, `screen_assembly/mod.rs`), then mend rolled back. One error is "expected one of `,`, `:`, or `}`, found `::`": a path written where a struct pattern or struct literal expects a field name. The same tree passes with mend 0.22.3. hana's log is gone.
+
+**Constraints:**
+- The tree: `~/rust/hana` at ad937ff7ec has three of the four files (read them with `git -C ~/rust/hana show ad937ff7ec:<path>`). The demo Phase 28 worktree `/home/natepiano/rust/tool-based-ui-demo` belongs to another session: read it only, never edit, build or lint in it.
+- Suspects: the fixes changed since `cargo-mend-v0.22.3` (`git log cargo-mend-v0.22.3..HEAD -- crates/cargo-mend`), first `imports_at_top` (phase 2s gate tracking, phase 2i, 2n), `inline_path_qualified_type`, and the leading `::` keep of phase 2o. Find the exact rewrite from the code and the four files before any change.
+- From phase 2s: a new syn node in a fix needs a case in `gate_tracking_visit!` (`fixes/imports/gate_tracking.rs`).
+- A rewrite must never replace a field name, a field-init shorthand (`Foo { x }`) or a field pattern shorthand (`Foo { x, .. }`) with a path. Where a shorthand binds a name the fix shortens or qualifies, write `x: <path>` or leave it unchanged.
+
+**Spec:**
+1. **Red first:** the smallest fixture that gives the parse error (or one of the 13 errors) through the real fix path (`imports::apply_fixes` or the fix's own apply entry), with the parsed output checked by `syn::parse_file`. One test for each distinct cause the four files show.
+2. Fix the cause in the fix that writes it.
+3. Every mend fix's output in the new tests parses and keeps the program's meaning.
+4. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/` — the fix that writes the path, and its tests
+- `crates/cargo-mend/CHANGELOG.md`
+
+**Workers:** 1 writer owns the code and the tests.
+
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second; the red tests fail on the pre-fix tree and pass after; the summary names each of the 13 errors' cause or says which cause it shares.
+
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: done
 
 **Depends on:** Phase 2b
 
-#### Work Order
+#### As-built
 
-**Goal:** an idle cargo-port uses under 1% of one core and draws no frame when nothing visible changed. During builds it stays under 3% of one core and under 2 frames each second.
-
-**Source:** showrunner, 2026-10-28; the user ranks CPU work above all other work. Measured on natedev at 11:12–11:25: the cargo-port main thread used 14% of one core; perf put 90% of it in `Path == Path` compares from `RootItem::at_path` (`crates/cargo-port/src/project/root_item.rs`), about 4 frames each second at about 30 ms each. Notes: `/tmp/claude-1000/-home-natepiano-rust-cargo-liner/4dbdb78e-a83b-4248-b8f9-ff278dcbc60c/scratchpad/cpu_investigation.md`, section "cargo-port: a full frame".
-
-**Constraints:**
-- From phase 2b: a `DiskUsage` reply can change a row from `Visible` to `Deleted` with the byte count still zero (`async_tasks/disk_handlers.rs` `apply_disk_usage` ≈65), so equal bytes do not mean equal visible state. Test that this change draws once and an identical later reply draws nothing.
-- From phase 2d: the row error state for a manifest cargo rejects is a visible input. Test redraws for an unselected row's error, its recovery, and `ProjectDiscovered`.
-- The detail cache owns `Option<DetailCacheKey>` (`tui/panes/data.rs` ≈21). Replace it with a named state that tells cleared details from details current for a key, like the new caches. The APIs that read or write it (`detail_is_current`, `set_detail_stamp`, `clear_detail_data` in `tui/panes/data.rs`) and their tests take and return that state too, so no caller reads a bare absence.
-- Measure idle CPU only after the startup folder walk, watcher registration and reconciliation, and startup enrichment end (the walk alone uses several cores for tens of seconds in a debug build; scan completion, `dispatch.rs` ≈96, comes before the watcher's Ready, `watcher/runtime.rs` ≈427). Add a named log marker or a repeatable procedure for that point and start both 60 s windows after it.
-- The event loop (`tui/terminal/event_loop.rs`, the `loop` in its run function) calls `ensure_visible_rows_cached`, `ensure_disk_cache`, `ensure_fit_widths_cached`, `ensure_detail_cached` and `draw_frame` on every wakeup. It wakes on input, on each background message, on each CPU pane sample, at least each second (`IDLE_HEARTBEAT`, `tui/app/mod.rs` ≈437), and each 80 ms while a lint, clean or run is live (`ANIMATION_TICK`).
-- `ensure_detail_cached` (`tui/app/navigation/cache.rs`) already skips work with a `DetailCacheKey` of the selected row and `scan.generation()`. Use the same pattern: a typed key of the inputs, not a bool flag set by hand at call sites. That generation alone is not a full key: `update_generations_for_msg` (`tui/app/async_tasks/dispatch.rs` ≈32) leaves it unchanged for an unselected project's `DiskUsage`, and `ProjectStorage` (`scan/background.rs` ≈258) does not touch it. Each cache names its own inputs: list rows, disk totals, column widths and storage. A new cache state is an enum (for example `NotComputed` / `Current(key)`), not a bare `Option<Key>`.
-- Phase 2 made the target size arrive by a 30 s disk poll. A poll reply that changes no size must not draw a frame; one that changes an unselected project's size must update its row.
-- A root path lookup already uses `IndexMap::get`; `ProjectList::at_path` and its siblings (`tui/project_list/list.rs` ≈325 onward) still search descendants (members, worktrees, vendored packages) in a line. The index must stay valid after an insert, a replace, a regroup and a rescan (`tui/project_list_state.rs`, `tui/app/tree_mutation.rs`). `compute_disk_cache` (`tui/panes/project_list/disk.rs` ≈172) calls `visible_row_disk_usage` for each visible row, which calls `at_path`, and clones the sorted vector once for each child node. The render calls `at_path` per row (`tui/panes/project_list/tree_rows.rs` ≈393).
-- A visible clock, spinner or animation still moves at its own rate (`App::animation_timeout`, `tui/app/mod.rs` ≈436, 80 ms); a frame for it is a change. The build budget of under 2 frames each second applies while cargo runs in a project and no spinner or animation is on screen.
-- The event loop logs only slow frames today, so frame rate needs a counter of drawn frames (for example a perf-log line each second with the count), not a count of slow-frame lines.
-- From phase 2q: `ProjectListState.expanded` is a `tui_pane::ExpansionModel<ExpandKey>` (`crates/tui_pane/src/expansion.rs`). After `ProjectList::replace_roots_from` swaps the roots and the path index, it must still call `expanded.retain` with the keys of the live expandable rows (project rows and worktree containers), so no stale key stays open.
-- The Deleted mark, dismiss and all row content stay the same; this phase changes when work runs, not what is drawn.
-- Phase 2's full suite on natedev had two tests over one second: `tui::app::tests::interaction::project_list_renders_framework_overflow_affordance` (1.141 s) and `tui::app::tests::interaction::selection_row_highlight_covers_ansi_colored_log_text` (1.081 s). Both draw frames; this phase brings each under one second.
-
-**Spec:**
-1. **Draw on change.** The loop draws a frame only when input, a background message, a timer or an animation changed visible state since the last frame. The 1 s idle heartbeat draws nothing when nothing changed.
-2. **Path index.** `ProjectList` keeps an index from project path to its place in the roots, rebuilt when the roots change, so `at_path` and its siblings, `visible_row_disk_usage` and the render's per-row lookup do no linear search.
-3. **Disk and width caches.** `ensure_disk_cache` and `ensure_fit_widths_cached` recompute only when their inputs change (scan generation, visible rows, the settings they read), keyed like `ensure_detail_cached`. `compute_disk_cache` clones no vector per child node.
-4. **Tests, red first, each under one second:** an idle loop iteration with no change draws no frame; a background message that changes a row draws one; a `DiskUsage` reply for an unselected project with a new size updates its row, one that changes `Visible` to `Deleted` draws once, and an identical later reply draws nothing; the index finds the right project after insert, replace, regroup and rescan; a lookup by path returns the same project as the linear search for roots, members, worktrees and vendored packages; the disk cache does not recompute when nothing changed and does when a disk size changes.
-5. **Live CPU measure:** CPU seconds over 60 s, idle (no input, no cargo running in the scratch roots), for the installed binary and the branch binary, with the method in `docs/cargo-port/as-built/overview.md`, after checking that no natedev build hold is in force. Record both numbers and the frames drawn per second from the frame counter. Then the same with a `cargo build` running in a scratch project and no spinner on screen.
-6. CHANGELOG: one line in `crates/cargo-port/CHANGELOG.md`.
+The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame key or the drawn screen changed since the last frame; the 1 s idle heartbeat draws nothing when nothing changed. A perf-log line (`TUI_PANE_LOG=tui_pane::perf=trace`, `drawn_frame_count`, `drawn_frames=N`) reports the drawn frames each second. `ProjectList` keeps a path index from project path to its place in the roots, rebuilt when the roots change, so `at_path`, its siblings, `visible_row_disk_usage` and the per-row render lookup do no linear search. List rows, disk totals, column widths and details recompute only when their typed keys change (`NotComputed` / `Current(key)`); the detail cache stores `DetailCacheState` (`Cleared` / `Current(key)`). `compute_disk_cache` clones no vector per child node. Measured on release builds, one scratch project: idle 0.267/0.250/0.250% of one core (main 0.217/0.183/0.217%); during a build in the worktree 0.200/0.664/0.348% (main 0.646/0.201/0.439%) at 1.00/1.05/1.33 frames each second.
 
 **Files:**
-- `crates/cargo-port/src/tui/panes/data.rs` and `crates/cargo-port/src/tui/panes/system.rs` — the detail cache state
-- `crates/cargo-port/src/tui/terminal/event_loop.rs` — draw on change
-- `crates/cargo-port/src/tui/app/mod.rs` — idle heartbeat; the two slow interaction tests (≈7200, ≈8238)
-- `crates/cargo-port/src/tui/app/navigation/cache.rs` — cache keys
-- `crates/cargo-port/src/tui/project_list/list.rs` — path index
+- `crates/cargo-port/src/tui/terminal/event_loop.rs`, `event_loop_tests.rs` — draw on change, frame counter, fixed-time test source
+- `crates/cargo-port/src/tui/app/navigation/cache.rs` — typed cache keys
+- `crates/cargo-port/src/tui/project_list/list.rs`, `path_index_tests.rs` — path index and its upkeep tests
 - `crates/cargo-port/src/tui/panes/project_list/disk.rs` — disk cache without per-node clones
-- `crates/cargo-port/src/tui/panes/project_list/tree_rows.rs` — per-row lookup through the index
-- `crates/cargo-port/src/project/root_item.rs` — only if the index needs a change there
-- `crates/cargo-port/src/tui/project_list_state.rs` — index upkeep on change
-- `crates/cargo-port/src/tui/app/tree_mutation.rs` — index upkeep on insert, replace, regroup
-- `crates/cargo-port/src/tui/app/async_tasks/dispatch.rs` — generation inputs for the new keys
-- `crates/cargo-port/src/tui/terminal/event_loop_tests.rs` — new
-- `crates/cargo-port/src/tui/project_list/path_index_tests.rs` — new
+- `crates/cargo-port/src/tui/panes/data.rs` — `DetailCacheState` storage
+
+**Gotchas:** each CPU pane sample changes the screen, so an idle cargo-port draws about 1.15 frames each second. ratatui-core 0.1.2 keeps `Frame::cursor_position` crate-private and has no public cursor visibility. The per-frame candidate render left idle CPU above main's; Phase 3b removes it.
+
+### Phase 3b — A drawn frame renders once, into the real terminal  · status: todo
+
+**Depends on:** Phase 3
+
+#### Work Order
+
+**Goal:** idle CPU on the branch binary is below main's, beyond the spread over 3 pairs.
+
+**Source:** showrunner, 2026-11-03, holding phase 3 (ef8fce7c) before its merge. Release idle, 3 pairs, one scratch project: main 0.217/0.183/0.217% of one core, branch 0.267/0.250/0.250%; the gap is larger than each side's spread. Both draw about 1.15 frames each second at idle, because each CPU pane sample changes the screen.
+
+**Cause (from the code):** `draw_frame` (`tui/terminal/event_loop.rs` ≈275) makes a new `Terminal<TestBackend>` for each frame, renders the whole UI into it, clones its buffer, compares it with the last frame, then copies it into the real terminal. Main renders once into the real terminal. ratatui's `Terminal::draw` already writes only the cells that changed.
+
+**Constraints:**
+- Draw with the public `Terminal::draw` when the frame key says a draw is due; remove the per-frame candidate `Terminal<TestBackend>`. Do not expand the frame key.
+- Classify each frame as `Drawn` or `Unchanged` by its completed buffer and `get_cursor_position` compared with one retained screen. ratatui-core 0.1.2 keeps `Frame::cursor_position` crate-private and has no public cursor visibility, so do not compare visibility and do not patch ratatui.
+- Keep the frame key, the draw-on-change tests, every existing assertion and the F015 fixed-time test source. The frame counter counts only `Drawn` frames.
+- No new allocation for each frame in the draw path.
+
+**Spec:**
+1. One render for each drawn frame, into the real terminal.
+2. **Tests, red first, each under one second:** a drawn frame calls the UI render once; an unchanged frame key renders nothing; the existing event loop tests stay green.
+3. **Live CPU measure** (unit director): 3 idle pairs, main against the branch, release builds, with the method in `docs/cargo-port/as-built/overview.md`.
+
+**Files:**
+- `crates/cargo-port/src/tui/terminal/event_loop.rs` and `crates/cargo-port/src/tui/terminal/event_loop_tests.rs`
 - `crates/cargo-port/CHANGELOG.md`
 
-**Workers:** 1 writer (impl4) owns the implementation and every test file; the unit director owns the live CPU measurements (spec 5).
-- `impl` — specs 1–4 and 6, the frame counter, the two slow interaction tests in `tui/app/mod.rs`, and the tests in `tui/terminal/event_loop_tests.rs` and `tui/project_list/path_index_tests.rs`; hub: `crates/cargo-port/src/tui/project_list/list.rs`.
+**Workers:** 1 writer (impl4) owns the code and the tests; the unit director owns the live measure.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; the idle CPU of spec 5 under 1% of one core on the branch binary; during the build, under 3% of one core and under 2 frames each second with no spinner on screen; the two interaction tests each under one second. The checkpoint adds a Change-Review line.
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; branch idle CPU below main's beyond the spread over 3 pairs.
+
+### Phase 3c — The detail cache API takes a named state  · status: todo
+
+**Depends on:** Phase 3
+
+#### Work Order
+
+**Goal:** no caller of the detail cache reads or passes a bare absence; cleared details and details current for a key are two named states.
+
+**Source:** phase 3 review. Phase 3's Constraints required the detail cache APIs and their tests to take and return the named state. Phase 3 changed the storage to `DetailCacheState` (`tui/panes/data.rs` ≈68, `Cleared` / `Current(key)`), but `detail_is_current`, `set_detail_stamp` and `Panes::clear_detail_data` still take `Option<DetailCacheKey>`, and `impl From<Option<DetailCacheKey>> for DetailCacheState` converts at the boundary.
+
+**Constraints:**
+- The desired state comes from the selection (`tui/app/navigation/cache.rs` ≈80–109). No selection is its own named outcome, not `None`; convert once where the selection is read.
+- Remove `impl From<Option<DetailCacheKey>> for DetailCacheState` when no caller needs it.
+- Behavior stays the same; this phase changes types only.
+
+**Spec:**
+1. `detail_is_current`, `set_detail_stamp` and `Panes::clear_detail_data` take the named state. `repo_handlers.rs` ≈650 and `navigation/cache.rs` pass a named state.
+2. **Tests, each under one second:** the existing detail cache tests in `tui/panes/system.rs` use the named states; add one for no selection and one for cleared details of a selected row.
+
+**Files:**
+- `crates/cargo-port/src/tui/panes/data.rs` and `crates/cargo-port/src/tui/panes/system.rs`
+- `crates/cargo-port/src/tui/app/navigation/cache.rs`
+- `crates/cargo-port/src/tui/app/async_tasks/repo_handlers.rs`
+
+**Workers:** 1 writer owns the code and the tests.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; no `Option<DetailCacheKey>` in a detail cache API.
 
 ### Phase 4 — A Deleted row stays on the list and shows its mark  · status: todo
 
@@ -321,10 +371,10 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 - `crates/cargo-port/src/tui/app/async_tasks/deleted_rescan_tests.rs` — new; tester
 - `crates/cargo-port/src/tui/terminal/no_color_tests.rs` — new; tester
 - `crates/cargo-port/src/tui/project_list/` — the Deleted entry state, if the root type holds it; the named indexed lookup result and its tests in `path_index_tests.rs`
-- `crates/cargo-port/src/tui/terminal/` — NO_COLOR attribute output
+- `crates/cargo-port/src/tui/terminal/` — NO_COLOR attribute output; not event_loop.rs or event_loop_tests.rs, which Phase 3b owns
 - `crates/cargo-port/src/tui/sccache/render.rs` — popup width
-- `crates/cargo-port/src/tui/panes/` — the Git pane value fit, once the cause is found
-- `crates/cargo-port/CHANGELOG.md`
+- `crates/cargo-port/src/tui/panes/` — the Git pane value fit, once the cause is found; not data.rs or system.rs, which Phase 3c owns
+- `crates/cargo-port/CHANGELOG.md` — add the lines after Phase 3b's checkpoint
 
 **Workers:** 1 writer + 1 tester.
 - `impl` — specs 1–4 and 7; hub: `crates/cargo-port/src/tui/app/async_tasks/tree.rs`. Not the tester's files.
@@ -334,7 +384,7 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: todo
 
-**Depends on:** Phase 3
+**Depends on:** Phase 3b (both edit `tui/terminal/event_loop.rs`)
 
 #### Work Order
 
@@ -343,7 +393,9 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 **Source:** phase 3 review (event_loop.rs ≈285): on a CPU-only wake, the frame check allocates a backend, renders the whole UI to a candidate buffer and clones it. Phase 3's release idle measure (3 pairs, one scratch project): main 0.217/0.183/0.217% of one core, branch 0.267/0.250/0.250%. The median change (+0.033 points) is inside main's spread (0.034), so the cause is not proven. Astra's advice: `/tmp/claude/astra/20261102T204624Z-1292297/review.md`.
 
 **Constraints:**
-- Find the cost first. Measure one CPU-only wake on the branch (render calls, time) before any change. Repair only when 3 live pairs show a change above the spread.
+- Phase 3b removes the per-frame candidate render, allocation and copy that the source above names. Measure again after Phase 3b: 3 idle pairs, main's release build against the branch's, and one CPU-only wake on the branch (render calls, time).
+- Build the partial render only when those 3 pairs show branch idle CPU above main's beyond the spread. Otherwise the phase completes with no code change: record the pairs in its As-built and close it.
+- Full and CPU-only renders share one render setup in `tui/render.rs` (`render_tiled_panes` ≈144 and its render inputs). The event loop does not copy the render-context or pane-chrome rules.
 - Phase 3 already makes an identical CPU sample return false in `CpuPane::tick` (`tui/panes/cpu/pane.rs` ≈122).
 - A partial render applies only to an isolated CPU change with stable geometry. Do a full render for the first frame, a layout change (the core count changes the layout, `render.rs` ≈169), any other pending change, and an active overlay or toast.
 - For a partial render, keep the last frame's screen, clear the CPU rect, and render it through `render_panes` with a CPU-only layout; the framework draws borders and dividers (`tui_pane` `framework/render.rs` ≈122). Keep the other cells, the cursor and the equality check.
@@ -356,6 +408,7 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 **Files:**
 - `crates/cargo-port/src/tui/terminal/event_loop.rs` and `event_loop_tests.rs` — the CPU-only frame path and its tests
 - `crates/cargo-port/src/tui/panes/cpu/` — the CPU pane render, if needed
+- `crates/cargo-port/src/tui/render.rs` — the render setup shared by full and CPU-only renders
 - `crates/cargo-port/CHANGELOG.md`
 
 **Workers:** 1 writer (impl4) owns the code and the tests; the unit director owns the live measure.
