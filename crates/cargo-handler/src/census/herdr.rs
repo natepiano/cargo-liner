@@ -10,10 +10,14 @@ use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::mpsc::Receiver;
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::SyncSender;
 use std::sync::mpsc::{self};
 use std::thread;
+use std::time::Instant;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -33,8 +37,10 @@ use super::classify;
 use super::classify::CodexSessionLink;
 use super::classify::ProcessEntry;
 use crate::constants::HERDR_ANSWER_LIMIT;
+use crate::constants::HERDR_INITIAL_TIMEOUT;
 use crate::constants::HERDR_READ_TIMEOUT;
 use crate::constants::HERDR_SOCKET_VARIABLE;
+use crate::constants::HERDR_SUBSCRIPTION_RETRY;
 
 /// Environment discovery is specific to one process lifetime.
 #[derive(Clone, Debug)]
@@ -126,17 +132,21 @@ enum NameWorker {
     Running {
         send:    SyncSender<NameWork>,
         receive: Receiver<NameAnswer>,
+        inputs:  Arc<Mutex<Option<NameInputs>>>,
     },
     Unavailable,
 }
 
 #[derive(Debug)]
+struct NameInputs {
+    generation: u64,
+    processes:  Vec<ProcessEntry>,
+    links:      HashMap<u32, CodexSessionLink>,
+}
+
+#[derive(Debug)]
 enum NameWork {
-    Processes {
-        generation: u64,
-        processes:  Vec<ProcessEntry>,
-        links:      HashMap<u32, CodexSessionLink>,
-    },
+    Processes,
     CheckPaneEvents,
 }
 
@@ -182,22 +192,22 @@ impl HerdrNames {
         {
             self.worker = NameWorker::start();
         }
-        if let NameWorker::Running { send, .. } = &self.worker {
+        if let NameWorker::Running { send, inputs, .. } = &self.worker {
             if clients != self.clients {
-                if send
-                    .try_send(NameWork::Processes {
-                        generation: self.generation + 1,
+                if let Ok(mut latest) = inputs.try_lock() {
+                    self.generation += 1;
+                    *latest = Some(NameInputs {
+                        generation: self.generation,
                         processes:  processes.to_vec(),
                         links:      links.clone(),
-                    })
-                    .is_ok()
-                {
-                    self.generation += 1;
+                    });
                     self.answers.clear();
                     self.clients = clients;
                     if matches!(self.initial, InitialAnswer::NotRequested) {
                         self.initial = InitialAnswer::Pending;
                     }
+                    // Any queued signal makes the worker take the latest snapshot.
+                    let _ = send.try_send(NameWork::Processes);
                 }
             } else if clients.iter().any(|c| c.need == NameNeed::PaneName) {
                 let _ = send.try_send(NameWork::CheckPaneEvents);
@@ -232,11 +242,12 @@ impl HerdrNames {
         }
     }
 
-    /// A one-shot probe waits outside the scan stage for its initial answer.
+    /// A one-shot probe gives the worker a bounded time for its initial answer.
     pub(super) fn finish_initial(&mut self, links: &mut HashMap<u32, CodexSessionLink>) {
         if matches!(self.initial, InitialAnswer::Pending)
             && let NameWorker::Running { receive, .. } = &self.worker
-            && let Ok(answers) = receive.recv()
+            && let Ok(answers) = receive.recv_timeout(HERDR_INITIAL_TIMEOUT)
+            && answers.generation == self.generation
         {
             self.initial = InitialAnswer::Ready;
             self.answers = answers
@@ -253,6 +264,8 @@ impl NameWorker {
     fn start() -> Self {
         let (send, work) = mpsc::sync_channel(1);
         let (answers, receive) = mpsc::channel();
+        let inputs = Arc::new(Mutex::new(None::<NameInputs>));
+        let latest = Arc::clone(&inputs);
         let launched = thread::Builder::new()
             .name("herdr-names".into())
             .spawn(move || {
@@ -260,27 +273,21 @@ impl NameWorker {
                 let mut processes = Vec::new();
                 let mut links = HashMap::new();
                 let mut generation = 0;
-                while let Ok(work) = work.recv() {
-                    match work {
-                        NameWork::Processes {
-                            generation: current_generation,
-                            processes: current,
-                            links: current_links,
-                        } => {
-                            generation = current_generation;
-                            processes = current;
-                            links = current_links;
-                        },
-                        NameWork::CheckPaneEvents => {
-                            if !reader.events.values_mut().any(PaneEvents::changed) {
-                                continue;
-                            }
-                            for link in links.values_mut() {
-                                if matches!(link, CodexSessionLink::HerdrName(_)) {
-                                    *link = CodexSessionLink::NoMatch;
-                                }
-                            }
-                        },
+                while let Ok(_) | Err(RecvTimeoutError::Timeout) =
+                    work.recv_timeout(HERDR_SUBSCRIPTION_RETRY)
+                {
+                    let current = latest.lock().ok().and_then(|mut inputs| inputs.take());
+                    if let Some(current) = current {
+                        generation = current.generation;
+                        processes = current.processes;
+                        links = current.links;
+                    } else if !reader.check_events() {
+                        continue;
+                    }
+                    for link in links.values_mut() {
+                        if matches!(link, CodexSessionLink::HerdrName(_)) {
+                            *link = CodexSessionLink::NoMatch;
+                        }
                     }
                     reader.refresh(&processes, &mut links);
                     let names = links
@@ -298,7 +305,11 @@ impl NameWorker {
                 }
             });
         if launched.is_ok() {
-            Self::Running { send, receive }
+            Self::Running {
+                send,
+                receive,
+                inputs,
+            }
         } else {
             Self::Unavailable
         }
@@ -309,7 +320,7 @@ impl NameWorker {
 #[derive(Debug)]
 enum PaneEvents {
     Connected { stream: UnixStream, bytes: Vec<u8> },
-    Unavailable,
+    Unavailable { retry_at: Instant },
 }
 
 impl PaneEvents {
@@ -339,10 +350,27 @@ impl PaneEvents {
             stream.set_nonblocking(true).map_err(|_| ())?;
             Ok(stream)
         };
-        open().map_or(Self::Unavailable, |stream| Self::Connected {
-            stream,
-            bytes: Vec::new(),
-        })
+        open().map_or_else(
+            |()| Self::unavailable(),
+            |stream| Self::Connected {
+                stream,
+                bytes: Vec::new(),
+            },
+        )
+    }
+
+    fn unavailable() -> Self {
+        Self::Unavailable {
+            retry_at: Instant::now() + HERDR_SUBSCRIPTION_RETRY,
+        }
+    }
+
+    fn retry(&mut self, path: &Path) -> bool {
+        if matches!(self, Self::Unavailable { retry_at } if Instant::now() >= *retry_at) {
+            *self = Self::subscribe(path);
+            return matches!(self, Self::Connected { .. });
+        }
+        false
     }
 
     fn changed(&mut self) -> bool {
@@ -353,18 +381,18 @@ impl PaneEvents {
         loop {
             match stream.read(&mut buffer) {
                 Ok(0) => {
-                    *self = Self::Unavailable;
+                    *self = Self::unavailable();
                     return true;
                 },
                 Ok(count) => bytes.extend_from_slice(&buffer[..count]),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => break,
                 Err(_) => {
-                    *self = Self::Unavailable;
+                    *self = Self::unavailable();
                     return true;
                 },
             }
             if bytes.len() as u64 >= HERDR_ANSWER_LIMIT {
-                *self = Self::Unavailable;
+                *self = Self::unavailable();
                 return true;
             }
         }
@@ -416,6 +444,15 @@ struct ForegroundProcess {
 }
 
 impl HerdrReader {
+    fn check_events(&mut self) -> bool {
+        let mut changed = false;
+        for (path, events) in &mut self.events {
+            changed |= events.changed();
+            changed |= events.retry(path);
+        }
+        changed
+    }
+
     /// Do not read herdr while every interactive process has a thread link.
     pub(super) fn refresh(
         &mut self,
@@ -452,7 +489,8 @@ impl HerdrReader {
         for path in &sockets {
             self.events
                 .entry(path.clone())
-                .or_insert_with(|| PaneEvents::subscribe(path));
+                .or_insert_with(|| PaneEvents::subscribe(path))
+                .retry(path);
         }
         self.refresh_from(processes, links, &sockets, request);
     }
@@ -469,6 +507,12 @@ impl HerdrReader {
         let mut names: HashMap<u32, Vec<String>> = HashMap::new();
         let mut present = HashSet::new();
         for socket in sockets {
+            if matches!(
+                self.events.get(socket),
+                Some(PaneEvents::Unavailable { .. })
+            ) {
+                continue;
+            }
             let Ok(answer) = read(socket, "session.snapshot", &json!({})) else {
                 continue;
             };
@@ -562,13 +606,8 @@ fn pane_name(
                 .map(|tab| tab.label.as_str())
                 .filter(|name| !name.trim().is_empty())
         })
-        .or(title)
-        .map(|name| {
-            name.split_once(" | ")
-                .map_or(name, |(name, _)| name)
-                .trim()
-                .to_owned()
-        })
+        .or_else(|| title.map(|name| name.split_once(" | ").map_or(name, |(name, _)| name)))
+        .map(|name| name.trim().to_owned())
         .filter(|name| !name.is_empty())
 }
 

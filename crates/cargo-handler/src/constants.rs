@@ -601,7 +601,11 @@ pub(crate) const REVIEW_JOB_HEADING: &str = "# ";
 
 /// Herdr exports its API address to pane processes.
 pub(crate) const HERDR_SOCKET_VARIABLE: &str = "HERDR_SOCKET_PATH";
-/// Bound the silent fallback when the herdr API does not answer.
+/// Bound the initial probe wait for the background worker.
+pub(crate) const HERDR_INITIAL_TIMEOUT: Duration = Duration::from_millis(100);
+/// The worker retries failed subscriptions without blocking a scan.
+pub(crate) const HERDR_SUBSCRIPTION_RETRY: Duration = Duration::from_millis(500);
+/// Bound each herdr API read and write.
 pub(crate) const HERDR_READ_TIMEOUT: Duration = Duration::from_millis(100);
 /// Bound each herdr API answer.
 pub(crate) const HERDR_ANSWER_LIMIT: u64 = 4 * 1024 * 1024;

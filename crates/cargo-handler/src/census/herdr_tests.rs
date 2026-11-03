@@ -2,6 +2,7 @@
 #![expect(clippy::expect_used, reason = "tests use isolated API fixtures")]
 
 use std::os::unix::net::UnixListener;
+use std::time::Duration;
 
 use super::*;
 use crate::census::account::ConfigHome;
@@ -96,7 +97,7 @@ fn a_herdr_name_precedes_the_pid_and_a_label_precedes_the_title() {
         }
         Ok(value)
     });
-    assert_eq!(name(&links[&2]), "pane name");
+    assert_eq!(name(&links[&2]), "pane name | user");
 }
 
 #[test]
@@ -184,16 +185,32 @@ fn a_scan_uses_cached_names_without_waiting_for_the_api() {
     let (processes, mut links, _) = fixture();
     let (send, work) = mpsc::sync_channel(1);
     let (answers, receive) = mpsc::channel();
+    let inputs = Arc::new(Mutex::new(None::<NameInputs>));
     let mut names = HerdrNames {
-        worker: NameWorker::Running { send, receive },
+        worker: NameWorker::Running {
+            send,
+            receive,
+            inputs: Arc::clone(&inputs),
+        },
         ..HerdrNames::default()
     };
     names.refresh(&processes, &mut links);
     assert_eq!(name(&links[&2]), "pid 2", "the API has not answered");
     assert!(matches!(
         work.recv().expect("new process request"),
-        NameWork::Processes { .. }
+        NameWork::Processes
     ));
+    let (snapshot_processes, snapshot_generation) = inputs
+        .lock()
+        .expect("shared inputs")
+        .as_ref()
+        .map(|snapshot| (snapshot.processes.clone(), snapshot.generation))
+        .expect("process snapshot");
+    assert_eq!(
+        snapshot_processes, processes,
+        "the signal supplies every process"
+    );
+    assert_eq!(snapshot_generation, names.generation);
     let generation = names.generation;
     answers
         .send(NameAnswer {
@@ -249,15 +266,31 @@ fn the_initial_probe_uses_the_background_answer() {
     let (processes, mut links, _) = fixture();
     let (send, work) = mpsc::sync_channel(1);
     let (answers, receive) = mpsc::channel();
+    let inputs = Arc::new(Mutex::new(None::<NameInputs>));
     let mut names = HerdrNames {
-        worker: NameWorker::Running { send, receive },
+        worker: NameWorker::Running {
+            send,
+            receive,
+            inputs: Arc::clone(&inputs),
+        },
         ..HerdrNames::default()
     };
     names.refresh(&processes, &mut links);
     assert!(matches!(
         work.recv().expect("initial request"),
-        NameWork::Processes { .. }
+        NameWork::Processes
     ));
+    let (snapshot_processes, snapshot_generation) = inputs
+        .lock()
+        .expect("shared inputs")
+        .as_ref()
+        .map(|snapshot| (snapshot.processes.clone(), snapshot.generation))
+        .expect("process snapshot");
+    assert_eq!(
+        snapshot_processes, processes,
+        "the signal supplies every process"
+    );
+    assert_eq!(snapshot_generation, names.generation);
     let generation = names.generation;
     answers
         .send(NameAnswer {
@@ -275,4 +308,156 @@ fn the_initial_probe_uses_the_background_answer() {
     assert_eq!(name(&links[&2]), "morty");
     names.finish_initial(&mut links);
     assert_eq!(name(&links[&2]), "morty", "a second read does not wait");
+}
+
+#[test]
+fn an_initial_probe_finishes_when_the_worker_never_answers() {
+    let (processes, mut links, _) = fixture();
+    let (send, work) = mpsc::sync_channel(1);
+    let (answers, receive) = mpsc::channel();
+    let mut names = HerdrNames {
+        worker: NameWorker::Running {
+            send,
+            receive,
+            inputs: Arc::default(),
+        },
+        ..HerdrNames::default()
+    };
+    names.refresh(&processes, &mut links);
+    let (finished, result) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        names.finish_initial(&mut links);
+        finished.send(name(&links[&2])).expect("probe result");
+    });
+    let received = result.recv_timeout(Duration::from_millis(250));
+    drop(answers);
+    drop(work);
+    worker.join().expect("probe thread");
+    assert_eq!(
+        received.expect("a stalled worker cannot stop the probe"),
+        "pid 2"
+    );
+}
+
+#[test]
+fn a_failed_subscription_retries_when_the_service_returns() {
+    let directory = tempfile::tempdir().expect("socket directory");
+    let path = directory.path().join("herdr.sock");
+    let (processes, mut links, _) = fixture();
+    let mut reader = HerdrReader::default();
+    reader
+        .addresses
+        .insert((2, 20), HerdrAddress::Socket(path.clone()));
+    reader
+        .events
+        .insert(path.clone(), PaneEvents::subscribe(&path));
+    let listener = UnixListener::bind(&path).expect("returned service");
+    listener.set_nonblocking(true).expect("nonblocking service");
+    // The retry deadline passes before the next worker refresh.
+    reader.events.insert(
+        path.clone(),
+        PaneEvents::Unavailable {
+            retry_at: Instant::now(),
+        },
+    );
+    links.insert(2, CodexSessionLink::NoMatch);
+    reader.refresh(&processes, &mut links);
+    assert!(matches!(
+        reader.events.get(&path),
+        Some(PaneEvents::Connected { .. })
+    ));
+}
+
+#[test]
+fn a_failed_event_connection_discards_its_old_names() {
+    let (processes, mut links, sockets) = fixture();
+    let (stream, peer) = UnixStream::pair().expect("event connection");
+    stream.set_nonblocking(true).expect("nonblocking reader");
+    let mut reader = HerdrReader::default();
+    reader.events.insert(
+        PathBuf::from("fixture.sock"),
+        PaneEvents::Connected {
+            stream,
+            bytes: Vec::new(),
+        },
+    );
+    drop(peer);
+    assert!(reader.events.values_mut().any(PaneEvents::changed));
+    reader.refresh_from(&processes, &mut links, &sockets, answer);
+    assert_eq!(
+        name(&links[&2]),
+        "pid 2",
+        "a failed subscription cannot preserve a name"
+    );
+}
+
+#[test]
+fn only_terminal_titles_lose_the_host_suffix() {
+    let tabs = vec![Tab {
+        tab_id: "tab".into(),
+        label:  "tab name | user".into(),
+    }];
+    assert_eq!(
+        pane_name(Some("pane name | user"), Some("title | user"), "tab", &tabs),
+        Some("pane name | user".into())
+    );
+    assert_eq!(
+        pane_name(None, Some("title | user"), "tab", &tabs),
+        Some("tab name | user".into())
+    );
+    assert_eq!(
+        pane_name(None, Some("title | user"), "absent", &tabs),
+        Some("title".into())
+    );
+}
+
+#[test]
+fn a_full_queue_keeps_the_latest_snapshot_without_repeated_copies() {
+    let (mut processes, mut links, _) = fixture();
+    let (send, work) = mpsc::sync_channel(1);
+    let (answers, receive) = mpsc::channel();
+    let inputs = Arc::new(Mutex::new(None::<NameInputs>));
+    let mut names = HerdrNames {
+        worker: NameWorker::Running {
+            send,
+            receive,
+            inputs: Arc::clone(&inputs),
+        },
+        ..HerdrNames::default()
+    };
+    names.refresh(&processes, &mut links);
+    processes.push(process(3, 1, 30, "codex"));
+    links.insert(3, CodexSessionLink::NoMatch);
+    names.refresh(&processes, &mut links);
+    let pointer = inputs
+        .lock()
+        .expect("latest snapshot")
+        .as_ref()
+        .expect("pending inputs")
+        .processes
+        .as_ptr();
+    names.refresh(&processes, &mut links);
+    let (process_count, generation, latest_pointer) = inputs
+        .lock()
+        .expect("latest snapshot")
+        .as_ref()
+        .map(|latest| {
+            (
+                latest.processes.len(),
+                latest.generation,
+                latest.processes.as_ptr(),
+            )
+        })
+        .expect("pending inputs");
+    assert_eq!(process_count, 3, "a full queue retains the new process");
+    assert_eq!(generation, names.generation);
+    assert_eq!(
+        latest_pointer, pointer,
+        "unchanged clients do not copy the snapshot"
+    );
+    assert!(
+        matches!(work.try_recv(), Ok(NameWork::Processes)),
+        "one small signal covers all updates"
+    );
+    drop(answers);
 }

@@ -264,8 +264,8 @@ impl LocalScanner {
                 &self.account_labels,
             )
         });
-        self.attach_codex_names(&mut rows);
         if matches!(self.publication, LocalPublication::FirstAnswerPending) {
+            self.attach_codex_names(&mut rows);
             publish(ScanStage::Classified, rows.clone());
         }
         startup_log::startup_stage("details", || read_details(self, &mut rows));
