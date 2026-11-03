@@ -23,13 +23,7 @@
 
 | Unit | Plan | Worktree | Branch | Port | Owns |
 | --- | --- | --- | --- | --- | --- |
-| cleanup-unit | `docs/cargo-port/as-built/targets-pane.md` (as-built; plan done) | removed 2026-10-06 | `cleanup/running` (deleted) | — | `crates/cargo-port`, `docs/cargo-port` |
-| cargo-tile | `docs/cargo-tile/as-built/summary-depth.md` (as-built; plan done) | removed 2026-10-06 | `enh/cargo-tile` (deleted) | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
-| berth-flake-unit | `docs/cargo-berth/as-built/test-git-and-discovery.md` (as-built; plan done) | removed 2026-10-06 | `fix/berth-flake` (deleted) | — | `crates/cargo-berth`, `crates/cargo-berth-test-support`, `docs/cargo-berth` |
-| tile-mem-unit | `docs/cargo-tile/as-built/memory-column.md` (as-built; plan done) | removed 2026-10-08 | `main-tile-mem` (deleted) | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
 | tile-unit | docs/cargo-port/remove-running-section-tile-fixes.md | /home/natepiano/rust/cargo-liner-tile | remove-running-section-tile | — | crates/tui_pane, crates/cargo-tile, crates/cargo-handler, docs/cargo-tile |
-| berth-hook-hang-unit | `docs/cargo-berth/as-built/hook-cost.md` (as-built; plan done) | removed 2026-10-14 | `remove-running-section-berth-hook-hang` (deleted) | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
-| berth-ceiling-unit | `docs/cargo-berth/as-built/test-git-and-discovery.md` (as-built; plan done) | removed 2026-10-14 | `remove-running-section-berth-ceiling` (deleted) | — | crates/cargo-berth/ |
 | handler-unit | docs/cargo-port/remove-running-section-handler-footer-colors.md | /home/natepiano/rust/cargo-liner-handler | remove-running-section-handler | — | crates/cargo-handler/, crates/tui_pane/ (pane/frame.rs, tiles/draw.rs, CHANGELOG; --before tile-fixes) |
 | berth-unit | (retired 2026-10-31, worktree removed, session 0a713a32-389e-446b-a7bc-5ab7a753b383) docs/cargo-port/remove-running-section-berth-open.md (phases 49 and 50 not built; as-built folded) | /home/natepiano/rust/cargo-liner-berth | remove-running-section-berth | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
 | review-unit | (retired 2026-10-19, worktree removed) docs/cargo-port/remove-running-section-review.md | /home/natepiano/rust/cargo-liner-review | remove-running-section-review | — | — |
