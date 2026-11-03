@@ -1462,24 +1462,38 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - The first code review found 5 defects, 2 blocking (a blocking probe, a stale subscription, the title cut, a copy of each process, names attached more than once). Repair 1 fixed all five.
 - A `Change-Review:` text must not hold a pipe character. An empty checkpoint carried the corrected line.
 
-### Phase 61 — The accounts table drops the read column  · status: todo
+### Phase 61 — The handler accounts table matches the accounts board  · status: todo
 
-**Depends on:** none (showrunner approved as next, 2026-11-02).
+**Depends on:** the accounts-unit change that gives each role on an account its own row, on main. Runs first when the cargo pause lifts and that hash is on main. If the pause lifts first, Phase 57c runs, and this phase starts beside it when the hash arrives (showrunner, 2026-11-03).
 
 #### Work Order
 
-**Goal:** cargo-handler's accounts table matches the accounts board, which drops its read column (accounts-unit 101s). The JSON keeps `read_at` and `read_ok`.
+**Goal:** cargo-handler's accounts table matches the accounts board: no read column, the busy, shell, idle and total counts for each role, and one row for each role on an account.
+
+**Source:**
+- The user, 2026-11-03, via accounts-unit: "when will handler pick up the new accounts board with the multiple columns?" The board columns came from accounts-unit phases 101m, 101o, 101s and 101u (on main 2026-11-02 13:37).
+- accounts-unit, 2026-11-03: each role on an account gets its own row. The first row is the same as today; the next rows show only the role and its counts.
+- Phase 44 is folded in (showrunner, 2026-11-03). Its source: the user, direct to the handler unit, 2026-10-28 ≈23:40 EDT: "need to add an enhancement to show the count of sessions for each account in the accounts summary table". Unit session `phases/44/source.md`.
+
+**State model:**
+1. The accounts JSON owns each account and, per account, each role with its busy, shell, idle and total counts. cargo-handler keeps no count of its own.
+2. One account gives one first row (the account values, as today) and one more row for each further role. A role row draws only the role and its counts.
+3. A role that leaves the JSON removes its row. An account with no roles draws only its first row.
+4. Selection and sort act on accounts. Role rows stay under their account.
 
 **Spec:**
-1. Remove `AccountsColumn::Read`, its header, its sort, and `ACCOUNT_READ_DOT` if nothing else uses it.
-2. Update the column tests in `summary/accounts_tests.rs` and `summary/accounts_header_sort_tests.rs`; each Assertion-Change line names the removed column.
-3. CHANGELOG: one Changed line in cargo-handler.
+1. Read the counts from the JSON keys that accounts-unit names. Never parse the board text.
+2. Remove `AccountsColumn::Read`, its header, its sort, and `ACCOUNT_READ_DOT` if nothing else uses it. The JSON keeps `read_at` and `read_ok`.
+3. Add the busy, shell, idle and total columns. The total is the session count that Phase 44 asked for.
+4. Draw the role rows per State model items 2 to 4. The fit drops optional columns as today, before it wraps.
+5. Tests under 1 s: the column set; role rows for one and for three roles; a role that leaves; sort keeps role rows under their account; a narrow width drops optional columns. Each Assertion-Change line names the removed or added column.
+6. CHANGELOG: one Changed line in cargo-handler.
 
-**Files:** `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/constants.rs`, the accounts tests, `crates/cargo-handler/CHANGELOG.md`.
+**Files:** `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/constants.rs`, `crates/cargo-handler/src/sort.rs`, the accounts reader in `crates/cargo-handler/src/census/`, the accounts tests, `crates/cargo-handler/CHANGELOG.md`.
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean. This change is visible: shots of the accounts table, a design check line, and a Change-Review line.
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: shots of the accounts table on natedev with live counts, a design check line, and a Change-Review line.
 
 ### Phase 45 — Handler rows expand and collapse like the cargo-port project list  · status: done
 
@@ -1961,45 +1975,6 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 **Workers:** 1 writer.
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: captures in a dark and a light theme. The checkpoint adds ONE Change-Review line covering C113 and C115: the ramp reads at a glance, no red, no reset color matches a session color, dark and light themes.
-
-### Phase 44 — The accounts summary shows a session count per account  · status: todo
-
-**Depends on:** Phase 43
-
-#### Work Order
-
-**Goal:** the accounts table in the summary has a `sessions` column that shows, for each account, how many live sessions run on it.
-
-**Source:** the user, direct to the handler unit, 2026-10-28 ≈23:40 EDT: "need to add an enhancement to show the count of sessions for each account in the accounts summary table". Unit session `phases/44/source.md`.
-
-**Constraints from prior phases:**
-- `render/mod.rs` ≈595 can build more than one `SummaryLayout` in a frame, and ≈665 builds a new `SummaryFrame` per request: compute `AccountSessionCounts` once per frame with the frame's placement and pass it to every summary allocation. Count logical rows by the membership rules at `agent_cell.rs` ≈1428, ≈1935, not painted rows.
-- Columns: `AccountsColumn` (`sort.rs` ≈172) with `ALL`, `index` and `header` (`"account", "role", "left", "resets", "credits", "enabled", "in use", "read"`). `summary/accounts.rs`: `compare_accounts` (≈99) sorts by each column, `values` (≈371) builds the cell text, `AccountsFit::for_width` (≈431) fits widths, the always-kept columns are Account, Roles and WeeklyLeft (≈468), and `AccountsColumnDrop::ORDER` (≈487) is InUse, Enabled, Read, Credits. Phase 28 pins the heading and column headers; phase 32 keeps main's table height.
-- `AccountUsage` (`census/accounts.rs` ≈86) comes from `accounts.py`; Rust does not infer its roles or filter its rows. The count comes from the census, not from `accounts.py`.
-- `SummaryFrame` (`summary/mod.rs` ≈213) holds `machines`, `placement` and `accounts`; `SummaryLayout::new` (≈438) calls `accounts::build_lines`. A row's account is `AgentRow.account` / `ChildRow.account` (`census/mod.rs` ≈323, ≈459), an `Account` whose label (`AccountHome::label`) is the label the tiles show; shells and subagents are `Account::Unrecorded`.
-- Do not count through `TreeLine::account` (`agent_cell.rs` ≈1153). It gives the parent's account to unrecorded shell and subagent rows, for display only.
-- Phase 43 changes age text in summary fixtures; this phase runs after it so the summary fixture text changes once each.
-
-**Spec:**
-1. A session is a logical member: an eligible session identity after placement, folding and hiding, on any shown machine. Claude sessions, Codex sessions and Codex threads are eligible; shells and subagents are not and do not count (unit director's call; a one-line revert if the showrunner counts only top-level agents). Count each identity once, by its own recorded `Account` home with that label. A folded or hidden identity does not count.
-2. `AccountsColumn::Sessions`, header `sessions`, drawn after `role`; the value is the count, `0` for an account with none. Header click sorts by it like the other number columns. It drops for width after Credits (`AccountsColumnDrop` gains `Sessions` as the last entry).
-3. The count is computed once per frame into a typed map (for example `AccountSessionCounts`) passed to `build_lines`; no census walk inside a cell draw.
-4. Tests, red first, in `summary/accounts_tests.rs`: a census-only count change while the account reading is cached; one managed thread shown by more than one source row counts once; counts stay the same across scrolling and width changes; two accounts with 3 and 0 drawn sessions show `3` and `0`; a shell or subagent child adds nothing; a folded dispatch shell adds nothing; in `summary/accounts_header_sort_tests.rs` a click on `sessions` sorts by count; a narrow width drops `sessions` after `credits`. Update accounts fixtures whose text changes (`render/accounts_grid_tests.rs`, `render/pinned_accounts_tests.rs` and any other the suite names). Each test under one second.
-5. CHANGELOG: one line under Added.
-
-**Files:**
-- `crates/cargo-handler/src/sort.rs` — `AccountsColumn::Sessions`
-- `crates/cargo-handler/src/summary/accounts.rs` — values, sort, fit and drop order
-- `crates/cargo-handler/src/summary/mod.rs` — the per-frame counts
-- `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`, `crates/cargo-handler/src/render/accounts_grid_tests.rs`, `crates/cargo-handler/src/render/pinned_accounts_tests.rs` — tests and fixture text
-- `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/render/mod.rs` — one count snapshot per frame (impl slot)
-
-**Workers:** 1 writer + 1 tester.
-- `impl` — `sort.rs`, `summary/accounts.rs`, `summary/mod.rs`, fixture updates in `render/` and the CHANGELOG; hub: `crates/cargo-handler/src/summary/accounts.rs`.
-- `test` — opens as impl: no `tests/` lane; it writes the tests in `summary/accounts_tests.rs` and `summary/accounts_header_sort_tests.rs` from this Spec.
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of the accounts table on natedev shows each account's session count, and the count matches the drawn rows for one account. The checkpoint adds a Change-Review line.
 
 ### Phase 59 — Shift-left and shift-right move the tile focus  · status: todo
 
