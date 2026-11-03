@@ -1497,6 +1497,74 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: shots of the accounts table on natedev with live counts, a design check line, and a Change-Review line.
 
+### Phase 62 — A worker that waits on a detached run shows in its unit's tree  · status: todo
+
+**Depends on:** none. Runs after Phase 61 (unit director, 2026-11-03: a wrong status ranks above the click feature in Phase 63).
+
+#### Work Order
+
+**Goal:** a unit whose Codex worker waits on a detached `verify.sh` run shows that worker row with `waiting` or the gate step, not a bare `idle` tree.
+
+**Source:** the user, via the hana showrunner and the showrunner, 2026-11-03: cargo-handler shows every session in the hana tree as `idle`, also fastest and research, which have open phases with Codex workers. fastest's nextest step waits in the build memory queue.
+
+**Cause (read from main ff9c2b2fc and the live machine, 2026-11-03):**
+1. A Claude row takes its status from `~/.claude/sessions/<pid>.json` (`idle`, `busy`, `shell`). `idle` wins over the transcript (`scan.rs` `attach_activity_and_names`). This is correct: the director is between turns.
+2. A Codex worker row exists only while its launcher (`implement.sh`) runs below the unit, or while an app server holds its rollout open. A worker that starts a detached run ends its turn, so its launcher exits and the app server unloads the thread (`thread_unload_delay_secs=0`).
+3. The detached run is `mesh_runs.py supervise` under `systemd --user`, not below the unit's pid. Its record names the worker's thread id, and `VerificationProcesses::run` gives that activity only to a child row with the same thread id. With no row, the run shows nowhere.
+4. Live case: fastest (session dir `1454cef1…`), worker `hana_catalyst-build-speed-tests-impl`, thread `01a1870d-1a99…`, roster status `done`, run pid 1062454 `verify.sh test hana --filter startup_animation`, status `running`.
+5. Also: `app_server_threads` (`scan.rs`) reads only `~/.codex/sessions`. All 16 mesh servers on natedev use `CODEX_HOME=~/.codex2`, so a worker in its turn with no live launcher has no row either.
+
+**State model:**
+1. A unit's session directory owns its roster (`mesh_roster.json`: worker name, role, thread id) and its run records (`mesh_runs/*.json`). The `director` file in that directory names the unit's Claude session id.
+2. A worker row exists while any of these is live: its launcher, its thread open on an app server, or a running run record whose pid is live and whose thread id is the worker's.
+3. A row that exists only for a run takes the run's activity: `waiting` until cargo starts, then the step (`nextest`, `clippy`, and the others, with `(mac)` for a remote step). The row goes away when the run ends and no other source is live.
+4. The unit's own row keeps its session status. A worker's state never changes the director's row.
+
+**Spec:**
+1. Make a worker row from a running run record, with the roster's name and role, under the Claude row that the `director` file names. Reuse `worker_dispatch`'s roster read and `RunRecords::read_for_processes`. Do not add a second reader for either file.
+2. A row from a launcher or an app server and a row from a run for the same thread id are one row.
+3. `app_server_threads` reads each app server's own `CODEX_HOME` sessions directory through `codex::session_home`, not `~/.codex` only.
+4. Tests under 1 s: a run with no launcher gives a `waiting` worker row; the same run with cargo below gives `nextest`; the run ends and the row goes away; a launcher and a run for one thread give one row; an app server on a second Codex home shows its open thread; the director's `idle` row stays `idle`.
+5. CHANGELOG: one Fixed line in cargo-handler.
+
+**Files:** `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/activity.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs`, their tests, `crates/cargo-handler/CHANGELOG.md`.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: a shot of a unit tile on natedev with a worker row that shows `waiting` or a gate step during a live detached run, a design check line, and a Change-Review line.
+
+### Phase 63 — A click on a row's open/close marker toggles that row  · status: todo
+
+**Depends on:** Phase 45 (done). Runs after Phase 62. If the cargo pause lifts before the accounts per-role hash is on main, it runs beside Phase 57c (showrunner, 2026-11-03).
+
+#### Work Order
+
+**Goal:** a left click on a row's `▶` or `▼` marker opens or closes that row, the same as Right and Left.
+
+**Source:** the user, via the showrunner, 2026-11-03: "expand collapse should respond to mouse clicks also". Showrunner ruling: a click on the marker toggles the row; match cargo-port's project list if it takes clicks.
+
+**cargo-port (main ff9c2b2fc):** a left click on a project list row selects it and toggles its expansion (`tui/interaction.rs` `handle_click` → `toggle_selected_project_expansion`). The click is on the whole row.
+
+**Unit director's call:** cargo-handler toggles only on the marker cells. A click on the rest of the row keeps Phase 16's select, and Phase 20 gives that click a word highlight. A whole-row toggle would open or close a tree on each select or word click. Risk: a one-cell target; the marker and its trailing space are two cells, so the target is two cells wide.
+
+**State model:**
+1. Phase 45's `HandlerExpansion` keeps the open and closed choices. A click changes it only through the same operation that Right and Left use.
+2. A marker hit is part of the painted frame: the row identity and the marker's two cells. A click on a leaf row's lead does nothing more than select.
+3. A marker click also selects the row, as Phase 16's click does.
+
+**Spec:**
+1. Record each painted row's marker cells beside its row span in `SurfaceSelection` (`interaction.rs`). Compute them from `TreeLine::lead` (`agent_cell.rs`), the same text that draws the marker.
+2. Extend `RowClick` with an outcome for a marker hit, for example `RowClick::Toggled(RowIdentity)`. Keep one click dispatcher and one hit test (Phase 16 binds).
+3. On a marker hit, select the row and apply the toggle that Enter applies.
+4. Tests under 1 s: a click on `▶` opens the row; a click on `▼` closes it; a click on the name only selects; a click on a leaf row's lead only selects; a click on a scrolled tile hits the painted row.
+5. CHANGELOG: one Added line in cargo-handler.
+
+**Files:** `crates/cargo-handler/src/interaction.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/app/expansion.rs`, their tests, `crates/cargo-handler/CHANGELOG.md`.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: shots on natedev before and after a marker click, a design check line, and a Change-Review line.
+
 ### Phase 45 — Handler rows expand and collapse like the cargo-port project list  · status: done
 
 #### As-built
