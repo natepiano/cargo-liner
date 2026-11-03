@@ -1589,12 +1589,12 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Spec:**
 1. Give `finish_initial` a typed wait, for example `InitialWait::{Startup, Probe}`. Do not use a bare duration argument. The probe's `Scanner` uses `Probe`, and the TUI uses `Startup`.
-2. Add one constant for the probe bound beside `HERDR_INITIAL_TIMEOUT`. Choose its value from the measured probe times, and write the reason in the doc comment.
-3. Check whether `HERDR_READ_TIMEOUT` also drops names under load. If it does, the probe path uses a longer read timeout through the same typed wait. Record the measurement in the as-built.
-4. Tests under 1 s, with a controlled answer channel and no real sleeps: an answer after 100 ms reaches the probe; the TUI path returns at 100 ms; a herdr that is not running ends the probe wait at once; an answer of an older generation does not count.
+2. Put the probe bound in config, not in a constant (showrunner, 2026-11-03: load sets the right value, and a change must not need a release). Add `[census] herdr_probe_wait` to `CensusConfig` (`config.rs` ≈115) as a typed value with a default, the same as `codex_thread_start_window` (`CodexStartWindow`). The probe reads it the same way, through `Scanner::with_codex_start_window`'s pattern (`probe.rs` ≈417). Choose the default from the measured probe times, and write the reason in the doc comment.
+3. Check whether `HERDR_READ_TIMEOUT` also drops names under load. If it does, move it to config by the same rule (`[census] herdr_read_timeout`), and the probe path uses that value through the same typed wait. Record the measurement in the as-built.
+4. Tests under 1 s, with a controlled answer channel and no real sleeps: an answer after 100 ms reaches the probe; the TUI path returns at 100 ms; a herdr that is not running ends the probe wait at once; an answer of an older generation does not count; a missing config key gives the default, and a set key changes the bound.
 5. CHANGELOG: one Fixed line in cargo-handler.
 
-**Files:** `crates/cargo-handler/src/census/herdr.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/src/census/herdr_tests.rs`, `crates/cargo-handler/CHANGELOG.md`.
+**Files:** `crates/cargo-handler/src/census/herdr.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/config.rs`, `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/src/census/herdr_tests.rs`, the config tests, `crates/cargo-handler/CHANGELOG.md`.
 
 **Workers:** 1 writer.
 
