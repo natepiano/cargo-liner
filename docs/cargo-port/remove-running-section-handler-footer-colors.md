@@ -1475,6 +1475,8 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - accounts-unit, 2026-11-03: each role on an account gets its own row. The first row is the same as today; the next rows show only the role and its counts.
 - Phase 44 is folded in (showrunner, 2026-11-03). Its source: the user, direct to the handler unit, 2026-10-28 ≈23:40 EDT: "need to add an enhancement to show the count of sessions for each account in the accounts summary table". Unit session `phases/44/source.md`.
 
+**JSON contract (accounts-unit, 2026-11-03, accounts 2de06b584):** each entry of `accounts` in `accounts.py status --json --stored` has `roles` (role names), `role_counts` (same order; each `{busy, shell, idle, total}`) and `role_counts_by_machine` (`{"natedev": {<role>: {...}}, "mac": {...}}`). The board adds the two machines for each role. `shell` can be null for a Codex account; draw an empty cell. The JSON keeps one entry per account; the board makes one row per item in `roles`. The session count is the sum of `total` over the account's roles on both machines; a session with no mapped role is not counted.
+
 **State model:**
 1. The accounts JSON owns each account and, per account, each role with its busy, shell, idle and total counts. cargo-handler keeps no count of its own.
 2. One account gives one first row (the account values, as today) and one more row for each further role. A role row draws only the role and its counts.
