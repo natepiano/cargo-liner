@@ -414,7 +414,12 @@ impl CodexLogs {
                 record.logged_at >= process.started
                     && processes.iter().any(|source| {
                         record.belongs_to(source)
-                            && (source.pid == process.pid || source.parent == Some(process.pid))
+                            && match record.selection.proof {
+                                SelectionProof::InProcessSnapshot => source.pid == process.pid,
+                                SelectionProof::MatchedResponse => {
+                                    source.pid == process.pid || source.parent == Some(process.pid)
+                                },
+                            }
                     })
             })
             .filter_map(|record| match rows.get(&account, &record.thread_id) {
@@ -648,17 +653,59 @@ fn log_request_id(body: &str, key: &str) -> Option<String> {
     }
 }
 
-/// Only a matched success response confirms a daemon selection.
+/// The evidence that binds a selection to its log process.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ConfirmedConnection(u64);
+enum SelectionProof {
+    MatchedResponse,
+    InProcessSnapshot,
+}
+
+#[derive(Debug)]
+struct ConfirmedSelection {
+    connection: u64,
+    request:    String,
+    proof:      SelectionProof,
+}
+
+impl ConfirmedSelection {
+    fn snapshot(identity: &str, body: &str, thread: &str) -> Option<Self> {
+        if !body.contains("rpc.transport=\"in-process\"")
+            || !body.contains(&format!("shell_snapshot{{thread_id={thread}}}"))
+            || !body.contains("}: Shell snapshot successfully created:")
+        {
+            return None;
+        }
+        let request = SelectionRequest::request(identity, body)?;
+        Some(Self {
+            connection: request.connection,
+            request:    request.request,
+            proof:      SelectionProof::InProcessSnapshot,
+        })
+    }
+
+    fn rejects_older_request(&self, other: &Self) -> bool {
+        match (
+            self.request
+                .strip_prefix("integer:")
+                .and_then(|id| id.parse::<u64>().ok()),
+            other
+                .request
+                .strip_prefix("integer:")
+                .and_then(|id| id.parse::<u64>().ok()),
+        ) {
+            (Some(previous), Some(current)) => previous > current,
+            _ => false,
+        }
+    }
+}
 
 #[derive(Debug)]
 struct LoggedThread {
-    pid:        u32,
-    id:         i64,
-    logged_at:  u64,
-    thread_id:  String,
-    connection: ConfirmedConnection,
+    pid:       u32,
+    id:        i64,
+    logged_at: u64,
+    thread_id: String,
+    selection: ConfirmedSelection,
 }
 
 impl LoggedThread {
@@ -780,26 +827,40 @@ impl LogDatabase {
             if let Some(request) = SelectionRequest::request(&identity, &body) {
                 self.requests.entry(request).or_insert(logged_at);
             }
-            let connection = match SelectionRequest::response(&identity, &body) {
-                Some(request) if self.requests.remove(&request).is_some() => {
-                    ConfirmedConnection(request.connection)
-                },
-                _ => continue,
-            };
             let Some(thread_id) = row.get::<_, Option<String>>(3)? else {
                 continue;
+            };
+            let selection = match SelectionRequest::response(&identity, &body) {
+                Some(request) if self.requests.remove(&request).is_some() => ConfirmedSelection {
+                    connection: request.connection,
+                    request:    request.request,
+                    proof:      SelectionProof::MatchedResponse,
+                },
+                _ => match ConfirmedSelection::snapshot(&identity, &body, &thread_id) {
+                    Some(selection) => {
+                        self.requests.remove(&SelectionRequest {
+                            daemon:     identity.clone(),
+                            connection: selection.connection,
+                            request:    selection.request.clone(),
+                        });
+                        selection
+                    },
+                    None => continue,
+                },
             };
             let record = LoggedThread {
                 pid,
                 id,
                 logged_at,
                 thread_id,
-                connection,
+                selection,
             };
             let records = self.records.entry(pid).or_default();
-            let kept = records.iter_mut().find(|r| r.connection == connection);
+            let kept = records
+                .iter_mut()
+                .find(|r| r.selection.connection == record.selection.connection);
             if let Some(kept) = kept {
-                if kept.id < record.id {
+                if kept.id < record.id && !kept.selection.rejects_older_request(&record.selection) {
                     *kept = record;
                 }
             } else {

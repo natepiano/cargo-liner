@@ -1317,3 +1317,93 @@ fn an_explicit_resume_id_cannot_name_an_unproven_non_user_thread() {
         );
     }
 }
+
+fn in_process_snapshot(logs: &Connection, id: i64, pid: u32, thread: &str, request: u64) {
+    let body = format!(
+        "app_server.request{{rpc.method=\"thread/resume\" rpc.transport=\"in-process\" rpc.request_id={request} app_server.connection_id=0 app_server.client_name=\"codex-tui\"}}:thread_spawn:session_init:shell_snapshot{{thread_id={thread}}}: Shell snapshot successfully created: /fixture/{thread}"
+    );
+    selection_row(logs, id, START + 1, Some(thread), &body);
+    logs.execute(
+        "UPDATE logs SET process_uuid = ?1 WHERE id = ?2",
+        rusqlite::params![format!("pid:{pid}:fixture"), id],
+    )
+    .expect("snapshot process");
+}
+
+#[test]
+fn an_in_process_snapshot_names_only_its_tui_and_follows_resume() {
+    let mut fixture = SessionFixture::new();
+    fixture.threads[0].created_ms = (START - 86_400) * 1000;
+    store_threads(&fixture);
+    let second = second_thread(&fixture);
+    second_tui(&mut fixture);
+    let logs = log_database(&fixture);
+    in_process_snapshot(&logs, 1, 10, ID, 9);
+    let rows = fixture.scan();
+    assert_eq!(rows[0].name, "database-title");
+    assert_eq!(rows[1].name, "pid 30");
+    in_process_snapshot(&logs, 2, 10, &second, 20);
+    let rows = fixture.scan();
+    assert_eq!(rows[0].name, "summer");
+    assert_eq!(rows[1].name, "pid 30");
+    let (_, _, tile) = drawn(vec![rows[0].clone()], RootWork::Absent);
+    assert!(tile.iter().any(|line| line.contains("summer")), "{tile:?}");
+    in_process_snapshot(&logs, 3, 10, ID, 9);
+    assert_eq!(
+        fixture.scan()[0].name,
+        "summer",
+        "a delayed old snapshot cannot reverse the selection"
+    );
+}
+
+#[test]
+fn a_detached_daemon_snapshot_does_not_name_either_tui() {
+    let mut fixture = SessionFixture::new();
+    store_threads(&fixture);
+    managed_child(&mut fixture);
+    fixture.processes[1].parent = None;
+    second_tui(&mut fixture);
+    let logs = log_database(&fixture);
+    in_process_snapshot(&logs, 1, 20, ID, 9);
+    let rows = fixture.scan();
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.pid == 10)
+            .expect("first TUI")
+            .name,
+        "pid 10"
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.pid == 30)
+            .expect("second TUI")
+            .name,
+        "pid 30"
+    );
+}
+
+#[test]
+fn a_snapshot_requires_the_same_thread_and_in_process_transport() {
+    let mut fixture = SessionFixture::new();
+    store_threads(&fixture);
+    let logs = log_database(&fixture);
+    in_process_snapshot(&logs, 1, 10, ID, 9);
+    logs.execute("UPDATE logs SET feedback_log_body = replace(feedback_log_body, 'in-process', 'unix_socket') WHERE id = 1", []).expect("socket transport");
+    assert_eq!(fixture.scan()[0].name, "pid 10");
+    in_process_snapshot(&logs, 2, 10, ID, 10);
+    logs.execute(
+        "UPDATE logs SET thread_id = 'another-thread' WHERE id = 2",
+        [],
+    )
+    .expect("different thread column");
+    assert_eq!(fixture.scan()[0].name, "pid 10");
+    managed_child(&mut fixture);
+    in_process_snapshot(&logs, 3, 20, ID, 11);
+    assert_eq!(
+        fixture.scan()[0].name,
+        "pid 10",
+        "an embedded snapshot names only its own process"
+    );
+    in_process_snapshot(&logs, 4, 10, ID, 12);
+    assert_eq!(fixture.scan()[0].name, "database-title");
+}
