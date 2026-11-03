@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Codex windows without a proven thread show their herdr pane name or tab label.
+- Handler rows support expansion and collapse, with root children visible by default.
 
 - Shift-Up and Shift-Down focus the tile above and below.
 - Shell rows for sleep commands show timer in the role column.

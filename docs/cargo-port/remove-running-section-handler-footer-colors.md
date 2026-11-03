@@ -1526,6 +1526,35 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 3. Tests under 1 s for the default, each operation, a row that leaves and comes back, and a row that moves parent.
 4. CHANGELOG: one Added line in cargo-handler.
 
+**Files:**
+- `crates/cargo-handler/src/app.rs`
+- `crates/cargo-handler/src/globals.rs`
+- `crates/cargo-handler/src/terminal.rs`
+- `crates/cargo-handler/src/keymap.rs`
+- `crates/cargo-handler/src/agent_cell.rs`
+- `crates/cargo-handler/src/tiles.rs`
+- `crates/cargo-handler/src/interaction.rs`
+- `crates/cargo-handler/src/constants.rs`
+- `crates/cargo-handler/src/summary/mod.rs`
+- `crates/cargo-handler/src/census/tree.rs`
+- `crates/cargo-handler/src/expansion.rs`
+- `crates/cargo-handler/src/expansion_tests.rs`
+- `crates/cargo-handler/CHANGELOG.md`
+
+
+
+Phase 45 assertion migrations:
+
+Assertion-Change: crates/cargo-handler/src/agent_cell.rs::a_cell_draws_its_header_and_what_its_agent_runs — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell.rs::each_top_level_agent_holds_the_sessions_it_opened — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell.rs::conflicting_and_cyclic_edges_form_one_deterministic_forest — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell/tests/activity_tests.rs::activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_ids — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell/tests/sort_tests.rs::default_tree_sort_preserves_phase_one_rows_rails_and_hues — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell/tests/sort_tests.rs::assert_column_keeps_subtrees_and_hues — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell/tests/tree_tests.rs::a_compressed_showrunner_starts_with_aligned_tree_columns — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell/tests/tree_tests.rs::work_lines_nest_below_their_member_and_skip_process_and_session_nodes — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+Assertion-Change: crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs::unassigned_rows_are_flat_with_blank_roles_and_nested_work_rails — Replace the old prefixes with cargo-port prefixes. Preserve every assertion and its row checks.
+
 **Workers:** 1 writer.
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean. This change is visible: shots, a design check line, and a Change-Review line.
@@ -2046,3 +2075,8 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 **Workers:** 1 writer.
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: in cargo-handler on natedev, shift-left and shift-right move the focus, and the shortcuts overlay shows the four focus keys. The checkpoint adds a Change-Review line.
+
+Assertion-Change: crates/cargo-handler/src/render/narrow_width_tests.rs::growth_app — Change the End offset from 66 to 67. The selectable root adds one row.
+
+Assertion-Change: crates/cargo-handler/src/render/pinned_accounts_tests.rs::pinned_accounts_missed_click_keeps_selection_and_retired_surface_stays_gone — Add the preferred surface argument. Preserve the assertion that the retired row remains Gone.
+Assertion-Change: crates/cargo-handler/src/render/pinned_accounts_tests.rs::pinned_accounts_named_states_distinguish_empty_cells_rows_and_retired_content — Add the preferred surface argument. Preserve the assertions for Found(Summary) and Gone.
