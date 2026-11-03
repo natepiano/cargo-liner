@@ -280,17 +280,11 @@ fn versioned_database(codex_dir: &Path, prefix: &str) -> Option<PathBuf> {
         .map(|(_, path)| path)
 }
 
-mod socket;
-
-#[cfg(test)]
-pub(super) use socket::SocketEndpoint;
-use socket::SocketSnapshot;
-
 /// The current database answer for a requested thread.
 #[derive(Debug)]
 pub(super) enum ThreadLookup {
     User(CodexThread),
-    NonUser(CodexThread),
+    NonUser,
     Missing,
 }
 
@@ -311,37 +305,17 @@ impl ThreadRows {
 #[derive(Debug, Default)]
 pub(super) struct CodexLogs {
     databases: HashMap<PathBuf, LogDatabase>,
-    sockets:   SocketSnapshot,
 }
 
 impl CodexLogs {
-    /// Read socket ownership and advance each account log once.
+    /// Advance each account log once.
     pub(super) fn refresh(&mut self, processes: &[ProcessEntry], home: Option<&Path>) {
-        let started = std::time::Instant::now();
-        self.sockets.refresh(processes, home);
-        startup_log::startup_event(&format!(
-            "codex_socket_read elapsed_us={} sock_diag_queries={}",
-            started.elapsed().as_micros(),
-            self.sockets.query_count()
-        ));
         let started = std::time::Instant::now();
         self.refresh_logs(processes, home);
         startup_log::startup_event(&format!(
             "codex_log_read elapsed_us={}",
             started.elapsed().as_micros()
         ));
-    }
-
-    #[cfg(test)]
-    pub(super) fn refresh_with_peers(
-        &mut self,
-        processes: &[ProcessEntry],
-        home: Option<&Path>,
-        endpoints: &[SocketEndpoint],
-    ) {
-        self.sockets
-            .replace(processes, home, endpoints, &HashSet::new());
-        self.refresh_logs(processes, home);
     }
 
     fn refresh_logs(&mut self, processes: &[ProcessEntry], home: Option<&Path>) {
@@ -422,7 +396,7 @@ impl CodexLogs {
         rows
     }
 
-    /// Select exact process records and confirmed selections from an exclusive child daemon.
+    /// Select records from this process or its child daemon.
     pub(super) fn link<'a>(
         &self,
         process: &ProcessEntry,
@@ -440,28 +414,15 @@ impl CodexLogs {
                 record.logged_at >= process.started
                     && processes.iter().any(|source| {
                         record.belongs_to(source)
-                            && (source.pid == process.pid
-                                || (source.parent == Some(process.pid)
-                                    && self.sockets.clients(source.pid) == [process.pid]))
+                            && (source.pid == process.pid || source.parent == Some(process.pid))
                     })
             })
             .filter_map(|record| match rows.get(&account, &record.thread_id) {
                 Some(ThreadLookup::User(thread)) => Some((record.id, thread)),
-                Some(ThreadLookup::Missing | ThreadLookup::NonUser(_)) | None => None,
+                Some(ThreadLookup::Missing | ThreadLookup::NonUser) | None => None,
             })
             .max_by_key(|(id, _)| *id)
             .map(|(_, thread)| thread)
-    }
-
-    pub(super) fn permits_launch_fallback(
-        &self,
-        process: &ProcessEntry,
-        processes: &[ProcessEntry],
-    ) -> bool {
-        !matches!(
-            self.sockets.relation(process, processes),
-            socket::ClientDaemonLink::Unresolved
-        )
     }
 
     #[cfg(test)]
@@ -516,7 +477,7 @@ fn read_current_threads(
                 if row.get::<_, bool>(5)? {
                     Ok(ThreadLookup::User(decode_thread(row, &owner)?))
                 } else {
-                    Ok(ThreadLookup::NonUser(decode_thread(row, &owner)?))
+                    Ok(ThreadLookup::NonUser)
                 }
             })
             .optional()?
@@ -1261,5 +1222,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "../codex_label_cut_tests.rs"]
+#[path = "codex_label_cut_tests.rs"]
 mod label_cut_tests;

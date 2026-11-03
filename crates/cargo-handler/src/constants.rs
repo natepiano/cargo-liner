@@ -598,10 +598,3 @@ pub(crate) const CLAUDE_PLAN_PERMISSION_ARGUMENT: &str = "--permission-mode=plan
 pub(crate) const WORKER_DOCUMENT_EXTENSION: &str = "json";
 /// Markdown heading opening for a pooled review job.
 pub(crate) const REVIEW_JOB_HEADING: &str = "# ";
-
-/// The netlink message that requests Unix socket details.
-#[cfg(target_os = "linux")]
-pub(crate) const CODEX_SOCK_DIAG_BY_FAMILY: u16 = 20;
-/// Request the Unix socket peer attribute.
-#[cfg(target_os = "linux")]
-pub(crate) const CODEX_UNIX_DIAG_SHOW_PEER: u32 = 4;

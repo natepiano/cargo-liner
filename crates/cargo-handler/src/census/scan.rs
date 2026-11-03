@@ -251,12 +251,12 @@ impl LocalScanner {
         &mut self,
         processes: &[ProcessEntry],
         sessions: &[SessionRecord],
-        codex_threads: &[CodexThread],
+        _: &[CodexThread],
         home: Option<&Path>,
         mut publish: impl FnMut(ScanStage, Vec<AgentRow>),
         read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
     ) {
-        self.resolve_codex_sessions(processes, codex_threads, home);
+        self.resolve_codex_sessions(processes, home);
         let mut rows = startup_log::startup_stage("classify_agents", || {
             let threads = classify::linked_threads(&self.codex_links);
             classify::agent_rows_with_threads(
@@ -276,28 +276,13 @@ impl LocalScanner {
     }
 
     /// Read current thread rows and resolve one map for this scan.
-    fn resolve_codex_sessions(
-        &mut self,
-        processes: &[ProcessEntry],
-        threads: &[CodexThread],
-        home: Option<&Path>,
-    ) {
+    fn resolve_codex_sessions(&mut self, processes: &[ProcessEntry], home: Option<&Path>) {
         let records = startup_log::startup_stage("codex_thread_ids", || {
             self.codex_logs
                 .thread_rows(processes, home, self.codex_start_window)
         });
-        self.codex_links = classify::codex_session_links(
-            processes,
-            if threads.is_empty() {
-                &records.candidates
-            } else {
-                threads
-            },
-            home,
-            self.codex_start_window,
-            &self.codex_logs,
-            &records,
-        );
+        self.codex_links =
+            classify::codex_session_links(processes, home, &self.codex_logs, &records);
     }
 
     /// A scanner of the user running this process.
