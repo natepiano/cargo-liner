@@ -8661,6 +8661,169 @@ mod tests {
         );
     }
 
+    fn captured_ci_nextest_with_independent_child(root: &Path) -> (Capture, Vec<CargoGroup>) {
+        fs::create_dir_all(root.join("state/pids")).expect("registration directory");
+        let magic = std::str::from_utf8(REGISTRATION_MAGIC).expect("registration magic");
+        fs::write(
+            root.join("state/pids/1181682.generation"),
+            format!(
+                "{magic}\0generation\0boot\x0016184325\0run.log\0/run/github-runner/hana-linux-2/hana/hana\0/run/github-runner/hana-linux-2\x007\0nextest\0run\0--profile\0ci\0--all-features\0--workspace\0--tests\0"
+            ),
+        )
+        .expect("v3 registration");
+        fs::write(
+            root.join("run.log"),
+            "\x1b[32;1m        PASS\x1b[0m [   2.511s] ( 2574/11437) \x1b[35;1mhana::bin/hana\n",
+        )
+        .expect("nextest capture");
+        let IdentityEvidence::Available(birth) = BirthStamp::from_fields("boot", "16184325") else {
+            panic!("fixture birth stamp");
+        };
+        let capture = Capture::take_from(root, |pid| {
+            KernelObservation::for_test(pid, Observation::Present(birth.clone()))
+        });
+        let arguments = [
+            "nextest",
+            "run",
+            "--profile",
+            "ci",
+            "--all-features",
+            "--workspace",
+            "--tests",
+        ];
+        let shim = ["/bin/sh", "/tools/bin/cargo"]
+            .into_iter()
+            .chain(arguments)
+            .map(OsString::from)
+            .collect::<Vec<_>>();
+        let nextest = std::iter::once("/tools/bin/cargo-nextest")
+            .chain(arguments)
+            .map(OsString::from)
+            .collect::<Vec<_>>();
+        let application = [OsString::from("/work/application")];
+        let independent = ["cargo", "build", "--package", "independent"].map(OsString::from);
+        let records = ProcessObservations::new(
+            [
+                (1_181_682, 1_181_681, "sh", shim.as_slice()),
+                (1_181_826, 1_181_682, "sh", shim.as_slice()),
+                (1_181_827, 1_181_826, "sh", shim.as_slice()),
+                (1_181_829, 1_181_827, "cargo-nextest", nextest.as_slice()),
+                (1_181_830, 1_181_829, "application", application.as_slice()),
+                (1_181_831, 1_181_830, "cargo", independent.as_slice()),
+            ]
+            .map(|(pid, parent, name, argv)| {
+                let mut process = ProcessObservation::cargo(pid, argv);
+                process.name = ProcessField::Observed(OsStr::new(name));
+                process.parent = ProcessField::Observed(Pid::from_u32(parent));
+                process.directory =
+                    ProcessField::Observed(Path::new("/run/github-runner/hana-linux-2/hana/hana"));
+                process
+            }),
+        );
+        let groups = CensusSequence::default().sample_capture(&records, &capture);
+        (capture, groups)
+    }
+
+    /// A verified CI capture belongs to its origin, never an independent child.
+    #[test]
+    fn a_captured_ci_nextest_draws_its_meter_without_lending_it_to_a_child() {
+        let root = tempfile::tempdir().expect("capture root");
+        let (capture, groups) = captured_ci_nextest_with_independent_child(root.path());
+        assert_eq!(capture.confirmed().len(), 1);
+        let reading = CaptureLookup::Registered(CaptureRead::Progress(RunState::Working {
+            phase:    Phase::Testing,
+            progress: Progress {
+                done:  2574,
+                total: 11437,
+            },
+        }));
+        assert_eq!(capture.read(&capture.confirmed()[0].key), reading);
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lead.pid, 1_181_682);
+        assert!(matches!(
+            groups[0].lead.provenance,
+            RowProvenance::Direct(_)
+        ));
+        assert_eq!(
+            groups[0].lead.capture_membership,
+            CaptureMembership::Outside
+        );
+        assert_eq!(groups[0].lead.state, reading);
+        let mut roster = Roster::new();
+        roster.observe(groups, Instant::now());
+        let group = &roster.groups()[0];
+        let origin = &group.lead;
+        assert!(matches!(
+            own_counter(origin),
+            CounterState::Working {
+                phase:    Phase::Testing,
+                progress: Progress {
+                    done:  2574,
+                    total: 11437,
+                },
+            }
+        ));
+        let child = group
+            .rows()
+            .find(|row| row.process.pid == 1_181_831)
+            .expect("independent invocation");
+        assert!(matches!(
+            child.process.provenance,
+            RowProvenance::Enclosing(_)
+        ));
+        assert_eq!(child.process.state, reading);
+        assert!(matches!(
+            own_counter(child),
+            CounterState::NoCurrentProgress
+        ));
+
+        let stats = SccacheStats::default();
+        let cells = Cells::for_frame(roster.visible(&[]), CommandView::long(), &stats, 50);
+        let area = Rect::new(0, 0, 200, 50);
+        let (grid, buffer) = settled_buffer_with_cells(&cells, area);
+        let placements = grid.placements(
+            area,
+            TileGrowth {
+                initial_rows:  12,
+                fill:          TileFill::Redistribute,
+                widen_summary: false,
+            },
+        );
+        let command_cells = placements
+            .iter()
+            .filter(|placement| matches!(placement.content, TileContent::Group(_)))
+            .collect::<Vec<_>>();
+        assert_eq!(command_cells.len(), 1);
+        let text = placement_text(&buffer, command_cells[0]);
+        let origin_rows = text
+            .lines()
+            .filter(|line| line.split_whitespace().next() == Some("1181682"))
+            .collect::<Vec<_>>();
+        assert_eq!(origin_rows.len(), 1, "{text}");
+        assert!(
+            origin_rows[0]
+                .contains("[ci] cargo nextest run --profile ci --all-features --workspace --tests"),
+            "{text}"
+        );
+        for hidden_pid in ["1181826", "1181827", "1181829"] {
+            assert!(!text.contains(hidden_pid), "{text}");
+        }
+        let meter = text
+            .lines()
+            .find(|line| line.contains("testing"))
+            .expect("testing meter");
+        assert!(meter.contains("22.5%"), "{text}");
+        assert!(meter.contains(PROGRESS_HEADING_FILLED), "{text}");
+        assert!(meter.contains(PROGRESS_HEADING_EMPTY), "{text}");
+        assert_eq!(text.matches("22.5%").count(), 1, "{text}");
+        let child_row = text
+            .lines()
+            .find(|line| line.contains("cargo build --package independent"))
+            .expect("independent command row");
+        assert!(!child_row.contains('%'), "{text}");
+    }
+
     #[test]
     fn progress_in_the_summary_does_not_tighten_the_cells_gap() {
         let mut app = subcommand_frame(CommandView::short(), &["clippy", "--locked"], 2_593_000);
