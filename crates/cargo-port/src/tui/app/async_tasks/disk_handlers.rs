@@ -18,6 +18,13 @@ impl App {
     /// project-pane summary without doing filesystem work on the render path.
     pub(super) fn refresh_project_storage(&mut self) {
         self.storage_refresh_at = Instant::now();
+        #[cfg(test)]
+        if matches!(
+            self.startup_services.background_query_source(),
+            crate::tui::startup_services::BackgroundQuerySource::QueuedReplies
+        ) {
+            return;
+        }
         let paths = self.project_list.visible_project_storage_paths();
         let sender = self.background.background_sender();
         let handle = self.net.http_client().handle;
@@ -104,7 +111,8 @@ impl App {
         root_path: &AbsolutePath,
         entries: Vec<(AbsolutePath, DirSizes)>,
     ) {
-        self.scan.bump_generation();
+        // Dispatch compares the applied bytes, breakdown and visibility for
+        // each path. An unchanged poll must retain both row and detail caches.
         // Insert root_path and each entries path into startup.disk.seen: group_disk_usage_trees
         // groups flat disk_entries under shallow ancestors while ProjectList::iter follows
         // build_tree workspaces/worktree groups, so root-only marking could leave expected paths

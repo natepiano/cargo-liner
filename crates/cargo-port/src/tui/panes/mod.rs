@@ -19,8 +19,6 @@ mod system;
 mod targets;
 mod widths;
 
-use std::collections::HashMap;
-
 #[cfg(test)]
 pub(super) use actions::handle_ci_runs_key;
 pub(super) use ci::CiData;
@@ -151,7 +149,7 @@ use super::keymap::GitAction;
 use super::keymap::LintsAction;
 use super::keymap::PackageAction;
 use super::keymap::TargetsAction;
-use super::project_list_state::ProjectList;
+use super::project_list_state::DiskCacheKey;
 #[cfg(test)]
 use super::render_context::PaneRenderCtx;
 #[cfg(test)]
@@ -204,8 +202,8 @@ pub(super) fn dispatch_targets_action(targets_action: TargetsAction, app: &mut A
     actions::dispatch_targets_action(targets_action, app);
 }
 
-pub(super) fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
-    project_list::compute_disk_cache(entries)
+pub(super) fn compute_disk_cache(key: &DiskCacheKey) -> Vec<u64> {
+    project_list::compute_disk_cache(key)
 }
 
 #[cfg(test)]
@@ -249,3 +247,6 @@ pub(super) fn request_clean(app: &mut App) { actions::request_clean(app); }
 pub(super) use pane_data::GitProbe;
 pub(super) use pane_data::GitReadHealth;
 pub(super) use pane_data::GitSyncLabels;
+pub(super) use project_list::ProjectRowPresentation;
+pub(super) use project_list::ProjectRowWidthInput;
+pub(super) use project_list::project_width_presentations;

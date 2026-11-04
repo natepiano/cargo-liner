@@ -40,7 +40,7 @@ impl CpuMonitorSlot {
     fn latest(&self) -> Option<CpuUsage> {
         match self {
             Self::Active(monitor) => monitor.latest(),
-            Self::Inert(_) => None,
+            Self::Inert(samples) => samples.try_iter().last(),
         }
     }
 
@@ -119,10 +119,17 @@ impl CpuPane {
         }
     }
 
-    pub fn tick(&mut self) {
-        if let Some(cpu_usage) = self.monitor.latest() {
-            self.sample_phase = CpuSamplePhase::Sampled(cpu_usage);
+    /// Drain samples and report whether the pane's visible sample state changed.
+    pub fn tick(&mut self) -> bool {
+        let Some(cpu_usage) = self.monitor.latest() else {
+            return false;
+        };
+        let next = CpuSamplePhase::Sampled(cpu_usage);
+        if self.sample_phase == next {
+            return false;
         }
+        self.sample_phase = next;
+        true
     }
 
     /// The monitor's sample-channel receiver, for registering in the
@@ -806,6 +813,26 @@ mod tests {
             core_rows[0], core_rows[1],
             "first sample moved the core-count row"
         );
+    }
+
+    #[test]
+    fn tick_reports_only_sample_phase_changes() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = quiet_pane();
+        let (sender, samples) = channel::unbounded();
+        pane.monitor = CpuMonitorSlot::Inert(samples);
+        assert!(!pane.tick());
+        sender.send(usage_with_cores(8, 42))?;
+        assert!(pane.tick());
+        sender.send(usage_with_cores(8, 42))?;
+        assert!(!pane.tick());
+        sender.send(usage_with_cores(8, 43))?;
+        assert!(pane.tick());
+        assert_eq!(
+            pane.sample_phase(),
+            &CpuSamplePhase::Sampled(usage_with_cores(8, 43))
+        );
+        assert!(!pane.tick());
+        Ok(())
     }
 
     #[test]

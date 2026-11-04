@@ -1616,6 +1616,10 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 **As built** (checkpoint `ac47cbba`, merged as main `2fb29335c`, 2026-11-03): a command cell names its account tag and directory in its top border through `TileGroupTitle::Titled`. The body draws no lead heading row, so the cell shows one more process row. One account decision, `TableAccountHeadings`, feeds the title and any nested body heading. The directory cut fits the title room. A nested directory keeps its body heading. Live at 393x89 against main: 8 of 8 command cells have one title, no lead heading stays in a body, and process rows stay 17 of 17 with no clipped cell.
 
+### Phase 47a — The border title is only the account and directory; progress is the first body row  · status: done
+
+**As built** (checkpoint `229b35851`, merged as main `48dfe94d2`, 2026-11-03): a command cell's top border holds only its account tag and directory. Its progress reading (state word, meter, percent) is the first body row, above the table header. A cell with no reading starts with its table. One owner computes the reading row, and a cell's demand counts it only when it draws. Live at 393x89 against main: 0 of 8 titles hold progress text (main 8 of 8), 8 of 8 readings are the first body row, process rows stay 17 of 17, and no cell is clipped. Gates under the bump: lint and 15 related tests; the showrunner runs the full suite on the merged tip.
+
 ### Phase 46 — Enter shows the focused cell on the full screen, and Esc returns to the grid  · status: todo
 
 **Depends on:** Phase 42 (both change `render.rs` and the `tui_pane` frame; this phase starts on top of Phase 42's checkpoint)
@@ -2461,7 +2465,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 
 ### Phase 48 — The p and h shortcuts show with the other global shortcuts  · status: todo
 
-**Depends on:** Phase 39
+**Depends on:** none (it named Phase 39 only for file order; Phase 39 has not started)
 
 #### Work Order
 
@@ -2506,30 +2510,9 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - A live shot shows the disk value in GiB after mem.
 - Idle tile CPU does not rise by more than the spread of 3 live pairs.
 
-### Phase 50 — A CI nextest run shows its progress meter  · status: in progress
+### Phase 50 — A CI nextest run shows its progress meter  · status: done
 
-**Depends on:** none. The showrunner put it before 43b, P47, P46, 48 and 49, beside 43a: a user sees this defect in a feature that worked.
-
-#### Work Order
-
-**Goal:** A `[ci]` cell for a GitHub runner's `cargo nextest run` shows the same progress meter as a local nextest run. User report, 2026-11-02, through the showrunner: the hana-linux-2 runner's `[ci] cargo nextest run --workspace` row (runs 1, 28:59) showed no meter.
-
-**Spec:**
-
-1. Find the cause first, on a live runner job. Check the capture registration of the runner's shim call, the capture read, and the cell's meter rule. Record the cause in `phases/50/cause.md`.
-2. Fix the cause where it lives: the shim, the capture read, or the render.
-3. Add a test that fails on the current tree: a dispatched CI nextest with a capture shows its meter. Extend `a_long_ci_cell_draws_its_dispatched_nextests_runs` or add one beside it.
-4. A local nextest keeps its current meter.
-
-**Files:**
-- `crates/cargo-tile/src/cargo-capture-shim.sh`
-- `crates/cargo-tile/src/progress/capture_read.rs`
-- `crates/cargo-tile/src/render.rs`
-- `crates/cargo-tile/src/census/scan.rs`
-
-**Acceptance gate:**
-- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green; no new test takes 1 s or more.
-- A live shot of a runner nextest job shows the meter in its `[ci]` cell.
+**As built** (checkpoint `2a55fa9c2`, merged as main `431ecb2e8`, 2026-11-03): no code change. The CI nextest meter was missing because an old cargo-tile reader was not restarted; a reader built from main draws it. The test `a_captured_ci_nextest_draws_its_meter_without_lending_it_to_a_child` pins that a captured CI nextest run draws its own meter and its child rows borrow none.
 
 ### Phase 51 — A reader scenario ends its fake cargo processes  · status: todo
 

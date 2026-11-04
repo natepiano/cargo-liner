@@ -18,6 +18,8 @@ use crate::render;
 use crate::sort::SortDirection;
 use crate::sort::TreeSort;
 
+const FIXTURE_MACHINE: &str = "natedev";
+
 fn forest() -> HandlerTree {
     HandlerTree::new(
         [
@@ -343,7 +345,7 @@ fn recorded_pidless_subagent_hides_children_and_enter_toggles_them() {
     select_work(
         &mut app,
         &SelectedRow::Subagent {
-            machine: census::local_machine_name(),
+            machine: FIXTURE_MACHINE.to_owned(),
             owner:   RowOwner {
                 pid:     10,
                 started: 100,
@@ -372,7 +374,7 @@ fn duplicate_legacy_branches_keep_ordinals_before_visibility_filtering() {
     select_work(
         &mut app,
         &SelectedRow::LegacyWork {
-            machine: census::local_machine_name(),
+            machine: FIXTURE_MACHINE.to_owned(),
             owner:   RowOwner {
                 pid:     10,
                 started: 100,
@@ -412,7 +414,7 @@ fn legacy_branch_expansion_and_selection_follow_census_identity_after_sorting() 
     );
     paint(&mut app);
     let branch_a = SelectedRow::LegacyWork {
-        machine: census::local_machine_name(),
+        machine: FIXTURE_MACHINE.to_owned(),
         owner:   RowOwner {
             pid:     10,
             started: 100,

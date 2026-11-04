@@ -119,6 +119,10 @@ Theme templates are `crates/cargo-port/themes/default_dark.toml`, `crates/cargo-
 
 The same root holds keymap.toml. `tui/keymap/load.rs` loads defaults, migrations and user bindings; actions, canonical keys, resolved bindings and scopes are in adjacent files. `crates/cargo-port/tests/assets/default-keymap.toml` and `crates/cargo-port/tests/assets/default-config.toml` record defaults.
 
+## Idle CPU measure
+
+Launch the binary and sample its CPU use once a second, with 100% meaning one fully used core. First wait until the startup panel shows every startup row complete and the project count stops changing, so a walk that waits on disk is not mistaken for idle. Then start each 60 s measurement window only after ten consecutive one-second samples are each below 5% of one core. If that does not happen within five minutes after startup completes, the measure fails: record it as a failure with the CPU samples, not as a result. Any work still running after that point counts against the measure, so its cost cannot make the result artificially low.
+
 ## Tests and live check
 
 Tests mostly live in inline test modules beside code. Separate files include `tui/settings_scroll_tests.rs`, `tui/panes/output/presentation_tests.rs` and `tui/render/status_bar_contrast_tests.rs`; `crates/cargo-port/tests/` holds default-file assets. `make_app` and `make_app_with_config` in `tui/test_support.rs` disable unrequested startup services and isolate files. `count_allocations` in `test_support.rs` counts allocations on the calling thread. `init_git_repo` installs real loose objects from `test_support/git_seed/` to avoid repeated Git setup commands.
