@@ -1490,6 +1490,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 4. Draw the role rows per State model items 2 to 4. The fit drops optional columns as today, before it wraps.
 5. Tests under 1 s: the column set; role rows for one and for three roles; a role that leaves; sort keeps role rows under their account; a narrow width drops optional columns. Each Assertion-Change line names the removed or added column.
 6. CHANGELOG: one Changed line in cargo-handler.
+7. C193 (the user, 2026-11-03, via unit-board and the showrunner: "they diverge right now - it is up to handler to make the fixes"): the table matches the unit-board accounts board (`~/.claude/mods/unit-board/hooks/accounts.tsx`) in its columns, their order and the green or red usage-read mark. The order is: read mark, account, left, role, busy, shell, idle, total, resets, credits, enabled. The `in use` column goes. A `total` row under the accounts sums the counts. The live side-by-side comparison on natedev goes in the checkpoint notice, with a Change-Review line.
 
 **Files:** `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/constants.rs`, `crates/cargo-handler/src/sort.rs`, the accounts reader in `crates/cargo-handler/src/census/`, the accounts tests, `crates/cargo-handler/CHANGELOG.md`.
 
