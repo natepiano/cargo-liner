@@ -2465,7 +2465,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 
 ### Phase 48 — The p and h shortcuts show with the other global shortcuts  · status: todo
 
-**Depends on:** Phase 39
+**Depends on:** none (it named Phase 39 only for file order; Phase 39 has not started)
 
 #### Work Order
 
@@ -2510,7 +2510,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - A live shot shows the disk value in GiB after mem.
 - Idle tile CPU does not rise by more than the spread of 3 live pairs.
 
-### Phase 50 — A CI nextest run shows its progress meter  · status: in progress
+### Phase 50 — A CI nextest run shows its progress meter  · status: done
 
 **Depends on:** none. The showrunner put it before 43b, P47, P46, 48 and 49, beside 43a: a user sees this defect in a feature that worked.
 
