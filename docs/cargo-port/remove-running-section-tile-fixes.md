@@ -2512,28 +2512,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 
 ### Phase 50 — A CI nextest run shows its progress meter  · status: done
 
-**Depends on:** none. The showrunner put it before 43b, P47, P46, 48 and 49, beside 43a: a user sees this defect in a feature that worked.
-
-#### Work Order
-
-**Goal:** A `[ci]` cell for a GitHub runner's `cargo nextest run` shows the same progress meter as a local nextest run. User report, 2026-11-02, through the showrunner: the hana-linux-2 runner's `[ci] cargo nextest run --workspace` row (runs 1, 28:59) showed no meter.
-
-**Spec:**
-
-1. Find the cause first, on a live runner job. Check the capture registration of the runner's shim call, the capture read, and the cell's meter rule. Record the cause in `phases/50/cause.md`.
-2. Fix the cause where it lives: the shim, the capture read, or the render.
-3. Add a test that fails on the current tree: a dispatched CI nextest with a capture shows its meter. Extend `a_long_ci_cell_draws_its_dispatched_nextests_runs` or add one beside it.
-4. A local nextest keeps its current meter.
-
-**Files:**
-- `crates/cargo-tile/src/cargo-capture-shim.sh`
-- `crates/cargo-tile/src/progress/capture_read.rs`
-- `crates/cargo-tile/src/render.rs`
-- `crates/cargo-tile/src/census/scan.rs`
-
-**Acceptance gate:**
-- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green; no new test takes 1 s or more.
-- A live shot of a runner nextest job shows the meter in its `[ci]` cell.
+**As built** (checkpoint `2a55fa9c2`, merged as main `431ecb2e8`, 2026-11-03): no code change. The CI nextest meter was missing because an old cargo-tile reader was not restarted; a reader built from main draws it. The test `a_captured_ci_nextest_draws_its_meter_without_lending_it_to_a_child` pins that a captured CI nextest run draws its own meter and its child rows borrow none.
 
 ### Phase 51 — A reader scenario ends its fake cargo processes  · status: todo
 
