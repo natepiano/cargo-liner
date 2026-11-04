@@ -1796,7 +1796,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - `mesh_roster.json` and `role_map_cache.json` go in Phase 57e, after models 3n reaches main. At 57c dispatch, 3n is not on main: staff rows have no role field.
 - `mesh_runs` stays. It holds run results.
 - Fields: `id`, `kind`, `name`, `parent`, `current_session`, `worktree` (units), `doc` (showrunners). Kinds: `showrunner`, `unit`, `worker`, `agent`. A worker row's parent is its unit. Its `current_session` is a Codex thread id or a Claude session id.
-- The Mac has no staff file. Its `staff.py` forwards reads to natedev over ssh. cargo-handler never reads over ssh. Sdlc is asked to keep a current copy of `staff.json` on the Mac, and the Mac config points to that copy. Until it exists, a missing file gives no staff names and no error. The checkpoint notice says whether the Mac tree empties without the file.
+- The Mac: the user approved a read-only copy of `staff.json` on the Mac (2026-11-04). Herdr-unit adds the push: each staff write on natedev replaces the Mac copy at the same path, by an atomic rename. The Mac config uses the same staff path, with no Mac special case. cargo-handler never reads over ssh. Until the copy exists, a missing file gives no staff names and no error. The showrunner installs 57c on the Mac when the push is on `~/.claude` main.
 
 ### Phase 57e — Worker roles come from the staff file  · status: todo
 
