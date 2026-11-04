@@ -301,7 +301,7 @@ The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame 
 
 **Gotchas:** each CPU pane sample changes the screen, so an idle cargo-port draws about 1.15 frames each second. ratatui-core 0.1.2 keeps `Frame::cursor_position` crate-private and has no public cursor visibility. The per-frame candidate render left idle CPU above main's; Phase 3b removes it.
 
-### Phase 3b — A drawn frame renders once, into the real terminal  · status: todo
+### Phase 3b — A drawn frame renders once, into the real terminal  · status: done
 
 **Depends on:** Phase 3
 
@@ -331,6 +331,8 @@ The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame 
 **Workers:** 1 writer (impl4) owns the code and the tests; the unit director owns the live measure.
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; branch idle CPU below main's beyond the spread over 3 pairs.
+
+**As built:** test cargo-port 1154/1154 and workspace lint pass. Release idle over 3 pairs: installed 0.200/0.217/0.217%, branch 0.200/0.217/0.217% of one core. The branch no longer exceeds main; the Phase 3 excess (0.250–0.267%) is gone. The first live run exited under a pty that did not answer the cursor query, so the draw path no longer reads the cursor.
 
 ### Phase 3c — The detail cache API takes a named state  · status: todo
 

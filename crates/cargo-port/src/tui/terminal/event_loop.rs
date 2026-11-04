@@ -8,12 +8,11 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crossterm::event::Event;
+use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
-use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use ratatui::layout::Position;
 use tui_pane::Keymap;
 use tui_pane::PERF_LOG_TARGET;
 use tui_pane::ToastCountdownState;
@@ -273,39 +272,45 @@ fn measure(action: impl FnOnce()) -> Duration {
     started.elapsed()
 }
 
-/// Render a candidate once, then write it only if cells or cursor changed.
-/// Input receipt is a reason to inspect the screen, never proof it changed.
 fn draw_frame<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     output: &mut FrameOutput,
 ) -> Result<FrameDraw, B::Error> {
+    draw_frame_with_renderer(terminal, app, output, render::ui)
+}
+
+/// Render once into the terminal, then classify changes to the buffer only.
+/// Input receipt is a reason to inspect the screen, never proof it changed.
+fn draw_frame_with_renderer<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    output: &mut FrameOutput,
+    render_ui: impl FnOnce(&mut Frame, &mut App),
+) -> Result<FrameDraw, B::Error> {
     let started = Instant::now();
-    let size = terminal.size()?;
-    let mut candidate = Terminal::new(TestBackend::new(size.width, size.height))
-        .unwrap_or_else(|never| match never {});
-    candidate
-        .draw(|frame| render::ui(frame, app))
-        .unwrap_or_else(|never| match never {});
-    let screen = RenderedScreen {
-        cells:  candidate.backend().buffer().clone(),
-        cursor: if candidate.backend().cursor_visible() {
-            ScreenCursor::Visible(candidate.backend().cursor_position())
-        } else {
-            ScreenCursor::Hidden
+    let completed = terminal.draw(|frame| render_ui(frame, app))?;
+    let changed = match output {
+        FrameOutput::FirstFrame => {
+            let cells = completed.buffer.clone();
+            *output = FrameOutput::Drawn(RenderedScreen { cells });
+            true
+        },
+        FrameOutput::Drawn(previous) => {
+            let cells_changed = previous.cells != *completed.buffer;
+            if cells_changed {
+                // Buffer's default clone_from allocates. Reuse the cell vector instead.
+                previous.cells.content.clone_from(&completed.buffer.content);
+                previous.cells.area = completed.buffer.area;
+            }
+            cells_changed
         },
     };
-    if matches!(output, FrameOutput::Drawn(previous) if previous == &screen) {
-        return Ok(FrameDraw::Unchanged);
+    if changed {
+        Ok(FrameDraw::Drawn(started.elapsed()))
+    } else {
+        Ok(FrameDraw::Unchanged)
     }
-    terminal.draw(|frame| {
-        frame.buffer_mut().clone_from(&screen.cells);
-        if let ScreenCursor::Visible(position) = screen.cursor {
-            frame.set_cursor_position(position);
-        }
-    })?;
-    *output = FrameOutput::Drawn(screen);
-    Ok(FrameDraw::Drawn(started.elapsed()))
 }
 
 #[derive(Default)]
@@ -315,16 +320,8 @@ enum FrameOutput {
     Drawn(RenderedScreen),
 }
 
-#[derive(PartialEq)]
 struct RenderedScreen {
-    cells:  Buffer,
-    cursor: ScreenCursor,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum ScreenCursor {
-    Hidden,
-    Visible(Position),
+    cells: Buffer,
 }
 
 enum FrameDraw {

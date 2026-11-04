@@ -3,6 +3,8 @@
     reason = "tests require valid fixture paths and queued messages"
 )]
 
+use std::io::Error;
+use std::io::ErrorKind;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -13,7 +15,13 @@ use crossterm::event::KeyModifiers;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
 use ratatui::Terminal;
+use ratatui::backend::Backend;
+use ratatui::backend::ClearType;
 use ratatui::backend::TestBackend;
+use ratatui::backend::WindowSize;
+use ratatui::buffer::Cell;
+use ratatui::layout::Position;
+use ratatui::layout::Size;
 use tui_pane::ToastCountdownState;
 use tui_pane::ToastDuration;
 use tui_pane::ToastLingerState;
@@ -28,6 +36,7 @@ use super::FrameKey;
 use super::FrameOutput;
 use super::FrameState;
 use super::draw_frame;
+use super::draw_frame_with_renderer;
 use super::process_input_frame;
 use crate::channel;
 use crate::project::AbsolutePath;
@@ -713,4 +722,155 @@ fn valid_keymap_reload_changes_the_frame_key() {
     }
     assert!(frames.needs_draw(&app, now));
     assert!(!frames.needs_draw(&app, now));
+}
+
+#[test]
+fn drawn_frame_renders_ui_once_in_the_real_terminal() {
+    let mut app = test_support::make_app(&[project("/tmp/phase3b-render")]);
+    app.ensure_visible_rows_cached();
+    app.ensure_disk_cache();
+    app.ensure_fit_widths_cached();
+    app.ensure_detail_cached();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+    let mut output = FrameOutput::default();
+    let mut render_counts = Vec::new();
+    assert!(matches!(
+        draw_frame_with_renderer(&mut terminal, &mut app, &mut output, |frame, app| {
+            render_counts.push(frame.count());
+            crate::tui::render::ui(frame, app);
+        })
+        .expect("first frame"),
+        FrameDraw::Drawn(_)
+    ));
+    app.open_ready_confirmation_for_test(ConfirmAction::Clean(AbsolutePath::from(
+        "/tmp/phase3b-render",
+    )));
+    assert!(matches!(
+        draw_frame_with_renderer(&mut terminal, &mut app, &mut output, |frame, app| {
+            render_counts.push(frame.count());
+            crate::tui::render::ui(frame, app);
+        })
+        .expect("confirmation frame"),
+        FrameDraw::Drawn(_)
+    ));
+    assert_eq!(render_counts, [0, 1]);
+}
+
+#[test]
+fn changed_frames_reuse_terminal_and_retained_cell_buffers() {
+    let mut app = test_support::make_app(&[]);
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+    let mut output = FrameOutput::default();
+    assert!(matches!(
+        draw_frame_with_renderer(&mut terminal, &mut app, &mut output, |frame, _| {
+            frame.buffer_mut()[(0, 0)].set_symbol("A");
+        })
+        .expect("first frame"),
+        FrameDraw::Drawn(_)
+    ));
+    let (changed, changed_allocations) = crate::test_support::count_allocations(|| {
+        draw_frame_with_renderer(&mut terminal, &mut app, &mut output, |frame, _| {
+            frame.buffer_mut()[(0, 0)].set_symbol("B");
+        })
+        .expect("changed frame")
+    });
+    assert!(matches!(changed, FrameDraw::Drawn(_)));
+    assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "B");
+    assert_eq!(changed_allocations, 0);
+    let (unchanged, unchanged_allocations) = crate::test_support::count_allocations(|| {
+        draw_frame_with_renderer(&mut terminal, &mut app, &mut output, |frame, _| {
+            frame.buffer_mut()[(0, 0)].set_symbol("B");
+        })
+        .expect("unchanged frame")
+    });
+    assert!(matches!(unchanged, FrameDraw::Unchanged));
+    assert_eq!(unchanged_allocations, 0);
+}
+
+#[test]
+fn unchanged_frame_key_skips_ui_render() {
+    let mut app = test_support::make_app(&[]);
+    let now = Instant::now();
+    let mut frames = FrameState::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+    let mut output = FrameOutput::default();
+    let mut renders = 0;
+    for _ in 0..2 {
+        if frames.needs_draw(&app, now) {
+            assert!(matches!(
+                draw_frame_with_renderer(&mut terminal, &mut app, &mut output, |frame, app| {
+                    renders += 1;
+                    crate::tui::render::ui(frame, app);
+                })
+                .expect("allowed frame"),
+                FrameDraw::Drawn(_)
+            ));
+        }
+    }
+    assert_eq!(renders, 1);
+}
+
+struct CursorQueryUnsupported(TestBackend);
+
+impl Backend for CursorQueryUnsupported {
+    type Error = Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        self.0.draw(content).map_err(std::io::Error::other)
+    }
+
+    fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+        self.0.hide_cursor().map_err(std::io::Error::other)
+    }
+
+    fn show_cursor(&mut self) -> Result<(), Self::Error> {
+        self.0.show_cursor().map_err(std::io::Error::other)
+    }
+
+    fn get_cursor_position(&mut self) -> Result<Position, Self::Error> {
+        Err(std::io::Error::new(
+            ErrorKind::Unsupported,
+            "the terminal does not answer cursor queries",
+        ))
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> Result<(), Self::Error> {
+        self.0
+            .set_cursor_position(position)
+            .map_err(std::io::Error::other)
+    }
+
+    fn clear(&mut self) -> Result<(), Self::Error> { self.0.clear().map_err(std::io::Error::other) }
+
+    fn clear_region(&mut self, clear_type: ClearType) -> Result<(), Self::Error> {
+        self.0
+            .clear_region(clear_type)
+            .map_err(std::io::Error::other)
+    }
+
+    fn size(&self) -> Result<Size, Self::Error> { self.0.size().map_err(std::io::Error::other) }
+
+    fn window_size(&mut self) -> Result<WindowSize, Self::Error> {
+        self.0.window_size().map_err(std::io::Error::other)
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> { self.0.flush().map_err(std::io::Error::other) }
+}
+
+#[test]
+fn frames_draw_without_terminal_cursor_replies() -> std::io::Result<()> {
+    let mut app = test_support::make_app(&[]);
+    let mut terminal = Terminal::new(CursorQueryUnsupported(TestBackend::new(100, 30)))?;
+    let mut output = FrameOutput::default();
+    for (symbol, changes) in [("A", true), ("A", false), ("B", true)] {
+        let result = draw_frame_with_renderer(&mut terminal, &mut app, &mut output, |frame, _| {
+            frame.buffer_mut()[(0, 0)].set_symbol(symbol);
+        })?;
+        assert_eq!(matches!(result, FrameDraw::Drawn(_)), changes);
+        assert_eq!(terminal.backend().0.buffer()[(0, 0)].symbol(), symbol);
+    }
+    Ok(())
 }
