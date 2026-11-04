@@ -1620,6 +1620,38 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 **As built** (checkpoint `229b35851`, merged as main `48dfe94d2`, 2026-11-03): a command cell's top border holds only its account tag and directory. Its progress reading (state word, meter, percent) is the first body row, above the table header. A cell with no reading starts with its table. One owner computes the reading row, and a cell's demand counts it only when it draws. Live at 393x89 against main: 0 of 8 titles hold progress text (main 8 of 8), 8 of 8 readings are the first body row, process rows stay 17 of 17, and no cell is clipped. Gates under the bump: lint and 15 related tests; the showrunner runs the full suite on the merged tip.
 
+### Phase 47b — The cell border is plain; the account and directory are the first body row  · status: in progress
+
+**Depends on:** none (it starts on main `4b3ce44da`, after Phase 47a)
+
+#### Work Order
+
+**Goal:** A command cell shows its border as a plain line again. The account and directory move into the body. From the user (2026-11-03, through the showrunner): "it works - i think i miss seeing the cell borders - rather than have the title be the [username] - {direcotry} - i think it should just be the first row - followed by the optional build/test progress bar. hopefully that's simple to change". The showrunner put this phase first in the order.
+
+**Spec:**
+1. The top border of a command cell carries no title. It is the plain border line that cells had before Phase 47.
+2. Body row 1 shows the account and directory, for example `[natepiano] ~/rust/hana`. It uses the one account decision, `TableAccountHeadings`, and the directory cut that fits the row.
+3. Body row 2 shows the progress reading (state word, meter, percent), only when the command has one.
+4. The process table follows. A cell with no reading starts its table on row 2.
+5. A cell's demand counts the heading row always and the reading row only when it draws.
+
+**Tests, red first:**
+- `a_command_cell_border_has_no_title`: the top border row of a command cell holds only border glyphs.
+- `a_command_cell_names_its_account_and_directory_on_its_first_body_row`: body row 1 reads `[account] directory`.
+- `a_command_cell_draws_its_progress_on_its_second_body_row`: with a reading, body row 2 holds the state word and meter; without one, row 2 is the table header.
+- Change the Phase 47 and 47a assertions that expect the title. Each Assertion-Change line names this user request as its reason.
+
+**Files:**
+- `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/CHANGELOG.md`
+
+**Seats:** 1 writer (`impl`). The CHANGELOG gets one Changed line.
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile` and the related `cargo-tile` tests green; no test takes 1 s or more.
+- Unit director's live capture at 393x89 against main: every command cell has a plain top border, body row 1 is the account and directory, the reading is row 2 when one runs, and no cell is clipped.
+- Change-review line: a command cell's border is plain, and its account and directory are its first body row.
+
 ### Phase 46 — Enter shows the focused cell on the full screen, and Esc returns to the grid  · status: todo
 
 **Depends on:** Phase 42 (both change `render.rs` and the `tui_pane` frame; this phase starts on top of Phase 42's checkpoint)
