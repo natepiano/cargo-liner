@@ -1793,12 +1793,12 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - The staff file replaces these reads. 57c removes each one:
   1. `production_tree.py --json` and the `hierarchy_command` setting.
   2. The review pool `pool.json`. Herdr 3p deletes the file.
-- `mesh_roster.json` and `role_map_cache.json` go in Phase 57d, after models 3n reaches main. At 57c dispatch, 3n is not on main: staff rows have no role field.
+- `mesh_roster.json` and `role_map_cache.json` go in Phase 57e, after models 3n reaches main. At 57c dispatch, 3n is not on main: staff rows have no role field.
 - `mesh_runs` stays. It holds run results.
 - Fields: `id`, `kind`, `name`, `parent`, `current_session`, `worktree` (units), `doc` (showrunners). Kinds: `showrunner`, `unit`, `worker`, `agent`. A worker row's parent is its unit. Its `current_session` is a Codex thread id or a Claude session id.
 - The Mac has no staff file. Its `staff.py` forwards reads to natedev over ssh. cargo-handler never reads over ssh. Sdlc is asked to keep a current copy of `staff.json` on the Mac, and the Mac config points to that copy. Until it exists, a missing file gives no staff names and no error. The checkpoint notice says whether the Mac tree empties without the file.
 
-### Phase 57d — Worker roles come from the staff file  · status: todo
+### Phase 57e — Worker roles come from the staff file  · status: todo
 
 **Depends on:** Phase 57c; models 3n on `~/.claude` main (each worker gets its own staff row with its role).
 
