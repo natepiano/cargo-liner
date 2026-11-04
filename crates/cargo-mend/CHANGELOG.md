@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `--fix` preserves imports used by macro fields, macro bindings, field shorthand, and child modules, so rewritten code keeps its field syntax and bindings.
 - `--fix` preserves enclosing cfg conditions when it moves imports from associated functions and expressions to module scope.
 - On Linux, build scripts use the selected compiler's matching libraries, so compiler probes read stdin when a project pins another toolchain.
 - Keep one independent compiler wrapper copy for each mend run, so a reinstall cannot interrupt fix validation.

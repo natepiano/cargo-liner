@@ -1,7 +1,7 @@
-mod attribute_references;
-mod descendant_globs;
+mod descendant_imports;
 mod function_imports;
 mod inline_calls;
+mod preserved_imports;
 mod references;
 mod scan;
 mod support;

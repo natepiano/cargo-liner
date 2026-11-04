@@ -6,15 +6,10 @@ use anyhow::Context;
 use anyhow::Result;
 use syn::File;
 use syn::Item;
-use syn::ItemMod;
-use syn::ItemUse;
-use syn::UseTree;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
-use syn::visit::visit_item_mod;
 
-use super::attribute_references;
-use super::descendant_globs;
+use super::descendant_imports;
 use super::function_imports::ImportDetector;
 use super::function_imports::ImportTarget;
 use super::function_imports::RawCandidate;
@@ -284,7 +279,7 @@ fn scan_file(
 
     let mut imports = ModuleImports::from_syntax(syntax, indexed, &current_module_path)?;
 
-    let module_to_functions = fixable_function_candidates(
+    let mut module_to_functions = fixable_function_candidates(
         &FileScope {
             syntax,
             module_map,
@@ -309,7 +304,12 @@ fn scan_file(
     let mut collector = ReferenceCollector::new(indexed, &imported_names);
     Visit::visit_file(&mut collector, syntax);
 
-    let references = collector.references?;
+    drop_preserved_import_candidates(&collector.preserved_imports, &mut module_to_functions);
+    let references = collector
+        .references?
+        .into_iter()
+        .filter(|reference| !collector.preserved_imports.contains(&reference.name))
+        .collect::<Vec<_>>();
     let bindings = RewriteBinding::collect(indexed, &module_to_functions, &references)?;
 
     let (mut findings, mut fixes) =
@@ -381,11 +381,8 @@ fn fixable_function_candidates(
 
     drop_colliding_candidates(scope.imports, &mut module_to_functions, inline_candidates);
 
-    drop_attribute_referenced_candidates(scope.syntax, &mut module_to_functions);
-
-    drop_candidates_reimported_by_inline_modules(scope.syntax, &mut module_to_functions);
-
-    descendant_globs::drop_candidates_reached_by_descendant_globs(
+    descendant_imports::drop_candidates_reached_by_descendants(
+        scope.syntax,
         scope.module_map,
         scope.sources,
         scope.current_module_path,
@@ -518,124 +515,16 @@ fn drop_colliding_candidates(
     });
 }
 
-/// Drop candidates whose function name is mentioned by an attribute. Attribute
-/// payloads belong to the attribute macro's grammar rather than to the path
-/// graph the rewrite walks — `#[serde(default = "make_default")]` names the
-/// function as a string literal — so the reference collector never sees them and
-/// removing the import would leave the name unresolved (E0425). Leave such
-/// imports untouched rather than emit a fix that does not compile.
-///
-/// Inline call candidates are unaffected: they add a module import and shorten a
-/// path that is already fully qualified, so nothing an attribute names stops
-/// resolving.
-/// Drop candidates an inline `mod` re-imports from the file's own top level.
-///
-/// `#[cfg(test)] mod tests { use super::reflect_component_for; }` sitting under
-/// a file-scope `use crate::capabilities::reflect_component_for;` names that
-/// file-scope binding. Rewriting the outer import to `use crate::capabilities;`
-/// leaves the inner `use` naming nothing (E0432), and the module has no
-/// `capabilities` binding to reach the function through (E0433). The pair only
-/// works rewritten together, so leave both alone and report nothing rather than
-/// emit a fix that compiles in the file but not in the module below it.
-///
-/// A glob (`use super::*;`) is not a re-import: it makes whatever the file
-/// binds visible, so the new `use crate::capabilities;` arrives with it and the
-/// references inside the module follow the rewrite normally.
-fn drop_candidates_reimported_by_inline_modules(
-    syntax: &File,
+/// Drop candidates whose imports `preserved_imports` keeps, because an attribute
+/// or a macro names them, or a struct field shorthand uses them. The rewrite
+/// cannot change those uses into paths, so removing the import would leave them
+/// unresolved (E0425).
+fn drop_preserved_import_candidates(
+    preserved_names: &BTreeSet<String>,
     module_to_functions: &mut BTreeMap<String, Vec<RawCandidate>>,
 ) {
-    let mut collector = InlineSuperReimportCollector {
-        inline_mod_depth: 0,
-        names:            BTreeSet::new(),
-    };
-    Visit::visit_file(&mut collector, syntax);
-    if collector.names.is_empty() {
-        return;
-    }
-
     module_to_functions.retain(|_, functions| {
-        functions.retain(|candidate| {
-            !candidate.inline_scope.is_empty()
-                || !collector.names.contains(&candidate.function_name)
-        });
-        !functions.is_empty()
-    });
-}
-
-struct InlineSuperReimportCollector {
-    inline_mod_depth: usize,
-    names:            BTreeSet<String>,
-}
-
-impl Visit<'_> for InlineSuperReimportCollector {
-    fn visit_item_mod(&mut self, node: &ItemMod) {
-        if node.content.is_some() {
-            self.inline_mod_depth += 1;
-            visit_item_mod(self, node);
-            self.inline_mod_depth -= 1;
-        } else {
-            visit_item_mod(self, node);
-        }
-    }
-
-    fn visit_item_use(&mut self, node: &ItemUse) {
-        if self.inline_mod_depth == 0 {
-            return;
-        }
-        collect_super_reimports(
-            &node.tree,
-            &mut Vec::new(),
-            self.inline_mod_depth,
-            &mut self.names,
-        );
-    }
-}
-
-/// Leaf names of `use` paths that climb exactly `depth` `super` segments — from
-/// inside an inline `mod` nested `depth` deep, that is the file's own top level.
-fn collect_super_reimports(
-    tree: &UseTree,
-    prefix: &mut Vec<String>,
-    depth: usize,
-    names: &mut BTreeSet<String>,
-) {
-    match tree {
-        UseTree::Path(path) => {
-            prefix.push(path.ident.to_string());
-            collect_super_reimports(&path.tree, prefix, depth, names);
-            prefix.pop();
-        },
-        UseTree::Name(name) => {
-            if reaches_file_top_level(prefix, depth) {
-                names.insert(name.ident.to_string());
-            }
-        },
-        UseTree::Rename(rename) => {
-            if reaches_file_top_level(prefix, depth) {
-                names.insert(rename.ident.to_string());
-            }
-        },
-        UseTree::Group(group) => {
-            for item in &group.items {
-                collect_super_reimports(item, prefix, depth, names);
-            }
-        },
-        UseTree::Glob(_) => {},
-    }
-}
-
-fn reaches_file_top_level(prefix: &[String], depth: usize) -> bool {
-    prefix.len() == depth && prefix.iter().all(|segment| segment == "super")
-}
-
-fn drop_attribute_referenced_candidates(
-    syntax: &File,
-    module_to_functions: &mut BTreeMap<String, Vec<RawCandidate>>,
-) {
-    let attribute_names = attribute_references::collect(syntax);
-    module_to_functions.retain(|_, functions| {
-        functions.retain(|candidate| !attribute_names.contains(&candidate.function_name));
+        functions.retain(|candidate| !preserved_names.contains(&candidate.function_name));
         !functions.is_empty()
     });
 }
@@ -797,12 +686,134 @@ mod tests {
 
     use anyhow::Context;
     use proc_macro2::LineColumn;
+    use syn::Item;
+    use syn::Stmt;
 
     use super::FunctionImportPolicy;
     use super::ImportRewritePlan;
     use crate::fixes::imports::ImportSource;
     use crate::fixes::imports::ModuleImports;
     use crate::rust_syntax::ParsedSources;
+
+    fn rewrite_fixture(text: &str) -> anyhow::Result<String> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("lib.rs");
+        std::fs::write(&path, text)?;
+        let sources = ParsedSources::default();
+        let module_map = sources.module_map(dir.path());
+        let (_, fixes) = super::scan_file(
+            dir.path(),
+            super::CrateSources {
+                source_root: dir.path(),
+                sources:     &sources,
+            },
+            &path,
+            &module_map,
+        )?;
+        crate::fixes::imports::apply_fixes(&fixes.try_into()?)?;
+        let rewritten = std::fs::read_to_string(path)?;
+        let syntax = syn::parse_file(&rewritten)?;
+        for item in syntax.items {
+            if let Item::Fn(function) = item {
+                for statement in function.block.stmts {
+                    if let Stmt::Macro(statement) = statement
+                        && statement.mac.path.is_ident("inspect")
+                    {
+                        syn::parse2::<syn::Block>(statement.mac.tokens)?;
+                    }
+                }
+            }
+        }
+        Ok(rewritten)
+    }
+
+    fn assert_field_import_preserved(body: &str) -> anyhow::Result<()> {
+        let text = format!(
+            "mod helpers {{ pub fn device() -> u8 {{ 1 }} }}\n\
+             use crate::helpers::device;\n\
+             struct State {{ device: u8 }}\n\
+             fn check(input: State) {{ device(); {body} }}\n"
+        );
+        assert_eq!(rewrite_fixture(&text)?, text);
+        Ok(())
+    }
+
+    #[test]
+    fn module_import_keeps_macro_struct_literal_field_names() -> anyhow::Result<()> {
+        assert_field_import_preserved("inspect!({ State { device: device() } });")
+    }
+
+    #[test]
+    fn module_import_keeps_macro_struct_pattern_field_names() -> anyhow::Result<()> {
+        assert_field_import_preserved("inspect!({ let State { device: local } = input; local });")
+    }
+
+    #[test]
+    fn module_import_keeps_macro_shorthand_and_its_local_binding() -> anyhow::Result<()> {
+        assert_field_import_preserved(
+            "inspect!({ let State { device } = input; State { device } });",
+        )
+    }
+
+    #[test]
+    fn module_import_keeps_function_value_field_shorthand() -> anyhow::Result<()> {
+        assert_field_import_preserved(
+            "struct Callback { device: fn() -> u8 } let callback = Callback { device };",
+        )
+    }
+
+    #[test]
+    fn module_import_keeps_spawn_binding_used_by_path_mounted_child() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source_root = dir.path().join("src");
+        std::fs::create_dir(&source_root)?;
+        let tests = dir.path().join("tests");
+        std::fs::create_dir(&tests)?;
+        std::fs::write(
+            source_root.join("lib.rs"),
+            "mod screen_population_tests { pub fn spawn() {} } mod screen_assembly;",
+        )?;
+        let path = source_root.join("screen_assembly.rs");
+        let text = "use crate::screen_population_tests::spawn;\n\
+                    fn check() { spawn(); }\n\
+                    #[path = \"../tests/patch_stubs.rs\"] mod patch_stubs;\n";
+        std::fs::write(&path, text)?;
+        std::fs::write(
+            tests.join("patch_stubs.rs"),
+            "use super::spawn; fn check() { spawn(); }",
+        )?;
+        let sources = ParsedSources::default();
+        let module_map = sources.module_map(&source_root);
+        let (_, fixes) = super::scan_file(
+            dir.path(),
+            super::CrateSources {
+                source_root: &source_root,
+                sources:     &sources,
+            },
+            &path,
+            &module_map,
+        )?;
+        crate::fixes::imports::apply_fixes(&fixes.try_into()?)?;
+        let rewritten = std::fs::read_to_string(path)?;
+        syn::parse_file(&rewritten)?;
+        assert_eq!(
+            rewritten, text,
+            "the child still imports the parent binding"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn module_import_keeps_imported_macro_binding() -> anyhow::Result<()> {
+        let text = "mod helpers {\n\
+                    macro_rules! check_property { ($e:expr) => { $e }; }\n\
+                    pub(crate) use check_property;\n\
+                    }\n\
+                    use crate::helpers::check_property;\n\
+                    fn check() { check_property!(true); }\n";
+        assert_eq!(rewrite_fixture(text)?, text);
+        Ok(())
+    }
 
     #[test]
     fn module_import_fix_keeps_if_let_registration_row_local() -> anyhow::Result<()> {
