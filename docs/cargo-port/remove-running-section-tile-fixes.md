@@ -1616,7 +1616,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 **As built** (checkpoint `ac47cbba`, merged as main `2fb29335c`, 2026-11-03): a command cell names its account tag and directory in its top border through `TileGroupTitle::Titled`. The body draws no lead heading row, so the cell shows one more process row. One account decision, `TableAccountHeadings`, feeds the title and any nested body heading. The directory cut fits the title room. A nested directory keeps its body heading. Live at 393x89 against main: 8 of 8 command cells have one title, no lead heading stays in a body, and process rows stay 17 of 17 with no clipped cell.
 
-### Phase 47a — The border title is only the account and directory; progress is the first body row  · status: in progress
+### Phase 47a — The border title is only the account and directory; progress is the first body row  · status: done
 
 **Depends on:** Phase 47.
 
