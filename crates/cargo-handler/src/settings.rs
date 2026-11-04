@@ -21,10 +21,11 @@ use tui_pane::step_framework_setting;
 use crate::app::App;
 use crate::census::HierarchySource;
 use crate::config::CargoHandler;
+use crate::config::StaffFilePath;
 use crate::constants::CENSUS_SETTINGS_SECTION;
-use crate::constants::HIERARCHY_COMMAND_LABEL;
 use crate::constants::MACHINES_SETTINGS_SECTION;
 use crate::constants::REMOTE_MACHINES_LABEL;
+use crate::constants::STAFF_FILE_LABEL;
 use crate::constants::TILES_SETTINGS_SECTION;
 
 /// cargo-handler's own rows; the framework steps the rest.
@@ -32,8 +33,8 @@ use crate::constants::TILES_SETTINGS_SECTION;
 pub(crate) enum AppSetting {
     /// `machines.remote`, typed in as a list of ssh host names.
     RemoteMachines,
-    /// `census.hierarchy_command`, typed in as one line of shell.
-    HierarchyCommand,
+    /// `census.staff_file`, entered as a file path.
+    StaffFile,
 }
 
 /// Build the settings rows for the current frame.
@@ -58,9 +59,9 @@ pub(crate) fn rows(app: &App) -> SettingsRows<AppSetting> {
 
     out.section(CENSUS_SETTINGS_SECTION);
     out.text(
-        AppSetting::HierarchyCommand,
-        HIERARCHY_COMMAND_LABEL,
-        config.census.hierarchy_command.clone(),
+        AppSetting::StaffFile,
+        STAFF_FILE_LABEL,
+        config.census.staff_file.0.clone(),
     );
 
     out.files::<CargoHandler>();
@@ -87,7 +88,7 @@ pub(crate) fn cycle(app: &mut App, step: SettingStep) {
             app.startup_note.appearance = note.into();
         },
         Some(
-            SettingTarget::App(AppSetting::RemoteMachines | AppSetting::HierarchyCommand)
+            SettingTarget::App(AppSetting::RemoteMachines | AppSetting::StaffFile)
             | SettingTarget::AppText(_)
             | SettingTarget::ReadOnly,
         )
@@ -102,8 +103,8 @@ pub(crate) fn selected_text(app: &App) -> Option<String> {
         Some(SettingTarget::AppText(AppSetting::RemoteMachines)) => {
             Some(join_list(&app.loaded_config.config.machines.remote))
         },
-        Some(SettingTarget::AppText(AppSetting::HierarchyCommand)) => {
-            Some(app.loaded_config.config.census.hierarchy_command.clone())
+        Some(SettingTarget::AppText(AppSetting::StaffFile)) => {
+            Some(app.loaded_config.config.census.staff_file.0.clone())
         },
         _ => None,
     }
@@ -117,8 +118,8 @@ pub(crate) fn commit_text(app: &mut App, text: &str) {
         Some(SettingTarget::AppText(AppSetting::RemoteMachines)) => {
             set_remote_machines(app, parse_list(text));
         },
-        Some(SettingTarget::AppText(AppSetting::HierarchyCommand)) => {
-            set_hierarchy_command(app, text);
+        Some(SettingTarget::AppText(AppSetting::StaffFile)) => {
+            set_staff_file(app, text);
         },
         _ => return,
     }
@@ -135,12 +136,11 @@ fn set_remote_machines(app: &mut App, hosts: Vec<String>) {
     app.loaded_config.config.machines.remote = hosts;
 }
 
-/// Keep the stored shell line and the scheduler's enabled or off state
-/// in sync without running the command on the UI thread.
-fn set_hierarchy_command(app: &mut App, text: &str) {
-    app.hierarchy_command
+/// Keep the stored file path and the scheduler source in sync.
+fn set_staff_file(app: &mut App, text: &str) {
+    app.staff_file
         .replace(HierarchySource::from(text.to_string()));
-    app.loaded_config.config.census.hierarchy_command = text.to_string();
+    app.loaded_config.config.census.staff_file = StaffFilePath(text.to_string());
 }
 
 /// Outstanding startup notices, kept visible after their toasts
@@ -212,43 +212,42 @@ mod tests {
         );
     }
 
-    /// Committing preserves shell syntax, updates the scheduler, and
-    /// lets an empty edit disable hierarchy discovery again.
+    /// Committing the staff file path updates the scheduler.
+    /// An empty path disables staff discovery.
     #[test]
-    fn committing_the_hierarchy_command_updates_the_config_and_scheduler() {
+    fn committing_the_staff_file_updates_the_config_and_scheduler() {
         let mut app = App::new_for_test().expect("test app should build");
         let settings = rows(&app);
         let selection = (0..settings.rows().len())
             .find(|&selection| {
-                settings.target(selection)
-                    == Some(SettingTarget::AppText(AppSetting::HierarchyCommand))
+                settings.target(selection) == Some(SettingTarget::AppText(AppSetting::StaffFile))
             })
-            .expect("the settings list a hierarchy command row");
+            .expect("the settings list a staff file row");
         app.framework.settings_pane.select_row(selection);
-        let command = "printf '%s' '{\"schema\":1,\"edges\":[]}' | cat";
+        let command = "/tmp/staff list.json";
         let row_value = |app: &App| {
             rows(app)
                 .rows()
                 .iter()
-                .find(|row| row.label == HIERARCHY_COMMAND_LABEL)
+                .find(|row| row.label == STAFF_FILE_LABEL)
                 .map(|row| row.value.clone())
-                .expect("the settings list a hierarchy command row")
+                .expect("the settings list a staff file row")
         };
 
         commit_text(&mut app, command);
 
-        assert_eq!(app.loaded_config.config.census.hierarchy_command, command);
+        assert_eq!(app.loaded_config.config.census.staff_file.0, command);
         assert_eq!(
-            app.hierarchy_command.snapshot(),
-            HierarchySource::Command(command.to_string())
+            app.staff_file.snapshot(),
+            HierarchySource::File(command.to_string())
         );
         assert_eq!(selected_text(&app).as_deref(), Some(command));
         assert_eq!(row_value(&app), command);
 
         commit_text(&mut app, "");
 
-        assert_eq!(app.loaded_config.config.census.hierarchy_command, "");
-        assert_eq!(app.hierarchy_command.snapshot(), HierarchySource::Off);
+        assert_eq!(app.loaded_config.config.census.staff_file.0, "");
+        assert_eq!(app.staff_file.snapshot(), HierarchySource::Off);
         assert_eq!(selected_text(&app).as_deref(), Some(""));
         assert_eq!(row_value(&app), "");
     }

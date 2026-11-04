@@ -1,4 +1,4 @@
-//! Bounded hierarchy commands and their per-session-set cache, run off the UI thread.
+//! The staff file reader and the hierarchy publication state.
 
 #[path = "command_inputs.rs"]
 mod command_inputs;
@@ -10,13 +10,14 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fs;
 use std::io::Read;
+use std::ops::Deref;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-use std::path::Path;
 use std::path::PathBuf;
 use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::RecvTimeoutError;
@@ -29,10 +30,6 @@ pub(super) use command_inputs::FileRevision;
 pub(super) use command_inputs::InputDrivenCommand;
 use serde::Deserialize;
 use serde::Serialize;
-use sysinfo::Pid;
-use sysinfo::ProcessRefreshKind;
-use sysinfo::ProcessesToUpdate;
-use sysinfo::System;
 
 use super::AgentRow;
 use super::CodexThreadId;
@@ -40,9 +37,10 @@ use super::HierarchyEdge;
 use super::HierarchyEdges;
 use super::HierarchyRole;
 use super::HierarchySource;
+use super::RoleFallback;
 use super::SessionIdentity;
-use super::worker_dispatch::JobText;
-use super::worker_dispatch::WorkerTask;
+use super::worker_dispatch::WorkerDispatch;
+use super::worker_dispatch::WorkerIdentity;
 use crate::constants::HIERARCHY_OUTPUT_LIMIT;
 use crate::constants::HIERARCHY_REFRESH_INTERVAL;
 use crate::constants::HIERARCHY_SCHEMA;
@@ -52,326 +50,9 @@ use crate::constants::KILL_GROUP_OPTIONS;
 #[cfg(unix)]
 use crate::constants::KILL_PROGRAM;
 use crate::constants::PROBE_EXIT_CHECK;
-use crate::constants::REVIEW_POOL_DIRECTORY;
-use crate::constants::REVIEW_POOL_FILE;
 use crate::constants::SHELL_PROGRAM;
 use crate::constants::SHELL_SCRIPT_FLAG;
 use crate::startup_log;
-
-/// The source machine decides whether a stored reviewer can draw.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ReviewerState {
-    #[default]
-    NotPool,
-    Idle,
-    /// A command identified a pool edge. Its process still needs validation.
-    Unverified,
-    Busy {
-        name:    String,
-        pid:     u32,
-        started: u64,
-    },
-}
-
-impl ReviewerState {
-    pub(super) const fn is_drawn(&self) -> bool {
-        matches!(self, Self::NotPool | Self::Busy { .. })
-    }
-}
-
-/// Source-side reviewer state travels independently of retained manager links.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(super) struct ReviewerOutcome {
-    pub(super) thread_id: String,
-    pub(super) state:     ReviewerState,
-}
-
-/// The pool location is unavailable when the user's home is unknown.
-pub(super) enum ReviewerPoolLocation {
-    MissingHome,
-    Directory(PathBuf),
-}
-
-impl ReviewerPoolLocation {
-    pub(super) fn update(&self, pools: &mut ReviewerPools) -> Vec<(PathBuf, SystemTime)> {
-        match self {
-            Self::MissingHome => {
-                pools.documents.clear();
-                Vec::new()
-            },
-            Self::Directory(path) => pools.update(path),
-        }
-    }
-
-    pub(super) fn read(&self) -> ReviewerPools {
-        match self {
-            Self::MissingHome => ReviewerPools::default(),
-            Self::Directory(path) => ReviewerPools::read(path),
-        }
-    }
-}
-
-/// Missing leases do not authorize a stored reviewer to draw.
-#[derive(Debug, Default, Deserialize)]
-#[serde(from = "Option<PoolLeaseRecord>")]
-enum PoolLease {
-    #[default]
-    Unleased,
-    Leased,
-}
-
-#[derive(Deserialize)]
-struct PoolLeaseRecord {
-    unit: String,
-}
-
-impl From<Option<PoolLeaseRecord>> for PoolLease {
-    fn from(record: Option<PoolLeaseRecord>) -> Self {
-        match record {
-            Some(record) if !record.unit.is_empty() => Self::Leased,
-            _ => Self::Unleased,
-        }
-    }
-}
-
-/// A process claim still needs a liveness check on each scan.
-#[derive(Debug, Default, Deserialize)]
-#[serde(from = "Option<u32>")]
-enum ReviewerProcessClaim {
-    #[default]
-    Unclaimed,
-    Claimed(u32),
-}
-
-impl From<Option<u32>> for ReviewerProcessClaim {
-    fn from(pid: Option<u32>) -> Self { pid.map_or(Self::Unclaimed, Self::Claimed) }
-}
-
-/// A missing allocation time uses the claimed process's start.
-#[derive(Debug, Default, Deserialize)]
-#[serde(from = "Option<f64>")]
-enum ReviewAllocation {
-    #[default]
-    ProcessStart,
-    Recorded(u64),
-}
-
-impl From<Option<f64>> for ReviewAllocation {
-    fn from(seconds: Option<f64>) -> Self {
-        seconds
-            .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
-            .and_then(|duration| duration.as_millis().try_into().ok())
-            .map_or(Self::ProcessStart, Self::Recorded)
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct PoolReviewer {
-    thread_id:      String,
-    #[serde(default)]
-    lease:          PoolLease,
-    #[serde(default)]
-    busy_pid:       ReviewerProcessClaim,
-    #[serde(default)]
-    last_allocated: ReviewAllocation,
-}
-
-#[derive(Debug, Deserialize)]
-struct PoolTemplate {
-    thread_id: String,
-}
-
-/// Unknown pool fields stay at the JSON boundary.
-#[derive(Debug, Default, Deserialize)]
-struct ReviewerPoolDocument {
-    #[serde(default)]
-    reviewers: BTreeMap<String, PoolReviewer>,
-    #[serde(default)]
-    templates: BTreeMap<String, PoolTemplate>,
-}
-
-/// Pool documents are reread only when their modification time changes.
-#[derive(Debug, Default)]
-pub(super) struct ReviewerPools {
-    documents: BTreeMap<PathBuf, (SystemTime, ReviewerPoolDocument)>,
-    processes: Mutex<System>,
-}
-
-impl ReviewerPools {
-    pub(super) fn root() -> ReviewerPoolLocation {
-        dirs::home_dir().map_or(ReviewerPoolLocation::MissingHome, |home| {
-            ReviewerPoolLocation::Directory(home.join(REVIEW_POOL_DIRECTORY))
-        })
-    }
-
-    pub(super) fn read(root: &Path) -> Self {
-        let mut pools = Self::default();
-        pools.update(root);
-        pools
-    }
-
-    /// Return a stable key for hierarchy cache invalidation.
-    pub(super) fn update(&mut self, root: &Path) -> Vec<(PathBuf, SystemTime)> {
-        let mut current = BTreeSet::new();
-        for directory in fs::read_dir(root).into_iter().flatten().flatten() {
-            let path = directory.path().join(REVIEW_POOL_FILE);
-            let Ok(modified) = fs::metadata(&path).and_then(|metadata| metadata.modified()) else {
-                continue;
-            };
-            current.insert(path.clone());
-            if self
-                .documents
-                .get(&path)
-                .is_none_or(|(previous, _)| *previous != modified)
-            {
-                let document = fs::read(&path)
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                    .unwrap_or_default();
-                self.documents.insert(path, (modified, document));
-            }
-        }
-        self.documents.retain(|path, _| current.contains(path));
-        self.documents
-            .iter()
-            .map(|(path, (modified, _))| (path.clone(), *modified))
-            .collect()
-    }
-
-    pub(super) fn outcomes(&self) -> Vec<ReviewerOutcome> {
-        let mut edges = HierarchyEdges(
-            self.documents
-                .values()
-                .flat_map(|(_, document)| document.reviewers.values())
-                .map(|record| record.thread_id.as_str())
-                .map(|id| HierarchyEdge {
-                    manager:  String::new(),
-                    member:   id.to_owned(),
-                    role:     HierarchyRole::Review,
-                    reviewer: ReviewerState::Unverified,
-                })
-                .collect(),
-        );
-        self.refresh(&mut edges);
-        let mut outcomes: Vec<_> = edges
-            .0
-            .into_iter()
-            .map(|edge| ReviewerOutcome {
-                thread_id: edge.member,
-                state:     edge.reviewer,
-            })
-            .collect();
-        outcomes.extend(
-            self.documents
-                .values()
-                .flat_map(|(_, document)| document.templates.values())
-                .map(|record| record.thread_id.as_str())
-                .map(|id| ReviewerOutcome {
-                    thread_id: id.to_owned(),
-                    state:     ReviewerState::Idle,
-                }),
-        );
-        outcomes
-    }
-
-    pub(super) fn apply_outcomes(rows: &mut [AgentRow], outcomes: &[ReviewerOutcome]) {
-        for row in rows {
-            row.children.retain(|child| !matches!(&child.thread_id, CodexThreadId::Recorded(id)
-                if outcomes.iter().any(|outcome| outcome.thread_id == *id && !outcome.state.is_drawn())));
-        }
-    }
-
-    /// Recheck process identity even when the hierarchy command failed.
-    pub(super) fn refresh(&self, edges: &mut HierarchyEdges) {
-        let reviewers: Vec<_> = self
-            .documents
-            .values()
-            .flat_map(|(_, document)| document.reviewers.iter())
-            .collect();
-        let pids: Vec<_> = reviewers
-            .iter()
-            .filter_map(|(_, record)| match record.busy_pid {
-                ReviewerProcessClaim::Claimed(pid) => Some(Pid::from_u32(pid)),
-                ReviewerProcessClaim::Unclaimed => None,
-            })
-            .collect();
-        let mut system = self
-            .processes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // sysinfo exposes no removal API. Rebuild only when a claim is retired,
-        // refreshing the current claims rather than the whole process table.
-        if system.processes().keys().any(|pid| !pids.contains(pid)) {
-            *system = System::new();
-        }
-        system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&pids),
-            true,
-            ProcessRefreshKind::nothing().without_tasks(),
-        );
-        for edge in &mut edges.0 {
-            let record = reviewers
-                .iter()
-                .find(|(_, record)| record.thread_id == edge.member);
-            if let Some((name, record)) = record {
-                edge.reviewer = match (&record.lease, &record.busy_pid) {
-                    (PoolLease::Leased, ReviewerProcessClaim::Claimed(pid)) => system
-                        .process(Pid::from_u32(*pid))
-                        .map_or(ReviewerState::Idle, |process| ReviewerState::Busy {
-                            name:    (*name).clone(),
-                            pid:     *pid,
-                            started: match record.last_allocated {
-                                ReviewAllocation::Recorded(time) => time,
-                                ReviewAllocation::ProcessStart => {
-                                    process.start_time().saturating_mul(1000)
-                                },
-                            },
-                        }),
-                    _ => ReviewerState::Idle,
-                };
-            } else if !matches!(edge.reviewer, ReviewerState::NotPool) {
-                edge.reviewer = ReviewerState::Idle;
-            }
-        }
-        drop(system);
-    }
-
-    /// Current source outcomes replace stale reviewer state on retained links.
-    pub(super) fn update_edges(edges: &mut HierarchyEdges, outcomes: &[ReviewerOutcome]) {
-        for edge in &mut edges.0 {
-            if let Some(outcome) = outcomes
-                .iter()
-                .find(|outcome| outcome.thread_id == edge.member)
-            {
-                edge.reviewer = outcome.state.clone();
-            }
-        }
-    }
-
-    /// Idle pool threads must not leak through ordinary app-server rows.
-    pub(super) fn apply(rows: &mut [AgentRow], edges: &HierarchyEdges) {
-        for row in rows {
-            row.children.retain_mut(|child| {
-                let CodexThreadId::Recorded(id) = &child.thread_id else {
-                    return true;
-                };
-                let Some(edge) = edges.0.iter().find(|edge| edge.member == *id) else {
-                    return true;
-                };
-                if let ReviewerState::Busy { name, .. } = &edge.reviewer
-                    && !matches!(child.worker_task, WorkerTask::Reviewer { .. })
-                {
-                    child.worker_task = WorkerTask::Reviewer {
-                        name: name.clone(),
-                        job:  JobText::Unrecorded,
-                    };
-                }
-                edge.reviewer.is_drawn()
-            });
-        }
-    }
-}
 
 /// Why hierarchy discovery could not produce a usable answer.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -437,6 +118,39 @@ impl From<HierarchyEdges> for HierarchySnapshot {
     }
 }
 
+impl HierarchyEdges {
+    /// Staff kinds preserve the roles that the census already resolved from mesh rosters.
+    pub(super) fn with_worker_roles(mut self, rows: &[AgentRow]) -> Self {
+        let mut roles = BTreeMap::new();
+        for row in rows {
+            if let SessionIdentity::Claude(session) = &row.session_id
+                && let RoleFallback::Worker(role) = row.role_fallback
+            {
+                roles.insert(session.as_str(), role);
+            }
+            for child in &row.children {
+                if let WorkerDispatch::Worker(dispatch) = &child.dispatch
+                    && let RoleFallback::Worker(role) = dispatch.fallback()
+                {
+                    let session = match &dispatch.identity {
+                        WorkerIdentity::ClaudeSession(session)
+                        | WorkerIdentity::CodexThread(session) => session,
+                    };
+                    roles.insert(session.as_str(), role);
+                }
+            }
+        }
+        for edge in &mut self.0 {
+            if edge.role == HierarchyRole::Worker
+                && let Some(role) = roles.get(edge.member.as_str())
+            {
+                edge.role = *role;
+            }
+        }
+        self
+    }
+}
+
 impl HierarchySnapshot {
     pub(crate) fn matched(mut self, rows: &[AgentRow]) -> Self {
         if self.notice == HierarchyNotice::Clear && !self.edges.0.iter().any(|edge| {
@@ -460,8 +174,10 @@ impl Display for HierarchyError {
             Self::OutputUnreadable => formatter.write_str("unreadable hierarchy output"),
             Self::OutputTooLarge => formatter.write_str("hierarchy output too large"),
             Self::ExitUnreadable => formatter.write_str("command exit status unreadable"),
-            Self::UnknownSchema(schema) => write!(formatter, "unknown hierarchy schema {schema}"),
-            Self::MalformedEdge => formatter.write_str("malformed hierarchy edge"),
+            Self::UnknownSchema(schema) => {
+                write!(formatter, "staff schema {schema}; expected schema 2")
+            },
+            Self::MalformedEdge => formatter.write_str("malformed staff file"),
             Self::EmptySessionId => formatter.write_str("empty hierarchy session id"),
         }
     }
@@ -471,40 +187,143 @@ impl Error for HierarchyError {}
 
 /// A source of hierarchy edges, replaceable by fixtures in scheduler tests.
 pub(crate) trait HierarchyRunner: Send + Sync {
-    /// Run `command`, allowing at most `timeout` for output and exit.
-    fn run(&self, command: &str, timeout: Duration) -> Result<HierarchyEdges, HierarchyError>;
-}
+    /// Read links for the configured source.
+    fn run(&self, source: &str, timeout: Duration) -> Result<HierarchyEdges, HierarchyError>;
 
-/// Runs the configured shell command on this machine.
-pub(crate) struct CommandRunner;
-
-impl HierarchyRunner for CommandRunner {
-    fn run(&self, command: &str, timeout: Duration) -> Result<HierarchyEdges, HierarchyError> {
-        parse(&run_output(command, timeout)?)
+    #[cfg(test)]
+    fn publication(&self, _source: &HierarchySource) -> StaffPublication {
+        StaffPublication::Deferred
     }
 }
 
-/// Production hierarchy reads retain an answer while known script inputs stay unchanged.
-#[derive(Default)]
-pub(super) struct InputDrivenHierarchyRunner(
-    Mutex<BTreeMap<String, InputDrivenCommand<Result<HierarchyEdges, HierarchyError>>>>,
-);
+/// A file answer can publish without an asynchronous discovery request.
+#[cfg(test)]
+pub(crate) enum StaffPublication {
+    Deferred,
+    Ready(HierarchySnapshot),
+}
 
-impl HierarchyRunner for InputDrivenHierarchyRunner {
-    fn run(&self, command: &str, timeout: Duration) -> Result<HierarchyEdges, HierarchyError> {
-        let mut readings = self
+/// Classification can run without staff inputs in isolated census fixtures.
+#[derive(Debug, Default)]
+pub(super) enum StaffDiscovery {
+    #[default]
+    Disabled,
+    File {
+        setting: super::StaffFileSetting,
+        reader:  StaffFileReader,
+    },
+}
+
+impl StaffDiscovery {
+    pub(super) fn snapshot(&self) -> StaffSnapshot {
+        match self {
+            Self::Disabled => StaffSnapshot::default(),
+            Self::File { setting, reader } => {
+                let source = setting.snapshot();
+                let roster = reader.roster(&source);
+                StaffSnapshot { source, roster }
+            },
+        }
+    }
+}
+
+/// One scan uses one source and one parsed revision for names and links.
+#[derive(Clone, Debug, Default)]
+pub(super) struct StaffSnapshot {
+    source:            HierarchySource,
+    pub(super) roster: Arc<StaffRoster>,
+}
+
+impl StaffSnapshot {
+    pub(super) fn publication(&self) -> HierarchySnapshot {
+        match self.source {
+            HierarchySource::Off => HierarchyEdges::default().into(),
+            HierarchySource::File(_) => self.roster.edges.clone().into(),
+        }
+    }
+}
+
+/// One reader shares the parsed staff file with classification and publication.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct StaffFileReader(Arc<Mutex<StaffFileCache>>);
+
+#[derive(Debug, Default)]
+enum StaffFileCache {
+    #[default]
+    Unread,
+    Read {
+        path:     PathBuf,
+        revision: SystemTime,
+        roster:   Arc<StaffRoster>,
+    },
+}
+
+impl StaffFileReader {
+    /// Check the mtime before reading and parsing the file.
+    pub(super) fn roster(&self, source: &HierarchySource) -> Arc<StaffRoster> {
+        let HierarchySource::File(path) = source else {
+            return Arc::default();
+        };
+        let path = path
+            .strip_prefix("~/")
+            .and_then(|relative| dirs::home_dir().map(|home| home.join(relative)))
+            .unwrap_or_else(|| PathBuf::from(path));
+        let mut cache = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let inputs = readings.entry(command.to_owned()).or_insert_with(|| {
-            InputDrivenCommand::for_command(command, HIERARCHY_REFRESH_INTERVAL)
-        });
-        let answer = inputs.read(Instant::now(), || CommandRunner.run(command, timeout));
-        if answer.is_err() {
-            inputs.invalidate();
+        let Ok(mut file) = fs::File::open(&path) else {
+            *cache = StaffFileCache::Unread;
+            return Arc::default();
+        };
+        let Ok(metadata) = file.metadata() else {
+            *cache = StaffFileCache::Unread;
+            return Arc::default();
+        };
+        let Ok(revision) = metadata.modified() else {
+            *cache = StaffFileCache::Unread;
+            return Arc::default();
+        };
+        if !metadata.is_file() {
+            *cache = StaffFileCache::Unread;
+            return Arc::default();
         }
-        drop(readings);
-        answer
+        if let StaffFileCache::Read {
+            path: previous,
+            revision: modified,
+            roster,
+        } = &*cache
+            && previous == &path
+            && modified == &revision
+        {
+            return Arc::clone(roster);
+        }
+        let mut bytes = Vec::new();
+        if file.read_to_end(&mut bytes).is_err() {
+            *cache = StaffFileCache::Unread;
+            return Arc::default();
+        }
+        let roster = Arc::new(StaffRoster::parse(&bytes).unwrap_or_default());
+        *cache = StaffFileCache::Read {
+            path,
+            revision,
+            roster: Arc::clone(&roster),
+        };
+        roster
+    }
+}
+
+impl HierarchyRunner for StaffFileReader {
+    fn run(&self, path: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
+        Ok(self
+            .roster(&HierarchySource::File(path.to_owned()))
+            .edges
+            .clone())
+    }
+
+    #[cfg(test)]
+    fn publication(&self, source: &HierarchySource) -> StaffPublication {
+        StaffPublication::Ready(self.roster(source).edges.clone().into())
     }
 }
 
@@ -597,97 +416,202 @@ fn read_output(stdout: impl Read) -> Result<Vec<u8>, HierarchyError> {
     Ok(bytes)
 }
 
-/// The command output before wire fields become validated domain edges.
-#[derive(Deserialize)]
-struct HierarchyReport {
-    /// Version of the command contract, independent of the probe schema.
-    schema: u32,
-    /// Each edge is decoded once, including roles a newer command may introduce.
-    edges:  Vec<HierarchyWireEdge>,
+/// The staff file owns names and links, while the census owns liveness.
+#[derive(Debug, Default)]
+pub(super) struct StaffRoster {
+    pub(super) edges: HierarchyEdges,
+    names:            BTreeMap<String, String>,
 }
 
-/// Optional wire fields become a named failure at the domain boundary.
 #[derive(Deserialize)]
-struct HierarchyWireEdge {
-    /// Managing Claude session, required for known roles.
-    manager: Option<String>,
-    /// Local managed Claude session, required for known roles.
-    member:  Option<String>,
-    /// An absent role fails the answer; a future role discards only its edge.
-    role:    Option<HierarchyWireRole>,
-    #[serde(default)]
-    state:   HierarchyWireReviewerState,
+struct StaffDocument {
+    rows: Vec<StaffDocumentRow>,
 }
 
-/// A producer state is decoded before it can affect placement.
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum HierarchyWireReviewerState {
-    #[default]
-    NotPool,
-    Busy,
-    Idle,
+/// The parent field distinguishes a root from a managed row.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StaffParent {
+    Managed(String),
+    Root(()),
+}
+
+/// Unknown kinds have no required fields in this reader.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum StaffDocumentRow {
+    Showrunner(StaffFields),
+    Unit(StaffFields),
+    Worker(StaffFields),
+    Agent(StaffFields),
     #[serde(other)]
     Unknown,
 }
 
-/// Unknown roles discard only their own edge.
 #[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum HierarchyWireRole {
-    Showrunner,
-    Unit,
-    Impl,
-    Test,
-    Review,
-    Fix,
-    #[serde(other)]
-    Unknown,
+struct StaffFields {
+    id:              String,
+    name:            String,
+    parent:          StaffParent,
+    current_session: String,
 }
 
-/// Decode a command answer, rejecting a foreign schema or malformed JSON.
-pub(super) fn parse(output: &[u8]) -> Result<HierarchyEdges, HierarchyError> {
-    let report: HierarchyReport =
-        serde_json::from_slice(output).map_err(|_| HierarchyError::OutputUnreadable)?;
-    if report.schema != HIERARCHY_SCHEMA {
-        return Err(HierarchyError::UnknownSchema(report.schema));
+struct StaffRow {
+    fields: StaffFields,
+    kind:   StaffKind,
+}
+
+impl Deref for StaffRow {
+    type Target = StaffFields;
+    fn deref(&self) -> &Self::Target { &self.fields }
+}
+
+impl StaffDocumentRow {
+    fn known(self) -> Option<StaffRow> {
+        let (kind, fields) = match self {
+            Self::Showrunner(fields) => (StaffKind::Showrunner, fields),
+            Self::Unit(fields) => (StaffKind::Unit, fields),
+            Self::Worker(fields) => (StaffKind::Worker, fields),
+            Self::Agent(fields) => (StaffKind::Agent, fields),
+            Self::Unknown => return None,
+        };
+        Some(StaffRow { fields, kind })
     }
-    report
-        .edges
-        .into_iter()
-        .filter(|edge| !matches!(edge.role, Some(HierarchyWireRole::Unknown)))
-        .map(|edge| {
-            let manager = edge.manager.ok_or(HierarchyError::MalformedEdge)?;
-            let member = edge.member.ok_or(HierarchyError::MalformedEdge)?;
-            let role = match edge.role {
-                Some(HierarchyWireRole::Showrunner) => HierarchyRole::Showrunner,
-                Some(HierarchyWireRole::Unit) => HierarchyRole::Unit,
-                Some(HierarchyWireRole::Impl) => HierarchyRole::Impl,
-                Some(HierarchyWireRole::Test) => HierarchyRole::Test,
-                Some(HierarchyWireRole::Review) => HierarchyRole::Review,
-                Some(HierarchyWireRole::Fix) => HierarchyRole::Fix,
-                None | Some(HierarchyWireRole::Unknown) => {
-                    return Err(HierarchyError::MalformedEdge);
+}
+
+/// IDs and sessions are unique, parent kinds are valid, and parent chains have no cycles.
+struct ValidatedStaffForest<'a>(BTreeMap<&'a str, &'a StaffRow>);
+
+impl<'a> ValidatedStaffForest<'a> {
+    fn new(rows: &'a [StaffRow]) -> Result<Self, HierarchyError> {
+        let members: BTreeMap<_, _> = rows.iter().map(|row| (row.id.as_str(), row)).collect();
+        if members.len() != rows.len() {
+            return Err(HierarchyError::MalformedEdge);
+        }
+        let mut sessions = BTreeSet::new();
+        for row in members.values() {
+            if !sessions.insert(row.current_session.as_str()) {
+                return Err(HierarchyError::MalformedEdge);
+            }
+            match &row.parent {
+                StaffParent::Root(())
+                    if matches!(row.kind, StaffKind::Showrunner | StaffKind::Agent) => {},
+                StaffParent::Managed(parent) => {
+                    let manager = members
+                        .get(parent.as_str())
+                        .ok_or(HierarchyError::MalformedEdge)?;
+                    if !row.kind.accepts_parent(manager.kind) {
+                        return Err(HierarchyError::MalformedEdge);
+                    }
                 },
-            };
-            if manager.is_empty() || member.is_empty() {
+                StaffParent::Root(()) => return Err(HierarchyError::MalformedEdge),
+            }
+            if row.id.is_empty() || row.current_session.is_empty() {
                 return Err(HierarchyError::EmptySessionId);
             }
-            Ok(HierarchyEdge {
-                reviewer: match edge.state {
-                    HierarchyWireReviewerState::Busy => ReviewerState::Unverified,
-                    HierarchyWireReviewerState::Idle => ReviewerState::Idle,
-                    HierarchyWireReviewerState::NotPool | HierarchyWireReviewerState::Unknown => {
-                        ReviewerState::NotPool
-                    },
-                },
-                manager,
-                member,
+            let mut ancestors = BTreeSet::from([row.id.as_str()]);
+            let mut ancestor = *row;
+            while let StaffParent::Managed(parent) = &ancestor.parent {
+                if !ancestors.insert(parent.as_str()) {
+                    return Err(HierarchyError::MalformedEdge);
+                }
+                ancestor = members
+                    .get(parent.as_str())
+                    .ok_or(HierarchyError::MalformedEdge)?;
+            }
+        }
+        Ok(Self(members))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StaffKind {
+    Showrunner,
+    Unit,
+    Worker,
+    Agent,
+}
+
+impl StaffKind {
+    const fn accepts_parent(self, parent: Self) -> bool {
+        matches!(
+            (self, parent),
+            (
+                Self::Showrunner | Self::Unit | Self::Worker,
+                Self::Showrunner
+            ) | (Self::Worker, Self::Unit)
+        )
+    }
+
+    const fn role(self) -> HierarchyRole {
+        match self {
+            Self::Showrunner => HierarchyRole::Showrunner,
+            Self::Unit => HierarchyRole::Unit,
+            Self::Worker => HierarchyRole::Worker,
+            Self::Agent => HierarchyRole::Agent,
+        }
+    }
+}
+
+/// A missing staff name leaves the existing census name unchanged.
+pub(super) enum StaffName<'a> {
+    Named(&'a str),
+    Unlisted,
+}
+
+impl StaffRoster {
+    pub(super) fn name(&self, session: &str) -> StaffName<'_> {
+        self.names
+            .get(session)
+            .map_or(StaffName::Unlisted, |name| StaffName::Named(name))
+    }
+
+    fn parse(output: &[u8]) -> Result<Self, HierarchyError> {
+        #[derive(Deserialize)]
+        struct SchemaHeader {
+            schema: u32,
+        }
+        let header: SchemaHeader =
+            serde_json::from_slice(output).map_err(|_| HierarchyError::OutputUnreadable)?;
+        if header.schema != HIERARCHY_SCHEMA {
+            return Err(HierarchyError::UnknownSchema(header.schema));
+        }
+        let document: StaffDocument =
+            serde_json::from_slice(output).map_err(|_| HierarchyError::MalformedEdge)?;
+        let known: Vec<_> = document
+            .rows
+            .into_iter()
+            .filter_map(StaffDocumentRow::known)
+            .collect();
+        let ValidatedStaffForest(members) = ValidatedStaffForest::new(&known)?;
+        let mut roster = Self::default();
+        for member in members.values() {
+            let role = member.kind.role();
+            if !member.name.is_empty() {
+                roster
+                    .names
+                    .insert(member.current_session.clone(), member.name.clone());
+            }
+            let StaffParent::Managed(parent) = &member.parent else {
+                continue;
+            };
+            let Some(manager) = members.get(parent.as_str()) else {
+                continue;
+            };
+            roster.edges.0.push(HierarchyEdge {
+                manager: manager.current_session.clone(),
+                member: member.current_session.clone(),
                 role,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(HierarchyEdges)
+            });
+        }
+        Ok(roster)
+    }
+}
+
+/// Test fixtures use the same parser as the file reader.
+#[cfg(test)]
+pub(super) fn parse(output: &[u8]) -> Result<HierarchyEdges, HierarchyError> {
+    StaffRoster::parse(output).map(|roster| roster.edges)
 }
 
 /// Whether discovery answered or must preserve the last successful links.
@@ -698,10 +622,7 @@ pub(super) enum HierarchyAnswer {
     /// A configured source answered, but none of its identities occur in this scan.
     Unmatched(HierarchyEdges),
     /// Discovery failed; absence of edges is not an authoritative answer.
-    Failed {
-        reason:    HierarchyError,
-        reviewers: Vec<ReviewerOutcome>,
-    },
+    Failed { reason: HierarchyError },
 }
 
 /// Run one configured discovery, logging a single line for each failed command.
@@ -709,7 +630,7 @@ pub(super) fn read(
     source: &HierarchySource,
     runner: &dyn HierarchyRunner,
 ) -> Result<HierarchyEdges, HierarchyError> {
-    let HierarchySource::Command(command) = source else {
+    let HierarchySource::File(command) = source else {
         return Ok(HierarchyEdges::default());
     };
     match runner.run(command, HIERARCHY_TIMEOUT) {
@@ -756,25 +677,6 @@ enum HierarchyRetry {
     NextTick,
 }
 
-/// The source directory used to validate reviewer leases.
-#[derive(Default)]
-enum ReviewerPoolRoot {
-    #[default]
-    UserState,
-    #[cfg(test)]
-    Fixture(PathBuf),
-}
-
-impl ReviewerPoolRoot {
-    fn path(&self) -> ReviewerPoolLocation {
-        match self {
-            Self::UserState => ReviewerPools::root(),
-            #[cfg(test)]
-            Self::Fixture(path) => ReviewerPoolLocation::Directory(path.clone()),
-        }
-    }
-}
-
 /// Unnamed sessions that already caused their extra hierarchy check.
 #[derive(Default)]
 struct CheckedUnlinkedSessions(BTreeSet<String>);
@@ -791,7 +693,7 @@ enum HierarchyDiscovery {
 pub(super) enum HierarchyPublication {
     Pending,
     RefreshNeeded,
-    Ready(HierarchySnapshot),
+    Ready,
 }
 
 /// Placement identities that one refresh must resolve, with its retained links.
@@ -875,24 +777,13 @@ pub(super) struct HierarchyCache {
     /// Failure invalidates the ordinary refresh interval.
     retry:     HierarchyRetry,
     notice:    HierarchyNotice,
-    pools:     ReviewerPools,
-    pool_key:  Vec<(PathBuf, SystemTime)>,
-    pool_root: ReviewerPoolRoot,
 }
 
 impl HierarchyCache {
-    #[cfg(test)]
-    pub(super) fn with_pool_root(root: PathBuf) -> Self {
-        Self {
-            pool_root: ReviewerPoolRoot::Fixture(root),
-            ..Self::default()
-        }
-    }
-
     /// Cached links, cleared immediately when the setting changes or turns off.
-    pub(super) fn cached(&mut self, source: HierarchySource) -> &LastSuccessfulHierarchy {
-        if self.source != source || matches!(source, HierarchySource::Off) {
-            self.source = source;
+    pub(super) fn cached(&mut self, source: &HierarchySource) -> &LastSuccessfulHierarchy {
+        if &self.source != source || matches!(source, HierarchySource::Off) {
+            self.source.clone_from(source);
             self.success = LastSuccessfulHierarchy::Unanswered;
             self.retry = HierarchyRetry::OnExpiration;
             self.discovery = HierarchyDiscovery::Pending;
@@ -905,7 +796,7 @@ impl HierarchyCache {
     #[cfg(test)]
     pub(super) fn edges(
         &mut self,
-        source: HierarchySource,
+        source: &HierarchySource,
         rows: &[AgentRow],
         runner: &dyn HierarchyRunner,
         now: Instant,
@@ -955,18 +846,13 @@ impl HierarchyCache {
     /// Decide and reserve a request before its worker starts, so checked ids survive chains.
     pub(super) fn prepare_snapshot(
         &mut self,
-        source: HierarchySource,
+        source: &HierarchySource,
         rows: &[AgentRow],
         now: Instant,
     ) -> HierarchyPreparation {
-        self.cached(source.clone());
+        self.cached(source);
         if matches!(source, HierarchySource::Off) {
             return HierarchyPreparation::Ready(self.retained(source));
-        }
-        let pool_key = self.pool_root.path().update(&mut self.pools);
-        if self.pool_key != pool_key {
-            self.retry = HierarchyRetry::NextTick;
-            self.pool_key = pool_key;
         }
         if matches!(self.discovery, HierarchyDiscovery::Pending) {
             return HierarchyPreparation::Request(HierarchyRequestKind::Initial);
@@ -996,13 +882,12 @@ impl HierarchyCache {
     /// Accept a follow-up without making previously checked sessions eligible again.
     pub(super) fn refresh_outcome(
         &mut self,
-        source: HierarchySource,
+        source: &HierarchySource,
         rows: &[AgentRow],
         outcome: Result<HierarchyEdges, HierarchyError>,
         now: Instant,
     ) -> HierarchySnapshot {
-        self.cached(source.clone());
-        self.pool_key = self.pool_root.path().update(&mut self.pools);
+        self.cached(source);
         self.accept(outcome, now);
         let snapshot = self.retained(source).matched(rows);
         self.notice = snapshot.notice;
@@ -1012,13 +897,12 @@ impl HierarchyCache {
     /// Accept the bounded first attempt after its worker returns.
     pub(super) fn first_outcome(
         &mut self,
-        source: HierarchySource,
+        source: &HierarchySource,
         rows: &[AgentRow],
         outcome: Result<HierarchyEdges, HierarchyError>,
         now: Instant,
     ) -> HierarchySnapshot {
-        self.cached(source.clone());
-        self.pool_key = self.pool_root.path().update(&mut self.pools);
+        self.cached(source);
         self.discovery = HierarchyDiscovery::Answered(CheckedUnlinkedSessions::default());
         self.accept(outcome, now);
         let snapshot = self.retained(source).matched(rows);
@@ -1030,25 +914,26 @@ impl HierarchyCache {
     #[cfg(test)]
     pub(super) fn snapshot(
         &mut self,
-        source: HierarchySource,
+        source: &HierarchySource,
         rows: &[AgentRow],
         runner: &dyn HierarchyRunner,
         now: Instant,
     ) -> HierarchySnapshot {
-        match self.prepare_snapshot(source.clone(), rows, now) {
+        match self.prepare_snapshot(source, rows, now) {
             HierarchyPreparation::Ready(snapshot) => snapshot,
             HierarchyPreparation::Request(HierarchyRequestKind::Initial) => {
-                let outcome = read(&source, runner);
+                let outcome = read(source, runner);
                 self.first_outcome(source, rows, outcome, now)
             },
             HierarchyPreparation::Request(HierarchyRequestKind::Refresh(_)) => {
-                let outcome = read(&source, runner);
+                let outcome = read(source, runner);
                 self.refresh_outcome(source, rows, outcome, now)
             },
         }
     }
 
     /// A cached success keeps its original deadline; a failed attempt belongs to this scan.
+    #[cfg(test)]
     pub(super) fn reuse_deadline(&self, attempted: Instant) -> Instant {
         let refreshed = match (&self.success, self.notice) {
             (
@@ -1063,27 +948,25 @@ impl HierarchyCache {
     /// Get an outcome before publishing a new source or a new unchecked session.
     pub(super) fn publication(
         &mut self,
-        source: HierarchySource,
+        source: &HierarchySource,
         rows: &[AgentRow],
     ) -> HierarchyPublication {
-        let snapshot = self.retained(source);
+        self.cached(source);
         match (&self.source, &self.discovery) {
-            (HierarchySource::Command(_), HierarchyDiscovery::Pending) => {
+            (HierarchySource::File(_), HierarchyDiscovery::Pending) => {
                 HierarchyPublication::Pending
             },
-            (HierarchySource::Command(_), HierarchyDiscovery::Answered(_))
+            (HierarchySource::File(_), HierarchyDiscovery::Answered(_))
                 if !self.unchecked_sessions(rows).is_empty() =>
             {
                 HierarchyPublication::RefreshNeeded
             },
-            _ => HierarchyPublication::Ready(snapshot),
+            _ => HierarchyPublication::Ready,
         }
     }
 
-    pub(super) fn retained(&mut self, source: HierarchySource) -> HierarchySnapshot {
-        let mut edges = self.cached(source).edges();
-        self.pool_root.path().update(&mut self.pools);
-        self.pools.refresh(&mut edges);
+    pub(super) fn retained(&mut self, source: &HierarchySource) -> HierarchySnapshot {
+        let edges = self.cached(source).edges();
         HierarchySnapshot {
             edges,
             notice: self.notice,
@@ -1100,112 +983,69 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
+    use serde_json::Value;
+
     use super::*;
 
     #[test]
-    fn reviewer_missing_home_clears_cached_pools_instead_of_using_a_relative_root() {
-        let root = tempfile::tempdir().expect("pool root");
-        let production = root.path().join("production");
-        fs::create_dir(&production).expect("production directory");
-        fs::write(
-            production.join(REVIEW_POOL_FILE),
-            br#"{"templates":{"code":{"thread_id":"template-thread"}}}"#,
-        )
-        .expect("pool document");
-        let mut pools = ReviewerPools::read(root.path());
-        assert_eq!(pools.outcomes().len(), 1, "the fixture pool was read");
-        assert_eq!(ReviewerPoolLocation::MissingHome.update(&mut pools), []);
-        assert_eq!(
-            pools.outcomes().len(),
-            0,
-            "missing home cannot retain a discovered pool"
-        );
-    }
-
-    #[test]
-    fn idle_reviewer_processes_drop_pids_no_pool_claims() {
-        let pools = ReviewerPools::default();
-        let pid = Pid::from_u32(std::process::id());
-        pools
-            .processes
-            .lock()
-            .expect("process table")
-            .refresh_processes_specifics(
-                ProcessesToUpdate::Some(&[pid]),
-                true,
-                ProcessRefreshKind::nothing().without_tasks(),
-            );
-        assert!(
-            pools
-                .processes
-                .lock()
-                .expect("process table")
-                .process(pid)
-                .is_some()
-        );
-        pools.refresh(&mut HierarchyEdges(Vec::new()));
-        assert!(
-            pools
-                .processes
-                .lock()
-                .expect("process table")
-                .processes()
-                .is_empty(),
-            "processes outside the current reviewer claims release their entries"
-        );
-    }
-
-    /// A valid edge plus a role introduced by a future command implementation.
-    #[test]
-    fn future_roles_do_not_hide_known_edges_and_foreign_schemas_fail() {
-        let output = br#"{"schema":1,"edges":[{"manager":"boss","member":"worker","role":"impl"},{"manager":"boss","member":"future","role":"future"}]}"#;
-        assert_eq!(
-            parse(output),
-            Ok(HierarchyEdges(vec![HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "boss".to_string(),
-                member:   "worker".to_string(),
-                role:     HierarchyRole::Impl,
-            }]))
-        );
-        assert!(parse(br#"{"schema":2,"edges":[]}"#).is_err());
-        assert!(parse(br#"{"schema":1,"edges":[{"role":"impl"}]}"#).is_err());
-    }
-
-    /// Keep error categories distinct for failed commands and malformed contracts.
-    #[test]
-    fn command_and_contract_failures_keep_their_named_reasons() {
-        for (output, reason) in [
-            (b"not json".as_slice(), HierarchyError::OutputUnreadable),
-            (
-                br#"{"schema":2,"edges":[]}"#,
-                HierarchyError::UnknownSchema(2),
-            ),
-            (
-                br#"{"schema":1,"edges":[{"role":"impl"}]}"#,
-                HierarchyError::MalformedEdge,
-            ),
-            (
-                br#"{"schema":1,"edges":[{"manager":"boss","member":"worker"}]}"#,
-                HierarchyError::MalformedEdge,
-            ),
-            (
-                br#"{"schema":1,"edges":[{"manager":"","member":"worker","role":"impl"}]}"#,
-                HierarchyError::EmptySessionId,
-            ),
-            (
-                br#"{"schema":1,"edges":[{"manager":"boss","member":"","role":"impl"}]}"#,
-                HierarchyError::EmptySessionId,
-            ),
-        ] {
-            assert_eq!(parse(output), Err(reason));
+    fn malformed_staff_never_returns_the_valid_part_of_its_links() {
+        fn publishes_no_links(report: &Value) -> bool {
+            let directory = tempfile::tempdir().expect("staff directory");
+            let path = directory.path().join("staff.json");
+            fs::write(&path, serde_json::to_vec(report).expect("JSON")).expect("staff file");
+            let reader = StaffFileReader::default();
+            let source = HierarchySource::File(path.to_string_lossy().into_owned());
+            matches!(
+                reader.publication(&source),
+                StaffPublication::Ready(HierarchySnapshot {
+                    edges: HierarchyEdges(edges),
+                    notice: HierarchyNotice::Clear,
+                }) if edges.is_empty()
+            ) && reader.roster(&source).names.is_empty()
         }
+
+        let valid: Value = serde_json::from_slice(include_bytes!("fixtures/staff_members.json"))
+            .expect("staff fixture");
+        for field in ["id", "parent", "current_session", "kind", "name"] {
+            let mut report = valid.clone();
+            report["rows"][2]
+                .as_object_mut()
+                .expect("worker")
+                .remove(field);
+            assert!(publishes_no_links(&report), "missing {field}");
+        }
+        for invalid in ["missing-parent", "worker-staff-id"] {
+            let mut report = valid.clone();
+            report["rows"][2]["parent"] = invalid.into();
+            assert!(publishes_no_links(&report), "invalid parent {invalid}");
+        }
+        let mut cycle = valid.clone();
+        cycle["rows"][0]["parent"] = "unit-staff-id".into();
+        assert!(
+            publishes_no_links(&cycle),
+            "a cycle must invalidate every link"
+        );
+        let mut duplicate = valid.clone();
+        duplicate["rows"]
+            .as_array_mut()
+            .expect("rows")
+            .push(valid["rows"][0].clone());
+        assert!(
+            publishes_no_links(&duplicate),
+            "duplicate IDs must invalidate every link"
+        );
+        let mut wrong_manager = valid;
+        wrong_manager["rows"][0]["current_session"] = serde_json::json!({"codex":"boss-session"});
+        assert!(
+            publishes_no_links(&wrong_manager),
+            "a malformed manager session must invalidate every link"
+        );
     }
 
     #[test]
     fn command_exit_keeps_its_reason_without_a_shell_startup_deadline() {
         assert_eq!(
-            CommandRunner.run("exit 7", Duration::from_secs(60)),
+            run_output("exit 7", Duration::from_secs(60)),
             Err(HierarchyError::ExitedUnsuccessfully)
         );
     }
@@ -1213,7 +1053,7 @@ mod tests {
     #[test]
     fn command_timeout_keeps_its_reason() {
         assert_eq!(
-            CommandRunner.run("exec sleep 10", Duration::from_millis(100)),
+            run_output("exec sleep 10", Duration::from_millis(100)),
             Err(HierarchyError::TimedOut)
         );
     }
@@ -1226,7 +1066,7 @@ mod tests {
         let command = format!("echo $$ > '{}'; exec yes", pid_file.display());
         let started = Instant::now();
         assert_eq!(
-            CommandRunner.run(&command, Duration::from_millis(500)),
+            run_output(&command, Duration::from_millis(500)),
             Err(HierarchyError::OutputTooLarge)
         );
         assert!(started.elapsed() < Duration::from_millis(800));
@@ -1246,17 +1086,16 @@ mod tests {
     #[test]
     fn output_limit_accepts_a_complete_answer_at_the_boundary() {
         let mut output =
-            br#"{"schema":1,"edges":[{"manager":"boss","member":"worker","role":"review"}]}"#
+            br#"{"schema":2,"rows":[{"id":"a","kind":"showrunner","name":"unit","parent":null,"current_session":"unit-session"},{"id":"b","kind":"worker","name":"worker","parent":"a","current_session":"worker-thread"}]}"#
                 .to_vec();
         output.resize(HIERARCHY_OUTPUT_LIMIT, b' ');
         let bytes = read_output(output.as_slice()).expect("an answer at the limit should be read");
         assert_eq!(
             parse(&bytes),
             Ok(HierarchyEdges(vec![HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "boss".to_string(),
-                member:   "worker".to_string(),
-                role:     HierarchyRole::Review,
+                manager: "unit-session".to_string(),
+                member:  "worker-thread".to_string(),
+                role:    HierarchyRole::Worker,
             }]))
         );
         output.push(b' ');
@@ -1279,10 +1118,9 @@ mod tests {
                 return Err(HierarchyError::ExitedUnsuccessfully);
             }
             Ok(HierarchyEdges(vec![HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  command.to_string(),
-                member:   "worker".to_string(),
-                role:     HierarchyRole::Impl,
+                manager: command.to_string(),
+                member:  "worker-thread".to_string(),
+                role:    HierarchyRole::Impl,
             }]))
         }
     }
@@ -1301,13 +1139,11 @@ mod tests {
             }
         }
         let first = HierarchyEdges(vec![HierarchyEdge {
-            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-            manager:  "boss".to_string(),
-            member:   "worker".to_string(),
-            role:     HierarchyRole::Unit,
+            manager: "boss".to_string(),
+            member:  "worker".to_string(),
+            role:    HierarchyRole::Unit,
         }]);
         let replacement = HierarchyEdges(vec![HierarchyEdge {
-            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
             manager: "new-boss".to_string(),
             ..first.0[0].clone()
         }]);
@@ -1317,37 +1153,27 @@ mod tests {
             Err(HierarchyError::ExitedUnsuccessfully),
             Ok(replacement.clone()),
         ])));
-        let source = HierarchySource::Command("unchanged".to_string());
+        let source = HierarchySource::File("unchanged".to_string());
         let mut cache = HierarchyCache::default();
         let start = Instant::now();
-        assert_eq!(cache.edges(source.clone(), &[], &runner, start), first);
+        assert_eq!(cache.edges(&source, &[], &runner, start), first);
         let expired = start + HIERARCHY_REFRESH_INTERVAL;
-        assert_eq!(cache.edges(source.clone(), &[], &runner, expired), first);
+        assert_eq!(cache.edges(&source, &[], &runner, expired), first);
         assert_eq!(
-            cache.edges(
-                source.clone(),
-                &[],
-                &runner,
-                expired + Duration::from_millis(1)
-            ),
+            cache.edges(&source, &[], &runner, expired + Duration::from_millis(1)),
             first
         );
         assert_eq!(
-            cache.edges(
-                source.clone(),
-                &[],
-                &runner,
-                expired + Duration::from_millis(2)
-            ),
+            cache.edges(&source, &[], &runner, expired + Duration::from_millis(2)),
             replacement
         );
         assert_eq!(
-            cache.edges(source, &[], &runner, expired + Duration::from_millis(3)),
+            cache.edges(&source, &[], &runner, expired + Duration::from_millis(3)),
             replacement
         );
         assert!(runner.0.lock().expect("answer queue").is_empty());
         assert_eq!(
-            cache.edges(HierarchySource::Off, &[], &runner, expired),
+            cache.edges(&HierarchySource::Off, &[], &runner, expired),
             HierarchyEdges::default()
         );
     }
@@ -1358,21 +1184,21 @@ mod tests {
         let runner = RecordingRunner(Mutex::new(Vec::new()));
         let mut cache = HierarchyCache::default();
         let now = Instant::now();
-        let source = HierarchySource::Command("good".to_string());
-        let initial = cache.edges(source.clone(), &[], &runner, now);
+        let source = HierarchySource::File("good".to_string());
+        let initial = cache.edges(&source, &[], &runner, now);
         assert_eq!(
-            cache.edges(source.clone(), &[], &runner, now + Duration::from_secs(29)),
+            cache.edges(&source, &[], &runner, now + Duration::from_secs(29)),
             initial
         );
         assert_eq!(runner.0.lock().expect("calls should lock").len(), 1);
         assert_eq!(
-            cache.edges(source, &[], &runner, now + HIERARCHY_REFRESH_INTERVAL),
+            cache.edges(&source, &[], &runner, now + HIERARCHY_REFRESH_INTERVAL),
             initial
         );
         assert_eq!(runner.0.lock().expect("calls should lock").len(), 2);
         assert_eq!(
             cache.edges(
-                HierarchySource::Command("fail".to_string()),
+                &HierarchySource::File("fail".to_string()),
                 &[],
                 &runner,
                 now
@@ -1381,7 +1207,7 @@ mod tests {
         );
         assert_eq!(
             cache.edges(
-                HierarchySource::Command("fail".to_string()),
+                &HierarchySource::File("fail".to_string()),
                 &[],
                 &runner,
                 now
@@ -1390,13 +1216,13 @@ mod tests {
         );
         assert_eq!(runner.0.lock().expect("calls should lock").len(), 4);
         assert_eq!(
-            cache.edges(HierarchySource::Off, &[], &runner, now),
+            cache.edges(&HierarchySource::Off, &[], &runner, now),
             HierarchyEdges::default()
         );
         assert_eq!(runner.0.lock().expect("calls should lock").len(), 4);
         assert_eq!(
             cache.edges(
-                HierarchySource::Command("good".to_string()),
+                &HierarchySource::File("good".to_string()),
                 &[],
                 &runner,
                 now
@@ -1431,9 +1257,9 @@ mod tests {
         use crate::census::AgentPlacement;
         use crate::census::Census;
         use crate::census::CensusUpdate;
-        use crate::census::HierarchyCommand;
         use crate::census::Machine;
         use crate::census::MachineState;
+        use crate::census::StaffFileSetting;
         use crate::census::scan::ScanStage;
         use crate::census::schedule;
         use crate::footer_colors::FooterColors;
@@ -1515,7 +1341,7 @@ mod tests {
             }
             let edges = parse(
                 &serde_json::to_vec(&serde_json::json!({
-                    "schema":1,"edges":[{"manager":SHOWRUNNER,"member":UNIT,"role":"unit"}]
+                    "schema":2,"rows":[{"id":"boss","name":"boss","parent":null,"current_session":SHOWRUNNER,"kind":"showrunner"},{"id":"unit","name":"unit","parent":"boss","current_session":UNIT,"kind":"unit"}]
                 }))
                 .expect("production edge encodes"),
             )
@@ -1526,7 +1352,7 @@ mod tests {
                 Ok(edges),
             ])));
             let mut cache = HierarchyCache::default();
-            let source = HierarchySource::Command("fixture production command".into());
+            let source = HierarchySource::File("fixture production command".into());
             let now = Instant::now();
             for (moment, expected) in [
                 (now, HierarchyNotice::Clear),
@@ -1540,7 +1366,7 @@ mod tests {
                 ),
             ] {
                 let rows = production_rows();
-                let discovered = cache.snapshot(source.clone(), &rows, &runner, moment);
+                let discovered = cache.snapshot(&source, &rows, &runner, moment);
                 assert_eq!(discovered.notice, expected);
                 assert_unit_draws_under_showrunner(rows, discovered.edges);
             }
@@ -1560,10 +1386,9 @@ mod tests {
                 }
             }
             let links = HierarchyEdges(vec![HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  SHOWRUNNER.into(),
-                member:   UNIT.into(),
-                role:     HierarchyRole::Unit,
+                manager: SHOWRUNNER.into(),
+                member:  UNIT.into(),
+                role:    HierarchyRole::Unit,
             }]);
             let runner = Arc::new(PublicationAttempts(Mutex::new(VecDeque::from([
                 Ok(links.clone()),
@@ -1571,7 +1396,7 @@ mod tests {
                 Ok(links),
             ]))));
             let updates = schedule::spawn_with_test_source(
-                HierarchyCommand::new(HierarchySource::Command("fixture hierarchy".into())),
+                StaffFileSetting::new(HierarchySource::File("fixture hierarchy".into())),
                 runner,
                 |sender| {
                     let now = Instant::now();
@@ -1641,10 +1466,9 @@ mod tests {
             impl HierarchyRunner for ForeignSessions {
                 fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
                     Ok(HierarchyEdges(vec![HierarchyEdge {
-                        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                        manager:  "another-production".into(),
-                        member:   "another-session".into(),
-                        role:     HierarchyRole::Unit,
+                        manager: "another-production".into(),
+                        member:  "another-session".into(),
+                        role:    HierarchyRole::Unit,
                     }]))
                 }
             }
@@ -1652,7 +1476,7 @@ mod tests {
             let rows = production_rows();
             let now = Instant::now();
             let unmatched = cache.snapshot(
-                HierarchySource::Command("fixture command".into()),
+                &HierarchySource::File("fixture command".into()),
                 &rows,
                 &ForeignSessions,
                 now,
@@ -1663,7 +1487,7 @@ mod tests {
                 1,
                 "unmatched does not discard a valid command answer"
             );
-            let disabled = cache.snapshot(HierarchySource::Off, &rows, &ForeignSessions, now);
+            let disabled = cache.snapshot(&HierarchySource::Off, &rows, &ForeignSessions, now);
             assert_eq!(disabled.notice, HierarchyNotice::Clear);
             assert!(
                 disabled.edges.0.is_empty(),
@@ -1682,7 +1506,7 @@ mod tests {
             let (release_details, details_released) = mpsc::channel();
             let (completed, completion) = mpsc::channel();
             let updates = schedule::spawn_with_test_source(
-                HierarchyCommand::new(HierarchySource::Command("fixture production tree".into())),
+                StaffFileSetting::new(HierarchySource::File("fixture production tree".into())),
                 Arc::new(ProductionTree),
                 move |sender| {
                     let rows = production_rows();
@@ -1723,17 +1547,16 @@ mod tests {
             impl HierarchyRunner for ForeignHierarchy {
                 fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
                     Ok(HierarchyEdges(vec![HierarchyEdge {
-                        reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                        manager:  "foreign-manager".into(),
-                        member:   "foreign-unit".into(),
-                        role:     HierarchyRole::Unit,
+                        manager: "foreign-manager".into(),
+                        member:  "foreign-unit".into(),
+                        role:    HierarchyRole::Unit,
                     }]))
                 }
             }
             let mut cache = HierarchyCache::default();
-            let source = HierarchySource::Command("fixture foreign hierarchy".into());
+            let source = HierarchySource::File("fixture foreign hierarchy".into());
             cache.snapshot(
-                source.clone(),
+                &source,
                 &production_rows(),
                 &ForeignHierarchy,
                 Instant::now()
@@ -1742,7 +1565,7 @@ mod tests {
             );
             // Simulate the classified publication before a slow refresh by reading
             // `HierarchyCache::retained` with its expired links and notice.
-            let retained = cache.retained(source);
+            let retained = cache.retained(&source);
             let mut app = App::new_for_test().expect("test app");
             app.census = Census::new("natedev".into());
             app.census.apply(CensusUpdate::Local {
@@ -1767,10 +1590,14 @@ mod tests {
                 .join("\n");
             assert!(output.contains("hierarchy: no session matched"), "{output}");
             assert_eq!(
-                cache.retained(HierarchySource::Off).notice,
+                cache.retained(&HierarchySource::Off).notice,
                 HierarchyNotice::Clear,
                 "a replacement source clears the old outcome"
             );
         }
     }
 }
+
+#[cfg(test)]
+#[path = "hierarchy_file_tests.rs"]
+mod file_tests;

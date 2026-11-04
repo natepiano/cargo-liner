@@ -38,17 +38,23 @@ use serde::Deserialize;
 use super::Agent;
 use super::AgentActivity;
 use super::AgentRow;
+use super::CodexThreadId;
 use super::RoleFallback;
 use super::ServiceTier;
 use super::SessionIdentity;
+use super::StaffRowName;
+use super::StaffRowNames;
 use super::account;
 use super::account::AccountLabels;
 use super::account::ConfigHome;
 use super::codex::CodexLogs;
 use super::codex::CodexThread;
 use super::codex::ThreadRows;
+use super::hierarchy::StaffName;
+use super::hierarchy::StaffRoster;
 use super::tmux;
 use super::transcript::BashCall;
+use super::tree;
 use crate::config::CodexStartWindow;
 use crate::constants::CALL_LOOKAHEAD;
 use crate::constants::CALL_LOOKBACK;
@@ -201,6 +207,40 @@ impl SessionRecord {
     /// Whether the Claude desktop app started the session.
     fn is_from_desktop_app(&self) -> bool {
         self.entrypoint.as_deref() == Some(CLAUDE_DESKTOP_ENTRYPOINT)
+    }
+}
+
+/// Staff names replace fallback names only on rows that the census proved live.
+pub(super) fn attach_staff_names(
+    rows: &mut [AgentRow],
+    staff: &StaffRoster,
+    links: &HashMap<u32, CodexSessionLink>,
+) {
+    for row in rows {
+        row.staff_names = StaffRowNames::default();
+        let session = match &row.session_id {
+            SessionIdentity::Claude(session) => Some(session.clone()),
+            SessionIdentity::Unrecorded => match links.get(&row.pid) {
+                Some(CodexSessionLink::Named(thread)) => tree::thread_id(&thread.rollout),
+                _ => None,
+            },
+        };
+        if let Some(session) = session
+            && let StaffName::Named(name) = staff.name(&session)
+        {
+            name.clone_into(&mut row.name);
+            row.staff_names.own = StaffRowName::Named(name.to_owned());
+        }
+        for child in &mut row.children {
+            if let CodexThreadId::Recorded(session) = &child.thread_id
+                && let StaffName::Named(name) = staff.name(session)
+            {
+                name.clone_into(&mut child.name);
+                row.staff_names
+                    .threads
+                    .insert(session.clone(), name.to_owned());
+            }
+        }
     }
 }
 
@@ -400,6 +440,7 @@ fn claude_row(
     }
     let directory = session.cwd.as_deref().or(process.directory.as_deref());
     Some(AgentRow {
+        staff_names:     StaffRowNames::default(),
         agent:           Agent::Claude,
         role_fallback:   crate::census::RoleFallback::None,
         session_id:      session.session_id.clone().into(),
@@ -428,6 +469,7 @@ fn desktop_app_row(
     account_labels: &AccountLabels,
 ) -> AgentRow {
     AgentRow {
+        staff_names:     StaffRowNames::default(),
         agent:           Agent::Claude,
         role_fallback:   crate::census::RoleFallback::None,
         session_id:      SessionIdentity::Unrecorded,
@@ -487,6 +529,7 @@ fn codex_row(
         format!("pid {}", process.pid)
     };
     Some(AgentRow {
+        staff_names: StaffRowNames::default(),
         agent,
         role_fallback: crate::census::RoleFallback::None,
         session_id: SessionIdentity::Unrecorded,

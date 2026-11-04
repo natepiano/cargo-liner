@@ -10,7 +10,6 @@ use crate::census::AccountColumn;
 use crate::census::AgentActivity;
 use crate::census::RoleFallback;
 use crate::census::accounts::AccountsTable;
-use crate::census::hierarchy::ReviewerState;
 use crate::census::worker_dispatch::WorkerTask;
 use crate::constants::TREE_ACCOUNT_HEADER;
 use crate::constants::TREE_AGE_HEADER;
@@ -72,7 +71,6 @@ fn mockup(claude_accounts: [&str; 3]) -> MachineState {
     ]
     .into_iter()
     .map(|(manager, member, role)| HierarchyEdge {
-        reviewer: ReviewerState::NotPool,
         manager: manager.to_string(),
         member: member.to_string(),
         role,

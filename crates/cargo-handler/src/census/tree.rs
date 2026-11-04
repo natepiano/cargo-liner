@@ -770,6 +770,7 @@ mod tests {
     use crate::census::RoleFallback;
     use crate::census::SessionIdentity;
     use crate::census::ShellTimerObservation;
+    use crate::census::StaffRowNames;
     use crate::census::account::AccountLabels;
     use crate::census::account::ConfigHome;
 
@@ -1025,6 +1026,7 @@ mod tests {
     /// An agent row for `pid`, started at `started`.
     fn agent_row(pid: u32, started: u64) -> AgentRow {
         AgentRow {
+            staff_names: StaffRowNames::default(),
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,

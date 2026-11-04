@@ -1,0 +1,31 @@
+{
+  "schema": 2,
+  "rows": [
+    {
+      "id": "boss-staff-id",
+      "kind": "showrunner",
+      "name": "production",
+      "parent": null,
+      "current_session": "boss-session"
+    },
+    {
+      "id": "unit-staff-id",
+      "kind": "unit",
+      "name": "handler",
+      "parent": "boss-staff-id",
+      "worktree": {
+        "machine": "natedev",
+        "path": "/fixture/handler",
+        "state": "present"
+      },
+      "current_session": "unit-session"
+    },
+    {
+      "id": "worker-staff-id",
+      "kind": "worker",
+      "name": "reviewer",
+      "parent": "unit-staff-id",
+      "current_session": "worker-thread"
+    }
+  ]
+}

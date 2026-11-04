@@ -72,7 +72,7 @@ pub(crate) fn run() -> ExitCode {
         Ticker::new(
             census::schedule::spawn(
                 app.remote_machines.clone(),
-                app.hierarchy_command.clone(),
+                app.staff_file.clone(),
                 AccountLabels::new(
                     &app.loaded_config.config.accounts,
                     dirs::home_dir().as_deref(),
@@ -464,6 +464,7 @@ mod tests {
     use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::StaffRowNames;
     use crate::census::Timer;
     use crate::census::accounts::AccountsFailure;
     use crate::census::accounts::AccountsReading;
@@ -1071,6 +1072,7 @@ mod tests {
         let mut ticker = Ticker::new(receiver, appearance_receiver);
         let now = Instant::now();
         let row = AgentRow {
+            staff_names:     StaffRowNames::default(),
             agent:           Agent::Claude,
             role_fallback:   RoleFallback::None,
             session_id:      SessionIdentity::Unrecorded,

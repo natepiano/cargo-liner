@@ -1462,24 +1462,153 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - The first code review found 5 defects, 2 blocking (a blocking probe, a stale subscription, the title cut, a copy of each process, names attached more than once). Repair 1 fixed all five.
 - A `Change-Review:` text must not hold a pipe character. An empty checkpoint carried the corrected line.
 
-### Phase 61 — The accounts table drops the read column  · status: todo
+### Phase 61 — The handler accounts table matches the accounts board  · status: todo
 
-**Depends on:** none (showrunner approved as next, 2026-11-02).
+**Depends on:** the accounts-unit change that gives each role on an account its own row. It is on the `~/.claude` main as cc740e532. Starts beside Phase 62 when the cargo pause lifts; the two phases share no file (showrunner, 2026-11-03).
 
 #### Work Order
 
-**Goal:** cargo-handler's accounts table matches the accounts board, which drops its read column (accounts-unit 101s). The JSON keeps `read_at` and `read_ok`.
+**Goal:** cargo-handler's accounts table matches the accounts board: no read column, the busy, shell, idle and total counts for each role, and one row for each role on an account.
+
+**Source:**
+- The user, 2026-11-03, via accounts-unit: "when will handler pick up the new accounts board with the multiple columns?" The board columns came from accounts-unit phases 101m, 101o, 101s and 101u (on main 2026-11-02 13:37).
+- accounts-unit, 2026-11-03: each role on an account gets its own row. The first row is the same as today; the next rows show only the role and its counts.
+- Phase 44 is folded in (showrunner, 2026-11-03). Its source: the user, direct to the handler unit, 2026-10-28 ≈23:40 EDT: "need to add an enhancement to show the count of sessions for each account in the accounts summary table". Unit session `phases/44/source.md`.
+
+**JSON contract (accounts-unit, 2026-11-03, accounts 2de06b584):** each entry of `accounts` in `accounts.py status --json --stored` has `roles` (role names), `role_counts` (same order; each `{busy, shell, idle, total}`) and `role_counts_by_machine` (`{"natedev": {<role>: {...}}, "mac": {...}}`). The board adds the two machines for each role. `shell` can be null for a Codex account; draw an empty cell. The JSON keeps one entry per account; the board makes one row per item in `roles`. The session count is the sum of `total` over the account's roles on both machines; a session with no mapped role is not counted.
+
+**State model:**
+1. The accounts JSON owns each account and, per account, each role with its busy, shell, idle and total counts. cargo-handler keeps no count of its own.
+2. One account gives one first row (the account values, as today) and one more row for each further role. A role row draws only the role and its counts.
+3. A role that leaves the JSON removes its row. An account with no roles draws only its first row.
+4. Selection and sort act on accounts. Role rows stay under their account.
 
 **Spec:**
-1. Remove `AccountsColumn::Read`, its header, its sort, and `ACCOUNT_READ_DOT` if nothing else uses it.
-2. Update the column tests in `summary/accounts_tests.rs` and `summary/accounts_header_sort_tests.rs`; each Assertion-Change line names the removed column.
-3. CHANGELOG: one Changed line in cargo-handler.
+1. Read the counts from the JSON keys that accounts-unit names. Never parse the board text.
+2. Remove `AccountsColumn::Read`, its header, its sort, and `ACCOUNT_READ_DOT` if nothing else uses it. The JSON keeps `read_at` and `read_ok`.
+3. Add the busy, shell, idle and total columns. The total is the session count that Phase 44 asked for.
+4. Draw the role rows per State model items 2 to 4. The fit drops optional columns as today, before it wraps.
+5. Tests under 1 s: the column set; role rows for one and for three roles; a role that leaves; sort keeps role rows under their account; a narrow width drops optional columns. Each Assertion-Change line names the removed or added column.
+6. CHANGELOG: one Changed line in cargo-handler.
 
-**Files:** `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/constants.rs`, the accounts tests, `crates/cargo-handler/CHANGELOG.md`.
+**Files:** `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/constants.rs`, `crates/cargo-handler/src/sort.rs`, the accounts reader in `crates/cargo-handler/src/census/`, the accounts tests, `crates/cargo-handler/CHANGELOG.md`.
 
 **Workers:** 1 writer.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean. This change is visible: shots of the accounts table, a design check line, and a Change-Review line.
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: shots of the accounts table on natedev with live counts, a design check line, and a Change-Review line.
+
+### Phase 62 — A worker that waits on a detached run shows in its unit's tree  · status: todo
+
+**Depends on:** none. Starts first when the cargo pause lifts, with Phase 61 beside it (showrunner, 2026-11-03).
+
+#### Work Order
+
+**Goal:** a unit whose Codex worker waits on a detached `verify.sh` run shows that worker row with `waiting` or the gate step, not a bare `idle` tree.
+
+**Source:** the user, via the hana showrunner and the showrunner, 2026-11-03: cargo-handler shows every session in the hana tree as `idle`, also fastest and research, which have open phases with Codex workers. fastest's nextest step waits in the build memory queue.
+
+**Cause (read from main ff9c2b2fc and the live machine, 2026-11-03):**
+1. A Claude row takes its status from `~/.claude/sessions/<pid>.json` (`idle`, `busy`, `shell`). `idle` wins over the transcript (`scan.rs` `attach_activity_and_names`). This is correct: the director is between turns.
+2. A Codex worker row exists only while its launcher (`implement.sh`) runs below the unit, or while an app server holds its rollout open. A worker that starts a detached run ends its turn, so its launcher exits and the app server unloads the thread (`thread_unload_delay_secs=0`).
+3. The detached run is `mesh_runs.py supervise` under `systemd --user`, not below the unit's pid. Its record names the worker's thread id, and `VerificationProcesses::run` gives that activity only to a child row with the same thread id. With no row, the run shows nowhere.
+4. Live case: fastest (session dir `1454cef1…`), worker `hana_catalyst-build-speed-tests-impl`, thread `01a1870d-1a99…`, roster status `done`, run pid 1062454 `verify.sh test hana --filter startup_animation`, status `running`.
+5. Also: `app_server_threads` (`scan.rs`) reads only `~/.codex/sessions`. All 16 mesh servers on natedev use `CODEX_HOME=~/.codex2`, so a worker in its turn with no live launcher has no row either.
+
+**State model:**
+1. A unit's session directory owns its roster (`mesh_roster.json`: worker name, role, thread id) and its run records (`mesh_runs/*.json`). The `director` file in that directory names the unit's Claude session id.
+2. A worker row exists while any of these is live: its launcher, its thread open on an app server, or a running run record whose pid is live and whose thread id is the worker's.
+3. A row that exists only for a run takes the run's activity: `waiting` until cargo starts, then the step (`nextest`, `clippy`, and the others, with `(mac)` for a remote step). The row goes away when the run ends and no other source is live.
+4. The unit's own row keeps its session status. A worker's state never changes the director's row.
+
+**Spec:**
+1. Make a worker row from a running run record, with the roster's name and role, under the Claude row that the `director` file names. Reuse `worker_dispatch`'s roster read and `RunRecords::read_for_processes`. Do not add a second reader for either file.
+2. A row from a launcher or an app server and a row from a run for the same thread id are one row.
+3. `app_server_threads` reads each app server's own `CODEX_HOME` sessions directory through `codex::session_home`, not `~/.codex` only.
+4. Tests under 1 s: a run with no launcher gives a `waiting` worker row; the same run with cargo below gives `nextest`; the run ends and the row goes away; a launcher and a run for one thread give one row; an app server on a second Codex home shows its open thread; the director's `idle` row stays `idle`.
+5. CHANGELOG: one Fixed line in cargo-handler.
+
+**Files:** `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/activity.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs`, their tests, `crates/cargo-handler/CHANGELOG.md`.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: a shot of a unit tile on natedev with a worker row that shows `waiting` or a gate step during a live detached run, a design check line, and a Change-Review line.
+
+### Phase 63 — Expand and collapse by mouse and by depth keys  · status: todo
+
+**Depends on:** Phase 45 (done). Runs after Phase 62, or beside Phase 57c (showrunner, 2026-11-03). Showrunner rulings: the marker-only toggle stands; the C185 depth keys fold into this phase, because both change the same open-row state.
+
+#### Work Order
+
+**Goal:** a left click on a row's `▶` or `▼` marker opens or closes that row, the same as Right and Left. The digit keys show the focused tile to a depth, and `-` closes every tile to its roots and first level.
+
+**Source:** the user, via the showrunner, 2026-11-03: "expand collapse should respond to mouse clicks also". Showrunner ruling: a click on the marker toggles the row; match cargo-port's project list if it takes clicks.
+
+**Source (depth keys):** the user, change review C185 on Phase 45, 2026-11-03: "works: - should just close to showing the root and first level - also for the focused cell, the numbers should show up to that level - 1 will show root and first 2 will show root 1 and 2, and so on - the numbers up to 9 should work - 0 should collapse to the root".
+
+**Key check (main ff9c2b2fc):** no cargo-handler key takes `1` to `9`. `0` is `ResetExpansion` and `-` is `CollapseAll` (`globals.rs` ≈43, ≈93, ≈175, ≈179); this phase changes both. cargo-handler's tile removal is Shift-Delete, so no tile key takes a digit or `-`. In cargo-tile, a separate app, `-` is `RemoveTile` and `+` is `AddTile` (`cargo-tile/src/app_global_action.rs` ≈64); this phase does not change cargo-tile. `1` to `3` are attract-screen keys in `tui_pane` (`attract/moving_band.rs` ≈140); they act only while the attract screen replaces the grid, when no tile has focus.
+
+**cargo-port (main ff9c2b2fc):** a left click on a project list row selects it and toggles its expansion (`tui/interaction.rs` `handle_click` → `toggle_selected_project_expansion`). The click is on the whole row.
+
+**Unit director's call:** cargo-handler toggles only on the marker cells. A click on the rest of the row keeps Phase 16's select, and Phase 20 gives that click a word highlight. A whole-row toggle would open or close a tree on each select or word click. Risk: a one-cell target; the marker and its trailing space are two cells, so the target is two cells wide.
+
+**State model:**
+1. Phase 45's `HandlerExpansion` keeps the open and closed choices. A click changes it only through the same operation that Right and Left use.
+2. A marker hit is part of the painted frame: the row identity and the marker's two cells. A click on a leaf row's lead does nothing more than select.
+3. A marker click also selects the row, as Phase 16's click does.
+4. Each tile has a depth level, `DepthLevel::{Through(n), All}` with n from 0 to 9. The default is `Through(1)`: the roots and the first level show, the same as today's default. A row at depth d is open when d < n. `All` opens every row.
+5. A digit key n sets the focused tile to `Through(n)` and clears that tile's row choices. `=` sets every tile to `All`. `-` sets every tile to `Through(1)`. `0` is `Through(0)`: only roots show. A new row in a tile follows that tile's level.
+6. A row choice (Right, Left, Enter, a marker click) wins over its tile's level until the next level key for that tile.
+
+**Spec:**
+1. Record each painted row's marker cells beside its row span in `SurfaceSelection` (`interaction.rs`). Compute them from `TreeLine::lead` (`agent_cell.rs`), the same text that draws the marker.
+2. Extend `RowClick` with an outcome for a marker hit, for example `RowClick::Toggled(RowIdentity)`. Keep one click dispatcher and one hit test (Phase 16 binds).
+3. On a marker hit, select the row and apply the toggle that Enter applies.
+4. Tests under 1 s: a click on `▶` opens the row; a click on `▼` closes it; a click on the name only selects; a click on a leaf row's lead only selects; a click on a scrolled tile hits the painted row.
+5. Replace `ResetExpansion` with one action per digit key, 0 to 9, for the focused tile. `-` keeps `CollapseAll` and now closes to `Through(1)`. The default `Through(1)` gives the same view as today's reset. The shortcuts overlay shows the digits as one row if the overlay can group them; else ten rows.
+6. The level lives in cargo-handler's `expansion.rs`. Do not add it to the shared `tui_pane` expansion model: cargo-port has no consumer for it.
+7. Tests under 1 s: `1`, `2` and `9` show the focused tile to that depth and leave other tiles as they are; `0` shows only roots; `-` closes every tile to the first level; a new deep row follows its tile's level; a row choice wins over the level until the next level key; the key table maps each digit.
+8. CHANGELOG: one Added line and one Changed line (`-` and `0`) in cargo-handler.
+
+**Files:** `crates/cargo-handler/src/interaction.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/expansion.rs`, `crates/cargo-handler/src/globals.rs`, `crates/cargo-handler/src/expansion_tests.rs`, their tests, `crates/cargo-handler/CHANGELOG.md`.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: shots on natedev before and after a marker click, and after `0`, `2` and `-`; a design check line; and Change-Review lines for the marker click and the depth keys.
+
+### Phase 64 — A one-shot probe waits for herdr pane names  · status: todo
+
+**Depends on:** Phase 62, because both phases change `census/scan.rs`. Runs beside Phase 61 or Phase 63; they share no file with it (showrunner, 2026-11-03).
+
+#### Work Order
+
+**Goal:** `cargo-handler probe` on a loaded host shows a herdr-named Codex window by its name on each run, so a remote cell no longer changes between the name and `pid N`.
+
+**Source:** the showrunner, 2026-11-03, 15:47 EST. On natedev at load average 47 with the installed build 9bb05b8be, three `cargo-handler probe` runs took 6.5 s, 11.0 s and 2.4 s. Runs 1 and 2 showed morty (pid 2719866) as `pid 2719866`. Run 3 showed `morty`. A remote cell runs `ssh <host> cargo-handler probe` on each poll, and each run is a new process.
+
+**Cause (main ff9c2b2fc):**
+1. `Scanner::scan` (`scan.rs` ≈334) calls `HerdrNames::finish_initial` (`herdr.rs` ≈246) once.
+2. `finish_initial` waits only `HERDR_INITIAL_TIMEOUT` (100 ms, `constants.rs` ≈605) for the herdr worker's first answer. When the answer is late, the row keeps `pid N`.
+3. The TUI reads the late answer on a later scan. A one-shot probe has no later scan, so the late name is lost.
+4. The worker sends one `NameAnswer` after each refresh, also when it finds no names. Its socket operations use `HERDR_READ_TIMEOUT` (100 ms, `constants.rs` ≈609).
+
+**State model:**
+1. The herdr worker owns the pane names. `InitialAnswer::{Pending, Ready}` records whether the scan has the answer for its generation.
+2. The TUI path keeps the 100 ms wait. A late answer arrives on a later scan, as today.
+3. The probe path waits until the answer for its own generation arrives, or until a probe bound ends. After the bound, the row shows `pid N`.
+4. A herdr that is not running gives an answer or ends the wait at once. It never makes the probe wait the full bound.
+
+**Spec:**
+1. Give `finish_initial` a typed wait, for example `InitialWait::{Startup, Probe}`. Do not use a bare duration argument. The probe's `Scanner` uses `Probe`, and the TUI uses `Startup`.
+2. Put the probe bound in config, not in a constant (showrunner, 2026-11-03: load sets the right value, and a change must not need a release). Add `[census] herdr_probe_wait` to `CensusConfig` (`config.rs` ≈115) as a typed value with a default, the same as `codex_thread_start_window` (`CodexStartWindow`). The probe reads it the same way, through `Scanner::with_codex_start_window`'s pattern (`probe.rs` ≈417). Choose the default from the measured probe times, and write the reason in the doc comment.
+3. Check whether `HERDR_READ_TIMEOUT` also drops names under load. If it does, move it to config by the same rule (`[census] herdr_read_timeout`), and the probe path uses that value through the same typed wait. Record the measurement in the as-built.
+4. Tests under 1 s, with a controlled answer channel and no real sleeps: an answer after 100 ms reaches the probe; the TUI path returns at 100 ms; a herdr that is not running ends the probe wait at once; an answer of an older generation does not count; a missing config key gives the default, and a set key changes the bound.
+5. CHANGELOG: one Fixed line in cargo-handler.
+
+**Files:** `crates/cargo-handler/src/census/herdr.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/config.rs`, `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/src/census/herdr_tests.rs`, the config tests, `crates/cargo-handler/CHANGELOG.md`.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live check on natedev under load: five `cargo-handler probe` runs each show a herdr-named Codex window by its name. Take the window's pid from the probe's own output, and never type into or signal that window. Add a Change-Review line.
 
 ### Phase 45 — Handler rows expand and collapse like the cargo-port project list  · status: done
 
@@ -1643,7 +1772,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Source:** the user, 2026-11-02, via the showrunner: "why don't you just read the staff document - it should be sub millisecond to read / eventually i do want to track other agents - between the staff page and the herdr commands we should be able to get answers much faster / herdr shouldn't focus on making staff fast - we should just read the staff page directly". The showrunner ruled the design the same day. It replaces the earlier `staff.py show --json --live` plan.
 
-**Evidence, read-only, 2026-11-02:** `~/.local/state/staff/staff.json` is 109 KB, schema 2, with key `rows`. It holds 394 rows: 322 `worker`, 65 `unit`, 7 `showrunner`. Each row has `id`, `kind`, `name`, `parent` and `current_session`. The Mac has no staff file.
+**Evidence, read-only, 2026-11-02:** `~/.local/state/staff/staff.json` is 109 KB, schema 2, with key `rows`. It holds 394 rows: 322 `worker`, 65 `unit`, 7 `showrunner`. From 2026-11-03 (staff owner sdlc, `~/.claude` main da268842c), one row has kind `agent` (morty). The reader accepts `agent` and keeps a row of an unknown kind out of the tree, never failing the whole read. Each row has `id`, `kind`, `name`, `parent` and `current_session`. The Mac has no staff file.
 
 **State model:**
 
@@ -1961,45 +2090,6 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 **Workers:** 1 writer.
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: captures in a dark and a light theme. The checkpoint adds ONE Change-Review line covering C113 and C115: the ramp reads at a glance, no red, no reset color matches a session color, dark and light themes.
-
-### Phase 44 — The accounts summary shows a session count per account  · status: todo
-
-**Depends on:** Phase 43
-
-#### Work Order
-
-**Goal:** the accounts table in the summary has a `sessions` column that shows, for each account, how many live sessions run on it.
-
-**Source:** the user, direct to the handler unit, 2026-10-28 ≈23:40 EDT: "need to add an enhancement to show the count of sessions for each account in the accounts summary table". Unit session `phases/44/source.md`.
-
-**Constraints from prior phases:**
-- `render/mod.rs` ≈595 can build more than one `SummaryLayout` in a frame, and ≈665 builds a new `SummaryFrame` per request: compute `AccountSessionCounts` once per frame with the frame's placement and pass it to every summary allocation. Count logical rows by the membership rules at `agent_cell.rs` ≈1428, ≈1935, not painted rows.
-- Columns: `AccountsColumn` (`sort.rs` ≈172) with `ALL`, `index` and `header` (`"account", "role", "left", "resets", "credits", "enabled", "in use", "read"`). `summary/accounts.rs`: `compare_accounts` (≈99) sorts by each column, `values` (≈371) builds the cell text, `AccountsFit::for_width` (≈431) fits widths, the always-kept columns are Account, Roles and WeeklyLeft (≈468), and `AccountsColumnDrop::ORDER` (≈487) is InUse, Enabled, Read, Credits. Phase 28 pins the heading and column headers; phase 32 keeps main's table height.
-- `AccountUsage` (`census/accounts.rs` ≈86) comes from `accounts.py`; Rust does not infer its roles or filter its rows. The count comes from the census, not from `accounts.py`.
-- `SummaryFrame` (`summary/mod.rs` ≈213) holds `machines`, `placement` and `accounts`; `SummaryLayout::new` (≈438) calls `accounts::build_lines`. A row's account is `AgentRow.account` / `ChildRow.account` (`census/mod.rs` ≈323, ≈459), an `Account` whose label (`AccountHome::label`) is the label the tiles show; shells and subagents are `Account::Unrecorded`.
-- Do not count through `TreeLine::account` (`agent_cell.rs` ≈1153). It gives the parent's account to unrecorded shell and subagent rows, for display only.
-- Phase 43 changes age text in summary fixtures; this phase runs after it so the summary fixture text changes once each.
-
-**Spec:**
-1. A session is a logical member: an eligible session identity after placement, folding and hiding, on any shown machine. Claude sessions, Codex sessions and Codex threads are eligible; shells and subagents are not and do not count (unit director's call; a one-line revert if the showrunner counts only top-level agents). Count each identity once, by its own recorded `Account` home with that label. A folded or hidden identity does not count.
-2. `AccountsColumn::Sessions`, header `sessions`, drawn after `role`; the value is the count, `0` for an account with none. Header click sorts by it like the other number columns. It drops for width after Credits (`AccountsColumnDrop` gains `Sessions` as the last entry).
-3. The count is computed once per frame into a typed map (for example `AccountSessionCounts`) passed to `build_lines`; no census walk inside a cell draw.
-4. Tests, red first, in `summary/accounts_tests.rs`: a census-only count change while the account reading is cached; one managed thread shown by more than one source row counts once; counts stay the same across scrolling and width changes; two accounts with 3 and 0 drawn sessions show `3` and `0`; a shell or subagent child adds nothing; a folded dispatch shell adds nothing; in `summary/accounts_header_sort_tests.rs` a click on `sessions` sorts by count; a narrow width drops `sessions` after `credits`. Update accounts fixtures whose text changes (`render/accounts_grid_tests.rs`, `render/pinned_accounts_tests.rs` and any other the suite names). Each test under one second.
-5. CHANGELOG: one line under Added.
-
-**Files:**
-- `crates/cargo-handler/src/sort.rs` — `AccountsColumn::Sessions`
-- `crates/cargo-handler/src/summary/accounts.rs` — values, sort, fit and drop order
-- `crates/cargo-handler/src/summary/mod.rs` — the per-frame counts
-- `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`, `crates/cargo-handler/src/render/accounts_grid_tests.rs`, `crates/cargo-handler/src/render/pinned_accounts_tests.rs` — tests and fixture text
-- `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/render/mod.rs` — one count snapshot per frame (impl slot)
-
-**Workers:** 1 writer + 1 tester.
-- `impl` — `sort.rs`, `summary/accounts.rs`, `summary/mod.rs`, fixture updates in `render/` and the CHANGELOG; hub: `crates/cargo-handler/src/summary/accounts.rs`.
-- `test` — opens as impl: no `tests/` lane; it writes the tests in `summary/accounts_tests.rs` and `summary/accounts_header_sort_tests.rs` from this Spec.
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of the accounts table on natedev shows each account's session count, and the count matches the drawn rows for one account. The checkpoint adds a Change-Review line.
 
 ### Phase 59 — Shift-left and shift-right move the tile focus  · status: todo
 

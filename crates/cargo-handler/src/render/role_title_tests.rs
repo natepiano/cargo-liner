@@ -26,7 +26,6 @@ use crate::census::HierarchyRole;
 use crate::census::MachineState;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
-use crate::census::hierarchy::ReviewerState;
 use crate::census::scan::ScanStage;
 use crate::footer_colors;
 use crate::footer_colors::FooterColor;
@@ -50,16 +49,14 @@ fn tile_title_suffixes_use_showrunner_and_unit_role_colors() {
     ])).expect("agent rows");
     let edges = HierarchyEdges(vec![
         HierarchyEdge {
-            manager:  "boss".into(),
-            member:   "unit".into(),
-            role:     HierarchyRole::Unit,
-            reviewer: ReviewerState::NotPool,
+            manager: "boss".into(),
+            member:  "unit".into(),
+            role:    HierarchyRole::Unit,
         },
         HierarchyEdge {
-            manager:  "unit".into(),
-            member:   "worker".into(),
-            role:     HierarchyRole::Impl,
-            reviewer: ReviewerState::NotPool,
+            manager: "unit".into(),
+            member:  "worker".into(),
+            role:    HierarchyRole::Impl,
         },
     ]);
     let colors =
@@ -124,20 +121,18 @@ fn account_grid(colors: &FooterColors, boss_visible: bool, labels: &[&str]) -> B
     ])).expect("grid rows");
     let edges = HierarchyEdges(vec![
         HierarchyEdge {
-            manager:  "boss".into(),
-            member:   "unit".into(),
-            role:     HierarchyRole::Unit,
-            reviewer: ReviewerState::NotPool,
+            manager: "boss".into(),
+            member:  "unit".into(),
+            role:    HierarchyRole::Unit,
         },
         HierarchyEdge {
-            manager:  "unit".into(),
-            member:   "worker".into(),
-            role:     if boss_visible {
+            manager: "unit".into(),
+            member:  "worker".into(),
+            role:    if boss_visible {
                 HierarchyRole::Showrunner
             } else {
                 HierarchyRole::Impl
             },
-            reviewer: ReviewerState::NotPool,
         },
     ]);
     let state = MachineState::Answered(
@@ -571,16 +566,14 @@ fn new_showrunner_and_unassigned_tiles_sort_names_and_first_click_reverses_them(
         rows,
         hierarchy: HierarchyEdges(vec![
             HierarchyEdge {
-                manager:  "boss".into(),
-                member:   "zeta".into(),
-                role:     HierarchyRole::Unit,
-                reviewer: ReviewerState::NotPool,
+                manager: "boss".into(),
+                member:  "zeta".into(),
+                role:    HierarchyRole::Unit,
             },
             HierarchyEdge {
-                manager:  "boss".into(),
-                member:   "alpha".into(),
-                role:     HierarchyRole::Unit,
-                reviewer: ReviewerState::NotPool,
+                manager: "boss".into(),
+                member:  "alpha".into(),
+                role:    HierarchyRole::Unit,
             },
         ])
         .into(),
@@ -1272,7 +1265,6 @@ fn roots_with_different_subtree_sizes() -> MachineState {
                 manager: id.clone(),
                 member,
                 role: HierarchyRole::Unit,
-                reviewer: ReviewerState::NotPool,
             });
         }
     }

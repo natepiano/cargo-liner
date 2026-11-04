@@ -113,13 +113,21 @@ pub(crate) struct MachinesConfig {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct CensusConfig {
-    /// One line of shell that prints this machine's hierarchy edges;
-    /// empty disables hierarchy discovery.
-    pub(crate) hierarchy_command:         String,
+    /// The staff file path. An empty path disables staff discovery.
+    pub(crate) staff_file:                StaffFilePath,
     /// Optional command printing stored account roles and usage as JSON.
     pub(crate) accounts_command:          String,
     /// Seconds after process startup in which a new Codex thread can match.
     pub(crate) codex_thread_start_window: CodexStartWindow,
+}
+
+/// The configured staff file path, including its default location.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct StaffFilePath(pub(crate) String);
+
+impl Default for StaffFilePath {
+    fn default() -> Self { Self("~/.local/state/staff/staff.json".to_owned()) }
 }
 
 /// The configured span for the Codex startup fallback, in seconds.
@@ -215,7 +223,7 @@ widen_summary = true
 remote = []
 
 [census]
-hierarchy_command = \"\"
+staff_file = \"~/.local/state/staff/staff.json\"
 accounts_command = \"\"
 codex_thread_start_window = 60
 
@@ -247,8 +255,9 @@ codex_thread_start_window = 60
 
     #[test]
     fn config_without_an_accounts_table_has_no_labels() {
-        let config: Config = toml::from_str("[census]\nhierarchy_command = \"\"\n")
-            .expect("config from before accounts parses");
+        let config: Config =
+            toml::from_str("[census]\nstaff_file = \"~/.local/state/staff/staff.json\"\n")
+                .expect("config from before accounts parses");
         assert!(config.accounts.0.is_empty());
     }
 
@@ -270,19 +279,13 @@ codex_thread_start_window = 60
         assert_eq!(round_trip(&restated), restated);
     }
 
-    /// Shell quoting and separators survive a config save and reload.
+    /// Spaces in the staff path survive a config save.
     #[test]
-    fn the_hierarchy_command_round_trips_as_one_shell_line() {
-        let text =
-            "[census]\nhierarchy_command = '''printf '%s' '{\"schema\":1,\"edges\":[]}' | cat'''\n";
+    fn the_staff_file_round_trips_as_a_path() {
+        let text = "[census]\nstaff_file = '/tmp/staff list.json'\n";
         let restated = round_trip(text);
-        let reloaded: Config =
-            toml::from_str(&restated).expect("the saved shell command should parse");
-
-        assert_eq!(
-            reloaded.census.hierarchy_command,
-            "printf '%s' '{\"schema\":1,\"edges\":[]}' | cat"
-        );
+        let reloaded: Config = toml::from_str(&restated).expect("the staff path should parse");
+        assert_eq!(reloaded.census.staff_file.0, "/tmp/staff list.json");
         assert_eq!(round_trip(&restated), restated);
     }
 
