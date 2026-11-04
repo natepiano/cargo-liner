@@ -510,6 +510,78 @@ mod tests {
     }
 
     #[test]
+    fn local_trait_import_under_parent_glob_stays_free_of_unused_imports() -> anyhow::Result<()> {
+        let text = r"pub mod api {
+    pub trait Apply { fn apply(self); }
+    impl Apply for u8 { fn apply(self) {} }
+}
+use api::Apply;
+pub fn parent() { 1u8.apply(); }
+pub mod child {
+    use super::*;
+    pub fn check() {
+        use crate::api::Apply as _;
+        1u8.apply();
+        parent();
+    }
+}
+";
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("fixture.rs");
+        std::fs::write(&path, text)?;
+        let syntax = syn::parse_file(text)?;
+        let (_, fixes) = super::scan(&syntax, text, &path, "fixture.rs")?;
+        let fixes = crate::fixes::imports::ValidatedFixSet::try_from(fixes)?;
+        crate::fixes::imports::apply_fixes(&fixes)?;
+        let output = std::process::Command::new("rustc")
+            .args([
+                "--crate-type=lib",
+                "--emit=metadata",
+                "--deny=unused-imports",
+            ])
+            .arg(&path)
+            .arg("--out-dir")
+            .arg(temp.path())
+            .output()?;
+        assert!(
+            output.status.success(),
+            "rewritten imports must compile without unused imports: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn moving_imports_checks_glob_scope_and_cfg_overlap() -> anyhow::Result<()> {
+        for (source, expected) in [
+            (
+                "use crate::api::*;\nfn f() { use crate::api::Apply; }\n",
+                "use crate::api::*;\nfn f() { use crate::api::Apply; }\n",
+            ),
+            (
+                "mod sibling { use crate::api::*; }\nfn f() { use crate::api::Apply; }\n",
+                "use crate::api::Apply;\nmod sibling { use crate::api::*; }\nfn f() {  }\n",
+            ),
+            (
+                "#[cfg(flag)] use crate::api::*;\nfn f() { #[cfg(not(flag))] use crate::api::Apply; }\n",
+                "#[cfg(flag)] use crate::api::*;\n#[cfg(not(flag))]\nuse crate::api::Apply;\nfn f() {  }\n",
+            ),
+        ] {
+            let temp = tempfile::tempdir()?;
+            let path = temp.path().join("fixture.rs");
+            std::fs::write(&path, source)?;
+            let syntax = syn::parse_file(source)?;
+            let (_, fixes) = super::scan(&syntax, source, &path, "fixture.rs")?;
+            let fixes = crate::fixes::imports::ValidatedFixSet::try_from(fixes)?;
+            crate::fixes::imports::apply_fixes(&fixes)?;
+            let rewritten = std::fs::read_to_string(&path)?;
+            syn::parse_file(&rewritten)?;
+            assert_eq!(rewritten, expected, "glob scope and cfg: {source}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn moved_import_keeps_unicode_diagnostic_and_edit_bytes() -> anyhow::Result<()> {
         let line = "fn f() { /* é */ use crate::a::Thing; }";
         let text = format!("// é\n{line}\n");
