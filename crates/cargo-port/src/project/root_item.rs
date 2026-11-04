@@ -10,7 +10,6 @@ use super::git;
 use super::git::CheckoutInfo;
 use super::git::Submodule;
 use super::git::WorktreeGroup;
-use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
@@ -163,18 +162,6 @@ impl RootItem {
         }
     }
 
-    /// Look up a submodule by absolute path.
-    pub(crate) fn find_submodule(&self, path: &Path) -> Option<&Submodule> {
-        self.submodules().iter().find(|s| s.path.as_path() == path)
-    }
-
-    /// Mutable lookup of a submodule by absolute path.
-    pub(crate) fn find_submodule_mut(&mut self, path: &Path) -> Option<&mut Submodule> {
-        self.submodules_mut()
-            .iter_mut()
-            .find(|s| s.path.as_path() == path)
-    }
-
     /// Whether this is a Rust project (has `Cargo.toml`).
     pub(crate) const fn is_rust(&self) -> bool {
         matches!(self, Self::Rust(_) | Self::Worktrees(_))
@@ -212,37 +199,6 @@ impl RootItem {
                 .find(|s| s.path.as_path() == path)
                 .map(|s| &s.project_info)
         })
-    }
-
-    /// The `WorktreeStatus` of the specific checkout that owns `path`.
-    /// Resolves into worktree groups so a linked checkout reports its own
-    /// `Linked` status instead of the group primary's. `None` when no
-    /// checkout in this item contains `path`.
-    pub(crate) fn worktree_status_at(&self, path: &Path) -> Option<&WorktreeStatus> {
-        match self {
-            Self::Rust(p) => p.at_path(path).map(|_| p.worktree_status()),
-            Self::NonRust(p) => (p.path() == path).then(|| p.worktree_status()),
-            Self::Worktrees(g) => g
-                .iter_entries()
-                .find(|entry| entry.at_path(path).is_some())
-                .map(RustProject::worktree_status),
-        }
-    }
-
-    /// The checkout root (workspace or package root) whose working tree
-    /// contains `path` — the node that carries the branch and CI state.
-    /// Resolves into worktree groups so a path under a linked checkout
-    /// returns that checkout's root, not the group primary. Members and
-    /// vendored crates resolve to their checkout root.
-    pub(crate) fn checkout_root_for(&self, path: &Path) -> Option<&AbsolutePath> {
-        match self {
-            Self::Rust(p) => p.at_path(path).map(|_| p.path()),
-            Self::NonRust(p) => (p.path() == path).then(|| p.path()),
-            Self::Worktrees(g) => g
-                .iter_entries()
-                .find(|entry| entry.at_path(path).is_some())
-                .map(RustProject::path),
-        }
     }
 
     pub(crate) fn rust_info_at_path(&self, path: &Path) -> Option<&RustInfo> {
@@ -305,33 +261,6 @@ impl RootItem {
             Self::Rust(p) => p.lint_at_path_mut(path),
             Self::NonRust(_) => None,
             Self::Worktrees(g) => find_in_group_mut(g, path, RustProject::lint_at_path_mut),
-        }
-    }
-
-    pub(crate) fn lint_owner_path(&self, path: &Path) -> Option<&AbsolutePath> {
-        match self {
-            Self::Rust(p) => p.lint_owner_path(path),
-            Self::NonRust(_) => None,
-            Self::Worktrees(g) => g.iter_entries().find_map(|p| p.lint_owner_path(path)),
-        }
-    }
-
-    /// Lint runs owned by the parent of a vendored crate at `path`.
-    ///
-    /// Vendored crates do not own lint state (see `VendoredPackage`), but the
-    /// detail pane surfaces the owning root's runs when a vendored row is
-    /// selected — mirroring how workspace members inherit their workspace's
-    /// lint history.
-    pub(crate) fn vendored_owner_lint(&self, path: &Path) -> Option<&LintRuns> {
-        match self {
-            Self::Rust(project) => project
-                .vendored_at_path(path)
-                .map(|_| &project.rust_info().lint_runs),
-            Self::NonRust(_) => None,
-            Self::Worktrees(g) => g
-                .iter_entries()
-                .find(|p| p.vendored_at_path(path).is_some())
-                .map(|p| &p.rust_info().lint_runs),
         }
     }
 

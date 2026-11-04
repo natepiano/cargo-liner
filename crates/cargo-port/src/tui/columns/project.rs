@@ -40,7 +40,7 @@ pub(super) enum ColumnWidth {
     Fit { min: usize },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(in crate::tui) enum Align {
     Left,
     Right,
@@ -183,7 +183,7 @@ pub(super) const fn column_defs(lint_column: LintColumnStatus) -> [ColumnDef; NU
 
 // `CellContent`, `StyledSegment`, `LintCell` and `ProjectRow` hold styled table output.
 
-#[derive(Default)]
+#[derive(Default, PartialEq)]
 pub(in crate::tui) struct CellContent {
     pub text:           String,
     pub style:          Style,
@@ -193,7 +193,7 @@ pub(in crate::tui) struct CellContent {
     pub suffix_style:   Option<Style>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(in crate::tui) struct StyledSegment {
     pub text:  String,
     pub style: Style,
@@ -243,7 +243,7 @@ impl LintCell {
 }
 
 /// Deleted rows strike their content while suffix spans retain their own style.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(in crate::tui) enum RowLifecycle {
     Present,
     Deleted,
@@ -305,6 +305,7 @@ pub(in crate::tui) struct ProjectRow<'a> {
     pub worktree_health:   WorktreeHealth,
 }
 
+#[derive(PartialEq)]
 pub(in crate::tui) struct RowCells {
     pub cells:           [CellContent; NUM_COLS],
     pub prefix:          String,

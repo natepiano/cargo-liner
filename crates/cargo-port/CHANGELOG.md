@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Render each allowed frame once into the real terminal and reuse the retained screen buffer.
+- Draw a frame only when something visible changed; look up project paths through an index and recompute disk totals and column widths only when their inputs change, so an idle cargo-port uses about 0.2% of one core.
 - Use the shared `tui_pane` expansion model and keys for the project list; preserve its navigation and saved expansion state.
 
 - The settings, keymap and global shortcuts overlays scroll by the mouse wheel through `tui_pane`; modal capture and scroll inversion stay the same.

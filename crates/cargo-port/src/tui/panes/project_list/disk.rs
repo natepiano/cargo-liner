@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
 use std::path::Path;
 
 use ratatui::style::Style;
@@ -11,7 +9,7 @@ use tui_pane::warning_color;
 
 use crate::project::RootItem;
 use crate::scan::StorageHeadroom;
-use crate::tui::project_list::VisibleRow;
+use crate::tui::project_list_state::DiskCacheKey;
 use crate::tui::project_list_state::ProjectList;
 use crate::tui::render;
 
@@ -129,38 +127,8 @@ pub(super) fn formatted_disk_for_item(item: &RootItem) -> String {
 // Project pane. Expansion and collapse therefore update both the gradient and
 // the three emphasized values.
 
-pub(super) fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
-    let mut all_sorted: Vec<u64> = entries
-        .visible_rows()
-        .iter()
-        .filter_map(|row| entries.visible_row_disk_usage(*row))
-        .collect();
-    all_sorted.sort_unstable();
-
-    let child_nodes: HashSet<usize> = entries
-        .visible_rows()
-        .iter()
-        .filter_map(child_row_node_index)
-        .collect();
-    let mut child_sorted = HashMap::new();
-    for node_index in child_nodes {
-        child_sorted.insert(node_index, all_sorted.clone());
-    }
-
-    (all_sorted, child_sorted)
-}
-
-const fn child_row_node_index(row: &VisibleRow) -> Option<usize> {
-    match row {
-        VisibleRow::Root { .. } | VisibleRow::GroupHeader { .. } => None,
-        VisibleRow::Member { node_index, .. }
-        | VisibleRow::MemberVendored { node_index, .. }
-        | VisibleRow::Vendored { node_index, .. }
-        | VisibleRow::WorktreeEntry { node_index, .. }
-        | VisibleRow::WorktreeGroupHeader { node_index, .. }
-        | VisibleRow::WorktreeMember { node_index, .. }
-        | VisibleRow::WorktreeMemberVendored { node_index, .. }
-        | VisibleRow::WorktreeVendored { node_index, .. }
-        | VisibleRow::Submodule { node_index, .. } => Some(*node_index),
-    }
+pub(super) fn compute_disk_cache(key: &DiskCacheKey) -> Vec<u64> {
+    let mut sorted = key.visible_bytes.clone();
+    sorted.sort_unstable();
+    sorted
 }

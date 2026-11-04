@@ -7,8 +7,10 @@ use crate::http::ServiceSignal;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project::Submodule;
+use crate::project::Visibility;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
+use crate::tui::app::ProjectListPresentation;
 use crate::tui::app::scan_state::ScanPhase;
 use crate::tui::project_list_state::ProjectList;
 use crate::tui::sccache;
@@ -107,12 +109,83 @@ impl App {
     /// exhaustive matches with `unreachable!()`. Multi-statement arms
     /// are extracted as small helpers so each arm stays a single
     /// call.
+    pub(in crate::tui::app) fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
+        let disk_before = self.disk_message_inputs(&msg);
+        let row_generation_before = self.project_list.row_generation;
+        let row_before = self.row_message_input(&msg);
+        let storage_before = self.project_list.project_storage();
+        let is_disk = matches!(
+            msg,
+            BackgroundMsg::DiskUsage { .. } | BackgroundMsg::DiskUsageBatch { .. }
+        );
+        let is_storage = matches!(msg, BackgroundMsg::ProjectStorage { .. });
+        if !is_disk {
+            self.update_generations_for_msg(&msg);
+        }
+        let rebuild = self.apply_bg_msg(msg);
+        let row_changed = match row_before {
+            MessageRowInput::Unaffected => false,
+            MessageRowInput::Rows(before) => before != self.project_row_presentation(),
+        };
+        let disk_changed = disk_before
+            .iter()
+            .any(|(path, before)| disk_row_input(&self.project_list, path) != *before);
+        if disk_changed
+            || (is_storage && self.project_list.project_storage() != storage_before)
+            || row_changed
+        {
+            if self.project_list.row_generation == row_generation_before {
+                self.project_list.row_generation += 1;
+            }
+            if disk_changed
+                && disk_before.iter().any(|(path, before)| {
+                    disk_row_input(&self.project_list, path) != *before
+                        && self.detail_path_is_affected(path)
+                })
+            {
+                self.scan.bump_generation();
+            }
+        }
+        rebuild
+    }
+
+    fn row_message_input(&self, msg: &BackgroundMsg) -> MessageRowInput {
+        match msg {
+            BackgroundMsg::CiRuns { .. }
+            | BackgroundMsg::CheckoutInfo { .. }
+            | BackgroundMsg::RepoInfo { .. }
+            | BackgroundMsg::Submodules { .. }
+            | BackgroundMsg::LintStatus { .. }
+            | BackgroundMsg::LintStartupStatus { .. }
+            | BackgroundMsg::LanguageStatsBatch { .. }
+            | BackgroundMsg::CargoMetadata { .. } => {
+                MessageRowInput::Rows(self.project_row_presentation())
+            },
+            // Structural handlers own index/row generations. Disk and storage
+            // compare their measured inputs separately; all other messages
+            // update tooling, detail or toast state rather than list rows.
+            _ => MessageRowInput::Unaffected,
+        }
+    }
+
+    fn disk_message_inputs(&self, msg: &BackgroundMsg) -> Vec<(AbsolutePath, DiskRowInput)> {
+        match msg {
+            BackgroundMsg::DiskUsage { path, .. } => {
+                vec![(path.clone(), disk_row_input(&self.project_list, path))]
+            },
+            BackgroundMsg::DiskUsageBatch { entries, .. } => entries
+                .iter()
+                .map(|(path, _)| (path.clone(), disk_row_input(&self.project_list, path)))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "trivial 1:1 exhaustive variant mapping"
     )]
-    pub(in crate::tui::app) fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
-        self.update_generations_for_msg(&msg);
+    fn apply_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
         match msg {
             BackgroundMsg::DiskUsage { path, bytes } => {
                 self.handle_disk_usage_msg(path.as_path(), bytes);
@@ -278,6 +351,7 @@ impl App {
             !declarations_match
         });
         if submodule_list_changed {
+            self.project_list.rebuild_path_index();
             self.rebuild_visible_rows_now();
         }
     }
@@ -345,4 +419,44 @@ mod tests {
             Some(Path::new("/tmp/project/second"))
         );
     }
+}
+
+/// Disk replies can change deletion state without changing bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiskRowInput {
+    Missing,
+    Present {
+        bytes:      MeasuredBytes,
+        target:     MeasuredBytes,
+        non_target: MeasuredBytes,
+        visibility: Visibility,
+    },
+}
+
+fn disk_row_input(projects: &ProjectList, path: &Path) -> DiskRowInput {
+    projects
+        .at_path(path)
+        .map_or(DiskRowInput::Missing, |info| DiskRowInput::Present {
+            bytes:      MeasuredBytes::from(info.disk_usage_bytes),
+            target:     MeasuredBytes::from(info.in_project_target),
+            non_target: MeasuredBytes::from(info.in_project_non_target),
+            visibility: info.visibility,
+        })
+}
+
+/// A disk field is unknown until a measurement supplies its byte count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MeasuredBytes {
+    Unknown,
+    Known(u64),
+}
+
+impl From<Option<u64>> for MeasuredBytes {
+    fn from(bytes: Option<u64>) -> Self { bytes.map_or(Self::Unknown, Self::Known) }
+}
+
+/// Only list-row inputs may invalidate the list's width cache.
+enum MessageRowInput {
+    Unaffected,
+    Rows(ProjectListPresentation),
 }
