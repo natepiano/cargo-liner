@@ -1029,6 +1029,7 @@ mod tests {
     use crate::census::RoleLabel;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::StaffRowNames;
     use crate::census::WorkIdentity;
     use crate::census::transcript::SubagentRole;
     use crate::census::worker_dispatch::WorkerDispatch;
@@ -1154,23 +1155,23 @@ fraying = "leading"
         "│ natedev · no agents                                                          │",
         "│       ┌ Settings ────────────────────────────────────────────────────┐       │",
         "│       │ Appearance:                                                  │       │",
-        "│       │ ▶ mode               < auto >                                │       │",
-        "│       │   light theme        < Default Light >                       │       │",
-        "│       │   dark theme         < Default Dark >                        │       │",
-        "│       │   transparent        < true >                                │       │",
+        "│       │ ▶ mode           < auto >                                    │       │",
+        "│       │   light theme    < Default Light >                           │       │",
+        "│       │   dark theme     < Default Dark >                            │       │",
+        "│       │   transparent    < true >                                    │       │",
         "│       │ Tiles:                                                       │       │",
-        "│       │   initial rows       < 4 >                                   │       │",
-        "│       │   fill               < redistribute >                        │       │",
-        "│       │   view               < cells >                               │       │",
-        "│       │   widen summary      < true >                                │       │",
+        "│       │   initial rows   < 4 >                                       │       │",
+        "│       │   fill           < redistribute >                            │       │",
+        "│       │   view           < cells >                                   │       │",
+        "│       │   widen summary  < true >                                    │       │",
         "│       │ Machines:                                                    │       │",
-        "│       │   remote             none                                    │       │",
+        "│       │   remote         none                                        │       │",
         "│       │ Census:                                                      │       │",
-        "│       │   hierarchy command                                          │       │",
+        "│       │   staff file     ~/.local/state/staff/staff.json             │       │",
         "│       │ Files:                                                       │       │",
-        "│       │   config             /<config>/cargo-handler/config.toml     │       │",
-        "│       │   themes             /<config>/cargo-handler/themes          │       │",
-        "│       │   keymap             /<config>/cargo-handler/keymap.toml     │       │",
+        "│       │   config         /<config>/cargo-handler/config.toml         │       │",
+        "│       │   themes         /<config>/cargo-handler/themes              │       │",
+        "│       │   keymap         /<config>/cargo-handler/keymap.toml         │       │",
         "│       └──────────────────────────────────────────────────────────────┘ 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
@@ -1622,6 +1623,7 @@ fraying = "leading"
             work_id: WorkIdentity::Legacy,
         };
         AgentRow {
+            staff_names:     StaffRowNames::default(),
             role_fallback:   RoleFallback::None,
             session_id:      SessionIdentity::Unrecorded,
             agent:           Agent::Claude,

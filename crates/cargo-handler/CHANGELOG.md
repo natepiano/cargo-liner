@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Skip equal tile frames and repaint session ages when their minute labels or shared column width changes.
-- Read managers, members and roles from the schema 3 staff list through `hierarchy_command`; stop reading the retired review pool.
+- Read managers, members and staff names directly from the staff file (`staff_file` setting, schema 2), and reread it only when it changes. A missing staff file shows no staff names and no error. Remove the `hierarchy_command` setting and the review pool reader.
 - Idle CPU drops: the census watches its inputs, refreshes only changed process rows, reuses parsed worker data, and redraws body text only when it changes.
 - Summary and tile ages use d:hh:mm without seconds and align to the right.
 - Idle census scans retain parsed run records and process tables; stored account and hierarchy commands run when their inputs change.

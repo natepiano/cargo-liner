@@ -852,7 +852,9 @@ impl FooterColors {
             HierarchyRole::Impl
             | HierarchyRole::Test
             | HierarchyRole::Review
-            | HierarchyRole::Fix => FooterTint::Plain,
+            | HierarchyRole::Fix
+            | HierarchyRole::Worker
+            | HierarchyRole::Agent => FooterTint::Plain,
         }
     }
 

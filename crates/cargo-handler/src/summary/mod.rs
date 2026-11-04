@@ -1001,6 +1001,7 @@ mod tests {
     use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::StaffRowNames;
     use crate::census::accounts::AccountsTable;
     use crate::sort::AccountsSort;
 
@@ -1027,6 +1028,7 @@ mod tests {
         directory: &str,
     ) -> AgentRow {
         AgentRow {
+            staff_names: StaffRowNames::default(),
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             agent,

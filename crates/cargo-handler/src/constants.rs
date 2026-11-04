@@ -52,8 +52,8 @@ pub(crate) const MACHINES_SETTINGS_SECTION: &str = "Machines";
 pub(crate) const CENSUS_SETTINGS_SECTION: &str = "Census";
 /// Label of the settings row holding `machines.remote`.
 pub(crate) const REMOTE_MACHINES_LABEL: &str = "remote";
-/// Label of the command reporting management links.
-pub(crate) const HIERARCHY_COMMAND_LABEL: &str = "hierarchy command";
+/// Label of the configured staff file path.
+pub(crate) const STAFF_FILE_LABEL: &str = "staff file";
 
 // status line and overlays
 /// Section heading the keymap overlay gives this app's globals scope.
@@ -499,23 +499,24 @@ pub(crate) const TMUX_LIST_CLIENTS: [&str; 3] =
     ["list-clients", "-F", "#{client_pid} #{session_name}"];
 
 // hierarchy discovery
-/// Version of the hierarchy command's JSON contract.
-pub(crate) const HIERARCHY_SCHEMA: u32 = 3;
+/// The schema version of the staff file.
+pub(crate) const HIERARCHY_SCHEMA: u32 = 2;
 /// Largest accepted hierarchy answer in bytes, before JSON decoding.
 pub(crate) const HIERARCHY_OUTPUT_LIMIT: usize = 1024 * 1024;
-/// The shell that evaluates a configured hierarchy command.
+/// The shell that evaluates an accounts command.
 pub(crate) const SHELL_PROGRAM: &str = "sh";
-/// The program that terminates a hierarchy command's process group.
+/// The program that stops a command process group.
 #[cfg(unix)]
 pub(crate) const KILL_PROGRAM: &str = "kill";
 /// Terminate the entire group, even when the shell has started child commands.
 #[cfg(unix)]
 pub(crate) const KILL_GROUP_OPTIONS: [&str; 2] = ["-KILL", "--"];
-/// Maximum runtime of the local hierarchy command.
+/// The time limit for an accounts command.
 pub(crate) const HIERARCHY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum age of hierarchy edges while the setting and sessions stay unchanged.
 pub(crate) const HIERARCHY_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
-/// Allow the measured 0.62-second hierarchy command to finish inside the two-second scan budget.
+/// The first publication budget for injected discovery sources.
+#[cfg(test)]
 pub(crate) const HIERARCHY_FIRST_PUBLISH_BUDGET: Duration = Duration::from_secs(1);
 
 // remote probe

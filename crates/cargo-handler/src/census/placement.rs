@@ -706,9 +706,11 @@ mod tests {
     use crate::census::HierarchyRole;
     use crate::census::MachineState;
     use crate::census::ServiceTier;
+    use crate::census::StaffRowNames;
 
     fn agent(pid: u32, id: &str) -> AgentRow {
         AgentRow {
+            staff_names: StaffRowNames::default(),
             agent: Agent::Claude,
             role_fallback: crate::census::RoleFallback::None,
             session_id: SessionIdentity::Claude(id.to_string()),
