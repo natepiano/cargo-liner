@@ -2,15 +2,27 @@ use std::collections::HashSet;
 use std::io;
 use std::io::Stdout;
 use std::path::Path;
+use std::rc::Rc;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
 use crossterm::event::Event;
+use ratatui::Frame;
 use ratatui::Terminal;
+use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
+use ratatui::buffer::Buffer;
+use tui_pane::Keymap;
 use tui_pane::PERF_LOG_TARGET;
+use tui_pane::ToastCountdownState;
+use tui_pane::ToastId;
+use tui_pane::ToastLingerState;
+use tui_pane::ToastStyle;
+use tui_pane::ToastVisualDeadline;
+use tui_pane::TrackedItemActivity;
 use tui_pane::TrackedItemKey;
+use tui_pane::TrackedItemLifecycle;
 
 use super::frame_metrics::FrameMetrics;
 use super::frame_metrics::FrameSpeed;
@@ -21,10 +33,12 @@ use crate::channel;
 use crate::channel::Receiver;
 use crate::channel::Select;
 use crate::channel::TryRecvError;
+use crate::config::CargoPortConfig;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::app::PollBackgroundStats;
 use crate::tui::input;
+use crate::tui::project_list::VisibleRow;
 use crate::tui::render;
 use crate::tui::state::OwnedRunLaunchStart;
 
@@ -66,7 +80,7 @@ struct InputDrain {
 
 /// Event-driven render loop.
 ///
-/// Each iteration drains every ready source, renders one frame, then
+/// Each iteration drains every ready source, renders if visible state changed, then
 /// blocks in [`wait_for_event`] until something happens — input, a
 /// background message, a new CPU sample, or the animation heartbeat. The
 /// full drain runs on *every* wake regardless of which channel fired, so
@@ -84,6 +98,9 @@ pub(super) fn event_loop(
     input_rx: &Receiver<Event>,
 ) -> io::Result<()> {
     let mut rearmed_after_first_draw = false;
+    let mut frame_state = FrameState::default();
+    let mut frame_counter = DrawnFrameCounter::new();
+    let mut frame_output = FrameOutput::default();
     loop {
         let frame_started = Instant::now();
 
@@ -98,18 +115,39 @@ pub(super) fn event_loop(
 
         let (bg_stats, bg_elapsed) = poll_background_frame(app);
         let tick_now = Instant::now();
-        let cpu_elapsed = measure(|| app.panes.cpu_tick());
+        let cpu_started = Instant::now();
+        let cpu_changed = app.panes.cpu_tick();
+        let cpu_elapsed = cpu_started.elapsed();
         app.scan.prune_shimmers(tick_now);
 
-        let rows_elapsed = measure(|| app.ensure_visible_rows_cached());
-        let disk_elapsed = measure(|| app.ensure_disk_cache());
-        let fit_elapsed = measure(|| app.ensure_fit_widths_cached());
-        let detail_elapsed = measure(|| app.ensure_detail_cached());
-        let draw_elapsed = draw_frame(terminal, app)?;
-        if !rearmed_after_first_draw {
-            let _ = run::enable_input_modes();
-            rearmed_after_first_draw = true;
+        let changed = frame_state.needs_draw(app, tick_now);
+        let inspect_frame = changed
+            || input.count > 0
+            || cpu_changed
+            || bg_stats.bg_msgs > 0
+            || bg_stats.ci_msgs > 0
+            || bg_stats.owned_run_events > 0;
+        let mut rows_elapsed = Duration::ZERO;
+        let mut disk_elapsed = Duration::ZERO;
+        let mut fit_elapsed = Duration::ZERO;
+        let mut detail_elapsed = Duration::ZERO;
+        let mut draw_elapsed = Duration::ZERO;
+        if inspect_frame {
+            rows_elapsed = measure(|| app.ensure_visible_rows_cached());
+            disk_elapsed = measure(|| app.ensure_disk_cache());
+            fit_elapsed = measure(|| app.ensure_fit_widths_cached());
+            detail_elapsed = measure(|| app.ensure_detail_cached());
+            if let FrameDraw::Drawn(elapsed) = draw_frame(terminal, app, &mut frame_output)? {
+                draw_elapsed = elapsed;
+                frame_counter.drawn();
+            }
+            frame_state.record_draw(app, tick_now);
+            if !rearmed_after_first_draw {
+                let _ = run::enable_input_modes();
+                rearmed_after_first_draw = true;
+            }
         }
+        frame_counter.log_if_due();
 
         if app.framework.quit_requested() || app.framework.restart_requested() {
             flush_pending_selection(app);
@@ -234,13 +272,61 @@ fn measure(action: impl FnOnce()) -> Duration {
     started.elapsed()
 }
 
-fn draw_frame(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+fn draw_frame<B: Backend>(
+    terminal: &mut Terminal<B>,
     app: &mut App,
-) -> io::Result<Duration> {
+    output: &mut FrameOutput,
+) -> Result<FrameDraw, B::Error> {
+    draw_frame_with_renderer(terminal, app, output, render::ui)
+}
+
+/// Render once into the terminal, then classify changes to the buffer only.
+/// Input receipt is a reason to inspect the screen, never proof it changed.
+fn draw_frame_with_renderer<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    output: &mut FrameOutput,
+    render_ui: impl FnOnce(&mut Frame, &mut App),
+) -> Result<FrameDraw, B::Error> {
     let started = Instant::now();
-    terminal.draw(|frame| render::ui(frame, app))?;
-    Ok(started.elapsed())
+    let completed = terminal.draw(|frame| render_ui(frame, app))?;
+    let changed = match output {
+        FrameOutput::FirstFrame => {
+            let cells = completed.buffer.clone();
+            *output = FrameOutput::Drawn(RenderedScreen { cells });
+            true
+        },
+        FrameOutput::Drawn(previous) => {
+            let cells_changed = previous.cells != *completed.buffer;
+            if cells_changed {
+                // Buffer's default clone_from allocates. Reuse the cell vector instead.
+                previous.cells.content.clone_from(&completed.buffer.content);
+                previous.cells.area = completed.buffer.area;
+            }
+            cells_changed
+        },
+    };
+    if changed {
+        Ok(FrameDraw::Drawn(started.elapsed()))
+    } else {
+        Ok(FrameDraw::Unchanged)
+    }
+}
+
+#[derive(Default)]
+enum FrameOutput {
+    #[default]
+    FirstFrame,
+    Drawn(RenderedScreen),
+}
+
+struct RenderedScreen {
+    cells: Buffer,
+}
+
+enum FrameDraw {
+    Unchanged,
+    Drawn(Duration),
 }
 
 fn spawn_pending_background_tasks(app: &mut App) {
@@ -299,4 +385,220 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         scan_complete = app.scan.is_complete(),
         "slow_frame"
     );
+}
+
+/// Inputs shared by a rendered frame. Time is represented by a deadline,
+/// so an idle heartbeat does not create a new input on its own.
+#[derive(Clone, PartialEq)]
+struct FrameKey {
+    row_generation:      u64,
+    detail_generation:   u64,
+    selected_row:        FrameSelection,
+    scan:                ScanFrameState,
+    lint_animation:      LintAnimation,
+    operation_animation: OperationAnimation,
+    config:              CargoPortConfig,
+    keymap:              FrameKeymap,
+    sccache:             SccacheFrameNote,
+    toasts:              Vec<ToastFrameKey>,
+}
+
+/// Retain the installed keymap so a reload cannot reuse its identity.
+#[derive(Clone)]
+struct FrameKeymap(Rc<Keymap<App>>);
+
+impl PartialEq for FrameKeymap {
+    fn eq(&self, other: &Self) -> bool { Rc::ptr_eq(&self.0, &other.0) }
+}
+
+#[derive(Clone, PartialEq)]
+enum SccacheFrameNote {
+    Unavailable,
+    Reported { label: String, value: String },
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum ScanFrameState {
+    Running,
+    /// Discovery shimmers can fade after scanning finishes.
+    DiscoveryShimmer,
+    Complete,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum LintAnimation {
+    Idle,
+    Running,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum OperationAnimation {
+    Idle,
+    Running,
+}
+
+impl FrameKey {
+    fn from_app(app: &App, now: Instant) -> Self {
+        Self {
+            row_generation:      app.project_list.row_generation,
+            detail_generation:   app.scan.generation(),
+            selected_row:        app
+                .project_list
+                .selected_row()
+                .map_or(FrameSelection::Empty, FrameSelection::Selected),
+            scan:                if !app.scan.is_complete() {
+                ScanFrameState::Running
+            } else if app.scan.has_active_shimmers() {
+                ScanFrameState::DiscoveryShimmer
+            } else {
+                ScanFrameState::Complete
+            },
+            lint_animation:      if app.project_list.has_running_lints() {
+                LintAnimation::Running
+            } else {
+                LintAnimation::Idle
+            },
+            operation_animation: if app.inflight.needs_animation() {
+                OperationAnimation::Running
+            } else {
+                OperationAnimation::Idle
+            },
+            config:              app.config.current().clone(),
+            keymap:              FrameKeymap(Rc::clone(&app.framework_keymap)),
+            sccache:             app.sccache_status_line.note().map_or(
+                SccacheFrameNote::Unavailable,
+                |note| SccacheFrameNote::Reported {
+                    label: note.label,
+                    value: note.value,
+                },
+            ),
+            toasts:              app
+                .framework
+                .toasts
+                .active_views(now)
+                .iter()
+                .map(|toast| ToastFrameKey {
+                    id:         toast.id(),
+                    title:      toast.title().to_owned(),
+                    body:       toast.body().to_owned(),
+                    style:      toast.style(),
+                    has_action: toast.has_action(),
+                    countdown:  toast.countdown(),
+                    linger:     toast.linger(),
+                    items:      toast
+                        .tracked_items()
+                        .iter()
+                        .map(|item| ToastItemFrameKey {
+                            label:     item.label.clone(),
+                            activity:  item.activity,
+                            lifecycle: item.lifecycle,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Default)]
+enum FrameState {
+    #[default]
+    FirstFrame,
+    Drawn {
+        key:                Box<FrameKey>,
+        next_visual_change: ToastVisualDeadline,
+    },
+}
+
+impl FrameState {
+    /// The caller supplies time so frame inputs and elapsed animation deadlines
+    /// can be checked independently of scheduler delays.
+    fn needs_draw(&mut self, app: &App, now: Instant) -> bool {
+        let key = FrameKey::from_app(app, now);
+        let changed = match self {
+            Self::FirstFrame => true,
+            Self::Drawn {
+                key: previous,
+                next_visual_change,
+            } => {
+                previous.as_ref() != &key
+                    || matches!(next_visual_change, ToastVisualDeadline::At(deadline) if now >= *deadline)
+            },
+        };
+        if changed {
+            self.record_draw(app, now);
+        }
+        changed
+    }
+
+    fn record_draw(&mut self, app: &App, now: Instant) {
+        let timeout = app.animation_timeout_at(now);
+        let next_visual_change = if timeout < Duration::from_secs(1) {
+            ToastVisualDeadline::At(now + timeout)
+        } else {
+            app.framework.toasts.next_visual_change_deadline(now)
+        };
+        *self = Self::Drawn {
+            key: Box::new(FrameKey::from_app(app, now)),
+            next_visual_change,
+        };
+    }
+}
+
+/// Count all terminal draws, including fast ones and zero-draw idle windows.
+struct DrawnFrameCounter {
+    window_started: Instant,
+    frames:         u64,
+}
+
+impl DrawnFrameCounter {
+    fn new() -> Self {
+        Self {
+            window_started: Instant::now(),
+            frames:         0,
+        }
+    }
+
+    const fn drawn(&mut self) { self.frames += 1; }
+
+    fn log_if_due(&mut self) {
+        let elapsed = self.window_started.elapsed();
+        if elapsed < Duration::from_secs(1) {
+            return;
+        }
+        tracing::trace!(target: PERF_LOG_TARGET, drawn_frames = self.frames,
+            window_ms = tui_pane::perf_log_ms(elapsed.as_millis()),
+            frames_per_second = f64::from(u32::try_from(self.frames).unwrap_or(u32::MAX)) / elapsed.as_secs_f64(), "drawn_frame_count");
+        self.frames = 0;
+        self.window_started = Instant::now();
+    }
+}
+
+#[cfg(test)]
+#[path = "event_loop_tests.rs"]
+mod event_loop_tests;
+
+#[derive(Clone, PartialEq, Eq)]
+enum FrameSelection {
+    Empty,
+    Selected(VisibleRow),
+}
+
+#[derive(Clone, PartialEq)]
+struct ToastFrameKey {
+    id:         ToastId,
+    title:      String,
+    body:       String,
+    style:      ToastStyle,
+    has_action: bool,
+    countdown:  ToastCountdownState,
+    linger:     ToastLingerState,
+    items:      Vec<ToastItemFrameKey>,
+}
+
+#[derive(Clone, PartialEq)]
+struct ToastItemFrameKey {
+    label:     String,
+    activity:  TrackedItemActivity,
+    lifecycle: TrackedItemLifecycle,
 }

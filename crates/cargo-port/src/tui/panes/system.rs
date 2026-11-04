@@ -138,7 +138,7 @@ impl Panes {
     }
 
     /// Drain the CPU pane's background sampler. Delegates to `CpuPane::tick`.
-    pub(in crate::tui) fn cpu_tick(&mut self) { self.cpu.tick(); }
+    pub(in crate::tui) fn cpu_tick(&mut self) -> bool { self.cpu.tick() }
 
     /// Reset the CPU pane after a config reload changes CPU poll
     /// behavior. Delegates to `CpuPane::reset`.

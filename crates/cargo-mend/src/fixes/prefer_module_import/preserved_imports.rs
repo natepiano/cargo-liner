@@ -1,50 +1,71 @@
 use std::collections::BTreeSet;
 
+use proc_macro2::Delimiter;
 use proc_macro2::TokenStream;
 use proc_macro2::TokenTree;
 use quote::ToTokens;
 use syn::Attribute;
 use syn::File;
 use syn::LitStr;
+use syn::Macro;
+use syn::MacroDelimiter;
 use syn::visit::Visit;
 
-/// Every name the file's attributes mention, either as a bare ident or as a
-/// string literal holding a single identifier.
+/// Every name whose import a prefer-module-import rewrite must keep.
 ///
-/// A prefer-module-import rewrite has to rename every reference to the imported
-/// function, and it can only rename references it can see as paths. Attribute
-/// payloads are neither: syn exposes `Meta::List` contents as an opaque token
-/// stream that no visitor descends into, and macros like serde name a function
-/// with a *string* — `#[serde(default = "default_scale")]`. Deleting
-/// `use super::defaults::default_scale;` leaves that string naming something
-/// that is no longer in scope (E0425).
-///
-/// Qualifying the mention instead is not an option: the attribute macro decides
-/// what its own tokens mean, so a string that reads as an identifier is only
-/// sometimes a path. The caller drops matching candidates and leaves the import
-/// alone.
+/// The rewrite renames only the references it can see as paths. Attribute
+/// payloads and macro bodies are opaque token streams that the attribute or the
+/// macro gives meaning to. Serde names a function with a string, as in
+/// `#[serde(default = "default_scale")]`. A macro body can use a name as a struct
+/// field, where `module::device` is not valid syntax. If the rewrite deletes the
+/// import, the name is no longer in scope (E0425). If it qualifies the token, the
+/// code can stop parsing. The caller keeps these imports.
 pub(super) fn collect(syntax: &File) -> BTreeSet<String> {
-    let mut collector = AttributeNames {
+    let mut collector = PreservedImports {
         names: BTreeSet::new(),
     };
     collector.visit_file(syntax);
     collector.names
 }
 
-struct AttributeNames {
+struct PreservedImports {
     names: BTreeSet<String>,
 }
 
-impl Visit<'_> for AttributeNames {
+impl Visit<'_> for PreservedImports {
     fn visit_attribute(&mut self, node: &Attribute) {
-        // `AttributeNames::visit_attribute` skips `node.path().is_ident("doc")` because doc
-        // comments desugar to `#[doc = "..."]`. Prose that happens to be a single word is
-        // not a reference, and treating it as one would silence the lint across most
-        // documented files.
+        // Doc comments desugar to `#[doc = "..."]`. A doc comment that is one word
+        // is prose, not a reference. If it counted, most documented files would
+        // keep every import.
         if node.path().is_ident("doc") {
             return;
         }
         collect_from_tokens(&node.meta.to_token_stream(), &mut self.names);
+    }
+
+    fn visit_macro(&mut self, node: &Macro) {
+        if let Some(name) = node.path.get_ident() {
+            self.names.insert(name.to_string());
+        }
+        if matches!(node.delimiter, MacroDelimiter::Brace(_)) {
+            collect_from_tokens(&node.tokens, &mut self.names);
+        } else {
+            self.collect_braced_names(&node.tokens);
+        }
+    }
+}
+
+impl PreservedImports {
+    fn collect_braced_names(&mut self, tokens: &TokenStream) {
+        for token in tokens.clone() {
+            if let TokenTree::Group(group) = token {
+                if group.delimiter() == Delimiter::Brace {
+                    collect_from_tokens(&group.stream(), &mut self.names);
+                } else {
+                    self.collect_braced_names(&group.stream());
+                }
+            }
+        }
     }
 }
 
@@ -70,7 +91,7 @@ fn collect_from_tokens(tokens: &TokenStream, names: &mut BTreeSet<String>) {
 
 /// True for a string that is exactly one identifier. A qualified string such as
 /// `"defaults::default_scale"` resolves through the module, not through the
-/// function import, so a prefer-module-import rewrite cannot break it.
+/// function import, so the rewrite cannot break it.
 fn is_plain_ident(value: &str) -> bool {
     let mut characters = value.chars();
     characters

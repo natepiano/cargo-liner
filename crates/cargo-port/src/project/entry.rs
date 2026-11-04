@@ -1,6 +1,5 @@
 use std::ops::Deref;
 use std::ops::DerefMut;
-use std::path::Path;
 
 use super::git;
 use super::git::RepoInfo;
@@ -80,16 +79,4 @@ impl DerefMut for ProjectEntry {
 
 fn git_repo_for(item: &RootItem) -> Option<GitRepo> {
     git::git_repo_root(item.path()).map(|_| GitRepo::default())
-}
-
-/// True if `target` is within (or equal to) the entry's hierarchy. Walks
-/// the contained `RootItem`'s paths via `at_path` — the same lookup the
-/// read-side accessors already use.
-pub(crate) fn entry_contains(entry: &ProjectEntry, target: &Path) -> bool {
-    entry.root_item.at_path(target).is_some()
-        || entry
-            .root_item
-            .submodules()
-            .iter()
-            .any(|s| s.path.as_path() == target)
 }

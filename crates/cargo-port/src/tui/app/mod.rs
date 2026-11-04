@@ -159,6 +159,8 @@ use super::panes::OutputPresentation;
 use super::panes::PaneBehavior;
 use super::panes::PaneId;
 use super::panes::Panes;
+use super::panes::ProjectRowPresentation;
+use super::panes::ProjectRowWidthInput;
 use super::panes::SyncedDescriptionHeight;
 use super::project_list::VisibleRow;
 use super::project_list_state::ProjectList;
@@ -319,7 +321,41 @@ pub(super) struct App {
     pub(super) fixture_dirs:         Option<FixtureDirs>,
 }
 
+/// Unpadded presentation includes hidden descendants that still affect fitting.
+#[derive(PartialEq)]
+struct ProjectListPresentation(Vec<ProjectRowPresentation>);
+
+impl ProjectListPresentation {
+    fn width_inputs(self) -> Vec<ProjectRowWidthInput> {
+        self.0
+            .into_iter()
+            .map(panes::ProjectRowPresentation::into_width_input)
+            .collect()
+    }
+}
+
 impl App {
+    /// Reuse the row renderer for change detection so diagnostic markers, Git
+    /// state and width inputs have one presentation owner. Freeze animation time.
+    fn project_row_presentation(&self) -> ProjectListPresentation {
+        let lookup = self.ci.status_lookup();
+        let ctx = PaneRenderCtx {
+            animation_elapsed:         Duration::ZERO,
+            config:                    &self.config,
+            project_list:              &self.project_list,
+            selected_project_path:     self.selected_project_path_for_render(),
+            scan:                      &self.scan,
+            ci_status_lookup:          &lookup,
+            settings_render_inputs:    None,
+            synced_description_height: SyncedDescriptionHeight::default(),
+            output_presentation:       OutputPresentation::derive(
+                self.inflight.owned_run().output_state(),
+                self.inflight.owned_run().running_label(),
+            ),
+        };
+        ProjectListPresentation(panes::project_width_presentations(&ctx))
+    }
+
     /// Constructor entry — declared here in `mod.rs` so `pub(super)`
     /// reaches `tui` (its parent module), satisfying callers in
     /// sibling modules `tui::terminal` and `tui::interaction`. The
@@ -436,9 +472,11 @@ impl App {
     /// [`tui_pane::Toasts::next_visual_change_deadline`]. A new animated
     /// element added at render time without a matching deadline or predicate
     /// here will not advance while the screen is otherwise idle.
-    pub(super) fn animation_timeout(&self) -> Duration {
+    pub(super) fn animation_timeout(&self) -> Duration { self.animation_timeout_at(Instant::now()) }
+
+    /// Compute the wake interval from the same clock as the frame inputs.
+    pub(super) fn animation_timeout_at(&self, now: Instant) -> Duration {
         const IDLE_HEARTBEAT: Duration = Duration::from_secs(1);
-        let now = Instant::now();
         let animation_timeout = if self.is_animating() {
             ANIMATION_TICK
         } else {
@@ -9589,19 +9627,18 @@ mod tests {
             let root = make_project(Some("blender"), &root_path);
             let mut app = make_app(&[root]);
 
-            let root_info = app
-                .project_list
-                .at_path_mut(Path::new(&root_path))
-                .expect("test project should exist in project list");
-            root_info.submodules.push(Submodule {
-                name:          "lib/linux_x64".to_string(),
-                path:          AbsolutePath::from(sub_path.clone()),
-                relative_path: "lib/linux_x64".to_string(),
-                url:           None,
-                branch:        None,
-                commit:        PinnedCommit::Absent,
-                project_info:  crate::project::ProjectInfo::default(),
-                git_repo:      None,
+            app.handle_bg_msg(BackgroundMsg::Submodules {
+                path:       AbsolutePath::from(root_path.clone()),
+                submodules: vec![Submodule {
+                    name:          "lib/linux_x64".to_string(),
+                    path:          AbsolutePath::from(sub_path.clone()),
+                    relative_path: "lib/linux_x64".to_string(),
+                    url:           None,
+                    branch:        None,
+                    commit:        PinnedCommit::Absent,
+                    project_info:  crate::project::ProjectInfo::default(),
+                    git_repo:      None,
+                }],
             });
 
             app.handle_disk_usage(Path::new(&root_path), 2_000_000);
@@ -17432,7 +17469,9 @@ mod tests {
         fn handle_project_discovered_does_not_allocate_per_comparison() {
             const VISIBLE_PROJECTS: usize = 8;
 
-            fn allocations_for_discovery(app: &mut App, project_count: usize) -> usize {
+            fn allocations_for_discovery(project_count: usize) -> usize {
+                // Both sizes start with equivalent independent app state.
+                let mut app = make_app(&[]);
                 app.project_list = ProjectList::default();
                 for index in 0..project_count {
                     let path = format!("/abs/project_{index:04}");
@@ -17457,9 +17496,8 @@ mod tests {
                 allocations
             }
 
-            let mut app = make_app(&[]);
-            let small = allocations_for_discovery(&mut app, VISIBLE_PROJECTS);
-            let large = allocations_for_discovery(&mut app, 200);
+            let small = allocations_for_discovery(VISIBLE_PROJECTS);
+            let large = allocations_for_discovery(200);
             assert_eq!(
                 large, small,
                 "discovery allocations must not grow with comparisons"
