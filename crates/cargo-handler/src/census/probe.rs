@@ -414,6 +414,7 @@ pub(crate) fn print() -> ExitCode {
             &loaded.config.accounts,
             dirs::home_dir().as_deref(),
         ))
+        .with_codex_start_window(loaded.config.census.codex_thread_start_window)
         .scan(),
         HierarchyEdges::default(),
     );

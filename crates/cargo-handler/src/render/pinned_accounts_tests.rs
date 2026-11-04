@@ -469,7 +469,7 @@ fn pinned_accounts_missed_click_keeps_selection_and_retired_surface_stays_gone()
     );
     assert!(
         matches!(
-            selections.follow_focused(&identity),
+            selections.follow_focused(&SelectableSurface::EmptyCell, &identity),
             crate::interaction::RowLocation::Gone
         ),
         "retired row cannot focus replacement content"
@@ -503,7 +503,7 @@ fn pinned_accounts_named_states_distinguish_empty_cells_rows_and_retired_content
         vec![(old.clone(), RowSpan::single(0))],
     )]);
     assert!(matches!(
-        selections.containing(&old),
+        selections.containing(&SelectableSurface::EmptyCell, &old),
         RowLocation::Found(SelectionSurface::Summary)
     ));
     assert!(matches!(
@@ -514,7 +514,10 @@ fn pinned_accounts_named_states_distinguish_empty_cells_rows_and_retired_content
         SelectionSurface::Summary,
         vec![(replacement.clone(), RowSpan::single(0))],
     )]);
-    assert!(matches!(selections.follow_focused(&old), RowLocation::Gone));
+    assert!(matches!(
+        selections.follow_focused(&SelectableSurface::EmptyCell, &old),
+        RowLocation::Gone
+    ));
     assert_eq!(
         selections
             .surface(&SelectionSurface::Summary)

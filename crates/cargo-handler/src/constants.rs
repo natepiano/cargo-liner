@@ -109,14 +109,14 @@ pub(crate) const TREE_SESSION_HEADER: &str = "session";
 pub(crate) const TREE_STATUS_HEADER: &str = "status";
 /// Leads a session in an agent cell's tree that has a later session
 /// beside it.
-pub(crate) const TREE_BRANCH: &str = "├─ ";
+pub(crate) const TREE_BRANCH: &str = "├── ";
 /// Leads the last session its launcher opened in an agent cell's tree.
-pub(crate) const TREE_LAST_BRANCH: &str = "└─ ";
+pub(crate) const TREE_LAST_BRANCH: &str = "└── ";
 /// Carries a level's line of an agent cell's tree down past a line
 /// that does not branch at it.
-pub(crate) const TREE_RAIL: &str = "│  ";
+pub(crate) const TREE_RAIL: &str = "│ ";
 /// Stands for a level of an agent cell's tree whose line has ended.
-pub(crate) const TREE_SPACE: &str = "   ";
+pub(crate) const TREE_SPACE: &str = "  ";
 /// Rows the note standing in for an empty tree takes.
 pub(crate) const NOTHING_RUNNING_HEIGHT: u16 = 1;
 /// What an agent cell says in place of its tree when the agent is
@@ -375,30 +375,27 @@ pub(crate) const CODEX_RESUME_LAST_ARGUMENT: &str = "--last";
 /// `state_<n>.sqlite`, `<n>` counting the versions of its layout, and
 /// the highest `<n>` present is the one Codex writes.
 pub(crate) const CODEX_STATE_PREFIX: &str = "state_";
+/// Start the first log read at the oldest live process, using the time index.
+pub(crate) const CODEX_LOG_INITIAL_QUERY: &str = "SELECT id, ts, process_uuid, thread_id, feedback_log_body FROM logs INDEXED BY idx_logs_ts WHERE ts >= ?1 ORDER BY id";
+/// Start the cursor beyond all rows in the first read snapshot.
+pub(crate) const CODEX_LOG_MAX_ID_QUERY: &str = "SELECT coalesce(max(id), 0) FROM logs";
+/// Read each later log row once through the primary key.
+pub(crate) const CODEX_LOG_NEW_QUERY: &str =
+    "SELECT id, ts, process_uuid, thread_id, feedback_log_body FROM logs WHERE id > ?1 ORDER BY id";
+/// The versioned Codex log database prefix.
+pub(crate) const CODEX_LOG_PREFIX: &str = "logs_";
+/// The process identity prefix in Codex log rows.
+pub(crate) const CODEX_LOG_PROCESS_PREFIX: &str = "pid:";
 /// Extension of Codex's thread database. Its journal files beside it
 /// carry longer ones.
 pub(crate) const CODEX_STATE_EXTENSION: &str = "sqlite";
 /// How long a read of Codex's thread database waits on a writer before
 /// giving up on the scan's names.
 pub(crate) const CODEX_STATE_BUSY_TIMEOUT: Duration = Duration::from_millis(200);
-/// The threads an interactive Codex created within a span of creation
-/// times: `?1` is [`CODEX_LEGACY_TUI_ORIGINATOR`], `?2` and `?3` the span's
-/// ends in unix milliseconds.
-pub(crate) const CODEX_THREADS_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, \
-     rollout_path FROM threads WHERE (thread_source = 'user' OR \
-     (thread_source IS NULL AND originator = ?1)) AND (source IS NULL OR source <> 'exec') \
-     AND created_at_ms BETWEEN ?2 AND ?3";
-/// Interactive threads in older databases without both source columns.
-pub(crate) const CODEX_LEGACY_THREADS_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, \
-     rollout_path FROM threads WHERE originator = ?1 AND created_at_ms BETWEEN ?2 AND ?3";
 /// The newest thread in one directory, including threads older than process startup.
 pub(crate) const CODEX_LAST_THREAD_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, rollout_path FROM threads WHERE cwd = ?1 ORDER BY created_at_ms DESC, id DESC LIMIT 1";
 /// The interactive originator used by older rows without a thread source.
 pub(crate) const CODEX_LEGACY_TUI_ORIGINATOR: &str = "codex-tui";
-/// How long after an interactive Codex starts the thread it starts with
-/// may be created. Codex creates it during startup, after any question
-/// about trusting the directory.
-pub(crate) const CODEX_THREAD_START_WINDOW: Duration = Duration::from_secs(60);
 /// How long before an interactive Codex's recorded start its thread may
 /// be created: the process table counts a start in whole seconds from a
 /// boot time that is itself read in whole seconds.
@@ -601,3 +598,14 @@ pub(crate) const CLAUDE_PLAN_PERMISSION_ARGUMENT: &str = "--permission-mode=plan
 pub(crate) const WORKER_DOCUMENT_EXTENSION: &str = "json";
 /// Markdown heading opening for a pooled review job.
 pub(crate) const REVIEW_JOB_HEADING: &str = "# ";
+
+/// Herdr exports its API address to pane processes.
+pub(crate) const HERDR_SOCKET_VARIABLE: &str = "HERDR_SOCKET_PATH";
+/// Bound the initial probe wait for the background worker.
+pub(crate) const HERDR_INITIAL_TIMEOUT: Duration = Duration::from_millis(100);
+/// The worker retries failed subscriptions without blocking a scan.
+pub(crate) const HERDR_SUBSCRIPTION_RETRY: Duration = Duration::from_millis(500);
+/// Bound each herdr API read and write.
+pub(crate) const HERDR_READ_TIMEOUT: Duration = Duration::from_millis(100);
+/// Bound each herdr API answer.
+pub(crate) const HERDR_ANSWER_LIMIT: u64 = 4 * 1024 * 1024;

@@ -509,7 +509,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 /// The responsibility read once from a subagent's metadata and description.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub(crate) enum SubagentRole {
     Capture,
     Review,
@@ -522,7 +522,7 @@ pub(crate) enum SubagentRole {
 }
 
 /// A nonempty specialist type recorded by Claude.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub(crate) struct SpecialistRole(String);
 

@@ -10,6 +10,7 @@ use crate::config::DefaultArguments;
 use crate::constants::ARGUMENT_ASSIGNMENT;
 use crate::constants::ARGUMENT_SEPARATOR;
 use crate::constants::CAPTURE_RUNNER_NAME;
+use crate::constants::CAPTURE_SHELL_NAME;
 use crate::constants::CAPTURE_SHIM_ARGUMENT;
 use crate::constants::CAPTURE_SHIM_PASSTHROUGH_ARGUMENT;
 use crate::constants::CARGO_DEFAULT_PROFILE;
@@ -591,7 +592,9 @@ impl CargoArguments {
 pub(super) enum CargoTransport<'argv> {
     /// The v4 runner owns the invocation while another process executes these arguments.
     NativeCapture { arguments: &'argv [OsString] },
-    /// Cargo, an external subcommand, or the earlier shell transport.
+    /// The v3 shell entry runs cargo through a PTY or a pipe.
+    ShellCapture { arguments: &'argv [OsString] },
+    /// Cargo or an external subcommand without a capture entry.
     Ordinary,
 }
 
@@ -606,6 +609,12 @@ impl<'argv> CargoTransport<'argv> {
                     && is_cargo_binary(executable) =>
             {
                 Self::NativeCapture { arguments }
+            },
+            [shell, executable, arguments @ ..]
+                if Path::new(shell).file_name() == Some(OsStr::new(CAPTURE_SHELL_NAME))
+                    && is_cargo_binary(executable) =>
+            {
+                Self::ShellCapture { arguments }
             },
             _ => Self::Ordinary,
         }

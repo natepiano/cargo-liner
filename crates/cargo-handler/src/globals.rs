@@ -20,18 +20,27 @@
 
 use crossterm::event::KeyCode;
 use tui_pane::Bindings;
+use tui_pane::ExpansionAction;
 use tui_pane::Globals;
 use tui_pane::KeyBind;
 use tui_pane::NavAction;
 use tui_pane::TileAction;
 
 use crate::app::App;
+use crate::app::expansion::HandlerExpansionAction;
+use crate::app::expansion::{self};
 use crate::constants::APP_GLOBALS_SECTION;
 use crate::render;
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub(crate) enum AppGlobalAction {
+        ExpandAll => ("expand_all", "Expand all rows");
+        CollapseAll => ("collapse_all", "Collapse all rows");
+        ExpandRow => ("expand_row", "Expand the selected row");
+        CollapseRow => ("collapse_row", "Collapse the selected row");
+        ToggleRow => ("toggle_row", "Toggle the selected row");
+        ResetExpansion => ("reset_expansion", "Restore default expansion");
         AddTile    => ("add_tile",    "Add a tile");
         RemoveTile => ("remove_tile", "Remove an empty tile");
         FocusLeft  => ("focus_left",  "Focus the tile to the left");
@@ -61,11 +70,11 @@ impl Globals<App> for AppGlobalAction {
     fn render_order() -> &'static [Self::Actions] { <Self as tui_pane::Action>::ALL }
 
     fn defaults() -> Bindings<Self::Actions> {
-        tui_pane::bindings! {
+        let mut bindings = tui_pane::bindings! {
             '+' => Self::AddTile,
-            '-' => Self::RemoveTile,
-            KeyCode::Left => Self::FocusLeft,
-            KeyCode::Right => Self::FocusRight,
+            KeyBind::shift(KeyCode::Delete) => Self::RemoveTile,
+            KeyBind::shift(KeyCode::Left) => Self::FocusLeft,
+            KeyBind::shift(KeyCode::Right) => Self::FocusRight,
             KeyBind::shift(KeyCode::Up) => Self::FocusUp,
             KeyBind::shift(KeyCode::Down) => Self::FocusDown,
             KeyCode::Up => Self::RowUp,
@@ -80,7 +89,19 @@ impl Globals<App> for AppGlobalAction {
             KeyBind::ctrl('s') => Self::SaveFavorite,
             KeyBind::ctrl('o') => Self::OpenFavorites,
             'm' => Self::RandomFavorite,
+            KeyCode::Enter => Self::ToggleRow,
+            '0' => Self::ResetExpansion,
+        };
+        for (key, action) in ExpansionAction::key_bindings(crossterm::event::KeyModifiers::NONE) {
+            let action = match action {
+                ExpansionAction::ExpandAll => Self::ExpandAll,
+                ExpansionAction::CollapseAll => Self::CollapseAll,
+                ExpansionAction::ExpandRow => Self::ExpandRow,
+                ExpansionAction::CollapseRow => Self::CollapseRow,
+            };
+            bindings.bind(key, action);
         }
+        bindings
     }
 
     fn dispatcher() -> fn(Self::Actions, &mut App) { dispatch }
@@ -90,6 +111,24 @@ impl Globals<App> for AppGlobalAction {
 fn dispatch(action: AppGlobalAction, app: &mut App) {
     let growth = app.loaded_config.config.tiles.growth();
     match action {
+        AppGlobalAction::ExpandAll => expansion::dispatch(
+            app,
+            HandlerExpansionAction::Shared(ExpansionAction::ExpandAll),
+        ),
+        AppGlobalAction::CollapseAll => expansion::dispatch(
+            app,
+            HandlerExpansionAction::Shared(ExpansionAction::CollapseAll),
+        ),
+        AppGlobalAction::ExpandRow => expansion::dispatch(
+            app,
+            HandlerExpansionAction::Shared(ExpansionAction::ExpandRow),
+        ),
+        AppGlobalAction::CollapseRow => expansion::dispatch(
+            app,
+            HandlerExpansionAction::Shared(ExpansionAction::CollapseRow),
+        ),
+        AppGlobalAction::ToggleRow => expansion::dispatch(app, HandlerExpansionAction::Toggle),
+        AppGlobalAction::ResetExpansion => expansion::dispatch(app, HandlerExpansionAction::Reset),
         AppGlobalAction::AddTile => app.tiles.apply(TileAction::Add, growth),
         AppGlobalAction::RemoveTile => app.tiles.apply(TileAction::Remove, growth),
         AppGlobalAction::FocusLeft => app.tiles.apply(TileAction::FocusLeft, growth),
@@ -132,9 +171,15 @@ mod tests {
         let scope = AppGlobalAction::defaults().into_scope_map();
         let expected = [
             (KeyBind::from('+'), AppGlobalAction::AddTile),
-            (KeyBind::from('-'), AppGlobalAction::RemoveTile),
-            (KeyBind::from(KeyCode::Left), AppGlobalAction::FocusLeft),
-            (KeyBind::from(KeyCode::Right), AppGlobalAction::FocusRight),
+            (KeyBind::from('='), AppGlobalAction::ExpandAll),
+            (KeyBind::from('-'), AppGlobalAction::CollapseAll),
+            (KeyBind::from(KeyCode::Left), AppGlobalAction::CollapseRow),
+            (KeyBind::from(KeyCode::Right), AppGlobalAction::ExpandRow),
+            (KeyBind::from(KeyCode::Enter), AppGlobalAction::ToggleRow),
+            (KeyBind::from('0'), AppGlobalAction::ResetExpansion),
+            (KeyBind::shift(KeyCode::Delete), AppGlobalAction::RemoveTile),
+            (KeyBind::shift(KeyCode::Left), AppGlobalAction::FocusLeft),
+            (KeyBind::shift(KeyCode::Right), AppGlobalAction::FocusRight),
             (KeyBind::shift(KeyCode::Up), AppGlobalAction::FocusUp),
             (KeyBind::shift(KeyCode::Down), AppGlobalAction::FocusDown),
             (KeyBind::from(KeyCode::Up), AppGlobalAction::RowUp),

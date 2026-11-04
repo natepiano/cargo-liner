@@ -54,11 +54,12 @@ use super::activity::RunRecords;
 use super::activity::TranscriptRead;
 use super::branch;
 use super::classify;
+use super::classify::CodexSessionLink;
 use super::classify::HeldSession;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 use super::codex;
-use super::codex::CodexThread;
+use super::codex::CodexLogs;
 use super::codex_names::SessionName;
 use super::codex_names::SessionNames;
 use super::desktop;
@@ -87,6 +88,7 @@ use super::worker_dispatch::WorkerIdentity;
 use super::worker_dispatch::WorkerNames;
 use super::worker_dispatch::WorkerRoleSource;
 use super::worker_dispatch::WorkerTask;
+use crate::config::CodexStartWindow;
 use crate::constants::ACTIVITY_PROCESS_NAMES;
 use crate::constants::CALL_SEARCH_SETTLE;
 use crate::constants::CLAUDE_AGENT;
@@ -147,6 +149,11 @@ pub(super) struct LocalScanner {
     /// Each Codex rollout read for its tier, as far as it was read.
     rollouts:            Rollouts,
     session_names:       SessionNames,
+    /// Each Codex account log advances from its retained row id.
+    codex_logs:          CodexLogs,
+    herdr:               super::herdr::HerdrNames,
+    codex_links:         HashMap<u32, CodexSessionLink>,
+    codex_start_window:  CodexStartWindow,
     transcript_activity: HashMap<PathBuf, TranscriptRead>,
     subagent_activity:   HashMap<PathBuf, TranscriptRead>,
     subagent_reads:      SubagentReads,
@@ -224,7 +231,6 @@ impl LocalScanner {
         &mut self,
         processes: &[ProcessEntry],
         sessions: &[SessionRecord],
-        codex_threads: &[CodexThread],
         home: Option<&Path>,
         mut publish: impl FnMut(Vec<AgentRow>),
         read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
@@ -232,7 +238,6 @@ impl LocalScanner {
         self.scan_stages_with(
             processes,
             sessions,
-            codex_threads,
             home,
             |_, rows| publish(rows),
             read_details,
@@ -244,26 +249,42 @@ impl LocalScanner {
         &mut self,
         processes: &[ProcessEntry],
         sessions: &[SessionRecord],
-        codex_threads: &[CodexThread],
         home: Option<&Path>,
         mut publish: impl FnMut(ScanStage, Vec<AgentRow>),
         read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
     ) {
+        self.resolve_codex_sessions(processes, home);
         let mut rows = startup_log::startup_stage("classify_agents", || {
-            classify::agent_rows(
+            let threads = classify::linked_threads(&self.codex_links);
+            classify::agent_rows_with_threads(
                 processes,
                 sessions,
-                codex_threads,
+                &threads,
                 home,
                 &self.account_labels,
             )
         });
         if matches!(self.publication, LocalPublication::FirstAnswerPending) {
+            self.attach_codex_names(&mut rows);
             publish(ScanStage::Classified, rows.clone());
         }
         startup_log::startup_stage("details", || read_details(self, &mut rows));
+        self.attach_codex_names(&mut rows);
         publish(ScanStage::Completed, rows);
         self.publication = LocalPublication::CompletedAnswerPublished;
+    }
+
+    /// Read current thread rows and resolve one map for this scan.
+    fn resolve_codex_sessions(&mut self, processes: &[ProcessEntry], home: Option<&Path>) {
+        let records = startup_log::startup_stage("codex_thread_ids", || {
+            self.codex_logs
+                .thread_rows(processes, home, self.codex_start_window)
+        });
+        self.codex_links =
+            classify::codex_session_links(processes, home, &self.codex_logs, &records);
+        startup_log::startup_stage("herdr_names", || {
+            self.herdr.refresh(processes, &mut self.codex_links);
+        });
     }
 
     /// A scanner of the user running this process.
@@ -278,6 +299,13 @@ impl LocalScanner {
             session_starts: HashMap::new(),
             rollouts: Rollouts::default(),
             session_names: super::codex_names::SessionNames::default(),
+            codex_logs: codex::CodexLogs::default(),
+            #[cfg(not(test))]
+            herdr: super::herdr::HerdrNames::default(),
+            #[cfg(test)]
+            herdr: super::herdr::HerdrNames::isolated(),
+            codex_links: HashMap::new(),
+            codex_start_window: crate::config::CodexStartWindow::default(),
             transcript_activity: HashMap::new(),
             subagent_activity: HashMap::new(),
             subagent_reads: SubagentReads::default(),
@@ -292,6 +320,12 @@ impl LocalScanner {
         }
     }
 
+    /// Use the same startup setting as the host or probe configuration.
+    pub(super) const fn with_codex_start_window(mut self, window: CodexStartWindow) -> Self {
+        self.codex_start_window = window;
+        self
+    }
+
     /// Every agent running now, oldest first, with what it is running.
     /// The wire probe consumes only the completed answer.
     ///
@@ -300,6 +334,8 @@ impl LocalScanner {
     pub(super) fn scan(&mut self) -> Vec<AgentRow> {
         let mut rows = Vec::new();
         self.scan_staged(|_, answer| rows = answer);
+        self.herdr.finish_initial(&mut self.codex_links);
+        self.attach_codex_names(&mut rows);
         rows
     }
 
@@ -313,43 +349,14 @@ impl LocalScanner {
         });
         let processes =
             startup_log::startup_stage("process_table", || self.processes.read(&sessions));
-        // Codex's database is opened only while an interactive Codex runs,
-        // and read only for the span its threads could have been created in.
-        let codex_threads = startup_log::startup_stage("codex_sqlite", || {
-            let mut threads = Vec::new();
-            let homes: HashSet<_> = processes
-                .iter()
-                .filter(|process| process.is_codex())
-                .filter_map(|process| codex::session_home(process, home.as_deref()))
-                .collect();
-            for codex_home in homes {
-                if let Some(window) = classify::codex_thread_window(&processes) {
-                    threads.extend(codex::read_threads(&codex_home, &window));
-                }
-                let resumed = processes
-                    .iter()
-                    .filter(|process| {
-                        codex::session_home(process, home.as_deref()).as_ref() == Some(&codex_home)
-                    })
-                    .flat_map(|process| codex::read_resumed_threads(process, &codex_home));
-                threads.extend(resumed);
-            }
-            threads
-        });
+        self.codex_logs.refresh(&processes, home.as_deref());
         self.scan_stages_with(
             &processes,
             &sessions,
-            &codex_threads,
             home.as_deref(),
             publish,
             |scanner, rows| {
-                scanner.attach_details(
-                    &processes,
-                    &sessions,
-                    &codex_threads,
-                    home.as_deref(),
-                    rows,
-                );
+                scanner.attach_details(&processes, &sessions, home.as_deref(), rows);
             },
         );
     }
@@ -359,7 +366,6 @@ impl LocalScanner {
         &mut self,
         processes: &[ProcessEntry],
         sessions: &[SessionRecord],
-        codex_threads: &[CodexThread],
         home: Option<&Path>,
         rows: &mut [AgentRow],
     ) {
@@ -369,7 +375,7 @@ impl LocalScanner {
             .map(|home| PacerHistory::read(&home.join(CODEX_PACER_STATE)))
             .unwrap_or_default();
         let service_tiers = startup_log::startup_stage("codex_service_tiers", || {
-            self.codex_tiers(processes, codex_threads, &pacer, home)
+            self.codex_tiers(processes, &pacer)
         });
         for row in rows.iter_mut() {
             if let Some(tier) = service_tiers.get(&row.pid) {
@@ -421,7 +427,7 @@ impl LocalScanner {
             })
             .unwrap_or_default()
         });
-        self.attach_codex_sessions(processes, codex_threads, home, rows);
+        self.attach_codex_sessions(processes, home, rows);
         self.rollouts.forget_unread();
         let dispatches = startup_log::startup_stage("worker_dispatches", || {
             worker_dispatches(processes, &mut self.worker_names, &mut self.worker_commands)
@@ -468,11 +474,9 @@ impl LocalScanner {
     fn attach_codex_sessions(
         &mut self,
         processes: &[ProcessEntry],
-        threads: &[CodexThread],
         home: Option<&Path>,
         rows: &mut [AgentRow],
     ) {
-        let startup = classify::codex_startup_threads(processes, threads, home);
         let homes: HashSet<_> = processes
             .iter()
             .filter(|process| process.is_codex())
@@ -489,14 +493,31 @@ impl LocalScanner {
                 continue;
             }
             row.activity = AgentActivity::Idle;
-            row.name = format!("pid {}", row.pid);
-            let Some(thread) = startup.get(&row.pid) else {
+            let Some(thread) = self
+                .codex_links
+                .get(&row.pid)
+                .and_then(classify::CodexSessionLink::thread)
+            else {
                 continue;
             };
             let read = self.rollouts.read(&thread.rollout);
             row.activity = read.activity();
-            if let SessionName::Named(name) = self.session_names.name(thread) {
-                row.name = name;
+        }
+    }
+
+    /// This stage owns the fallback name in each interactive census row.
+    fn attach_codex_names(&self, rows: &mut [AgentRow]) {
+        for row in rows.iter_mut().filter(|row| row.agent == Agent::Codex) {
+            match self.codex_links.get(&row.pid) {
+                Some(CodexSessionLink::Named(thread)) => {
+                    row.name = match self.session_names.name(thread) {
+                        SessionName::Named(name) => name,
+                        SessionName::Unnamed => format!("pid {}", row.pid),
+                    };
+                },
+                Some(CodexSessionLink::HerdrName(name)) => row.name.clone_from(name),
+                Some(CodexSessionLink::NoMatch) => row.name = format!("pid {}", row.pid),
+                None => {},
             }
         }
     }
@@ -645,16 +666,16 @@ impl LocalScanner {
     fn codex_tiers(
         &mut self,
         processes: &[ProcessEntry],
-        codex_threads: &[CodexThread],
         pacer: &PacerHistory,
-        home: Option<&Path>,
     ) -> HashMap<u32, ServiceTier> {
-        let startup = classify::codex_startup_threads(processes, codex_threads, home);
         processes
             .iter()
             .filter(|process| process.is_codex() && !process.is_app_server())
             .map(|process| {
-                let thread = startup.get(&process.pid);
+                let thread = self
+                    .codex_links
+                    .get(&process.pid)
+                    .and_then(classify::CodexSessionLink::thread);
                 let rollout = thread.map(|thread| self.rollouts.read(&thread.rollout));
                 let started = thread.map_or(process.started, |thread| thread.created_ms / 1_000);
                 let tier = tier::requested(rollout, &process.arguments, pacer, started);
@@ -1989,6 +2010,7 @@ mod tests {
     use crate::census::Account;
     use crate::census::RoleFallback;
     use crate::census::SessionIdentity;
+    use crate::census::herdr::HerdrNames;
     use crate::census::hierarchy::ReviewerPools;
 
     #[test]
@@ -2263,6 +2285,10 @@ mod tests {
             session_starts:      HashMap::new(),
             rollouts:            Rollouts::default(),
             session_names:       super::super::codex_names::SessionNames::default(),
+            codex_logs:          codex::CodexLogs::default(),
+            herdr:               HerdrNames::isolated(),
+            codex_links:         HashMap::new(),
+            codex_start_window:  crate::config::CodexStartWindow::default(),
             transcript_activity: HashMap::new(),
             subagent_activity:   HashMap::new(),
             subagent_reads:      SubagentReads::default(),
@@ -2273,6 +2299,28 @@ mod tests {
             desktop_source:      DesktopSource::Windows(Vec::new()),
             desktops:            None,
         }
+    }
+
+    #[test]
+    fn the_census_name_stage_keeps_the_herdr_name_in_the_wire_row() {
+        let mut scanner = scanner();
+        let processes = vec![entry(2, 1, "codex", 20, &["codex"])];
+        let mut rows = classify::agent_rows_with_threads(
+            &processes,
+            &[],
+            &HashMap::new(),
+            None,
+            &AccountLabels::default(),
+        );
+        scanner
+            .codex_links
+            .insert(2, CodexSessionLink::HerdrName("morty".into()));
+        scanner.attach_codex_names(&mut rows);
+        assert_eq!(rows[0].name, "morty");
+        scanner.attach_codex_sessions(&processes, None, &mut rows);
+        scanner.attach_codex_names(&mut rows);
+        let wire = serde_json::to_value(&rows).expect("census wire rows");
+        assert_eq!(wire[0]["name"], "morty");
     }
 
     /// A process with its command line read.
@@ -2590,7 +2638,6 @@ mod hierarchy_publication_tests {
                 LocalScanner::new(AccountLabels::default()).scan_stages_with(
                     &[],
                     &[],
-                    &[],
                     None,
                     |stage, rows| {
                         answers
@@ -2874,10 +2921,10 @@ mod process_cache_tests {
             now + PROCESS_RECOVERY_INTERVAL.saturating_sub(Duration::from_millis(1)),
         );
         assert!(
-            !classify::agent_rows(
+            !classify::agent_rows_with_threads(
                 &before,
                 std::slice::from_ref(&session),
-                &[],
+                &HashMap::default(),
                 None,
                 &AccountLabels::default()
             )
@@ -2887,8 +2934,13 @@ mod process_cache_tests {
         );
         assert_eq!(census.discoveries, 1);
         let recovered = census.read_at(&[], now + PROCESS_RECOVERY_INTERVAL);
-        let shown =
-            classify::agent_rows(&recovered, &[session], &[], None, &AccountLabels::default());
+        let shown = classify::agent_rows_with_threads(
+            &recovered,
+            &[session],
+            &HashMap::default(),
+            None,
+            &AccountLabels::default(),
+        );
         assert!(
             shown
                 .iter()

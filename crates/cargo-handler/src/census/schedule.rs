@@ -51,6 +51,7 @@ use super::remote::RemoteRunner;
 use super::remote::SshRunner;
 use super::scan::LocalScanner;
 use super::scan::ScanStage;
+use crate::config::CodexStartWindow;
 use crate::constants::HIERARCHY_FIRST_PUBLISH_BUDGET;
 #[cfg(test)]
 use crate::constants::HIERARCHY_REFRESH_INTERVAL;
@@ -632,8 +633,9 @@ pub(crate) fn spawn(
     remotes: RemoteMachines,
     hierarchy: HierarchyCommand,
     account_labels: AccountLabels,
+    codex_start_window: CodexStartWindow,
 ) -> Receiver<CensusUpdate> {
-    let mut scanner = LocalScanner::new(account_labels);
+    let mut scanner = LocalScanner::new(account_labels).with_codex_start_window(codex_start_window);
     spawn_staged_with(
         remotes,
         hierarchy,

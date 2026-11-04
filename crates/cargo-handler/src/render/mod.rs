@@ -47,6 +47,7 @@ use crate::agent_cell::TreeColumn;
 use crate::agent_cell::TreeMeasurement;
 use crate::agent_cell::TreeMetrics;
 use crate::app::App;
+use crate::app::expansion::HandlerExpansion;
 use crate::census;
 use crate::census::AccountColumn;
 use crate::census::AgentPlacement;
@@ -168,6 +169,7 @@ fn draw_panes_at(
         &app.tree_sorts,
         app.summary_sort,
     )
+    .with_expansion(&app.expansion)
     .with_accounts(&app.accounts.table)
     .with_accounts_sort(app.accounts_sort)
     .with_selections(app.selections.clone(), SelectableSurface::EmptyCell);
@@ -204,7 +206,7 @@ fn draw_panes_at(
     app.tree_layouts = cells.layouts.into_inner();
     app.selections = cells.selections.into_inner();
     if let TileSelection::Row(identity) = followed
-        && let RowLocation::Found(destination) = app.selections.containing(&identity)
+        && let RowLocation::Found(destination) = app.selections.containing(&focused, &identity)
         && focused != SelectableSurface::Surface(destination.clone())
         && let Some(placement) = app
             .tiles
@@ -246,6 +248,7 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
         &app.tree_sorts,
         app.summary_sort,
     )
+    .with_expansion(&app.expansion)
     .with_accounts(&app.accounts.table)
     .with_accounts_sort(app.accounts_sort);
     for tile in &cells.tiles {
@@ -560,6 +563,13 @@ impl<'a> Cells<'a> {
         }
     }
 
+    fn with_expansion(mut self, expansion: &HandlerExpansion) -> Self {
+        for tile in &mut self.tiles {
+            tile.apply_expansion(expansion);
+        }
+        self
+    }
+
     fn with_selections(mut self, selections: Selections, focused: SelectableSurface) -> Self {
         self.selections = RefCell::new(selections);
         self.focused = RefCell::new(focused);
@@ -642,7 +652,8 @@ impl<'a> Cells<'a> {
             .collect();
         rows.push((SelectionSurface::Summary, summary_rows));
         let mut selections = self.selections.borrow_mut();
-        let followed = match &*self.focused.borrow() {
+        let focused = self.focused.borrow().clone();
+        let followed = match &focused {
             SelectableSurface::EmptyCell => TileSelection::NoRows,
             SelectableSurface::Surface(surface) => selections.surface(surface).map_or(
                 TileSelection::NoRows,
@@ -654,7 +665,7 @@ impl<'a> Cells<'a> {
             state.set_pin(layout.section_pin());
         }
         if let TileSelection::Row(identity) = followed
-            && let RowLocation::Found(destination) = selections.follow_focused(&identity)
+            && let RowLocation::Found(destination) = selections.follow_focused(&focused, &identity)
         {
             *self.focused.borrow_mut() = SelectableSurface::Surface(destination);
         }
@@ -994,12 +1005,14 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Cell;
     use tui_pane::CellPoint;
+    use tui_pane::ExpansionAction;
     use tui_pane::FavoritesFileState;
     use tui_pane::TileView;
     use tui_pane::dispatch_key;
 
     use super::*;
     use crate::agent_cell::TreeColumn;
+    use crate::app::expansion::HandlerExpansionAction;
     use crate::census::Account;
     use crate::census::Agent;
     use crate::census::AgentActivity;
@@ -1167,25 +1180,25 @@ fraying = "leading"
     const KEYMAP_OVERLAY: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
         "│ natedev · no agents                                                          │",
-        "│        ┌ Keymap ────────────────────────────────────────────────────┐        │",
-        "│        │                                                            │        │",
-        "│        │ Global Navigation:                                         │        │",
-        "│        │ ▸ Next pane                                     tab        │        │",
-        "│        │   Previous pane                                 shift-tab  │        │",
-        "│        │ Global Shortcuts:                                          │        │",
-        "│        │   Add a tile                                    +          │        │",
-        "│        │   Dismiss overlay / output                      x          │        │",
-        "│        │   Focus the tile above                          shift-up   │        │",
-        "│        │   Focus the tile below                          shift-down │        │",
-        "│        │   Focus the tile to the left                    left       │        │",
-        "│        │   Focus the tile to the right                   right      │        │",
-        "│        │   Open attract favorites                        ctrl-o     │        │",
-        "│        │   Open keymap viewer                            ctrl-k     │        │",
-        "│        │   Open settings                                 s          │        │",
-        "│        │   Quit                                          q          │        │",
-        "│        │   Randomize the attract screen                  r          │        │",
-        "│        │   Remove an empty tile                          -          │        │",
-        "│        └──────────────────────────1 of 6 ▼──────────────────────────┘        │",
+        "│       ┌ Keymap ──────────────────────────────────────────────────────┐       │",
+        "│       │                                                              │       │",
+        "│       │ Global Navigation:                                           │       │",
+        "│       │ ▸ Next pane                                     tab          │       │",
+        "│       │   Previous pane                                 shift-tab    │       │",
+        "│       │ Global Shortcuts:                                            │       │",
+        "│       │   Add a tile                                    +            │       │",
+        "│       │   Collapse all rows                             -            │       │",
+        "│       │   Collapse the selected row                     left         │       │",
+        "│       │   Dismiss overlay / output                      x            │       │",
+        "│       │   Expand all rows                               =            │       │",
+        "│       │   Expand the selected row                       right        │       │",
+        "│       │   Focus the tile above                          shift-up     │       │",
+        "│       │   Focus the tile below                          shift-down   │       │",
+        "│       │   Focus the tile to the left                    shift-left   │       │",
+        "│       │   Focus the tile to the right                   shift-right  │       │",
+        "│       │   Open attract favorites                        ctrl-o       │       │",
+        "│       │   Open keymap viewer                            ctrl-k       │       │",
+        "│       └───────────────────────────1 of 7 ▼───────────────────────────┘       │",
         "│                                             content rows: 1 of 1  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
@@ -1193,28 +1206,28 @@ fraying = "leading"
     /// The `?` overlay's first screen, with no `x` Dismiss row.
     const SHORTCUTS_OVERLAY: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
-        "│ natedev · no ┌ Global Shortcuts ──────────────────────────────┐              │",
-        "│              │                                                │              │",
-        "│              │ Global Navigation:                             │              │",
-        "│              │ ▸ Next pane                         tab        │              │",
-        "│              │   Previous pane                     shift-tab  │              │",
-        "│              │ Global Shortcuts:                              │              │",
-        "│              │   Add a tile                        +          │              │",
-        "│              │   Focus the tile above              shift-up   │              │",
-        "│              │   Focus the tile below              shift-down │              │",
-        "│              │   Focus the tile to the left        left       │              │",
-        "│              │   Focus the tile to the right       right      │              │",
-        "│              │   Open attract favorites            ctrl-o     │              │",
-        "│              │   Open keymap viewer                ctrl-k     │              │",
-        "│              │   Open settings                     s          │              │",
-        "│              │   Quit                              q          │              │",
-        "│              │   Randomize the attract screen      r          │              │",
-        "│              │   Remove an empty tile              -          │              │",
-        "│              │   Restart                           R          │              │",
-        "│              │   Save attract parameters           ctrl-s     │              │",
-        "│              │   Select one page above             pageup     │              │",
-        "│              │   Select one page below             pagedown   │1  r/c: 21/78 │",
-        "└──────────────└────────────────────1 of 2 ▼────────────────────┘──────────────┘",
+        "│ natedev · no┌ Global Shortcuts ────────────────────────────────┐             │",
+        "│             │                                                  │             │",
+        "│             │ Global Navigation:                               │             │",
+        "│             │ ▸ Next pane                         tab          │             │",
+        "│             │   Previous pane                     shift-tab    │             │",
+        "│             │ Global Shortcuts:                                │             │",
+        "│             │   Add a tile                        +            │             │",
+        "│             │   Collapse all rows                 -            │             │",
+        "│             │   Collapse the selected row         left         │             │",
+        "│             │   Expand all rows                   =            │             │",
+        "│             │   Expand the selected row           right        │             │",
+        "│             │   Focus the tile above              shift-up     │             │",
+        "│             │   Focus the tile below              shift-down   │             │",
+        "│             │   Focus the tile to the left        shift-left   │             │",
+        "│             │   Focus the tile to the right       shift-right  │             │",
+        "│             │   Open attract favorites            ctrl-o       │             │",
+        "│             │   Open keymap viewer                ctrl-k       │             │",
+        "│             │   Open settings                     s            │             │",
+        "│             │   Quit                              q            │             │",
+        "│             │   Randomize the attract screen      r            │             │",
+        "│             │   Remove an empty tile              shift-delete │  r/c: 21/78 │",
+        "└─────────────└─────────────────────1 of 2 ▼─────────────────────┘─────────────┘",
     ];
 
     /// The favorites overlay on one saved moving-band favorite.
@@ -1262,8 +1275,8 @@ fraying = "leading"
         "│                                                                              │",
         "│                                             content rows: 1 of 1  r/c: 10/78 │",
         "├ unassigned · natedev─────────────────────────────────────────────────────────┤",
-        "│ session ▲       status  directory                                        age │",
-        "│ boss of bosses  idle    ~/rust/hana_catalyst/docs/hana                 21:00 │",
+        "│   session ▲       status  directory                                      age │",
+        "│   boss of bosses  idle    ~/rust/hana_catalyst/docs/hana               21:00 │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
@@ -1528,7 +1541,10 @@ fraying = "leading"
         let mut app = laid_out_app();
         dispatch_key(&mut app, key('+'));
         dispatch_key(&mut app, key('+'));
-        dispatch_key(&mut app, key('-'));
+        dispatch_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT),
+        );
         app.tiles.settle_for_test();
 
         assert_eq!(
@@ -1691,7 +1707,8 @@ fraying = "leading"
                 app.footer_colors.colors(),
                 &app.tree_sorts,
                 app.summary_sort,
-            );
+            )
+            .with_expansion(&app.expansion);
             let tile = &cells.tiles[0];
             let span = cells
                 .header_spans(tile, area)
@@ -1723,6 +1740,10 @@ fraying = "leading"
             hierarchy: HierarchyEdges::default().into(),
             stage:     ScanStage::Completed,
         });
+        crate::app::expansion::dispatch(
+            &mut app,
+            HandlerExpansionAction::Shared(ExpansionAction::ExpandAll),
+        );
         let mut click = role_header_click(&app);
         cell_clicked(&mut app, click.clone());
         assert_eq!(app.tree_sorts.len(), 1, "only the clicked tile gets a sort");
@@ -1994,7 +2015,7 @@ fraying = "leading"
             }
             let member_line = rendered
                 .iter()
-                .find(|line| line.contains("└─ member"))
+                .find(|line| line.contains("└── member"))
                 .expect("the child has a tree line");
             assert!(member_line.contains(member_role_label.column_text()));
             assert!(!member_line.contains(&format!("member{HEADING_SEPARATOR}")));

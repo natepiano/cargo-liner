@@ -104,6 +104,37 @@ pub(crate) enum MeasurementAbsence {
     RetainedRate,
 }
 
+/// Live resources keep a measured value separate from sampling and absence reasons.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum LiveResources<T> {
+    /// Measured work, including a measured zero.
+    Reading(T),
+    /// A first rate needs another observation.
+    Sampling,
+    /// The absence reason stays explicit until display policy chooses its presentation.
+    Unavailable(MeasurementAbsence),
+}
+
+impl<T> From<Measurement<T>> for LiveResources<T> {
+    fn from(measurement: Measurement<T>) -> Self {
+        match measurement {
+            Measurement::Reading(reading) => Self::Reading(reading),
+            Measurement::Unavailable(MeasurementAbsence::FirstObservation) => Self::Sampling,
+            Measurement::Unavailable(reason) => Self::Unavailable(reason),
+        }
+    }
+}
+
+impl<T> LiveResources<T> {
+    /// Display policy keeps unavailable cells empty without discarding their typed reason.
+    pub(crate) fn text(self, reading: impl FnOnce(T) -> String) -> String {
+        match self {
+            Self::Reading(value) => reading(value),
+            Self::Sampling | Self::Unavailable(_) => String::new(),
+        }
+    }
+}
+
 impl<T> Measurement<T> {
     /// Transform a reading without manufacturing a value for an unavailable sample.
     pub(crate) fn map<U>(self, map: impl FnOnce(T) -> U) -> Measurement<U> {

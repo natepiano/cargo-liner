@@ -248,7 +248,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     assert_eq!(
         text[1].split_whitespace().collect::<Vec<_>>(),
         [
-            "├─",
+            "├──",
             "dashboard",
             "unit",
             "thinking",
@@ -261,7 +261,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
         text[2].split_whitespace().collect::<Vec<_>>(),
         [
             "│",
-            "└─",
+            "└──",
             "hanadocs-dashboard-impl",
             "impl",
             "idle",
@@ -272,7 +272,7 @@ fn a_compressed_showrunner_starts_with_aligned_tree_columns() {
     );
     assert_eq!(
         text[3].split_whitespace().collect::<Vec<_>>(),
-        ["└─", "diagrams", "unit", "idle", "claude3", "—", "4:00"]
+        ["└──", "diagrams", "unit", "idle", "claude3", "—", "4:00"]
     );
     assert_eq!(
         find(&buffer, "session").expect("header").0,
@@ -593,16 +593,16 @@ fn work_lines_nest_below_their_member_and_skip_process_and_session_nodes() {
         }
     }
     let rows = lines(&buffer);
-    assert!(rows[usize::from(row_of(&buffer, "unit-member"))].contains("├─ unit-member"));
-    assert!(rows[usize::from(row_of(&buffer, "clock job"))].contains("│  ├─ clock job"));
-    assert!(rows[usize::from(row_of(&buffer, "unheld worker"))].contains("│  │  └─ unheld worker"));
+    assert!(rows[usize::from(row_of(&buffer, "unit-member"))].contains("├── unit-member"));
+    assert!(rows[usize::from(row_of(&buffer, "clock job"))].contains("│ ├── clock job"));
+    assert!(rows[usize::from(row_of(&buffer, "unheld worker"))].contains("│ │ └── unheld worker"));
     assert!(
-        rows[usize::from(row_of(&buffer, "nested command"))].contains("│     └─ nested command")
+        rows[usize::from(row_of(&buffer, "nested command"))].contains("│   └── nested command")
     );
     assert!(
         rows.last()
             .expect("last work line")
-            .contains("└─ root command")
+            .contains("└── root command")
     );
     let status_x = find(&buffer, "status").expect("status column").0;
     for (name, role) in [

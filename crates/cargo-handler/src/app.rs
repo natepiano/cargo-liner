@@ -8,6 +8,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use std::time::Instant;
 
+use expansion::HandlerExpansion;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
@@ -31,6 +32,7 @@ use tui_pane::KeymapEditContext;
 use tui_pane::KeymapError;
 use tui_pane::KeymapUiContext;
 use tui_pane::NoToastAction;
+use tui_pane::Repaint;
 use tui_pane::ScrollDirection;
 use tui_pane::SettingStep;
 use tui_pane::SettingsHost;
@@ -74,6 +76,9 @@ use crate::theme::StartupThemeNotes;
 use crate::tiles::AgentCell;
 use crate::tiles::TileGrid;
 use crate::tiles::TileKey;
+
+#[path = "expansion.rs"]
+pub(crate) mod expansion;
 
 /// The attract screen, sharing the handler's optional startup timing log.
 pub(crate) type Attract = tui_pane::Attract<StartupProbe>;
@@ -147,6 +152,7 @@ pub(crate) struct App {
     /// Per-root preferences, discarded when that root leaves the census.
     pub(crate) selection_area:    Rect,
     pub(crate) selections:        Selections,
+    pub(crate) expansion:         HandlerExpansion,
     pub(crate) tree_sorts:        HashMap<TileKey, TreeSort>,
     pub(crate) tree_layouts:      HashMap<TileKey, TreeMetrics>,
     /// The summary allocation retained for header clicks until the next paint.
@@ -204,6 +210,7 @@ impl App {
         let placement = AgentPlacement::from_machines(&machines);
         let keys = agent_cell::tile_keys(&placement);
         self.tree_sorts.retain(|id, _| keys.contains(id));
+        self.expansion.retain(&placement);
     }
 
     /// Build the app with the grid focused and the keymap loaded.
@@ -258,6 +265,7 @@ impl App {
             tiles: TileGrid::new(),
             selections: crate::interaction::Selections::default(),
             selection_area: Rect::ZERO,
+            expansion: expansion::HandlerExpansion::default(),
             tree_sorts: HashMap::new(),
             tree_layouts: HashMap::new(),
             painted_summary: std::cell::RefCell::new(PaintedSummary::NotDrawn),
@@ -369,6 +377,7 @@ impl TerminalApp for App {
             && self.framework.overlay().is_none();
         if matches!(self.frame_request, FrameRequest::StatusClock)
             && stable_layers
+            && self.tiles.visual_repaint() == Repaint::NotNeeded
             && let PaintedFrame::Current {
                 buffer,
                 toast_change: painted_toast_change,
@@ -681,6 +690,40 @@ mod tests {
             &first.content[23 * 80..],
             &terminal.backend().buffer().content[23 * 80..],
             "the status clock changes"
+        );
+    }
+
+    #[test]
+    fn idle_visual_status_frames_leave_the_grid_paint_record_unchanged() {
+        let mut app = App::new_for_test().expect("test app");
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("body");
+        for _ in 0..4 {
+            app.request_clock_frame();
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("status");
+            assert_eq!(app.tiles.visual_repaint(), tui_pane::Repaint::NotNeeded);
+        }
+        assert_eq!(app.full_frames, 1, "status draws reuse the body");
+        let tint = tui_pane::focused_pane_tint_enabled();
+        tui_pane::set_focused_pane_tint(!tint);
+        app.request_clock_frame();
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("appearance body");
+        let frames = app.full_frames;
+        let current = app.tiles.visual_repaint();
+        tui_pane::set_focused_pane_tint(tint);
+        assert_eq!(frames, 2, "a clock request cannot hide a body change");
+        assert_eq!(
+            current,
+            tui_pane::Repaint::NotNeeded,
+            "body paint commits appearance"
         );
     }
 

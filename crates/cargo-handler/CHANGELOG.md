@@ -9,12 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Codex windows without a proven thread show their herdr pane name or tab label.
+- Handler rows support expansion and collapse, with root children visible by default.
+
 - Shift-Up and Shift-Down focus the tile above and below.
 - Shell rows for sleep commands show timer in the role column.
 - A tile with a selected row shows it and the total in its foot, `content rows: 3 of 12`; the number follows every selection move and scroll.
 - Select rows with Up, Down, PageUp, PageDown, Home and End, click a row, or scroll the tile under the pointer. The mouse wheel scrolls the shortcuts, keymap and settings overlays and leaves the tiles behind them still. Selection follows sessions and worker seats as their work changes. Role and status widths follow the painted rows while age units remain aligned through scrolling.
 
 ### Changed
+- Skip equal tile frames and repaint session ages when their minute labels or shared column width changes.
 - Idle CPU drops: the census watches its inputs, refreshes only changed process rows, reuses parsed worker data, and redraws body text only when it changes.
 - Summary and tile ages use d:hh:mm without seconds and align to the right.
 - Idle census scans retain parsed run records and process tables; stored account and hierarchy commands run when their inputs change.
@@ -49,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Codex sessions that use a detached daemon show their thread names through their socket connection.
+
+- Codex sessions opened from the resume picker show their own thread names and follow thread switches.
 - Resumed Codex sessions keep their own account and name when account homes share a sessions directory.
 - Release subagent and worker directory watches and cached records when their sessions leave the census.
 - Show renamed interactive Codex sessions from newer thread sources in tiles and the summary.

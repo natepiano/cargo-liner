@@ -18,23 +18,29 @@ fn database(home: &Path, rollout: &Path, name: &str) {
         .execute_batch(
             "PRAGMA synchronous = OFF;
         CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, created_at_ms INTEGER,
-        name TEXT, first_user_message TEXT, rollout_path TEXT);",
+        name TEXT, first_user_message TEXT, rollout_path TEXT, originator TEXT DEFAULT 'codex-tui');",
         )
         .expect("threads table");
     connection
         .execute(
-            "INSERT INTO threads VALUES (?1, '/fixture', 1000, ?2, '', ?3)",
+            "INSERT INTO threads (id, cwd, created_at_ms, name, first_user_message, rollout_path) VALUES (?1, '/fixture', 1000, ?2, '', ?3)",
             rusqlite::params![THREAD, name, rollout.to_string_lossy()],
         )
         .expect("named thread");
 }
 
-fn scan(process: &ProcessEntry, threads: &[CodexThread], home: &Path) -> Vec<AgentRow> {
+fn scan(process: &ProcessEntry, home: &Path) -> Vec<AgentRow> {
     let mut scanner = LocalScanner::new(AccountLabels::default());
     let processes = std::slice::from_ref(process);
-    let mut rows =
-        classify::agent_rows(processes, &[], threads, Some(home), &scanner.account_labels);
-    scanner.attach_codex_sessions(processes, threads, Some(home), &mut rows);
+    scanner.codex_logs.refresh(processes, Some(home));
+    let mut rows = Vec::new();
+    scanner.scan_stages_with(
+        processes,
+        &[],
+        Some(home),
+        |_, answer| rows = answer,
+        |scanner, rows| scanner.attach_codex_sessions(processes, Some(home), rows),
+    );
     rows
 }
 
@@ -72,19 +78,24 @@ fn resumed_codex_with_shared_rollouts_keeps_its_database_name_and_account() {
         "the other database contains the same thread id"
     );
     assert!(
-        classify::codex_startup_threads(
+        classify::linked_threads(&classify::codex_session_links(
             std::slice::from_ref(&process),
-            &foreign,
-            Some(root.path())
-        )
+            Some(root.path()),
+            &codex::CodexLogs::default(),
+            &codex::ThreadRows::default(),
+        ))
         .is_empty(),
         "a shared rollout cannot give another account ownership"
     );
-    assert_eq!(scan(&process, &foreign, root.path())[0].name, "pid 10");
+    assert_eq!(scan(&process, root.path())[0].name, "pid 10");
     let mut threads = foreign;
     threads.extend(codex::read_resumed_threads(&process, &second));
     assert_eq!(threads.len(), 2, "both account databases were read");
-    let rows = scan(&process, &threads, root.path());
+    let logs = rusqlite::Connection::open(second.join("logs_2.sqlite")).expect("own log database");
+    logs.execute_batch("PRAGMA synchronous = OFF; CREATE TABLE logs (id INTEGER PRIMARY KEY, ts INTEGER, process_uuid TEXT, thread_id TEXT, feedback_log_body TEXT); CREATE INDEX idx_logs_ts ON logs(ts DESC);").expect("own log table");
+    logs.execute("INSERT INTO logs VALUES (1, 100, 'pid:10:fixture', ?1, ?2)", rusqlite::params![THREAD,
+        "app_server.request{rpc.method=\"thread/resume\" rpc.request_id=1 app_server.connection_id=1 app_server.client_name=\"codex-tui\"}: composing running thread resume response request_id=ConnectionRequestId { connection_id: ConnectionId(1), request_id: Integer(1) }"]).expect("own process selection");
+    let rows = scan(&process, root.path());
     assert_eq!(rows.len(), 1);
     assert_eq!(
         rows[0].name, "morty",
@@ -101,8 +112,5 @@ fn resumed_codex_with_shared_rollouts_keeps_its_database_name_and_account() {
         format!("{{\"id\":\"{THREAD}\",\"thread_name\":\"renamed morty\"}}\n"),
     )
     .expect("own index");
-    assert_eq!(
-        scan(&process, &threads, root.path())[0].name,
-        "renamed morty"
-    );
+    assert_eq!(scan(&process, root.path())[0].name, "renamed morty");
 }

@@ -144,18 +144,18 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
     for (name, expected) in [
         (
             "zeta",
-            "├─ zeta fix idle z-account z-branch /z-directory 8:00",
+            "├── zeta fix idle z-account z-branch /z-directory 8:00",
         ),
         (
             "nested",
-            "│ └─ nested session thinking — — ~/rust/nested 5:00",
+            "│ └── nested session thinking — — ~/rust/nested 5:00",
         ),
-        ("z-thread", "│ └─ z-thread worker idle — — — 3:00"),
+        ("z-thread", "│ └── z-thread worker idle — — — 3:00"),
         (
             "alpha",
-            "└─ alpha impl thinking a-account a-branch /a-directory 4:00",
+            "└── alpha impl thinking a-account a-branch /a-directory 4:00",
         ),
-        ("a-shell", "└─ a-shell shell running a-account — — 2:00"),
+        ("a-shell", "└── a-shell shell running a-account — — 2:00"),
     ] {
         let y = usize::from(find(&buffer, name).expect("default row").1);
         assert_eq!(
@@ -186,8 +186,8 @@ fn default_tree_sort_preserves_phase_one_rows_rails_and_hues() {
     );
     assert_eq!(name_color(&buffer, "a-shell"), text_default());
     let drawn = lines(&buffer);
-    assert!(drawn[usize::from(find(&buffer, "zeta").expect("zeta").1)].contains("├─ zeta"));
-    assert!(drawn[usize::from(find(&buffer, "alpha").expect("alpha").1)].contains("└─ alpha"));
+    assert!(drawn[usize::from(find(&buffer, "zeta").expect("zeta").1)].contains("├── zeta"));
+    assert!(drawn[usize::from(find(&buffer, "alpha").expect("alpha").1)].contains("└── alpha"));
 }
 
 /// Check one column independently so each regression stays below one second.
@@ -224,11 +224,11 @@ fn assert_column_keeps_subtrees_and_hues(column: TreeColumn) {
         let drawn = lines(&buffer);
         assert!(
             drawn[usize::from(find(&buffer, first).expect("first sibling").1)]
-                .contains(&format!("├─ {first}"))
+                .contains(&format!("├── {first}"))
         );
         assert!(
             drawn[usize::from(find(&buffer, last).expect("last sibling").1)]
-                .contains(&format!("└─ {last}"))
+                .contains(&format!("└── {last}"))
         );
     }
 }

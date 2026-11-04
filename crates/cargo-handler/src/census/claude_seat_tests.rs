@@ -78,7 +78,13 @@ fn grouped(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Vec<String> {
 }
 
 fn classified(processes: &[ProcessEntry], sessions: &[SessionRecord]) -> Vec<AgentRow> {
-    let mut rows = classify::agent_rows(processes, sessions, &[], None, &AccountLabels::default());
+    let mut rows = classify::agent_rows_with_threads(
+        processes,
+        sessions,
+        &HashMap::default(),
+        None,
+        &AccountLabels::default(),
+    );
     tree::attach_children(
         &mut rows,
         processes,

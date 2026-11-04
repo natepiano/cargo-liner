@@ -66,7 +66,6 @@ fn subagent_transcript_read_tool_reaches_the_drawn_status_and_append_updates_it(
         scanner.attach_details(
             std::slice::from_ref(&process),
             &sessions,
-            &[],
             Some(home.path()),
             &mut rows,
         );

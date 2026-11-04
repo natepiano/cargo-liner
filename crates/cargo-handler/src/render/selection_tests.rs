@@ -88,7 +88,16 @@ fn assert_selected(buffer: &Buffer, label: &str) {
         tui_pane::selection_style(PaneFocusState::Active)
             .bg
             .expect("selected background"),
-        "selected row {label}"
+        "selected row {label}; rows:\n{}",
+        buffer
+            .content
+            .chunks(usize::from(buffer.area.width))
+            .map(|row| row
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
@@ -137,7 +146,10 @@ fn horizontal_keys_and_tabs_move_tile_focus_without_moving_the_row() {
     assert_eq!(right_top.x, right.x, "both right rows share a column");
     assert!(right_top.y < right.y, "the right column has two tiles");
     assert!(left.x < right.x, "the right row is beside the left row");
-    app.click(locate(&before, "build-for-10"));
+    for point in [right_top, right, left] {
+        app.click(point);
+        paint(&mut app);
+    }
     assert_selected(&paint(&mut app), "build-for-10");
     for (key, expected) in [
         (KeyCode::Right, "build-for-30"),
@@ -145,7 +157,7 @@ fn horizontal_keys_and_tabs_move_tile_focus_without_moving_the_row() {
         (KeyCode::Tab, "build-for-20"),
         (KeyCode::BackTab, "build-for-10"),
     ] {
-        let modifiers = if key == KeyCode::BackTab {
+        let modifiers = if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::BackTab) {
             KeyModifiers::SHIFT
         } else {
             KeyModifiers::NONE
