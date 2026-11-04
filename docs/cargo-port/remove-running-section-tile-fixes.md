@@ -1616,6 +1616,31 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 **As built** (checkpoint `ac47cbba`, merged as main `2fb29335c`, 2026-11-03): a command cell names its account tag and directory in its top border through `TileGroupTitle::Titled`. The body draws no lead heading row, so the cell shows one more process row. One account decision, `TableAccountHeadings`, feeds the title and any nested body heading. The directory cut fits the title room. A nested directory keeps its body heading. Live at 393x89 against main: 8 of 8 command cells have one title, no lead heading stays in a body, and process rows stay 17 of 17 with no clipped cell.
 
+### Phase 47a — The border title is only the account and directory; progress is the first body row  · status: done
+
+**Depends on:** Phase 47.
+
+#### Work Order
+
+**Goal:** A command cell's top border shows only its account tag and directory (`┌ [natepiano] ~/rust/hana ─`). Its building or testing progress is the first row inside the cell, and the table follows it. From the user (2026-11-03, through the showrunner): "i wanted the building /testing progress to show as the first line inside the cell - not on the same line as the title - the title should just be the [username] directory. the building/testing if it exists should be the first line in the cell followed by the table".
+
+**Spec:**
+
+1. The border title holds the account tag and the directory only. It holds no state word, meter or percent.
+2. When the cell has a progress reading, the first body row draws it: the state word, the meter and the percent, in the ink and fade the title row used before Phase 47. The table header and its rows follow.
+3. When the cell has no reading, the table starts on the first body row.
+4. One owner computes the reading row; the title and the body do not copy it. A cell's demand counts the reading row only when it draws.
+5. Nested body headings and the summary do not change.
+
+**Files:**
+- `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/src/constants.rs`
+
+**Acceptance gate:**
+- Tests, red first: `a_command_cell_title_holds_only_its_account_and_directory`, `a_command_cell_draws_its_progress_as_its_first_body_row`, `a_command_cell_without_a_reading_starts_with_its_table`. No test takes 1 s or more. Each changed assertion has an Assertion-Change line.
+- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green.
+- Live check at 393x89 on natedev against main: no title holds a meter, each cell with a reading draws it on its first body row, and no cell is clipped.
+
 ### Phase 46 — Enter shows the focused cell on the full screen, and Esc returns to the grid  · status: todo
 
 **Depends on:** Phase 42 (both change `render.rs` and the `tui_pane` frame; this phase starts on top of Phase 42's checkpoint)
