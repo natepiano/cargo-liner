@@ -2584,7 +2584,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 
 **As built** (checkpoint `2a55fa9c2`, merged as main `431ecb2e8`, 2026-11-03): no code change. The CI nextest meter was missing because an old cargo-tile reader was not restarted; a reader built from main draws it. The test `a_captured_ci_nextest_draws_its_meter_without_lending_it_to_a_child` pins that a captured CI nextest run draws its own meter and its child rows borrow none.
 
-### Phase 51 — A reader scenario ends its fake cargo processes  · status: todo
+### Phase 51 — A reader scenario ends its fake cargo processes  · status: done
 
 **Depends on:** none. It starts when the showrunner lifts the cargo pause for it.
 
