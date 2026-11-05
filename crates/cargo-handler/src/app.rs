@@ -48,11 +48,11 @@ use crate::census::AgentPlacement;
 use crate::census::Census;
 #[cfg(test)]
 use crate::census::CensusUpdate;
-use crate::census::HierarchyCommand;
 #[cfg(test)]
 use crate::census::HierarchyEdges;
 use crate::census::HierarchySource;
 use crate::census::RemoteMachines;
+use crate::census::StaffFileSetting;
 use crate::census::accounts::AccountsMonitor;
 #[cfg(test)]
 use crate::census::scan::ScanStage;
@@ -180,8 +180,8 @@ pub(crate) struct App {
     pub(crate) footer_colors:     FooterColorFile,
     /// `machines.remote` as the census scheduler reads it.
     pub(crate) remote_machines:   RemoteMachines,
-    /// `census.hierarchy_command` as the census scheduler reads it.
-    pub(crate) hierarchy_command: HierarchyCommand,
+    /// `census.staff_file` as the census scheduler reads it.
+    pub(crate) staff_file:        StaffFileSetting,
 }
 
 impl App {
@@ -245,8 +245,8 @@ impl App {
         census: Census,
     ) -> Result<Self, KeymapError> {
         let remote_machines = RemoteMachines::new(loaded_config.config.machines.remote.clone());
-        let hierarchy_command = HierarchyCommand::new(HierarchySource::from(
-            loaded_config.config.census.hierarchy_command.clone(),
+        let staff_file = StaffFileSetting::new(HierarchySource::from(
+            loaded_config.config.census.staff_file.0.clone(),
         ));
         let accounts = census::accounts::AccountsMonitor::new(
             loaded_config.config.census.accounts_command.clone(),
@@ -278,7 +278,7 @@ impl App {
             census,
             accounts,
             remote_machines,
-            hierarchy_command,
+            staff_file,
             footer_colors: FooterColorFile::default(),
         })
     }
@@ -516,6 +516,8 @@ impl FavoritesHost for App {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use crate::config::StaffFilePath;
+
     fn wheel_test_app_with_agents() -> App {
         let mut app = App::new_for_test().expect("test app");
         let rows = (1..=4)
@@ -870,7 +872,7 @@ mod tests {
     #[test]
     fn the_hierarchy_handle_starts_with_the_loaded_command() {
         let mut config = Config::default();
-        config.census.hierarchy_command = "production_tree --json".to_string();
+        config.census.staff_file = StaffFilePath("/fixture/staff.json".to_string());
         let app = App::new_with_keymap_path(
             LoadedConfig {
                 config,
@@ -883,8 +885,8 @@ mod tests {
         .expect("test app should build");
 
         assert_eq!(
-            app.hierarchy_command.snapshot(),
-            HierarchySource::Command("production_tree --json".to_string())
+            app.staff_file.snapshot(),
+            HierarchySource::File("/fixture/staff.json".to_string())
         );
     }
 }

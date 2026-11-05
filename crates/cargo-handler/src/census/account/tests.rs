@@ -29,6 +29,7 @@ use crate::census::RoleFallback;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
 use crate::census::ShellTimerObservation;
+use crate::census::StaffRowNames;
 use crate::census::WorkIdentity;
 use crate::census::classify::ProcessEntry;
 use crate::census::probe;
@@ -327,6 +328,7 @@ fn account_column_counts_the_same_label_on_two_machines_once() {
 /// An agent fixture serialized by the public row type, not a duplicate wire struct.
 fn agent_row(account: Account) -> AgentRow {
     AgentRow {
+        staff_names: StaffRowNames::default(),
         agent: Agent::Codex,
         role_fallback: RoleFallback::None,
         session_id: SessionIdentity::Unrecorded,

@@ -1,4 +1,4 @@
-//! Bounded hierarchy commands and their per-session-set cache, run off the UI thread.
+//! The staff file reader and the hierarchy publication state.
 
 #[path = "command_inputs.rs"]
 mod command_inputs;
@@ -8,20 +8,23 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::Display;
 use std::fmt::Formatter;
-#[cfg(test)]
 use std::fs;
 use std::io::Read;
+use std::ops::Deref;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::RecvTimeoutError;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
 
 pub(super) use command_inputs::FileRevision;
 pub(super) use command_inputs::InputDrivenCommand;
@@ -34,7 +37,10 @@ use super::HierarchyEdge;
 use super::HierarchyEdges;
 use super::HierarchyRole;
 use super::HierarchySource;
+use super::RoleFallback;
 use super::SessionIdentity;
+use super::worker_dispatch::WorkerDispatch;
+use super::worker_dispatch::WorkerIdentity;
 use crate::constants::HIERARCHY_OUTPUT_LIMIT;
 use crate::constants::HIERARCHY_REFRESH_INTERVAL;
 use crate::constants::HIERARCHY_SCHEMA;
@@ -112,6 +118,39 @@ impl From<HierarchyEdges> for HierarchySnapshot {
     }
 }
 
+impl HierarchyEdges {
+    /// Staff kinds preserve the roles that the census already resolved from mesh rosters.
+    pub(super) fn with_worker_roles(mut self, rows: &[AgentRow]) -> Self {
+        let mut roles = BTreeMap::new();
+        for row in rows {
+            if let SessionIdentity::Claude(session) = &row.session_id
+                && let RoleFallback::Worker(role) = row.role_fallback
+            {
+                roles.insert(session.as_str(), role);
+            }
+            for child in &row.children {
+                if let WorkerDispatch::Worker(dispatch) = &child.dispatch
+                    && let RoleFallback::Worker(role) = dispatch.fallback()
+                {
+                    let session = match &dispatch.identity {
+                        WorkerIdentity::ClaudeSession(session)
+                        | WorkerIdentity::CodexThread(session) => session,
+                    };
+                    roles.insert(session.as_str(), role);
+                }
+            }
+        }
+        for edge in &mut self.0 {
+            if edge.role == HierarchyRole::Worker
+                && let Some(role) = roles.get(edge.member.as_str())
+            {
+                edge.role = *role;
+            }
+        }
+        self
+    }
+}
+
 impl HierarchySnapshot {
     pub(crate) fn matched(mut self, rows: &[AgentRow]) -> Self {
         if self.notice == HierarchyNotice::Clear && !self.edges.0.iter().any(|edge| {
@@ -135,12 +174,10 @@ impl Display for HierarchyError {
             Self::OutputUnreadable => formatter.write_str("unreadable hierarchy output"),
             Self::OutputTooLarge => formatter.write_str("hierarchy output too large"),
             Self::ExitUnreadable => formatter.write_str("command exit status unreadable"),
-            Self::UnknownSchema(schema) => write!(
-                formatter,
-                "staff schema {schema}; set hierarchy_command to staff.py show --json --live (schema 3)"
-            ),
-            Self::MalformedEdge => formatter
-                .write_str("malformed staff list; hierarchy_command must return staff schema 3"),
+            Self::UnknownSchema(schema) => {
+                write!(formatter, "staff schema {schema}; expected schema 2")
+            },
+            Self::MalformedEdge => formatter.write_str("malformed staff file"),
             Self::EmptySessionId => formatter.write_str("empty hierarchy session id"),
         }
     }
@@ -150,40 +187,143 @@ impl Error for HierarchyError {}
 
 /// A source of hierarchy edges, replaceable by fixtures in scheduler tests.
 pub(crate) trait HierarchyRunner: Send + Sync {
-    /// Run `command`, allowing at most `timeout` for output and exit.
-    fn run(&self, command: &str, timeout: Duration) -> Result<HierarchyEdges, HierarchyError>;
-}
+    /// Read links for the configured source.
+    fn run(&self, source: &str, timeout: Duration) -> Result<HierarchyEdges, HierarchyError>;
 
-/// Runs the configured shell command on this machine.
-pub(crate) struct CommandRunner;
-
-impl HierarchyRunner for CommandRunner {
-    fn run(&self, command: &str, timeout: Duration) -> Result<HierarchyEdges, HierarchyError> {
-        parse(&run_output(command, timeout)?)
+    #[cfg(test)]
+    fn publication(&self, _source: &HierarchySource) -> StaffPublication {
+        StaffPublication::Deferred
     }
 }
 
-/// Production hierarchy reads retain an answer while known script inputs stay unchanged.
-#[derive(Default)]
-pub(super) struct InputDrivenHierarchyRunner(
-    Mutex<BTreeMap<String, InputDrivenCommand<Result<HierarchyEdges, HierarchyError>>>>,
-);
+/// A file answer can publish without an asynchronous discovery request.
+#[cfg(test)]
+pub(crate) enum StaffPublication {
+    Deferred,
+    Ready(HierarchySnapshot),
+}
 
-impl HierarchyRunner for InputDrivenHierarchyRunner {
-    fn run(&self, command: &str, timeout: Duration) -> Result<HierarchyEdges, HierarchyError> {
-        let mut readings = self
+/// Classification can run without staff inputs in isolated census fixtures.
+#[derive(Debug, Default)]
+pub(super) enum StaffDiscovery {
+    #[default]
+    Disabled,
+    File {
+        setting: super::StaffFileSetting,
+        reader:  StaffFileReader,
+    },
+}
+
+impl StaffDiscovery {
+    pub(super) fn snapshot(&self) -> StaffSnapshot {
+        match self {
+            Self::Disabled => StaffSnapshot::default(),
+            Self::File { setting, reader } => {
+                let source = setting.snapshot();
+                let roster = reader.roster(&source);
+                StaffSnapshot { source, roster }
+            },
+        }
+    }
+}
+
+/// One scan uses one source and one parsed revision for names and links.
+#[derive(Clone, Debug, Default)]
+pub(super) struct StaffSnapshot {
+    source:            HierarchySource,
+    pub(super) roster: Arc<StaffRoster>,
+}
+
+impl StaffSnapshot {
+    pub(super) fn publication(&self) -> HierarchySnapshot {
+        match self.source {
+            HierarchySource::Off => HierarchyEdges::default().into(),
+            HierarchySource::File(_) => self.roster.edges.clone().into(),
+        }
+    }
+}
+
+/// One reader shares the parsed staff file with classification and publication.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct StaffFileReader(Arc<Mutex<StaffFileCache>>);
+
+#[derive(Debug, Default)]
+enum StaffFileCache {
+    #[default]
+    Unread,
+    Read {
+        path:     PathBuf,
+        revision: SystemTime,
+        roster:   Arc<StaffRoster>,
+    },
+}
+
+impl StaffFileReader {
+    /// Check the mtime before reading and parsing the file.
+    pub(super) fn roster(&self, source: &HierarchySource) -> Arc<StaffRoster> {
+        let HierarchySource::File(path) = source else {
+            return Arc::default();
+        };
+        let path = path
+            .strip_prefix("~/")
+            .and_then(|relative| dirs::home_dir().map(|home| home.join(relative)))
+            .unwrap_or_else(|| PathBuf::from(path));
+        let mut cache = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let inputs = readings.entry(command.to_owned()).or_insert_with(|| {
-            InputDrivenCommand::for_command(command, HIERARCHY_REFRESH_INTERVAL)
-        });
-        let answer = inputs.read(Instant::now(), || CommandRunner.run(command, timeout));
-        if answer.is_err() {
-            inputs.invalidate();
+        let Ok(mut file) = fs::File::open(&path) else {
+            *cache = StaffFileCache::Unread;
+            return Arc::default();
+        };
+        let Ok(metadata) = file.metadata() else {
+            *cache = StaffFileCache::Unread;
+            return Arc::default();
+        };
+        let Ok(revision) = metadata.modified() else {
+            *cache = StaffFileCache::Unread;
+            return Arc::default();
+        };
+        if !metadata.is_file() {
+            *cache = StaffFileCache::Unread;
+            return Arc::default();
         }
-        drop(readings);
-        answer
+        if let StaffFileCache::Read {
+            path: previous,
+            revision: modified,
+            roster,
+        } = &*cache
+            && previous == &path
+            && modified == &revision
+        {
+            return Arc::clone(roster);
+        }
+        let mut bytes = Vec::new();
+        if file.read_to_end(&mut bytes).is_err() {
+            *cache = StaffFileCache::Unread;
+            return Arc::default();
+        }
+        let roster = Arc::new(StaffRoster::parse(&bytes).unwrap_or_default());
+        *cache = StaffFileCache::Read {
+            path,
+            revision,
+            roster: Arc::clone(&roster),
+        };
+        roster
+    }
+}
+
+impl HierarchyRunner for StaffFileReader {
+    fn run(&self, path: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
+        Ok(self
+            .roster(&HierarchySource::File(path.to_owned()))
+            .edges
+            .clone())
+    }
+
+    #[cfg(test)]
+    fn publication(&self, source: &HierarchySource) -> StaffPublication {
+        StaffPublication::Ready(self.roster(source).edges.clone().into())
     }
 }
 
@@ -276,13 +416,19 @@ fn read_output(stdout: impl Read) -> Result<Vec<u8>, HierarchyError> {
     Ok(bytes)
 }
 
-/// Schema 3 staff members, before their links are validated together.
-#[derive(Deserialize)]
-struct StaffReport {
-    members: Vec<StaffMember>,
+/// The staff file owns names and links, while the census owns liveness.
+#[derive(Debug, Default)]
+pub(super) struct StaffRoster {
+    pub(super) edges: HierarchyEdges,
+    names:            BTreeMap<String, String>,
 }
 
-/// Parent membership is distinct from a root in the staff list.
+#[derive(Deserialize)]
+struct StaffDocument {
+    rows: Vec<StaffDocumentRow>,
+}
+
+/// The parent field distinguishes a root from a managed row.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum StaffParent {
@@ -290,126 +436,182 @@ enum StaffParent {
     Root(()),
 }
 
-/// A live staff identity belongs to one session family.
+/// Unknown kinds have no required fields in this reader.
 #[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum StaffIdentity {
-    Claude(String),
-    Codex(String),
-}
-
-impl StaffIdentity {
-    fn session(&self) -> &str {
-        match self {
-            Self::Claude(id) | Self::Codex(id) => id,
-        }
-    }
-}
-
-/// The member id joins parent links; its identity locates the live process.
-#[derive(Deserialize)]
-struct StaffMember {
-    id:       String,
-    parent:   StaffParent,
-    identity: StaffIdentity,
-    role:     StaffRole,
-}
-
-/// Roles known to the hierarchy; future staff roles keep their own identity.
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum StaffRole {
-    Showrunner,
-    Unit,
-    Impl,
-    Test,
-    #[serde(alias = "astra-reviewer")]
-    Review,
-    Fix,
-    #[serde(rename = "astra-designer")]
-    Designer,
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum StaffDocumentRow {
+    Showrunner(StaffFields),
+    Unit(StaffFields),
+    Worker(StaffFields),
+    Agent(StaffFields),
     #[serde(other)]
     Unknown,
 }
 
-enum StaffLinkRole {
-    Known(HierarchyRole),
-    Future,
+#[derive(Deserialize)]
+struct StaffFields {
+    id:              String,
+    name:            String,
+    parent:          StaffParent,
+    current_session: String,
 }
 
-impl StaffRole {
-    const fn hierarchy_role(&self) -> StaffLinkRole {
-        match self {
-            Self::Showrunner => StaffLinkRole::Known(HierarchyRole::Showrunner),
-            Self::Unit => StaffLinkRole::Known(HierarchyRole::Unit),
-            Self::Impl | Self::Designer => StaffLinkRole::Known(HierarchyRole::Impl),
-            Self::Test => StaffLinkRole::Known(HierarchyRole::Test),
-            Self::Review => StaffLinkRole::Known(HierarchyRole::Review),
-            Self::Fix => StaffLinkRole::Known(HierarchyRole::Fix),
-            Self::Unknown => StaffLinkRole::Future,
-        }
-    }
+struct StaffRow {
+    fields: StaffFields,
+    kind:   StaffKind,
 }
 
-/// Decode one complete staff list; invalid links never publish a partial answer.
-pub(super) fn parse(output: &[u8]) -> Result<HierarchyEdges, HierarchyError> {
-    #[derive(Deserialize)]
-    struct SchemaHeader {
-        schema: u32,
-    }
-    let header: SchemaHeader =
-        serde_json::from_slice(output).map_err(|_| HierarchyError::OutputUnreadable)?;
-    if header.schema != HIERARCHY_SCHEMA {
-        return Err(HierarchyError::UnknownSchema(header.schema));
-    }
-    let report: StaffReport =
-        serde_json::from_slice(output).map_err(|_| HierarchyError::MalformedEdge)?;
-    let mut members = BTreeMap::new();
-    let mut identities = BTreeSet::new();
-    for member in &report.members {
-        if member.id.is_empty() || member.identity.session().is_empty() {
-            return Err(HierarchyError::EmptySessionId);
-        }
-        if members.insert(member.id.as_str(), member).is_some()
-            || !identities.insert(member.identity.session())
-        {
-            return Err(HierarchyError::MalformedEdge);
-        }
-    }
-    let mut edges = Vec::new();
-    for member in &report.members {
-        let StaffParent::Managed(parent) = &member.parent else {
-            continue;
+impl Deref for StaffRow {
+    type Target = StaffFields;
+    fn deref(&self) -> &Self::Target { &self.fields }
+}
+
+impl StaffDocumentRow {
+    fn known(self) -> Option<StaffRow> {
+        let (kind, fields) = match self {
+            Self::Showrunner(fields) => (StaffKind::Showrunner, fields),
+            Self::Unit(fields) => (StaffKind::Unit, fields),
+            Self::Worker(fields) => (StaffKind::Worker, fields),
+            Self::Agent(fields) => (StaffKind::Agent, fields),
+            Self::Unknown => return None,
         };
-        let manager = members
-            .get(parent.as_str())
-            .ok_or(HierarchyError::MalformedEdge)?;
-        if !matches!(manager.identity, StaffIdentity::Claude(_)) || parent == &member.id {
+        Some(StaffRow { fields, kind })
+    }
+}
+
+/// IDs and sessions are unique, parent kinds are valid, and parent chains have no cycles.
+struct ValidatedStaffForest<'a>(BTreeMap<&'a str, &'a StaffRow>);
+
+impl<'a> ValidatedStaffForest<'a> {
+    fn new(rows: &'a [StaffRow]) -> Result<Self, HierarchyError> {
+        let members: BTreeMap<_, _> = rows.iter().map(|row| (row.id.as_str(), row)).collect();
+        if members.len() != rows.len() {
             return Err(HierarchyError::MalformedEdge);
         }
-        let mut ancestors = BTreeSet::from([member.id.as_str()]);
-        let mut ancestor = manager;
-        loop {
-            if !ancestors.insert(ancestor.id.as_str()) {
+        let mut sessions = BTreeSet::new();
+        for row in members.values() {
+            if !sessions.insert(row.current_session.as_str()) {
                 return Err(HierarchyError::MalformedEdge);
             }
-            let StaffParent::Managed(parent) = &ancestor.parent else {
-                break;
-            };
-            ancestor = members
-                .get(parent.as_str())
-                .ok_or(HierarchyError::MalformedEdge)?;
+            match &row.parent {
+                StaffParent::Root(())
+                    if matches!(row.kind, StaffKind::Showrunner | StaffKind::Agent) => {},
+                StaffParent::Managed(parent) => {
+                    let manager = members
+                        .get(parent.as_str())
+                        .ok_or(HierarchyError::MalformedEdge)?;
+                    if !row.kind.accepts_parent(manager.kind) {
+                        return Err(HierarchyError::MalformedEdge);
+                    }
+                },
+                StaffParent::Root(()) => return Err(HierarchyError::MalformedEdge),
+            }
+            if row.id.is_empty() || row.current_session.is_empty() {
+                return Err(HierarchyError::EmptySessionId);
+            }
+            let mut ancestors = BTreeSet::from([row.id.as_str()]);
+            let mut ancestor = *row;
+            while let StaffParent::Managed(parent) = &ancestor.parent {
+                if !ancestors.insert(parent.as_str()) {
+                    return Err(HierarchyError::MalformedEdge);
+                }
+                ancestor = members
+                    .get(parent.as_str())
+                    .ok_or(HierarchyError::MalformedEdge)?;
+            }
         }
-        let StaffLinkRole::Known(role) = member.role.hierarchy_role() else {
-            continue;
-        };
-        edges.push(HierarchyEdge {
-            manager: manager.identity.session().to_owned(),
-            member: member.identity.session().to_owned(),
-            role,
-        });
+        Ok(Self(members))
     }
-    Ok(HierarchyEdges(edges))
+}
+
+#[derive(Clone, Copy)]
+enum StaffKind {
+    Showrunner,
+    Unit,
+    Worker,
+    Agent,
+}
+
+impl StaffKind {
+    const fn accepts_parent(self, parent: Self) -> bool {
+        matches!(
+            (self, parent),
+            (
+                Self::Showrunner | Self::Unit | Self::Worker,
+                Self::Showrunner
+            ) | (Self::Worker, Self::Unit)
+        )
+    }
+
+    const fn role(self) -> HierarchyRole {
+        match self {
+            Self::Showrunner => HierarchyRole::Showrunner,
+            Self::Unit => HierarchyRole::Unit,
+            Self::Worker => HierarchyRole::Worker,
+            Self::Agent => HierarchyRole::Agent,
+        }
+    }
+}
+
+/// A missing staff name leaves the existing census name unchanged.
+pub(super) enum StaffName<'a> {
+    Named(&'a str),
+    Unlisted,
+}
+
+impl StaffRoster {
+    pub(super) fn name(&self, session: &str) -> StaffName<'_> {
+        self.names
+            .get(session)
+            .map_or(StaffName::Unlisted, |name| StaffName::Named(name))
+    }
+
+    fn parse(output: &[u8]) -> Result<Self, HierarchyError> {
+        #[derive(Deserialize)]
+        struct SchemaHeader {
+            schema: u32,
+        }
+        let header: SchemaHeader =
+            serde_json::from_slice(output).map_err(|_| HierarchyError::OutputUnreadable)?;
+        if header.schema != HIERARCHY_SCHEMA {
+            return Err(HierarchyError::UnknownSchema(header.schema));
+        }
+        let document: StaffDocument =
+            serde_json::from_slice(output).map_err(|_| HierarchyError::MalformedEdge)?;
+        let known: Vec<_> = document
+            .rows
+            .into_iter()
+            .filter_map(StaffDocumentRow::known)
+            .collect();
+        let ValidatedStaffForest(members) = ValidatedStaffForest::new(&known)?;
+        let mut roster = Self::default();
+        for member in members.values() {
+            let role = member.kind.role();
+            if !member.name.is_empty() {
+                roster
+                    .names
+                    .insert(member.current_session.clone(), member.name.clone());
+            }
+            let StaffParent::Managed(parent) = &member.parent else {
+                continue;
+            };
+            let Some(manager) = members.get(parent.as_str()) else {
+                continue;
+            };
+            roster.edges.0.push(HierarchyEdge {
+                manager: manager.current_session.clone(),
+                member: member.current_session.clone(),
+                role,
+            });
+        }
+        Ok(roster)
+    }
+}
+
+/// Test fixtures use the same parser as the file reader.
+#[cfg(test)]
+pub(super) fn parse(output: &[u8]) -> Result<HierarchyEdges, HierarchyError> {
+    StaffRoster::parse(output).map(|roster| roster.edges)
 }
 
 /// Whether discovery answered or must preserve the last successful links.
@@ -428,7 +630,7 @@ pub(super) fn read(
     source: &HierarchySource,
     runner: &dyn HierarchyRunner,
 ) -> Result<HierarchyEdges, HierarchyError> {
-    let HierarchySource::Command(command) = source else {
+    let HierarchySource::File(command) = source else {
         return Ok(HierarchyEdges::default());
     };
     match runner.run(command, HIERARCHY_TIMEOUT) {
@@ -491,7 +693,7 @@ enum HierarchyDiscovery {
 pub(super) enum HierarchyPublication {
     Pending,
     RefreshNeeded,
-    Ready(HierarchySnapshot),
+    Ready,
 }
 
 /// Placement identities that one refresh must resolve, with its retained links.
@@ -579,9 +781,9 @@ pub(super) struct HierarchyCache {
 
 impl HierarchyCache {
     /// Cached links, cleared immediately when the setting changes or turns off.
-    pub(super) fn cached(&mut self, source: HierarchySource) -> &LastSuccessfulHierarchy {
-        if self.source != source || matches!(source, HierarchySource::Off) {
-            self.source = source;
+    pub(super) fn cached(&mut self, source: &HierarchySource) -> &LastSuccessfulHierarchy {
+        if &self.source != source || matches!(source, HierarchySource::Off) {
+            self.source.clone_from(source);
             self.success = LastSuccessfulHierarchy::Unanswered;
             self.retry = HierarchyRetry::OnExpiration;
             self.discovery = HierarchyDiscovery::Pending;
@@ -594,7 +796,7 @@ impl HierarchyCache {
     #[cfg(test)]
     pub(super) fn edges(
         &mut self,
-        source: HierarchySource,
+        source: &HierarchySource,
         rows: &[AgentRow],
         runner: &dyn HierarchyRunner,
         now: Instant,
@@ -644,11 +846,11 @@ impl HierarchyCache {
     /// Decide and reserve a request before its worker starts, so checked ids survive chains.
     pub(super) fn prepare_snapshot(
         &mut self,
-        source: HierarchySource,
+        source: &HierarchySource,
         rows: &[AgentRow],
         now: Instant,
     ) -> HierarchyPreparation {
-        self.cached(source.clone());
+        self.cached(source);
         if matches!(source, HierarchySource::Off) {
             return HierarchyPreparation::Ready(self.retained(source));
         }
@@ -680,12 +882,12 @@ impl HierarchyCache {
     /// Accept a follow-up without making previously checked sessions eligible again.
     pub(super) fn refresh_outcome(
         &mut self,
-        source: HierarchySource,
+        source: &HierarchySource,
         rows: &[AgentRow],
         outcome: Result<HierarchyEdges, HierarchyError>,
         now: Instant,
     ) -> HierarchySnapshot {
-        self.cached(source.clone());
+        self.cached(source);
         self.accept(outcome, now);
         let snapshot = self.retained(source).matched(rows);
         self.notice = snapshot.notice;
@@ -695,12 +897,12 @@ impl HierarchyCache {
     /// Accept the bounded first attempt after its worker returns.
     pub(super) fn first_outcome(
         &mut self,
-        source: HierarchySource,
+        source: &HierarchySource,
         rows: &[AgentRow],
         outcome: Result<HierarchyEdges, HierarchyError>,
         now: Instant,
     ) -> HierarchySnapshot {
-        self.cached(source.clone());
+        self.cached(source);
         self.discovery = HierarchyDiscovery::Answered(CheckedUnlinkedSessions::default());
         self.accept(outcome, now);
         let snapshot = self.retained(source).matched(rows);
@@ -712,25 +914,26 @@ impl HierarchyCache {
     #[cfg(test)]
     pub(super) fn snapshot(
         &mut self,
-        source: HierarchySource,
+        source: &HierarchySource,
         rows: &[AgentRow],
         runner: &dyn HierarchyRunner,
         now: Instant,
     ) -> HierarchySnapshot {
-        match self.prepare_snapshot(source.clone(), rows, now) {
+        match self.prepare_snapshot(source, rows, now) {
             HierarchyPreparation::Ready(snapshot) => snapshot,
             HierarchyPreparation::Request(HierarchyRequestKind::Initial) => {
-                let outcome = read(&source, runner);
+                let outcome = read(source, runner);
                 self.first_outcome(source, rows, outcome, now)
             },
             HierarchyPreparation::Request(HierarchyRequestKind::Refresh(_)) => {
-                let outcome = read(&source, runner);
+                let outcome = read(source, runner);
                 self.refresh_outcome(source, rows, outcome, now)
             },
         }
     }
 
     /// A cached success keeps its original deadline; a failed attempt belongs to this scan.
+    #[cfg(test)]
     pub(super) fn reuse_deadline(&self, attempted: Instant) -> Instant {
         let refreshed = match (&self.success, self.notice) {
             (
@@ -745,24 +948,24 @@ impl HierarchyCache {
     /// Get an outcome before publishing a new source or a new unchecked session.
     pub(super) fn publication(
         &mut self,
-        source: HierarchySource,
+        source: &HierarchySource,
         rows: &[AgentRow],
     ) -> HierarchyPublication {
-        let snapshot = self.retained(source);
+        self.cached(source);
         match (&self.source, &self.discovery) {
-            (HierarchySource::Command(_), HierarchyDiscovery::Pending) => {
+            (HierarchySource::File(_), HierarchyDiscovery::Pending) => {
                 HierarchyPublication::Pending
             },
-            (HierarchySource::Command(_), HierarchyDiscovery::Answered(_))
+            (HierarchySource::File(_), HierarchyDiscovery::Answered(_))
                 if !self.unchecked_sessions(rows).is_empty() =>
             {
                 HierarchyPublication::RefreshNeeded
             },
-            _ => HierarchyPublication::Ready(snapshot),
+            _ => HierarchyPublication::Ready,
         }
     }
 
-    pub(super) fn retained(&mut self, source: HierarchySource) -> HierarchySnapshot {
+    pub(super) fn retained(&mut self, source: &HierarchySource) -> HierarchySnapshot {
         let edges = self.cached(source).edges();
         HierarchySnapshot {
             edges,
@@ -784,142 +987,65 @@ mod tests {
 
     use super::*;
 
-    /// A valid edge plus a role introduced by a future command implementation.
-    #[test]
-    fn future_roles_do_not_hide_known_edges_and_foreign_schemas_fail() {
-        let output = br#"{"schema":3,"inputs":[],"members":[{"id":"s0","name":"boss","kind":"showrunner","parent":null,"identity":{"claude":"boss"},"role":"showrunner"},{"id":"s1","name":"worker","kind":"worker","parent":"s0","identity":{"codex":"worker"},"role":"impl"},{"id":"s2","name":"future","kind":"worker","parent":"s0","identity":{"claude":"future"},"role":"future"}]}"#;
-        assert_eq!(
-            parse(output),
-            Ok(HierarchyEdges(vec![HierarchyEdge {
-                manager: "boss".to_string(),
-                member:  "worker".to_string(),
-                role:    HierarchyRole::Impl,
-            }]))
-        );
-        assert!(parse(br#"{"schema":2,"edges":[]}"#).is_err());
-        assert!(parse(br#"{"schema":3,"members":[{"id":"broken","role":"impl"}]}"#).is_err());
-    }
-
-    #[test]
-    fn staff_parent_ids_resolve_claude_managers_and_codex_workers() {
-        let edges =
-            parse(include_bytes!("fixtures/staff_members.json")).expect("schema 3 staff list");
-        assert_eq!(
-            edges,
-            HierarchyEdges(vec![
-                HierarchyEdge {
-                    manager: "boss-session".into(),
-                    member:  "unit-session".into(),
-                    role:    HierarchyRole::Unit,
-                },
-                HierarchyEdge {
-                    manager: "unit-session".into(),
-                    member:  "worker-thread".into(),
-                    role:    HierarchyRole::Review,
-                },
-            ])
-        );
-        assert_eq!(
-            parse(br#"{"schema":3,"inputs":[],"members":[]}"#),
-            Ok(HierarchyEdges::default())
-        );
-        assert_eq!(
-            parse(br#"{"schema":1,"edges":[]}"#),
-            Err(HierarchyError::UnknownSchema(1))
-        );
-    }
-
     #[test]
     fn malformed_staff_never_returns_the_valid_part_of_its_links() {
+        fn publishes_no_links(report: &Value) -> bool {
+            let directory = tempfile::tempdir().expect("staff directory");
+            let path = directory.path().join("staff.json");
+            fs::write(&path, serde_json::to_vec(report).expect("JSON")).expect("staff file");
+            let reader = StaffFileReader::default();
+            let source = HierarchySource::File(path.to_string_lossy().into_owned());
+            matches!(
+                reader.publication(&source),
+                StaffPublication::Ready(HierarchySnapshot {
+                    edges: HierarchyEdges(edges),
+                    notice: HierarchyNotice::Clear,
+                }) if edges.is_empty()
+            ) && reader.roster(&source).names.is_empty()
+        }
+
         let valid: Value = serde_json::from_slice(include_bytes!("fixtures/staff_members.json"))
             .expect("staff fixture");
-        for field in ["id", "parent", "identity", "role"] {
+        for field in ["id", "parent", "current_session", "kind", "name"] {
             let mut report = valid.clone();
-            report["members"][2]
+            report["rows"][2]
                 .as_object_mut()
                 .expect("worker")
                 .remove(field);
-            assert!(
-                parse(&serde_json::to_vec(&report).expect("JSON")).is_err(),
-                "missing {field}"
-            );
+            assert!(publishes_no_links(&report), "missing {field}");
         }
         for invalid in ["missing-parent", "worker-staff-id"] {
             let mut report = valid.clone();
-            report["members"][2]["parent"] = invalid.into();
-            assert_eq!(
-                parse(&serde_json::to_vec(&report).expect("JSON")),
-                Err(HierarchyError::MalformedEdge)
-            );
+            report["rows"][2]["parent"] = invalid.into();
+            assert!(publishes_no_links(&report), "invalid parent {invalid}");
         }
         let mut cycle = valid.clone();
-        cycle["members"][0]["parent"] = "unit-staff-id".into();
-        assert_eq!(
-            parse(&serde_json::to_vec(&cycle).expect("JSON")),
-            Err(HierarchyError::MalformedEdge)
+        cycle["rows"][0]["parent"] = "unit-staff-id".into();
+        assert!(
+            publishes_no_links(&cycle),
+            "a cycle must invalidate every link"
         );
         let mut duplicate = valid.clone();
-        duplicate["members"]
+        duplicate["rows"]
             .as_array_mut()
-            .expect("members")
-            .push(valid["members"][0].clone());
-        assert_eq!(
-            parse(&serde_json::to_vec(&duplicate).expect("JSON")),
-            Err(HierarchyError::MalformedEdge)
+            .expect("rows")
+            .push(valid["rows"][0].clone());
+        assert!(
+            publishes_no_links(&duplicate),
+            "duplicate IDs must invalidate every link"
         );
         let mut wrong_manager = valid;
-        wrong_manager["members"][0]["identity"] = serde_json::json!({"codex":"boss-session"});
-        assert_eq!(
-            parse(&serde_json::to_vec(&wrong_manager).expect("JSON")),
-            Err(HierarchyError::MalformedEdge)
+        wrong_manager["rows"][0]["current_session"] = serde_json::json!({"codex":"boss-session"});
+        assert!(
+            publishes_no_links(&wrong_manager),
+            "a malformed manager session must invalidate every link"
         );
-    }
-
-    #[test]
-    fn staff_command_discards_stderr_and_reads_only_the_staff_answer() {
-        let output = include_str!("fixtures/staff_members.json");
-        let command =
-            format!("printf '%s' 'not part of the staff list' >&2; printf '%s' '{output}'");
-        assert_eq!(
-            CommandRunner.run(&command, Duration::from_secs(1)),
-            parse(output.as_bytes())
-        );
-    }
-
-    /// Keep error categories distinct for failed commands and malformed contracts.
-    #[test]
-    fn command_and_contract_failures_keep_their_named_reasons() {
-        for (output, reason) in [
-            (b"not json".as_slice(), HierarchyError::OutputUnreadable),
-            (
-                br#"{"schema":2,"edges":[]}"#,
-                HierarchyError::UnknownSchema(2),
-            ),
-            (
-                br#"{"schema":3,"members":[{"id":"broken","role":"impl"}]}"#,
-                HierarchyError::MalformedEdge,
-            ),
-            (
-                br#"{"schema":3,"inputs":[],"members":[{"id":"s0","name":"boss","kind":"showrunner","parent":null,"identity":{"claude":"boss"},"role":"showrunner"},{"id":"s1","name":"worker","kind":"worker","parent":"s0","identity":{"claude":"worker"}}]}"#,
-                HierarchyError::MalformedEdge,
-            ),
-            (
-                br#"{"schema":3,"inputs":[],"members":[{"id":"s0","name":"","kind":"showrunner","parent":null,"identity":{"claude":""},"role":"showrunner"},{"id":"s1","name":"worker","kind":"worker","parent":"s0","identity":{"codex":"worker"},"role":"impl"}]}"#,
-                HierarchyError::EmptySessionId,
-            ),
-            (
-                br#"{"schema":3,"inputs":[],"members":[{"id":"s0","name":"boss","kind":"showrunner","parent":null,"identity":{"claude":"boss"},"role":"showrunner"},{"id":"s1","name":"","kind":"worker","parent":"s0","identity":{"codex":""},"role":"impl"}]}"#,
-                HierarchyError::EmptySessionId,
-            ),
-        ] {
-            assert_eq!(parse(output), Err(reason));
-        }
     }
 
     #[test]
     fn command_exit_keeps_its_reason_without_a_shell_startup_deadline() {
         assert_eq!(
-            CommandRunner.run("exit 7", Duration::from_secs(60)),
+            run_output("exit 7", Duration::from_secs(60)),
             Err(HierarchyError::ExitedUnsuccessfully)
         );
     }
@@ -927,7 +1053,7 @@ mod tests {
     #[test]
     fn command_timeout_keeps_its_reason() {
         assert_eq!(
-            CommandRunner.run("exec sleep 10", Duration::from_millis(100)),
+            run_output("exec sleep 10", Duration::from_millis(100)),
             Err(HierarchyError::TimedOut)
         );
     }
@@ -940,7 +1066,7 @@ mod tests {
         let command = format!("echo $$ > '{}'; exec yes", pid_file.display());
         let started = Instant::now();
         assert_eq!(
-            CommandRunner.run(&command, Duration::from_millis(500)),
+            run_output(&command, Duration::from_millis(500)),
             Err(HierarchyError::OutputTooLarge)
         );
         assert!(started.elapsed() < Duration::from_millis(800));
@@ -960,16 +1086,16 @@ mod tests {
     #[test]
     fn output_limit_accepts_a_complete_answer_at_the_boundary() {
         let mut output =
-            br#"{"schema":3,"inputs":[],"members":[{"id":"s0","name":"boss","kind":"showrunner","parent":null,"identity":{"claude":"boss"},"role":"showrunner"},{"id":"s1","name":"worker","kind":"worker","parent":"s0","identity":{"codex":"worker"},"role":"review"}]}"#
+            br#"{"schema":2,"rows":[{"id":"a","kind":"showrunner","name":"unit","parent":null,"current_session":"unit-session"},{"id":"b","kind":"worker","name":"worker","parent":"a","current_session":"worker-thread"}]}"#
                 .to_vec();
         output.resize(HIERARCHY_OUTPUT_LIMIT, b' ');
         let bytes = read_output(output.as_slice()).expect("an answer at the limit should be read");
         assert_eq!(
             parse(&bytes),
             Ok(HierarchyEdges(vec![HierarchyEdge {
-                manager: "boss".to_string(),
-                member:  "worker".to_string(),
-                role:    HierarchyRole::Review,
+                manager: "unit-session".to_string(),
+                member:  "worker-thread".to_string(),
+                role:    HierarchyRole::Worker,
             }]))
         );
         output.push(b' ');
@@ -993,7 +1119,7 @@ mod tests {
             }
             Ok(HierarchyEdges(vec![HierarchyEdge {
                 manager: command.to_string(),
-                member:  "worker".to_string(),
+                member:  "worker-thread".to_string(),
                 role:    HierarchyRole::Impl,
             }]))
         }
@@ -1027,37 +1153,27 @@ mod tests {
             Err(HierarchyError::ExitedUnsuccessfully),
             Ok(replacement.clone()),
         ])));
-        let source = HierarchySource::Command("unchanged".to_string());
+        let source = HierarchySource::File("unchanged".to_string());
         let mut cache = HierarchyCache::default();
         let start = Instant::now();
-        assert_eq!(cache.edges(source.clone(), &[], &runner, start), first);
+        assert_eq!(cache.edges(&source, &[], &runner, start), first);
         let expired = start + HIERARCHY_REFRESH_INTERVAL;
-        assert_eq!(cache.edges(source.clone(), &[], &runner, expired), first);
+        assert_eq!(cache.edges(&source, &[], &runner, expired), first);
         assert_eq!(
-            cache.edges(
-                source.clone(),
-                &[],
-                &runner,
-                expired + Duration::from_millis(1)
-            ),
+            cache.edges(&source, &[], &runner, expired + Duration::from_millis(1)),
             first
         );
         assert_eq!(
-            cache.edges(
-                source.clone(),
-                &[],
-                &runner,
-                expired + Duration::from_millis(2)
-            ),
+            cache.edges(&source, &[], &runner, expired + Duration::from_millis(2)),
             replacement
         );
         assert_eq!(
-            cache.edges(source, &[], &runner, expired + Duration::from_millis(3)),
+            cache.edges(&source, &[], &runner, expired + Duration::from_millis(3)),
             replacement
         );
         assert!(runner.0.lock().expect("answer queue").is_empty());
         assert_eq!(
-            cache.edges(HierarchySource::Off, &[], &runner, expired),
+            cache.edges(&HierarchySource::Off, &[], &runner, expired),
             HierarchyEdges::default()
         );
     }
@@ -1068,21 +1184,21 @@ mod tests {
         let runner = RecordingRunner(Mutex::new(Vec::new()));
         let mut cache = HierarchyCache::default();
         let now = Instant::now();
-        let source = HierarchySource::Command("good".to_string());
-        let initial = cache.edges(source.clone(), &[], &runner, now);
+        let source = HierarchySource::File("good".to_string());
+        let initial = cache.edges(&source, &[], &runner, now);
         assert_eq!(
-            cache.edges(source.clone(), &[], &runner, now + Duration::from_secs(29)),
+            cache.edges(&source, &[], &runner, now + Duration::from_secs(29)),
             initial
         );
         assert_eq!(runner.0.lock().expect("calls should lock").len(), 1);
         assert_eq!(
-            cache.edges(source, &[], &runner, now + HIERARCHY_REFRESH_INTERVAL),
+            cache.edges(&source, &[], &runner, now + HIERARCHY_REFRESH_INTERVAL),
             initial
         );
         assert_eq!(runner.0.lock().expect("calls should lock").len(), 2);
         assert_eq!(
             cache.edges(
-                HierarchySource::Command("fail".to_string()),
+                &HierarchySource::File("fail".to_string()),
                 &[],
                 &runner,
                 now
@@ -1091,7 +1207,7 @@ mod tests {
         );
         assert_eq!(
             cache.edges(
-                HierarchySource::Command("fail".to_string()),
+                &HierarchySource::File("fail".to_string()),
                 &[],
                 &runner,
                 now
@@ -1100,13 +1216,13 @@ mod tests {
         );
         assert_eq!(runner.0.lock().expect("calls should lock").len(), 4);
         assert_eq!(
-            cache.edges(HierarchySource::Off, &[], &runner, now),
+            cache.edges(&HierarchySource::Off, &[], &runner, now),
             HierarchyEdges::default()
         );
         assert_eq!(runner.0.lock().expect("calls should lock").len(), 4);
         assert_eq!(
             cache.edges(
-                HierarchySource::Command("good".to_string()),
+                &HierarchySource::File("good".to_string()),
                 &[],
                 &runner,
                 now
@@ -1141,9 +1257,9 @@ mod tests {
         use crate::census::AgentPlacement;
         use crate::census::Census;
         use crate::census::CensusUpdate;
-        use crate::census::HierarchyCommand;
         use crate::census::Machine;
         use crate::census::MachineState;
+        use crate::census::StaffFileSetting;
         use crate::census::scan::ScanStage;
         use crate::census::schedule;
         use crate::footer_colors::FooterColors;
@@ -1225,7 +1341,7 @@ mod tests {
             }
             let edges = parse(
                 &serde_json::to_vec(&serde_json::json!({
-                    "schema":3,"members":[{"id":"boss","parent":null,"identity":{"claude":SHOWRUNNER},"role":"showrunner"},{"id":"unit","parent":"boss","identity":{"claude":UNIT},"role":"unit"}]
+                    "schema":2,"rows":[{"id":"boss","name":"boss","parent":null,"current_session":SHOWRUNNER,"kind":"showrunner"},{"id":"unit","name":"unit","parent":"boss","current_session":UNIT,"kind":"unit"}]
                 }))
                 .expect("production edge encodes"),
             )
@@ -1236,7 +1352,7 @@ mod tests {
                 Ok(edges),
             ])));
             let mut cache = HierarchyCache::default();
-            let source = HierarchySource::Command("fixture production command".into());
+            let source = HierarchySource::File("fixture production command".into());
             let now = Instant::now();
             for (moment, expected) in [
                 (now, HierarchyNotice::Clear),
@@ -1250,7 +1366,7 @@ mod tests {
                 ),
             ] {
                 let rows = production_rows();
-                let discovered = cache.snapshot(source.clone(), &rows, &runner, moment);
+                let discovered = cache.snapshot(&source, &rows, &runner, moment);
                 assert_eq!(discovered.notice, expected);
                 assert_unit_draws_under_showrunner(rows, discovered.edges);
             }
@@ -1280,7 +1396,7 @@ mod tests {
                 Ok(links),
             ]))));
             let updates = schedule::spawn_with_test_source(
-                HierarchyCommand::new(HierarchySource::Command("fixture hierarchy".into())),
+                StaffFileSetting::new(HierarchySource::File("fixture hierarchy".into())),
                 runner,
                 |sender| {
                     let now = Instant::now();
@@ -1360,7 +1476,7 @@ mod tests {
             let rows = production_rows();
             let now = Instant::now();
             let unmatched = cache.snapshot(
-                HierarchySource::Command("fixture command".into()),
+                &HierarchySource::File("fixture command".into()),
                 &rows,
                 &ForeignSessions,
                 now,
@@ -1371,7 +1487,7 @@ mod tests {
                 1,
                 "unmatched does not discard a valid command answer"
             );
-            let disabled = cache.snapshot(HierarchySource::Off, &rows, &ForeignSessions, now);
+            let disabled = cache.snapshot(&HierarchySource::Off, &rows, &ForeignSessions, now);
             assert_eq!(disabled.notice, HierarchyNotice::Clear);
             assert!(
                 disabled.edges.0.is_empty(),
@@ -1390,7 +1506,7 @@ mod tests {
             let (release_details, details_released) = mpsc::channel();
             let (completed, completion) = mpsc::channel();
             let updates = schedule::spawn_with_test_source(
-                HierarchyCommand::new(HierarchySource::Command("fixture production tree".into())),
+                StaffFileSetting::new(HierarchySource::File("fixture production tree".into())),
                 Arc::new(ProductionTree),
                 move |sender| {
                     let rows = production_rows();
@@ -1438,9 +1554,9 @@ mod tests {
                 }
             }
             let mut cache = HierarchyCache::default();
-            let source = HierarchySource::Command("fixture foreign hierarchy".into());
+            let source = HierarchySource::File("fixture foreign hierarchy".into());
             cache.snapshot(
-                source.clone(),
+                &source,
                 &production_rows(),
                 &ForeignHierarchy,
                 Instant::now()
@@ -1449,7 +1565,7 @@ mod tests {
             );
             // Simulate the classified publication before a slow refresh by reading
             // `HierarchyCache::retained` with its expired links and notice.
-            let retained = cache.retained(source);
+            let retained = cache.retained(&source);
             let mut app = App::new_for_test().expect("test app");
             app.census = Census::new("natedev".into());
             app.census.apply(CensusUpdate::Local {
@@ -1474,10 +1590,14 @@ mod tests {
                 .join("\n");
             assert!(output.contains("hierarchy: no session matched"), "{output}");
             assert_eq!(
-                cache.retained(HierarchySource::Off).notice,
+                cache.retained(&HierarchySource::Off).notice,
                 HierarchyNotice::Clear,
                 "a replacement source clears the old outcome"
             );
         }
     }
 }
+
+#[cfg(test)]
+#[path = "hierarchy_file_tests.rs"]
+mod file_tests;

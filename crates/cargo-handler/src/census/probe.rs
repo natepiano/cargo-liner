@@ -22,18 +22,17 @@ use super::ChildRow;
 use super::CodexThreadId;
 use super::HierarchyEdges;
 use super::HierarchyNotice;
-use super::HierarchySnapshot;
 use super::HierarchySource;
 use super::ServiceTier;
 use super::SessionIdentity;
 use super::ShellTimerObservation;
+use super::StaffRowNames;
 use super::Timer;
 use super::WorkIdentity;
 use super::account::AccountLabels;
-use super::hierarchy;
-use super::hierarchy::CommandRunner;
 use super::hierarchy::HierarchyAnswer;
 use super::hierarchy::HierarchyError;
+use super::hierarchy::StaffFileReader;
 use super::idle_activity;
 use super::local_machine_name;
 use super::scan::LocalScanner;
@@ -280,6 +279,8 @@ pub(super) struct ProbeAgentRow {
     account:         Account,
     name:            String,
     #[serde(default)]
+    staff_names:     StaffRowNames,
+    #[serde(default)]
     status:          Option<String>,
     #[serde(default)]
     activity:        Option<super::AgentActivity>,
@@ -305,6 +306,7 @@ impl From<ProbeAgentRow> for AgentRow {
             service_tier:    row.service_tier,
             account:         row.account,
             name:            row.name,
+            staff_names:     row.staff_names,
             activity:        row
                 .activity
                 .unwrap_or_else(|| AgentActivity::from(row.status.as_deref())),
@@ -344,7 +346,8 @@ struct ProbeReport {
 }
 
 impl ProbeReport {
-    /// Keep the schema-3 failure flag for receivers that predate typed notices.
+    /// Keep the failure flag for receivers that cannot read typed notices.
+    #[cfg(test)]
     const fn record_failure(&mut self, reason: HierarchyError) {
         self.hierarchy_failed = true;
         self.hierarchy_notice = HierarchyNotice::Failed(reason);
@@ -399,37 +402,17 @@ struct SchemaHeader {
 pub(crate) fn print() -> ExitCode {
     startup_log::init();
     let loaded = LoadedConfig::load::<CargoHandler>();
-    let source = HierarchySource::from(loaded.config.census.hierarchy_command);
-    let mut report = ProbeReport::from_answer(
-        local_machine_name(),
-        LocalScanner::new(AccountLabels::new(
-            &loaded.config.accounts,
-            dirs::home_dir().as_deref(),
-        ))
-        .with_codex_start_window(loaded.config.census.codex_thread_start_window)
-        .scan(),
-        HierarchyEdges::default(),
-    );
-    match hierarchy::read(&source, &CommandRunner) {
-        Ok(edges) => {
-            let snapshot = HierarchySnapshot {
-                edges,
-                notice: HierarchyNotice::Clear,
-            };
-            let snapshot = if matches!(source, HierarchySource::Command(_)) {
-                let mut rows = report.rows.clone();
-                rows.extend_from_slice(&report.thread_hosts);
-                snapshot.matched(&rows)
-            } else {
-                snapshot
-            };
-            report.edges = snapshot.edges;
-            report.hierarchy_notice = snapshot.notice;
-        },
-        Err(reason) => {
-            report.record_failure(reason);
-        },
-    }
+    let source = HierarchySource::from(loaded.config.census.staff_file.0);
+    let staff = StaffFileReader::default();
+    let (rows, snapshot) = LocalScanner::new(AccountLabels::new(
+        &loaded.config.accounts,
+        dirs::home_dir().as_deref(),
+    ))
+    .with_codex_start_window(loaded.config.census.codex_thread_start_window)
+    .with_staff_file(super::StaffFileSetting::new(source), staff)
+    .scan();
+    let edges = snapshot.publication().edges.with_worker_roles(&rows);
+    let report = ProbeReport::from_answer(local_machine_name(), rows, edges);
     let written = serde_json::to_string(&report)
         .map_err(io::Error::from)
         .and_then(|json| writeln!(io::stdout().lock(), "{json}"));
@@ -527,6 +510,7 @@ mod tests {
             edges:            HierarchyEdges::default(),
             rows:             vec![
                 AgentRow {
+                    staff_names:     StaffRowNames::default(),
                     agent:           Agent::Codex,
                     role_fallback:   crate::census::RoleFallback::None,
                     session_id:      SessionIdentity::Unrecorded,
@@ -544,6 +528,7 @@ mod tests {
                     children:        Vec::new(),
                 },
                 AgentRow {
+                    staff_names:     StaffRowNames::default(),
                     agent:           Agent::Claude,
                     role_fallback:   crate::census::RoleFallback::None,
                     session_id:      SessionIdentity::Unrecorded,
@@ -619,6 +604,7 @@ mod tests {
     /// The separate session launched by the report's Claude row.
     fn worker() -> AgentRow {
         AgentRow {
+            staff_names:     StaffRowNames::default(),
             agent:           Agent::Claude,
             role_fallback:   RoleFallback::None,
             session_id:      SessionIdentity::Unrecorded,

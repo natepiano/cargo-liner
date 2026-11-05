@@ -52,6 +52,7 @@ use crate::census::RootPresentation;
 use crate::census::RowIdentity;
 use crate::census::ServiceTier;
 use crate::census::ShellTimerObservation;
+use crate::census::StaffRowName;
 #[cfg(test)]
 use crate::census::Timer;
 use crate::census::WorkIdentity;
@@ -1217,22 +1218,43 @@ impl TreeLine<'_> {
             LineSubject::ManagedThread(child, _) => &child.name,
             LineSubject::Work(work) => &work.child.name,
         };
-        let name = match self.dispatch_label {
-            DispatchLabel::Original => match self.subject {
-                LineSubject::ManagedThread(child, role) => child.worker_task.label(
-                    WorkerRoleSource::resolve(WorkerRoleInput::Hierarchy(role)),
-                    original,
-                ),
-                LineSubject::Work(work) if matches!(work.kind, WorkKind::Thread) => {
-                    work.child.worker_task.label(
-                        WorkerRoleSource::resolve(WorkerRoleInput::Dispatch(self.dispatch_label)),
-                        original,
-                    )
-                },
-                _ => original.clone(),
+        let staff_name = match self.subject {
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => {
+                match &self.row.staff_names.own {
+                    StaffRowName::Named(name) => Some(name),
+                    StaffRowName::Unlisted => None,
+                }
             },
-            DispatchLabel::Worker(dispatch) => dispatch.label(),
+            LineSubject::ManagedThread(child, _) => match &child.thread_id {
+                CodexThreadId::Recorded(thread) => self.row.staff_names.threads.get(thread),
+                CodexThreadId::Unrecorded => None,
+            },
+            LineSubject::Work(work) => match &work.child.thread_id {
+                CodexThreadId::Recorded(thread) => self.row.staff_names.threads.get(thread),
+                CodexThreadId::Unrecorded => None,
+            },
         };
+        let name = staff_name.map_or_else(
+            || match self.dispatch_label {
+                DispatchLabel::Original => match self.subject {
+                    LineSubject::ManagedThread(child, role) => child.worker_task.label(
+                        WorkerRoleSource::resolve(WorkerRoleInput::Hierarchy(role)),
+                        original,
+                    ),
+                    LineSubject::Work(work) if matches!(work.kind, WorkKind::Thread) => {
+                        work.child.worker_task.label(
+                            WorkerRoleSource::resolve(WorkerRoleInput::Dispatch(
+                                self.dispatch_label,
+                            )),
+                            original,
+                        )
+                    },
+                    _ => original.clone(),
+                },
+                DispatchLabel::Worker(dispatch) => dispatch.label(),
+            },
+            Clone::clone,
+        );
         match self.location {
             SessionLocation::SameMachine => name,
             SessionLocation::AnotherMachine => format!("{name}{HEADING_SEPARATOR}{}", self.machine),
@@ -3203,6 +3225,7 @@ mod tests {
     use super::*;
     use crate::census::Account;
     use crate::census::CodexThreadId;
+    use crate::census::StaffRowNames;
 
     #[path = "activity_tests.rs"]
     mod activity_tests;
@@ -3239,6 +3262,23 @@ mod tests {
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
     use crate::constants::TRUNCATION_MARK;
+
+    #[test]
+    fn dispatched_workers_draw_staff_names_before_dispatch_labels() {
+        let mut owner: AgentRow =
+            serde_json::from_str(include_str!("census/fixtures/restarted_unit_codex.json"))
+                .expect("dispatched worker");
+        let fallback = lines(&drawn(&owner, None, 160)).join("\n");
+        assert!(fallback.contains("impl · compile crates"), "{fallback}");
+        owner.children[0].name = "staff worker".into();
+        owner
+            .staff_names
+            .threads
+            .insert("unit-worker-thread".into(), "staff worker".into());
+        let named = lines(&drawn(&owner, None, 160)).join("\n");
+        assert!(named.contains("staff worker"), "{named}");
+        assert!(!named.contains("impl · compile crates"), "{named}");
+    }
 
     /// Every cell across `machines`, in the order the grid shows them:
     /// machine by machine, one for each top-level agent, holding the
@@ -3278,6 +3318,7 @@ mod tests {
     /// seconds before [`NOW`] and opened by `launched_by`.
     fn agent(pid: u32, name: &str, age: u64, launched_by: Option<u32>) -> AgentRow {
         AgentRow {
+            staff_names: StaffRowNames::default(),
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,

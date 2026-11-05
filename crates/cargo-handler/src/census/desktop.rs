@@ -226,6 +226,7 @@ mod tests {
     use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::StaffRowNames;
     use crate::census::account::ConfigHome;
 
     /// The single-instance terminal that owns several windows.
@@ -263,6 +264,7 @@ mod tests {
     /// A Claude Code row with no desktop yet.
     fn row(pid: u32, name: &str) -> AgentRow {
         AgentRow {
+            staff_names: StaffRowNames::default(),
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,

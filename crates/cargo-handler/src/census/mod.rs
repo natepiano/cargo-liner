@@ -46,6 +46,7 @@ pub(crate) mod tree;
 pub(crate) mod worker_dispatch;
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::PoisonError;
@@ -193,6 +194,10 @@ pub(crate) enum HierarchyRole {
     Showrunner,
     /// Directs a unit.
     Unit,
+    /// Performs work for a manager.
+    Worker,
+    /// Runs an independent agent.
+    Agent,
     /// Implements a change.
     Impl,
     /// Tests a change.
@@ -204,11 +209,13 @@ pub(crate) enum HierarchyRole {
 }
 
 impl HierarchyRole {
-    /// The role value the hierarchy command reports, shown in titles and member tree lines.
+    /// The role shown in titles and member rows.
     const fn text(self) -> &'static str {
         match self {
             Self::Showrunner => "showrunner",
             Self::Unit => "unit",
+            Self::Worker => "worker",
+            Self::Agent => "agent",
             Self::Impl => "impl",
             Self::Test => "test",
             Self::Review => "review",
@@ -255,8 +262,8 @@ pub(crate) enum HierarchySource {
     /// Hierarchy discovery is disabled.
     #[default]
     Off,
-    /// A shell command printing the schema-3 staff contract.
-    Command(String),
+    /// A path to the schema-2 staff file.
+    File(String),
 }
 
 impl From<String> for HierarchySource {
@@ -264,16 +271,16 @@ impl From<String> for HierarchySource {
         if command.trim().is_empty() {
             Self::Off
         } else {
-            Self::Command(command)
+            Self::File(command)
         }
     }
 }
 
 /// The hierarchy setting shared between the app and the scheduler.
 #[derive(Clone, Debug)]
-pub(crate) struct HierarchyCommand(Arc<RwLock<HierarchySource>>);
+pub(crate) struct StaffFileSetting(Arc<RwLock<HierarchySource>>);
 
-impl HierarchyCommand {
+impl StaffFileSetting {
     /// Share the configured source with the scheduler.
     pub(crate) fn new(source: HierarchySource) -> Self { Self(Arc::new(RwLock::new(source))) }
 
@@ -301,6 +308,27 @@ pub(crate) enum RoleFallback {
     Worker(HierarchyRole),
 }
 
+/// Staff names retain their source through dispatch labeling and remote transport.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct StaffRowNames {
+    pub(crate) own:     StaffRowName,
+    pub(crate) threads: BTreeMap<String, String>,
+}
+
+impl StaffRowNames {
+    fn is_empty(&self) -> bool {
+        matches!(self.own, StaffRowName::Unlisted) && self.threads.is_empty()
+    }
+}
+
+/// A staff name takes precedence over every dispatch and activity label.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) enum StaffRowName {
+    #[default]
+    Unlisted,
+    Named(String),
+}
+
 /// One agent someone can talk to, or an app server transporting workers
 /// for placement without appearing in the summary or its own cell.
 /// The field order is the
@@ -320,6 +348,8 @@ pub(crate) struct AgentRow {
     pub(crate) account:         Account,
     /// The session's name, or what stands in for one.
     pub(crate) name:            String,
+    #[serde(default, skip_serializing_if = "StaffRowNames::is_empty")]
+    pub(crate) staff_names:     StaffRowNames,
     /// One current activity, resolved from conversation events and live verification.
     pub(crate) activity:        AgentActivity,
     /// When the agent's session began, in unix seconds: for Claude Code
@@ -717,6 +747,7 @@ mod tests {
     /// A claude row started at `started`.
     fn row(started: u64) -> AgentRow {
         AgentRow {
+            staff_names: StaffRowNames::default(),
             agent: Agent::Claude,
             role_fallback: crate::census::RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,

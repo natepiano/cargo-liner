@@ -23,17 +23,15 @@ use super::Agent;
 use super::AgentRow;
 use super::CensusUpdate;
 use super::CodexThreadId;
-use super::HierarchyCommand;
 use super::HierarchyEdges;
 use super::HierarchySnapshot;
 use super::HierarchySource;
 use super::RemoteHierarchyAnswers;
 use super::RemoteMachines;
 use super::SessionIdentity;
+use super::StaffFileSetting;
 use super::account::AccountLabels;
 use super::hierarchy;
-#[cfg(test)]
-use super::hierarchy::CommandRunner;
 use super::hierarchy::HierarchyCache;
 use super::hierarchy::HierarchyError;
 use super::hierarchy::HierarchyNotice;
@@ -42,7 +40,10 @@ use super::hierarchy::HierarchyPublication;
 use super::hierarchy::HierarchyRefreshScope;
 use super::hierarchy::HierarchyRequestKind;
 use super::hierarchy::HierarchyRunner;
-use super::hierarchy::InputDrivenHierarchyRunner;
+use super::hierarchy::StaffFileReader;
+#[cfg(test)]
+use super::hierarchy::StaffPublication;
+use super::hierarchy::StaffSnapshot;
 use super::probe;
 use super::remote;
 use super::remote::ProbeOutcome;
@@ -51,6 +52,7 @@ use super::remote::SshRunner;
 use super::scan::LocalScanner;
 use super::scan::ScanStage;
 use crate::config::CodexStartWindow;
+#[cfg(test)]
 use crate::constants::HIERARCHY_FIRST_PUBLISH_BUDGET;
 #[cfg(test)]
 use crate::constants::HIERARCHY_REFRESH_INTERVAL;
@@ -98,6 +100,7 @@ enum LocalScanState {
 }
 
 /// Discovery completed during classification belongs to this scan until it expires.
+#[cfg(test)]
 #[derive(Default)]
 enum ScanDiscovery {
     #[default]
@@ -252,6 +255,7 @@ enum PendingHierarchyRequest {
     Initial(HierarchyRequestAnswer),
     Refresh {
         answer:    HierarchyRequestAnswer,
+        #[cfg(test)]
         placement: HierarchyRefreshScope,
     },
 }
@@ -275,7 +279,27 @@ pub(crate) struct LocalAnswers {
 }
 
 impl LocalAnswers {
+    /// Publish the same staff revision that supplied this scan's names.
+    pub(super) fn publish_staff(
+        &self,
+        stage: ScanStage,
+        rows: Vec<AgentRow>,
+        staff: &StaffSnapshot,
+    ) -> Result<(), SendError<CensusUpdate>> {
+        let publications = self
+            .publications
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let snapshot = staff.publication();
+        publications.deliver(rows.clone(), snapshot.clone(), ScanStage::Classified)?;
+        match stage {
+            ScanStage::Classified => Ok(()),
+            ScanStage::Completed => publications.deliver(rows, snapshot, stage),
+        }
+    }
+
     /// Publish a stage without holding the publication owner during detail reads.
+    #[cfg(test)]
     pub(super) fn publish(
         &self,
         stage: ScanStage,
@@ -285,6 +309,7 @@ impl LocalAnswers {
     }
 
     /// Synthetic observation times let cache tests check expiry without sleeping.
+    #[cfg(test)]
     pub(super) fn publish_at(
         &self,
         stage: ScanStage,
@@ -323,14 +348,16 @@ struct LocalPublications {
     /// Send only rows with a known placement outcome to the app.
     sender:       Sender<CensusUpdate>,
     /// Read the current setting so old command results cannot restore a removed source.
-    hierarchy:    HierarchyCommand,
+    hierarchy:    StaffFileSetting,
     /// Run discovery outside the scan to release ready results during detail reads.
     runner:       Arc<dyn HierarchyRunner>,
     /// Keep a pending command separate from an available cache.
     state:        LocalHierarchy,
     /// Reuse Classified discovery within the same scan until its result expires.
+    #[cfg(test)]
     discovery:    ScanDiscovery,
     /// Bound the startup wait so unrelated rows can publish before discovery ends.
+    #[cfg(test)]
     first_budget: Duration,
     /// Wake the scheduler when background discovery can release held rows.
     events:       Sender<ScheduleEvent>,
@@ -344,11 +371,14 @@ impl LocalPublications {
         rows: Vec<AgentRow>,
     ) -> Result<(), SendError<CensusUpdate>> {
         let source = self.hierarchy.snapshot();
+        if let StaffPublication::Ready(snapshot) = self.runner.publication(&source) {
+            return self.deliver(rows, snapshot, ScanStage::Completed);
+        }
         let now = Instant::now();
         let LocalHierarchy::Available(cache) = &mut self.state else {
             return Ok(());
         };
-        match cache.prepare_snapshot(source.clone(), &rows, now) {
+        match cache.prepare_snapshot(&source, &rows, now) {
             HierarchyPreparation::Request(kind) => {
                 self.start_request(source, rows, ScanStage::Completed, now, kind)?;
                 self.finish_pending(self.first_budget)
@@ -360,6 +390,7 @@ impl LocalPublications {
     }
 
     /// Tests can advance observation time without sleeping.
+    #[cfg(test)]
     pub(super) fn publish_at(
         &mut self,
         stage: ScanStage,
@@ -367,6 +398,13 @@ impl LocalPublications {
         now: Instant,
     ) -> Result<(), SendError<CensusUpdate>> {
         let source = self.hierarchy.snapshot();
+        if let StaffPublication::Ready(snapshot) = self.runner.publication(&source) {
+            self.deliver(rows.clone(), snapshot.clone(), ScanStage::Classified)?;
+            return match stage {
+                ScanStage::Classified => Ok(()),
+                ScanStage::Completed => self.deliver(rows, snapshot, stage),
+            };
+        }
         if let LocalHierarchy::Pending {
             source: pending, ..
         } = &self.state
@@ -403,27 +441,26 @@ impl LocalPublications {
                     expires,
                 } if classified == source
                     && now < expires
-                    && (matches!(
-                        cache.retained(source.clone()).notice,
-                        HierarchyNotice::Failed(_)
-                    ) || matches!(
-                        cache.publication(source.clone(), &rows),
-                        HierarchyPublication::Ready(_)
-                    )) =>
+                    && (matches!(cache.retained(&source).notice, HierarchyNotice::Failed(_))
+                        || matches!(
+                            cache.publication(&source, &rows),
+                            HierarchyPublication::Ready
+                        )) =>
                 {
-                    let hierarchy = cache.retained(source);
+                    let hierarchy = cache.retained(&source);
                     self.deliver(rows.clone(), hierarchy.clone(), ScanStage::Classified)?;
                     return self.deliver(rows, hierarchy, stage);
                 },
                 _ => {},
             }
         }
-        match cache.publication(source.clone(), &rows) {
+        match cache.publication(&source, &rows) {
             HierarchyPublication::Pending => self.start_initial(source, rows, stage, now),
             HierarchyPublication::RefreshNeeded => self.discover_at(rows, stage, now),
-            HierarchyPublication::Ready(hierarchy) => {
+            HierarchyPublication::Ready => {
+                let hierarchy = cache.retained(&source);
                 self.deliver(rows.clone(), hierarchy, ScanStage::Classified)?;
-                if matches!(source, HierarchySource::Command(_))
+                if matches!(source, HierarchySource::File(_))
                     || matches!(stage, ScanStage::Completed)
                 {
                     self.discover_at(rows, stage, now)?;
@@ -439,6 +476,7 @@ impl LocalPublications {
     }
 
     /// Only the scan worker spends the startup budget; scheduler wakeups never wait.
+    #[cfg(test)]
     fn start_initial(
         &mut self,
         source: HierarchySource,
@@ -480,7 +518,14 @@ impl LocalPublications {
             ),
             HierarchyRequestKind::Refresh(placement) => {
                 let rows = PendingPlacementRows::refreshing(rows, &placement);
-                (PendingHierarchyRequest::Refresh { answer, placement }, rows)
+                (
+                    PendingHierarchyRequest::Refresh {
+                        answer,
+                        #[cfg(test)]
+                        placement,
+                    },
+                    rows,
+                )
             },
         };
         self.state = LocalHierarchy::Pending {
@@ -510,7 +555,7 @@ impl LocalPublications {
             return Ok(());
         };
         let rows = publish.rows.independent();
-        let hierarchy = cache.retained(source.clone());
+        let hierarchy = cache.retained(source);
         let stage = match request.as_ref() {
             PendingHierarchyRequest::Initial(_) => publish.stage,
             PendingHierarchyRequest::Refresh { .. } => ScanStage::Classified,
@@ -525,7 +570,10 @@ impl LocalPublications {
             && *source != self.hierarchy.snapshot()
         {
             let old = std::mem::take(&mut self.state);
-            self.discovery = ScanDiscovery::Unstarted;
+            #[cfg(test)]
+            {
+                self.discovery = ScanDiscovery::Unstarted;
+            }
             if let LocalHierarchy::Pending { publish, .. } = old {
                 return self.discover_at(publish.rows.into_rows(), publish.stage, publish.observed);
             }
@@ -551,30 +599,33 @@ impl LocalPublications {
             let rows = publish.rows.into_rows();
             let (hierarchy, requested) = match *request {
                 PendingHierarchyRequest::Initial(answer) => (
-                    cache.first_outcome(source.clone(), &rows, outcome, publish.observed),
+                    cache.first_outcome(&source, &rows, outcome, publish.observed),
                     answer.requested,
                 ),
                 PendingHierarchyRequest::Refresh { answer, .. } => (
-                    cache.refresh_outcome(source.clone(), &rows, outcome, publish.observed),
+                    cache.refresh_outcome(&source, &rows, outcome, publish.observed),
                     answer.requested,
                 ),
             };
             if !matches!(hierarchy.notice, HierarchyNotice::Failed(_))
                 && matches!(
-                    cache.publication(source.clone(), &requested.newcomers(&rows)),
+                    cache.publication(&source, &requested.newcomers(&rows)),
                     HierarchyPublication::RefreshNeeded
                 )
             {
                 self.state = LocalHierarchy::Available(cache);
                 return self.discover_at(rows, publish.stage, publish.observed);
             }
-            self.discovery = match publish.stage {
-                ScanStage::Classified => ScanDiscovery::Classified {
-                    source,
-                    expires: cache.reuse_deadline(publish.observed),
-                },
-                ScanStage::Completed => ScanDiscovery::Unstarted,
-            };
+            #[cfg(test)]
+            {
+                self.discovery = match publish.stage {
+                    ScanStage::Classified => ScanDiscovery::Classified {
+                        source,
+                        expires: cache.reuse_deadline(publish.observed),
+                    },
+                    ScanStage::Completed => ScanDiscovery::Unstarted,
+                };
+            }
             self.state = LocalHierarchy::Available(cache);
             self.deliver(rows, hierarchy, publish.stage)?;
         }
@@ -592,19 +643,22 @@ impl LocalPublications {
         let LocalHierarchy::Available(cache) = &mut self.state else {
             return Ok(());
         };
-        match cache.prepare_snapshot(source.clone(), &rows, now) {
+        match cache.prepare_snapshot(&source, &rows, now) {
             HierarchyPreparation::Request(kind) => {
                 self.start_request(source, rows, stage, now, kind)?;
                 self.deliver_held()
             },
             HierarchyPreparation::Ready(hierarchy) => {
-                self.discovery = match stage {
-                    ScanStage::Classified => ScanDiscovery::Classified {
-                        source,
-                        expires: cache.reuse_deadline(now),
-                    },
-                    ScanStage::Completed => ScanDiscovery::Unstarted,
-                };
+                #[cfg(test)]
+                {
+                    self.discovery = match stage {
+                        ScanStage::Classified => ScanDiscovery::Classified {
+                            source,
+                            expires: cache.reuse_deadline(now),
+                        },
+                        ScanStage::Completed => ScanDiscovery::Unstarted,
+                    };
+                }
                 self.deliver(rows, hierarchy, stage)
             },
         }
@@ -616,6 +670,10 @@ impl LocalPublications {
         hierarchy: HierarchySnapshot,
         stage: ScanStage,
     ) -> Result<(), SendError<CensusUpdate>> {
+        let hierarchy = HierarchySnapshot {
+            edges:  hierarchy.edges.with_worker_roles(&rows),
+            notice: hierarchy.notice,
+        };
         startup_log::startup_local_answer(&rows);
         self.sender.send(CensusUpdate::Local {
             rows,
@@ -629,20 +687,23 @@ impl LocalPublications {
 /// probing over ssh, and hand back the channel it answers on.
 pub(crate) fn spawn(
     remotes: RemoteMachines,
-    hierarchy: HierarchyCommand,
+    hierarchy: StaffFileSetting,
     account_labels: AccountLabels,
     codex_start_window: CodexStartWindow,
 ) -> Receiver<CensusUpdate> {
-    let mut scanner = LocalScanner::new(account_labels).with_codex_start_window(codex_start_window);
+    let staff = StaffFileReader::default();
+    let mut scanner = LocalScanner::new(account_labels)
+        .with_codex_start_window(codex_start_window)
+        .with_staff_file(hierarchy.clone(), staff.clone());
     spawn_staged_with(
         remotes,
         hierarchy,
-        Arc::new(InputDrivenHierarchyRunner::default()),
+        Arc::new(staff),
         Arc::new(SshRunner::new()),
         move |sender| {
             let mut schedule = ScanSchedule::NextRound;
-            scanner.scan_staged(|stage, rows| {
-                if sender.publish(stage, rows).is_err() {
+            scanner.scan_staged(|stage, rows, staff| {
+                if sender.publish_staff(stage, rows, staff).is_err() {
                     schedule = ScanSchedule::Finished;
                 }
             });
@@ -661,7 +722,7 @@ pub(crate) fn spawn(
 /// receiver is gone.
 fn spawn_staged_with(
     remotes: RemoteMachines,
-    hierarchy: HierarchyCommand,
+    hierarchy: StaffFileSetting,
     hierarchy_runner: Arc<dyn HierarchyRunner>,
     runner: Arc<dyn RemoteRunner>,
     mut scan_local: impl FnMut(&mut LocalAnswers) -> ScanSchedule + Send + 'static,
@@ -676,7 +737,9 @@ fn spawn_staged_with(
             hierarchy,
             runner: hierarchy_runner,
             state: LocalHierarchy::default(),
+            #[cfg(test)]
             discovery: ScanDiscovery::default(),
+            #[cfg(test)]
             first_budget: HIERARCHY_FIRST_PUBLISH_BUDGET,
         }));
         let (scan, rounds) = mpsc::channel();
@@ -763,8 +826,8 @@ fn spawn_with(
 ) -> Receiver<CensusUpdate> {
     spawn_staged_with(
         remotes,
-        HierarchyCommand::new(HierarchySource::Off),
-        Arc::new(InputDrivenHierarchyRunner::default()),
+        StaffFileSetting::new(HierarchySource::Off),
+        Arc::new(StaffFileReader::default()),
         runner,
         move |sender| {
             if sender.send(scan_local()).is_ok() {
@@ -780,7 +843,7 @@ fn spawn_with(
 /// Run one real scheduler scan with a source the startup test can hold.
 #[cfg(test)]
 pub(crate) fn spawn_with_test_source(
-    hierarchy: HierarchyCommand,
+    hierarchy: StaffFileSetting,
     hierarchy_runner: Arc<dyn HierarchyRunner>,
     mut scan_local: impl FnMut(&mut LocalAnswers) + Send + 'static,
 ) -> Receiver<CensusUpdate> {
@@ -800,7 +863,7 @@ pub(crate) fn spawn_with_test_source(
 /// Run a fixture scan with a short first-answer budget.
 #[cfg(test)]
 pub(super) fn spawn_with_test_source_and_budget(
-    hierarchy: HierarchyCommand,
+    hierarchy: StaffFileSetting,
     hierarchy_runner: Arc<dyn HierarchyRunner>,
     budget: Duration,
     mut scan_local: impl FnMut(&mut LocalAnswers) + Send + 'static,
@@ -819,7 +882,7 @@ pub(super) fn spawn_with_test_source_and_budget(
 #[cfg(test)]
 pub(super) fn spawn_with_test_remote_and_budget(
     remotes: RemoteMachines,
-    hierarchy: HierarchyCommand,
+    hierarchy: StaffFileSetting,
     hierarchy_runner: Arc<dyn HierarchyRunner>,
     remote_runner: Arc<dyn RemoteRunner>,
     budget: Duration,
@@ -910,8 +973,6 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
-    use tempfile::TempDir;
-
     use super::*;
     use crate::census::Account;
     use crate::census::Agent;
@@ -923,6 +984,7 @@ mod tests {
     use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::StaffRowNames;
     use crate::census::hierarchy::HierarchyError;
 
     /// The host whose probe waits until the test lets it finish.
@@ -950,8 +1012,8 @@ mod tests {
     #[test]
     fn each_local_scan_publishes_one_completion_after_its_interim_rows() {
         let updates = spawn_with_test_source(
-            HierarchyCommand::new(HierarchySource::Off),
-            Arc::new(CommandRunner),
+            StaffFileSetting::new(HierarchySource::Off),
+            Arc::new(StaffFileReader::default()),
             |answers| {
                 answers
                     .publish(ScanStage::Classified, vec![session_row("worker", 1)])
@@ -1016,7 +1078,7 @@ mod tests {
         let runner = Arc::new(Recovering(AtomicUsize::new(0)));
         let observed = Arc::clone(&runner);
         let updates = spawn_with_test_source(
-            HierarchyCommand::new(HierarchySource::Command("fixture".into())),
+            StaffFileSetting::new(HierarchySource::File("fixture".into())),
             runner,
             |answers| {
                 let start = Instant::now();
@@ -1075,7 +1137,7 @@ mod tests {
         let runner = Arc::new(Attempts(AtomicUsize::new(0)));
         let observed = Arc::clone(&runner);
         let updates = spawn_with_test_source(
-            HierarchyCommand::new(HierarchySource::Command("fixture".into())),
+            StaffFileSetting::new(HierarchySource::File("fixture".into())),
             runner,
             |answers| {
                 let start = Instant::now();
@@ -1144,6 +1206,7 @@ mod tests {
     /// A local Claude fixture whose process identity may change independently of its session.
     fn session_row(id: &str, pid: u32) -> AgentRow {
         AgentRow {
+            staff_names: StaffRowNames::default(),
             agent: Agent::Claude,
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Claude(id.to_string()),
@@ -1159,132 +1222,6 @@ mod tests {
             branch: None,
             launched_by: None,
             children: Vec::new(),
-        }
-    }
-
-    /// Write a command script, keeping a space in its path to exercise shell quoting.
-    fn command_script(script: &str) -> (TempDir, HierarchySource) {
-        let temp = tempfile::tempdir().expect("a fixture directory should open");
-        let path = temp.path().join("hierarchy fixture.sh");
-        std::fs::write(&path, script).expect("the fixture should be written");
-        let source = HierarchySource::Command(format!("sh '{}'", path.display()));
-        (temp, source)
-    }
-
-    /// A real fixture command reaches a census machine answer through the scheduler.
-    #[test]
-    fn hierarchy_command_edges_reach_the_local_census() {
-        let (_temp, source) = command_script(
-            r#"printf '%s\n' '{"schema":3,"inputs":[],"members":[{"id":"s0","name":"remote-boss","kind":"showrunner","parent":null,"identity":{"claude":"remote-boss"},"role":"showrunner"},{"id":"s1","name":"worker","kind":"worker","parent":"s0","identity":{"codex":"worker"},"role":"impl"}]}'"#,
-        );
-        let updates = spawn_with_test_source(
-            HierarchyCommand::new(source),
-            Arc::new(CommandRunner),
-            |sender| {
-                sender
-                    .send(vec![session_row("worker", 1)])
-                    .expect("the local answer should send");
-            },
-        );
-        let mut census = super::super::Census::new("local".to_string());
-        census.apply(
-            updates
-                .recv_timeout(PATIENCE)
-                .expect("the census should answer"),
-        );
-        let machines = census.machines(&[]);
-        assert_eq!(
-            machines[0].state,
-            &MachineState::Answered(
-                vec![session_row("worker", 1)],
-                super::super::HierarchyEdges(vec![super::super::HierarchyEdge {
-                    manager: "remote-boss".to_string(),
-                    member:  "worker".to_string(),
-                    role:    super::super::HierarchyRole::Impl,
-                }])
-                .into()
-            )
-        );
-    }
-
-    /// Use the production runner with a shorter permitted runtime for timeout fixtures.
-    struct ShortDeadlineRunner;
-
-    impl HierarchyRunner for ShortDeadlineRunner {
-        fn run(&self, command: &str, timeout: Duration) -> Result<HierarchyEdges, HierarchyError> {
-            CommandRunner.run(command, timeout.min(Duration::from_millis(120)))
-        }
-    }
-
-    /// Failed, malformed, and timed-out scripts publish no links and reap the timed-out child.
-    #[test]
-    fn unsuccessful_commands_publish_no_edges_and_timeout_reaps_the_child() {
-        for (script, reason) in [
-            ("exit 1", HierarchyError::ExitedUnsuccessfully),
-            ("printf 'malformed'", HierarchyError::OutputUnreadable),
-            (
-                "printf '{\"schema\":2,\"edges\":[]}'",
-                HierarchyError::UnknownSchema(2),
-            ),
-            ("exec yes", HierarchyError::OutputTooLarge),
-        ] {
-            let started = Instant::now();
-            let (_temp, source) = command_script(script);
-            let updates = spawn_with_test_source(
-                HierarchyCommand::new(source),
-                Arc::new(CommandRunner),
-                |sender| {
-                    sender
-                        .send(Vec::new())
-                        .expect("the local answer should send");
-                },
-            );
-            assert_eq!(
-                updates
-                    .recv_timeout(PATIENCE)
-                    .expect("a failed hierarchy still answers"),
-                noted(Vec::new(), HierarchyNotice::Failed(reason))
-            );
-            assert!(started.elapsed() < Duration::from_millis(800));
-        }
-        for close_stdout in ["", "exec > /dev/null;"] {
-            let temp = tempfile::tempdir().expect("a fixture directory should open");
-            let pid_file = temp.path().join("pid");
-            let source = HierarchySource::Command(format!(
-                "{close_stdout} echo $$ > '{}'; exec sleep 10",
-                pid_file.display()
-            ));
-            let started = Instant::now();
-            let updates = spawn_with_test_source(
-                HierarchyCommand::new(source),
-                Arc::new(ShortDeadlineRunner),
-                |sender| {
-                    sender
-                        .send(Vec::new())
-                        .expect("the local answer should send");
-                },
-            );
-            assert_eq!(
-                updates
-                    .recv_timeout(PATIENCE)
-                    .expect("a timed-out hierarchy still answers"),
-                noted(
-                    Vec::new(),
-                    HierarchyNotice::Failed(HierarchyError::TimedOut)
-                )
-            );
-            assert!(started.elapsed() < Duration::from_millis(800));
-            let pid =
-                std::fs::read_to_string(pid_file).expect("the script should have recorded its pid");
-            let status = std::process::Command::new("kill")
-                .args(["-0", pid.trim()])
-                .stderr(std::process::Stdio::null())
-                .status()
-                .expect("kill should start");
-            assert!(
-                !status.success(),
-                "the timed-out child must be killed and reaped"
-            );
         }
     }
 
@@ -1353,7 +1290,7 @@ mod tests {
         let rows = vec![session_row("worker", 2)];
         let expected = rows.clone();
         let updates = spawn_with_test_source(
-            HierarchyCommand::new(HierarchySource::Command("fixture".to_string())),
+            StaffFileSetting::new(HierarchySource::File("fixture".to_string())),
             runner,
             move |answers| {
                 answers
@@ -1429,7 +1366,7 @@ mod tests {
         let (finish, details) = mpsc::channel();
         let started = Instant::now();
         let updates = spawn_with_test_source_and_budget(
-            HierarchyCommand::new(HierarchySource::Command("fixture".to_string())),
+            StaffFileSetting::new(HierarchySource::File("fixture".to_string())),
             Arc::new(GatedHierarchy {
                 entered,
                 release: Mutex::new(released),
@@ -1488,7 +1425,7 @@ mod tests {
         let budget = HIERARCHY_FIRST_PUBLISH_BUDGET / 100;
         let deadline = budget + HIERARCHY_FIRST_PUBLISH_BUDGET / 5;
         let updates = spawn_with_test_source_and_budget(
-            HierarchyCommand::new(HierarchySource::Command("fixture".into())),
+            StaffFileSetting::new(HierarchySource::File("fixture".into())),
             Arc::new(HeldCommand(Mutex::new(held))),
             budget,
             |answers| {
@@ -1698,7 +1635,7 @@ mod tests {
     /// Staged answers reuse links across process changes and refresh on session or setting changes.
     #[test]
     fn scheduler_refreshes_on_session_sets_and_live_setting_changes() {
-        let hierarchy = HierarchyCommand::new(HierarchySource::Command("first".to_string()));
+        let hierarchy = StaffFileSetting::new(HierarchySource::File("first".to_string()));
         let edits = hierarchy.clone();
         let runner = Arc::new(CountingHierarchy(std::sync::atomic::AtomicUsize::new(0)));
         let updates = spawn_with_test_source(
@@ -1714,7 +1651,7 @@ mod tests {
                 sender
                     .send(vec![session_row("b", 2)])
                     .expect("new session should send");
-                edits.replace(HierarchySource::Command("second".to_string()));
+                edits.replace(HierarchySource::File("second".to_string()));
                 sender
                     .send(vec![session_row("b", 2)])
                     .expect("new setting should send");
