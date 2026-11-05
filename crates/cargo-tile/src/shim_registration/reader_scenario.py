@@ -8,6 +8,7 @@ from collections.abc import Callable
 import errno
 import faulthandler
 import fcntl
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 import math
@@ -30,11 +31,50 @@ from typing import TYPE_CHECKING, ClassVar, Iterator, TypeVar, cast
 
 if TYPE_CHECKING:
     # A started writer is (child, observations, registration, fields, log).
-    StartedWriter = tuple[subprocess.Popen[bytes], Path, Path, list[bytes], Path]
+    StartedWriter = tuple['ScenarioOwnedWriter', Path, Path, list[bytes], Path]
     RegistrationCarrier = tuple['ParentOwnedChild', Path, Path, list[bytes], Path]
     # A cell foreground holds its SGR color parameters, or None for the default color.
     Foreground = tuple[int, ...] | None
     Snapshot = tuple[str, list[list[Foreground]]]
+
+def guard_writer_group() -> int:
+    """Keep the writer group inside the scenario's lifetime."""
+    request = json.loads(sys.stdin.buffer.readline())
+    scenario_descriptor = sys.stdin.fileno()
+    exited_read, exited_write = os.pipe()
+    os.set_blocking(exited_write, False)
+    _ = signal.set_wakeup_fd(exited_write)
+    _ = signal.signal(signal.SIGCHLD, lambda _signal, _frame: None)
+    with open(request['output'], 'wb') as output:
+        child = subprocess.Popen(request['arguments'], cwd=request['directory'],
+                                 env=request['environment'], stdin=subprocess.DEVNULL,
+                                 stdout=output, stderr=output, start_new_session=True)
+    try:
+        print(child.pid, flush=True)
+        while child.poll() is None:
+            readable, _, _ = select.select([scenario_descriptor, exited_read], [], [])
+            if exited_read in readable:
+                _ = os.read(exited_read, 4096)
+            if scenario_descriptor in readable and not os.read(scenario_descriptor, 1):
+                break
+    finally:
+        # A failed startup reply must not leave an unprotected writer.
+        if child.poll() is None:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        status = child.wait()
+        _ = signal.set_wakeup_fd(-1)
+        os.close(exited_read)
+        os.close(exited_write)
+    return status
+
+if sys.argv[1:] == ['--writer-guardian']:
+    writer_status = guard_writer_group()
+    if writer_status < 0:
+        signal.raise_signal(-writer_status)
+    sys.exit(writer_status)
 
 root = Path(sys.argv[1]).resolve()
 binary, source, scenario, observation_argument, smoothing_argument, *deadline_arguments = sys.argv[2:]
@@ -74,6 +114,7 @@ SELF_CHECK_SCENARIOS = (
     '--blocked-invocation-self-check',
     '--concurrent-deadline-self-check', '--cpu-observation-self-check', '--reader-end-self-check',
     '--scenario-deadline-self-check', '--terminal-frame-self-check',
+    '--writer-kill-self-check', '--writer-kill-victim',
 )
 assert scenario in READER_SCENARIOS or scenario in SELF_CHECK_SCENARIOS, scenario
 assert len(deadline_arguments) <= 1, deadline_arguments
@@ -230,7 +271,7 @@ exit 37
                        PYTHONUTF8='1',
                        LC_ALL=writer_locale, LANG=writer_locale,
                        TZ='EST5EDT,M3.2.0,M11.1.0', TERM='xterm-256color')
-writers: list[tuple[subprocess.Popen[bytes], Path]] = []
+writers: list[tuple[ScenarioOwnedWriter, Path]] = []
 parent_owned_children: list[Path] = []
 detached_servers: list[subprocess.Popen[bytes]] = []
 # CPU setup assigns these through globals; annotations narrow them at module scope.
@@ -340,8 +381,39 @@ class WriterNotification:
 
 writer_notifications: dict[Path, WriterNotification] = {}
 
+class ScenarioOwnedWriter:
+    """Own a writer through a guardian and a scenario-only lifetime pipe."""
+
+    def __init__(self, arguments: list[str], directory: Path,
+                 child_environment: dict[str, str], output: Path) -> None:
+        self.guardian = subprocess.Popen(
+            [sys.executable, '-S', __file__, '--writer-guardian'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True)
+        lifetime = required(self.guardian.stdin, 'writer guardian has no lifetime pipe')
+        reply = required(self.guardian.stdout, 'writer guardian has no startup reply')
+        try:
+            request = dict(arguments=arguments, directory=str(directory),
+                           environment=child_environment, output=str(output))
+            _ = lifetime.write(json.dumps(request).encode() + b'\n')
+            lifetime.flush()
+            self.pid = int(reply.readline())
+        except BaseException:
+            lifetime.close()
+            _ = self.guardian.wait()
+            raise
+        finally:
+            reply.close()
+
+    def poll(self) -> int | None:
+        return self.guardian.poll()
+
+    def wait(self, timeout: float) -> int:
+        status = self.guardian.wait(timeout=timeout)
+        required(self.guardian.stdin, 'writer guardian has no lifetime pipe').close()
+        return status
+
 class LaunchedWriter:
-    def __init__(self, child: subprocess.Popen[bytes], observations: Path,
+    def __init__(self, child: ScenarioOwnedWriter, observations: Path,
                  writer_home: Path, nested_observations: tuple[Path, ...]) -> None:
         self.child = child
         self.observations = observations
@@ -362,10 +434,8 @@ def launch_writer(name: str, writer_home: Path, command: str = 'build',
         nested = observations / nested_command
         nested.mkdir()
         writer_notifications[nested] = WriterNotification(nested)
-    with (observations / 'output').open('wb') as output:
-        child = subprocess.Popen(['sh', str(bin_directory / 'cargo'), command, name, *arguments],
-                                 cwd=directory, env=child_environment, stdin=subprocess.DEVNULL,
-                                 stdout=output, stderr=output, start_new_session=True)
+    child = ScenarioOwnedWriter(['sh', str(bin_directory / 'cargo'), command, name, *arguments],
+                                directory, child_environment, observations / 'output')
     writers.append((child, observations))
     nested_observations = tuple(observations / command for command in nested_commands)
     return LaunchedWriter(child, observations, writer_home, nested_observations)
@@ -1701,6 +1771,49 @@ def assert_reader_end_bounds_output_writer() -> None:
              deadline=time.monotonic() + 0.2)
     end_reader(signal.SIGTERM, exit_seconds=0.02, killed_exit_seconds=0.2)
 
+def assert_killed_scenario_ends_writer_group() -> None:
+    victim_arguments = list(sys.argv)
+    victim_arguments[4] = '--writer-kill-victim'
+    victim = subprocess.Popen([sys.executable, '-S', *victim_arguments],
+                              stdout=subprocess.PIPE, bufsize=0)
+    scenario_pid = victim.pid
+    writer_pid = None
+    scenario_reaped = False
+    group_ended = False
+    try:
+        with required(victim.stdout, 'scenario has no readiness pipe') as ready:
+            assert select.select([ready], [], [], 0.4)[0], 'scenario does not start a writer'
+            writer_pid = int(ready.readline())
+            assert select.select([ready], [], [], 0.4)[0], 'writer does not reach its wait'
+            assert ready.readline() == b'ready\n', 'writer readiness is missing'
+
+        def live_writer_group() -> list[int]:
+            table = subprocess.check_output(['ps', '-axo', 'pid=,pgid=,stat='], text=True)
+            return [int(pid) for pid, group, state in (line.split() for line in table.splitlines())
+                    if int(group) == writer_pid and not state.startswith('Z')]
+
+        before = live_writer_group()
+        assert writer_pid in before, 'writer exits before the scenario is killed'
+        assert len(before) > 1, 'the writer has no child to protect'
+        os.kill(scenario_pid, signal.SIGKILL)
+        _, status = os.waitpid(scenario_pid, 0)
+        victim.returncode = os.waitstatus_to_exitcode(status)
+        scenario_reaped = True
+        assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
+        wait_for(lambda: not live_writer_group(), 'SIGKILL leaves the writer group alive',
+                 diagnostics=lambda: str(live_writer_group()), pause=0.005,
+                 deadline=time.monotonic() + 0.3)
+        group_ended = True
+    finally:
+        if not scenario_reaped:
+            os.kill(scenario_pid, signal.SIGKILL)
+            _ = victim.wait()
+        if writer_pid is not None and not group_ended:
+            try:
+                os.killpg(writer_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
 def assert_concurrent_deadline_names_pending_wait() -> None:
     # The deadline is armed below, once only the second wait is pending.
     cancel_scenario_deadline()
@@ -1729,6 +1842,19 @@ def assert_concurrent_deadline_names_pending_wait() -> None:
         executor.shutdown()
 
 arm_scenario_deadline()
+
+if scenario == '--writer-kill-victim':
+    prepare_fixture()
+    killed_launch = launch_writer('probe-killed-scenario', home)
+    print(killed_launch.child.pid, flush=True)
+    _ = finish_writer_start(killed_launch)
+    print('ready', flush=True)
+    signal.pause()
+
+if scenario == '--writer-kill-self-check':
+    assert_killed_scenario_ends_writer_group()
+    cancel_scenario_deadline()
+    sys.exit(0)
 
 if scenario == '--blocked-invocation-self-check':
     assert_blocked_invocation_readiness()
