@@ -27,14 +27,22 @@ fn process(pid: u32, parent: u32, arguments: &[&str]) -> ProcessEntry {
 }
 
 fn run(pid: u32, started_at: f64, status: &str, thread: &str) -> RunRecord {
-    serde_json::from_value(serde_json::json!({
+    let record: RunRecord = serde_json::from_value(serde_json::json!({
         "run_id":format!("run-{pid}"), "status":status,
         "session_dir":"/fixture/session", "worker":"fixture-test", "thread_id":thread,
         "label":"package tests", "command":["bash","verify.sh","test","cargo-handler"],
         "cwd":"/fixture", "log":"/fixture/run.log", "started_at":started_at,
         "pid":pid, "director_dir":"/fixture/director", "done_message_file":"/fixture/done"
     }))
-    .expect("real mesh-run record shape parses")
+    .expect("real mesh-run record shape parses");
+    record.at_file(&std::path::PathBuf::from(format!(
+        "/fixture/session/mesh_runs/run-{pid}.json"
+    )))
+}
+
+fn supervisor(pid: u32) -> ProcessEntry {
+    let record = format!("/fixture/session/mesh_runs/run-{pid}.json");
+    process(pid, 1, &["python3", "mesh_runs.py", "supervise", &record])
 }
 
 #[test]
@@ -262,10 +270,7 @@ fn activity_verify_steps_come_from_the_runs_descendants_including_mac_and_waitin
 
 #[test]
 fn activity_detached_run_uses_thread_identity_and_ignores_finished_or_dead_records() {
-    let processes = [
-        process(100, 1, &["bash", "verify.sh"]),
-        process(101, 100, &["cargo", "clippy"]),
-    ];
+    let processes = [supervisor(100), process(101, 100, &["cargo", "clippy"])];
     let records = [
         run(100, 100.0, "running", "our-thread"),
         run(999, 999.0, "running", "our-thread"),
@@ -291,9 +296,9 @@ fn activity_detached_run_uses_thread_identity_and_ignores_finished_or_dead_recor
 #[test]
 fn activity_newest_live_run_wins_then_reveals_the_older_run_when_it_finishes() {
     let processes = [
-        process(100, 1, &["bash", "verify.sh"]),
+        supervisor(100),
         process(101, 100, &["cargo", "clippy"]),
-        process(200, 1, &["bash", "verify.sh"]),
+        supervisor(200),
     ];
     let older = run(100, 100.0, "running", "worker");
     let newest = run(200, 200.0, "running", "worker");
@@ -367,4 +372,34 @@ fn activity_probe_round_trip_keeps_the_step_location_and_legacy_child_busy_state
     let (decoded, _) = probe::parse_report(&encoded).expect("new report reads back");
     assert_eq!(crate::summary::status_text(&decoded[0]), "nextest (mac)");
     assert_eq!(decoded[0].children[0].activity.text(), "thinking");
+}
+
+#[test]
+fn a_reused_supervisor_pid_does_not_keep_a_finished_worker_waiting() {
+    let records = [run(100, 100.0, "running", "worker")];
+    for arguments in [
+        vec!["python3", "unrelated.py"],
+        vec![
+            "python3",
+            "mesh_runs.py",
+            "supervise",
+            "/fixture/session/mesh_runs/another.json",
+        ],
+        vec![
+            "echo",
+            "mesh_runs.py",
+            "start",
+            "/fixture/session/mesh_runs/run-100.json",
+        ],
+    ] {
+        let processes = [process(100, 1, &arguments)];
+        assert_eq!(
+            activity::run_activity(&records, &processes, "worker"),
+            AgentActivity::Unreported
+        );
+    }
+    assert_eq!(
+        activity::run_activity(&records, &[supervisor(100)], "worker").text(),
+        "waiting"
+    );
 }

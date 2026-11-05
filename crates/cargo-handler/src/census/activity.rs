@@ -24,6 +24,9 @@ use serde_json::Value;
 
 use super::classify::ProcessEntry;
 use super::hierarchy::FileRevision;
+use super::hierarchy::StaffRoster;
+use super::hierarchy::WorkerReference;
+use super::tier::ThreadWorktree;
 use super::transcript;
 use super::transcript::JsonlCursor;
 use super::transcript::RecordKind;
@@ -412,11 +415,13 @@ impl TranscriptRead {
 /// A record at the file boundary; incomplete identity never enters a live run.
 #[derive(Deserialize)]
 struct RunPayload {
-    thread_id:  Option<String>,
+    #[serde(flatten)]
+    worker:     Option<WorkerReference>,
     pid:        u32,
     command:    Vec<String>,
     status:     RunStatus,
     started_at: Option<f64>,
+    cwd:        Option<PathBuf>,
 }
 
 /// Only validated, running verification records may compete for a worker's activity.
@@ -429,15 +434,60 @@ pub(super) enum RunRecord {
 
 #[derive(Clone, Debug)]
 pub(super) struct VerificationRun {
-    thread_id:  String,
+    worker:     WorkerReference,
     pid:        u32,
     requested:  RequestedStep,
     started_at: f64,
+    record:     RunRecordPath,
+    worktree:   ThreadWorktree,
+}
+
+/// A decoded record gains its file identity at the reader boundary.
+#[derive(Clone, Debug)]
+enum RunRecordPath {
+    Unlocated,
+    File(PathBuf),
+}
+
+impl RunRecord {
+    /// Bind the decoded record to the file that supplied it.
+    pub(super) fn at_file(mut self, path: &Path) -> Self {
+        if let Self::Verify(run) = &mut self {
+            run.record = RunRecordPath::File(path.to_owned());
+        }
+        self
+    }
+
+    pub(super) fn session<'a>(&'a self, staff: &'a StaffRoster) -> Option<&'a str> {
+        match self {
+            Self::Verify(run) => run.worker.session(staff),
+            Self::Ignored => None,
+        }
+    }
+}
+
+/// The exact record named by a mesh supervisor's command line.
+pub(super) fn supervisor_record(process: &ProcessEntry) -> Option<&Path> {
+    let args = &process.arguments;
+    let script = args.iter().position(|word| {
+        Path::new(word)
+            .file_name()
+            .is_some_and(|name| name == "mesh_runs.py")
+    })?;
+    let program = Path::new(args.first()?).file_name()?.to_str()?;
+    if script > 1 || (script == 1 && !program.starts_with("python") && program != "py") {
+        return None;
+    }
+    if args.get(script + 1)?.as_str() != "supervise" || args.len() != script + 3 {
+        return None;
+    }
+    let record = Path::new(args.get(script + 2)?);
+    record.is_absolute().then_some(record)
 }
 
 impl From<RunPayload> for RunRecord {
     fn from(payload: RunPayload) -> Self {
-        let Some(thread_id) = payload.thread_id.filter(|id| !id.is_empty()) else {
+        let Some(worker) = payload.worker else {
             return Self::Ignored;
         };
         let Some(started_at) = payload.started_at.filter(|at| at.is_finite()) else {
@@ -450,13 +500,17 @@ impl From<RunPayload> for RunRecord {
             return Self::Ignored;
         }
         Self::Verify(VerificationRun {
-            thread_id,
+            worker,
             pid: payload.pid,
             requested: arguments
                 .iter()
                 .find_map(|word| VerifyStep::from_word(word))
                 .map_or(RequestedStep::Unknown, RequestedStep::Step),
             started_at,
+            record: RunRecordPath::Unlocated,
+            worktree: payload
+                .cwd
+                .map_or(ThreadWorktree::Unrecorded, ThreadWorktree::Recorded),
         })
     }
 }
@@ -543,6 +597,17 @@ impl VerificationProgress {
     }
 }
 
+/// The latest live verification run for one worker thread.
+#[derive(Clone, Debug)]
+pub(super) enum WorkerRun {
+    Inactive,
+    Running {
+        activity: AgentActivity,
+        started:  u64,
+        worktree: ThreadWorktree,
+    },
+}
+
 /// Verification progress for the process rows in one census answer.
 pub(super) struct VerificationProcesses<'a> {
     processes:      &'a [ProcessEntry],
@@ -607,26 +672,51 @@ impl<'a> VerificationProcesses<'a> {
         progress
     }
 
-    /// Latest eligible live verification wins for this worker.
-    pub(super) fn run(&mut self, records: &[RunRecord], thread_id: &str) -> AgentActivity {
+    /// Return the latest run whose supervisor still names the same record file.
+    pub(super) fn worker_run<'r>(
+        &mut self,
+        records: impl IntoIterator<Item = &'r RunRecord>,
+    ) -> WorkerRun {
         let latest = records
-            .iter()
-            .filter_map(|record| match record {
-                RunRecord::Verify(run)
-                    if run.thread_id == thread_id && self.by_pid.contains_key(&run.pid) =>
-                {
-                    Some(run)
-                },
-                _ => None,
+            .into_iter()
+            .filter_map(|record| {
+                let RunRecord::Verify(run) = record else {
+                    return None;
+                };
+                let process = self.processes.get(*self.by_pid.get(&run.pid)?)?;
+                let RunRecordPath::File(path) = &run.record else {
+                    return None;
+                };
+                (supervisor_record(process) == Some(path.as_path())).then_some(run)
             })
             .max_by(|left, right| {
                 left.started_at
                     .total_cmp(&right.started_at)
                     .then(left.pid.cmp(&right.pid))
             });
-        latest.map_or(AgentActivity::Unreported, |run| {
-            self.progress(run.pid).with_requested(run.requested)
+        latest.map_or(WorkerRun::Inactive, |run| WorkerRun::Running {
+            activity: self.progress(run.pid).with_requested(run.requested),
+            started:  self.processes[self.by_pid[&run.pid]].started,
+            worktree: run.worktree.clone(),
         })
+    }
+
+    /// Index all worker runs after every session has supplied its records.
+    pub(super) fn worker_runs<'r>(
+        &mut self,
+        records: impl IntoIterator<Item = &'r RunRecord>,
+        staff: &'r StaffRoster,
+    ) -> HashMap<String, WorkerRun> {
+        let mut threads: HashMap<&str, Vec<&RunRecord>> = HashMap::new();
+        for record in records {
+            if let Some(id) = record.session(staff) {
+                threads.entry(id).or_default().push(record);
+            }
+        }
+        threads
+            .into_iter()
+            .map(|(id, records)| (id.to_owned(), self.worker_run(records)))
+            .collect()
     }
 }
 
@@ -698,7 +788,14 @@ pub(super) fn run_activity(
     processes: &[ProcessEntry],
     thread_id: &str,
 ) -> AgentActivity {
-    VerificationProcesses::new(processes).run(records, thread_id)
+    match VerificationProcesses::new(processes).worker_run(
+        records
+            .iter()
+            .filter(|record| record.session(&StaffRoster::default()) == Some(thread_id)),
+    ) {
+        WorkerRun::Inactive => AgentActivity::Unreported,
+        WorkerRun::Running { activity, .. } => activity,
+    }
 }
 
 /// Parsed detached-run records retained by one local census scanner.
@@ -927,7 +1024,7 @@ impl RunRecords {
 
     /// Count cache work with explicit event delivery, without OS service startup time.
     #[cfg(test)]
-    fn for_test() -> Self {
+    pub(super) fn for_test() -> Self {
         Self {
             install_watch: |session, _, _| {
                 if session.join("mesh_runs").is_dir() {
@@ -1041,7 +1138,9 @@ impl RunRecords {
                 continue;
             }
             let content = read(&path).map_or(RunFileContent::ReadFailed, |bytes| {
-                parse(&bytes).map_or(RunFileContent::MalformedJson, RunFileContent::Parsed)
+                parse(&bytes).map_or(RunFileContent::MalformedJson, |record| {
+                    RunFileContent::Parsed(record.at_file(&path))
+                })
             });
             if matches!(content, RunFileContent::ReadFailed) {
                 watch.record_changed(name.clone());

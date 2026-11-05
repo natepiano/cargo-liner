@@ -93,15 +93,29 @@ fn process(pid: u32, parent: u32, arguments: &[&str]) -> ProcessEntry {
 }
 
 fn record(pid: u32, started_at: f64, command: &[&str]) -> Result<RunRecord, serde_json::Error> {
-    serde_json::from_value(serde_json::json!({
+    serde_json::from_value::<RunRecord>(serde_json::json!({
         "pid":pid,"started_at":started_at,"thread_id":"worker","status":"running","command":command
     }))
+    .map(|record| {
+        record.at_file(&PathBuf::from(format!(
+            "/fixture/session/mesh_runs/run-{pid}.json"
+        )))
+    })
 }
 
 #[test]
 fn unrelated_detached_commands_never_override_a_tool_or_an_older_gate() -> TestResult {
     let processes = [
-        process(100, 1, &["bash", "/fixture/verify.sh"]),
+        process(
+            100,
+            1,
+            &[
+                "python3",
+                "mesh_runs.py",
+                "supervise",
+                "/fixture/session/mesh_runs/run-100.json",
+            ],
+        ),
         process(101, 100, &["cargo", "clippy"]),
         process(200, 1, &["python3", "send.py"]),
     ];
@@ -224,7 +238,16 @@ fn remote_step_unknown_uses_the_verify_request_without_changing_local_waits() ->
         &["bash", "/fixture/verify.sh", "test", "cargo-handler"],
     )?];
     let processes = [
-        process(100, 1, &["bash", "verify.sh"]),
+        process(
+            100,
+            1,
+            &[
+                "python3",
+                "mesh_runs.py",
+                "supervise",
+                "/fixture/session/mesh_runs/run-100.json",
+            ],
+        ),
         process(101, 100, &["ssh", "mac", "remote-dispatch"]),
     ];
     assert_eq!(

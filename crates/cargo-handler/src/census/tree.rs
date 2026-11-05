@@ -83,9 +83,20 @@ pub(super) struct ThreadEntry {
     pub(super) account:      Account,
 }
 
+/// A roster thread retained by a live verification supervisor.
+#[derive(Debug)]
+pub(super) struct RunThread {
+    pub(super) id:       String,
+    pub(super) dispatch: ResolvedWorkerDispatch,
+    pub(super) activity: AgentActivity,
+    pub(super) started:  u64,
+}
+
 /// What the scan read from disk for the tree.
 #[derive(Debug, Default)]
 pub(super) struct TreeSources<'a> {
+    /// Run-only threads belong to their unit director when no tree already contains them.
+    pub(super) run_threads:       HashMap<u32, Vec<RunThread>>,
     /// The worker launchers found in process commands and mesh rosters.
     pub(super) dispatches:        HashMap<u32, WorkerDispatch>,
     /// Exact thread identities backed by their own dispatch roster.
@@ -213,7 +224,7 @@ pub(super) fn attach_children(
     rows: &mut [AgentRow],
     processes: &[ProcessEntry],
     sources: &TreeSources<'_>,
-) {
+) -> HashSet<String> {
     let table = classify::pid_table(processes);
     let mut children: HashMap<u32, Vec<&ProcessEntry>> = HashMap::new();
     for process in processes {
@@ -225,7 +236,7 @@ pub(super) fn attach_children(
         children: &children,
         sources,
     };
-    let trees: Vec<Vec<ChildRow>> = rows
+    let mut trees: Vec<Vec<ChildRow>> = rows
         .iter()
         .map(|row| {
             let sessions: Vec<&AgentRow> = rows
@@ -287,9 +298,50 @@ pub(super) fn attach_children(
             laid_out
         })
         .collect();
+    let added = append_run_threads(rows, &mut trees, sources);
     for (row, tree) in rows.iter_mut().zip(trees) {
         row.children = tree;
     }
+    added
+}
+
+/// Add only missing run threads after the tree builder lays out all process sources.
+fn append_run_threads(
+    rows: &[AgentRow],
+    trees: &mut [Vec<ChildRow>],
+    sources: &TreeSources<'_>,
+) -> HashSet<String> {
+    let mut present: HashSet<_> = trees
+        .iter()
+        .flatten()
+        .filter_map(|child| match &child.thread_id {
+            CodexThreadId::Recorded(id) => Some(id.clone()),
+            CodexThreadId::Unrecorded => None,
+        })
+        .collect();
+    let mut added = HashSet::new();
+    for (row, children) in rows.iter().zip(trees.iter_mut()) {
+        for thread in sources.run_threads.get(&row.pid).into_iter().flatten() {
+            if present.insert(thread.id.clone()) {
+                added.insert(thread.id.clone());
+                children.push(ChildRow {
+                    work_id:      WorkIdentity::Legacy,
+                    worker_task:  WorkerTask::RoleOnly,
+                    activity:     thread.activity,
+                    dispatch:     WorkerDispatch::Worker(thread.dispatch.clone()),
+                    thread_id:    CodexThreadId::Recorded(thread.id.clone()),
+                    depth:        0,
+                    kind:         ChildKind::Thread,
+                    service_tier: ServiceTier::Unrecorded,
+                    account:      Account::Unrecorded,
+                    pid:          None,
+                    name:         thread.dispatch.label(),
+                    started:      thread.started,
+                });
+            }
+        }
+    }
+    added
 }
 
 /// Open conversations are not workers: only an exact dispatch authorizes a child.
@@ -329,6 +381,14 @@ fn retain_dispatched_threads(nodes: &mut Vec<Node>, sources: &TreeSources<'_>) {
     });
 }
 
+impl ChildRow {
+    /// Match a drawn thread without allocating another worker identity.
+    pub(super) fn is_thread(&self, id: &str) -> bool {
+        self.kind == ChildKind::Thread
+            && matches!(&self.thread_id, CodexThreadId::Recorded(thread) if thread == id)
+    }
+}
+
 /// One shell and thread that occupy the same final tile.
 #[derive(Debug)]
 pub(super) struct DispatchFold<'a> {
@@ -344,15 +404,29 @@ pub(super) struct DispatchFold<'a> {
 pub(super) fn join_dispatches<'a>(
     children: &[(RowIdentity<'a>, &'a ChildRow)],
 ) -> Vec<DispatchFold<'a>> {
-    children.iter().filter_map(|(tile, shell)| {
-        let WorkerDispatch::Worker(dispatch) = &shell.dispatch else { return None; };
-        if !matches!(shell.kind, ChildKind::Shell(_)) { return None; }
-        let (_, thread) = children.iter().find(|(thread_tile, child)| {
-            thread_tile == tile && child.kind == ChildKind::Thread
-                && matches!(&child.thread_id, CodexThreadId::Recorded(id) if dispatch.identity == super::worker_dispatch::WorkerIdentity::CodexThread(id.clone()))
-        })?;
-        Some(DispatchFold { shell, thread, dispatch })
-    }).collect()
+    children
+        .iter()
+        .filter_map(|(tile, shell)| {
+            let WorkerDispatch::Worker(dispatch) = &shell.dispatch else {
+                return None;
+            };
+            if !matches!(shell.kind, ChildKind::Shell(_)) {
+                return None;
+            }
+            let (_, thread) = children.iter().find(|(thread_tile, child)| {
+                thread_tile == tile
+                    && match &dispatch.identity {
+                        WorkerIdentity::CodexThread(id) => child.is_thread(id),
+                        WorkerIdentity::ClaudeSession(_) => false,
+                    }
+            })?;
+            Some(DispatchFold {
+                shell,
+                thread,
+                dispatch,
+            })
+        })
+        .collect()
 }
 
 /// Walks the process table below an agent.
@@ -995,6 +1069,7 @@ mod tests {
     /// was found in the transcript of a subagent that has since finished.
     fn natedev_sources(sessions: &[SessionRecord]) -> TreeSources<'_> {
         TreeSources {
+            run_threads: HashMap::new(),
             dispatches: HashMap::new(),
             thread_dispatches: HashMap::new(),
             sessions,

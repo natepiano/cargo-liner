@@ -1462,7 +1462,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 - The first code review found 5 defects, 2 blocking (a blocking probe, a stale subscription, the title cut, a copy of each process, names attached more than once). Repair 1 fixed all five.
 - A `Change-Review:` text must not hold a pipe character. An empty checkpoint carried the corrected line.
 
-### Phase 61 — The handler accounts table matches the accounts board  · status: todo
+### Phase 61 — The handler accounts table matches the accounts board  · status: merged into Phase 65
 
 **Depends on:** the accounts-unit change that gives each role on an account its own row. It is on the `~/.claude` main as cc740e532. Starts beside Phase 62 when the cargo pause lifts; the two phases share no file (showrunner, 2026-11-03).
 
@@ -1483,6 +1483,8 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 3. A role that leaves the JSON removes its row. An account with no roles draws only its first row.
 4. Selection and sort act on accounts. Role rows stay under their account.
 
+**Merged into Phase 65 (showrunner, 2026-11-05):** this phase does not land alone. On main's layout the taller table needs a third draw at 200 by 70, and main settles in two. Its table changes land with Phase 65's checkpoint. The Spec and State model below stay the table's contract.
+
 **Spec:**
 1. Read the counts from the JSON keys that accounts-unit names. Never parse the board text.
 2. Remove `AccountsColumn::Read`, its header, its sort, and `ACCOUNT_READ_DOT` if nothing else uses it. The JSON keeps `read_at` and `read_ok`.
@@ -1498,7 +1500,85 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: shots of the accounts table on natedev with live counts, a design check line, and a Change-Review line.
 
-### Phase 62 — A worker that waits on a detached run shows in its unit's tree  · status: todo
+### Phase 65 — Tiles settle at once when the accounts table wraps  · status: todo
+
+**Depends on:** none. Runs now, beside Phase 62's checkpoint and Phase 42. Where it shares files with Phase 42, Phase 42 lands first, and this phase merges main and builds on it (showrunner, 2026-11-05).
+
+#### Work Order
+
+**Goal:** the accounts table of Phase 61 lands, and tiles settle in two draws as on main. The second draw keeps the first draw's placements, at no CPU cost against main.
+
+**Source:** phase 61 findings F016 and F017, moved here by showrunner ruling d024d5df; Phase 61's table changes, merged in by the showrunner on 2026-11-05. Base: the Phase 61 tree, saved as unit session `phases/65/base_61_table.patch` (main's `tui_pane` plus the table changes). Round 4 patch and evidence: unit session `phases/61/round4_whole_tree.patch`, `phases/61/evidence/round4-*.txt`. Attempts log: memory `attempts-phase61-layout-settle`.
+
+**The defect:** tile demand depends on tile width, tile width depends on demand, and provider preparation changes demand. At width 200 by height 70, the second draw changes the first draw's placements.
+
+**Tries that failed:**
+1. A draw loop in the test helper hid the defect.
+2. A candidate search before preparation settled in two draws, but made 2+P demand calls per draw and measured unprepared state.
+3. One preparation, then a search only when one named input type changed, made exactly 2 calls on an unchanged draw. The selected layout did not survive the next preparation.
+4. Group demand ignores height compression (`TreePresentation::HeightCompressed`). Width 200 settles. Width 80 flips: demand is 6 rows at width 78 and 4 rows at width 39. Kept as part of the fix.
+5. Full-view demand at every width. All 4 widths settle, but 12 existing assertions fail: a narrow tile must ask only for the rows of its compressed view. Rejected.
+
+**Why a search:** width-dependent demand is intended. When the grid measures only at current widths, width 80 has no fixed point. Each column count must be tested at its own widths (showrunner ruling c6f4c107, 2026-11-05).
+
+**Spec:**
+1. Phase 61's Spec and State model are this phase's table contract. The saved base already holds that work.
+2. Try 4 stays in the handler. The candidate search goes in `tui_pane`, per item 6 of the state model. No public `tui_pane` trait that cargo-tile implements changes.
+3. No assertion changes. The `paint` helper keeps main's two fixed draws.
+4. CHANGELOG: the Phase 61 Changed line stays; add one Fixed line only if users see the settle change.
+5. Stop rule: if the search cannot hold 2 demand calls on an unchanged draw, or an assertion must change, stop and report.
+
+**Approach (Astra review, unit session `phases/61/astra_F016_round4_review.md`):** start from main's `tui_pane`. Do not restore the planner first.
+1. Add a controlled test with the width-200 fixture. Hold source data, time and selections constant, and use a fresh provider for each comparison. Compare both draw-width sets under each draw's preparation allocations. Record raw summary height, `summary_width`, each group's rows, shared presentation, scroll offsets and minimum tile width.
+2. Let that test select the change:
+   - If group demand changes at fixed widths, separate the handler's requested content rows from allocation-dependent compression (`TreeMeasurement::allocated`, `agent_cell.rs`). Keep drawing, selection and readout in agreement.
+   - If summary demand drives the change, derive the preferred width from the source for the required account columns, not from fitted lines (`SummaryLayout::preferred_width`). Keep the exact wrapped height and all required facts.
+3. Restore a planner only if these smaller changes cannot meet the gate. The selected destination must then survive the preparation for that destination. A fixed number of hidden draws gives no general guarantee.
+
+**Acceptance condition:** the first selected destination stays unchanged on the next draw with unchanged inputs. Preparation stays before every `cells.demands` call.
+
+**Layout state model (showrunner rulings d024d5df and c6f4c107, 2026-11-05):**
+Each layout state has one owning record. Item 6 is the one new record.
+1. Provider preparation. Owner: the provider (cargo-tile `row_end`, `cell_gap`, `layouts`, `whole_short_tables`, `row_uses`; cargo-handler `summary_selection`, shared tree metrics, viewports). Built only by `prepare_moving_frame` in `draw_tile_grid`, once per draw, before any `cells.demands` call. It changes demand, so nothing re-prepares after a selection.
+2. Demands. Owner: `TileGrid.demands`. Changed only by `replace_demands`, from `sync_demands`. Each change clears item 5.
+3. Held layout (rows, focus, summary span, summary depth). Owner: `TileGrid.held`. Changed by `replan_layout_endpoints`, `sync_demands`, `resolve_destination_depth`, `advance` and `complete_arrangement`.
+4. Motion and destinations. Owner: `TileGrid.motion` and `TileGrid.pending`. Changed by `replan_layout_endpoints`, `open_waiting_commands_in_current_motion`, `queue_steps`, `advance` and `resize_for_focus`. `settle_for_test` is test-only.
+5. Admission decision. Owner: `TileGrid.layout_admission`, a cache of items 2 and 3 with the layout rules. It holds no fact of its own.
+6. Selected plan (new). Owner: one `TileGrid` field that holds the plan inputs and the selected widths, demands and depth. Built only by the candidate search in `sync_measured_demands`. The search tests each permitted column count at that count's own widths. The inputs are one named type, compared whole, and hold no state that the selection itself writes. Equal inputs reuse the selection and make no candidate `cells.demands` call; the rest of `sync_demands` still runs. Item 1 stays before every measurement. The first run of this design failed because its inputs held `held` and `slots` and the current widths; phase 65's worker records the final form in unit session `phases/65/state_model.md`, and this item takes it at the checkpoint.
+
+Draw order: prepare, measure at current widths, search only when the inputs changed, sync, draw. An unchanged draw makes exactly 2 `cells.demands` calls, as main does.
+
+**Files:**
+- `crates/tui_pane/src/tiles/grid.rs`
+- `crates/tui_pane/src/tiles/draw.rs`
+- `crates/cargo-handler/src/agent_cell.rs`
+- `crates/cargo-handler/src/summary/mod.rs`
+- `crates/cargo-handler/src/render/mod.rs`
+- `crates/cargo-handler/src/terminal.rs`
+- `crates/cargo-handler/src/interaction.rs`
+- `crates/cargo-handler/src/summary/accounts.rs`
+- `crates/cargo-handler/src/summary/constants.rs`
+- `crates/cargo-handler/src/summary/accounts_tests.rs`
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs`
+- `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`
+- `crates/cargo-handler/src/summary/accounts_refresh_tests.rs`
+- `crates/cargo-handler/src/sort.rs`
+- `crates/cargo-handler/src/census/accounts.rs`
+- `crates/cargo-handler/src/census/account.rs`
+- `crates/cargo-handler/src/census/account/`
+- `crates/cargo-handler/src/census/accounts_wire_tests.rs`
+- `crates/cargo-handler/src/summary/role_span_tests.rs`
+- `crates/cargo-handler/src/render/accounts_grid_tests.rs`
+- `crates/cargo-handler/src/render/selected_ink_tests.rs`
+- `crates/cargo-handler/src/render/pinned_accounts_tests.rs`
+- `crates/cargo-handler/src/render/narrow_width_tests.rs`
+- `crates/cargo-handler/src/summary/hierarchy_note_tests.rs`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler`, `verify.sh test tui_pane`, `verify.sh test cargo-tile` and `verify.sh lint cargo-handler` clean, with no assertion changed to make a test pass; no test takes a second. `crates/cargo-tile/src/render.rs:10906` stays at exactly 2 calls. `grid_at_height_70_keeps_all_work_rows_and_accounts` passes at 200 by 70 with main's two-draw `paint`. A refresh case starts from a settled application, and checks pending motion and the drawn result across ordinary animation frames. Live shots of the accounts table at widths 200, 80, 50 and 40 on natedev with live counts. A live capture of cargo-tile against main at the same 4 widths; its layout is no worse. 3 CPU pairs against main for an unchanged draw, for cargo-handler and for cargo-tile; the result is not a cost. A Change-Review line.
+
+### Phase 62 — A worker that waits on a detached run shows in its unit's tree  · status: done
 
 **Depends on:** none. Starts first when the cargo pause lifts, with Phase 61 beside it (showrunner, 2026-11-03).
 

@@ -5,6 +5,11 @@
     reason = "isolated account fixtures must be readable"
 )]
 
+#[cfg(target_os = "linux")]
+use std::io::Write;
+
+#[cfg(target_os = "linux")]
+use super::activity_scan_tests;
 use super::*;
 use crate::census::account::ConfigHome;
 
@@ -113,4 +118,130 @@ fn resumed_codex_with_shared_rollouts_keeps_its_database_name_and_account() {
     )
     .expect("own index");
     assert_eq!(scan(&process, root.path())[0].name, "renamed morty");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn app_server_open_thread_uses_its_second_codex_home() {
+    let root = tempfile::tempdir().expect("isolated homes");
+    let session = root.path().join("unit");
+    fs::create_dir_all(&session).expect("unit directory");
+    fs::write(
+        session.join("mesh_roster.json"),
+        serde_json::json!({"fixture-impl":{"thread_id":THREAD,"role":"test"}}).to_string(),
+    )
+    .expect("roster");
+    let mut scanner = LocalScanner::new(AccountLabels::default());
+    scanner.desktop_source = DesktopSource::Windows(Vec::new());
+    scanner.session_roots = SessionRoots::new([root.path().to_owned()]);
+    let second_home = root.path().join(".codex2");
+    fs::create_dir_all(second_home.join(CODEX_SESSIONS_DIRNAME)).expect("second home sessions");
+    let rollout = second_home
+        .join(CODEX_SESSIONS_DIRNAME)
+        .join(format!("rollout-test-{THREAD}.jsonl"));
+    let prompt = format!(
+        "Write fixtures\nSummary: {}/phases/4/summary.txt",
+        session.display()
+    );
+    let mut held = fs::File::create(&rollout).expect("owned rollout descriptor");
+    writeln!(
+        held,
+        "{}",
+        serde_json::json!({"type":"response_item", "payload":{
+            "type":"message", "role":"user", "content":[{"type":"input_text", "text":prompt}]
+        }})
+    )
+    .expect("thread prompt");
+    let mut server = activity_scan_tests::process(std::process::id(), 10, &["codex", "app-server"]);
+    server.config_home = ConfigHome::Named(second_home);
+    let processes = [activity_scan_tests::process(10, 1, &["claude"]), server];
+    let mut rows: Vec<AgentRow> = serde_json::from_value(serde_json::json!([{
+        "agent":"claude", "session_id":"director-id", "name":"director", "pid":10, "started":10,
+        "status":"idle", "desktop":null, "directory":"/fixture", "branch":null, "launched_by":null, "children":[]
+    }])).expect("director row");
+    scanner.attach_details(&processes, &[], Some(root.path()), &mut rows);
+    assert_eq!(
+        rows[0]
+            .children
+            .iter()
+            .filter(|child| child.thread_id == CodexThreadId::Recorded(THREAD.to_owned()))
+            .count(),
+        1
+    );
+    assert_eq!(rows[0].activity, AgentActivity::Idle);
+    drop(held);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_open_thread_in_symlinked_sessions_keeps_its_account_database_name() {
+    let root = tempfile::tempdir().expect("isolated homes");
+    let first = root.path().join(".codex");
+    let second = root.path().join(".codex2");
+    let sessions = first.join(CODEX_SESSIONS_DIRNAME);
+    fs::create_dir_all(&sessions).expect("shared sessions");
+    let rollout = sessions.join(format!("rollout-test-{THREAD}.jsonl"));
+    fs::write(&rollout, "").expect("rollout");
+    database(&first, &rollout, "wrong account");
+    database(&second, &rollout, "second account thread");
+    std::os::unix::fs::symlink(&sessions, second.join(CODEX_SESSIONS_DIRNAME))
+        .expect("sessions link");
+    let held = fs::File::open(&rollout).expect("owned open rollout");
+    let mut server = activity_scan_tests::process(std::process::id(), 1, &["codex", "app-server"]);
+    server.config_home = ConfigHome::Named(second.clone());
+    let mut rollouts = Rollouts::default();
+    let mut names = codex::OpenThreadRows::default();
+    let rows = app_server_threads(
+        &[server],
+        &mut rollouts,
+        &mut names,
+        &PacerHistory::default(),
+        Some(root.path()),
+        &AccountLabels::default(),
+    );
+    let thread = &rows[&std::process::id()][0];
+    assert_eq!(thread.name, "second account thread");
+    assert_eq!(
+        thread.account,
+        crate::census::Account::Home(AccountLabels::default().resolve(&second, Some(root.path())))
+    );
+    drop(held);
+}
+
+#[test]
+fn open_thread_names_reuse_the_database_until_its_wal_changes() {
+    let root = tempfile::tempdir().expect("isolated database");
+    let rollout = root.path().join(format!("rollout-test-{THREAD}.jsonl"));
+    database(root.path(), &rollout, "first name");
+    let connection =
+        rusqlite::Connection::open(root.path().join("state_6.sqlite")).expect("database writer");
+    connection
+        .execute_batch("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;")
+        .expect("WAL mode");
+    let mut names = codex::OpenThreadRows::default();
+    let ids = [THREAD.to_owned()];
+    assert_eq!(
+        names.read(root.path(), &ids)[THREAD].label().as_deref(),
+        Some("first name")
+    );
+    assert_eq!(names.database_reads, 1);
+    assert_eq!(
+        names.read(root.path(), &ids)[THREAD].label().as_deref(),
+        Some("first name")
+    );
+    assert_eq!(
+        names.database_reads, 1,
+        "an unchanged database is read once"
+    );
+    connection
+        .execute(
+            "UPDATE threads SET name = 'new name' WHERE id = ?1",
+            [THREAD],
+        )
+        .expect("rename in WAL");
+    assert_eq!(
+        names.read(root.path(), &ids)[THREAD].label().as_deref(),
+        Some("new name")
+    );
+    assert_eq!(names.database_reads, 2);
 }

@@ -8,6 +8,7 @@ use std::iter::Peekable;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::Chars;
+use std::sync::Arc;
 use std::time::Instant;
 use std::time::SystemTime;
 
@@ -20,16 +21,21 @@ use serde::ser::SerializeStruct;
 use super::HierarchyRole;
 use super::RoleFallback;
 use super::classify::ProcessEntry;
+use super::hierarchy::StaffRoster;
+use super::hierarchy::WorkerReference;
 use super::tier::ThreadWorktree;
 use super::transcript::DirectoryChange;
 use super::transcript::InputDirectoryWatch;
 use crate::constants::REVIEW_JOB_HEADING;
-use crate::constants::SESSION_ROOTS;
 use crate::constants::UUID_TEXT_LENGTH;
 use crate::constants::WORKER_DOCUMENT_EXTENSION;
 use crate::constants::WORKER_LABEL;
 
+mod sessions;
+pub(super) use sessions::SessionRoots;
+
 /// The roster filename inside a dispatch's session directory.
+pub(super) const DIRECTOR_FILE: &str = "director";
 const ROSTER_FILE: &str = "mesh_roster.json";
 const WORKER_FILE_PREFIX: &str = "impl_worker_";
 const CLAIM_FILE_PREFIX: &str = "impl_claim_";
@@ -416,26 +422,10 @@ struct SeatClaim {
     worker: String,
 }
 
-/// The directories under which task prompts can identify worker sessions.
-#[derive(Debug)]
-pub(super) struct SessionRoots {
-    directories: Vec<PathBuf>,
-}
-
-impl SessionRoots {
-    pub(super) fn new(directories: impl IntoIterator<Item = PathBuf>) -> Self {
-        Self {
-            directories: directories.into_iter().collect(),
-        }
-    }
-
-    /// Production discovery keeps the configured unit and delegate roots in order.
-    pub(super) fn production() -> Self { Self::new(SESSION_ROOTS.map(PathBuf::from)) }
-}
-
 /// A roster cached by its file modification time, never searched globally.
 #[derive(Debug, Default)]
 pub(super) struct WorkerNames {
+    staff:           Arc<StaffRoster>,
     #[cfg(test)]
     prompt_parses:   usize,
     prompts:         BTreeMap<String, WorkerPrompt>,
@@ -443,6 +433,8 @@ pub(super) struct WorkerNames {
     jobs:            BTreeMap<String, JobText>,
     #[cfg(test)]
     directory_reads: usize,
+    #[cfg(test)]
+    roster_reads:    usize,
     rosters:         BTreeMap<PathBuf, (SystemTime, WorkerRoster)>,
     seats:           BTreeMap<PathBuf, (SystemTime, SeatDocument)>,
 }
@@ -464,9 +456,24 @@ struct WorkerPrompt {
 }
 
 impl WorkerNames {
+    /// Refresh identities even when the roster files do not change.
+    pub(super) fn set_staff(&mut self, staff: Arc<StaffRoster>) {
+        if !Arc::ptr_eq(&self.staff, &staff) {
+            for (_, roster) in self.rosters.values_mut() {
+                roster.resolve_staff(&staff);
+            }
+            self.staff = staff;
+        }
+    }
+
+    pub(super) fn staff_snapshot(&self) -> Arc<StaffRoster> { Arc::clone(&self.staff) }
     /// Drop watches and identity documents for sessions the census no longer sees.
     pub(super) fn retain_sessions(&mut self, sessions: &HashSet<PathBuf>) {
         self.directories.retain(|path, _| sessions.contains(path));
+        self.rosters.retain(|path, _| {
+            path.parent()
+                .is_some_and(|parent| sessions.contains(parent))
+        });
         self.seats.retain(|path, _| {
             path.parent()
                 .is_some_and(|parent| sessions.contains(parent))
@@ -682,18 +689,32 @@ impl WorkerNames {
         &self.roster_snapshot(directory).1
     }
 
+    #[cfg(test)]
+    pub(super) const fn roster_reads(&self) -> usize { self.roster_reads }
+
     /// The roster and its timestamp come from the same metadata observation.
     fn roster_snapshot(&mut self, directory: &Path) -> &(SystemTime, WorkerRoster) {
         let path = directory.join(ROSTER_FILE);
         let modified = fs::metadata(&path)
             .and_then(|metadata| metadata.modified())
             .unwrap_or(std::time::UNIX_EPOCH);
-        let cached = self
-            .rosters
-            .entry(path)
-            .or_insert_with(|| (modified, WorkerRoster::read(directory)));
+        let cached = self.rosters.entry(path).or_insert_with(|| {
+            #[cfg(test)]
+            {
+                self.roster_reads += 1;
+            }
+            let mut roster = WorkerRoster::read(directory);
+            roster.resolve_staff(&self.staff);
+            (modified, roster)
+        });
         if cached.0 != modified {
-            *cached = (modified, WorkerRoster::read(directory));
+            #[cfg(test)]
+            {
+                self.roster_reads += 1;
+            }
+            let mut roster = WorkerRoster::read(directory);
+            roster.resolve_staff(&self.staff);
+            *cached = (modified, roster);
         }
         cached
     }
@@ -722,19 +743,7 @@ impl WorkerNames {
                     .seat_prefix()
                     .and_then(|prefix| seat.strip_prefix(&format!("{prefix}-")))
                     .unwrap_or(seat);
-                selected = Some((
-                    modified,
-                    ResolvedWorkerDispatch {
-                        seat:       seat.clone(),
-                        identity:   WorkerIdentity::CodexThread(thread_id.to_owned()),
-                        job:        job.clone(),
-                        short_seat: short.to_owned(),
-                        role:       match worker.role {
-                            DispatchRole::Unroled => DispatchRole::from_short_seat(short),
-                            role @ DispatchRole::Worker(_) => role,
-                        },
-                    },
-                ));
+                selected = Some((modified, worker.dispatch(seat, short, job.clone())));
             }
         }
         selected.map_or(WorkerDispatch::Plain, |(_, dispatch)| {
@@ -1283,17 +1292,11 @@ impl ParsedDispatch {
             return WorkerDispatch::Plain;
         };
 
-        let short_seat = self.worktree.short_seat(seat).to_owned();
-        WorkerDispatch::Worker(ResolvedWorkerDispatch {
-            seat: seat.clone(),
-            identity: WorkerIdentity::CodexThread(entry.thread_id.clone()),
-            job: JobText::parse(&self.job, JobSource::DispatchJob),
-            role: match entry.role {
-                DispatchRole::Unroled => DispatchRole::from_short_seat(&short_seat),
-                role @ DispatchRole::Worker(_) => role,
-            },
-            short_seat,
-        })
+        WorkerDispatch::Worker(entry.dispatch(
+            seat,
+            self.worktree.short_seat(seat),
+            JobText::parse(&self.job, JobSource::DispatchJob),
+        ))
     }
 }
 
@@ -1732,13 +1735,36 @@ enum LauncherIdentity {
 
 /// A roster entry with a usable thread identity.
 #[derive(Clone, Debug)]
-struct RosterWorker {
+pub(super) struct RosterWorker {
     /// The nonempty thread id to join to the census.
     thread_id: String,
     /// The dispatch pid, where the roster records it.
     launcher:  LauncherIdentity,
     /// The supported worker responsibility, if the roster records one.
     role:      DispatchRole,
+}
+
+impl RosterWorker {
+    pub(super) fn thread_id(&self) -> &str { &self.thread_id }
+
+    /// All roster sources use the same seat label and responsibility rules.
+    pub(super) fn dispatch(
+        &self,
+        seat: &str,
+        short_seat: &str,
+        job: JobText,
+    ) -> ResolvedWorkerDispatch {
+        ResolvedWorkerDispatch {
+            seat: seat.to_owned(),
+            identity: WorkerIdentity::CodexThread(self.thread_id.clone()),
+            short_seat: short_seat.to_owned(),
+            job,
+            role: match self.role {
+                DispatchRole::Unroled => DispatchRole::from_short_seat(short_seat),
+                role @ DispatchRole::Worker(_) => role,
+            },
+        }
+    }
 }
 
 /// A typed JSON boundary that ignores an absent or malformed field.
@@ -1758,8 +1784,8 @@ impl<T> Default for RosterField<T> {
 /// The fields read from a seat, independent of unrelated roster metadata.
 #[derive(Debug, Deserialize)]
 struct RosterRecord {
-    /// A thread is required before the seat can participate in a fold.
-    thread_id:    String,
+    #[serde(flatten)]
+    worker:       WorkerReference,
     /// Some completed seats no longer have a launcher process.
     #[serde(default)]
     launcher_pid: RosterField<u32>,
@@ -1782,21 +1808,60 @@ enum RosterEntry {
 #[derive(Clone, Debug, Default)]
 pub(super) struct WorkerRoster {
     /// Entries whose thread identity was validated at the JSON boundary.
-    seats: BTreeMap<String, RosterWorker>,
+    seats:       BTreeMap<String, RosterWorker>,
+    memberships: BTreeMap<String, RosterMembership>,
+}
+
+#[derive(Clone, Debug)]
+struct RosterMembership {
+    worker:   WorkerReference,
+    launcher: LauncherIdentity,
+    role:     DispatchRole,
 }
 
 impl WorkerRoster {
+    fn resolve_staff(&mut self, staff: &StaffRoster) {
+        self.seats = self
+            .memberships
+            .iter()
+            .filter_map(|(seat, member)| {
+                Some((
+                    seat.clone(),
+                    RosterWorker {
+                        thread_id: member.worker.session(staff)?.to_owned(),
+                        launcher:  member.launcher.clone(),
+                        role:      member.role,
+                    },
+                ))
+            })
+            .collect();
+    }
+
+    pub(in crate::census) fn current_director<'a>(
+        &'a self,
+        staff: &'a StaffRoster,
+    ) -> Option<&'a str> {
+        self.memberships
+            .values()
+            .find_map(|member| member.worker.parent_session(staff))
+    }
+    /// Validated Codex roster entries supply exact thread ids without identity conversion.
+    pub(super) fn workers(&self) -> impl Iterator<Item = (&str, &RosterWorker)> + '_ {
+        self.seats
+            .iter()
+            .map(|(seat, worker)| (seat.as_str(), worker))
+    }
+
     /// Malformed or unavailable rosters provide no worker identities.
     pub(super) fn parse(text: &str) -> Self {
         let entries: BTreeMap<String, RosterEntry> = serde_json::from_str(text).unwrap_or_default();
-        let seats = entries
+        let memberships = entries
             .into_iter()
             .filter_map(|(seat, entry)| {
                 let RosterEntry::Worker(record) = entry else {
                     return None;
                 };
-                let thread_id = record.thread_id.trim();
-                if seat.is_empty() || thread_id.is_empty() {
+                if seat.is_empty() {
                     return None;
                 }
                 let launcher = match record.launcher_pid {
@@ -1809,15 +1874,20 @@ impl WorkerRoster {
                 };
                 Some((
                     seat,
-                    RosterWorker {
-                        thread_id: thread_id.to_owned(),
+                    RosterMembership {
+                        worker: record.worker,
                         launcher,
                         role,
                     },
                 ))
             })
             .collect();
-        Self { seats }
+        let mut roster = Self {
+            memberships,
+            seats: BTreeMap::new(),
+        };
+        roster.resolve_staff(&StaffRoster::default());
+        roster
     }
 
     /// Read the roster only during census scanning.
@@ -2118,6 +2188,25 @@ mod context_job_tests;
 #[cfg(test)]
 mod idle_prompt_tests {
     use super::*;
+
+    #[test]
+    fn retained_session_reuses_its_roster_until_discovery_drops_it() -> std::io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        fs::write(
+            directory.path().join(ROSTER_FILE),
+            r#"{"fixture-test":{"thread_id":"thread","role":"test"}}"#,
+        )?;
+        let mut names = WorkerNames::default();
+        assert_eq!(names.roster(directory.path()).workers().count(), 1);
+        assert_eq!(names.roster_reads(), 1);
+        names.retain_sessions(&HashSet::from([directory.path().to_path_buf()]));
+        assert_eq!(names.rosters.len(), 1);
+        assert_eq!(names.roster(directory.path()).workers().count(), 1);
+        assert_eq!(names.roster_reads(), 1);
+        names.retain_sessions(&HashSet::new());
+        assert_eq!(names.rosters.len(), 0);
+        Ok(())
+    }
 
     #[test]
     fn departed_worker_sessions_release_their_watches_and_documents() -> std::io::Result<()> {

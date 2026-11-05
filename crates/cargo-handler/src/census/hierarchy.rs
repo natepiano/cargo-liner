@@ -421,6 +421,52 @@ fn read_output(stdout: impl Read) -> Result<Vec<u8>, HierarchyError> {
 pub(super) struct StaffRoster {
     pub(super) edges: HierarchyEdges,
     names:            BTreeMap<String, String>,
+    members:          BTreeMap<String, StaffMembership>,
+}
+
+/// A checked member retains its current session and its current manager.
+#[derive(Debug)]
+struct StaffMembership {
+    session: String,
+    parent:  StaffManager,
+}
+
+#[derive(Debug)]
+enum StaffManager {
+    Root,
+    Session(String),
+}
+
+/// Stable staff identities and legacy thread identities have separate meanings.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+pub(super) enum WorkerReference {
+    Staff { staff_id: String },
+    LegacyThread { thread_id: String },
+}
+
+impl WorkerReference {
+    pub(super) fn session<'a>(&'a self, staff: &'a StaffRoster) -> Option<&'a str> {
+        match self {
+            Self::Staff { staff_id } => staff
+                .members
+                .get(staff_id)
+                .map(|member| member.session.as_str()),
+            Self::LegacyThread { thread_id } => {
+                (!thread_id.trim().is_empty()).then_some(thread_id.trim())
+            },
+        }
+    }
+
+    pub(super) fn parent_session<'a>(&self, staff: &'a StaffRoster) -> Option<&'a str> {
+        let Self::Staff { staff_id } = self else {
+            return None;
+        };
+        match &staff.members.get(staff_id)?.parent {
+            StaffManager::Root => None,
+            StaffManager::Session(session) => Some(session),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -586,6 +632,19 @@ impl StaffRoster {
         let ValidatedStaffForest(members) = ValidatedStaffForest::new(&known)?;
         let mut roster = Self::default();
         for member in members.values() {
+            let parent = match &member.parent {
+                StaffParent::Root(()) => StaffManager::Root,
+                StaffParent::Managed(id) => {
+                    StaffManager::Session(members[id.as_str()].current_session.clone())
+                },
+            };
+            roster.members.insert(
+                member.id.clone(),
+                StaffMembership {
+                    session: member.current_session.clone(),
+                    parent,
+                },
+            );
             let role = member.kind.role();
             if !member.name.is_empty() {
                 roster
