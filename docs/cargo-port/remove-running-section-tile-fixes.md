@@ -1620,6 +1620,76 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 **As built** (checkpoint `229b35851`, merged as main `48dfe94d2`, 2026-11-03): a command cell's top border holds only its account tag and directory. Its progress reading (state word, meter, percent) is the first body row, above the table header. A cell with no reading starts with its table. One owner computes the reading row, and a cell's demand counts it only when it draws. Live at 393x89 against main: 0 of 8 titles hold progress text (main 8 of 8), 8 of 8 readings are the first body row, process rows stay 17 of 17, and no cell is clipped. Gates under the bump: lint and 15 related tests; the showrunner runs the full suite on the merged tip.
 
+### Phase 47b — The cell border is plain; the account and directory are the first body row  · status: done
+
+**Depends on:** none (it starts on main `4b3ce44da`, after Phase 47a)
+
+#### Work Order
+
+**Goal:** A command cell shows its border as a plain line again. The account and directory move into the body. From the user (2026-11-03, through the showrunner): "it works - i think i miss seeing the cell borders - rather than have the title be the [username] - {direcotry} - i think it should just be the first row - followed by the optional build/test progress bar. hopefully that's simple to change". The showrunner put this phase first in the order.
+
+**Spec:**
+1. The top border of a command cell carries no title. It is the plain border line that cells had before Phase 47.
+2. Body row 1 shows the account and directory, for example `[natepiano] ~/rust/hana`. It uses the one account decision, `TableAccountHeadings`, and the directory cut that fits the row.
+3. Body row 2 shows the progress reading (state word, meter, percent), only when the command has one.
+4. The process table follows. A cell with no reading starts its table on row 2.
+5. A cell's demand counts the heading row always and the reading row only when it draws.
+
+**Tests, red first:**
+- `a_command_cell_border_has_no_title`: the top border row of a command cell holds only border glyphs.
+- `a_command_cell_names_its_account_and_directory_on_its_first_body_row`: body row 1 reads `[account] directory`.
+- `a_command_cell_draws_its_progress_on_its_second_body_row`: with a reading, body row 2 holds the state word and meter; without one, row 2 is the table header.
+- Change the Phase 47 and 47a assertions that expect the title. Each Assertion-Change line names this user request as its reason.
+
+**Files:**
+- `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/src/constants.rs`
+- `crates/cargo-tile/CHANGELOG.md`
+
+**Seats:** 1 writer (`impl`). The CHANGELOG gets one Changed line.
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile` and the related `cargo-tile` tests green; no test takes 1 s or more.
+- Unit director's live capture at 393x89 against main: every command cell has a plain top border, body row 1 is the account and directory, the reading is row 2 when one runs, and no cell is clipped.
+- Change-review line: a command cell's border is plain, and its account and directory are its first body row.
+
+### Phase 52 — The attract screen is a cargo-tile feature, on by default  · status: done
+
+**Depends on:** none (it starts on main)
+
+#### Work Order
+
+**Goal:** A build of cargo-tile with no default features links no Swift code. The showrunner (2026-11-05) put this phase second in the order. Nix on the Mac builds cargo-tile with `buildNoDefaultFeatures` for the hana CI hook. Today `crates/cargo-tile/Cargo.toml` turns on the `tui_pane` `backdrop` feature with no condition. `backdrop` pulls `screencapturekit`, and its `apple-cf` dependency needs Swift. That failed the natedev darwin rebuild `8d0a2ca`. Natedev and resources wait on this checkpoint.
+
+**Spec:**
+1. cargo-tile has a new feature, `attract`, in its default features. `attract` turns on `tui_pane/backdrop`.
+2. The `tui_pane` dependency of cargo-tile no longer turns on `backdrop` itself. Only `attract` does.
+3. The attract code compiles only with `attract`: its keys, constants, interaction, global action, probe, app state, terminal setup and drawing.
+4. With `attract` off, cargo-tile builds and runs. It has no attract screen and no attract key, and the help shows no attract key.
+5. With default features, cargo-tile behaves as it does on main.
+
+**Tests:** no new test. The default-feature suite proves item 5. The two builds in the gate prove items 1 to 4.
+
+**Files:**
+- `crates/cargo-tile/Cargo.toml`
+- `crates/cargo-tile/src/keymap.rs`
+- `crates/cargo-tile/src/constants.rs`
+- `crates/cargo-tile/src/interaction.rs`
+- `crates/cargo-tile/src/app_global_action.rs`
+- `crates/cargo-tile/src/probe.rs`
+- `crates/cargo-tile/src/app.rs`
+- `crates/cargo-tile/src/terminal.rs`
+- `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/CHANGELOG.md`
+
+**Seats:** 1 writer (`impl`). The CHANGELOG gets one Added line for the `attract` feature.
+
+**Acceptance gate:**
+- `cargo build -p cargo-tile --no-default-features` passes on the Mac, and the link has no Swift library.
+- The default build passes on natedev and on the Mac.
+- `verify.sh lint cargo-tile` and the `cargo-tile` tests green; no test takes 1 s or more.
+- Change-review line: cargo-tile builds with no default features on the Mac, without Swift.
+
 ### Phase 46 — Enter shows the focused cell on the full screen, and Esc returns to the grid  · status: todo
 
 **Depends on:** Phase 42 (both change `render.rs` and the `tui_pane` frame; this phase starts on top of Phase 42's checkpoint)
@@ -2463,7 +2533,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.
 - The summary gives each test named in Spec items 5 and 6 its quiet natedev time and load, and for any at a second or more, its measured cause, its floor and the fix proposal sent to the showrunner.
 
-### Phase 48 — The p and h shortcuts show with the other global shortcuts  · status: todo
+### Phase 48 — The p and h shortcuts show with the other global shortcuts  · status: done
 
 **Depends on:** none (it named Phase 39 only for file order; Phase 39 has not started)
 
@@ -2514,7 +2584,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 
 **As built** (checkpoint `2a55fa9c2`, merged as main `431ecb2e8`, 2026-11-03): no code change. The CI nextest meter was missing because an old cargo-tile reader was not restarted; a reader built from main draws it. The test `a_captured_ci_nextest_draws_its_meter_without_lending_it_to_a_child` pins that a captured CI nextest run draws its own meter and its child rows borrow none.
 
-### Phase 51 — A reader scenario ends its fake cargo processes  · status: todo
+### Phase 51 — A reader scenario ends its fake cargo processes  · status: done
 
 **Depends on:** none. It starts when the showrunner lifts the cargo pause for it.
 
@@ -2536,3 +2606,27 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 **Acceptance gate:**
 - `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green on natedev and the Mac; no new test takes 1 s or more.
 - After the Mac pass, no process from a scenario folder stays on the Mac.
+
+### Phase 53 — A lifecycle test leaves no process running  · status: done
+
+**Depends on:** none
+
+#### Work Order
+
+**Goal:** `install_prints_a_completed_toolchain_before_a_later_lock_finishes` leaves no process when it ends. On the Mac, the Phase 51 run on 2026-11-05 reported this test as leaky at 0.637 s. The showrunner put this item in the plan on 2026-11-05.
+
+**Spec:**
+
+1. Find what the test leaves running after it returns.
+2. End that process in the test's own cleanup, on a pass and on a failed assertion.
+3. Keep every assertion of the test as it is.
+
+**Tests:** the named test stays under 1 s. Nextest no longer reports it as leaky.
+
+**Files:**
+- `crates/cargo-tile/tests/cli_lifecycle.rs`
+
+**Seats:** 1 writer (`fix`).
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile --mac` green; nextest on the Mac reports no leak for this test.

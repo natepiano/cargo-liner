@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use ratatui::Frame;
@@ -24,7 +26,6 @@ use tui_pane::on_error_color;
 use tui_pane::success_color;
 use tui_pane::title_color;
 use tui_pane::warning_color;
-use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use super::GitPane;
@@ -70,9 +71,12 @@ use crate::tui::panes::package;
 use crate::tui::panes::pane_data::GitCheckout;
 use crate::tui::panes::pane_data::GitProbe;
 use crate::tui::panes::support;
+use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state::AvailabilityStatus;
 use crate::tui::theme_roles;
+
+static MIN_FITTED_TEXT_WIDTH: LazyLock<usize> = LazyLock::new(|| FIT_TEXT_ELLIPSIS.width() + 1);
 
 struct GitRenderCtx<'a> {
     data:              &'a GitData,
@@ -540,23 +544,16 @@ fn pull_request_state_text(row: &PullRequestRow, animation_elapsed: Duration) ->
     }
 }
 
-fn fit_text(text: &str, max_width: usize) -> String {
+fn fit_text(text: &str, max_width: usize) -> Cow<'_, str> {
     if text.width() <= max_width {
-        return text.to_string();
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(render::truncate_with_ellipsis(
+            text,
+            max_width,
+            FIT_TEXT_ELLIPSIS,
+        ))
     }
-    if max_width <= FIT_TEXT_ELLIPSIS.len() {
-        return ".".repeat(max_width);
-    }
-    let mut out = String::new();
-    let target = max_width - FIT_TEXT_ELLIPSIS.len();
-    for ch in text.chars() {
-        if out.width() + ch.width().unwrap_or(0) > target {
-            break;
-        }
-        out.push(ch);
-    }
-    out.push_str(FIT_TEXT_ELLIPSIS);
-    out
 }
 
 fn append_worktrees_section(
@@ -826,6 +823,14 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         label_width,
         row_offset,
     } = *args;
+    let content_width = usize::from(area_width).saturating_sub(3);
+    let label_only = content_width / 2 < *MIN_FITTED_TEXT_WIDTH;
+    let label_width = if label_only {
+        usize::from(area_width).saturating_sub(1)
+    } else {
+        label_width.min(content_width / 2)
+    };
+    let available = content_width.saturating_sub(label_width);
     for (i, field) in fields.iter().enumerate() {
         let row_index = row_offset + i;
         accum.row_spans.push(VisualRowSpan {
@@ -835,32 +840,33 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         if matches!(focus, PaneFocusState::Active) && row_index == pane.pos() {
             *accum.focused_output_line = accum.lines.len();
         }
-        let label = field.label();
+        let label = fit_text(field.label(), label_width);
+        let selection = tui_pane::selection_state(pane, row_index, focus);
+        let ls = selection.patch(styles.readonly_label);
+        if label_only {
+            accum
+                .lines
+                .push(Line::from(Span::styled(format!(" {label}"), ls)));
+            continue;
+        }
         let is_rate_limit_row = matches!(
             *field,
             DetailField::RateLimitCore | DetailField::RateLimitGraphQl
         );
+        let prefix = format!(" {label:<label_width$} ");
+        let wraps = matches!(*field, DetailField::WorktreeError | DetailField::Bisect);
         let value = build_field_value(data, *field, is_rate_limit_row);
-        let selection = tui_pane::selection_state(pane, row_index, focus);
+        let value = if wraps || value.width() <= available {
+            value
+        } else {
+            fit_text(&value, available).into_owned()
+        };
         let base_value_style = field_value_style(data, *field);
-        let ls = selection.patch(styles.readonly_label);
         let vs = selection.patch(base_value_style);
-        if matches!(
-            *field,
-            DetailField::Head | DetailField::WorktreeError | DetailField::Bisect
-        ) && !value.is_empty()
-        {
-            let prefix = format!(" {label:<label_width$} ");
+        if wraps && !value.is_empty() {
             let prefix_len = prefix.width();
-            let col_width = area_width as usize;
-            let avail = col_width.saturating_sub(prefix_len + 1);
-            if avail > 0 && value.width() > avail {
-                let wrapped = if matches!(*field, DetailField::WorktreeError | DetailField::Bisect)
-                {
-                    support::word_wrap(&value, avail)
-                } else {
-                    support::hard_wrap(&value, avail)
-                };
+            if available > 0 && value.width() > available {
+                let wrapped = support::word_wrap(&value, available);
                 for (wi, chunk) in wrapped.iter().enumerate() {
                     if wi == 0 {
                         accum.lines.push(Line::from(vec![
@@ -881,7 +887,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
                 ]));
             }
         } else {
-            let mut spans = vec![Span::styled(format!(" {label:<label_width$} "), ls)];
+            let mut spans = vec![Span::styled(prefix, ls)];
             if is_rate_limit_row
                 && data.github_status.is_available()
                 && let Some(idx) = value.find(" resets ")

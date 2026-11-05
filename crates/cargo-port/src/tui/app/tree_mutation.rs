@@ -27,11 +27,6 @@ pub(in crate::tui) struct TreeMutation<'a> {
 }
 
 impl TreeMutation<'_> {
-    /// Replace the entire project list (used by tree-build paths).
-    pub(in crate::tui) fn replace_all(&mut self, projects: ProjectList) {
-        self.projects.replace_roots_from(projects);
-    }
-
     /// Insert a discovered project into the existing tree, returning
     /// `true` if the insertion changed the tree. Requires the dispatch
     /// context and schedules a `cargo metadata` refresh for the item's

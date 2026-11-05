@@ -478,7 +478,7 @@ fn dispatch_navigation(app: &mut App, focused: FocusedPane<AppPaneId>, bind: &Ke
         && !nav_scope.has_prefix(pending.keys())
     {
         app.pending_nav_chord.clear();
-        (AppNavigation::dispatcher())(action, focused, app);
+        dispatch_navigation_choice(app, action, focused);
         return true;
     }
     if nav_scope.has_prefix(pending.keys()) {
@@ -490,7 +490,7 @@ fn dispatch_navigation(app: &mut App, focused: FocusedPane<AppPaneId>, bind: &Ke
     if let Some(action) = nav_scope.action_for_sequence(&single)
         && !nav_scope.has_prefix(single.keys())
     {
-        (AppNavigation::dispatcher())(action, focused, app);
+        dispatch_navigation_choice(app, action, focused);
         return true;
     }
     if nav_scope.has_prefix(single.keys()) {
@@ -498,6 +498,13 @@ fn dispatch_navigation(app: &mut App, focused: FocusedPane<AppPaneId>, bind: &Ke
         return true;
     }
     false
+}
+
+fn dispatch_navigation_choice(app: &mut App, action: NavAction, focused: FocusedPane<AppPaneId>) {
+    (AppNavigation::dispatcher())(action, focused, app);
+    if focused == FocusedPane::App(AppPaneId::ProjectList) {
+        app.record_selection_choice();
+    }
 }
 
 fn focused_text_input_mode(app: &App) -> bool {
@@ -669,6 +676,7 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, direction: ScrollDirecti
         } else {
             app.project_list.move_down();
         }
+        app.record_selection_choice();
         return;
     }
 
@@ -815,6 +823,7 @@ pub fn dispatch_project_list_action(action: ProjectListAction, app: &mut App) {
             }
         },
     }
+    app.record_selection_choice();
 }
 
 pub fn dispatch_output_action(action: OutputAction, app: &mut App) {

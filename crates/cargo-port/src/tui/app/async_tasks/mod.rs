@@ -18,4 +18,7 @@ mod startup;
 mod startup_phase;
 mod tree;
 
+#[cfg(test)]
+mod deleted_rescan_tests;
+
 pub use startup_phase::Startup;

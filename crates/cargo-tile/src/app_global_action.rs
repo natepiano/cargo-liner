@@ -25,32 +25,51 @@
 use crossterm::event::KeyCode;
 use tui_pane::Bindings;
 use tui_pane::Globals;
+#[cfg(feature = "attract")]
 use tui_pane::KeyBind;
 use tui_pane::TileAction;
 
 use crate::app::App;
 use crate::constants::APP_GLOBALS_SECTION;
 
-tui_pane::action_enum! {
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub(crate) enum AppGlobalAction {
-        AddTile    => ("add_tile",    "Add a tile");
-        RemoveTile => ("remove_tile", "Remove an empty tile");
-        FocusLeft  => ("focus_left",  "Focus the tile to the left");
-        FocusRight => ("focus_right", "Focus the tile to the right");
-        FocusUp    => ("focus_up",    "Focus the tile above");
-        FocusDown  => ("focus_down",  "Focus the tile below");
-        Freeze     => ("freeze",      "Freeze the display");
+// Expand optional actions before action_enum generates its action tables.
+macro_rules! app_global_actions {
+    (($($attract:tt)*) ($($favorites:tt)*)) => {
+        tui_pane::action_enum! {
+            #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+            pub(crate) enum AppGlobalAction {
+                AddTile    => ("add_tile",    "Add a tile");
+                RemoveTile => ("remove_tile", "Remove an empty tile");
+                FocusLeft  => ("focus_left",  "Focus the tile to the left");
+                FocusRight => ("focus_right", "Focus the tile to the right");
+                FocusUp    => ("focus_up",    "Focus the tile above");
+                FocusDown  => ("focus_down",  "Focus the tile below");
+                Freeze     => ("freeze",      "Freeze the display");
+                $($attract)*
+                ProcessTree => ("process_tree", "Show process hierarchy");
+                Arguments => ("arguments", "Show all arguments");
+                $($favorites)*
+            }
+        }
+    };
+}
+
+#[cfg(feature = "attract")]
+app_global_actions! {
+    (
         Attract    => ("attract",     "Show the attract screen");
         RandomizeAttract => ("randomize_attract", "Randomize the attract screen");
         UndoAttractReplacement => ("undo_attract_replacement", "Undo attract replacement");
-        ProcessTree => ("process_tree", "Show process hierarchy");
-        Arguments => ("arguments", "Show all arguments");
+    )
+    (
         SaveFavorite => ("save_favorite", "Save attract parameters");
         OpenFavorites => ("open_favorites", "Open attract favorites");
         RandomFavorite => ("random_favorite", "Show a random favorite");
-    }
+    )
 }
+
+#[cfg(not(feature = "attract"))]
+app_global_actions! { () () }
 
 impl Globals<App> for AppGlobalAction {
     type Actions = Self;
@@ -60,7 +79,7 @@ impl Globals<App> for AppGlobalAction {
     fn render_order() -> &'static [Self::Actions] { <Self as tui_pane::Action>::ALL }
 
     fn defaults() -> Bindings<Self::Actions> {
-        tui_pane::bindings! {
+        let mut bindings = tui_pane::bindings! {
             '+' => Self::AddTile,
             '-' => Self::RemoveTile,
             KeyCode::Left => Self::FocusLeft,
@@ -68,15 +87,22 @@ impl Globals<App> for AppGlobalAction {
             KeyCode::Up => Self::FocusUp,
             KeyCode::Down => Self::FocusDown,
             'f' => Self::Freeze,
-            'a' => Self::Attract,
-            'r' => Self::RandomizeAttract,
-            'u' => Self::UndoAttractReplacement,
-            'p' => Self::ProcessTree,
-            'h' => Self::Arguments,
-            KeyBind::ctrl('s') => Self::SaveFavorite,
-            KeyBind::ctrl('o') => Self::OpenFavorites,
-            'm' => Self::RandomFavorite,
+        };
+        #[cfg(feature = "attract")]
+        {
+            bindings.bind('a', Self::Attract);
+            bindings.bind('r', Self::RandomizeAttract);
+            bindings.bind('u', Self::UndoAttractReplacement);
         }
+        bindings.bind('p', Self::ProcessTree);
+        bindings.bind('h', Self::Arguments);
+        #[cfg(feature = "attract")]
+        {
+            bindings.bind(KeyBind::ctrl('s'), Self::SaveFavorite);
+            bindings.bind(KeyBind::ctrl('o'), Self::OpenFavorites);
+            bindings.bind('m', Self::RandomFavorite);
+        }
+        bindings
     }
 
     fn dispatcher() -> fn(Self::Actions, &mut App) { dispatch }
@@ -93,13 +119,19 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::FocusUp => app.tiles.apply(TileAction::FocusUp, growth),
         AppGlobalAction::FocusDown => app.tiles.apply(TileAction::FocusDown, growth),
         AppGlobalAction::Freeze => app.updates = app.updates.toggled(),
+        #[cfg(feature = "attract")]
         AppGlobalAction::Attract => app.attract.toggle(),
+        #[cfg(feature = "attract")]
         AppGlobalAction::RandomizeAttract => app.attract.randomize(),
+        #[cfg(feature = "attract")]
         AppGlobalAction::UndoAttractReplacement => tui_pane::undo_attract_replacement(app),
         AppGlobalAction::ProcessTree => app.tree = app.tree.toggled(),
         AppGlobalAction::Arguments => app.arguments = app.arguments.toggled(),
+        #[cfg(feature = "attract")]
         AppGlobalAction::SaveFavorite => tui_pane::save_favorite(app),
+        #[cfg(feature = "attract")]
         AppGlobalAction::OpenFavorites => tui_pane::open_favorites(app),
+        #[cfg(feature = "attract")]
         AppGlobalAction::RandomFavorite => tui_pane::show_random_favorite(app),
     }
 }
@@ -110,17 +142,25 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    #[cfg(feature = "attract")]
     use std::time::Duration;
+    #[cfg(feature = "attract")]
     use std::time::Instant;
 
+    #[cfg(feature = "attract")]
     use ratatui::layout::Rect;
+    #[cfg(feature = "attract")]
     use tui_pane::AttractSettings;
+    #[cfg(feature = "attract")]
     use tui_pane::KeyBind;
+    #[cfg(feature = "attract")]
     use tui_pane::ToastVisualDeadline;
-    use tui_pane::Updates;
 
     use super::*;
+    #[cfg(feature = "attract")]
+    use crate::app::Updates;
 
+    #[cfg(feature = "attract")]
     const MOVING_BAND_ROW: &str = r#"
 [[favorite]]
 id = "01a03f60-9c14-7b41-8a02-1de4c7c9b332"
@@ -133,6 +173,7 @@ tail_speed = 72
 fraying = "leading"
 "#;
 
+    #[cfg(feature = "attract")]
     fn moving_band_settings() -> AttractSettings {
         tui_pane::parse_favorite_rows_for_test(MOVING_BAND_ROW)
             .expect("favorites fixture should parse")
@@ -142,6 +183,7 @@ fraying = "leading"
             .settings
     }
 
+    #[cfg(feature = "attract")]
     fn assert_only_toast_animates_and_expires(app: &mut App, expected_title: &str) {
         let now = Instant::now();
         let toasts = app.framework.toasts.active_views(now);
@@ -182,6 +224,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn r_randomizes_the_attract_screen() {
         let scope = AppGlobalAction::defaults().into_scope_map();
 
@@ -192,6 +235,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn u_undoes_the_latest_attract_replacement() {
         let scope = AppGlobalAction::defaults().into_scope_map();
 
@@ -202,6 +246,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn exact_hidden_restore_confirms_and_expires_while_frozen() {
         let mut app = App::new_for_test().expect("test app should build");
         app.updates = Updates::Frozen;
@@ -223,6 +268,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn adjusted_restore_names_the_moved_parameter_sets_and_expires_while_frozen() {
         let mut app = App::new_for_test().expect("test app should build");
         app.updates = Updates::Frozen;
@@ -239,6 +285,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn unavailable_undo_says_so_and_expires_while_frozen() {
         let mut app = App::new_for_test().expect("test app should build");
         app.updates = Updates::Frozen;
@@ -249,6 +296,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn randomizing_always_requests_the_attract_screen() {
         let mut app = App::new_for_test().expect("test app should build");
         let mut configurations = Vec::new();
@@ -271,6 +319,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn control_s_saves_a_favorite() {
         let scope = AppGlobalAction::defaults().into_scope_map();
 
@@ -281,6 +330,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn control_o_opens_favorites() {
         let scope = AppGlobalAction::defaults().into_scope_map();
 
@@ -291,6 +341,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn m_loads_a_random_favorite() {
         let scope = AppGlobalAction::defaults().into_scope_map();
 

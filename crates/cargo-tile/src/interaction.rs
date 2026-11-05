@@ -34,6 +34,7 @@ impl HitTestRegistry for App {
             AppPaneId::Main => Some(&self.tiles),
             // The attract screen has no click behavior, and the
             // favorites modal absorbs clicks before this pane walk.
+            #[cfg(feature = "attract")]
             AppPaneId::Attract(_) | AppPaneId::Favorites => None,
         }
     }
@@ -50,6 +51,7 @@ impl InputContext for App {
 
     /// The favorites modal has no mouse selection yet, but still
     /// absorbs every click so none reaches the grid underneath it.
+    #[cfg(feature = "attract")]
     fn app_modal_overlay_hit(&self, _: Position) -> ModalHit<TilePick> {
         if self.favorites_overlay.is_open() {
             ModalHit::MissedRow
@@ -57,6 +59,9 @@ impl InputContext for App {
             ModalHit::Closed
         }
     }
+
+    #[cfg(not(feature = "attract"))]
+    fn app_modal_overlay_hit(&self, _: Position) -> ModalHit<TilePick> { ModalHit::Closed }
 
     fn map_framework_hit(&self, hit: FrameworkHit) -> Option<TilePick> {
         TilePick::from_framework_hit(hit)
@@ -69,12 +74,14 @@ impl InputContext for App {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    #[cfg(feature = "attract")]
     use std::path::PathBuf;
     use std::rc::Rc;
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
+    #[cfg(feature = "attract")]
     use tui_pane::FavoritesFileState;
     use tui_pane::FrameworkOverlayId;
     use tui_pane::GlobalAction;
@@ -172,6 +179,7 @@ mod tests {
     /// The open favorites overlay takes a click on the cell under it,
     /// so the ring stays where it was.
     #[test]
+    #[cfg(feature = "attract")]
     fn a_click_under_the_favorites_overlay_leaves_the_ring_in_place() {
         let mut app = two_cell_app();
         tui_pane::open_favorites_on_state_for_test(
@@ -228,6 +236,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn open_app_modal_absorbs_clicks_before_the_grid() {
         let mut app = App::new_for_test().expect("test app should build");
         assert_eq!(

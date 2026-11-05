@@ -6,6 +6,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::Action;
+use tui_pane::BLOCK_BORDER_WIDTH;
 use tui_pane::NavAction;
 use tui_pane::PaneFocusState;
 use tui_pane::SECTION_HEADER_INDENT;
@@ -19,7 +20,7 @@ use tui_pane::text_default;
 use tui_pane::title_color;
 use unicode_width::UnicodeWidthStr;
 
-use super::constants::CONTENT_WIDTH_PADDING;
+use super::constants::CONTENT_RIGHT_PADDING;
 use super::constants::POPUP_BORDER_HEIGHT;
 use super::constants::POPUP_HORIZONTAL_MARGIN;
 use super::constants::POPUP_MIN_WIDTH;
@@ -255,18 +256,18 @@ const fn stat_label_width() -> usize { 36 }
 fn content_width(lines: &[Line<'_>]) -> u16 {
     lines
         .iter()
-        .map(line_width)
+        .map(Line::width)
         .max()
-        .and_then(|width| u16::try_from(width.saturating_add(CONTENT_WIDTH_PADDING)).ok())
+        .and_then(|width| {
+            u16::try_from(
+                width
+                    .saturating_add(BLOCK_BORDER_WIDTH)
+                    .saturating_add(CONTENT_RIGHT_PADDING.width()),
+            )
+            .ok()
+        })
         .unwrap_or(POPUP_MIN_WIDTH)
         .max(POPUP_MIN_WIDTH)
-}
-
-fn line_width(line: &Line<'_>) -> usize {
-    line.spans
-        .iter()
-        .map(|span| span.content.as_ref().width())
-        .sum()
 }
 
 fn popup_height(row_count: usize, area_height: u16) -> u16 {

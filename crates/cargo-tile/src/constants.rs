@@ -201,6 +201,7 @@ pub(crate) const PROBE_THRESHOLD: Duration = Duration::from_millis(33);
 /// a reason the user cannot grant their way out of. The frame log is off
 /// unless its variable is set, so the line names the variable rather
 /// than promising a recording an ordinary run never makes.
+#[cfg(feature = "attract")]
 pub(crate) const ATTRACT_BACKDROP_UNAVAILABLE_NOTICE: &str =
     "attract: desktop capture unavailable -- set CARGO_TILE_FRAME_LOG to record why";
 /// Marks anything shortened or shed for lack of room.
@@ -214,8 +215,6 @@ pub(crate) const ELISION: &str = "\u{2026}";
 /// word off the corner glyph the title is set against.
 pub(crate) const SUMMARY_CELL_TITLE: &str = " summary ";
 
-/// Space between a command border title and the surrounding rule.
-pub(crate) const COMMAND_TITLE_PADDING: &str = " ";
 /// The capture-installation card describes the work it starts.
 pub(crate) const CAPTURE_PROGRESS_TITLE: &str = "Capturing cargo progress";
 /// Delimiters around a command's non-default build profile.
@@ -254,6 +253,7 @@ pub(crate) const ARGUMENT_SEPARATOR: &str = "--";
 /// because it was asked for. Stands alone for the same reason
 /// [`FROZEN_NOTE_LABEL`] does, and says the same kind of thing: the
 /// grid is still there, it is being drawn over.
+#[cfg(feature = "attract")]
 pub(crate) const ATTRACT_NOTE_LABEL: &str = "attract";
 /// Number of bytes in one gibibyte.
 pub(crate) const BYTES_PER_GIBIBYTE: u64 = 1 << 30;

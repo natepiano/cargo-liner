@@ -21,6 +21,9 @@ use super::pane::LangPane;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
 use crate::tui::panes::constants::LANG_NUM_COL;
+use crate::tui::project_list::ProjectPathLookup::Found;
+use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+use crate::tui::project_list::ProjectPathLookup::UnknownPath;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::theme_roles;
@@ -228,14 +231,13 @@ pub fn render_lang_pane_body(
         ..
     } = ctx;
 
-    let lang_stats = projects
-        .at_path(selected_project_path.unwrap_or_else(|| std::path::Path::new("")))
-        .and_then(|p| p.language_stats.as_ref())
-        .cloned();
+    let lang_stats =
+        match projects.at_path(selected_project_path.unwrap_or_else(|| std::path::Path::new(""))) {
+            Found(p) => p.language_stats.as_ref(),
+            UnknownPath | StaleRoute => None,
+        };
 
-    let lang_count = lang_stats
-        .as_ref()
-        .map_or(0, |s| flatten_lang_entries(s).len());
+    let lang_count = lang_stats.map_or(0, |stats| flatten_lang_entries(stats).len());
     let cursor = matches!(pane_focus_state, PaneFocusState::Active).then(|| pane.viewport.pos());
     let title = tui_pane::pane_title(
         "Languages",
@@ -269,7 +271,7 @@ pub fn render_lang_pane_body(
     }
 
     let widths = lang_table_widths();
-    let entries = flatten_lang_entries(&stats);
+    let entries = flatten_lang_entries(stats);
     let entry_count = entries.len();
 
     let fixed_cols = 3 + 5 * usize::from(LANG_NUM_COL) + 6;
@@ -291,7 +293,7 @@ pub fn render_lang_pane_body(
         let footer_y = inner.y + inner.height.saturating_sub(1);
         let footer_area = Rect::new(inner.x, footer_y, inner.width, 1);
         frame.render_widget(
-            Table::new([lang_footer_row(&stats)], widths).column_spacing(1),
+            Table::new([lang_footer_row(stats)], widths).column_spacing(1),
             footer_area,
         );
         let body_height = inner.height.saturating_sub(2);
@@ -303,7 +305,7 @@ pub fn render_lang_pane_body(
         viewport.set_viewport_rows(usize::from(body_area.height));
         render_lang_table(frame, pane, rows, widths, body_area);
     } else {
-        rows.push(lang_footer_row(&stats));
+        rows.push(lang_footer_row(stats));
         let body_height = inner.height.saturating_sub(1);
         let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
 

@@ -3,22 +3,30 @@
 
 use std::path::PathBuf;
 use std::rc::Rc;
+#[cfg(feature = "attract")]
 use std::time::Duration;
 use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::layout::Position;
+#[cfg(feature = "attract")]
 use ratatui::layout::Rect;
 use tui_pane::AppContext;
 use tui_pane::AppIdentity;
 use tui_pane::Appearance;
+#[cfg(feature = "attract")]
 use tui_pane::AttractHost;
+#[cfg(feature = "attract")]
 use tui_pane::AttractMode;
+#[cfg(feature = "attract")]
 use tui_pane::FavoritesHost;
+#[cfg(feature = "attract")]
 use tui_pane::FavoritesOverlay;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
+#[cfg(feature = "attract")]
 use tui_pane::KeyBind;
+#[cfg(feature = "attract")]
 use tui_pane::KeyOutcome;
 use tui_pane::Keymap;
 use tui_pane::KeymapEditContext;
@@ -31,7 +39,9 @@ use tui_pane::SettingsFileSpec;
 use tui_pane::SettingsHost;
 use tui_pane::TerminalApp;
 use tui_pane::TileGridHost;
-use tui_pane::Updates;
+#[cfg(feature = "attract")]
+pub(crate) use tui_pane::Updates;
+#[cfg(feature = "attract")]
 use tui_pane::VisualDeadline;
 
 use crate::app_global_action::AppGlobalAction;
@@ -57,15 +67,20 @@ use crate::settings;
 use crate::tiles::TileGrid;
 
 /// The attract screen, writing its lines and timings to the frame log.
+#[cfg(feature = "attract")]
 pub(crate) type Attract = tui_pane::Attract<FrameLog>;
 
 /// App-pane sections the keymap overlay walks, in display order. Every
 /// [`AppPaneId`] belongs here or its pane-local shortcuts go unlisted.
-const APP_PANE_DISPLAY_ORDER: [AppPaneId; 5] = [
+const APP_PANE_DISPLAY_ORDER: &[AppPaneId] = &[
     AppPaneId::Main,
+    #[cfg(feature = "attract")]
     AppPaneId::Attract(AttractMode::MovingBand),
+    #[cfg(feature = "attract")]
     AppPaneId::Attract(AttractMode::MovingText),
+    #[cfg(feature = "attract")]
     AppPaneId::Attract(AttractMode::Pixelate),
+    #[cfg(feature = "attract")]
     AppPaneId::Favorites,
 ];
 
@@ -81,9 +96,31 @@ pub(crate) enum AppPaneId {
     /// having a rectangle -- [`tui_pane::Attract`] draws over the whole
     /// terminal -- but a scope of its own, so each animation binds its
     /// own keys and `keymap.toml` keeps a table for each.
+    #[cfg(feature = "attract")]
     Attract(AttractMode),
     /// The app-owned favorites modal and its local keymap scope.
+    #[cfg(feature = "attract")]
     Favorites,
+}
+
+/// The display can freeze without an attract screen.
+#[cfg(not(feature = "attract"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Updates {
+    /// Apply new scans and animation steps.
+    Live,
+    /// Keep the current display.
+    Frozen,
+}
+
+#[cfg(not(feature = "attract"))]
+impl Updates {
+    pub(crate) const fn toggled(self) -> Self {
+        match self {
+            Self::Live => Self::Frozen,
+            Self::Frozen => Self::Live,
+        }
+    }
 }
 
 /// Whether command cells include the process ancestry above their rows.
@@ -184,8 +221,10 @@ pub(crate) struct App {
     /// Whether the display is taking new work in or being held still.
     pub(crate) updates:           Updates,
     /// The attract screen shown over the grid while nothing is running.
+    #[cfg(feature = "attract")]
     pub(crate) attract:           Attract,
     /// App-owned modal for browsing attract-screen favorites.
+    #[cfg(feature = "attract")]
     pub(crate) favorites_overlay: FavoritesOverlay,
     /// Whether command cells show process ancestry.
     pub(crate) tree:              ProcessHierarchy,
@@ -229,7 +268,9 @@ impl App {
             inline_error: None,
             started: Instant::now(),
             updates: Updates::Live,
+            #[cfg(feature = "attract")]
             attract: Attract::new(),
+            #[cfg(feature = "attract")]
             favorites_overlay: FavoritesOverlay::default(),
             tree: ProcessHierarchy::default(),
             arguments: ArgumentDetail::default(),
@@ -277,7 +318,7 @@ impl SettingsHost for App {
 impl KeymapUiContext for App {
     fn keymap_inline_error(&self) -> Option<&str> { self.inline_error.as_deref() }
 
-    fn keymap_pane_display_order(&self) -> &[AppPaneId] { &APP_PANE_DISPLAY_ORDER }
+    fn keymap_pane_display_order(&self) -> &[AppPaneId] { APP_PANE_DISPLAY_ORDER }
 }
 
 impl KeymapEditContext for App {
@@ -329,8 +370,10 @@ impl TerminalApp for App {
     /// Settling the window costs several round trips to the window
     /// server, which is far longer than a frame, and `terminal.draw` is
     /// no place to spend them.
+    #[cfg(feature = "attract")]
     fn before_draw(&mut self) { self.attract.identify(); }
 
+    #[cfg(feature = "attract")]
     fn visual_deadline(&self, now: Instant, frame_period: Duration) -> VisualDeadline {
         self.favorites_overlay.visual_deadline(now, frame_period)
     }
@@ -338,6 +381,7 @@ impl TerminalApp for App {
     /// The favorites modal owns every key while it is open: a key its
     /// scope does not bind is still its own, and disarms a pending
     /// delete rather than reaching a global.
+    #[cfg(feature = "attract")]
     fn modal_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
         tui_pane::dispatch_favorites_key(self, keymap, bind)
     }
@@ -350,21 +394,26 @@ impl TerminalApp for App {
     /// focus ring would not be steerable at all. Only the keys it
     /// actually binds are taken -- `q` still quits, `f` still freezes,
     /// and `a` gives the grid back.
+    #[cfg(feature = "attract")]
     fn attract_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
         tui_pane::dispatch_attract_key(self, keymap, bind)
     }
 
+    #[cfg(feature = "attract")]
     fn resized(&mut self, area: Rect) { self.attract.record_terminal_resize(area); }
 
     /// The attract screen reclamps its parameters to the new size, so
     /// an open favorites table re-marks which row matches them.
+    #[cfg(feature = "attract")]
     fn resize_settled(&mut self) { tui_pane::favorites_resize_settled(self); }
 
     /// Never while the attract screen is up: the strip already paints
     /// every cell it covers, and a full repaint inside one frame of it
     /// shows as a tear.
+    #[cfg(feature = "attract")]
     fn holds_full_repaint(&self) -> bool { self.attract.showing() }
 
+    #[cfg(feature = "attract")]
     fn before_exit(&mut self) {
         self.attract
             .record_completed_backdrop_attempts_before_exit();
@@ -382,6 +431,7 @@ impl TileGridHost for App {
 
 /// Each attract animation's keys hang off an [`AppPaneId::Attract`] of
 /// their own.
+#[cfg(feature = "attract")]
 impl AttractHost for App {
     const MOVING_BAND_PANE: AppPaneId = AppPaneId::Attract(AttractMode::MovingBand);
     const MOVING_TEXT_PANE: AppPaneId = AppPaneId::Attract(AttractMode::MovingText);
@@ -393,6 +443,7 @@ impl AttractHost for App {
 }
 
 /// The favorites modal's keys hang off [`AppPaneId::Favorites`].
+#[cfg(feature = "attract")]
 impl FavoritesHost for App {
     const FAVORITES_PANE: AppPaneId = AppPaneId::Favorites;
 

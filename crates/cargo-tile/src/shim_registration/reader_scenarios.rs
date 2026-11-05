@@ -252,6 +252,12 @@ fn reader_end_deadline_kills_a_reader_that_ignores_end_and_keeps_writing() {
     run_reader_script("--reader-end-self-check");
 }
 
+/// SIGKILL cannot leave a scenario's waiting writer or its children alive.
+#[test]
+fn reader_scenario_sigkill_ends_its_waiting_writer_group() {
+    run_reader_script("--writer-kill-self-check");
+}
+
 /// The process-wide deadline identifies the scenario and pending predicate.
 #[test]
 fn reader_scenario_deadline_names_scenario_and_pending_wait() {

@@ -38,6 +38,8 @@ use crate::scan::CachedRepoData;
 use crate::scan::CiFetchResult;
 use crate::scan::RepoCache;
 use crate::tui::app::App;
+use crate::tui::panes::DetailCacheState;
+use crate::tui::project_list::ProjectPathLookup;
 use crate::tui::project_list_state::SyncResolution;
 use crate::tui::state;
 
@@ -170,8 +172,13 @@ impl App {
         // CI, branch and lint already resolve ownership to that checkout.
         let stores_own_git_state = !self.project_list.is_vendored_path(path)
             && !self.project_list.is_workspace_member_path(path);
-        if stores_own_git_state && let Some(project) = self.project_list.at_path_mut(path) {
-            project.local_git_state = LocalGitState::Detected(Box::new(checkout_info));
+        if stores_own_git_state {
+            match self.project_list.at_path_mut(path) {
+                ProjectPathLookup::Found(project) => {
+                    project.local_git_state = LocalGitState::Detected(Box::new(checkout_info));
+                },
+                ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => {},
+            }
         }
         // `panes.clear_worktree_summary_cache` discards branch names read from
         // `ProjectInfo::local_git_state`, so worktree summary rows recompute from the
@@ -647,7 +654,7 @@ impl App {
         }
         self.ci.clear_content();
         self.lint.clear_content();
-        self.panes.clear_detail_data(None);
+        self.panes.clear_detail_data(DetailCacheState::Cleared);
         self.background
             .register_item_background_services(&service_root_item);
         self.register_lint_project_if_eligible(&service_root_item);

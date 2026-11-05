@@ -42,6 +42,7 @@ use crate::channel;
 use crate::project::AbsolutePath;
 use crate::project::FileStamp;
 use crate::project::ManifestFingerprint;
+use crate::project::NonRustProject;
 use crate::project::Package;
 use crate::project::RootItem;
 use crate::project::RustProject;
@@ -53,6 +54,7 @@ use crate::scan::ProjectStorage;
 use crate::sccache::SccacheSummary;
 use crate::tui::app::App;
 use crate::tui::app::ConfirmAction;
+use crate::tui::project_list::ProjectPathLookup::Found;
 use crate::tui::test_support;
 
 fn project(path: &str) -> RootItem {
@@ -340,7 +342,7 @@ fn equal_zero_bytes_still_draws_deletion_once() {
     assert_eq!(
         app.project_list
             .at_path(&path)
-            .expect("deleted row")
+            .expect_found("deleted row")
             .visibility,
         crate::project::Visibility::Deleted
     );
@@ -355,18 +357,20 @@ fn project_discovered_draws_one_new_frame() {
     let now = Instant::now();
     let mut frames = FrameState::default();
     assert!(frames.needs_draw(&app, now));
+    // A non-Rust root starts no `cargo metadata` task, so its reply cannot join this poll.
+    let discovered = NonRustProject::new(AbsolutePath::from("/tmp/phase3-discovered"), None);
     queue(
         &mut app,
         BackgroundMsg::ProjectDiscovered {
-            item: project("/tmp/phase3-discovered"),
+            item: RootItem::NonRust(discovered),
         },
     );
     assert!(frames.needs_draw(&app, now));
-    assert!(
+    assert!(matches!(
         app.project_list
-            .at_path(std::path::Path::new("/tmp/phase3-discovered"))
-            .is_some()
-    );
+            .at_path(std::path::Path::new("/tmp/phase3-discovered")),
+        Found(_)
+    ));
 }
 
 #[test]
@@ -591,7 +595,7 @@ fn disk_batch_changes_breakdown_once_and_preserves_identical_detail_generation()
     queue(&mut app, batch(60));
     assert!(frames.needs_draw(&app, now));
     assert!(app.scan.generation() > generation);
-    let info = app.project_list.at_path(&path).expect("batch row");
+    let info = app.project_list.at_path(&path).expect_found("batch row");
     assert_eq!(info.disk_usage_bytes, Some(100));
     assert_eq!(info.in_project_target, Some(60));
 }

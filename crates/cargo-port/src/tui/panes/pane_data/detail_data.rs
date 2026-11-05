@@ -42,6 +42,9 @@ use crate::project::ProjectFields;
 use crate::scan;
 use crate::tui::panes::DescriptionBlock;
 use crate::tui::panes::targets;
+use crate::tui::project_list::ProjectPathLookup::Found;
+use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+use crate::tui::project_list::ProjectPathLookup::UnknownPath;
 use crate::tui::state::CiDisplay;
 use crate::tui::state::Lint;
 use crate::tui::state::LintDisplay;
@@ -632,9 +635,10 @@ pub(super) fn worktree_group_summary_for(item: &RootItem) -> Option<WorktreeGrou
 }
 
 fn compute_in_project_bytes(pl: &ProjectList, abs_path: &Path) -> (Option<u64>, Option<u64>) {
-    pl.at_path(abs_path).map_or((None, None), |pi| {
-        (pi.in_project_target, pi.in_project_non_target)
-    })
+    match pl.at_path(abs_path) {
+        Found(pi) => (pi.in_project_target, pi.in_project_non_target),
+        UnknownPath | StaleRoute => (None, None),
+    }
 }
 
 fn compute_ci_status(
@@ -758,10 +762,10 @@ pub(super) fn collect_runtime_fields(
     let crates_io = resolve_crates_io_section(app, abs_path);
 
     let t_disk = std::time::Instant::now();
-    let disk = app
-        .project_list
-        .at_path(abs_path)
-        .and_then(|project| project.disk_usage_bytes);
+    let disk = match app.project_list.at_path(abs_path) {
+        Found(project) => project.disk_usage_bytes,
+        UnknownPath | StaleRoute => None,
+    };
     let worktree_group_summary = worktree_item.and_then(worktree_group_summary_for);
     let ci = compute_ci_status(app, abs_path, worktree_item);
     let disk_ms = tui_pane::perf_log_ms(t_disk.elapsed().as_millis());
