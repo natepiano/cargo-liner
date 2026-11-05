@@ -2607,7 +2607,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green on natedev and the Mac; no new test takes 1 s or more.
 - After the Mac pass, no process from a scenario folder stays on the Mac.
 
-### Phase 53 — A lifecycle test leaves no process running  · status: todo
+### Phase 53 — A lifecycle test leaves no process running  · status: done
 
 **Depends on:** none
 
