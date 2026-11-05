@@ -231,58 +231,62 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 
 ### Phase 2t — mend --fix never writes a path into a struct pattern or struct literal field  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `verify.sh lint hana` passes with cargo-mend 0.23.0-dev on the hana tree that 0.22.3 passes; no mend rewrite gives code that does not compile.
-
-**Source:** showrunner, 2026-11-03, from hana: cargo-mend 0.23.0-dev broke `verify.sh lint hana` on `init/catalyst` ad937ff7ec plus demo Phase 28. Its rewrites gave 13 compile errors in 4 test files (`crates/hana/tests/frame_time_cables.rs`, `cable_motion/opened_routes.rs`, `cable_motion/patch_stubs.rs`, `screen_assembly/mod.rs`), then mend rolled back. One error is "expected one of `,`, `:`, or `}`, found `::`": a path written where a struct pattern or struct literal expects a field name. The same tree passes with mend 0.22.3. hana's log is gone.
-
-**Constraints:**
-- The tree: `~/rust/hana` at ad937ff7ec has three of the four files (read them with `git -C ~/rust/hana show ad937ff7ec:<path>`). The demo Phase 28 worktree `/home/natepiano/rust/tool-based-ui-demo` belongs to another session: read it only, never edit, build or lint in it.
-- Suspects: the fixes changed since `cargo-mend-v0.22.3` (`git log cargo-mend-v0.22.3..HEAD -- crates/cargo-mend`), first `imports_at_top` (phase 2s gate tracking, phase 2i, 2n), `inline_path_qualified_type`, and the leading `::` keep of phase 2o. Find the exact rewrite from the code and the four files before any change.
-- From phase 2s: a new syn node in a fix needs a case in `gate_tracking_visit!` (`fixes/imports/gate_tracking.rs`).
-- A rewrite must never replace a field name, a field-init shorthand (`Foo { x }`) or a field pattern shorthand (`Foo { x, .. }`) with a path. Where a shorthand binds a name the fix shortens or qualifies, write `x: <path>` or leave it unchanged.
-
-**Spec:**
-1. **Red first:** the smallest fixture that gives the parse error (or one of the 13 errors) through the real fix path (`imports::apply_fixes` or the fix's own apply entry), with the parsed output checked by `syn::parse_file`. One test for each distinct cause the four files show.
-2. Fix the cause in the fix that writes it.
-3. Every mend fix's output in the new tests parses and keeps the program's meaning.
-4. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
+`mend --fix` no longer breaks code when `prefer_module_import` rewrites a path. `PreservedImports` keeps each binding whose uses cannot take a qualified path: an imported macro binding, a field name in a macro call, a field-init shorthand or field pattern shorthand, and a binding that an external child module uses. The import and all its uses stay together. `ReferenceCollector` uses its lexical scope information for field shorthand. A shared descendant import guard protects named imports and glob imports across child modules.
 
 **Files:**
-- `crates/cargo-mend/src/fixes/` — the fix that writes the path, and its tests
+- `crates/cargo-mend/src/fixes/prefer_module_import/scan.rs` — the preserved imports and one test for each cause
 - `crates/cargo-mend/CHANGELOG.md`
+
+**Gotchas:** the macro token walker cannot tell a field name from a function name, so a binding used inside a macro call stays imported.
+
+### Phase 2u — mend --fix never adds an import that a glob already brings  · status: done
+
+#### As-built
+
+`mend --fix` keeps a local import when a glob in the destination scope can supply the same binding or trait, so the fix adds no import that rustc reports as unused. `lint hana`, which denies warnings, passes on the copy that gave the warning.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/imports_at_top/in_body_use_finder.rs` — finds the glob in the destination scope
+- `crates/cargo-mend/src/fixes/imports/module_imports.rs` — the shared check for a binding that a glob brings
+- `crates/cargo-mend/CHANGELOG.md`
+
+### Phase 2v — widget gets the hana construct that crashes rustc  · status: done
+
+#### As-built
+
+No code. On hana `39e5c19033`, rustc 1.99.0 stops with `assertion failed: !deep_decl.is_glob_import()` (rustc_resolve imports.rs:583) when it builds test code; mend hits it only because it builds `--all-targets`. The construct: `use super::*;` in the cfg(test) module `rear_patch_panel::tests` (`crates/hana/src/tool/rear_patch_panel/mod.rs`), which brings a helper that the parent module also re-exports. Widget replaced the glob with explicit imports in `0c4e265f32`. Neither widget's worker nor this unit made a small sample that reproduces the panic; Codex refused the reduction task three times (content filter). The rustc issue can cite the commit pair `39e5c19033` / `0c4e265f32`.
+
+### Phase 2w — mend --fix never makes a function too long for clippy  · status: todo
+
+#### Work Order
+
+**Goal:** `mend --fix` never moves a function past clippy `too_many_lines`, so a lint run that was green stays green after the fix.
+
+**Source:** showrunner, 2026-11-05, from the performance showrunner's report. The module-import rewrite makes names longer, rustfmt then wraps the calls, and the function grows. `switch_dimming_and_the_patch_edit_fade_restore_in_either_order` in `crates/hana/tests/tool_switch/mod.rs` went from under the limit to 106/100, and hana `4590aeeb22` split it by hand. `opening_one_pocket_among_many_tools_touches_only_its_own_cards_and_rows` in `crates/hana/tests/pocket_open_work/mod.rs` reached 102/100 on the metrics-gathering tree. Showrunner: "mend --fix must not leave lint red."
+
+**Constraints:**
+- mend does not split a function. Splitting stays with the person who owns the function.
+- A function that is already over the limit before the fix keeps its current behavior.
+- A function with `#[allow(clippy::too_many_lines)]` or `#[expect(clippy::too_many_lines)]` is not limited.
+- Read the limit from the workspace `clippy.toml` key `too-many-lines-threshold`. Without that key, use the clippy default.
+
+**Spec:**
+1. **Red first:** the smallest fixture through the real fix path where the rewrite wraps calls and moves one function past the limit, with a second function in the same file that stays under the limit.
+2. Measure each function that a fix changes. Format the new file text with the rustfmt settings of the workspace, and count the body lines as clippy counts them: no blank lines and no comment lines.
+3. When a function goes from within the limit to over the limit, drop every rewrite in that function. Its imports at function scope stay too. Other functions in the file keep their rewrites.
+4. Report and fix agree: a kept function gives no warning and no failed exit in either mode. A notice names the file, the function and the count, and says to split the function. A second `--fix` run changes nothing and gives the same notice.
+5. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
+
+**Files:**
+- `crates/cargo-mend/` — the fix path, the measure, the notice and their tests
 
 **Workers:** 1 writer owns the code and the tests.
 
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second; the red tests fail on the pre-fix tree and pass after; the summary names each of the 13 errors' cause or says which cause it shares.
-- Director gate (showrunner, 2026-11-03): the new mend binary runs `mend --all-targets --workspace --fix` on a copy of hana ad937ff7ec plus the demo Phase 28 changes, with no rollback, and `cargo check --workspace --all-targets` on the fixed copy gives 0 errors.
+**State:** none.
 
-### Phase 2u — mend --fix never adds an import that a glob already brings  · status: todo
-
-#### Work Order
-
-**Goal:** `mend --fix` on the hana copy from Phase 2t adds no import that rustc reports as unused, so `verify.sh lint hana`, which denies warnings, passes.
-
-**Source:** showrunner, 2026-11-03, from the Phase 2t director gate: on the fixed hana copy, `cargo check` gives one new warning, `unused import: bevy::ecs::system::RunSystemOnce`. `mend --fix` added `use bevy::ecs::system::RunSystemOnce as _;` to `crates/hana/tests/arrange_glyph/envelope.rs`, which already has `use super::*;`. Hana stays blocked until this phase lands.
-
-**Constraints:**
-- The fixed and clean hana copies are in the director's scratchpad; the director gives their paths. Read `/home/natepiano/rust/tool-based-ui-demo` only; never edit, build or lint in it.
-- Find the fix that writes the import from the code and the hana file before any change.
-- An import that a fix adds must not duplicate a name or a trait (`as _`) that a glob import in the same module already brings.
-
-**Spec:**
-1. **Red first:** the smallest fixture through the real fix path that adds the duplicate import, with a check that the output has no unused import.
-2. Fix the cause in the fix that writes the import.
-3. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
-
-**Files:**
-- `crates/cargo-mend/src/fixes/` — the fix that adds the import, and its tests
-- `crates/cargo-mend/CHANGELOG.md`
-
-**Workers:** 1 writer owns the code and the tests.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second; the red test fails on the pre-fix tree and passes after. Director gate: the new mend binary runs `--fix` on a clean copy of the Phase 2t hana tree with no rollback, and `cargo check --workspace --all-targets` on the fixed copy gives 0 errors and 0 warnings.
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second; the red test fails on the pre-fix tree and passes after. Director gate: the new mend binary runs `--fix` on a clean copy of hana `4590aeeb22^`, then `verify.sh lint hana` on that copy shows no `too_many_lines` error, and the notice names the kept function.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: done
 
@@ -305,34 +309,15 @@ The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame 
 
 **Depends on:** Phase 3
 
-#### Work Order
+#### As-built
 
-**Goal:** idle CPU on the branch binary is below main's, beyond the spread over 3 pairs.
-
-**Source:** showrunner, 2026-11-03, holding phase 3 (ef8fce7c) before its merge. Release idle, 3 pairs, one scratch project: main 0.217/0.183/0.217% of one core, branch 0.267/0.250/0.250%; the gap is larger than each side's spread. Both draw about 1.15 frames each second at idle, because each CPU pane sample changes the screen.
-
-**Cause (from the code):** `draw_frame` (`tui/terminal/event_loop.rs` ≈275) makes a new `Terminal<TestBackend>` for each frame, renders the whole UI into it, clones its buffer, compares it with the last frame, then copies it into the real terminal. Main renders once into the real terminal. ratatui's `Terminal::draw` already writes only the cells that changed.
-
-**Constraints:**
-- Draw with the public `Terminal::draw` when the frame key says a draw is due; remove the per-frame candidate `Terminal<TestBackend>`. Do not expand the frame key.
-- Classify each frame as `Drawn` or `Unchanged` by its completed buffer compared with one retained screen. Never call `get_cursor_position`: with `CrosstermBackend` it queries the terminal and waits for a reply, which adds a round trip to each frame and exits cargo-port in a terminal that does not reply. cargo-port sets no cursor, so the buffer is the whole screen. ratatui-core 0.1.2 keeps `Frame::cursor_position` crate-private; do not patch ratatui.
-- Keep the frame key, the draw-on-change tests, every existing assertion and the F015 fixed-time test source. The frame counter counts only `Drawn` frames.
-- No new allocation for each frame in the draw path.
-
-**Spec:**
-1. One render for each drawn frame, into the real terminal.
-2. **Tests, red first, each under one second:** a drawn frame calls the UI render once; an unchanged frame key renders nothing; the existing event loop tests stay green.
-3. **Live CPU measure** (unit director): 3 idle pairs, main against the branch, release builds, with the method in `docs/cargo-port/as-built/overview.md`.
+`draw_frame` (`tui/terminal/event_loop.rs`) renders each drawn frame once, into the real terminal, with the public `Terminal::draw`. The per-frame `Terminal<TestBackend>` is gone. A frame is `Drawn` or `Unchanged` by a comparison of its completed buffer with one retained screen, and the frame counter counts only `Drawn` frames. The draw path adds no allocation for each frame. Release idle over 3 pairs: installed 0.200/0.217/0.217%, branch 0.200/0.217/0.217% of one core.
 
 **Files:**
-- `crates/cargo-port/src/tui/terminal/event_loop.rs` and `crates/cargo-port/src/tui/terminal/event_loop_tests.rs`
+- `crates/cargo-port/src/tui/terminal/event_loop.rs`, `event_loop_tests.rs`
 - `crates/cargo-port/CHANGELOG.md`
 
-**Workers:** 1 writer (impl4) owns the code and the tests; the unit director owns the live measure.
-
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; branch idle CPU below main's beyond the spread over 3 pairs.
-
-**As built:** test cargo-port 1154/1154 and workspace lint pass. Release idle over 3 pairs: installed 0.200/0.217/0.217%, branch 0.200/0.217/0.217% of one core. The branch no longer exceeds main; the Phase 3 excess (0.250–0.267%) is gone. The first live run exited under a pty that did not answer the cursor query, so the draw path no longer reads the cursor.
+**Gotchas:** the draw path never calls `get_cursor_position`. With `CrosstermBackend` it queries the terminal and waits for a reply, which exits cargo-port in a terminal that does not reply. cargo-port sets no cursor, so the buffer is the whole screen.
 
 ### Phase 3c — The detail cache API takes a named state  · status: todo
 
@@ -361,6 +346,18 @@ The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame 
 **Workers:** 1 writer owns the code and the tests.
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; no `Option<DetailCacheKey>` in a detail cache API.
+
+### Phase 3d — The discovery frame test takes no background reply  · status: todo
+
+**Source:** showrunner, 2026-11-05. `project_discovered_draws_one_new_frame` failed in one of two aws runs and held every merge: the poll processed 2 messages, not 1.
+
+**Cause:** the test discovers a Rust root. `insert_into_hierarchy` starts `cargo metadata` for it. The root does not exist, so the reply comes quickly and can join the same poll.
+
+**Fix:** the test discovers a non-Rust root, which starts no metadata task. The test keeps every assertion.
+
+**Files:** `crates/cargo-port/src/tui/terminal/event_loop_tests.rs`.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean.
 
 ### Phase 4 — A Deleted row stays on the list and shows its mark  · status: todo
 
@@ -410,6 +407,48 @@ The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame 
 - `test` — spec 5, in `tui/app/async_tasks/deleted_rescan_tests.rs` and `tui/terminal/no_color_tests.rs`, plus the sccache and Git pane cases in test modules beside those files, each named in the tester's first board post; `impl` registers them.
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; the live check and the four shots of spec 6, with a design check pass. The checkpoint adds a Change-Review line for each visible fix.
+
+### Phase 4b — cargo-port's selection, contrast and narrow panes read clearly  · status: todo
+
+**Depends on:** Phase 4
+
+#### Work Order
+
+**Goal:** every defect that the Phase 4 design check found on main's screens is gone: the selection shows without colour, text has readable contrast, nothing is cut without a mark, and narrow panes stay useful.
+
+**Source:** Phase 4 design check, 2026-11-05. The same live shots on the main build at `3fb98ed6e` show each defect, so Phase 4 did not cause them. Shots: `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_main/`.
+
+**Constraints:**
+- Phase 4 keeps its Deleted row, its strike-through under `NO_COLOR` and its Git pane value fit. This phase does not change those results except as Spec 2 and 3 say.
+- Spec 3 changes the existing `deleted row content should be crossed out` assertion in `tui/app/mod.rs`. Record the new assertion in the checkpoint's Assertion-Change line.
+- Colours stay in the theme. Do not hard-code a new value at a draw site.
+- Each item gets a red test that reads the drawn buffer, under one second.
+
+**Spec:**
+1. **Selection under `NO_COLOR`.** The selected row draws in reverse video, so it differs from every other row. The `▶` mark stays on the row it names. The focused pane has a mark that does not use colour.
+2. **Deleted row Disk cell.** A Deleted row shows only `[x]` in the Disk column, not `0.0`.
+3. **Strike-through.** A Deleted row strikes only its name and value text, not the empty cells between them.
+4. **Scroll position.** The sccache popup shows `▲ 2 of 2` at its end, not `▲ 1 of 2`.
+5. **Row highlight.** The sccache popup's selected row highlight reaches the right border.
+6. **Contrast.** These pass the guide's `readable-contrast` rule: the selected sccache label (#96beb4 on #565656, 3.61:1), Disk values (#ff6464 on #505050), the selected project name (#ff8700 on #565656, 3.05:1), white CPU labels on yellow and green, the red System percentage (#cd0000 on #1e1e1e), and the grey `resets` text.
+7. **One selection fill.** A selected row uses one fill across all its columns. The Disk column fill is clearly different from the selection fill.
+8. **Cut text.** The Languages header `comments` shows whole, and each row names its language. Package pane values that do not fit wrap or end in an ellipsis.
+9. **80 columns.** A pane too narrow to show text is hidden, and its width goes to the other panes. The Workspace pane shows values beside `Path` and `Disk`. The Git pane shows its values at 80 columns.
+10. **Words.** Replace the column titles `Og` and `Mn` with common words that fit, and replace the hint `home/end ends` with `home/end first/last`.
+11. **Git rows at 80 columns.** `FIT_TEXT_ELLIPSIS` is one glyph, `…`, as in the pane titles. A label-only row uses the full inner width, so it shows at least as many letters as main. The two rate rows read `Core` and `GraphQL`, so they differ.
+12. **Letter case.** Pane titles and rows use sentence case: `Sccache stats`, `CI runs`, `Targets: binary`, `Multiple input files`.
+13. **sccache reasons.** Each non-cacheable reason row says in plain words why the call was not cached. No row reads `-`, `-o` or `missing output_dir`.
+14. **CPU bars.** The bars draw with cell background, so no dark line shows between rows.
+
+**Files:**
+- `crates/cargo-port/src/tui/` — the project columns, the sccache popup, the System and Languages panes, the Package pane, the pane layout, the hint text and their tests
+- `crates/tui_pane/src/` — only when the cause of an item lives there
+
+**Workers:** 1 writer owns the code and the tests.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` when it changes, and `verify.sh lint cargo-port` clean; no test takes a second. The unit director takes live shots at 160x45 in colour, 160x45 under `NO_COLOR=1` and 80x30 in colour. A fresh design check on those shots raises none of these items.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: todo
 
