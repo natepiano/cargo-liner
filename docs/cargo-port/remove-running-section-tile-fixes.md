@@ -2606,3 +2606,27 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 **Acceptance gate:**
 - `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green on natedev and the Mac; no new test takes 1 s or more.
 - After the Mac pass, no process from a scenario folder stays on the Mac.
+
+### Phase 53 — A lifecycle test leaves no process running  · status: todo
+
+**Depends on:** none
+
+#### Work Order
+
+**Goal:** `install_prints_a_completed_toolchain_before_a_later_lock_finishes` leaves no process when it ends. On the Mac, the Phase 51 run on 2026-11-05 reported this test as leaky at 0.637 s. The showrunner put this item in the plan on 2026-11-05.
+
+**Spec:**
+
+1. Find what the test leaves running after it returns.
+2. End that process in the test's own cleanup, on a pass and on a failed assertion.
+3. Keep every assertion of the test as it is.
+
+**Tests:** the named test stays under 1 s. Nextest no longer reports it as leaky.
+
+**Files:**
+- `crates/cargo-tile/tests/cli_lifecycle.rs`
+
+**Seats:** 1 writer (`fix`).
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile --mac` green; nextest on the Mac reports no leak for this test.
