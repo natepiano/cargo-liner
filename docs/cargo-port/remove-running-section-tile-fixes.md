@@ -1652,7 +1652,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - Unit director's live capture at 393x89 against main: every command cell has a plain top border, body row 1 is the account and directory, the reading is row 2 when one runs, and no cell is clipped.
 - Change-review line: a command cell's border is plain, and its account and directory are its first body row.
 
-### Phase 52 — The attract screen is a cargo-tile feature, on by default  · status: todo
+### Phase 52 — The attract screen is a cargo-tile feature, on by default  · status: done
 
 **Depends on:** none (it starts on main)
 

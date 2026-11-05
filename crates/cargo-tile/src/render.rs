@@ -28,6 +28,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::Widget;
+#[cfg(feature = "attract")]
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
 use tui_pane::CellContentExtent;
@@ -44,9 +45,9 @@ use tui_pane::StatusLineNote;
 use tui_pane::SummaryFoot;
 use tui_pane::TileCells;
 use tui_pane::TileGridContents;
-use tui_pane::Updates;
 use tui_pane::accent_color;
 use tui_pane::blend_color;
+#[cfg(feature = "attract")]
 use tui_pane::draw_attract_layers;
 use tui_pane::label_color;
 use tui_pane::pane_background;
@@ -60,6 +61,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::App;
 use crate::app::ArgumentDetail;
 use crate::app::ProcessHierarchy;
+use crate::app::Updates;
 use crate::census::command_text::CommandWord;
 use crate::census::command_text::CommandWordDisplay;
 use crate::config::DefaultArguments;
@@ -138,6 +140,7 @@ use crate::constants::ANCESTRY_LEVEL_INDENT;
 use crate::constants::ANCESTRY_MIN_COMMAND_WIDTH;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
+#[cfg(feature = "attract")]
 use crate::constants::ATTRACT_NOTE_LABEL;
 use crate::constants::BYTES_PER_GIBIBYTE;
 use crate::constants::COMMAND_COLUMN;
@@ -305,22 +308,31 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     let roster = app
         .roster
         .visible(&app.loaded_config.config.commands.hidden);
+    #[cfg(feature = "attract")]
     let work = if roster.groups().is_empty() {
         AttractWork::Idle
     } else {
         AttractWork::Running
     };
+    #[cfg(feature = "attract")]
     let updates = app.updates;
-    let mut summary_frames = DrawnSummaryFrames(Vec::new());
-    draw_attract_layers(frame, app, body, work, updates, |frame, app, contents| {
-        summary_frames = draw_visible_panes(frame, app, body, contents, roster);
-    });
+    #[cfg(feature = "attract")]
+    let summary_frames = {
+        let mut summary_frames = DrawnSummaryFrames(Vec::new());
+        draw_attract_layers(frame, app, body, work, updates, |frame, app, contents| {
+            summary_frames = draw_visible_panes(frame, app, body, contents, roster);
+        });
+        summary_frames
+    };
+    #[cfg(not(feature = "attract"))]
+    let summary_frames = draw_visible_panes(frame, app, body, TileGridContents::Shown, roster);
     draw_status_line(frame, app, keymap, status);
     let toast_area = app
         .framework
         .toasts
         .area_avoiding_frames(tui_pane::frame_inner(body), &summary_frames.0);
     tui_pane::render_toasts(frame, &mut app.framework, toast_area);
+    #[cfg(feature = "attract")]
     app.favorites_overlay.render(frame);
     tui_pane::draw_framework_overlay(frame, app, keymap, settings::rows);
 }
@@ -6354,6 +6366,7 @@ fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Re
     // And a grid drawn over looks exactly like an empty one, which is
     // the same problem: say that the work is behind the animation
     // rather than absent.
+    #[cfg(feature = "attract")]
     if app.attract.asked_for() {
         notes.push(StatusLineNote::flag(ATTRACT_NOTE_LABEL));
     }
@@ -6942,7 +6955,9 @@ mod tests {
     use ratatui::buffer::Cell;
     use sysinfo::Pid;
     use tui_pane::Appearance;
+    #[cfg(feature = "attract")]
     use tui_pane::BackdropNotice;
+    #[cfg(feature = "attract")]
     use tui_pane::FavoritesFileState;
     use tui_pane::GlobalAction;
     use tui_pane::Globals;
@@ -6953,6 +6968,7 @@ mod tests {
     use tui_pane::TileView;
     use tui_pane::ToastActivation;
     use tui_pane::ToastStyle;
+    #[cfg(feature = "attract")]
     use tui_pane::draw_backdrop_notice;
     use tui_pane::fade_to_background;
 
@@ -19522,6 +19538,7 @@ mod tests {
     /// over an idle grid: the panes stand bare while it arrives, the
     /// status line goes back on top, and no backdrop notice is due yet.
     #[test]
+    #[cfg(feature = "attract")]
     fn an_arriving_attract_screen_draws_the_pinned_frame() {
         const WIDTH: u16 = 80;
         const HEIGHT: u16 = 24;
@@ -19563,6 +19580,7 @@ mod tests {
 
     /// The frames the tail test pins: the favorites overlay alone, then
     /// each framework overlay.
+    #[cfg(feature = "attract")]
     const FRAME_TAIL_CASES: [(Option<GlobalAction>, [&str; FRAME_TAIL_HEIGHT as usize]); 4] = [
         (
             None,
@@ -19718,6 +19736,7 @@ mod tests {
     /// What follows the grid in a frame: body-bound toasts, then the
     /// favorites overlay, then whichever framework overlay is open.
     #[test]
+    #[cfg(feature = "attract")]
     fn the_frame_ends_with_toasts_then_favorites_then_the_framework_overlay() {
         // Tall enough to reach up under every popup, so the frame shows
         // which of the two is drawn over the other.
@@ -19781,6 +19800,7 @@ mod tests {
     /// the label colour, leaving every other row of the frame as it was,
     /// and no notice leaves the frame blank.
     #[test]
+    #[cfg(feature = "attract")]
     fn each_backdrop_notice_is_written_on_the_last_body_row() {
         const WIDTH: u16 = 128;
         const HEIGHT: u16 = 4;
@@ -19829,6 +19849,7 @@ mod tests {
     /// A terminal too narrow for the whole notice gets as much of it as
     /// fits on the one row rather than a second line over the grid.
     #[test]
+    #[cfg(feature = "attract")]
     fn a_narrow_body_cuts_the_backdrop_notice_at_its_edge() {
         let buffer = drawn_backdrop_notice(BackdropNotice::CaptureStalled, 40, 3);
         assert_eq!(
@@ -19843,6 +19864,7 @@ mod tests {
 
     /// Draw `notice` into a `width` by `height` frame whose body is every
     /// row but the last, which stands in for the status line.
+    #[cfg(feature = "attract")]
     fn drawn_backdrop_notice(notice: BackdropNotice, width: u16, height: u16) -> Buffer {
         let mut terminal =
             Terminal::new(TestBackend::new(width, height)).expect("the test terminal opens");

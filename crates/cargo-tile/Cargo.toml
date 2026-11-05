@@ -21,6 +21,10 @@ name = "cargo-tile"
 path = "src/main.rs"
 test = false
 
+[features]
+attract = ["tui_pane/backdrop"]
+default = ["attract"]
+
 [dependencies]
 chrono = { workspace = true }
 clap   = { workspace = true }
@@ -36,9 +40,8 @@ toml          = { workspace = true }
 unicode-width = { workspace = true }
 uuid          = { workspace = true }
 
-# tui_pane provides the framework used by the binary. `backdrop` is what
-# captures the desktop behind the window for the attract screen.
-tui_pane = { workspace = true, features = ["backdrop"] }
+# The attract feature enables desktop capture in the tui_pane framework.
+tui_pane = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
