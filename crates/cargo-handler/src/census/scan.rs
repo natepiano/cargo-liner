@@ -2910,11 +2910,8 @@ mod process_cache_tests {
         census.read_at(&[], now);
         // This birth has no session or tracked ancestor. Only recovery can discover it.
         let mut child = RecoveryChild(
-            Command::new("/bin/bash")
-                .args([
-                    "-c",
-                    "exec -a claude /bin/bash -c 'echo ready; read -r finish'",
-                ])
+            Command::new("bash")
+                .args(["-c", "exec -a claude bash -c 'echo ready; read -r finish'"])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .spawn()?,
