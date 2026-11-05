@@ -1652,6 +1652,43 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - Unit director's live capture at 393x89 against main: every command cell has a plain top border, body row 1 is the account and directory, the reading is row 2 when one runs, and no cell is clipped.
 - Change-review line: a command cell's border is plain, and its account and directory are its first body row.
 
+### Phase 52 — The attract screen is a cargo-tile feature, on by default  · status: todo
+
+**Depends on:** none (it starts on main)
+
+#### Work Order
+
+**Goal:** A build of cargo-tile with no default features links no Swift code. The showrunner (2026-11-05) put this phase second in the order. Nix on the Mac builds cargo-tile with `buildNoDefaultFeatures` for the hana CI hook. Today `crates/cargo-tile/Cargo.toml` turns on the `tui_pane` `backdrop` feature with no condition. `backdrop` pulls `screencapturekit`, and its `apple-cf` dependency needs Swift. That failed the natedev darwin rebuild `8d0a2ca`. Natedev and resources wait on this checkpoint.
+
+**Spec:**
+1. cargo-tile has a new feature, `attract`, in its default features. `attract` turns on `tui_pane/backdrop`.
+2. The `tui_pane` dependency of cargo-tile no longer turns on `backdrop` itself. Only `attract` does.
+3. The attract code compiles only with `attract`: its keys, constants, interaction, global action, probe, app state, terminal setup and drawing.
+4. With `attract` off, cargo-tile builds and runs. It has no attract screen and no attract key, and the help shows no attract key.
+5. With default features, cargo-tile behaves as it does on main.
+
+**Tests:** no new test. The default-feature suite proves item 5. The two builds in the gate prove items 1 to 4.
+
+**Files:**
+- `crates/cargo-tile/Cargo.toml`
+- `crates/cargo-tile/src/keymap.rs`
+- `crates/cargo-tile/src/constants.rs`
+- `crates/cargo-tile/src/interaction.rs`
+- `crates/cargo-tile/src/app_global_action.rs`
+- `crates/cargo-tile/src/probe.rs`
+- `crates/cargo-tile/src/app.rs`
+- `crates/cargo-tile/src/terminal.rs`
+- `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/CHANGELOG.md`
+
+**Seats:** 1 writer (`impl`). The CHANGELOG gets one Added line for the `attract` feature.
+
+**Acceptance gate:**
+- `cargo build -p cargo-tile --no-default-features` passes on the Mac, and the link has no Swift library.
+- The default build passes on natedev and on the Mac.
+- `verify.sh lint cargo-tile` and the `cargo-tile` tests green; no test takes 1 s or more.
+- Change-review line: cargo-tile builds with no default features on the Mac, without Swift.
+
 ### Phase 46 — Enter shows the focused cell on the full screen, and Esc returns to the grid  · status: todo
 
 **Depends on:** Phase 42 (both change `render.rs` and the `tui_pane` frame; this phase starts on top of Phase 42's checkpoint)
