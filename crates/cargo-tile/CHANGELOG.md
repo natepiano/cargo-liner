@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The `attract` feature enables the attract screen and desktop capture by default.
 - The mouse wheel scrolls the global shortcuts, keymap and settings overlays; the tiles behind an open overlay stay still.
 - `commands.default_arguments` selects the flags shown beside each subcommand, with a sorted list in Settings; defaults are `all-targets`, `fix`, and `workspace`.
 - `h` independently shows or hides all command arguments.
