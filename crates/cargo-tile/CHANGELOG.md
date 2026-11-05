@@ -63,6 +63,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The settings overlay's two Commands lists are typed in: Enter opens `excluded` or `hidden` as text, entries separated by commas or spaces, Enter again writes `config.toml` and applies it on the spot -- the scan picks up `excluded` on its next pass -- and Esc leaves the list as it was.
 
 ### Changed
+
+- Command cells use a plain border. The account and directory occupy body row 1. The optional progress reading follows.
 - A command cell names only its account and directory in its top border, as in `┌ [natepiano] ~/rust/hana ─`; its build or test progress is the first body row, above its process table.
 - Skip equal tile frames while preserving content fades and appearance changes.
 - Hidden cargo commands stay hidden while busy, including nested subtrees and their readings; the setting is renamed to `commands.hidden`, with `hidden_when_idle` accepted as a fallback.
