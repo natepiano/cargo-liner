@@ -6326,11 +6326,7 @@ fn cell_width(text: &str) -> u16 { u16::try_from(UnicodeWidthStr::width(text)).u
 /// slots named here, so `?` lands in the bottom-right corner and stays
 /// bound to whatever `keymap.toml` maps it to.
 fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Rect) {
-    let globals = [
-        StatusLineGlobal::app(AppGlobalAction::ProcessTree),
-        StatusLineGlobal::app(AppGlobalAction::Arguments),
-        StatusLineGlobal::global_shortcuts_help(),
-    ];
+    let globals = [StatusLineGlobal::global_shortcuts_help()];
     let mut notes = vec![StatusLineNote {
         label: APP_NAME.to_string(),
         value: APP_VERSION.to_string(),
@@ -19551,6 +19547,51 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[test]
+    fn the_status_line_omits_the_display_shortcuts() {
+        let app = App::new_for_test().expect("test app should build");
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal =
+            Terminal::new(TestBackend::new(160, 40)).expect("the test terminal opens");
+        terminal
+            .draw(|frame| draw_status_line(frame, &app, &keymap, Rect::new(0, 39, 160, 1)))
+            .expect("the status line draws");
+        let status = buffer_line(terminal.backend().buffer(), 39);
+        assert!(!status.contains("p process_tree"), "{status:?}");
+        assert!(!status.contains("h arguments"), "{status:?}");
+        assert!(status.contains("? shortcuts"), "{status:?}");
+    }
+
+    #[test]
+    fn the_global_shortcuts_list_keeps_both_display_shortcuts() {
+        let mut app = App::new_for_test().expect("test app should build");
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        for (key, action, description) in [
+            ("p", "process_tree", "Show process hierarchy"),
+            ("h", "arguments", "Show all arguments"),
+        ] {
+            assert!(keymap.global_shortcut_rows().iter().any(|row| {
+                row.action == action
+                    && row.description == description
+                    && row.key.as_ref().is_some_and(|bind| bind.to_string() == key)
+            }));
+        }
+        let mut terminal =
+            Terminal::new(TestBackend::new(160, 40)).expect("the test terminal opens");
+        terminal
+            .draw(|frame| tui_pane::draw_global_shortcuts_overlay(frame, &mut app, &keymap))
+            .expect("the shortcuts list draws");
+        let rows = buffer_rows(terminal.backend().buffer());
+        for (description, key) in [("Show process hierarchy", "p"), ("Show all arguments", "h")] {
+            assert!(
+                rows.iter().any(|row| {
+                    row.contains(description) && row.split_whitespace().any(|word| word == key)
+                }),
+                "{rows:?}"
+            );
+        }
+    }
+
     /// A whole frame three frames after the attract screen is asked for
     /// over an idle grid: the panes stand bare while it arrives, the
     /// status line goes back on top, and no backdrop notice is due yet.
@@ -19573,9 +19614,7 @@ mod tests {
 
         let inner = usize::from(WIDTH) - 2;
         let title = SUMMARY_CELL_TITLE;
-        let notes = format!(
-            "cargo-tile {APP_VERSION} attract  p process_tree   h arguments   ? shortcuts "
-        );
+        let notes = format!("cargo-tile {APP_VERSION} attract  ? shortcuts ");
         let mut expected = vec![format!(
             "┌{title}{}┐",
             "─".repeat(inner - title.chars().count())
@@ -19584,7 +19623,7 @@ mod tests {
         expected.push(format!("└{}┘", "─".repeat(inner)));
         expected.push(format!(
             "{:<width$}{notes}",
-            "",
+            " Uptime: 0s",
             width = usize::from(WIDTH) - notes.chars().count()
         ));
         assert_eq!(buffer_rows(terminal.backend().buffer()), expected);
@@ -19615,7 +19654,7 @@ mod tests {
                 "│ │                                                      │ │",
                 "│ └──────────────────────────────────────────────────────┘ │",
                 "└──────────────────────────────────────────────────────────┘",
-                " Uptime: 0s      p process_tree   h arguments   ? shortcuts ",
+                " Uptime: 0s              cargo-tile <version>  ? shortcuts ",
             ],
         ),
         (
@@ -19653,7 +19692,7 @@ mod tests {
                 "│ │   Focus the tile below                          down │ │",
                 "│ └──────────────────────1 of 11 ▼───────────────────────┘ │",
                 "└──────────────────────────────────────────────────────────┘",
-                " Uptime: 0s      p process_tree   h arguments   ? shortcuts ",
+                " Uptime: 0s              cargo-tile <version>  ? shortcuts ",
             ],
         ),
         (
@@ -19672,7 +19711,7 @@ mod tests {
                 "│ │  │   Focus the tile to the left        left      │   │ │",
                 "│ └──│   Focus the tile to the right       right     │───┘ │",
                 "└────└───────────────────1 of 3 ▼────────────────────┘─────┘",
-                " Uptime: 0s      p process_tree   h arguments   ? shortcuts ",
+                " Uptime: 0s              cargo-tile <version>  ? shortcuts ",
             ],
         ),
     ];
@@ -19701,8 +19740,8 @@ mod tests {
             FRAME_TAIL_HEIGHT.saturating_sub(1),
         );
         assert!(status.contains("Uptime: 0s"), "{status:?}");
-        assert!(status.contains("p process_tree"), "{status:?}");
-        assert!(status.contains("h arguments"), "{status:?}");
+        assert!(!status.contains("p process_tree"), "{status:?}");
+        assert!(!status.contains("h arguments"), "{status:?}");
         assert!(status.contains("? shortcuts"), "{status:?}");
     }
 

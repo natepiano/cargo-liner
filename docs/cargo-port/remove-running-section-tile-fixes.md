@@ -2533,7 +2533,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.
 - The summary gives each test named in Spec items 5 and 6 its quiet natedev time and load, and for any at a second or more, its measured cause, its floor and the fix proposal sent to the showrunner.
 
-### Phase 48 — The p and h shortcuts show with the other global shortcuts  · status: todo
+### Phase 48 — The p and h shortcuts show with the other global shortcuts  · status: done
 
 **Depends on:** none (it named Phase 39 only for file order; Phase 39 has not started)
 
