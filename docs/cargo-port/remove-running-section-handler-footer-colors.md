@@ -1023,34 +1023,29 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. Live: summary and accounts shots in all four themes, with each session, role and reset ink read from the shot.
 
-### Phase 34 — Tests leave no folders and wait on signals  · status: todo
+### Phase 34 — Tests leave no folders  · status: todo
 
 **Depends on:** Phase 18, Phase 31
 
 #### Work Order
 
-**Goal:** the cargo-handler startup-note tests leave no temporary folder behind, also when a test fails, and the census schedule timeout test waits for its child's pid file by a signal it controls, not by time.
+**Goal:** the cargo-handler startup-note tests leave no temporary folder behind, also when a test fails.
 
-**Source:** showrunner add-ons, 2026-10-26: the theme-note tests leave /tmp/.tmpXXXXXX folders that hold broken-default-dark.toml; and `census::schedule::tests::unsuccessful_commands_publish_no_edges_and_timeout_reaps_the_child` failed on the Mac under load (0.76 s, "the script should have recorded its pid", NotFound). Run order (showrunner): after phase 31.
+**Source:** showrunner add-ons, 2026-10-26: the theme-note tests leave /tmp/.tmpXXXXXX folders that hold broken-default-dark.toml. Run order (showrunner): after phase 31. The timeout test named in the same add-on and its `ShortDeadlineRunner` no longer exist, so that repair left this phase.
 
 **Constraints from prior phases:**
-- `census/hierarchy.rs` belongs to Phase 47 until its checkpoint.
 - Phase 18: `crates/cargo-handler/src/terminal/theme_note_tests.rs` builds the app through `terminal::startup_theme_notes` (`terminal.rs` ≈79) and `App::new_for_test_with_startup` (`app.rs` ≈246). Its `theme_directory()` keeps the theme folder in a `static DIRECTORY: OnceLock<TempDir>`, which is never dropped, so the folder stays after the run. The fixture function that gives the folder path takes no `self`.
-- The census test is in `crates/cargo-handler/src/census/schedule.rs` (≈1278). It already waits for a completion signal before it reads the pid file. The race is elsewhere: `ShortDeadlineRunner` allows 120 ms, and `census/hierarchy.rs` (≈476) starts that deadline before it spawns the child, so the child can be killed before it writes its pid. The failure is expiry before child readiness, not a fixed sleep before the read.
 
 **Spec:**
 1. Each theme-note test owns its own `TempDir`, which is removed when the test ends, also when it fails (the owner drops on unwind). No `keep()`, no `into_path()`, and no folder outside a `TempDir`. Pass the folder path through the fixture or the config the test builds, not through a static.
 2. A test fails when a theme-note run leaves a folder behind: it runs a fixture to the end, also through a forced failure, and checks that the folder path no longer exists.
-3. The census timeout test uses a test-controlled expiry trigger around the existing termination and reaping path: it observes a child-ready signal, then triggers expiry, with bounded waits only for fixture failure. Production command deadlines stay unchanged. The test proves that a timeout publishes no edges and kills and reaps the ready child.
-4. Each test runs under a second, alone and in the full suite.
+3. Each test runs under a second, alone and in the full suite.
 
 **Files:**
 - `crates/cargo-handler/src/terminal/theme_note_tests.rs`
-- `crates/cargo-handler/src/census/schedule.rs` — the timeout test only
-- `crates/cargo-handler/src/census/hierarchy.rs` — the bounded test-controlled expiry trigger only
 
 **Workers:** 1 tester.
-- `test` — both test repairs, the no-leftover-folder test and the test-controlled expiry trigger; keep the production startup-theme handoff when the static `TempDir` fixture is replaced.
+- `test` — the theme-note repair and the no-leftover-folder test; keep the production startup-theme handoff when the static `TempDir` fixture is replaced.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. After a full cargo-handler run, no new /tmp/.tmp* folder that holds a theme file is left (count before and after).
 
@@ -1158,7 +1153,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - The Codex startup lookup reads through the typed layouts Phase 41 shipped. `ThreadsLayout::WithThreadSource` runs `CODEX_THREADS_QUERY` (`constants.rs` ≈387: `thread_source = 'user'` with `source` not `'exec'`, or `codex-tui` rows with no `thread_source`). `ThreadsLayout::OriginatorOnly` runs `CODEX_LEGACY_THREADS_QUERY` (≈392: `codex-tui` only). Both leave out exec threads and worker threads at startup. `astra_review.py` runs `codex exec` (`originator` `codex_exec`), so its thread is not in the startup result.
 - The wire and lease token `review` stays accepted; displayed reviewer words follow Phase 35.
 - `render/narrow_width_tests.rs` (≈360) and its `growth_app` (≈430) use a long role so that restored or newly visible rows change the width requirement (checked at ≈488 and ≈534). Use supported role words and fixture widths that still test off-window width growth, End/Home/cursor restoration and the first enlarged frame. Keep the whole-core and below-core compression checks, the longer Astra labels included.
-- `codex::read_threads_by_id` (`census/codex.rs` ≈175) already accepts any originator (`CODEX_THREAD_BY_ID_QUERY`). Keep the startup exclusion of exec and worker threads. Do a separate edge-named lookup for Astra exec threads in the named Codex home; do not widen the startup queries. Reuse `SessionNames` for renamed sessions; keep the phase 15 home and resume checks (`thread_matches_home`, `ResumeRequest`) and the no-dispatch regression.
+- `OpenThreadRows::read` in `census/codex.rs` accepts explicit thread IDs through `CODEX_THREAD_BY_ID_QUERY`, regardless of originator. `codex::read_threads_by_id` no longer exists. Use the named Astra Codex home. Collect the IDs of both consumers per home and read each home once: `OpenThreadRows::read` replaces a home's requested IDs (`codex.rs` ≈323), and `app_server_threads` retains only app-server homes (`scan.rs` ≈1418). Retain the combined homes. Preserve per-home caching and invalidation by database and WAL revision. Test an unchanged scan (no second read) and a WAL change (one new read). Keep startup queries restricted as before. Reuse `SessionNames`, home matching, resume handling and the no-dispatch regression.
 - The scanner captures one `StaffSnapshot` before classification. Its source and `Arc<StaffRoster>` supply names and links for that scan. Preserve this consistency when adding Astra membership. Keep database and rollout reads outside the scheduler thread and the publication lock. App-server discovery uses Linux file descriptors under the sessions directory.
 - The staff reader has no reviewer-pool state or lease requirement. Astra busy/idle state needs a semantic type from the announced staff contract. A live Astra session must remain visible between turns without a pool file.
 - `HierarchyEdge` contains `manager`, `member` and `role`. It has no Codex home or busy/idle state. Convert announced staff fields into one checked Astra payload with a required home and state. Reject incomplete Astra membership at that boundary. Preserve the existing staff snapshot and forest validation. Do not add independent domain `Option` fields.
@@ -1580,39 +1575,25 @@ Draw order: prepare, measure at current widths, search only when the inputs chan
 
 ### Phase 62 — A worker that waits on a detached run shows in its unit's tree  · status: done
 
-**Depends on:** none. Starts first when the cargo pause lifts, with Phase 61 beside it (showrunner, 2026-11-03).
+#### As-built
 
-#### Work Order
+- `WorkerRun` and `RunThread` keep a detached worker visible as `waiting` or its verification step; the director keeps its own state.
+- `WorkerReference::{Staff, LegacyThread}` resolves `staff_id` through the existing `StaffRoster`; legacy `thread_id` keeps its direct meaning.
+- Current staff membership selects the live director before the cached `director` file; staff changes refresh retained roster identities.
+- `append_run_threads` adds only missing thread identities; a completed run releases its row when no other live source retains it.
+- App-server discovery uses each server's `CODEX_HOME`; `OpenThreadRows` caches names by account database and WAL revision.
+- Supervisor discovery retains inspected rosters by session directory, including sessions without a live director; unchanged rosters avoid another read.
 
-**Goal:** a unit whose Codex worker waits on a detached `verify.sh` run shows that worker row with `waiting` or the gate step, not a bare `idle` tree.
+**Files:**
+- `crates/cargo-handler/src/census/activity.rs`, `scan.rs`, `tree.rs` — eligible runs, discovery, activity and row creation.
+- `crates/cargo-handler/src/census/worker_dispatch/{mod.rs,sessions.rs}` — roster identities, retained reads and director discovery.
+- `crates/cargo-handler/src/census/{hierarchy.rs,codex.rs}` — checked staff membership and account database caching.
+- Census activity, hierarchy and Codex-home tests cover identity changes, row lifetime, deduplication and cache reuse.
 
-**Source:** the user, via the hana showrunner and the showrunner, 2026-11-03: cargo-handler shows every session in the hana tree as `idle`, also fastest and research, which have open phases with Codex workers. fastest's nextest step waits in the build memory queue.
+**Binds later work:** Worker-role removal of roster reads preserves detached-run discovery through staff membership. Dispatch pairing uses the resolved current thread identity.
 
-**Cause (read from main ff9c2b2fc and the live machine, 2026-11-03):**
-1. A Claude row takes its status from `~/.claude/sessions/<pid>.json` (`idle`, `busy`, `shell`). `idle` wins over the transcript (`scan.rs` `attach_activity_and_names`). This is correct: the director is between turns.
-2. A Codex worker row exists only while its launcher (`implement.sh`) runs below the unit, or while an app server holds its rollout open. A worker that starts a detached run ends its turn, so its launcher exits and the app server unloads the thread (`thread_unload_delay_secs=0`).
-3. The detached run is `mesh_runs.py supervise` under `systemd --user`, not below the unit's pid. Its record names the worker's thread id, and `VerificationProcesses::run` gives that activity only to a child row with the same thread id. With no row, the run shows nowhere.
-4. Live case: fastest (session dir `1454cef1…`), worker `hana_catalyst-build-speed-tests-impl`, thread `01a1870d-1a99…`, roster status `done`, run pid 1062454 `verify.sh test hana --filter startup_animation`, status `running`.
-5. Also: `app_server_threads` (`scan.rs`) reads only `~/.codex/sessions`. All 16 mesh servers on natedev use `CODEX_HOME=~/.codex2`, so a worker in its turn with no live launcher has no row either.
-
-**State model:**
-1. A unit's session directory owns its roster (`mesh_roster.json`: worker name, role, thread id) and its run records (`mesh_runs/*.json`). The `director` file in that directory names the unit's Claude session id.
-2. A worker row exists while any of these is live: its launcher, its thread open on an app server, or a running run record whose pid is live and whose thread id is the worker's.
-3. A row that exists only for a run takes the run's activity: `waiting` until cargo starts, then the step (`nextest`, `clippy`, and the others, with `(mac)` for a remote step). The row goes away when the run ends and no other source is live.
-4. The unit's own row keeps its session status. A worker's state never changes the director's row.
-
-**Spec:**
-1. Make a worker row from a running run record, with the roster's name and role, under the Claude row that the `director` file names. Reuse `worker_dispatch`'s roster read and `RunRecords::read_for_processes`. Do not add a second reader for either file.
-2. A row from a launcher or an app server and a row from a run for the same thread id are one row.
-3. `app_server_threads` reads each app server's own `CODEX_HOME` sessions directory through `codex::session_home`, not `~/.codex` only.
-4. Tests under 1 s: a run with no launcher gives a `waiting` worker row; the same run with cargo below gives `nextest`; the run ends and the row goes away; a launcher and a run for one thread give one row; an app server on a second Codex home shows its open thread; the director's `idle` row stays `idle`.
-5. CHANGELOG: one Fixed line in cargo-handler.
-
-**Files:** `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/activity.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs`, their tests, `crates/cargo-handler/CHANGELOG.md`.
-
-**Workers:** 1 writer.
-
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: a shot of a unit tile on natedev with a worker row that shows `waiting` or a gate step during a live detached run, a design check line, and a Change-Review line.
+**Gotchas:** Eligible runs require a live supervisor naming the exact record, a recognized command, finite start time and a discovered run directory.
+A script name inside `bash -c` remains unrecognized. Roster cache keys are files; retention keys are their parent directories.
 
 ### Phase 63 — Expand and collapse by mouse and by depth keys  · status: todo
 
@@ -1641,16 +1622,23 @@ Draw order: prepare, measure at current widths, search only when the inputs chan
 6. A row choice (Right, Left, Enter, a marker click) wins over its tile's level until the next level key for that tile.
 
 **Spec:**
-1. Record each painted row's marker cells beside its row span in `SurfaceSelection` (`interaction.rs`). Compute them from `TreeLine::lead` (`agent_cell.rs`), the same text that draws the marker.
+1. Record each painted row's marker cells beside its row span in `SurfaceSelection` (`interaction.rs`). Compute them from the fitted lead: `tree_cell_line` drops `TreeLine::lead` when the session column is narrow (`agent_cell.rs` ≈2799), so a row with no drawn marker records no marker cells. Clip the cells to the painted region.
 2. Extend `RowClick` with an outcome for a marker hit, for example `RowClick::Toggled(RowIdentity)`. Keep one click dispatcher and one hit test (Phase 16 binds).
 3. On a marker hit, select the row and apply the toggle that Enter applies.
-4. Tests under 1 s: a click on `▶` opens the row; a click on `▼` closes it; a click on the name only selects; a click on a leaf row's lead only selects; a click on a scrolled tile hits the painted row.
+4. Tests under 1 s: a click on `▶` opens the row; a click on `▼` closes it; a click on the name only selects; a click on a leaf row's lead only selects; a click on a scrolled tile hits the painted row; a click where a narrow column omitted the marker only selects; a click on a row that left the census after the draw toggles nothing.
 5. Replace `ResetExpansion` with one action per digit key, 0 to 9, for the focused tile. `-` keeps `CollapseAll` and now closes to `Through(1)`. The default `Through(1)` gives the same view as today's reset. The shortcuts overlay shows the digits as one row if the overlay can group them; else ten rows.
 6. The level lives in cargo-handler's `expansion.rs`. Do not add it to the shared `tui_pane` expansion model: cargo-port has no consumer for it.
 7. Tests under 1 s: `1`, `2` and `9` show the focused tile to that depth and leave other tiles as they are; `0` shows only roots; `-` closes every tile to the first level; a new deep row follows its tile's level; a row choice wins over the level until the next level key; the key table maps each digit.
 8. CHANGELOG: one Added line and one Changed line (`-` and `0`) in cargo-handler.
 
-**Files:** `crates/cargo-handler/src/interaction.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/expansion.rs`, `crates/cargo-handler/src/globals.rs`, `crates/cargo-handler/src/expansion_tests.rs`, their tests, `crates/cargo-handler/CHANGELOG.md`.
+**Files:**
+- `crates/cargo-handler/src/interaction.rs` — and its tests
+- `crates/cargo-handler/src/agent_cell.rs` — and its tests
+- `crates/cargo-handler/src/render/mod.rs` — and its tests
+- `crates/cargo-handler/src/expansion.rs`
+- `crates/cargo-handler/src/globals.rs` — and its tests
+- `crates/cargo-handler/src/expansion_tests.rs`
+- `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer.
 
@@ -1674,18 +1662,27 @@ Draw order: prepare, measure at current widths, search only when the inputs chan
 
 **State model:**
 1. The herdr worker owns the pane names. `InitialAnswer::{Pending, Ready}` records whether the scan has the answer for its generation.
-2. The TUI path keeps the 100 ms wait. A late answer arrives on a later scan, as today.
+2. The TUI path calls `scan_staged` (`schedule.rs` ≈705) and never calls `finish_initial`, so it does not wait. A late answer arrives on a later scan, as today.
 3. The probe path waits until the answer for its own generation arrives, or until a probe bound ends. After the bound, the row shows `pid N`.
 4. A herdr that is not running gives an answer or ends the wait at once. It never makes the probe wait the full bound.
+5. `SshRunner::probe` (`remote.rs` ≈155) holds the whole remote probe to `PROBE_TIMEOUT`. The herdr wait is part of that budget, so a configured wait must fit inside it.
 
 **Spec:**
-1. Give `finish_initial` a typed wait, for example `InitialWait::{Startup, Probe}`. Do not use a bare duration argument. The probe's `Scanner` uses `Probe`, and the TUI uses `Startup`.
+1. Give `finish_initial` a typed wait, for example `HerdrProbeWait`, read from config. Do not use a bare duration argument. Only `Scanner::scan`, the probe path, calls it. The TUI path stays on `scan_staged`, with no wait.
 2. Put the probe bound in config, not in a constant (showrunner, 2026-11-03: load sets the right value, and a change must not need a release). Add `[census] herdr_probe_wait` to `CensusConfig` (`config.rs` ≈115) as a typed value with a default, the same as `codex_thread_start_window` (`CodexStartWindow`). The probe reads it the same way, through `Scanner::with_codex_start_window`'s pattern (`probe.rs` ≈417). Choose the default from the measured probe times, and write the reason in the doc comment.
 3. Check whether `HERDR_READ_TIMEOUT` also drops names under load. If it does, move it to config by the same rule (`[census] herdr_read_timeout`), and the probe path uses that value through the same typed wait. Record the measurement in the as-built.
-4. Tests under 1 s, with a controlled answer channel and no real sleeps: an answer after 100 ms reaches the probe; the TUI path returns at 100 ms; a herdr that is not running ends the probe wait at once; an answer of an older generation does not count; a missing config key gives the default, and a set key changes the bound.
+4. Tests under 1 s, with a controlled answer channel and no real sleeps: an answer after 100 ms reaches the probe; `scan_staged` never waits for the herdr answer; a configured wait that does not fit inside `PROBE_TIMEOUT` is refused and a wait at the limit fits; a herdr that is not running ends the probe wait at once; an answer of an older generation does not count; a missing config key gives the default, and a set key changes the bound.
 5. CHANGELOG: one Fixed line in cargo-handler.
 
-**Files:** `crates/cargo-handler/src/census/herdr.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/src/config.rs`, `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/src/census/herdr_tests.rs`, the config tests, `crates/cargo-handler/CHANGELOG.md`.
+**Files:**
+- `crates/cargo-handler/src/census/herdr.rs`
+- `crates/cargo-handler/src/census/scan.rs`
+- `crates/cargo-handler/src/census/probe.rs`
+- `crates/cargo-handler/src/census/remote.rs`
+- `crates/cargo-handler/src/config.rs` — and its tests
+- `crates/cargo-handler/src/constants.rs`
+- `crates/cargo-handler/src/census/herdr_tests.rs`
+- `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer.
 
@@ -1866,7 +1863,7 @@ Draw order: prepare, measure at current widths, search only when the inputs chan
 
 ### Phase 57e — Worker roles come from the staff file  · status: todo
 
-**Depends on:** Phase 57c; models 3n on `~/.claude` main (each worker gets its own staff row with its role).
+**Depends on:** Phase 42, Phase 57c and Phase 62; models 3n on `~/.claude` main supplies each worker's staff role.
 
 #### Work Order
 
@@ -1875,14 +1872,23 @@ Draw order: prepare, measure at current widths, search only when the inputs chan
 **Source:** the showrunner, 2026-11-04, from the user's words "anything handler needs to do to support the staff file should be done so we can retire any mechanism scripts that are legacy".
 
 **Spec:**
-1. Read the announced 3n worker role through the existing schema-2 `StaffFileReader`. Extend `StaffFields` and `StaffRoster` without adding another file reader. Carry the role through the same `StaffSnapshot` as names and parent links. Derive the unit from the validated parent identity. Replace `HierarchyEdges::with_worker_roles` roster fallback with the staff role result. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
-2. Remove the `mesh_roster.json` read in `census/worker_dispatch/mod.rs` and its fixtures.
+1. Read the announced 3n worker role through the existing schema-2 `StaffFileReader`. Extend `StaffFields`, `StaffRoster` and the shared `StaffSnapshot`; add no second reader. Reuse the checked staff ID, current session and parent session that the staff reader retains. Derive the unit from that validated parent identity. Replace `HierarchyEdges::with_worker_roles` with the staff role result. Use named results for unavailable membership, a root member and a managed member when extending the identity lookups. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
+2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
 3. Remove the `role_map_cache.json` read in `census/command_inputs.rs`.
-4. Keep `mesh_runs`: it holds run results.
-5. Tests under 1 s: a worker's role and unit from its row; a worker row with no role; no roster file on disk.
+4. Keep `mesh_runs` and `WorkerReference::{Staff, LegacyThread}` semantics. Resolve staff IDs again when the staff snapshot changes, even when run files do not change. Preserve live-supervisor record-path checks, recognized commands, finite start times and discovered run directories. Keep one row per current thread, waiting or gate-step activity, independent director activity and completion removal. Keep legacy `director` fallback where legacy identity still needs it. Do not recognize a script name inside `bash -c`.
+5. Tests under 1 s: staff role and unit; a worker without a role; unavailable membership; no roster file on disk. Migrate the detached-run fixtures to staff-only membership. Keep their assertions for no launcher or open thread, staff handoff, a restarted director, one worker row, verification activity and completion removal.
 6. CHANGELOG: one Changed line in cargo-handler.
 
-**Files:** `crates/cargo-handler/src/census/worker_dispatch/`, `crates/cargo-handler/src/census/command_inputs.rs`, `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/hierarchy_file_tests.rs`, `crates/cargo-handler/src/census/scan/staged_tests.rs`, their fixtures, and `crates/cargo-handler/CHANGELOG.md`.
+**Files:**
+- `crates/cargo-handler/src/census/worker_dispatch/` — and its fixtures
+- `crates/cargo-handler/src/census/command_inputs.rs`
+- `crates/cargo-handler/src/census/hierarchy.rs`
+- `crates/cargo-handler/src/census/hierarchy_file_tests.rs` — and its fixtures
+- `crates/cargo-handler/src/census/activity.rs`
+- `crates/cargo-handler/src/census/scan.rs`
+- `crates/cargo-handler/src/census/scan/activity_scan_tests.rs` — and its fixtures
+- `crates/cargo-handler/src/census/scan/staged_tests.rs` — and its fixtures
+- `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer.
 
@@ -1974,7 +1980,7 @@ Draw order: prepare, measure at current widths, search only when the inputs chan
 **Constraints from prior phases:**
 - `AgentRow` (`census/mod.rs` ≈312) holds `agent`, `service_tier`, `account`, `name`, `activity`, `started`; rows also cross the probe wire from other machines ("missing from a probe printed before it existed"), so a new field needs a wire default for an older probe.
 - No model or effort reads exist yet. Candidate sources: the Claude transcript's assistant records (`message.model`, `census/transcript.rs`) and the session's effort setting; the Codex rollout's `turn_context` (`model`, `effort`) and the Codex thread records `census/codex.rs` reads (Phase 41 changed its thread queries: `ThreadsLayout::{WithThreadSource, OriginatorOnly}`); a worker dispatch line such as `codex/gpt-6.1-sol:high` (`census/worker_dispatch`).
-- Read model and effort by extending the existing transcript and rollout readers: Codex conversation data flows through `Rollouts` (`census/tier.rs` ≈401) and its calls in `census/scan.rs` (≈406, ≈486, ≈628); keep their revision and append checks. (`RunRecords::read_for_processes`, `census/activity.rs` ≈658, reads verification records and is not the path.)
+- Read model and effort through the existing transcript and rollout readers. Preserve `Rollouts` revision and append checks. App-server database rows use `OpenThreadRows::read`, cached per Codex home and invalidated by database and WAL revision. Extend that cache if database rows supply model or effort. `RunRecords::read_for_processes` reads verification evidence, rather than model data. `RunThread` can create a child without a rollout; keep that case valid.
 - `Rollouts::thread` returns `Option<&RolloutRead>` (`census/tier.rs` ≈425). Give it a named result such as `ThreadRollout::{NotRetained, Retained(..)}`, and keep a retained record with unrecorded model or effort distinct from a missing rollout; add no domain-owned `Option` fields.
 - Rows are built in `census/tree.rs` (subagents ≈657, flattened children ≈740) and `census/classify.rs`.
 - Phase 47 owns `census/{activity.rs,scan.rs,hierarchy.rs,command_inputs.rs,activity_regression_tests.rs}` and `app.rs`; claim a shared file through berth, or keep the read in `transcript.rs`, `codex.rs` and a new `census/model.rs`.
@@ -1982,7 +1988,7 @@ Draw order: prepare, measure at current widths, search only when the inputs chan
 **Spec:**
 1. One typed model name: `ModelName` with a short form from one table (`opus`, `sonnet`, `haiku`, `fable`, and the Codex names such as `astra`, `sol`), and `ModelName::Unrecorded` where no record names one. An unknown full id keeps a short form cut by one rule (the last word of the id with no version digits), never a placeholder string.
 2. One typed effort: `ReasoningEffort::{Low, Medium, High, XHigh, Max, Unrecorded}` from the record's word.
-3. Read each value from the agent's own record when the row first appears and again only when that record's revision changes. Subagents take theirs from their own record when it names one, else `Unrecorded`. Shells carry `Unrecorded`.
+3. Read each value from the agent's own record when the row first appears. Read it again only when that record's revision changes. Subagents use their own record when it names a value; otherwise use `Unrecorded`. Shells carry `Unrecorded`. A run-only thread without its own metadata also carries `Unrecorded`; do not borrow the director's or hosting process's values.
 4. `AgentRow` and `ChildRow` (`census/mod.rs` ≈437) carry both. Subagents use `ChildRow`, and managed and unassigned Codex threads also use `ChildRow`. Each thread carries its own model and effort through its child row and the probe wire, never the values of the process that hosts it. The probe wire carries them with an `Unrecorded` default for an older probe.
 5. Red-first tests, each under 1 s: an unchanged record is not read again, appended settings are read, a replaced record is read anew; a Claude transcript fixture gives `opus` + its effort; a Codex rollout or thread fixture gives `sol` + `high`; a thread fixture whose model and effort differ from its hosting process's values keeps its own values on its child row and across the probe wire; an unchanged record is not read again (a counted read); an older probe line parses with `Unrecorded`; the short-name table covers each listed name.
 6. Measure the added cost on the release build in the Phase 40 way and state it at the checkpoint.
@@ -2043,7 +2049,7 @@ Draw order: prepare, measure at current widths, search only when the inputs chan
 **Source:** Phase 40's full test run, 2026-10-29: three existing tests took 1.46 s (gradient), 1.27 s (busy ink) and 1.04 s (codex tier). Phase 43's full run, 2026-10-29: five more took 1.0–1.6 s (`render::selected_ink_tests::selected_row_inks_keep_glyph_contrast_for_sessions_roles_accounts_and_both_timer_states`, `…_in_default_light`, `…every_default_dark_roles_ink_keeps_coverage_and_hue_on_tinted_remembered_selection`, `…every_default_dark_sessions_ink_keeps_coverage_and_hue_on_tinted_remembered_selection`, `agent_cell::tests::design_ink_tests::tree_role_and_account_words_meet_contrast_on_every_tile_ground`); showrunner put them here, after 47, 48 and 43: cause found first, no rerun, no load blame. Phase 25's Codex slow test (showrunner, 2026-10-24: 1.510 s in the phase 30 full suite at high machine load) moved here on 2026-10-30. Phase 45's full run 12dd, 2026-11-03, at high machine load: two more took 1.308 s (pinned accounts) and 1.044 s (high-contrast light ink); alone they took 0.047 s and 0.110 s, and a later full run gave 0.112 s and 0.278 s (showrunner put them here). Standing rule: no test takes a second; a slow test is a defect to fix, never to rerun.
 
 **Constraints from prior phases:**
-- The eleven tests, all under `crates/cargo-handler/src/`:
+- The list below is history: each test took a second or more in a 2026-10 run. Phase 57b cut the first one. At the Phase 62 checkpoint the full suite has 857 tests and its slowest takes 0.309 s on the Mac. A name on this list is not work by itself. The eleven tests, all under `crates/cargo-handler/src/`:
   - `reset_shades_keep_saturated_chroma_and_separation_from_plain_text` (`summary/accounts_gradient_tests.rs` ≈532)
   - `busy_status_words_share_one_drawn_ink_across_row_kinds_and_frame_changes` (`agent_cell/tests/design_ink_tests.rs` ≈99)
   - `tree_role_and_account_words_meet_contrast_on_every_tile_ground` (`agent_cell/tests/design_ink_tests.rs` ≈336)
@@ -2059,8 +2065,8 @@ Draw order: prepare, measure at current widths, search only when the inputs chan
 - A test that runs under a second alone but over a second in the full suite is still a defect. There is no exemption for a test that is fast alone.
 
 **Spec:**
-1. Run the suite, name all eleven tests and measure each alone and in the full suite.
-2. Cut each at its cause; keep every assert.
+1. Run the suite once. List each of the eleven with its time, and every other test at a second or more. Measure only the tests at a second or more, alone and in the full suite.
+2. Cut each of those at its cause; keep every assert. With none at a second or more, change no code and record the times in the as-built.
 3. Show each test's time before and after, alone and in the full suite.
 
 **Files:**
@@ -2182,21 +2188,18 @@ Draw order: prepare, measure at current widths, search only when the inputs chan
 **Source:** the user, 2026-10-31, via the showrunner: "seems as if you should support shift-left and shift-right if you have these up and down - this should go to the end of the list for sure". The showrunner placed it as the last phase.
 
 **Constraints from prior phases:**
-- Phase 57a made cargo-handler default `FocusUp` to `shift-up` and `FocusDown` to `shift-down` (`crates/cargo-handler/src/globals.rs`), because plain `up` and `down` select rows. `FocusLeft` and `FocusRight` stay on plain `left` and `right` there.
+- Phase 45 binds all four focus moves to the shift arrows (`crates/cargo-handler/src/globals.rs` ≈76–79). Plain arrows now select rows and control expansion. The keymap and overlay captures already show the four keys.
 - cargo-tile binds all four focus moves to the plain arrows (`crates/cargo-tile/src/app_global_action.rs`) and has no shift focus keys, so this phase does not change cargo-tile.
 - `TileAction::FocusLeft` and `TileAction::FocusRight` already exist in tui_pane; no new grid action is needed.
-- Keep focus bindings in the default keymap so the user can rebind them. Changed default keys change the overlay captures in `render/mod.rs` (`the_keymap_overlay_opens_on_its_first_screen`, `the_shortcuts_overlay_opens_on_its_first_screen`).
+- Keep focus bindings in the default keymap so the user can rebind them.
 
 **Spec:**
-1. cargo-handler defaults `FocusLeft` to `shift-left` and `FocusRight` to `shift-right`, the same form as `FocusUp` and `FocusDown`. If the keymap takes more than one default key per action with no new API, plain `left` and `right` stay as a second key; if not, the shift keys replace them, and the summary says so.
-2. The Global Shortcuts and Keymap overlays show the four focus keys in the rows where Phase 57a shows the vertical ones.
-3. Red-first tests under 1 s: each shift arrow moves focus one tile in its direction and stays at the edge; the overlay shows all four focus keys. Update the two overlay captures.
-4. CHANGELOG: one Added line in cargo-handler.
+1. The bindings and overlay rows are in place. Do not change them.
+2. Add only the missing evidence. A red-first test under 1 s for each direction that no test proves: the shift arrow moves focus one tile and stays at the edge.
+3. CHANGELOG: one line only if the code changes.
 
 **Files:**
-- `crates/cargo-handler/src/globals.rs` — the defaults and their tests
-- `crates/cargo-handler/src/keymap.rs` — key rows
-- `crates/cargo-handler/src/render/mod.rs` — the overlay captures
+- `crates/cargo-handler/src/globals.rs` — the direction and edge tests
 - `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer.
