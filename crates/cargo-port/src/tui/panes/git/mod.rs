@@ -1,5 +1,7 @@
 mod pane;
 mod render;
+#[cfg(test)]
+mod value_fit_tests;
 
 pub use pane::GitPane;
 pub(super) use render::git_content_height;

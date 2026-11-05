@@ -33,17 +33,17 @@ impl PaneDataStore {
         }
     }
 
-    /// True when the stored detail matches `desired` — caller can skip
-    /// rebuilding. A desired key of `None` matches a cleared store.
-    pub(in crate::tui) fn detail_is_current(&self, desired: Option<DetailCacheKey>) -> bool {
-        self.detail_stamp == DetailCacheState::from(desired)
+    /// Return whether the stored details match the desired state.
+    /// `Cleared` matches details for no selection.
+    pub(in crate::tui) fn detail_is_current(&self, desired: DetailCacheState) -> bool {
+        self.detail_stamp == desired
     }
 
     /// Internal: write the stamp. Called only by `Panes::set_detail_data`
     /// / `Panes::clear_detail_data` so the detail-set "all five together"
     /// invariant survives.
-    pub(super) fn set_detail_stamp(&mut self, stamp: Option<DetailCacheKey>) {
-        self.detail_stamp = DetailCacheState::from(stamp);
+    pub(super) const fn set_detail_stamp(&mut self, stamp: DetailCacheState) {
+        self.detail_stamp = stamp;
         #[cfg(test)]
         {
             self.detail_builds += 1;
@@ -60,11 +60,7 @@ impl PaneDataStore {
 
 /// Cleared panes are current for no selection; selected details name their inputs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DetailCacheState {
+pub(in crate::tui) enum DetailCacheState {
     Cleared,
     Current(DetailCacheKey),
-}
-
-impl From<Option<DetailCacheKey>> for DetailCacheState {
-    fn from(key: Option<DetailCacheKey>) -> Self { key.map_or(Self::Cleared, Self::Current) }
 }

@@ -3,16 +3,22 @@
 mod status_bar_contrast_tests;
 
 use std::collections::HashSet;
+use std::num::NonZeroU16;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
+use crossterm::cursor::MoveToColumn;
+use crossterm::style::Colored;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
+use ratatui::buffer::CellDiffOption;
 use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -313,6 +319,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     }
 
     sync_hovered_pane_row(app);
+    prepare_terminal_buffer(frame.buffer_mut());
 }
 
 /// Body lines shown below the `Run cargo clean?` prompt — everything
@@ -602,34 +609,65 @@ fn sync_hovered_pane_row(app: &mut App) {
     app.apply_hovered_pane_row();
 }
 
-pub(super) fn truncate_to_width(text: &str, max_width: usize) -> String {
-    if text.width() <= max_width {
-        return text.to_string();
+/// Preserve attributes and cursor positions in terminal output.
+fn prepare_terminal_buffer(buffer: &mut Buffer) {
+    let no_color = Colored::ansi_color_disabled_memoized();
+    for (cell, position) in buffer.content.iter_mut().zip(buffer.area.positions()) {
+        if no_color {
+            cell.fg = Color::Reset;
+            cell.bg = Color::Reset;
+        }
+        if cell.symbol().ends_with('\u{fe0f}') {
+            let width = u16::try_from(cell.symbol().width()).unwrap_or(u16::MAX);
+            if let Some(width) = NonZeroU16::new(width) {
+                // Clear every reserved column before drawing a VS16 glyph.
+                let next_column = position.x.saturating_add(width.get());
+                let symbol = format!(
+                    "{}{}{}{}",
+                    " ".repeat(usize::from(width.get())),
+                    MoveToColumn(position.x),
+                    cell.symbol(),
+                    MoveToColumn(next_column)
+                );
+                cell.set_symbol(&symbol)
+                    .set_diff_option(CellDiffOption::ForcedWidth(width));
+            }
+        }
     }
+}
 
-    let mut out = String::new();
-    for ch in text.chars() {
-        let next = format!("{out}{ch}");
-        if next.width() > max_width {
+pub(super) fn truncate_to_width(text: &str, max_width: usize) -> &str {
+    if text.width() <= max_width {
+        return text;
+    }
+    let span = Span::raw(text);
+    let mut width = 0;
+    let mut end = 0;
+    for grapheme in span.styled_graphemes(Style::default()) {
+        width += grapheme.symbol.width();
+        if width > max_width {
             break;
         }
-        out.push(ch);
+        let Some(offset) = text[end..].find(grapheme.symbol) else {
+            break;
+        };
+        end += offset + grapheme.symbol.len();
     }
-    out
+    &text[..end]
 }
 
 pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &str) -> String {
     if text.width() <= max_width {
         return text.to_string();
     }
-    if max_width == 0 {
-        return String::new();
-    }
     if max_width <= ellipsis.width() {
-        return ellipsis.to_string();
+        return truncate_to_width(ellipsis, max_width).to_string();
     }
     let prefix = truncate_to_width(text, max_width.saturating_sub(ellipsis.width()));
-    format!("{prefix}{ellipsis}")
+    let mut shortened = String::with_capacity(prefix.len() + ellipsis.len());
+    shortened.push_str(prefix);
+    shortened.push_str(ellipsis);
+    shortened
 }
 
 /// Keep visible rows and mark omitted rows on the last retained line.

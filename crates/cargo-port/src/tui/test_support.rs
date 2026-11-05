@@ -15,6 +15,8 @@ use std::sync::MutexGuard;
 use std::sync::OnceLock;
 use std::time::Instant;
 
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use tempfile::TempDir;
 use tui_pane::Appearance;
 use tui_pane::SettingsFileSpec;
@@ -48,6 +50,30 @@ use crate::project::WorkspaceMetadataStore;
 use crate::test_support;
 use crate::themes;
 use crate::themes::ThemesDirOverrideGuard;
+
+pub(super) fn make_package(name: &str, path: &Path) -> RootItem {
+    RootItem::Rust(RustProject::Package(Package {
+        path: AbsolutePath::from(path),
+        name: Some(name.to_string()),
+        ..Package::default()
+    }))
+}
+
+pub(super) fn find_text_cell(buffer: &Buffer, limit: Rect, text: &str) -> Option<(u16, u16)> {
+    let limit = limit.intersection(buffer.area);
+    (limit.y..limit.bottom()).find_map(|y| {
+        let mut row = String::new();
+        let mut starts = Vec::new();
+        for x in limit.x..limit.right() {
+            starts.push((row.len(), x));
+            row.push_str(buffer[(x, y)].symbol());
+        }
+        let byte = row.find(text)?;
+        starts
+            .into_iter()
+            .find_map(|(start, x)| (start == byte).then_some((x, y)))
+    })
+}
 
 pub(super) fn test_http_client() -> HttpClient {
     let startup_services = StartupServices::quiet_unit_test();

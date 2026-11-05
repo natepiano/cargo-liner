@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use toml::ser::Error;
+
 use crate::project::AbsolutePath;
 use crate::scan;
 use crate::tui::app::App;
@@ -36,7 +38,11 @@ pub(super) fn load_tree_state() -> (Option<AbsolutePath>, Vec<ExpandTarget>) {
     let Ok(text) = std::fs::read_to_string(&*tree_state_file()) else {
         return (load_last_selected(), Vec::new());
     };
-    let file: TreeStateFile = toml::from_str(&text).unwrap_or_default();
+    parse_tree_state(&text)
+}
+
+fn parse_tree_state(text: &str) -> (Option<AbsolutePath>, Vec<ExpandTarget>) {
+    let file: TreeStateFile = toml::from_str(text).unwrap_or_default();
     let selected = file
         .selected
         .as_deref()
@@ -52,6 +58,12 @@ pub(super) fn load_tree_state() -> (Option<AbsolutePath>, Vec<ExpandTarget>) {
 
 /// Write the current selection and expanded containers to `tree_state.toml`.
 pub(super) fn save_tree_state(app: &App) {
+    if let Ok(text) = serialize_tree_state(app) {
+        let _ = std::fs::write(tree_state_file(), text);
+    }
+}
+
+fn serialize_tree_state(app: &App) -> Result<String, Error> {
     let file = TreeStateFile {
         selected: app
             .project_list
@@ -64,9 +76,17 @@ pub(super) fn save_tree_state(app: &App) {
             .map(encode_expand_target)
             .collect(),
     };
-    if let Ok(text) = toml::to_string(&file) {
-        let _ = std::fs::write(tree_state_file(), text);
-    }
+    toml::to_string(&file)
+}
+
+#[cfg(test)]
+pub(super) fn serialize_tree_state_for_test(app: &App) -> Result<String, Error> {
+    serialize_tree_state(app)
+}
+
+#[cfg(test)]
+pub(super) fn parse_tree_state_for_test(text: &str) -> (Option<AbsolutePath>, Vec<ExpandTarget>) {
+    parse_tree_state(text)
 }
 
 /// Tab-delimited token for one expanded container. The leading kind tag keeps a

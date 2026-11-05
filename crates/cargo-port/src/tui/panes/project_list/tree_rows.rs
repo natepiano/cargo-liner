@@ -39,6 +39,9 @@ use crate::tui::panes::lang;
 use crate::tui::panes::widths;
 use crate::tui::project_list::ExpandKey;
 use crate::tui::project_list::ProjectListRowDisplayPathResolution;
+use crate::tui::project_list::ProjectPathLookup::Found;
+use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+use crate::tui::project_list::ProjectPathLookup::UnknownPath;
 use crate::tui::project_list::VisibleRow;
 use crate::tui::project_list_state::ProjectList;
 use crate::tui::render_context::PaneRenderCtx;
@@ -539,11 +542,12 @@ fn render_root_item(
     let lang = if item.is_rust() {
         item.lang_icon()
     } else {
-        ctx.project_list
-            .at_path(item.path())
-            .and_then(|p| p.language_stats.as_ref())
-            .and_then(|ls| ls.entries.first())
-            .map_or("  ", |e| lang::language_icon(&e.language))
+        (match ctx.project_list.at_path(item.path()) {
+            Found(p) => p.language_stats.as_ref(),
+            UnknownPath | StaleRoute => None,
+        })
+        .and_then(|ls| ls.entries.first())
+        .map_or("  ", |e| lang::language_icon(&e.language))
     };
     let lint_cell = state::lint_cell_for(
         &Lint::status_for_root(&item.root_item),

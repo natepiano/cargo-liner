@@ -9,6 +9,9 @@ use tui_pane::warning_color;
 
 use crate::project::RootItem;
 use crate::scan::StorageHeadroom;
+use crate::tui::project_list::ProjectPathLookup::Found;
+use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+use crate::tui::project_list::ProjectPathLookup::UnknownPath;
 use crate::tui::project_list_state::DiskCacheKey;
 use crate::tui::project_list_state::ProjectList;
 use crate::tui::render;
@@ -107,10 +110,11 @@ pub(super) fn headroom_style(headroom: StorageHeadroom) -> Style {
 }
 
 pub(super) fn formatted_disk(projects: &ProjectList, path: &Path) -> String {
-    let bytes = projects
-        .at_path(path)
-        .and_then(|project| project.disk_usage_bytes)
-        .unwrap_or(0);
+    let bytes = (match projects.at_path(path) {
+        Found(project) => project.disk_usage_bytes,
+        UnknownPath | StaleRoute => None,
+    })
+    .unwrap_or(0);
     render::format_bytes(bytes)
 }
 

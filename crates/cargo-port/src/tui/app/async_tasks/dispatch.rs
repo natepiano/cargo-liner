@@ -12,6 +12,10 @@ use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::ProjectListPresentation;
 use crate::tui::app::scan_state::ScanPhase;
+use crate::tui::project_list::ProjectPathLookup::Found;
+use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+use crate::tui::project_list::ProjectPathLookup::UnknownPath;
+use crate::tui::project_list::ReplacementExpansion;
 use crate::tui::project_list_state::ProjectList;
 use crate::tui::sccache;
 
@@ -59,14 +63,14 @@ impl App {
             "scan_result_applied"
         );
 
-        // `mutate_tree().replace_all(ProjectList::new(projects))` applies the scan result inline
-        // rather than calling `apply_tree_build`, avoiding redundant rebuild scheduling.
-        let selected_path = self
-            .project_list
-            .selected_project_path()
-            .map(AbsolutePath::from)
-            .or_else(|| self.project_list.paths.last_selected.clone());
-        self.mutate_tree().replace_all(ProjectList::new(projects));
+        // Merge retained deletion states before restoring expansion identities.
+        let selected_path = self.project_list.paths.last_selected.clone();
+        let inline_dirs = self.config.current().tui.inline_dirs.clone();
+        self.mutate_tree().projects.replace_roots_from(
+            ProjectList::new(projects),
+            &inline_dirs,
+            ReplacementExpansion::RestoreSavedTargets,
+        );
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();
         self.refresh_lint_runs_from_disk();
@@ -76,20 +80,10 @@ impl App {
         // `select_project_in_tree`, so the cursor lands on the correct expanded row. Startup seeds
         // the set from disk and rescans from the live tree.
         let pending = std::mem::take(&mut self.project_list.paths.pending_expanded);
-        self.project_list.apply_expanded(&pending);
-        self.rebuild_visible_rows_now();
+        self.restore_expanded(&pending);
         self.refresh_project_storage();
-
-        // `project_list.select_project_in_tree` restores `selected_path`, falling back to
-        // `set_cursor(0)` when no prior selection exists and the list is nonempty.
-        if let Some(path) = selected_path {
-            self.project_list.select_project_in_tree(
-                path.as_path(),
-                self.config.include_non_rust().includes_non_rust(),
-            );
-        } else if !self.project_list.is_empty() {
-            self.project_list.set_cursor(0);
-        }
+        self.restore_selection(selected_path.as_deref());
+        self.scan.state.phase = ScanPhase::Complete;
         self.sync_selected_project();
 
         // `register_background_services_for_tree` registers each project watcher, as
@@ -98,9 +92,6 @@ impl App {
         self.register_background_services_for_tree();
         self.finish_watcher_registration_batch();
 
-        // Set `scan.state.phase` to `ScanPhase::Complete` before `begin_startup_phase` initializes
-        // startup detail tracking.
-        self.scan.state.phase = ScanPhase::Complete;
         self.begin_startup_phase(lint_registered);
     }
     /// Handle a single `BackgroundMsg`. Returns `true` if the tree
@@ -333,23 +324,7 @@ impl App {
     /// the path resolves to a known leaf. Extracted from the dispatch
     /// match so each arm stays a single call.
     fn handle_submodules_msg(&mut self, path: &Path, submodules: Vec<Submodule>) {
-        let submodule_list_changed = self.project_list.at_path_mut(path).is_some_and(|info| {
-            let declarations_match = info.submodules.len() == submodules.len()
-                && info
-                    .submodules
-                    .iter()
-                    .zip(&submodules)
-                    .all(|(current, accepted)| {
-                        current.name == accepted.name
-                            && current.path == accepted.path
-                            && current.relative_path == accepted.relative_path
-                            && current.url == accepted.url
-                            && current.branch == accepted.branch
-                            && current.commit == accepted.commit
-                    });
-            info.submodules = submodules;
-            !declarations_match
-        });
+        let submodule_list_changed = self.project_list.replace_submodules(path, submodules);
         if submodule_list_changed {
             self.project_list.rebuild_path_index();
             self.rebuild_visible_rows_now();
@@ -434,14 +409,15 @@ enum DiskRowInput {
 }
 
 fn disk_row_input(projects: &ProjectList, path: &Path) -> DiskRowInput {
-    projects
-        .at_path(path)
-        .map_or(DiskRowInput::Missing, |info| DiskRowInput::Present {
+    match projects.at_path(path) {
+        Found(info) => DiskRowInput::Present {
             bytes:      MeasuredBytes::from(info.disk_usage_bytes),
             target:     MeasuredBytes::from(info.in_project_target),
             non_target: MeasuredBytes::from(info.in_project_non_target),
             visibility: info.visibility,
-        })
+        },
+        UnknownPath | StaleRoute => DiskRowInput::Missing,
+    }
 }
 
 /// A disk field is unknown until a measurement supplies its byte count.

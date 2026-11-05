@@ -1,5 +1,5 @@
-// `CONTENT_WIDTH_PADDING` and the `POPUP_*` constants size and position the sccache overlay.
-pub(super) const CONTENT_WIDTH_PADDING: usize = 2;
+// The popup reserves the same padding on both sides of its body.
+pub(super) const CONTENT_RIGHT_PADDING: &str = tui_pane::SECTION_ITEM_INDENT;
 pub(super) const POPUP_BORDER_HEIGHT: u16 = 2;
 pub(super) const POPUP_HORIZONTAL_MARGIN: u16 = 4;
 pub(super) const POPUP_MIN_WIDTH: u16 = 56;
