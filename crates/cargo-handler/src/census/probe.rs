@@ -22,19 +22,17 @@ use super::ChildRow;
 use super::CodexThreadId;
 use super::HierarchyEdges;
 use super::HierarchyNotice;
-use super::HierarchySnapshot;
 use super::HierarchySource;
 use super::ServiceTier;
 use super::SessionIdentity;
 use super::ShellTimerObservation;
+use super::StaffRowNames;
 use super::Timer;
 use super::WorkIdentity;
 use super::account::AccountLabels;
-use super::hierarchy;
-use super::hierarchy::CommandRunner;
 use super::hierarchy::HierarchyAnswer;
 use super::hierarchy::HierarchyError;
-use super::hierarchy::ReviewerOutcome;
+use super::hierarchy::StaffFileReader;
 use super::idle_activity;
 use super::local_machine_name;
 use super::scan::LocalScanner;
@@ -281,6 +279,8 @@ pub(super) struct ProbeAgentRow {
     account:         Account,
     name:            String,
     #[serde(default)]
+    staff_names:     StaffRowNames,
+    #[serde(default)]
     status:          Option<String>,
     #[serde(default)]
     activity:        Option<super::AgentActivity>,
@@ -306,6 +306,7 @@ impl From<ProbeAgentRow> for AgentRow {
             service_tier:    row.service_tier,
             account:         row.account,
             name:            row.name,
+            staff_names:     row.staff_names,
             activity:        row
                 .activity
                 .unwrap_or_else(|| AgentActivity::from(row.status.as_deref())),
@@ -326,8 +327,6 @@ impl From<ProbeAgentRow> for AgentRow {
 struct ProbeReport {
     /// [`PROBE_SCHEMA`] of the build that printed it.
     schema:           u32,
-    #[serde(default)]
-    reviewers:        Vec<ReviewerOutcome>,
     /// The printing machine's short host name.
     machine:          String,
     /// Its agents, oldest first, each with what it is running.
@@ -347,7 +346,8 @@ struct ProbeReport {
 }
 
 impl ProbeReport {
-    /// Keep the schema-3 failure flag for receivers that predate typed notices.
+    /// Keep the failure flag for receivers that cannot read typed notices.
+    #[cfg(test)]
     const fn record_failure(&mut self, reason: HierarchyError) {
         self.hierarchy_failed = true;
         self.hierarchy_notice = HierarchyNotice::Failed(reason);
@@ -358,7 +358,7 @@ impl ProbeReport {
         let (rows, thread_hosts) = rows.into_iter().partition(AgentRow::is_visible);
         Self {
             schema: PROBE_SCHEMA,
-            reviewers: Vec::new(),
+
             machine,
             rows,
             edges,
@@ -370,7 +370,7 @@ impl ProbeReport {
 
     /// Restore transport-only identity before handing an answer to the census.
     fn into_answer(self) -> (Vec<AgentRow>, HierarchyAnswer) {
-        let mut rows: Vec<AgentRow> = self
+        let rows: Vec<AgentRow> = self
             .rows
             .into_iter()
             .chain(self.thread_hosts.into_iter().map(|mut host| {
@@ -378,16 +378,11 @@ impl ProbeReport {
                 host
             }))
             .collect();
-        hierarchy::ReviewerPools::apply_outcomes(&mut rows, &self.reviewers);
         let hierarchy = match self.hierarchy_notice {
-            HierarchyNotice::Failed(reason) => HierarchyAnswer::Failed {
-                reason,
-                reviewers: self.reviewers,
-            },
+            HierarchyNotice::Failed(reason) => HierarchyAnswer::Failed { reason },
             HierarchyNotice::NoSessionMatched => HierarchyAnswer::Unmatched(self.edges),
             HierarchyNotice::Clear if self.hierarchy_failed => HierarchyAnswer::Failed {
-                reason:    HierarchyError::ExitedUnsuccessfully,
-                reviewers: self.reviewers,
+                reason: HierarchyError::ExitedUnsuccessfully,
             },
             HierarchyNotice::Clear => HierarchyAnswer::Answered(self.edges),
         };
@@ -407,45 +402,17 @@ struct SchemaHeader {
 pub(crate) fn print() -> ExitCode {
     startup_log::init();
     let loaded = LoadedConfig::load::<CargoHandler>();
-    let source = HierarchySource::from(loaded.config.census.hierarchy_command);
-    let mut report = ProbeReport::from_answer(
-        local_machine_name(),
-        LocalScanner::new(AccountLabels::new(
-            &loaded.config.accounts,
-            dirs::home_dir().as_deref(),
-        ))
-        .with_codex_start_window(loaded.config.census.codex_thread_start_window)
-        .scan(),
-        HierarchyEdges::default(),
-    );
-    let pools = hierarchy::ReviewerPools::root().read();
-    report.reviewers = pools.outcomes();
-    hierarchy::ReviewerPools::apply_outcomes(&mut report.rows, &report.reviewers);
-    hierarchy::ReviewerPools::apply_outcomes(&mut report.thread_hosts, &report.reviewers);
-    match hierarchy::read(&source, &CommandRunner) {
-        Ok(mut edges) => {
-            let pools = hierarchy::ReviewerPools::root().read();
-            pools.refresh(&mut edges);
-            hierarchy::ReviewerPools::apply(&mut report.rows, &edges);
-            hierarchy::ReviewerPools::apply(&mut report.thread_hosts, &edges);
-            let snapshot = HierarchySnapshot {
-                edges,
-                notice: HierarchyNotice::Clear,
-            };
-            let snapshot = if matches!(source, HierarchySource::Command(_)) {
-                let mut rows = report.rows.clone();
-                rows.extend_from_slice(&report.thread_hosts);
-                snapshot.matched(&rows)
-            } else {
-                snapshot
-            };
-            report.edges = snapshot.edges;
-            report.hierarchy_notice = snapshot.notice;
-        },
-        Err(reason) => {
-            report.record_failure(reason);
-        },
-    }
+    let source = HierarchySource::from(loaded.config.census.staff_file.0);
+    let staff = StaffFileReader::default();
+    let (rows, snapshot) = LocalScanner::new(AccountLabels::new(
+        &loaded.config.accounts,
+        dirs::home_dir().as_deref(),
+    ))
+    .with_codex_start_window(loaded.config.census.codex_thread_start_window)
+    .with_staff_file(super::StaffFileSetting::new(source), staff)
+    .scan();
+    let edges = snapshot.publication().edges.with_worker_roles(&rows);
+    let report = ProbeReport::from_answer(local_machine_name(), rows, edges);
     let written = serde_json::to_string(&report)
         .map_err(io::Error::from)
         .and_then(|json| writeln!(io::stdout().lock(), "{json}"));
@@ -535,7 +502,6 @@ mod tests {
     /// opened.
     fn report() -> ProbeReport {
         ProbeReport {
-            reviewers:        Vec::new(),
             hierarchy_failed: false,
             hierarchy_notice: HierarchyNotice::Clear,
             schema:           PROBE_SCHEMA,
@@ -544,6 +510,7 @@ mod tests {
             edges:            HierarchyEdges::default(),
             rows:             vec![
                 AgentRow {
+                    staff_names:     StaffRowNames::default(),
                     agent:           Agent::Codex,
                     role_fallback:   crate::census::RoleFallback::None,
                     session_id:      SessionIdentity::Unrecorded,
@@ -561,6 +528,7 @@ mod tests {
                     children:        Vec::new(),
                 },
                 AgentRow {
+                    staff_names:     StaffRowNames::default(),
                     agent:           Agent::Claude,
                     role_fallback:   crate::census::RoleFallback::None,
                     session_id:      SessionIdentity::Unrecorded,
@@ -636,6 +604,7 @@ mod tests {
     /// The separate session launched by the report's Claude row.
     fn worker() -> AgentRow {
         AgentRow {
+            staff_names:     StaffRowNames::default(),
             agent:           Agent::Claude,
             role_fallback:   RoleFallback::None,
             session_id:      SessionIdentity::Unrecorded,
@@ -663,7 +632,7 @@ mod tests {
         assert_eq!(
             json,
             concat!(
-                r#"{"schema":3,"reviewers":[],"machine":"mac","rows":["#,
+                r#"{"schema":3,"machine":"mac","rows":["#,
                 r#"{"agent":"codex","session_id":null,"role_fallback":"none","service_tier":"unrecorded","account":null,"name":"ChatGPT","activity":"unreported","started":1790000000,"process_started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
                 r#"{"agent":"claude","session_id":null,"role_fallback":"none","service_tier":"unrecorded","account":null,"name":"natemccoy-30","activity":"idle","started":1790000100,"process_started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80100,"name":"Run the mesh","started":1790000110},"#,
@@ -719,10 +688,9 @@ mod tests {
         report.rows[1].session_id = SessionIdentity::Claude("manager".to_string());
         report.rows[2].session_id = SessionIdentity::Claude("member".to_string());
         report.edges = HierarchyEdges(vec![super::super::HierarchyEdge {
-            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-            manager:  "manager".to_string(),
-            member:   "member".to_string(),
-            role:     super::super::HierarchyRole::Review,
+            manager: "manager".to_string(),
+            member:  "member".to_string(),
+            role:    super::super::HierarchyRole::Review,
         }]);
         let output = serde_json::to_vec(&report).expect("the extended report should serialize");
         assert_eq!(
@@ -788,8 +756,7 @@ mod tests {
             Ok((
                 report.rows,
                 HierarchyAnswer::Failed {
-                    reason:    HierarchyError::ExitedUnsuccessfully,
-                    reviewers: Vec::new(),
+                    reason: HierarchyError::ExitedUnsuccessfully,
                 }
             ))
         );

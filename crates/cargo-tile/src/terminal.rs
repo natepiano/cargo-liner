@@ -12,11 +12,11 @@ use std::time::Instant;
 use tui_pane::Appearance;
 use tui_pane::PollWork;
 use tui_pane::Repaint;
-use tui_pane::Updates;
 use tui_pane::install_theme;
 use tui_pane::run_terminal;
 
 use crate::app::App;
+use crate::app::Updates;
 use crate::capture;
 use crate::census;
 use crate::census::CargoGroup;
@@ -188,7 +188,10 @@ impl Workers {
 
 impl PollWork<App> for Workers {
     fn poll(&mut self, app: &mut App, now: Instant) -> Repaint {
+        #[cfg(feature = "attract")]
         let mut dirty = tui_pane::poll_favorites(app, now) == Repaint::Needed;
+        #[cfg(not(feature = "attract"))]
+        let mut dirty = false;
         dirty |= drain_appearances(app, &self.appearances);
         // Frozen, every one of these is skipped: what a scan found,
         // how far a fade has walked and where a travelling cell has
@@ -231,6 +234,7 @@ impl PollWork<App> for Workers {
             // own cadence while it is on the screen, and for one more at
             // the end of the quiet it waits out before coming back. See
             // [`tui_pane::Attract::frame_due`].
+            #[cfg(feature = "attract")]
             if app.attract.frame_due() == Repaint::Needed {
                 dirty = true;
             }
@@ -317,11 +321,14 @@ mod tests {
     use crossterm::event::KeyModifiers;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    #[cfg(feature = "attract")]
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use tempfile::TempDir;
+    #[cfg(feature = "attract")]
     use tui_pane::FavoritesFileState;
     use tui_pane::FrameworkOverlayId;
+    #[cfg(feature = "attract")]
     use tui_pane::SettingsApplicationOutcome;
     use tui_pane::TerminalApp;
     use tui_pane::dispatch_key;
@@ -384,6 +391,7 @@ mod tests {
         assert_eq!(changed, Repaint::Needed, "appearance needs a body frame");
     }
 
+    #[cfg(feature = "attract")]
     const FAVORITE_ROW: &str = r#"
 [[favorite]]
 id = "01a03f60-9c14-7b41-8a02-1de4c7c9b332"
@@ -398,6 +406,7 @@ fraying = "leading"
 
     fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
 
+    #[cfg(feature = "attract")]
     fn rendered_buffer_lines(buffer: &Buffer) -> Vec<String> {
         (buffer.area.y..buffer.area.bottom())
             .map(|y| {
@@ -781,6 +790,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn app_modal_consumes_app_and_framework_globals_until_escape() {
         let mut app = App::new_for_test().expect("test app should build");
         dispatch_key(
@@ -800,6 +810,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn coalesced_resize_refreshes_currency_after_attract_reclamping() {
         let mut app = App::new_for_test().expect("test app should build");
         let rows = tui_pane::parse_favorite_rows_for_test(FAVORITE_ROW)
@@ -866,6 +877,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn framework_modal_prevents_a_second_app_modal_from_opening() {
         let mut app = App::new_for_test().expect("test app should build");
         dispatch_key(&mut app, key(KeyCode::Char('s')));

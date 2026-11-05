@@ -17,6 +17,7 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::process::Child;
     use std::process::Command;
     use std::process::Output;
     use std::process::Stdio;
@@ -368,14 +369,28 @@ exit 37
         fixture.assert_fallback_untouched();
     }
 
+    /// Own the CLI child until cleanup completes, including during a panic.
+    struct UnfinishedCli {
+        child: Child,
+    }
+
+    impl Drop for UnfinishedCli {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
     /// Kill and reap on both success and timeout, then join the owner of the stdout pipe.
     fn terminate_after_first_row(command: &mut Command) -> Output {
-        let mut child = command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("start CLI with unfinished later work");
-        let stdout = child.stdout.take().expect("child stdout pipe");
+        let mut cli = UnfinishedCli {
+            child: command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("start CLI with unfinished later work"),
+        };
+        let stdout = cli.child.stdout.take().expect("child stdout pipe");
         let (sender, receiver) = mpsc::channel();
         let reader = thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
@@ -386,11 +401,22 @@ exit 37
             bytes
         });
         let first = receiver.recv_timeout(CHILD_OUTPUT_TIMEOUT);
-        child
+        cli.child
             .kill()
             .expect("terminate CLI before later operation completes");
-        let mut output = child.wait_with_output().expect("reap terminated CLI");
-        output.stdout = reader.join().expect("join stdout reader");
+        let status = cli.child.wait().expect("reap terminated CLI");
+        let mut stderr = Vec::new();
+        cli.child
+            .stderr
+            .take()
+            .expect("child stderr pipe")
+            .read_to_end(&mut stderr)
+            .expect("drain child stderr");
+        let output = Output {
+            status,
+            stdout: reader.join().expect("join stdout reader"),
+            stderr,
+        };
         assert!(
             matches!(first, Ok(Ok(length)) if length > 0),
             "completed row never arrived: {first:?}; {output:?}"

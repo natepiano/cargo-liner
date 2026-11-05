@@ -42,6 +42,7 @@ use crate::channel;
 use crate::project::AbsolutePath;
 use crate::project::FileStamp;
 use crate::project::ManifestFingerprint;
+use crate::project::NonRustProject;
 use crate::project::Package;
 use crate::project::RootItem;
 use crate::project::RustProject;
@@ -355,10 +356,12 @@ fn project_discovered_draws_one_new_frame() {
     let now = Instant::now();
     let mut frames = FrameState::default();
     assert!(frames.needs_draw(&app, now));
+    // A non-Rust root starts no `cargo metadata` task, so its reply cannot join this poll.
+    let discovered = NonRustProject::new(AbsolutePath::from("/tmp/phase3-discovered"), None);
     queue(
         &mut app,
         BackgroundMsg::ProjectDiscovered {
-            item: project("/tmp/phase3-discovered"),
+            item: RootItem::NonRust(discovered),
         },
     );
     assert!(frames.needs_draw(&app, now));

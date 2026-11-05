@@ -266,16 +266,14 @@ fn activity_managed_tree_sorts_status_words_without_reordering_each_workers_chil
         vec![root, writer, reader],
         HierarchyEdges(vec![
             HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "root-id".into(),
-                member:   "reader-id".into(),
-                role:     HierarchyRole::Test,
+                manager: "root-id".into(),
+                member:  "reader-id".into(),
+                role:    HierarchyRole::Test,
             },
             HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "root-id".into(),
-                member:   "writer-id".into(),
-                role:     HierarchyRole::Impl,
+                manager: "root-id".into(),
+                member:  "writer-id".into(),
+                role:    HierarchyRole::Impl,
             },
         ])
         .into(),
@@ -338,16 +336,14 @@ fn activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_
         vec![root],
         HierarchyEdges(vec![
             HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "root-id".into(),
-                member:   task_id.into(),
-                role:     HierarchyRole::Fix,
+                manager: "root-id".into(),
+                member:  task_id.into(),
+                role:    HierarchyRole::Fix,
             },
             HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "root-id".into(),
-                member:   unreadable_id.into(),
-                role:     HierarchyRole::Test,
+                manager: "root-id".into(),
+                member:  unreadable_id.into(),
+                role:    HierarchyRole::Test,
             },
         ])
         .into(),

@@ -11,7 +11,18 @@
       "pid": null,
       "thread_id": "unit-worker-thread",
       "name": "compile crates",
-      "started": 100
+      "started": 100,
+      "dispatch": {
+        "worker": {
+          "seat": "fixture-impl",
+          "thread_id": "unit-worker-thread",
+          "job": "compile crates",
+          "short_seat": "impl",
+          "role": {
+            "worker": "impl"
+          }
+        }
+      }
     }
   ]
 }

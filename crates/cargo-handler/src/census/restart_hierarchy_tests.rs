@@ -274,7 +274,7 @@ fn restart_hierarchy_first_publication_never_draws_a_known_unit_as_top_level() {
         Ok(production_edges()),
     ]))));
     let updates = schedule::spawn_with_test_source(
-        HierarchyCommand::new(HierarchySource::Command("fixture production tree".into())),
+        StaffFileSetting::new(HierarchySource::File("fixture production tree".into())),
         runner,
         |answers| {
             answers
@@ -307,7 +307,7 @@ fn restart_hierarchy_new_pid_keeps_the_unit_nested_in_every_staged_publication()
         Ok(production_edges()),
     ]))));
     let updates = schedule::spawn_with_test_source(
-        HierarchyCommand::new(HierarchySource::Command("fixture production tree".into())),
+        StaffFileSetting::new(HierarchySource::File("fixture production tree".into())),
         runner,
         |answers| {
             answers
@@ -345,7 +345,7 @@ fn restart_hierarchy_new_session_is_placed_before_its_first_published_frame() {
         Ok(production_edges()),
     ]))));
     let updates = schedule::spawn_with_test_source(
-        HierarchyCommand::new(HierarchySource::Command("fixture production tree".into())),
+        StaffFileSetting::new(HierarchySource::File("fixture production tree".into())),
         runner,
         |answers| {
             let mut before = production_rows(20);
@@ -413,32 +413,26 @@ fn restart_hierarchy_unmapped_home_session_stays_in_the_top_level_table() {
 
 #[test]
 fn restart_hierarchy_refresh_failure_keeps_the_resumed_unit_nested() {
-    let pool_root = tempfile::tempdir().expect("empty reviewer pools");
-    let mut cache = HierarchyCache::with_pool_root(pool_root.path().to_owned());
+    let mut cache = HierarchyCache::default();
     let runner = Answers(Mutex::new(VecDeque::from([
         Ok(production_edges()),
         Err(HierarchyError::TimedOut),
         Ok(production_edges()),
     ])));
-    let source = HierarchySource::Command("fixture production tree".into());
+    let source = HierarchySource::File("fixture production tree".into());
     let now = Instant::now();
     let original = production_rows(20);
-    let initial = cache.snapshot(source.clone(), &original, &runner, now);
+    let initial = cache.snapshot(&source, &original, &runner, now);
     assert_unit_is_nested(&original, &initial);
     let resumed = production_rows(200);
-    let failed = cache.snapshot(
-        source.clone(),
-        &resumed,
-        &runner,
-        now + HIERARCHY_REFRESH_INTERVAL,
-    );
+    let failed = cache.snapshot(&source, &resumed, &runner, now + HIERARCHY_REFRESH_INTERVAL);
     assert_eq!(
         failed.notice,
         HierarchyNotice::Failed(HierarchyError::TimedOut)
     );
     assert_unit_is_nested(&resumed, &failed);
     let recovered = cache.snapshot(
-        source,
+        &source,
         &resumed,
         &runner,
         now + HIERARCHY_REFRESH_INTERVAL + Duration::from_millis(1),
@@ -449,17 +443,16 @@ fn restart_hierarchy_refresh_failure_keeps_the_resumed_unit_nested() {
 
 #[test]
 fn restart_hierarchy_missing_unit_edge_refreshes_on_the_next_scan() {
-    let pool_root = tempfile::tempdir().expect("empty reviewer pools");
-    let mut cache = HierarchyCache::with_pool_root(pool_root.path().to_owned());
+    let mut cache = HierarchyCache::default();
     let runner = Answers(Mutex::new(VecDeque::from([
         Ok(HierarchyEdges::default()),
         Ok(production_edges()),
     ])));
-    let source = HierarchySource::Command("fixture production tree".into());
+    let source = HierarchySource::File("fixture production tree".into());
     let rows = production_rows(200);
     let now = Instant::now();
-    cache.snapshot(source.clone(), &rows, &runner, now);
-    let linked = cache.snapshot(source, &rows, &runner, now);
+    cache.snapshot(&source, &rows, &runner, now);
+    let linked = cache.snapshot(&source, &rows, &runner, now);
     assert_eq!(
         runner.0.lock().expect("answers").len(),
         0,
@@ -470,19 +463,18 @@ fn restart_hierarchy_missing_unit_edge_refreshes_on_the_next_scan() {
 
 #[test]
 fn restart_hierarchy_unmapped_session_gets_one_refresh_until_a_new_id_arrives() {
-    let pool_root = tempfile::tempdir().expect("empty reviewer pools");
-    let mut cache = HierarchyCache::with_pool_root(pool_root.path().to_owned());
+    let mut cache = HierarchyCache::default();
     let runner = Answers(Mutex::new(VecDeque::from([
         Ok(production_edges()),
         Ok(production_edges()),
         Ok(production_edges()),
     ])));
-    let source = HierarchySource::Command("fixture production tree".into());
+    let source = HierarchySource::File("fixture production tree".into());
     let (processes, sessions) = fixture();
     let mut rows = classified(&processes, &sessions);
     let now = Instant::now();
-    cache.snapshot(source.clone(), &rows, &runner, now);
-    let checked = cache.snapshot(source.clone(), &rows, &runner, now + LOCAL_SCAN_INTERVAL);
+    cache.snapshot(&source, &rows, &runner, now);
+    let checked = cache.snapshot(&source, &rows, &runner, now + LOCAL_SCAN_INTERVAL);
     assert_eq!(
         runner.0.lock().expect("answers").len(),
         1,
@@ -493,12 +485,7 @@ fn restart_hierarchy_unmapped_session_gets_one_refresh_until_a_new_id_arrives() 
     assert!(unassigned_text(&rows, &checked).contains("ordinary home session"));
     assert!(summary.contains("1 top-level agent"), "{summary}");
     for tick in 2..=4 {
-        cache.snapshot(
-            source.clone(),
-            &rows,
-            &runner,
-            now + LOCAL_SCAN_INTERVAL * tick,
-        );
+        cache.snapshot(&source, &rows, &runner, now + LOCAL_SCAN_INTERVAL * tick);
         assert_eq!(
             runner.0.lock().expect("answers").len(),
             1,
@@ -509,24 +496,14 @@ fn restart_hierarchy_unmapped_session_gets_one_refresh_until_a_new_id_arrives() 
         .find(|row| row.pid == 30)
         .expect("home session")
         .session_id = SessionIdentity::Claude("another-ordinary-session".into());
-    let new_session = cache.snapshot(
-        source.clone(),
-        &rows,
-        &runner,
-        now + LOCAL_SCAN_INTERVAL * 4,
-    );
+    let new_session = cache.snapshot(&source, &rows, &runner, now + LOCAL_SCAN_INTERVAL * 4);
     assert_eq!(
         runner.0.lock().expect("answers").len(),
         0,
         "a new id receives its own check at the same observation time"
     );
     for tick in 5..=7 {
-        cache.snapshot(
-            source.clone(),
-            &rows,
-            &runner,
-            now + LOCAL_SCAN_INTERVAL * tick,
-        );
+        cache.snapshot(&source, &rows, &runner, now + LOCAL_SCAN_INTERVAL * tick);
     }
     let summary = summary_text(&rows, &new_session);
     assert!(!summary.contains("ordinary home session"), "{summary}");
@@ -576,7 +553,7 @@ impl RunningFixture {
             replies:   Mutex::new(answers),
         });
         let updates = schedule::spawn_with_test_source_and_budget(
-            HierarchyCommand::new(HierarchySource::Command("fixture production tree".into())),
+            StaffFileSetting::new(HierarchySource::File("fixture production tree".into())),
             runner,
             FIXTURE_FIRST_BUDGET,
             move |answers| {

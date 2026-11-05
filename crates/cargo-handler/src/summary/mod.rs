@@ -1001,8 +1001,8 @@ mod tests {
     use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::StaffRowNames;
     use crate::census::accounts::AccountsTable;
-    use crate::census::hierarchy::ReviewerState;
     use crate::sort::AccountsSort;
 
     /// The unix second every age in these tests is measured to.
@@ -1028,6 +1028,7 @@ mod tests {
         directory: &str,
     ) -> AgentRow {
         AgentRow {
+            staff_names: StaffRowNames::default(),
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             agent,
@@ -1145,10 +1146,9 @@ mod tests {
             pairs
                 .iter()
                 .map(|(manager, member)| HierarchyEdge {
-                    reviewer: ReviewerState::NotPool,
-                    manager:  (*manager).to_string(),
-                    member:   (*member).to_string(),
-                    role:     HierarchyRole::Unit,
+                    manager: (*manager).to_string(),
+                    member:  (*member).to_string(),
+                    role:    HierarchyRole::Unit,
                 })
                 .collect(),
         )

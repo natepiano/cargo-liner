@@ -65,9 +65,8 @@ use super::codex_names::SessionNames;
 use super::desktop;
 use super::desktop::TmuxLayout;
 use super::desktop::WindowEntry;
-use super::hierarchy::ReviewerOutcome;
-use super::hierarchy::ReviewerPools;
-use super::hierarchy::ReviewerState;
+use super::hierarchy::StaffFileReader;
+use super::hierarchy::StaffSnapshot;
 use super::tier;
 use super::tier::PacerHistory;
 use super::tier::Rollouts;
@@ -124,7 +123,6 @@ type ProcessKey = (u32, u64);
 /// Scans this machine for its agents and what each is running.
 #[derive(Debug)]
 pub(super) struct LocalScanner {
-    reviewer_pools:      ReviewerPools,
     processes:           ProcessCensus,
     run_records:         RunRecords,
     /// Whether a completed answer has replaced the startup classification.
@@ -153,6 +151,7 @@ pub(super) struct LocalScanner {
     codex_logs:          CodexLogs,
     herdr:               super::herdr::HerdrNames,
     codex_links:         HashMap<u32, CodexSessionLink>,
+    staff:               super::hierarchy::StaffDiscovery,
     codex_start_window:  CodexStartWindow,
     transcript_activity: HashMap<PathBuf, TranscriptRead>,
     subagent_activity:   HashMap<PathBuf, TranscriptRead>,
@@ -244,7 +243,7 @@ impl LocalScanner {
         );
     }
 
-    /// Classify synthetic or live inputs, publishing early only on startup.
+    #[cfg(test)]
     fn scan_stages_with(
         &mut self,
         processes: &[ProcessEntry],
@@ -253,7 +252,26 @@ impl LocalScanner {
         mut publish: impl FnMut(ScanStage, Vec<AgentRow>),
         read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
     ) {
+        self.scan_with_staff(
+            processes,
+            sessions,
+            home,
+            |stage, rows, _| publish(stage, rows),
+            read_details,
+        );
+    }
+
+    /// Classify synthetic or live inputs, publishing early only on startup.
+    fn scan_with_staff(
+        &mut self,
+        processes: &[ProcessEntry],
+        sessions: &[SessionRecord],
+        home: Option<&Path>,
+        mut publish: impl FnMut(ScanStage, Vec<AgentRow>, &StaffSnapshot),
+        read_details: impl FnOnce(&mut Self, &mut Vec<AgentRow>),
+    ) -> StaffSnapshot {
         self.resolve_codex_sessions(processes, home);
+        let staff = startup_log::startup_stage("staff", || self.staff.snapshot());
         let mut rows = startup_log::startup_stage("classify_agents", || {
             let threads = classify::linked_threads(&self.codex_links);
             classify::agent_rows_with_threads(
@@ -266,12 +284,15 @@ impl LocalScanner {
         });
         if matches!(self.publication, LocalPublication::FirstAnswerPending) {
             self.attach_codex_names(&mut rows);
-            publish(ScanStage::Classified, rows.clone());
+            classify::attach_staff_names(&mut rows, &staff.roster, &self.codex_links);
+            publish(ScanStage::Classified, rows.clone(), &staff);
         }
         startup_log::startup_stage("details", || read_details(self, &mut rows));
         self.attach_codex_names(&mut rows);
-        publish(ScanStage::Completed, rows);
+        classify::attach_staff_names(&mut rows, &staff.roster, &self.codex_links);
+        publish(ScanStage::Completed, rows, &staff);
         self.publication = LocalPublication::CompletedAnswerPublished;
+        staff
     }
 
     /// Read current thread rows and resolve one map for this scan.
@@ -305,6 +326,7 @@ impl LocalScanner {
             #[cfg(test)]
             herdr: super::herdr::HerdrNames::isolated(),
             codex_links: HashMap::new(),
+            staff: super::hierarchy::StaffDiscovery::Disabled,
             codex_start_window: crate::config::CodexStartWindow::default(),
             transcript_activity: HashMap::new(),
             subagent_activity: HashMap::new(),
@@ -312,7 +334,6 @@ impl LocalScanner {
             worker_names: WorkerNames::default(),
             worker_commands: WorkerCommands::default(),
             session_roots: SessionRoots::production(),
-            reviewer_pools: ReviewerPools::default(),
             processes: ProcessCensus::default(),
             run_records: activity::RunRecords::default(),
             desktop_source: DesktopSource::System,
@@ -326,21 +347,35 @@ impl LocalScanner {
         self
     }
 
+    /// Share the staff reader with hierarchy publication.
+    pub(super) fn with_staff_file(
+        mut self,
+        setting: super::StaffFileSetting,
+        reader: StaffFileReader,
+    ) -> Self {
+        self.staff = super::hierarchy::StaffDiscovery::File { setting, reader };
+        self
+    }
+
     /// Every agent running now, oldest first, with what it is running.
     /// The wire probe consumes only the completed answer.
     ///
     /// Each scan refreshes the retained process table. sysinfo replaces a reused
     /// pid when its start time changes, including its command and directory.
-    pub(super) fn scan(&mut self) -> Vec<AgentRow> {
+    pub(super) fn scan(&mut self) -> (Vec<AgentRow>, StaffSnapshot) {
         let mut rows = Vec::new();
-        self.scan_staged(|_, answer| rows = answer);
+        let snapshot = self.scan_staged(|_, answer, _| rows = answer);
         self.herdr.finish_initial(&mut self.codex_links);
         self.attach_codex_names(&mut rows);
-        rows
+        classify::attach_staff_names(&mut rows, &snapshot.roster, &self.codex_links);
+        (rows, snapshot)
     }
 
     /// Publish classification early on startup; later scans publish completed rows only.
-    pub(super) fn scan_staged(&mut self, publish: impl FnMut(ScanStage, Vec<AgentRow>)) {
+    pub(super) fn scan_staged(
+        &mut self,
+        publish: impl FnMut(ScanStage, Vec<AgentRow>, &StaffSnapshot),
+    ) -> StaffSnapshot {
         let home = self.home.clone();
         let sessions = startup_log::startup_stage("sessions", || {
             home.as_deref()
@@ -350,7 +385,7 @@ impl LocalScanner {
         let processes =
             startup_log::startup_stage("process_table", || self.processes.read(&sessions));
         self.codex_logs.refresh(&processes, home.as_deref());
-        self.scan_stages_with(
+        self.scan_with_staff(
             &processes,
             &sessions,
             home.as_deref(),
@@ -358,7 +393,7 @@ impl LocalScanner {
             |scanner, rows| {
                 scanner.attach_details(&processes, &sessions, home.as_deref(), rows);
             },
-        );
+        )
     }
 
     /// Read the detail sources after the classified rows have been published.
@@ -547,9 +582,6 @@ impl LocalScanner {
         let mut runs = HashMap::new();
         let live_processes = processes.iter().map(|process| process.pid).collect();
         let mut seen_run_sessions = HashSet::new();
-        ReviewerPools::root().update(&mut self.reviewer_pools);
-        let reviewer_outcomes = self.reviewer_pools.outcomes();
-        ReviewerPools::apply_outcomes(rows, &reviewer_outcomes);
         let mut seen_transcripts = HashSet::new();
         let table = classify::pid_table(processes);
         let mut verification_activity = activity::VerificationProcesses::new(processes);
@@ -599,17 +631,6 @@ impl LocalScanner {
                         .label(WorkerRoleSource::Unroled, &child.name),
                 };
                 child.dispatch = dispatch;
-                if let Some(ReviewerOutcome {
-                    state: ReviewerState::Busy { name, started, .. },
-                    ..
-                }) = reviewer_outcomes
-                    .iter()
-                    .find(|outcome| outcome.thread_id == *id)
-                {
-                    child.worker_task = read.reviewer_task(name, *started);
-                    child.dispatch = WorkerDispatch::Plain;
-                }
-
                 let records: Vec<_> = self
                     .worker_names
                     .directories(id, prompt, &self.session_roots)
@@ -2010,8 +2031,8 @@ mod tests {
     use crate::census::Account;
     use crate::census::RoleFallback;
     use crate::census::SessionIdentity;
+    use crate::census::StaffRowNames;
     use crate::census::herdr::HerdrNames;
-    use crate::census::hierarchy::ReviewerPools;
 
     #[test]
     fn idle_verification_arguments_are_checked_once_per_process() {
@@ -2274,6 +2295,7 @@ mod tests {
     /// A scanner with nothing found yet, reading no home directory.
     fn scanner() -> LocalScanner {
         LocalScanner {
+            staff:               super::super::hierarchy::StaffDiscovery::Disabled,
             processes:           ProcessCensus::default(),
             run_records:         activity::RunRecords::default(),
             publication:         LocalPublication::FirstAnswerPending,
@@ -2295,9 +2317,9 @@ mod tests {
             worker_names:        WorkerNames::default(),
             worker_commands:     WorkerCommands::default(),
             session_roots:       SessionRoots::new([]),
-            reviewer_pools:      ReviewerPools::default(),
-            desktop_source:      DesktopSource::Windows(Vec::new()),
-            desktops:            None,
+
+            desktop_source: DesktopSource::Windows(Vec::new()),
+            desktops:       None,
         }
     }
 
@@ -2352,6 +2374,7 @@ mod tests {
     /// A Claude Code row.
     fn claude_row(pid: u32, name: &str, started: u64) -> AgentRow {
         AgentRow {
+            staff_names: StaffRowNames::default(),
             agent: Agent::Claude,
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
@@ -2600,13 +2623,13 @@ mod hierarchy_publication_tests {
     use super::LocalScanner;
     use super::ScanStage;
     use crate::census::CensusUpdate;
-    use crate::census::HierarchyCommand;
     use crate::census::HierarchyEdge;
     use crate::census::HierarchyEdges;
     use crate::census::HierarchyNotice;
     use crate::census::HierarchyRole;
     use crate::census::HierarchySnapshot;
     use crate::census::HierarchySource;
+    use crate::census::StaffFileSetting;
     use crate::census::account::AccountLabels;
     use crate::census::hierarchy::HierarchyError;
     use crate::census::hierarchy::HierarchyRunner;
@@ -2619,10 +2642,9 @@ mod hierarchy_publication_tests {
         fn run(&self, _: &str, _: Duration) -> Result<HierarchyEdges, HierarchyError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(HierarchyEdges(vec![HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "boss".to_string(),
-                member:   "worker".to_string(),
-                role:     HierarchyRole::Impl,
+                manager: "boss".to_string(),
+                member:  "worker".to_string(),
+                role:    HierarchyRole::Impl,
             }]))
         }
     }
@@ -2632,7 +2654,7 @@ mod hierarchy_publication_tests {
         let runner = Arc::new(CountingRunner(AtomicUsize::new(0)));
         let observed = Arc::clone(&runner);
         let updates = schedule::spawn_with_test_source(
-            HierarchyCommand::new(HierarchySource::Command("fixture".to_string())),
+            StaffFileSetting::new(HierarchySource::File("fixture".to_string())),
             runner,
             move |answers| {
                 LocalScanner::new(AccountLabels::default()).scan_stages_with(
@@ -2655,10 +2677,9 @@ mod hierarchy_publication_tests {
             },
         );
         let edges = HierarchyEdges(vec![HierarchyEdge {
-            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-            manager:  "boss".to_string(),
-            member:   "worker".to_string(),
-            role:     HierarchyRole::Impl,
+            manager: "boss".to_string(),
+            member:  "worker".to_string(),
+            role:    HierarchyRole::Impl,
         }]);
         assert_eq!(
             updates
@@ -2889,11 +2910,8 @@ mod process_cache_tests {
         census.read_at(&[], now);
         // This birth has no session or tracked ancestor. Only recovery can discover it.
         let mut child = RecoveryChild(
-            Command::new("/bin/bash")
-                .args([
-                    "-c",
-                    "exec -a claude /bin/bash -c 'echo ready; read -r finish'",
-                ])
+            Command::new("bash")
+                .args(["-c", "exec -a claude bash -c 'echo ready; read -r finish'"])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .spawn()?,

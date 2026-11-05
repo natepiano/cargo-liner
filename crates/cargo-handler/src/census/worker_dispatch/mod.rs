@@ -354,13 +354,6 @@ pub(crate) enum WorkerTask {
     Reviewer { name: String, job: JobText },
 }
 impl WorkerTask {
-    /// Resolve a task line once at the rollout boundary.
-    pub(crate) fn from_prompt(prompt: &str) -> Self {
-        match JobText::parse(prompt, JobSource::FirstTaskPrompt) {
-            JobText::Unrecorded => Self::RoleOnly,
-            JobText::Recorded(job) => Self::Task(job),
-        }
-    }
     /// A final role names every thread, including unreadable or old raw-id rows.
     pub(crate) fn label(&self, role: WorkerRoleSource, original: &str) -> String {
         match self {
@@ -376,6 +369,17 @@ impl WorkerTask {
                     original.to_owned()
                 }
             },
+        }
+    }
+}
+
+#[cfg(test)]
+impl WorkerTask {
+    /// Build task fixtures with the prompt parser used by `WorkerNames`.
+    pub(crate) fn from_prompt(prompt: &str) -> Self {
+        match JobText::parse(prompt, JobSource::FirstTaskPrompt) {
+            JobText::Unrecorded => Self::RoleOnly,
+            JobText::Recorded(job) => Self::Task(job),
         }
     }
 }

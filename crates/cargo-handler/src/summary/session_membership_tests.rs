@@ -9,7 +9,6 @@ use crate::agent_cell::AgentTile;
 use crate::census::AgentActivity;
 use crate::census::HierarchyEdges;
 use crate::census::MachineState;
-use crate::census::hierarchy::ReviewerState;
 use crate::sort::AccountsSort;
 
 const NOW: u64 = 1_792_166_400;
@@ -60,10 +59,9 @@ fn draw_summary(machines: &[Machine<'_>], placement: &AgentPlacement<'_>) -> Buf
 
 fn state() -> MachineState {
     let edges = HierarchyEdges(vec![crate::census::HierarchyEdge {
-        manager:  "boss".into(),
-        member:   "unit".into(),
-        role:     crate::census::HierarchyRole::Unit,
-        reviewer: ReviewerState::NotPool,
+        manager: "boss".into(),
+        member:  "unit".into(),
+        role:    crate::census::HierarchyRole::Unit,
     }]);
     MachineState::Answered(sessions(), edges.into())
 }

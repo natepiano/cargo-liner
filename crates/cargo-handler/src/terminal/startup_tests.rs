@@ -18,9 +18,9 @@ use tui_pane::TerminalApp;
 use super::Ticker;
 use crate::app::App;
 use crate::census::Census;
-use crate::census::HierarchyCommand;
 use crate::census::HierarchySource;
-use crate::census::hierarchy::CommandRunner;
+use crate::census::StaffFileSetting;
+use crate::census::hierarchy::StaffFileReader;
 use crate::census::schedule;
 
 #[test]
@@ -31,8 +31,8 @@ fn the_first_frame_draws_the_scanning_summary_before_a_slow_source_answers() {
     let (source_started, source_entered) = mpsc::channel();
     let (source_answered, answer_sent) = mpsc::channel();
     let updates = schedule::spawn_with_test_source(
-        HierarchyCommand::new(HierarchySource::Off),
-        Arc::new(CommandRunner),
+        StaffFileSetting::new(HierarchySource::Off),
+        Arc::new(StaffFileReader::default()),
         move |sender| {
             if source_started.send(()).is_err() || source_released.recv().is_err() {
                 return;
