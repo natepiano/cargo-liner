@@ -215,8 +215,6 @@ pub(crate) const ELISION: &str = "\u{2026}";
 /// word off the corner glyph the title is set against.
 pub(crate) const SUMMARY_CELL_TITLE: &str = " summary ";
 
-/// Space between a command border title and the surrounding rule.
-pub(crate) const COMMAND_TITLE_PADDING: &str = " ";
 /// The capture-installation card describes the work it starts.
 pub(crate) const CAPTURE_PROGRESS_TITLE: &str = "Capturing cargo progress";
 /// Delimiters around a command's non-default build profile.

@@ -1620,7 +1620,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 **As built** (checkpoint `229b35851`, merged as main `48dfe94d2`, 2026-11-03): a command cell's top border holds only its account tag and directory. Its progress reading (state word, meter, percent) is the first body row, above the table header. A cell with no reading starts with its table. One owner computes the reading row, and a cell's demand counts it only when it draws. Live at 393x89 against main: 0 of 8 titles hold progress text (main 8 of 8), 8 of 8 readings are the first body row, process rows stay 17 of 17, and no cell is clipped. Gates under the bump: lint and 15 related tests; the showrunner runs the full suite on the merged tip.
 
-### Phase 47b — The cell border is plain; the account and directory are the first body row  · status: in progress
+### Phase 47b — The cell border is plain; the account and directory are the first body row  · status: done
 
 **Depends on:** none (it starts on main `4b3ce44da`, after Phase 47a)
 
@@ -1643,6 +1643,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 **Files:**
 - `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/src/constants.rs`
 - `crates/cargo-tile/CHANGELOG.md`
 
 **Seats:** 1 writer (`impl`). The CHANGELOG gets one Changed line.
