@@ -1,9 +1,9 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::path::Path;
 
 use indexmap::IndexMap;
 
+use super::list;
 use crate::project::AbsolutePath;
 use crate::project::MemberGroup;
 use crate::project::Package;
@@ -65,29 +65,41 @@ fn join_suffix(segments: &[&str], suffix_len: usize) -> String {
     segments[segments.len().saturating_sub(len)..].join("/")
 }
 
-pub(super) fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
-    let RootItem::Rust(linked) = item else {
-        return false;
-    };
-    if !linked.worktree_status().is_linked_worktree() {
-        return false;
-    }
-    let existing_identity = item_worktree_identity(existing).cloned();
-    if linked.worktree_status().primary_root() != existing_identity.as_ref() {
-        return false;
-    }
+pub(super) enum ProjectPlacement {
+    Inserted,
+    Unplaced(Box<RootItem>),
+}
 
-    match existing {
-        RootItem::Rust(primary) => {
-            let primary = primary.clone();
-            *existing = RootItem::Worktrees(WorktreeGroup::new(primary, vec![linked.clone()]));
-            true
+pub(super) fn try_attach_worktree(
+    existing: &mut RootItem,
+    item: Box<RootItem>,
+) -> ProjectPlacement {
+    let RootItem::Rust(linked) = &*item else {
+        return ProjectPlacement::Unplaced(item);
+    };
+    if !linked.worktree_status().is_linked_worktree()
+        || linked.worktree_status().primary_root() != item_worktree_identity(existing)
+    {
+        return ProjectPlacement::Unplaced(item);
+    }
+    match (existing, *item) {
+        (existing @ RootItem::Rust(_), RootItem::Rust(linked)) => {
+            let mut group = WorktreeGroup::new(linked, Vec::new());
+            if let RootItem::Rust(primary) = existing {
+                std::mem::swap(primary, &mut group.primary);
+            }
+            if let RootItem::Rust(linked) = std::mem::replace(existing, RootItem::Worktrees(group))
+                && let RootItem::Worktrees(group) = existing
+            {
+                group.linked.push(linked);
+            }
+            ProjectPlacement::Inserted
         },
-        RootItem::Worktrees(group) => {
-            group.linked.push(linked.clone());
-            true
+        (RootItem::Worktrees(group), RootItem::Rust(linked)) => {
+            group.linked.push(linked);
+            ProjectPlacement::Inserted
         },
-        RootItem::NonRust(_) => false,
+        (_, item) => ProjectPlacement::Unplaced(Box::new(item)),
     }
 }
 
@@ -182,25 +194,31 @@ pub(super) fn replace_workspace_members(
     *ws.groups_mut() = groups;
 }
 
-pub(super) fn try_insert_member(ws: &mut Workspace, item_path: &Path, item: &RootItem) -> bool {
-    if !item_path.starts_with(ws.path()) || item_path == ws.path() {
-        return false;
+pub(super) fn try_insert_member(ws: &mut Workspace, item: Box<RootItem>) -> ProjectPlacement {
+    if !item.path().starts_with(ws.path()) || item.path() == ws.path() {
+        return ProjectPlacement::Unplaced(item);
     }
-    let RootItem::Rust(RustProject::Package(pkg)) = item else {
-        return false;
+    let RootItem::Rust(RustProject::Package(pkg)) = *item else {
+        return ProjectPlacement::Unplaced(item);
     };
-    // Push `pkg` into the first inline `MemberGroup`, or create `MemberGroup::Inline` when none
-    // exists.
+    if let Some(current) = ws
+        .groups_mut()
+        .iter_mut()
+        .flat_map(MemberGroup::members_mut)
+        .find(|member| member.path() == pkg.path())
+    {
+        list::merge_retained_rust_info(&mut current.rust, pkg.rust);
+        return ProjectPlacement::Inserted;
+    }
     let inline = ws.groups_mut().iter_mut().find(|g| g.is_inline());
     if let Some(group) = inline {
-        group.members_mut().push(pkg.clone());
+        group.members_mut().push(pkg);
         group
             .members_mut()
             .sort_by(|a, b| a.package_name().as_str().cmp(b.package_name().as_str()));
     } else {
-        ws.groups_mut().push(MemberGroup::Inline {
-            members: vec![pkg.clone()],
-        });
+        ws.groups_mut()
+            .push(MemberGroup::Inline { members: vec![pkg] });
     }
-    true
+    ProjectPlacement::Inserted
 }

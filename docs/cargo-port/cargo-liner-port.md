@@ -319,7 +319,7 @@ The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame 
 
 **Gotchas:** the draw path never calls `get_cursor_position`. With `CrosstermBackend` it queries the terminal and waits for a reply, which exits cargo-port in a terminal that does not reply. cargo-port sets no cursor, so the buffer is the whole screen.
 
-### Phase 3c — The detail cache API takes a named state  · status: todo
+### Phase 3c — The detail cache API takes a named state  · status: done
 
 **Depends on:** Phase 3
 
@@ -339,7 +339,7 @@ The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame 
 2. **Tests, each under one second:** the existing detail cache tests in `tui/panes/system.rs` use the named states; add one for no selection and one for cleared details of a selected row.
 
 **Files:**
-- `crates/cargo-port/src/tui/panes/data.rs` and `crates/cargo-port/src/tui/panes/system.rs`
+- `crates/cargo-port/src/tui/panes/data.rs`, `crates/cargo-port/src/tui/panes/mod.rs` and `crates/cargo-port/src/tui/panes/system.rs`
 - `crates/cargo-port/src/tui/app/navigation/cache.rs`
 - `crates/cargo-port/src/tui/app/async_tasks/repo_handlers.rs`
 
@@ -347,19 +347,13 @@ The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame 
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; no `Option<DetailCacheKey>` in a detail cache API.
 
-### Phase 3d — The discovery frame test takes no background reply  · status: todo
+### Phase 3d — The discovery frame test takes no background reply  (merged 3fb98ed6e, checkpoint dd7c6a70c)
 
-**Source:** showrunner, 2026-11-05. `project_discovered_draws_one_new_frame` failed in one of two aws runs and held every merge: the poll processed 2 messages, not 1.
+#### As-built
 
-**Cause:** the test discovers a Rust root. `insert_into_hierarchy` starts `cargo metadata` for it. The root does not exist, so the reply comes quickly and can join the same poll.
+`project_discovered_draws_one_new_frame` discovers a non-Rust root, which starts no `cargo metadata` task, so no reply can join the same poll. The test keeps every assertion.
 
-**Fix:** the test discovers a non-Rust root, which starts no metadata task. The test keeps every assertion.
-
-**Files:** `crates/cargo-port/src/tui/terminal/event_loop_tests.rs`.
-
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean.
-
-### Phase 4 — A Deleted row stays on the list and shows its mark  · status: todo
+### Phase 4 — A Deleted row stays on the list and shows its mark  · status: done
 
 **Depends on:** Phase 3
 
@@ -425,17 +419,17 @@ The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame 
 - Each item gets a red test that reads the drawn buffer, under one second.
 
 **Spec:**
-1. **Selection under `NO_COLOR`.** The selected row draws in reverse video, so it differs from every other row. The `▶` mark stays on the row it names. The focused pane has a mark that does not use colour.
+1. **Selection under `NO_COLOR`.** The selected row draws in reverse video, so it differs from every other row. The `▶` mark stays on the row it names. The focused pane title already draws bold; its border also shows focus without colour.
 2. **Deleted row Disk cell.** A Deleted row shows only `[x]` in the Disk column, not `0.0`.
 3. **Strike-through.** A Deleted row strikes only its name and value text, not the empty cells between them.
 4. **Scroll position.** The sccache popup shows `▲ 2 of 2` at its end, not `▲ 1 of 2`.
 5. **Row highlight.** The sccache popup's selected row highlight reaches the right border.
 6. **Contrast.** These pass the guide's `readable-contrast` rule: the selected sccache label (#96beb4 on #565656, 3.61:1), Disk values (#ff6464 on #505050), the selected project name (#ff8700 on #565656, 3.05:1), white CPU labels on yellow and green, the red System percentage (#cd0000 on #1e1e1e), and the grey `resets` text.
 7. **One selection fill.** A selected row uses one fill across all its columns. The Disk column fill is clearly different from the selection fill.
-8. **Cut text.** The Languages header `comments` shows whole, and each row names its language. Package pane values that do not fit wrap or end in an ellipsis.
-9. **80 columns.** A pane too narrow to show text is hidden, and its width goes to the other panes. The Workspace pane shows values beside `Path` and `Disk`. The Git pane shows its values at 80 columns.
+8. **Cut text.** The Languages header `comments` shows whole, and each row names its language. Package pane values that do not fit wrap or end in an ellipsis. The Languages rows separate parent rows from their child subtotals; the total keeps summing parents only (`lang/render.rs:102`), so it stays correct.
+9. **80 columns.** A pane too narrow to show text is hidden, and its width goes to the other panes. The Workspace pane shows values beside `Path` and `Disk`. The Git pane shows its values at 80 columns. The CI Runs pane shows only the columns that fit whole (`ci/render.rs:471` keeps minimum widths past the pane width), and the `No description available` placeholder is one row that ends in `…`.
 10. **Words.** Replace the column titles `Og` and `Mn` with common words that fit, and replace the hint `home/end ends` with `home/end first/last`.
-11. **Git rows at 80 columns.** `FIT_TEXT_ELLIPSIS` is one glyph, `…`, as in the pane titles. A label-only row uses the full inner width, so it shows at least as many letters as main. The two rate rows read `Core` and `GraphQL`, so they differ.
+11. **Git rows at 80 columns.** `FIT_TEXT_ELLIPSIS` is one glyph, `…`, as in the pane titles. `MIN_FITTED_TEXT_WIDTH` is the ellipsis width plus one, so this change moves the point where a row becomes label-only: name the transition width as its own value and keep a test on each side of it. The two rate rows read `Core` and `GraphQL`, so they differ.
 12. **Letter case.** Pane titles and rows use sentence case: `Sccache stats`, `CI runs`, `Targets: binary`, `Multiple input files`.
 13. **sccache reasons.** Each non-cacheable reason row says in plain words why the call was not cached. No row reads `-`, `-o` or `missing output_dir`.
 14. **CPU bars.** The bars draw with cell background, so no dark line shows between rows.

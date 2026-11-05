@@ -27,6 +27,7 @@ use super::expand_state;
 use super::expand_state::ExpandTarget;
 use super::expand_state::ExpansionKeyLayout;
 use super::grouping;
+use super::grouping::ProjectPlacement;
 use super::selection::SelectionMutation;
 use super::visible_rows;
 use super::visible_rows::ExpandKey;
@@ -127,6 +128,260 @@ impl From<Option<DisplayPath>> for ProjectListRowDisplayPathResolution {
     }
 }
 
+/// The path index distinguishes absent paths from invalid stored routes.
+pub(in crate::tui) enum ProjectPathLookup<T> {
+    Found(T),
+    UnknownPath,
+    StaleRoute,
+}
+
+#[cfg(test)]
+mod lookup_test_support {
+    #![allow(clippy::panic, reason = "tests require a valid indexed project")]
+
+    use super::ProjectPathLookup;
+
+    impl<T> ProjectPathLookup<T> {
+        pub(in crate::tui) fn expect_found(self, context: &str) -> T {
+            match self {
+                Self::Found(value) => value,
+                Self::UnknownPath => panic!("unknown project path: {context}"),
+                Self::StaleRoute => panic!("stale project route: {context}"),
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::tui) enum ReplacementExpansion {
+    RestoreSavedTargets,
+    #[cfg(test)]
+    KeepValidKeys,
+}
+
+/// Rows that remain owned by the user during a scan replacement.
+struct RetainedProjectTree {
+    entries: Vec<ProjectEntry>,
+}
+
+impl RetainedProjectTree {
+    fn take_from(list: &mut ProjectList) -> Self {
+        let entries = std::mem::take(&mut list.roots)
+            .into_values()
+            .filter_map(|mut entry| retain_root(&mut entry.root_item).then_some(entry))
+            .collect();
+        Self { entries }
+    }
+
+    fn retain(mut root: RootItem) -> Option<RootItem> { retain_root(&mut root).then_some(root) }
+
+    fn merge_into(self, list: &mut ProjectList, inline_dirs: &[String]) {
+        if self.entries.is_empty() {
+            return;
+        }
+        for retained in self.entries {
+            let path = retained.path().clone();
+            if let Some(current) = list.roots.get_mut(&path) {
+                merge_retained_root(&mut current.root_item, retained.root_item, inline_dirs);
+            } else {
+                list.insert_into_hierarchy_without_index(retained.root_item);
+                if let Some(current) = list.roots.get_mut(&path) {
+                    current.git_repo = retained.git_repo;
+                }
+            }
+        }
+        list.regroup_members_without_index(inline_dirs);
+        list.rebuild_path_index();
+    }
+
+    fn preserve_replacement(current: &mut RootItem, previous: RootItem, inline_dirs: &[String]) {
+        if let Some(retained) = Self::retain(previous) {
+            merge_retained_root(current, retained, inline_dirs);
+        }
+    }
+
+    fn preserve_submodules(
+        current: &mut Vec<crate::project::Submodule>,
+        previous: Vec<crate::project::Submodule>,
+    ) {
+        merge_by_path(
+            current,
+            previous
+                .into_iter()
+                .filter(|child| child.visibility() != Visibility::Visible),
+            |current, retained| {
+                current.project_info = retained.project_info;
+            },
+        );
+    }
+}
+
+fn retain_info(info: &mut ProjectInfo) -> bool {
+    info.submodules
+        .retain_mut(|child| retain_info(&mut child.project_info));
+    info.visibility != Visibility::Visible || !info.submodules.is_empty()
+}
+
+fn retain_rust_info(info: &mut RustInfo) -> bool {
+    let retained = retain_info(&mut info.project_info);
+    info.vendored
+        .retain_mut(|child| retain_info(&mut child.project_info));
+    retained || !info.vendored.is_empty()
+}
+
+fn retain_package(package: &mut Package) -> bool { retain_rust_info(&mut package.rust) }
+
+fn retain_rust_project(project: &mut RustProject) -> bool {
+    let retained = retain_rust_info(project.rust_info_mut());
+    match project {
+        RustProject::Workspace(workspace) => {
+            for group in &mut workspace.groups {
+                group.members_mut().retain_mut(retain_package);
+            }
+            workspace.groups.retain(|group| !group.members().is_empty());
+            retained || !workspace.groups.is_empty()
+        },
+        RustProject::Package(_) => retained,
+    }
+}
+
+fn retain_root(root: &mut RootItem) -> bool {
+    match root {
+        RootItem::Rust(project) => retain_rust_project(project),
+        RootItem::NonRust(project) => retain_info(project),
+        RootItem::Worktrees(group) => {
+            let retained = retain_rust_project(&mut group.primary);
+            group.linked.retain_mut(retain_rust_project);
+            retained || !group.linked.is_empty()
+        },
+    }
+}
+
+fn merge_retained_info(current: &mut ProjectInfo, retained: ProjectInfo) {
+    if retained.visibility == Visibility::Visible {
+        merge_retained_children(&mut current.submodules, retained.submodules);
+    } else {
+        *current = retained;
+    }
+}
+
+fn merge_by_path<T: ProjectFields>(
+    current: &mut Vec<T>,
+    retained: impl IntoIterator<Item = T>,
+    mut merge: impl FnMut(&mut T, T),
+) {
+    for retained in retained {
+        if let Some(current) = current
+            .iter_mut()
+            .find(|current| current.path() == retained.path())
+        {
+            merge(current, retained);
+        } else {
+            current.push(retained);
+        }
+    }
+}
+
+fn merge_retained_children<T: ProjectFields>(current: &mut Vec<T>, retained: Vec<T>) {
+    merge_by_path(current, retained, |current, retained| *current = retained);
+}
+
+pub(super) fn merge_retained_rust_info(current: &mut RustInfo, retained: RustInfo) {
+    merge_retained_info(&mut current.project_info, retained.project_info);
+    merge_retained_children(&mut current.vendored, retained.vendored);
+}
+
+fn merge_retained_rust(
+    current: &mut RustProject,
+    mut retained: RustProject,
+    inline_dirs: &[String],
+) {
+    merge_retained_rust_info(
+        current.rust_info_mut(),
+        std::mem::take(retained.rust_info_mut()),
+    );
+    if let RustProject::Workspace(mut retained_workspace) = retained {
+        match current {
+            RustProject::Workspace(workspace) => {
+                let mut members: Vec<_> = std::mem::take(&mut workspace.groups)
+                    .into_iter()
+                    .flat_map(crate::project::MemberGroup::into_members)
+                    .collect();
+                let retained_members = std::mem::take(&mut retained_workspace.groups)
+                    .into_iter()
+                    .flat_map(crate::project::MemberGroup::into_members);
+                merge_by_path(&mut members, retained_members, |current, retained| {
+                    merge_retained_rust_info(&mut current.rust, retained.rust);
+                });
+                grouping::replace_workspace_members(workspace, members, inline_dirs);
+            },
+            RustProject::Package(_) => {
+                retained_workspace.rust = std::mem::take(current.rust_info_mut());
+                *current = RustProject::Workspace(retained_workspace);
+            },
+        }
+    }
+}
+
+fn merge_retained_root(current: &mut RootItem, retained: RootItem, inline_dirs: &[String]) {
+    match (current, retained) {
+        (RootItem::Rust(current), RootItem::Rust(retained)) => {
+            merge_retained_rust(current, retained, inline_dirs);
+        },
+        (RootItem::Worktrees(current), RootItem::Worktrees(retained)) => {
+            merge_retained_rust(&mut current.primary, retained.primary, inline_dirs);
+            merge_by_path(&mut current.linked, retained.linked, |current, retained| {
+                merge_retained_rust(current, retained, inline_dirs);
+            });
+        },
+        (current @ RootItem::Rust(_), RootItem::Worktrees(retained)) => {
+            merge_retained_root(current, RootItem::Rust(retained.primary), inline_dirs);
+            for linked in retained.linked {
+                if let ProjectPlacement::Unplaced(item) =
+                    grouping::try_attach_worktree(current, Box::new(RootItem::Rust(linked)))
+                    && let RootItem::Rust(linked) = *item
+                {
+                    match current {
+                        RootItem::Worktrees(group) => group.linked.push(linked),
+                        RootItem::Rust(primary) => {
+                            let primary = std::mem::replace(
+                                primary,
+                                RustProject::Package(Package::default()),
+                            );
+                            *current =
+                                RootItem::Worktrees(WorktreeGroup::new(primary, vec![linked]));
+                        },
+                        RootItem::NonRust(_) => {},
+                    }
+                }
+            }
+        },
+        (RootItem::Worktrees(current), RootItem::Rust(retained)) => {
+            merge_retained_rust(&mut current.primary, retained, inline_dirs);
+        },
+        (
+            current @ RootItem::NonRust(_),
+            retained @ (RootItem::Rust(_) | RootItem::Worktrees(_)),
+        ) => {
+            // Keep the Rust container while it owns retained members or worktrees.
+            let previous = std::mem::replace(current, retained);
+            if let RootItem::NonRust(mut fresh) = previous
+                && let Some(info) = current.at_path_mut(fresh.path())
+            {
+                let retained_info = std::mem::take(info);
+                let mut fresh_info = std::mem::take(&mut *fresh);
+                merge_retained_info(&mut fresh_info, retained_info);
+                *info = fresh_info;
+            }
+        },
+        (current, RootItem::NonRust(mut retained)) => {
+            if let Some(info) = current.at_path_mut(retained.path()) {
+                merge_retained_info(info, std::mem::take(&mut *retained));
+            }
+        },
+    }
+}
+
 impl ProjectList {
     pub(in crate::tui) fn new(items: Vec<RootItem>) -> Self {
         let mut projects = Self {
@@ -141,6 +396,13 @@ impl ProjectList {
         };
         projects.rebuild_path_index();
         projects
+    }
+
+    /// Keep user-owned deletion states while the scan rebuilds live entries.
+    pub(in crate::tui) fn retain_for_rescan(&mut self) {
+        self.roots
+            .retain(|_, entry| retain_root(&mut entry.root_item));
+        self.rebuild_path_index();
     }
 
     /// Production-only seeding: load `last_selected` from the terminal-state
@@ -221,26 +483,37 @@ impl ProjectList {
                 .and_then(|entry| entry.root_item.disk_usage_bytes()),
             VisibleRow::GroupHeader { .. } | VisibleRow::WorktreeGroupHeader { .. } => None,
             row => self
-                .abs_path_for_row(row)
-                .and_then(|path| self.at_path(path.as_path()))
-                .and_then(|info| info.disk_usage_bytes),
+                .path_for_row(row)
+                .and_then(|path| match self.at_path(path) {
+                    ProjectPathLookup::Found(info) => info.disk_usage_bytes,
+                    ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => None,
+                }),
         }
     }
 
-    /// Replace only the project hierarchy, keeping the selection-cluster
-    /// state (cursor, expansion set, finder, sort/width caches) intact.
-    /// Used by tree-rebuild paths that hand-build a fresh `ProjectList`
-    /// for whole-tree replacement.
-    pub(in crate::tui) fn replace_roots_from(&mut self, replacement: Self) {
+    /// Replace the hierarchy after merging retained rows and rebuilding its index.
+    pub(in crate::tui) fn replace_roots_from(
+        &mut self,
+        mut replacement: Self,
+        inline_dirs: &[String],
+        expansion: ReplacementExpansion,
+    ) {
+        RetainedProjectTree::take_from(self).merge_into(&mut replacement, inline_dirs);
         self.roots = replacement.roots;
         self.path_index = replacement.path_index;
         self.row_generation += 1;
-        let keys: HashSet<_> = self
-            .expandable_rows()
-            .chain(WorktreeContainerExpansion(self).expandable_rows())
-            .map(|(key, _)| key)
-            .collect();
-        self.expanded.retain(|key| keys.contains(key));
+        match expansion {
+            ReplacementExpansion::RestoreSavedTargets => self.expanded.reset(),
+            #[cfg(test)]
+            ReplacementExpansion::KeepValidKeys => {
+                let keys: HashSet<_> = self
+                    .expandable_rows()
+                    .chain(WorktreeContainerExpansion(self).expandable_rows())
+                    .map(|(key, _)| key)
+                    .collect();
+                self.expanded.retain(|key| keys.contains(key));
+            },
+        }
     }
 
     /// Split-borrow accessor for bulk-expansion paths that need to inspect
@@ -443,31 +716,102 @@ impl ProjectList {
         self.path_index = index;
     }
 
-    pub(in crate::tui) fn at_path(&self, target: &Path) -> Option<&ProjectInfo> {
-        let location = *self.path_index.get(target)?;
+    pub(in crate::tui) fn replace_submodules(
+        &mut self,
+        path: &Path,
+        submodules: Vec<crate::project::Submodule>,
+    ) -> bool {
+        match self.at_path_mut(path) {
+            ProjectPathLookup::Found(info) => {
+                let declarations_match = info.submodules.len() == submodules.len()
+                    && info
+                        .submodules
+                        .iter()
+                        .zip(&submodules)
+                        .all(|(current, accepted)| {
+                            current.name == accepted.name
+                                && current.path == accepted.path
+                                && current.relative_path == accepted.relative_path
+                                && current.url == accepted.url
+                                && current.branch == accepted.branch
+                                && current.commit == accepted.commit
+                        });
+                let mut submodules = submodules;
+                RetainedProjectTree::preserve_submodules(
+                    &mut submodules,
+                    std::mem::take(&mut info.submodules),
+                );
+                info.submodules = submodules;
+                !declarations_match
+            },
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => false,
+        }
+    }
+
+    pub(in crate::tui) fn at_path(&self, target: &Path) -> ProjectPathLookup<&ProjectInfo> {
+        match self.checked_node(target) {
+            ProjectPathLookup::Found((_, node)) => ProjectPathLookup::Found(node.info()),
+            ProjectPathLookup::UnknownPath => ProjectPathLookup::UnknownPath,
+            ProjectPathLookup::StaleRoute => ProjectPathLookup::StaleRoute,
+        }
+    }
+
+    fn project_location(&self, target: &Path) -> ProjectPathLookup<ProjectLocation> {
+        match self.checked_node(target) {
+            ProjectPathLookup::Found((location, _)) => ProjectPathLookup::Found(location),
+            ProjectPathLookup::UnknownPath => ProjectPathLookup::UnknownPath,
+            ProjectPathLookup::StaleRoute => ProjectPathLookup::StaleRoute,
+        }
+    }
+
+    fn checked_node(
+        &self,
+        target: &Path,
+    ) -> ProjectPathLookup<(ProjectLocation, &dyn ProjectFields)> {
+        let Some(&location) = self.path_index.get(target) else {
+            return ProjectPathLookup::UnknownPath;
+        };
+        match self.node_at_location(location) {
+            Some(node) if node.path().as_path() == target => {
+                ProjectPathLookup::Found((location, node))
+            },
+            Some(_) | None => ProjectPathLookup::StaleRoute,
+        }
+    }
+
+    fn node_at_location(&self, location: ProjectLocation) -> Option<&dyn ProjectFields> {
         let root = &self.get(location.root_index)?.root_item;
         match location.node {
             ProjectNodeLocation::Rust(owner) => {
-                Some(&rust_owner(checkout(root, location.checkout)?, owner)?.project_info)
+                rust_node(checkout(root, location.checkout)?, owner).map(RustProjectNode::fields)
             },
             ProjectNodeLocation::Vendored { owner, index } => Some(
-                &rust_owner(checkout(root, location.checkout)?, owner)?
+                rust_owner(checkout(root, location.checkout)?, owner)?
                     .vendored()
-                    .get(index)?
-                    .project_info,
+                    .get(index)?,
             ),
             ProjectNodeLocation::NonRust => match root {
                 RootItem::NonRust(project) => Some(project),
                 _ => None,
             },
-            ProjectNodeLocation::Submodule(index) => {
-                Some(&root.submodules().get(index)?.project_info)
-            },
+            ProjectNodeLocation::Submodule(index) => Some(root.submodules().get(index)?),
         }
     }
 
-    pub(in crate::tui) fn at_path_mut(&mut self, target: &Path) -> Option<&mut ProjectInfo> {
-        let location = *self.path_index.get(target)?;
+    pub(in crate::tui) fn at_path_mut(
+        &mut self,
+        target: &Path,
+    ) -> ProjectPathLookup<&mut ProjectInfo> {
+        let location = match self.project_location(target) {
+            ProjectPathLookup::Found(location) => location,
+            ProjectPathLookup::UnknownPath => return ProjectPathLookup::UnknownPath,
+            ProjectPathLookup::StaleRoute => return ProjectPathLookup::StaleRoute,
+        };
+        self.info_at_location_mut(location)
+            .map_or(ProjectPathLookup::StaleRoute, ProjectPathLookup::Found)
+    }
+
+    fn info_at_location_mut(&mut self, location: ProjectLocation) -> Option<&mut ProjectInfo> {
         let root = &mut self.roots.get_index_mut(location.root_index)?.1.root_item;
         match location.node {
             ProjectNodeLocation::Rust(owner) => Some(
@@ -494,13 +838,19 @@ impl ProjectList {
     /// upstream repository and are suppressed at the parent project's
     /// level — see the `BackgroundMsg::GitInfo` handler.
     pub(in crate::tui) fn is_submodule_path(&self, target: &Path) -> bool {
-        self.path_index.get(target).is_some_and(|location| {
-            matches!(location.repository, RepositoryLocation::Submodule { .. })
-        })
+        match self.project_location(target) {
+            ProjectPathLookup::Found(location) => {
+                matches!(location.repository, RepositoryLocation::Submodule { .. })
+            },
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => false,
+        }
     }
 
     pub(in crate::tui) fn rust_info_at_path(&self, target: &Path) -> Option<&RustInfo> {
-        let location = *self.path_index.get(target)?;
+        let location = match self.project_location(target) {
+            ProjectPathLookup::Found(location) => location,
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => return None,
+        };
         let ProjectNodeLocation::Rust(owner) = location.node else {
             return None;
         };
@@ -511,7 +861,10 @@ impl ProjectList {
     }
 
     fn rust_info_at_path_mut(&mut self, target: &Path) -> Option<&mut RustInfo> {
-        let location = *self.path_index.get(target)?;
+        let location = match self.project_location(target) {
+            ProjectPathLookup::Found(location) => location,
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => return None,
+        };
         let ProjectNodeLocation::Rust(owner) = location.node else {
             return None;
         };
@@ -525,7 +878,10 @@ impl ProjectList {
     }
 
     pub(in crate::tui) fn vendored_at_path(&self, target: &Path) -> Option<&VendoredPackage> {
-        let location = *self.path_index.get(target)?;
+        let location = match self.project_location(target) {
+            ProjectPathLookup::Found(location) => location,
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => return None,
+        };
         let ProjectNodeLocation::Vendored { owner, index } = location.node else {
             return None;
         };
@@ -538,7 +894,10 @@ impl ProjectList {
     }
 
     fn vendored_at_path_mut(&mut self, target: &Path) -> Option<&mut VendoredPackage> {
-        let location = *self.path_index.get(target)?;
+        let location = match self.project_location(target) {
+            ProjectPathLookup::Found(location) => location,
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => return None,
+        };
         let ProjectNodeLocation::Vendored { owner, index } = location.node else {
             return None;
         };
@@ -554,7 +913,10 @@ impl ProjectList {
     }
 
     pub(in crate::tui) fn vendored_owner_lint(&self, target: &Path) -> Option<&LintRuns> {
-        let location = *self.path_index.get(target)?;
+        let location = match self.project_location(target) {
+            ProjectPathLookup::Found(location) => location,
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => return None,
+        };
         if !matches!(location.node, ProjectNodeLocation::Vendored { .. }) {
             return None;
         }
@@ -566,7 +928,10 @@ impl ProjectList {
     }
 
     pub(in crate::tui) fn lint_at_path(&self, target: &Path) -> Option<&LintRuns> {
-        let location = *self.path_index.get(target)?;
+        let location = match self.project_location(target) {
+            ProjectPathLookup::Found(location) => location,
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => return None,
+        };
         if !matches!(location.node, ProjectNodeLocation::Rust(_)) {
             return None;
         }
@@ -578,7 +943,10 @@ impl ProjectList {
     }
 
     pub(in crate::tui) fn lint_at_path_mut(&mut self, target: &Path) -> Option<&mut LintRuns> {
-        let location = *self.path_index.get(target)?;
+        let location = match self.project_location(target) {
+            ProjectPathLookup::Found(location) => location,
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => return None,
+        };
         if !matches!(location.node, ProjectNodeLocation::Rust(_)) {
             return None;
         }
@@ -593,7 +961,10 @@ impl ProjectList {
     }
 
     pub(in crate::tui) fn lint_owner_path(&self, target: &Path) -> Option<AbsolutePath> {
-        let location = *self.path_index.get(target)?;
+        let location = match self.project_location(target) {
+            ProjectPathLookup::Found(location) => location,
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => return None,
+        };
         if !matches!(location.node, ProjectNodeLocation::Rust(_)) {
             return None;
         }
@@ -605,7 +976,10 @@ impl ProjectList {
     }
 
     fn checkout_root_for(&self, target: &Path) -> Option<AbsolutePath> {
-        let location = *self.path_index.get(target)?;
+        let location = match self.project_location(target) {
+            ProjectPathLookup::Found(location) => location,
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => return None,
+        };
         let root = &self.get(location.root_index)?.root_item;
         match location.node {
             ProjectNodeLocation::NonRust => Some(root.path().clone()),
@@ -625,11 +999,17 @@ impl ProjectList {
     /// Top-level entry whose hierarchy contains `target`. One-shot
     /// replacement for the per-field per-path lookups used elsewhere.
     pub(in crate::tui) fn entry_containing(&self, target: &Path) -> Option<&ProjectEntry> {
-        self.get(self.path_index.get(target)?.root_index)
+        match self.project_location(target) {
+            ProjectPathLookup::Found(location) => self.get(location.root_index),
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => None,
+        }
     }
 
     pub(in crate::tui) fn worktree_status_for(&self, path: &Path) -> Option<&WorktreeStatus> {
-        let location = *self.path_index.get(path)?;
+        let location = match self.project_location(path) {
+            ProjectPathLookup::Found(location) => location,
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => return None,
+        };
         let root = &self.get(location.root_index)?.root_item;
         match location.node {
             ProjectNodeLocation::Submodule(_) => None,
@@ -645,7 +1025,10 @@ impl ProjectList {
         &mut self,
         target: &Path,
     ) -> Option<&mut ProjectEntry> {
-        let root_index = self.path_index.get(target)?.root_index;
+        let root_index = match self.project_location(target) {
+            ProjectPathLookup::Found(location) => location.root_index,
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => return None,
+        };
         self.roots.get_index_mut(root_index).map(|(_, entry)| entry)
     }
 
@@ -696,8 +1079,10 @@ impl ProjectList {
     // project paths.
 
     pub(in crate::tui) fn git_info_for(&self, path: &Path) -> Option<&CheckoutInfo> {
-        self.at_path(path)
-            .and_then(|project| project.local_git_state.info())
+        match self.at_path(path) {
+            ProjectPathLookup::Found(project) => project.local_git_state.info(),
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => None,
+        }
     }
 
     /// Per-repo info (remotes, workflows, default branch, ...) for the
@@ -919,32 +1304,39 @@ impl ProjectList {
     }
 
     pub(in crate::tui) fn is_deleted(&self, path: &Path) -> bool {
-        self.at_path(path)
-            .is_some_and(|project| project.visibility == Visibility::Deleted)
+        match self.at_path(path) {
+            ProjectPathLookup::Found(project) => project.visibility == Visibility::Deleted,
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => false,
+        }
     }
 
     pub(in crate::tui) fn is_rust_at_path(&self, path: &Path) -> bool {
-        self.path_index.get(path).is_some_and(|location| {
-            matches!(
+        match self.project_location(path) {
+            ProjectPathLookup::Found(location) => matches!(
                 location.node,
                 ProjectNodeLocation::Rust(_) | ProjectNodeLocation::Vendored { .. }
-            )
-        })
+            ),
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => false,
+        }
     }
 
     pub(in crate::tui) fn is_vendored_path(&self, path: &Path) -> bool {
-        self.path_index
-            .get(path)
-            .is_some_and(|location| matches!(location.node, ProjectNodeLocation::Vendored { .. }))
+        match self.project_location(path) {
+            ProjectPathLookup::Found(location) => {
+                matches!(location.node, ProjectNodeLocation::Vendored { .. })
+            },
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => false,
+        }
     }
 
     pub(in crate::tui) fn is_workspace_member_path(&self, path: &Path) -> bool {
-        self.path_index.get(path).is_some_and(|location| {
-            matches!(
+        match self.project_location(path) {
+            ProjectPathLookup::Found(location) => matches!(
                 location.node,
                 ProjectNodeLocation::Rust(RustOwnerLocation::Member { .. })
-            )
-        })
+            ),
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => false,
+        }
     }
 
     pub(in crate::tui) fn git_main(&self, path: &Path) -> String {
@@ -989,22 +1381,27 @@ impl ProjectList {
                             "replacement path must match target path"
                         );
                         std::mem::swap(item, &mut replacement);
+                        RetainedProjectTree::preserve_replacement(item, replacement.clone(), &[]);
                         return Some(replacement);
                     }
                 },
                 RootItem::Worktrees(group) => {
-                    if group.primary.path() == path
-                        && let RootItem::Rust(rp) = replacement
-                    {
-                        let old = std::mem::replace(&mut group.primary, rp);
-                        return Some(RootItem::Rust(old));
-                    }
-                    for l in &mut group.linked {
-                        if l.path() == path
-                            && let RootItem::Rust(rp) = replacement
+                    for checkout in std::iter::once(&mut group.primary).chain(&mut group.linked) {
+                        if checkout.path() == path
+                            && let RootItem::Rust(project) = replacement
                         {
-                            let old = std::mem::replace(l, rp);
-                            return Some(RootItem::Rust(old));
+                            let mut updated = RootItem::Rust(project);
+                            RetainedProjectTree::preserve_replacement(
+                                &mut updated,
+                                RootItem::Rust(checkout.clone()),
+                                &[],
+                            );
+                            return match updated {
+                                RootItem::Rust(updated) => {
+                                    Some(RootItem::Rust(std::mem::replace(checkout, updated)))
+                                },
+                                RootItem::NonRust(_) | RootItem::Worktrees(_) => None,
+                            };
                         }
                     }
                 },
@@ -1050,29 +1447,26 @@ impl ProjectList {
     }
 
     fn insert_into_hierarchy_without_index(&mut self, item: RootItem) -> bool {
-        let item_path = item.path().to_path_buf();
+        let mut item = Box::new(item);
         for entry in self.roots.values_mut() {
-            if grouping::try_attach_worktree(&mut entry.root_item, &item) {
-                return false;
-            }
-
-            let inserted = match &mut entry.root_item {
-                RootItem::Rust(RustProject::Workspace(ws)) => {
-                    grouping::try_insert_member(ws, &item_path, &item)
-                },
-                RootItem::Worktrees(group) => std::iter::once(&mut group.primary)
-                    .chain(group.linked.iter_mut())
-                    .any(|entry| {
-                        if let RustProject::Workspace(ws) = entry {
-                            grouping::try_insert_member(ws, &item_path, &item)
-                        } else {
-                            false
-                        }
-                    }),
-                _ => false,
+            item = match grouping::try_attach_worktree(&mut entry.root_item, item) {
+                ProjectPlacement::Inserted => return false,
+                ProjectPlacement::Unplaced(item) => item,
             };
-            if inserted {
-                return true;
+            let (primary, linked) = match &mut entry.root_item {
+                RootItem::Rust(project) => (Some(project), &mut [][..]),
+                RootItem::Worktrees(group) => {
+                    (Some(&mut group.primary), group.linked.as_mut_slice())
+                },
+                RootItem::NonRust(_) => (None, &mut [][..]),
+            };
+            for project in primary.into_iter().chain(linked.iter_mut()) {
+                if let RustProject::Workspace(workspace) = project {
+                    item = match grouping::try_insert_member(workspace, item) {
+                        ProjectPlacement::Inserted => return true,
+                        ProjectPlacement::Unplaced(item) => item,
+                    };
+                }
             }
         }
         // When `grouping::try_insert_member` finds no parent workspace, use `shift_insert` to add a
@@ -1085,7 +1479,7 @@ impl ProjectList {
             .unwrap_or(self.roots.len());
         let key = item.path().clone();
         self.roots
-            .shift_insert(insert_index, key, ProjectEntry::with_repo(item, None));
+            .shift_insert(insert_index, key, ProjectEntry::with_repo(*item, None));
         false
     }
 
@@ -1149,10 +1543,10 @@ impl ProjectList {
             }
             let attached = grouping::try_attach_worktree(
                 &mut self.roots[target_index].root_item,
-                &linked_entry.root_item,
+                Box::new(linked_entry.root_item),
             );
             debug_assert!(
-                attached,
+                matches!(attached, grouping::ProjectPlacement::Inserted),
                 "linked worktree regroup should attach after container match"
             );
             if target_index >= index {
@@ -1161,8 +1555,9 @@ impl ProjectList {
         }
     }
 
-    // `clear` and test-only `push` mutate the `ProjectList::roots` collection.
+    // Test helpers change the roots and update the path index.
 
+    #[cfg(test)]
     pub(in crate::tui) fn clear(&mut self) {
         if !self.roots.is_empty() {
             self.roots.clear();
@@ -1562,7 +1957,7 @@ impl ProjectList {
         )
     }
 
-    fn path_for_row(&self, row: VisibleRow) -> Option<&Path> {
+    pub(in crate::tui) fn path_for_row(&self, row: VisibleRow) -> Option<&Path> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
                 Some(self.get(node_index)?.path().as_path())
@@ -1944,13 +2339,13 @@ impl ProjectList {
     ) -> Option<DismissTarget> {
         let dismiss_path = match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                self.get(node_index).map(|item| item.path().clone())
+                self.get(node_index).map(|item| item.path().as_path())
             },
             VisibleRow::Member { node_index, .. }
             | VisibleRow::MemberVendored { node_index, .. }
             | VisibleRow::Vendored { node_index, .. }
             | VisibleRow::Submodule { node_index, .. } => {
-                self.get(node_index).map(|item| item.path().clone())
+                self.get(node_index).map(|item| item.path().as_path())
             },
             VisibleRow::WorktreeEntry {
                 node_index,
@@ -1976,16 +2371,20 @@ impl ProjectList {
                 worktree_index,
                 ..
             } => match &self.get(node_index)?.root_item {
-                RootItem::Worktrees(group) => group.entry(worktree_index).map(|p| p.path().clone()),
+                RootItem::Worktrees(group) => {
+                    group.entry(worktree_index).map(|p| p.path().as_path())
+                },
                 _ => None,
             },
-        }?;
+        };
 
-        if self.is_deleted(&dismiss_path) {
-            Some(DismissTarget::DeletedProject(dismiss_path))
-        } else {
-            None
+        let owner = dismiss_path?;
+        if self.is_deleted(owner) {
+            return Some(DismissTarget::DeletedProject(AbsolutePath::from(owner)));
         }
+        let selected = self.path_for_row(row)?;
+        (selected != owner && self.is_deleted(selected))
+            .then(|| DismissTarget::DeletedProject(AbsolutePath::from(selected)))
     }
 
     pub(in crate::tui) fn worktree_parent_node_index(&self, path: &Path) -> Option<usize> {
@@ -2445,8 +2844,11 @@ impl ProjectList {
         entries: Vec<(AbsolutePath, LanguageStats)>,
     ) {
         for (path, stats) in entries {
-            if let Some(project) = self.at_path_mut(path.as_path()) {
-                project.language_stats = Some(stats);
+            match self.at_path_mut(path.as_path()) {
+                ProjectPathLookup::Found(project) => {
+                    project.language_stats = Some(stats);
+                },
+                ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => {},
             }
         }
     }
@@ -2457,8 +2859,11 @@ impl ProjectList {
         entries: Vec<(AbsolutePath, TestCounts)>,
     ) {
         for (path, counts) in entries {
-            if let Some(project) = self.at_path_mut(path.as_path()) {
-                project.test_counts = Some(counts);
+            match self.at_path_mut(path.as_path()) {
+                ProjectPathLookup::Found(project) => {
+                    project.test_counts = Some(counts);
+                },
+                ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => {},
             }
         }
     }
@@ -2612,33 +3017,34 @@ fn sync_workspace_members_from_metadata(
     let current = workspace_member_signature(ws);
     let members = metadata_member_packages(ws, metadata);
     let incoming = package_signature(&members);
-    if current == incoming {
-        return false;
-    }
-
     grouping::replace_workspace_members(ws, members, inline_dirs);
-    true
+    current != incoming
 }
 
-fn metadata_member_packages(ws: &Workspace, metadata: &WorkspaceMetadata) -> Vec<Package> {
-    let existing = ws
-        .groups()
-        .iter()
-        .flat_map(|group| group.members().iter().cloned())
+fn metadata_member_packages(ws: &mut Workspace, metadata: &WorkspaceMetadata) -> Vec<Package> {
+    let mut existing = std::mem::take(ws.groups_mut())
+        .into_iter()
+        .flat_map(crate::project::MemberGroup::into_members)
         .map(|member| (member.path().clone(), member))
         .collect::<HashMap<_, _>>();
 
-    metadata
+    let mut members = metadata
         .packages
         .values()
-        .filter_map(|record| metadata_member_package(ws, record, &existing))
-        .collect()
+        .filter_map(|record| metadata_member_package(ws, record, &mut existing))
+        .collect::<Vec<_>>();
+    for mut member in existing.into_values() {
+        if retain_package(&mut member) {
+            members.push(member);
+        }
+    }
+    members
 }
 
 fn metadata_member_package(
     ws: &Workspace,
     record: &PackageRecord,
-    existing: &HashMap<AbsolutePath, Package>,
+    existing: &mut HashMap<AbsolutePath, Package>,
 ) -> Option<Package> {
     let manifest_dir = record.manifest_path.as_path().parent()?;
     if manifest_dir == ws.path().as_path() || !manifest_dir.starts_with(ws.path().as_path()) {
@@ -2646,7 +3052,7 @@ fn metadata_member_package(
     }
 
     let path = AbsolutePath::from(manifest_dir.to_path_buf());
-    let mut member = existing.get(&path).cloned().unwrap_or_else(|| Package {
+    let mut member = existing.remove(&path).unwrap_or_else(|| Package {
         path: path.clone(),
         name: Some(record.name.clone()),
         ..Package::default()
@@ -2707,10 +3113,13 @@ enum GitRepoLookup {
 
 impl GitRepoLookup {
     fn find(list: &ProjectList, path: &Path) -> Option<Self> {
+        let location = match list.project_location(path) {
+            ProjectPathLookup::Found(location) => location,
+            ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => return None,
+        };
         if list.roots.contains_key(path) {
             return Some(Self::Direct(AbsolutePath::from(path)));
         }
-        let location = *list.path_index.get(path)?;
         let entry = list.get(location.root_index)?;
         match location.repository {
             RepositoryLocation::Submodule { root_index, index } => Some(Self::Submodule {
@@ -2754,16 +3163,41 @@ fn checkout_mut(root: &mut RootItem, place: CheckoutLocation) -> Option<&mut Rus
     }
 }
 
-fn rust_owner(project: &RustProject, place: RustOwnerLocation) -> Option<&RustInfo> {
+enum RustProjectNode<'a> {
+    Checkout(&'a RustProject),
+    Member(&'a Package),
+}
+
+impl<'a> RustProjectNode<'a> {
+    fn fields(self) -> &'a dyn ProjectFields {
+        match self {
+            Self::Checkout(project) => project,
+            Self::Member(package) => package,
+        }
+    }
+
+    const fn rust_info(self) -> &'a RustInfo {
+        match self {
+            Self::Checkout(project) => project.rust_info(),
+            Self::Member(package) => &package.rust,
+        }
+    }
+}
+
+fn rust_node(project: &RustProject, place: RustOwnerLocation) -> Option<RustProjectNode<'_>> {
     match place {
-        RustOwnerLocation::Checkout => Some(project.rust_info()),
+        RustOwnerLocation::Checkout => Some(RustProjectNode::Checkout(project)),
         RustOwnerLocation::Member { group, member } => match project {
-            RustProject::Workspace(workspace) => {
-                Some(&workspace.groups().get(group)?.members().get(member)?.rust)
-            },
+            RustProject::Workspace(workspace) => Some(RustProjectNode::Member(
+                workspace.groups().get(group)?.members().get(member)?,
+            )),
             RustProject::Package(_) => None,
         },
     }
+}
+
+fn rust_owner(project: &RustProject, place: RustOwnerLocation) -> Option<&RustInfo> {
+    rust_node(project, place).map(RustProjectNode::rust_info)
 }
 
 fn rust_owner_mut(project: &mut RustProject, place: RustOwnerLocation) -> Option<&mut RustInfo> {
