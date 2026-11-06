@@ -272,6 +272,18 @@ No code. On hana `39e5c19033`, rustc 1.99.0 stops with `assertion failed: !deep_
 
 **Gotchas:** `Formatter::detect` starts up to two short processes per mend scan. A relocation pass that depends on a kept function stays out as a whole, which keeps more relocations than the one caller needs.
 
+### Phase 2x — mend --fix keeps an import that a child module reaches through super  · status: done
+
+#### As-built
+
+`mend --fix` keeps a parent import that a child module reaches through a qualified path, such as `super::contrast_failures()` in an inline test module, a nested module, a file child or a macro argument. The descendant check (`DescendantAccessCollector` in `prefer_module_import/descendant_imports.rs`) records each `use`, glob, qualified path and macro-token path in a child module as a `DescendantBindingAccess`; the candidate filter keeps every import that one of them reaches. syn keeps macro bodies as tokens, so `collect_macro_paths` walks `ident :: ident` sequences through token groups. Five tests in `scan.rs` compile the result with rustc and check that a second pass changes nothing. On the Phase 4b tree, the new binary applied 7 import fixes with no rollback.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/prefer_module_import/descendant_imports.rs`, `scan.rs` — the collector and its tests
+- `crates/cargo-mend/CHANGELOG.md`
+
+**Gotchas:** the tests run `scan_file`, `apply_fixes` and rustc, not the full `--fix` path, so no test takes a second; the `--fix` path and its rollback were proved by the director's lint gate only.
+
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: done
 
 **Depends on:** Phase 2b
@@ -371,7 +383,8 @@ A deleted project stays on the list, struck through and dismissable, until the u
 - Spec 3 changes the existing `deleted row content should be crossed out` assertion in `tui/app/mod.rs`. Record the new assertion in the checkpoint's Assertion-Change line.
 - Spec 11 changes Phase 4's assertions in `tui/panes/git/value_fit_tests.rs`: the `"Rat"` and `"B..."` lookups and the three-dot rows. Record each in an Assertion-Change line.
 - Colours stay in the theme. Do not hard-code a new value at a draw site.
-- Each item gets a red test that reads the drawn buffer, under one second.
+- Each item gets a red test that reads the drawn buffer, under one second. Spec 23 is the one exception when only the capture font of the live harness changes: that change does not reach the app buffer, so its acceptance is the director's comparison of the live shots before and after.
+- **Constraints from prior phases:** the lint gate runs with the cargo-mend from Phase 2x (`b466107b9`), installed on both machines. An older mend rolls back the `contrast_failures` import fix. Phase 2w does not shorten a function that is already over the clippy limit, so this phase fixes its own length errors (the `ui` function in `tui/render.rs`, 102 of 100 lines).
 
 **Spec:**
 1. **Selection under `NO_COLOR`.** The selected row draws in reverse video, so it differs from every other row. The `▶` mark stays on the row it names. The focused pane title already draws bold; its border also shows focus without colour.
@@ -401,6 +414,62 @@ A deleted project stays on the list, struck through and dismissable, until the u
 **Files:**
 - `crates/cargo-port/src/tui/` — the project columns, the sccache popup, the System and Languages panes, the Package pane, the pane layout, the hint text and their tests
 - `crates/cargo-port/src/themes/builtins.rs` and `crates/cargo-port/themes/*.toml` — the selection and label colours for Spec 6; the compiled themes and the files stay equal
+- `crates/tui_pane/src/` — only when the cause of an item lives there
+
+**Workers:** 1 writer owns the code and the tests.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` when it changes, and `verify.sh lint cargo-port` clean; no test takes a second. The unit director takes live shots at 160x45 in colour, 160x45 under `NO_COLOR=1` and 80x30 in colour. A fresh design check on those shots raises none of these items.
+
+### Phase 4c — cargo-port's remaining screen defects read clearly  · status: todo
+
+**Depends on:** Phase 4b
+
+#### Work Order
+
+**Goal:** the screen defects that the Phase 4b design check found outside the Phase 4b Work Order are gone: the words are common and used once, the margins are even, and a popup leaves no scraps behind it.
+
+**Source:** Phase 4b design check, 2026-11-06. Most rows also show on main's shots at `3fb98ed6e`. Shots: `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4b/` and `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_main/`.
+
+**Constraints:**
+- Phase 4b's results stay as they are.
+- Colours stay in the theme. Do not hard-code a new value at a draw site.
+- Each item gets a red test that reads the drawn buffer, under one second.
+
+**Spec:**
+1. **Deleted project panes.** Languages and Targets of a Deleted project do not show the last data as if it were current.
+2. **Right margin in every pane.** Content does not touch the right border in Languages, Package and narrow panes (`total││`, `Branch│`, `workspace│`). The sccache popup hint row does not end on the border.
+3. **One column word.** `binary` does not sit under both `Type` and `Kind`. `Type` means one thing across the Projects, Package and Targets panes.
+4. **One name for the disk cache.** The status text and the popup title use one name. Spec 12 and Spec 19 of Phase 4b set `Sccache stats` and `Disk cache`. Before dispatch, the director records here the name the showrunner picks from the UX guide. The tests that assert the name that goes change, each with an Assertion-Change line.
+5. **Counts and units whole at 80 columns.** The title `Targets: binary (…` keeps its count, and `23.8 G…` keeps its unit.
+6. **Sections at 80 columns.** `├─ Structure ─┤` does not sit above `Path` and `Disk`. Section titles start in one column, and the divider draws its `┬` over the vertical line.
+7. **Page marks.** A CPU pane that shows part of its bars shows a page mark, or hides the bar row. Page marks sit in one place in every pane.
+8. **Status row gaps.** Groups in the status text keep a 2-cell gap. A hint that leaves a smaller gap hides.
+9. **One description.** `No description …` does not show beside a pane that shows the description.
+10. **sccache popup words.** The heading `Stats:` goes. The labels `Cache hits rate`, `Use direct/preprocessor mode?`, `Version (client)` and `Forced recaches` use common words.
+11. **Behind a popup.** A popup leaves no cut words or one-cell scraps behind it (`hQL`, `al`, `tem`, and `h`, `…`, `▶` at 80 columns): clear or dim all cells behind it.
+12. **Hints.** `enter activate` shows only on a row that acts on enter. The hints `nav` and `=/- all` use common words. Key names use one letter case (`Esc close`, `tab pane`).
+13. **Languages colours.** Languages columns use one value colour and one icon style, unless a colour carries a meaning.
+
+**Pending decision: can a target of a Deleted project still launch?**
+
+Actual problem:
+Spec 1 covers only what the Targets pane draws for a Deleted project. `handle_target_action` (`tui/panes/actions.rs:51`) launches a cached target with no deletion check, so enter on a Deleted project's target starts a cargo run in a folder that is gone.
+
+What exists now:
+- `TargetsPane::content` returns `Option<TargetsData>`; a Deleted project keeps its last data, and nothing in it says the project is deleted.
+- The user's rule for Deleted rows: they stay on the list until the user dismisses them or rescans. No user rule covers actions on them.
+
+What should change:
+- One named target availability, read from the project's `Visibility`, decides drawing, focus, mouse areas and launches. A Deleted project's targets do not launch; a recreated project's targets launch again. Tests cover deletion, recreation, dismissal and rescan.
+
+Recommendation:
+Add this to Spec 1. It is new visible behavior, so the showrunner rules on it from the user's words before dispatch.
+
+**Files:**
+- `crates/cargo-port/src/tui/` — the panes, the status text, the sccache popup and their tests
+- `crates/cargo-port/src/themes/builtins.rs` and `crates/cargo-port/themes/*.toml` — only when a colour changes; the compiled themes and the files stay equal
 - `crates/tui_pane/src/` — only when the cause of an item lives there
 
 **Workers:** 1 writer owns the code and the tests.
