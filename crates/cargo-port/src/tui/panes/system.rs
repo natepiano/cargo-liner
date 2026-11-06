@@ -17,6 +17,7 @@ use super::OutputPane;
 use super::PackagePane;
 use super::ProjectListPane;
 use super::TargetsPane;
+use super::data::DetailCacheState;
 use super::data::PaneDataStore;
 use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
@@ -108,13 +109,14 @@ impl Panes {
         self.package.set_content(package);
         self.git.set_content(git);
         self.targets.set_content(targets);
-        self.pane_data.set_detail_stamp(Some(stamp));
+        self.pane_data
+            .set_detail_stamp(DetailCacheState::Current(stamp));
     }
 
     /// Clear the detail set across the migrated detail panes owned by `Panes`,
     /// stamping with `stamp`. Mirrors `set_detail_data`'s fan-out. CI and lint
     /// content live on their own subsystems and are cleared by the caller.
-    pub(in crate::tui) fn clear_detail_data(&mut self, stamp: Option<super::data::DetailCacheKey>) {
+    pub(in crate::tui) fn clear_detail_data(&mut self, stamp: DetailCacheState) {
         self.package.clear_content();
         self.git.clear_content();
         self.targets.clear_content();
@@ -160,7 +162,9 @@ mod detail_set_tests {
     use crate::tui::panes::PackageData;
     use crate::tui::panes::TargetsData;
     use crate::tui::panes::data::DetailCacheKey;
+    use crate::tui::panes::data::DetailCacheState;
     use crate::tui::project_list::VisibleRow;
+    use crate::tui::test_support;
 
     fn fresh() -> Panes {
         Panes::new(
@@ -190,11 +194,15 @@ mod detail_set_tests {
     #[test]
     fn new_panes_detail_is_current_only_with_no_selection() {
         let panes = fresh();
-        assert!(panes.pane_data.detail_is_current(None));
-        assert!(!panes.pane_data.detail_is_current(Some(DetailCacheKey {
-            visible_row: any_row(),
-            generation:  0,
-        })));
+        assert!(panes.pane_data.detail_is_current(DetailCacheState::Cleared));
+        assert!(
+            !panes
+                .pane_data
+                .detail_is_current(DetailCacheState::Current(DetailCacheKey {
+                    visible_row: any_row(),
+                    generation:  0,
+                }))
+        );
     }
 
     #[test]
@@ -207,22 +215,33 @@ mod detail_set_tests {
         let (pkg, git, targets) = empty_detail();
         panes.set_detail_data(key, pkg, git, targets);
 
-        assert!(panes.pane_data.detail_is_current(Some(key)));
+        assert!(
+            panes
+                .pane_data
+                .detail_is_current(DetailCacheState::Current(key))
+        );
         assert!(panes.package.content().is_some());
         assert!(panes.git.content().is_some());
         assert!(panes.targets.content().is_some());
 
-        // `pane_data.detail_is_current` rejects `None` and `DetailCacheKey` values with a different
-        // `generation` or `visible_row`.
-        assert!(!panes.pane_data.detail_is_current(None));
-        assert!(!panes.pane_data.detail_is_current(Some(DetailCacheKey {
-            visible_row: any_row(),
-            generation:  4,
-        })));
-        assert!(!panes.pane_data.detail_is_current(Some(DetailCacheKey {
-            visible_row: other_row(),
-            generation:  3,
-        })));
+        // The cache rejects cleared details and keys with a different generation or row.
+        assert!(!panes.pane_data.detail_is_current(DetailCacheState::Cleared));
+        assert!(
+            !panes
+                .pane_data
+                .detail_is_current(DetailCacheState::Current(DetailCacheKey {
+                    visible_row: any_row(),
+                    generation:  4,
+                }))
+        );
+        assert!(
+            !panes
+                .pane_data
+                .detail_is_current(DetailCacheState::Current(DetailCacheKey {
+                    visible_row: other_row(),
+                    generation:  3,
+                }))
+        );
     }
 
     #[test]
@@ -239,8 +258,12 @@ mod detail_set_tests {
             visible_row: other_row(),
             generation:  7,
         };
-        panes.clear_detail_data(Some(clear_key));
-        assert!(panes.pane_data.detail_is_current(Some(clear_key)));
+        panes.clear_detail_data(DetailCacheState::Current(clear_key));
+        assert!(
+            panes
+                .pane_data
+                .detail_is_current(DetailCacheState::Current(clear_key))
+        );
         assert!(panes.package.content().is_none());
         assert!(panes.git.content().is_none());
         assert!(panes.targets.content().is_none());
@@ -249,7 +272,73 @@ mod detail_set_tests {
     #[test]
     fn clear_detail_with_none_matches_none() {
         let mut panes = fresh();
-        panes.clear_detail_data(None);
-        assert!(panes.pane_data.detail_is_current(None));
+        panes.clear_detail_data(DetailCacheState::Cleared);
+        assert!(panes.pane_data.detail_is_current(DetailCacheState::Cleared));
+    }
+
+    #[test]
+    fn no_selection_clears_previous_details_once() {
+        let project = test_support::make_package(
+            "detail-cache",
+            std::path::Path::new("/tmp/detail-cache-no-selection"),
+        );
+        let mut app = test_support::make_app(&[project]);
+        app.ensure_detail_cached();
+        assert!(app.panes.package.content().is_some());
+        assert!(app.panes.git.content().is_some());
+        assert!(app.panes.targets.content().is_some());
+        let populated = app.panes.pane_data.detail_build_count();
+
+        app.project_list.clear();
+        app.ensure_visible_rows_cached();
+        assert!(app.project_list.selected_row().is_none());
+        app.ensure_detail_cached();
+        assert!(
+            app.panes
+                .pane_data
+                .detail_is_current(DetailCacheState::Cleared)
+        );
+        assert!(app.panes.package.content().is_none());
+        assert!(app.panes.git.content().is_none());
+        assert!(app.panes.targets.content().is_none());
+        assert_eq!(app.panes.pane_data.detail_build_count(), populated + 1);
+
+        app.ensure_detail_cached();
+        assert_eq!(app.panes.pane_data.detail_build_count(), populated + 1);
+    }
+
+    #[test]
+    fn cleared_selected_details_stay_current_until_the_generation_changes() {
+        let project = test_support::make_package(
+            "detail-cache",
+            std::path::Path::new("/tmp/detail-cache-selected"),
+        );
+        let mut app = test_support::make_app(&[project]);
+        app.ensure_detail_cached();
+        assert_eq!(app.project_list.selected_row(), Some(any_row()));
+        let key = DetailCacheKey {
+            visible_row: any_row(),
+            generation:  app.scan.generation(),
+        };
+        app.panes.clear_detail_data(DetailCacheState::Current(key));
+        let cleared = app.panes.pane_data.detail_build_count();
+
+        app.ensure_detail_cached();
+        assert!(
+            app.panes
+                .pane_data
+                .detail_is_current(DetailCacheState::Current(key))
+        );
+        assert!(app.panes.package.content().is_none());
+        assert!(app.panes.git.content().is_none());
+        assert!(app.panes.targets.content().is_none());
+        assert_eq!(app.panes.pane_data.detail_build_count(), cleared);
+
+        app.scan.bump_generation();
+        app.ensure_detail_cached();
+        assert_eq!(app.panes.pane_data.detail_build_count(), cleared + 1);
+        assert!(app.panes.package.content().is_some());
+        assert!(app.panes.git.content().is_some());
+        assert!(app.panes.targets.content().is_some());
     }
 }

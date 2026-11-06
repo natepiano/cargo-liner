@@ -5,6 +5,16 @@ use crate::tui::project_list::ProjectListRowDisplayPathResolution;
 use crate::tui::project_list::VisibleRow;
 
 impl App {
+    pub(in crate::tui) fn record_selection_choice(&mut self) {
+        self.ensure_visible_rows_cached();
+        if let Some(path) = self.project_list.selected_project_path()
+            && self.project_list.paths.last_selected.as_deref() != Some(path)
+        {
+            self.project_list.paths.last_selected = Some(path.into());
+            self.project_list.mark_sync_changed();
+        }
+    }
+
     /// Returns the `RootItem` when a root row is selected.
     pub(in crate::tui) fn selected_item(&self) -> Option<&RootItem> {
         match self.project_list.selected_row()? {

@@ -37,6 +37,9 @@ use crate::project::PinnedCommit;
 use crate::project::ResolvedBranch;
 use crate::project::TrackedRef;
 use crate::project::WorktreeHealth;
+use crate::tui::project_list::ProjectPathLookup::Found;
+use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+use crate::tui::project_list::ProjectPathLookup::UnknownPath;
 use crate::tui::state::RepoBranchProbe;
 
 /// How a branch relates to the repo, rendered as a qualifier after its
@@ -510,9 +513,10 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
     GitDetailFields {
         failed_reads: GitReadFailures::of(checkout, repo_info),
         checkout: GitCheckout::from_probe(
-            app.project_list
-                .at_path(abs_path)
-                .map_or(WorktreeHealth::Normal, |info| info.worktree_health),
+            match app.project_list.at_path(abs_path) {
+                Found(info) => info.worktree_health,
+                UnknownPath | StaleRoute => WorktreeHealth::Normal,
+            },
             head,
             local_main_probe,
             WorktreePlacement::of(app.project_list.worktree_status_for(abs_path)),

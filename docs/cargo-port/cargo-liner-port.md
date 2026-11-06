@@ -1,6 +1,5 @@
 # port
 
-> **Production: cargo-liner** — unit `port-unit`; production doc `docs/cargo-port/cargo-liner-production.md`
 
 ## Source
 
@@ -27,7 +26,7 @@ you need to create a new unit to handle all cargo port enhancements it should be
 - **Build:** `bash ~/.claude/scripts/direct/verify.sh check cargo-port`
 - **Test:** `bash ~/.claude/scripts/direct/verify.sh test cargo-port`
 - **Lint:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-port`
-- **Invariants:** no test takes a second; a deleted project stays in the list, struck through, until the user dismisses it.
+- **Invariants:** no test takes a second; a deleted project stays in the list, struck through, until the user dismisses it or rescans (user, 2026-11-05).
 
 ## Phases
 
@@ -231,58 +230,62 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 
 ### Phase 2t — mend --fix never writes a path into a struct pattern or struct literal field  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `verify.sh lint hana` passes with cargo-mend 0.23.0-dev on the hana tree that 0.22.3 passes; no mend rewrite gives code that does not compile.
-
-**Source:** showrunner, 2026-11-03, from hana: cargo-mend 0.23.0-dev broke `verify.sh lint hana` on `init/catalyst` ad937ff7ec plus demo Phase 28. Its rewrites gave 13 compile errors in 4 test files (`crates/hana/tests/frame_time_cables.rs`, `cable_motion/opened_routes.rs`, `cable_motion/patch_stubs.rs`, `screen_assembly/mod.rs`), then mend rolled back. One error is "expected one of `,`, `:`, or `}`, found `::`": a path written where a struct pattern or struct literal expects a field name. The same tree passes with mend 0.22.3. hana's log is gone.
-
-**Constraints:**
-- The tree: `~/rust/hana` at ad937ff7ec has three of the four files (read them with `git -C ~/rust/hana show ad937ff7ec:<path>`). The demo Phase 28 worktree `/home/natepiano/rust/tool-based-ui-demo` belongs to another session: read it only, never edit, build or lint in it.
-- Suspects: the fixes changed since `cargo-mend-v0.22.3` (`git log cargo-mend-v0.22.3..HEAD -- crates/cargo-mend`), first `imports_at_top` (phase 2s gate tracking, phase 2i, 2n), `inline_path_qualified_type`, and the leading `::` keep of phase 2o. Find the exact rewrite from the code and the four files before any change.
-- From phase 2s: a new syn node in a fix needs a case in `gate_tracking_visit!` (`fixes/imports/gate_tracking.rs`).
-- A rewrite must never replace a field name, a field-init shorthand (`Foo { x }`) or a field pattern shorthand (`Foo { x, .. }`) with a path. Where a shorthand binds a name the fix shortens or qualifies, write `x: <path>` or leave it unchanged.
-
-**Spec:**
-1. **Red first:** the smallest fixture that gives the parse error (or one of the 13 errors) through the real fix path (`imports::apply_fixes` or the fix's own apply entry), with the parsed output checked by `syn::parse_file`. One test for each distinct cause the four files show.
-2. Fix the cause in the fix that writes it.
-3. Every mend fix's output in the new tests parses and keeps the program's meaning.
-4. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
+`mend --fix` no longer breaks code when `prefer_module_import` rewrites a path. `PreservedImports` keeps each binding whose uses cannot take a qualified path: an imported macro binding, a field name in a macro call, a field-init shorthand or field pattern shorthand, and a binding that an external child module uses. The import and all its uses stay together. `ReferenceCollector` uses its lexical scope information for field shorthand. A shared descendant import guard protects named imports and glob imports across child modules.
 
 **Files:**
-- `crates/cargo-mend/src/fixes/` — the fix that writes the path, and its tests
+- `crates/cargo-mend/src/fixes/prefer_module_import/scan.rs` — the preserved imports and one test for each cause
 - `crates/cargo-mend/CHANGELOG.md`
+
+**Gotchas:** the macro token walker cannot tell a field name from a function name, so a binding used inside a macro call stays imported.
+
+### Phase 2u — mend --fix never adds an import that a glob already brings  · status: done
+
+#### As-built
+
+`mend --fix` keeps a local import when a glob in the destination scope can supply the same binding or trait, so the fix adds no import that rustc reports as unused. `lint hana`, which denies warnings, passes on the copy that gave the warning.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/imports_at_top/in_body_use_finder.rs` — finds the glob in the destination scope
+- `crates/cargo-mend/src/fixes/imports/module_imports.rs` — the shared check for a binding that a glob brings
+- `crates/cargo-mend/CHANGELOG.md`
+
+### Phase 2v — widget gets the hana construct that crashes rustc  · status: done
+
+#### As-built
+
+No code. On hana `39e5c19033`, rustc 1.99.0 stops with `assertion failed: !deep_decl.is_glob_import()` (rustc_resolve imports.rs:583) when it builds test code; mend hits it only because it builds `--all-targets`. The construct: `use super::*;` in the cfg(test) module `rear_patch_panel::tests` (`crates/hana/src/tool/rear_patch_panel/mod.rs`), which brings a helper that the parent module also re-exports. Widget replaced the glob with explicit imports in `0c4e265f32`. Neither widget's worker nor this unit made a small sample that reproduces the panic; Codex refused the reduction task three times (content filter). The rustc issue can cite the commit pair `39e5c19033` / `0c4e265f32`.
+
+### Phase 2w — mend --fix never makes a function too long for clippy  · status: todo
+
+#### Work Order
+
+**Goal:** `mend --fix` never moves a function past clippy `too_many_lines`, so a lint run that was green stays green after the fix.
+
+**Source:** showrunner, 2026-11-05, from the performance showrunner's report. The module-import rewrite makes names longer, rustfmt then wraps the calls, and the function grows. `switch_dimming_and_the_patch_edit_fade_restore_in_either_order` in `crates/hana/tests/tool_switch/mod.rs` went from under the limit to 106/100, and hana `4590aeeb22` split it by hand. `opening_one_pocket_among_many_tools_touches_only_its_own_cards_and_rows` in `crates/hana/tests/pocket_open_work/mod.rs` reached 102/100 on the metrics-gathering tree. Showrunner: "mend --fix must not leave lint red."
+
+**Constraints:**
+- mend does not split a function. Splitting stays with the person who owns the function.
+- A function that is already over the limit before the fix keeps its current behavior.
+- A function with `#[allow(clippy::too_many_lines)]` or `#[expect(clippy::too_many_lines)]` is not limited.
+- Read the limit from the workspace `clippy.toml` key `too-many-lines-threshold`. Without that key, use the clippy default.
+
+**Spec:**
+1. **Red first:** the smallest fixture through the real fix path where the rewrite wraps calls and moves one function past the limit, with a second function in the same file that stays under the limit.
+2. Measure each function that a fix changes. Format the new file text with the rustfmt settings of the workspace, and count the body lines as clippy counts them: no blank lines and no comment lines.
+3. When a function goes from within the limit to over the limit, drop every rewrite in that function. Its imports at function scope stay too. Other functions in the file keep their rewrites.
+4. Report and fix agree: a kept function gives no warning and no failed exit in either mode. A notice names the file, the function and the count, and says to split the function. A second `--fix` run changes nothing and gives the same notice.
+5. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
+
+**Files:**
+- `crates/cargo-mend/` — the fix path, the measure, the notice and their tests
 
 **Workers:** 1 writer owns the code and the tests.
 
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second; the red tests fail on the pre-fix tree and pass after; the summary names each of the 13 errors' cause or says which cause it shares.
-- Director gate (showrunner, 2026-11-03): the new mend binary runs `mend --all-targets --workspace --fix` on a copy of hana ad937ff7ec plus the demo Phase 28 changes, with no rollback, and `cargo check --workspace --all-targets` on the fixed copy gives 0 errors.
+**State:** none.
 
-### Phase 2u — mend --fix never adds an import that a glob already brings  · status: todo
-
-#### Work Order
-
-**Goal:** `mend --fix` on the hana copy from Phase 2t adds no import that rustc reports as unused, so `verify.sh lint hana`, which denies warnings, passes.
-
-**Source:** showrunner, 2026-11-03, from the Phase 2t director gate: on the fixed hana copy, `cargo check` gives one new warning, `unused import: bevy::ecs::system::RunSystemOnce`. `mend --fix` added `use bevy::ecs::system::RunSystemOnce as _;` to `crates/hana/tests/arrange_glyph/envelope.rs`, which already has `use super::*;`. Hana stays blocked until this phase lands.
-
-**Constraints:**
-- The fixed and clean hana copies are in the director's scratchpad; the director gives their paths. Read `/home/natepiano/rust/tool-based-ui-demo` only; never edit, build or lint in it.
-- Find the fix that writes the import from the code and the hana file before any change.
-- An import that a fix adds must not duplicate a name or a trait (`as _`) that a glob import in the same module already brings.
-
-**Spec:**
-1. **Red first:** the smallest fixture through the real fix path that adds the duplicate import, with a check that the output has no unused import.
-2. Fix the cause in the fix that writes the import.
-3. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
-
-**Files:**
-- `crates/cargo-mend/src/fixes/` — the fix that adds the import, and its tests
-- `crates/cargo-mend/CHANGELOG.md`
-
-**Workers:** 1 writer owns the code and the tests.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second; the red test fails on the pre-fix tree and passes after. Director gate: the new mend binary runs `--fix` on a clean copy of the Phase 2t hana tree with no rollback, and `cargo check --workspace --all-targets` on the fixed copy gives 0 errors and 0 warnings.
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second; the red test fails on the pre-fix tree and passes after. Director gate: the new mend binary runs `--fix` on a clean copy of hana `4590aeeb22^`, then `verify.sh lint hana` on that copy shows no `too_many_lines` error, and the notice names the kept function.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: done
 
@@ -305,115 +308,134 @@ The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame 
 
 **Depends on:** Phase 3
 
-#### Work Order
+#### As-built
 
-**Goal:** idle CPU on the branch binary is below main's, beyond the spread over 3 pairs.
-
-**Source:** showrunner, 2026-11-03, holding phase 3 (ef8fce7c) before its merge. Release idle, 3 pairs, one scratch project: main 0.217/0.183/0.217% of one core, branch 0.267/0.250/0.250%; the gap is larger than each side's spread. Both draw about 1.15 frames each second at idle, because each CPU pane sample changes the screen.
-
-**Cause (from the code):** `draw_frame` (`tui/terminal/event_loop.rs` ≈275) makes a new `Terminal<TestBackend>` for each frame, renders the whole UI into it, clones its buffer, compares it with the last frame, then copies it into the real terminal. Main renders once into the real terminal. ratatui's `Terminal::draw` already writes only the cells that changed.
-
-**Constraints:**
-- Draw with the public `Terminal::draw` when the frame key says a draw is due; remove the per-frame candidate `Terminal<TestBackend>`. Do not expand the frame key.
-- Classify each frame as `Drawn` or `Unchanged` by its completed buffer compared with one retained screen. Never call `get_cursor_position`: with `CrosstermBackend` it queries the terminal and waits for a reply, which adds a round trip to each frame and exits cargo-port in a terminal that does not reply. cargo-port sets no cursor, so the buffer is the whole screen. ratatui-core 0.1.2 keeps `Frame::cursor_position` crate-private; do not patch ratatui.
-- Keep the frame key, the draw-on-change tests, every existing assertion and the F015 fixed-time test source. The frame counter counts only `Drawn` frames.
-- No new allocation for each frame in the draw path.
-
-**Spec:**
-1. One render for each drawn frame, into the real terminal.
-2. **Tests, red first, each under one second:** a drawn frame calls the UI render once; an unchanged frame key renders nothing; the existing event loop tests stay green.
-3. **Live CPU measure** (unit director): 3 idle pairs, main against the branch, release builds, with the method in `docs/cargo-port/as-built/overview.md`.
+`draw_frame` (`tui/terminal/event_loop.rs`) renders each drawn frame once, into the real terminal, with the public `Terminal::draw`. The per-frame `Terminal<TestBackend>` is gone. A frame is `Drawn` or `Unchanged` by a comparison of its completed buffer with one retained screen, and the frame counter counts only `Drawn` frames. The draw path adds no allocation for each frame. Release idle over 3 pairs: installed 0.200/0.217/0.217%, branch 0.200/0.217/0.217% of one core.
 
 **Files:**
-- `crates/cargo-port/src/tui/terminal/event_loop.rs` and `crates/cargo-port/src/tui/terminal/event_loop_tests.rs`
+- `crates/cargo-port/src/tui/terminal/event_loop.rs`, `event_loop_tests.rs`
 - `crates/cargo-port/CHANGELOG.md`
 
-**Workers:** 1 writer (impl4) owns the code and the tests; the unit director owns the live measure.
+**Gotchas:** the draw path never calls `get_cursor_position`. With `CrosstermBackend` it queries the terminal and waits for a reply, which exits cargo-port in a terminal that does not reply. cargo-port sets no cursor, so the buffer is the whole screen.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; branch idle CPU below main's beyond the spread over 3 pairs.
-
-**As built:** test cargo-port 1154/1154 and workspace lint pass. Release idle over 3 pairs: installed 0.200/0.217/0.217%, branch 0.200/0.217/0.217% of one core. The branch no longer exceeds main; the Phase 3 excess (0.250–0.267%) is gone. The first live run exited under a pty that did not answer the cursor query, so the draw path no longer reads the cursor.
-
-### Phase 3c — The detail cache API takes a named state  · status: todo
+### Phase 3c — The detail cache API takes a named state  · status: done
 
 **Depends on:** Phase 3
 
-#### Work Order
+#### As-built
 
-**Goal:** no caller of the detail cache reads or passes a bare absence; cleared details and details current for a key are two named states.
-
-**Source:** phase 3 review. Phase 3's Constraints required the detail cache APIs and their tests to take and return the named state. Phase 3 changed the storage to `DetailCacheState` (`tui/panes/data.rs` ≈68, `Cleared` / `Current(key)`), but `detail_is_current`, `set_detail_stamp` and `Panes::clear_detail_data` still take `Option<DetailCacheKey>`, and `impl From<Option<DetailCacheKey>> for DetailCacheState` converts at the boundary.
-
-**Constraints:**
-- The desired state comes from the selection (`tui/app/navigation/cache.rs` ≈80–109). No selection is its own named outcome, not `None`; convert once where the selection is read.
-- Remove `impl From<Option<DetailCacheKey>> for DetailCacheState` when no caller needs it.
-- Behavior stays the same; this phase changes types only.
-
-**Spec:**
-1. `detail_is_current`, `set_detail_stamp` and `Panes::clear_detail_data` take the named state. `repo_handlers.rs` ≈650 and `navigation/cache.rs` pass a named state.
-2. **Tests, each under one second:** the existing detail cache tests in `tui/panes/system.rs` use the named states; add one for no selection and one for cleared details of a selected row.
+`detail_is_current`, `set_detail_stamp` and `Panes::clear_detail_data` take `DetailCacheState` (`Cleared` / `Current(key)`). `tui/app/navigation/cache.rs` converts the selection once: a selected row gives `Current(key)` and no selection gives `Cleared`. `impl From<Option<DetailCacheKey>> for DetailCacheState` is gone. Behavior is unchanged.
 
 **Files:**
-- `crates/cargo-port/src/tui/panes/data.rs` and `crates/cargo-port/src/tui/panes/system.rs`
-- `crates/cargo-port/src/tui/app/navigation/cache.rs`
-- `crates/cargo-port/src/tui/app/async_tasks/repo_handlers.rs`
+- `crates/cargo-port/src/tui/panes/data.rs`, `panes/mod.rs`, `panes/system.rs` — the state and its API; tests for no selection and for cleared details of a selected row
+- `crates/cargo-port/src/tui/app/navigation/cache.rs`, `app/async_tasks/repo_handlers.rs` — callers pass the named state
+
+### Phase 3d — The discovery frame test takes no background reply  (merged 3fb98ed6e, checkpoint dd7c6a70c)
+
+#### As-built
+
+`project_discovered_draws_one_new_frame` discovers a non-Rust root, which starts no `cargo metadata` task, so no reply can join the same poll. The test keeps every assertion.
+
+### Phase 4 — A Deleted row stays on the list and shows its mark  · status: done
+
+**Depends on:** Phase 3
+
+#### As-built
+
+A project marked Deleted stays in its root, struck through and dismissable, through a full rescan and under `NO_COLOR=1`. `ProjectList::retain_for_rescan` keeps each Deleted entry when the rescan starts, and the completed scan result keeps it; retained rows merge into the new roots before expansion keys are pruned. Late zero-byte and positive disk replies do not bring back a dismissed row. A rescan restores the saved choice (`last_selected`) when it is selectable, else the first visible row, and never falls back to the current path. Navigation, a focus click and a dismissal each record the choice.
+
+`ProjectList::at_path` returns `ProjectPathLookup<T>` (`Found`, `UnknownPath`, `StaleRoute`), and each caller handles every outcome. Under `NO_COLOR`, the terminal output writes text attributes without colour codes and sends no colour reset that clears them. The sccache popup width is the widest row plus equal left and right padding. A Git pane value is cut at its end with an ellipsis, never from its middle; below inner width 11 a Git row shows only its label, in the full inner width.
+
+**Files:**
+- `crates/cargo-port/src/tui/project_list/list.rs`, `grouping.rs`, `visible_rows.rs`, `path_index_tests.rs` — retained rows, the named lookup and its tests
+- `crates/cargo-port/src/tui/app/async_tasks/tree.rs`, `dispatch.rs`, `disk_handlers.rs`, `deleted_rescan_tests.rs` — rescan, completed scan, late replies and their tests
+- `crates/cargo-port/src/tui/app/navigation/selection.rs`, `app/selection_paths.rs`, `app/dismiss.rs`, `input/dispatch.rs`, `interaction.rs`, `finder/dispatch.rs` — record the choice
+- `crates/cargo-port/src/tui/terminal/mod.rs`, `no_color_tests.rs` — attributes without colour
+- `crates/cargo-port/src/tui/sccache/render.rs`, `popup_padding_tests.rs` — popup padding
+- `crates/cargo-port/src/tui/panes/git/render.rs`, `value_fit_tests.rs` — Git value fit
+- `crates/cargo-port/CHANGELOG.md`
+
+**Gotchas:** the restored selection depends on four selection handlers outside the rescan code; a new way to choose a row must record the choice. Only a live run showed that a rescan replaced the live selection; the tests that pin it now live in `deleted_rescan_tests.rs`.
+
+### Phase 4a — A rescan clears Deleted rows again  · status: todo
+
+**Depends on:** Phase 4
+
+Order (user, 2026-11-06): Phase 2w first, then this phase, then Phase 4b.
+
+#### Work Order
+
+**Goal:** a deleted project stays on the list, struck through, until the user dismisses it or rescans. A full rescan drops every Deleted row.
+
+**Source:** the user, 2026-11-05, change review C196 (merged 7663c40e7): "i never asked for this. it's not what i want - you invented this", then "yes that is the actual feature i wanted - they stay on the list till i either dismiss them or i rescan. you removing rescan took that away from me". Phase 4 made a rescan keep Deleted rows. No user words asked for that; the old Phase 1 invariant ("until the user dismisses it") was this unit's own wording.
+
+**Constraints:**
+- Keep the live behavior from before Phase 4: when a folder is deleted while cargo-port runs, its row stays, struck through, and the user can dismiss it.
+- Keep the rest of Phase 4: the strike-through under `NO_COLOR`, the named path lookup, the sccache popup padding, the Git value fit, and the late disk replies that do not bring back a dismissed row.
+- A rescan still restores the saved choice (`last_selected`) when that row is still selectable, else the first visible row. A choice that pointed at a Deleted row goes to the first visible row.
+- Record each changed assertion in `deleted_rescan_tests.rs` in an Assertion-Change line.
+
+**Spec:**
+1. Remove the rescan retain: `ProjectList::retain_for_rescan` and the merge of retained rows into the new roots. A full rescan (`App::rescan`, `tui/app/async_tasks/tree.rs`) drops Deleted rows, as it did before Phase 4.
+2. Change the tests in `deleted_rescan_tests.rs` to prove the new rule: a Deleted row survives watcher events and stays until dismissed; a rescan removes it.
+3. Docs: the overview (`docs/cargo-port/as-built/overview.md`, data flow step 6) states the rule in the user's words. The `CHANGELOG.md` line "Keep Deleted rows ... through full rescans until dismissal" goes; add a line that a rescan clears Deleted rows. Rewrite Phase 4's as-built text so it no longer says the row survives a rescan.
+
+**Files:**
+- `crates/cargo-port/src/tui/project_list/list.rs`, `grouping.rs`
+- `crates/cargo-port/src/tui/app/async_tasks/tree.rs`, `deleted_rescan_tests.rs`
+- `crates/cargo-port/CHANGELOG.md`, `docs/cargo-port/as-built/overview.md`
 
 **Workers:** 1 writer owns the code and the tests.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; no `Option<DetailCacheKey>` in a detail cache API.
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Live check: delete a scratch project while cargo-port runs; the row stays struck through. Press the rescan key; the row is gone. The checkpoint carries a Change-Review line for the user to check this.
 
-### Phase 4 — A Deleted row stays on the list and shows its mark  · status: todo
+### Phase 4b — cargo-port's selection, contrast and narrow panes read clearly  · status: todo
 
-**Depends on:** Phase 3
+**Depends on:** Phase 4a
 
 #### Work Order
 
-**Goal:** a project marked Deleted stays in the list, struck through, through a full rescan and under `NO_COLOR=1`, until the user dismisses it. Two other display defects that the same live check sees are fixed with it: the sccache popup's right padding and a Git pane value that loses a letter from its middle.
+**Goal:** every defect that the Phase 4 design check found on main's screens is gone: the selection shows without colour, text has readable contrast, nothing is cut without a mark, and narrow panes stay useful.
 
-**Source:** showrunner, 2026-10-28, from three reports:
-- `App::rescan` (`tui/app/async_tasks/tree.rs` ≈52–58) clears every root, so a Deleted row leaves the list on a full rescan. This breaks the user rule "the row never leaves the list by itself" (found in the context map phase).
-- Under `NO_COLOR=1`, cargo-port writes SGR 9 (strike-through) and then `ESC[;m` (crossterm `SetColors` with no colours), which resets the strike-through, so a Deleted row looks normal. Evidence: `/tmp/claude/unit/be6481c9-047e-4add-83c1-870d55a33343/phases/39/live/terminal_env_clean/`.
-- Style's live shots (`/tmp/claude/unit/b063796c-82d6-4693-bea2-342456902a3a/phases/67/shots/after2`): at 160 columns the sccache popup's widest body row ("Cache location … ~/.cache/sccache") has one column of padding on the left and none on the right; at 80 columns the Git pane shows "fleet" as "flet". Both were in the code before style's change.
+**Source:** Phase 4 design check, 2026-11-05. The same live shots on the main build at `3fb98ed6e` show each defect, so Phase 4 did not cause them. Shots: `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_main/`.
 
 **Constraints:**
-- From phase 3: retained `Deleted` rows and stored dismissals stay reachable through the path index, and each retention change keeps its caches current. The late-reply dismissal guard already exists with a test (`async_tasks/disk_handlers.rs` ≈147); the work is to keep it through a scan replacement. The tester's acceptance case covers a discovery folder removed with two projects below it, a completed rescan, a dismissal, and late replies.
-- Build the rescan fix with a type, not a guard: the rescan keeps each Deleted entry in its root as its own state until `x` (or the close box) dismisses it. A fresh scan that does not find the project does not drop that state.
-- From phase 2q: `ProjectList::apply_expanded` (`tui/project_list/list.rs`) skips expansion targets that are not in the installed tree. Merge the retained Deleted rows into the new roots first, then prune expansion keys and restore the saved expansion targets. Test it with reordered roots and a selected Deleted member under an open group: the row stays visible, the selection stays on it, and the group stays open.
-- From phase 3: the indexed path lookup in `ProjectList` (`tui/project_list/list.rs` ≈446) returns one `None` for an unknown path and for a stored index route that no longer points at a project. Return a named result (an enum) so the two outcomes differ, and make each caller handle both. Add one test for each outcome in `tui/project_list/path_index_tests.rs`. This phase changes the retained rows in that index, so the stale-route outcome is reachable here.
-- Under `NO_COLOR`, write text attributes (strike-through, bold, dim) without colour codes; never send a colour reset that also resets attributes.
-- The sccache popup width is the widest row plus the left and right padding (`tui/sccache/render.rs`), so both sides get the same padding.
-- For "fleet" → "flet", find why one letter goes from the middle of the word first. Where a value must be shortened, shorten it at its end with an ellipsis.
+- Phase 4 keeps its Deleted row, its strike-through under `NO_COLOR` and its Git pane value fit. This phase does not change those results except as Spec 2 and 3 say.
+- Spec 3 changes the existing `deleted row content should be crossed out` assertion in `tui/app/mod.rs`. Record the new assertion in the checkpoint's Assertion-Change line.
+- Spec 11 changes Phase 4's assertions in `tui/panes/git/value_fit_tests.rs`: the `"Rat"` and `"B..."` lookups and the three-dot rows. Record each in an Assertion-Change line.
+- Colours stay in the theme. Do not hard-code a new value at a draw site.
+- Each item gets a red test that reads the drawn buffer, under one second.
 
 **Spec:**
-1. **Rescan keeps Deleted rows.** After a full rescan completes, a project marked Deleted is still in its root, still struck through, and still dismissable; dismiss removes it as before. Keeping entries when `rescan()` starts is not enough: `handle_scan_result` (`tui/app/async_tasks/dispatch.rs` ≈39) later replaces the whole list, and the Dismissed guard for late disk replies (`disk_handlers.rs` ≈65) reads the kept entry's visibility.
-2. **Strike-through under NO_COLOR.** With `NO_COLOR=1`, a Deleted row's bytes carry SGR 9 and no later reset clears it on that row.
-3. **sccache popup padding.** The popup's widest row has the same padding on the left and the right at 160 columns.
-4. **Git pane values.** At 80 columns, "fleet" shows whole, or shortened at its end with an ellipsis when the column cannot hold it; no letter goes from the middle of a value.
-5. **Tests, red first, each under one second:** mark a row Deleted (a plain project, a workspace member in a group, and a worktree), run a full rescan through to its completed scan result, and the row is still there with the mark; then dismiss it, and a late zero-byte and a late positive disk reply do not bring it back; a Deleted row rendered under `NO_COLOR` keeps the strike-through attribute in the output bytes; the sccache popup at 160 columns has equal left and right padding on its widest row; the Git pane at 80 columns shows the "fleet" value whole or end-shortened.
-6. **Live check and shots** (unit director, after checking that no natedev build hold is in force): one live check with a scratch project deleted while cargo-port runs, then a full rescan, then `NO_COLOR=1`; shots from a real window at normal size on this unit's port: the Deleted row after a rescan, the Deleted row under `NO_COLOR=1`, the sccache popup at 160 columns, the Git pane at 80 columns.
-7. CHANGELOG: one line for each of the four fixes in `crates/cargo-port/CHANGELOG.md`.
+1. **Selection under `NO_COLOR`.** The selected row draws in reverse video, so it differs from every other row. The `▶` mark stays on the row it names. The focused pane title already draws bold; its border also shows focus without colour.
+2. **Deleted row Disk cell.** A Deleted row shows only `[x]` in the Disk column, not `0.0`.
+3. **Strike-through.** A Deleted row strikes only its name and value text, not the empty cells between them.
+4. **Scroll position.** The sccache popup shows `▲ 2 of 2` at its end, not `▲ 1 of 2`.
+5. **Row highlight.** The sccache popup's selected row highlight reaches the right border.
+6. **Contrast.** These pass the guide's `readable-contrast` rule: the selected sccache label (#96beb4 on #565656, 3.61:1), Disk values (#ff6464 on #505050), the selected project name (#ff8700 on #565656, 3.05:1), white CPU labels on yellow and green, the red System percentage (#cd0000 on #1e1e1e), and the grey `resets` text.
+7. **One selection fill.** A selected row uses one fill across all its columns, Disk included. On an unselected row, the Disk column fill is clearly different from the selection fill.
+8. **Cut text.** The Languages header `comments` shows whole, and each row names its language. Package pane values that do not fit wrap or end in an ellipsis. The Languages rows separate parent rows from their child subtotals; the total keeps summing parents only (`lang/render.rs:102`), so it stays correct.
+9. **80 columns.** A pane too narrow to show text is hidden, and its width goes to the other panes. One named visibility result decides this. A hidden pane leaves the Tab order and has no mouse areas. When the focused pane hides, focus moves to the next visible pane. When width returns, the pane shows again and focus stays where it is. The Workspace pane shows values beside `Path` and `Disk`. The Git pane shows its values at 80 columns. The CI Runs pane shows only the columns that fit whole (`ci/render.rs:471` keeps minimum widths past the pane width), and the `No description available` placeholder is one row that ends in `…`.
+10. **Words.** Replace the column titles `Og` and `Mn` with common words that fit, and replace the hint `home/end ends` with `home/end first/last`.
+11. **Git rows at 80 columns.** `FIT_TEXT_ELLIPSIS` is one glyph, `…`, as in the pane titles. `MIN_FITTED_TEXT_WIDTH` is the ellipsis width plus one, so this change moves the point where a row becomes label-only: name the transition width as its own value and keep a test on each side of it. The two rate rows read `Core` and `GraphQL`, so they differ.
+12. **Letter case.** Pane titles and rows use sentence case: `Sccache stats`, `CI runs`, `Targets: binary`, `Multiple input files`.
+13. **sccache reasons.** Each non-cacheable reason row says in plain words why the call was not cached. No row reads `-`, `-o` or `missing output_dir`.
+14. **CPU bars.** In colour, the bars draw with cell background, so no dark line shows between rows. Under `NO_COLOR`, `prepare_terminal_buffer` (`tui/render.rs`) removes every background, so the bars keep their block glyphs and different utilization levels stay distinct.
 
 **Files:**
-- `crates/cargo-port/src/tui/app/async_tasks/tree.rs` — rescan keeps Deleted entries (entry point `prepare_rescan`)
-- `crates/cargo-port/src/tui/app/async_tasks/dispatch.rs` — the completed scan result keeps Deleted entries
-- `crates/cargo-port/src/tui/app/async_tasks/disk_handlers.rs` — late replies after dismiss
-- `crates/cargo-port/src/tui/app/async_tasks/deleted_rescan_tests.rs` — new; tester
-- `crates/cargo-port/src/tui/terminal/no_color_tests.rs` — new; tester
-- `crates/cargo-port/src/tui/project_list/` — the Deleted entry state, if the root type holds it; the named indexed lookup result and its tests in `path_index_tests.rs`
-- `crates/cargo-port/src/tui/terminal/` — NO_COLOR attribute output; not event_loop.rs or event_loop_tests.rs, which Phase 3b owns
-- `crates/cargo-port/src/tui/sccache/render.rs` — popup width
-- `crates/cargo-port/src/tui/panes/` — the Git pane value fit, once the cause is found; not data.rs or system.rs, which Phase 3c owns
-- `crates/cargo-port/CHANGELOG.md` — add the lines after Phase 3b's checkpoint
+- `crates/cargo-port/src/tui/` — the project columns, the sccache popup, the System and Languages panes, the Package pane, the pane layout, the hint text and their tests
+- `crates/cargo-port/src/themes/builtins.rs` and `crates/cargo-port/themes/*.toml` — the selection and label colours for Spec 6; the compiled themes and the files stay equal
+- `crates/tui_pane/src/` — only when the cause of an item lives there
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — specs 1–4 and 7; hub: `crates/cargo-port/src/tui/app/async_tasks/tree.rs`. Not the tester's files.
-- `test` — spec 5, in `tui/app/async_tasks/deleted_rescan_tests.rs` and `tui/terminal/no_color_tests.rs`, plus the sccache and Git pane cases in test modules beside those files, each named in the tester's first board post; `impl` registers them.
+**Workers:** 1 writer owns the code and the tests.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second; the live check and the four shots of spec 6, with a design check pass. The checkpoint adds a Change-Review line for each visible fix.
+**State:** none.
 
-### Phase 5 — A CPU sample costs only the CPU pane  · status: todo
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` when it changes, and `verify.sh lint cargo-port` clean; no test takes a second. The unit director takes live shots at 160x45 in colour, 160x45 under `NO_COLOR=1` and 80x30 in colour. A fresh design check on those shots raises none of these items.
 
-**Depends on:** Phase 3b (both edit `tui/terminal/event_loop.rs`)
+### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
+
+**Depends on:** Phase 3b (both edit `tui/terminal/event_loop.rs`) and Phase 4b (it changes CPU drawing and pane geometry, and this phase measures after it)
 
 #### Work Order
 
@@ -422,9 +444,10 @@ The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame 
 **Source:** phase 3 review (event_loop.rs ≈285): on a CPU-only wake, the frame check allocates a backend, renders the whole UI to a candidate buffer and clones it. Phase 3's release idle measure (3 pairs, one scratch project): main 0.217/0.183/0.217% of one core, branch 0.267/0.250/0.250%. The median change (+0.033 points) is inside main's spread (0.034), so the cause is not proven. Astra's advice: `/tmp/claude/astra/20261102T204624Z-1292297/review.md`.
 
 **Constraints:**
-- Phase 3b removes the per-frame candidate render, allocation and copy that the source above names. Measure again after Phase 3b: 3 idle pairs, main's release build against the branch's, and one CPU-only wake on the branch (render calls, time).
+- Phase 3b removed the per-frame candidate render, allocation and copy that the source above names, and its as-built records equal idle pairs. Measure again after Phase 4b: 3 idle pairs, main's release build against the branch's, and one CPU-only wake on the branch (render calls, time).
 - Build the partial render only when those 3 pairs show branch idle CPU above main's beyond the spread. Otherwise the phase completes with no code change: record the pairs in its As-built and close it.
 - Full and CPU-only renders share one render setup in `tui/render.rs` (`render_tiled_panes` ≈144 and its render inputs). The event loop does not copy the render-context or pane-chrome rules.
+- Both renders end in `prepare_terminal_buffer` (`tui/render.rs` ≈613), which applies the `NO_COLOR` reset and the VS16 cursor anchors. A partial render takes the same final step.
 - Phase 3 already makes an identical CPU sample return false in `CpuPane::tick` (`tui/panes/cpu/pane.rs` ≈122).
 - A partial render applies only to an isolated CPU change with stable geometry. Do a full render for the first frame, a layout change (the core count changes the layout, `render.rs` ≈169), any other pending change, and an active overlay or toast.
 - For a partial render, keep the last frame's screen, clear the CPU rect, and render it through `render_panes` with a CPU-only layout; the framework draws borders and dividers (`tui_pane` `framework/render.rs` ≈122). Keep the other cells, the cursor and the equality check.

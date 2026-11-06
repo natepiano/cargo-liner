@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep Deleted rows, their selection, and their expansion state through full rescans until dismissal.
+- Keep text attributes, including strike-through, when `NO_COLOR` suppresses terminal colours.
+- Give the widest sccache popup row equal left and right padding.
+- Shorten Git pane values at their end with an ellipsis when the value exceeds its column.
+- Keep the chosen VS16 glyphs and anchor the cursor after them to prevent shifted text during partial redraws.
+
 - Mark rejected Cargo manifests on their rows and show the selected error in the Package pane across rescans, without repeated error toasts; clear the diagnostic when metadata succeeds or the project is no longer Rust. Launch, I/O and timeout failures keep their error toasts.
 
 - On Linux, recreated external `.cargo` folders need a rescan to regain their config watch when their parent is unwatched; watching every ancestor would add a watch per ancestor folder.

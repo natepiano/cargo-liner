@@ -203,6 +203,7 @@ fn confirm_finder(app: &mut App) {
     let include_non_rust = app.config.include_non_rust().includes_non_rust();
     app.project_list
         .select_project_in_tree(finder_item.project_path.as_path(), include_non_rust);
+    app.record_selection_choice();
 
     match finder_item.kind {
         FinderKind::Project => {

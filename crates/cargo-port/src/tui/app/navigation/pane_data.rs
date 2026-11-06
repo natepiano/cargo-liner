@@ -9,8 +9,7 @@ use crate::tui::project_list::VisibleRow;
 impl App {
     /// Build per-pane data for the currently selected row, resolving through
     /// the `project_list_items` hierarchy.
-    pub(super) fn build_selected_pane_data(&self) -> Option<DetailPaneData> {
-        let row = self.project_list.selected_row()?;
+    pub(super) fn build_selected_pane_data(&self, row: VisibleRow) -> Option<DetailPaneData> {
         match row {
             VisibleRow::Root { node_index } => {
                 let item = self.project_list.get(node_index)?;

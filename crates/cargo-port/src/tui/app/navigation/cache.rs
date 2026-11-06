@@ -8,6 +8,7 @@ use crate::tui::columns::COL_DISK;
 use crate::tui::columns::LintColumnStatus;
 use crate::tui::panes;
 use crate::tui::panes::DetailCacheKey;
+use crate::tui::panes::DetailCacheState;
 use crate::tui::project_list::VisibleRow;
 use crate::tui::project_list_state::FitWidthsCacheKey;
 use crate::tui::render;
@@ -73,18 +74,24 @@ impl App {
     /// inputs to `build_selected_pane_data`, so a matching stamp means the
     /// stored detail is still correct.
     pub(in crate::tui) fn ensure_detail_cached(&mut self) {
-        let desired = self.project_list.selected_row().map(|row| DetailCacheKey {
-            visible_row: row,
-            generation:  self.scan.generation(),
-        });
+        let desired = match self.project_list.selected_row() {
+            Some(row) => DetailCacheState::Current(DetailCacheKey {
+                visible_row: row,
+                generation:  self.scan.generation(),
+            }),
+            None => DetailCacheState::Cleared,
+        };
         if self.panes.pane_data.detail_is_current(desired) {
             return;
         }
         let started = std::time::Instant::now();
         let pane_started = std::time::Instant::now();
-        let pane = desired.zip(self.build_selected_pane_data());
+        let pane = match desired {
+            DetailCacheState::Current(key) => self.build_selected_pane_data(key.visible_row),
+            DetailCacheState::Cleared => None,
+        };
         let pane_ms = tui_pane::perf_log_ms(pane_started.elapsed().as_millis());
-        if let Some((key, data)) = pane {
+        if let (DetailCacheState::Current(key), Some(data)) = (desired, pane) {
             let ci_started = std::time::Instant::now();
             let ci = tui::panes::build_ci_data(self);
             let ci_ms = tui_pane::perf_log_ms(ci_started.elapsed().as_millis());

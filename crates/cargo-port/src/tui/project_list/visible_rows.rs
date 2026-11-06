@@ -3,6 +3,7 @@ use tui_pane::ExpansionModel;
 use crate::project::AbsolutePath;
 use crate::project::GitStatus;
 use crate::project::MemberGroup;
+use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Submodule;
@@ -181,6 +182,14 @@ impl ProjectList {
     }
 }
 
+// Preserve tree indices while excluding children that the user dismissed.
+fn undismissed_children<T: ProjectFields>(children: &[T]) -> impl Iterator<Item = (usize, &T)> {
+    children
+        .iter()
+        .enumerate()
+        .filter(|(_, child)| child.visibility() != Visibility::Dismissed)
+}
+
 fn emit_groups(
     rows: &mut Vec<VisibleRow>,
     ni: usize,
@@ -190,7 +199,7 @@ fn emit_groups(
     for (gi, group) in groups.iter().enumerate() {
         match group {
             MemberGroup::Inline { members } => {
-                for (mi, member) in members.iter().enumerate() {
+                for (mi, member) in undismissed_children(members) {
                     rows.push(VisibleRow::Member {
                         node_index:   ni,
                         group_index:  gi,
@@ -207,7 +216,7 @@ fn emit_groups(
                     group_index: gi,
                 });
                 if expanded.is_open(&ExpandKey::Group(ni, gi), 0) {
-                    for (mi, member) in members.iter().enumerate() {
+                    for (mi, member) in undismissed_children(members) {
                         rows.push(VisibleRow::Member {
                             node_index:   ni,
                             group_index:  gi,
@@ -230,7 +239,7 @@ fn emit_member_vendored_rows(
     mi: usize,
     vendored: &[VendoredPackage],
 ) {
-    for (vi, _) in vendored.iter().enumerate() {
+    for (vi, _) in undismissed_children(vendored) {
         rows.push(VisibleRow::MemberVendored {
             node_index:     ni,
             group_index:    gi,
@@ -241,7 +250,7 @@ fn emit_member_vendored_rows(
 }
 
 fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[VendoredPackage]) {
-    for (vi, _) in vendored.iter().enumerate() {
+    for (vi, _) in undismissed_children(vendored) {
         rows.push(VisibleRow::Vendored {
             node_index:     ni,
             vendored_index: vi,
@@ -250,7 +259,7 @@ fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[Vendore
 }
 
 fn emit_submodule_rows(rows: &mut Vec<VisibleRow>, ni: usize, submodules: &[Submodule]) {
-    for (si, _) in submodules.iter().enumerate() {
+    for (si, _) in undismissed_children(submodules) {
         rows.push(VisibleRow::Submodule {
             node_index:      ni,
             submodule_index: si,
@@ -308,7 +317,7 @@ fn emit_worktree_children(
     for (gi, group) in groups.iter().enumerate() {
         match group {
             MemberGroup::Inline { members } => {
-                for (mi, member) in members.iter().enumerate() {
+                for (mi, member) in undismissed_children(members) {
                     rows.push(VisibleRow::WorktreeMember {
                         node_index:     ni,
                         worktree_index: wi,
@@ -327,7 +336,7 @@ fn emit_worktree_children(
                     group_index:    gi,
                 });
                 if expanded.is_open(&ExpandKey::WorktreeGroup(ni, wi, gi), 0) {
-                    for (mi, member) in members.iter().enumerate() {
+                    for (mi, member) in undismissed_children(members) {
                         rows.push(VisibleRow::WorktreeMember {
                             node_index:     ni,
                             worktree_index: wi,
@@ -350,7 +359,7 @@ fn emit_worktree_children(
         }
     }
 
-    for (vi, _) in vendored.iter().enumerate() {
+    for (vi, _) in undismissed_children(vendored) {
         rows.push(VisibleRow::WorktreeVendored {
             node_index:     ni,
             worktree_index: wi,
@@ -367,7 +376,7 @@ fn emit_worktree_member_vendored_rows(
     mi: usize,
     vendored: &[VendoredPackage],
 ) {
-    for (vi, _) in vendored.iter().enumerate() {
+    for (vi, _) in undismissed_children(vendored) {
         rows.push(VisibleRow::WorktreeMemberVendored {
             node_index:     ni,
             worktree_index: wi,

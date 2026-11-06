@@ -54,6 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep waiting workers in their unit tree while detached verification runs remain live, including workers on another Codex account.
+
 - Codex sessions that use a detached daemon show their thread names through their socket connection.
 
 - Codex sessions opened from the resume picker show their own thread names and follow thread switches.

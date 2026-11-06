@@ -25,6 +25,31 @@ use crate::census::worker_dispatch::WorkerRoster;
 
 const THREAD: &str = "01a18dbb-7e8f-7641-b3dd-bb2071ab9d7a";
 
+#[test]
+fn staff_identity_resolves_the_current_session_and_manager() {
+    let roster = StaffRoster::parse(&document()).expect("checked staff");
+    let worker = WorkerReference::Staff {
+        staff_id: "worker".into(),
+    };
+    assert_eq!(worker.session(&roster), Some(THREAD));
+    assert_eq!(worker.parent_session(&roster), Some("unit-live"));
+    let legacy = WorkerReference::LegacyThread {
+        thread_id: "worker".into(),
+    };
+    assert_eq!(legacy.session(&roster), Some("worker"));
+    assert_eq!(legacy.parent_session(&roster), None);
+    let root = WorkerReference::Staff {
+        staff_id: "boss".into(),
+    };
+    assert_eq!(root.session(&roster), Some("claude-live"));
+    assert_eq!(root.parent_session(&roster), None);
+    let missing = WorkerReference::Staff {
+        staff_id: "unlisted".into(),
+    };
+    assert_eq!(missing.session(&roster), None);
+    assert_eq!(missing.parent_session(&roster), None);
+}
+
 fn document() -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({"schema":2,"rows":[
         {"id":"boss","kind":"showrunner","name":"staff boss","parent":null,"current_session":"claude-live"},
