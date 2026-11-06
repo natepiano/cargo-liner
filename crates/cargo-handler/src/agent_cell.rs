@@ -2044,21 +2044,21 @@ fn lines_of<'a>(
                 }),
         )
         .collect();
-    if let Some(owner) = placement.rows.iter().find(|row| row.identity == parent) {
-        siblings.extend(
-            unclaimed_work(placement, parent, owner.row)
-                .into_iter()
-                .map(|branch| {
-                    (
-                        parent,
-                        owner.row,
-                        LineSubject::Work(branch.work),
-                        branch.branches,
-                        context.identities.work(parent, branch.work.census_index),
-                    )
-                }),
-        );
-    }
+    siblings.extend(
+        session_work_branches(placement, parent)
+            .into_iter()
+            .map(|work| {
+                (
+                    work.owner,
+                    work.row,
+                    LineSubject::Work(work.branch.work),
+                    work.branch.branches,
+                    context
+                        .identities
+                        .work(work.owner, work.branch.work.census_index),
+                )
+            }),
+    );
     siblings.sort_by(
         |(left_id, left_row, left_subject, _, left_selection),
          (right_id, right_row, right_subject, _, right_selection)| {
@@ -2128,13 +2128,67 @@ fn line_order<'a>(
     (started, identity.machine, pid)
 }
 
-/// Retain work that is neither a managed thread nor its folded dispatch.
-fn unclaimed_work<'a>(
+/// A work branch retains the census owner that supplies its row metadata.
+struct SessionWorkBranch<'a> {
+    owner:  RowIdentity<'a>,
+    row:    &'a AgentRow,
+    branch: WorkBranch<'a>,
+}
+
+/// Combine a session's own work with its paired dispatch work.
+fn session_work_branches<'a>(
     placement: &AgentPlacement<'a>,
     parent: RowIdentity<'a>,
-    row: &'a AgentRow,
-) -> Vec<WorkBranch<'a>> {
-    let claimed = placement
+) -> Vec<SessionWorkBranch<'a>> {
+    let mut branches = Vec::new();
+    if let Some(owner) = placement.rows.iter().find(|row| row.identity == parent) {
+        branches.extend(
+            unclaimed_work(placement, parent, owner.row)
+                .into_iter()
+                .map(|branch| SessionWorkBranch {
+                    owner: parent,
+                    row: owner.row,
+                    branch,
+                }),
+        );
+    }
+    let dispatches = placement.session_dispatch_work();
+    for work in dispatches.iter().filter(|work| work.worker == parent) {
+        let mut claimed = work_claims(placement, work.owner, work.row);
+        claimed.extend(
+            dispatches
+                .iter()
+                .filter(|other| {
+                    other.owner == work.owner
+                        && other.descendants != work.descendants
+                        && work.descendants.contains(&other.descendants.start)
+                })
+                .flat_map(|other| other.descendants.clone()),
+        );
+        branches.extend(
+            work_branches(
+                &work.row.children[work.descendants.clone()],
+                &claimed,
+                work.descendants.start,
+            )
+            .into_iter()
+            .map(|branch| SessionWorkBranch {
+                owner: work.owner,
+                row: work.row,
+                branch,
+            }),
+        );
+    }
+    branches
+}
+
+/// Identify managed threads and paired shells in their original census row.
+fn work_claims(
+    placement: &AgentPlacement<'_>,
+    parent: RowIdentity<'_>,
+    row: &AgentRow,
+) -> HashSet<usize> {
+    placement
         .threads
         .iter()
         .filter(|thread| thread.owner == parent)
@@ -2146,7 +2200,23 @@ fn unclaimed_work<'a>(
                 .filter(|(_, child)| placement.folds_dispatch(child))
                 .map(|(index, _)| index),
         )
-        .collect();
+        .collect()
+}
+
+/// Retain work that is neither a managed thread nor its folded dispatch.
+fn unclaimed_work<'a>(
+    placement: &AgentPlacement<'a>,
+    parent: RowIdentity<'a>,
+    row: &'a AgentRow,
+) -> Vec<WorkBranch<'a>> {
+    let mut claimed = work_claims(placement, parent, row);
+    claimed.extend(
+        placement
+            .session_dispatch_work()
+            .into_iter()
+            .filter(|work| work.owner == parent)
+            .flat_map(|work| work.descendants),
+    );
     work_branches(&row.children, &claimed, 0)
 }
 

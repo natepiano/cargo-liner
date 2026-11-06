@@ -606,3 +606,114 @@ pub(crate) const HERDR_SUBSCRIPTION_RETRY: Duration = Duration::from_millis(500)
 pub(crate) const HERDR_READ_TIMEOUT: Duration = Duration::from_millis(100);
 /// Bound each herdr API answer.
 pub(crate) const HERDR_ANSWER_LIMIT: u64 = 4 * 1024 * 1024;
+
+// worker launcher arguments
+/// The launcher argument `--claim-pid`.
+pub(crate) const DISPATCH_CLAIM_PID_FLAG: &str = "--claim-pid";
+/// The launcher argument `--cwd`.
+pub(crate) const DISPATCH_CWD_FLAG: &str = "--cwd";
+/// The launcher argument `--diff`.
+pub(crate) const DISPATCH_DIFF_FLAG: &str = "--diff";
+/// The launcher argument `--early-ready`.
+pub(crate) const DISPATCH_EARLY_READY_FLAG: &str = "--early-ready";
+/// The launcher argument `--effort`.
+pub(crate) const DISPATCH_EFFORT_FLAG: &str = "--effort";
+/// The launcher argument `--family`.
+pub(crate) const DISPATCH_FAMILY_FLAG: &str = "--family";
+/// The launcher argument `--fix-cause`.
+pub(crate) const DISPATCH_FIX_CAUSE_FLAG: &str = "--fix-cause";
+/// The launcher argument `--from`.
+pub(crate) const DISPATCH_FROM_FLAG: &str = "--from";
+/// The launcher argument `--from-session-dir`.
+pub(crate) const DISPATCH_FROM_SESSION_DIR_FLAG: &str = "--from-session-dir";
+/// The launcher argument `--guard-text`.
+pub(crate) const DISPATCH_GUARD_TEXT_FLAG: &str = "--guard-text";
+/// The launcher argument `--held-design`.
+pub(crate) const DISPATCH_HELD_DESIGN_FLAG: &str = "--held-design";
+/// The launcher argument `--held-role`.
+pub(crate) const DISPATCH_HELD_ROLE_FLAG: &str = "--held-role";
+/// The launcher argument `--human`.
+pub(crate) const DISPATCH_HUMAN_FLAG: &str = "--human";
+/// The launcher argument `--id-file`.
+pub(crate) const DISPATCH_ID_FILE_FLAG: &str = "--id-file";
+/// The launcher argument `--image`.
+pub(crate) const DISPATCH_IMAGE_FLAG: &str = "--image";
+/// The launcher argument `--instructions-file`.
+pub(crate) const DISPATCH_INSTRUCTIONS_FILE_FLAG: &str = "--instructions-file";
+/// The launcher argument `--lease`.
+pub(crate) const DISPATCH_LEASE_FLAG: &str = "--lease";
+/// The launcher argument `--lens`.
+pub(crate) const DISPATCH_LENS_FLAG: &str = "--lens";
+/// The launcher argument `--log-file`.
+pub(crate) const DISPATCH_LOG_FILE_FLAG: &str = "--log-file";
+/// The launcher argument `--log`.
+pub(crate) const DISPATCH_LOG_FLAG: &str = "--log";
+/// The launcher argument `--model`.
+pub(crate) const DISPATCH_MODEL_FLAG: &str = "--model";
+/// The launcher argument `--name`.
+pub(crate) const DISPATCH_NAME_FLAG: &str = "--name";
+/// The launcher argument `--new-worker`.
+pub(crate) const DISPATCH_NEW_WORKER_FLAG: &str = "--new-worker";
+/// The launcher argument `--no-accounting`.
+pub(crate) const DISPATCH_NO_ACCOUNTING_FLAG: &str = "--no-accounting";
+/// The launcher argument `--operation`.
+pub(crate) const DISPATCH_OPERATION_FLAG: &str = "--operation";
+/// The launcher argument `--pass`.
+pub(crate) const DISPATCH_PASS_FLAG: &str = "--pass";
+/// The launcher argument `--paths`.
+pub(crate) const DISPATCH_PATHS_FLAG: &str = "--paths";
+/// The launcher argument `--phase`.
+pub(crate) const DISPATCH_PHASE_FLAG: &str = "--phase";
+/// The launcher argument `--pool`.
+pub(crate) const DISPATCH_POOL_FLAG: &str = "--pool";
+/// The launcher argument `--prompt-file`.
+pub(crate) const DISPATCH_PROMPT_FILE_FLAG: &str = "--prompt-file";
+/// The launcher argument `--prompt`.
+pub(crate) const DISPATCH_PROMPT_FLAG: &str = "--prompt";
+/// The launcher argument `--read-only`.
+pub(crate) const DISPATCH_READ_ONLY_FLAG: &str = "--read-only";
+/// The launcher argument `--repeat-checked`.
+pub(crate) const DISPATCH_REPEAT_CHECKED_FLAG: &str = "--repeat-checked";
+/// The launcher argument `--reply-file`.
+pub(crate) const DISPATCH_REPLY_FILE_FLAG: &str = "--reply-file";
+/// The launcher argument `--report-recipient`.
+pub(crate) const DISPATCH_REPORT_RECIPIENT_FLAG: &str = "--report-recipient";
+/// The launcher argument `--resident`.
+pub(crate) const DISPATCH_RESIDENT_FLAG: &str = "--resident";
+/// The launcher argument `--role`.
+pub(crate) const DISPATCH_ROLE_FLAG: &str = "--role";
+/// The launcher argument `--sandbox`.
+pub(crate) const DISPATCH_SANDBOX_FLAG: &str = "--sandbox";
+/// The launcher argument `--service-tier`.
+pub(crate) const DISPATCH_SERVICE_TIER_FLAG: &str = "--service-tier";
+/// The launcher argument `--slot`.
+pub(crate) const DISPATCH_SLOT_FLAG: &str = "--slot";
+/// The launcher argument `--staff-id`.
+pub(crate) const DISPATCH_STAFF_ID_FLAG: &str = "--staff-id";
+/// The launcher argument `--style-since`.
+pub(crate) const DISPATCH_STYLE_SINCE_FLAG: &str = "--style-since";
+/// The launcher argument `--style-until`.
+pub(crate) const DISPATCH_STYLE_UNTIL_FLAG: &str = "--style-until";
+/// The launcher argument `--submission-receipt-file`.
+pub(crate) const DISPATCH_SUBMISSION_RECEIPT_FILE_FLAG: &str = "--submission-receipt-file";
+/// The launcher argument `--summary-file`.
+pub(crate) const DISPATCH_SUMMARY_FILE_FLAG: &str = "--summary-file";
+/// The launcher argument `--summary`.
+pub(crate) const DISPATCH_SUMMARY_FLAG: &str = "--summary";
+/// The launcher argument `--task`.
+pub(crate) const DISPATCH_TASK_FLAG: &str = "--task";
+/// The launcher argument `--timeout`.
+pub(crate) const DISPATCH_TIMEOUT_FLAG: &str = "--timeout";
+/// The launcher argument `--message-file`.
+pub(crate) const MESSAGE_FILE_FLAG: &str = "--message-file";
+/// The launcher argument `--message`.
+pub(crate) const MESSAGE_FLAG: &str = "--message";
+/// The launcher argument `--to`.
+pub(crate) const SEAT_FLAG: &str = "--to";
+/// The launcher argument `--session-dir`.
+pub(crate) const SESSION_DIRECTORY_FLAG: &str = "--session-dir";
+
+/// The shell entry for the current assignment launcher.
+pub(crate) const DISPATCH_ASSIGN_SHELL_SCRIPT: &str = ".claude/scripts/direct/assign.sh";
+/// The Python entry for the current assignment launcher.
+pub(crate) const DISPATCH_ASSIGN_PYTHON_SCRIPT: &str = ".claude/scripts/direct/assign.py";

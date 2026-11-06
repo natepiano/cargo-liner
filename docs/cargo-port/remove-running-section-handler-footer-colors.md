@@ -1222,7 +1222,7 @@ An interactive Codex session that the user renamed shows its name in its tile an
 
 **Gotchas:** a script name inside `bash -c` gives no step name, so that run shows `waiting`.
 
-### Phase 42 — A dispatch shell folds into its Codex worker row  · status: todo
+### Phase 42 — A dispatch shell folds into its Codex worker row  · status: done
 
 **Depends on:** Phase 40
 
