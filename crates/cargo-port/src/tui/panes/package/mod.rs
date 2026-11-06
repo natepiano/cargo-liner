@@ -1,4 +1,6 @@
 mod pane;
+#[cfg(test)]
+mod readability_tests;
 mod render;
 
 pub use pane::PackagePane;

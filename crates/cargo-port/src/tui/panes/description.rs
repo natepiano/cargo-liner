@@ -30,6 +30,7 @@ use tui_pane::label_color;
 use super::constants::NO_DESCRIPTION_AVAILABLE;
 use super::support;
 use crate::tui::render;
+use crate::tui::theme_roles;
 
 /// What the block renders when the source description is empty.
 #[derive(Clone, Copy)]
@@ -121,7 +122,17 @@ impl DescriptionBlock {
         };
 
         let rows = match body {
-            Some(text) if column_width > 0 => support::word_wrap(text, usize::from(column_width)),
+            Some(text) if column_width > 0 => {
+                if content_state.has_real_content() {
+                    support::word_wrap(text, usize::from(column_width))
+                } else {
+                    vec![render::truncate_with_ellipsis(
+                        text,
+                        usize::from(column_width),
+                        "…",
+                    )]
+                }
+            },
             _ => Vec::new(),
         };
 
@@ -217,6 +228,14 @@ impl DescriptionBlock {
             height: description_height,
         };
         frame.render_widget(Paragraph::new(lines), area);
+        theme_roles::paint_selection(
+            frame,
+            Rect {
+                height: description_height,
+                ..project_inner
+            },
+            selection,
+        );
         description_height
     }
 }

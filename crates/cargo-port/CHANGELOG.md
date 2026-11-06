@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Show the selected row and focused border without colour. Strike only Deleted row text, and show only its dismiss mark in Disk.
+- Fill the selected project row across all columns. Keep unselected Disk cells without a fill and use size-based colours.
+- Improve the dark theme contrast for selection, Disk values, and System percentages. Draw CPU bars with continuous backgrounds and readable labels.
+- Keep narrow panes useful. Hide panes that cannot fit, preserve focus when they return, and mark shortened Package and CI text.
+- Show language names, complete headers, and distinct child rows. Use common words and sentence case in pane labels.
+- Correct the sccache page count and selection fill. Explain non-cacheable reasons and name the status value Disk cache.
+- Add project margins and a Type heading. Show Deleted package details, use one target name, and show the missing lint state once.
+
 - Clear Deleted rows on a full rescan; keep them struck through until dismissal or rescan.
 - Keep text attributes, including strike-through, when `NO_COLOR` suppresses terminal colours.
 - Give the widest sccache popup row equal left and right padding.

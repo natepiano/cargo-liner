@@ -1,4 +1,6 @@
 mod data;
+#[cfg(test)]
+mod readability_tests;
 mod render;
 
 pub use data::CiData;

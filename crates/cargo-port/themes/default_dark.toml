@@ -24,16 +24,16 @@ inactive_border = "DarkGray"
 inactive_title  = "White"
 
 [variants.focus]
-active     = { r = 86, g = 86, b = 86 }
-hover      = { r = 80, g = 80, b = 80 }
-remembered = { r = 40, g = 40, b = 40 }
+active     = { r = 101, g = 101, b = 101 }
+hover      = { r = 60, g = 60, b = 60 }
+remembered = { r = 80, g = 80, b = 80 }
 
 [variants.semantic]
 accent       = { r = 0, g = 213, b = 213 }
-error        = "Red"
+error        = { r = 255, g = 128, b = 128 }
 inline_error = "Yellow"
 label        = { r = 150, g = 190, b = 180 }
-on_error     = "White"
+on_error     = "Black"
 success      = "Green"
 warning      = "Yellow"
 
@@ -45,6 +45,7 @@ dim       = "DarkGray"
 secondary = "Gray"
 
 [variants.roles]
+"cargo-port.selection.text" = { r = 255, g = 255, b = 255 }
 
 [variants.status]
 bar = { r = 60, g = 60, b = 60 }
@@ -53,6 +54,6 @@ bar = { r = 60, g = 60, b = 60 }
 match_bg = { r = 0, g = 90, b = 100 }
 
 [variants.disk_usage]
-high = { r = 255, g = 100, b = 100 }
+high = { r = 255, g = 128, b = 128 }
 low  = { r = 100, g = 220, b = 100 }
 mid  = { r = 255, g = 255, b = 255 }

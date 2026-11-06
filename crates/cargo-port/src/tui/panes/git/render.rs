@@ -77,6 +77,8 @@ use crate::tui::state::AvailabilityStatus;
 use crate::tui::theme_roles;
 
 static MIN_FITTED_TEXT_WIDTH: LazyLock<usize> = LazyLock::new(|| FIT_TEXT_ELLIPSIS.width() + 1);
+pub(super) static SPLIT_ROW_MIN_INNER_WIDTH: LazyLock<usize> =
+    LazyLock::new(|| 2 * *MIN_FITTED_TEXT_WIDTH + 3);
 
 struct GitRenderCtx<'a> {
     data:              &'a GitData,
@@ -250,6 +252,24 @@ fn render_git_column_inner(
         lines.len(),
     );
     frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), inner_area);
+    for (index, span) in row_spans.iter().enumerate() {
+        let start = span.start_y.max(usize::from(scroll_y));
+        let end = (span.start_y + span.height)
+            .min(usize::from(scroll_y) + usize::from(inner_area.height));
+        if start < end {
+            let area = Rect::new(
+                inner_area.x,
+                inner_area.y + u16::try_from(start - usize::from(scroll_y)).unwrap_or(u16::MAX),
+                inner_area.width,
+                u16::try_from(end - start).unwrap_or(u16::MAX),
+            );
+            theme_roles::paint_selection(
+                frame,
+                area,
+                tui_pane::selection_state(ctx.pane, ctx.row_offset + index, ctx.focus),
+            );
+        }
+    }
     push_section_overlays(&section_rules, scroll_y, outer_area, inner_area, chrome);
     GitRenderLayout {
         scroll_offset: usize::from(scroll_y),
@@ -295,7 +315,10 @@ fn append_remotes_section(
             *accum.focused_output_line = accum.lines.len();
         }
         let selection = tui_pane::selection_state(ctx.pane, row_index, ctx.focus);
-        accum.lines.push(remote_row_line(remote, layout, selection));
+        accum.lines.push(
+            remote_row_line(remote, layout, selection)
+                .style(theme_roles::selection_style(selection)),
+        );
     }
 }
 
@@ -350,12 +373,10 @@ fn append_pull_requests_section(
             *accum.focused_output_line = start_y;
         }
         let selection = tui_pane::selection_state(ctx.pane, row_index, ctx.focus);
-        accum.lines.push(pull_request_row_line(
-            row,
-            &col_widths,
-            selection,
-            ctx.animation_elapsed,
-        ));
+        accum.lines.push(
+            pull_request_row_line(row, &col_widths, selection, ctx.animation_elapsed)
+                .style(theme_roles::selection_style(selection)),
+        );
         accum.row_spans.push(VisualRowSpan { start_y, height: 1 });
     }
     if matches!(
@@ -593,7 +614,9 @@ fn append_worktrees_section(
             *accum.focused_output_line = accum.lines.len();
         }
         let selection = tui_pane::selection_state(ctx.pane, row_index, ctx.focus);
-        accum.lines.push(worktree_row_line(wt, layout, selection));
+        accum.lines.push(
+            worktree_row_line(wt, layout, selection).style(theme_roles::selection_style(selection)),
+        );
     }
 }
 
@@ -824,7 +847,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         row_offset,
     } = *args;
     let content_width = usize::from(area_width).saturating_sub(3);
-    let label_only = content_width / 2 < *MIN_FITTED_TEXT_WIDTH;
+    let label_only = usize::from(area_width) < *SPLIT_ROW_MIN_INNER_WIDTH;
     let label_width = if label_only {
         usize::from(area_width).saturating_sub(1)
     } else {
@@ -842,11 +865,12 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         }
         let label = fit_text(field.label(), label_width);
         let selection = tui_pane::selection_state(pane, row_index, focus);
-        let ls = selection.patch(styles.readonly_label);
+        let overlay = theme_roles::selection_style(selection);
+        let ls = styles.readonly_label.patch(overlay);
         if label_only {
             accum
                 .lines
-                .push(Line::from(Span::styled(format!(" {label}"), ls)));
+                .push(Line::from(Span::styled(format!(" {label}"), ls)).style(overlay));
             continue;
         }
         let is_rate_limit_row = matches!(
@@ -856,13 +880,18 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         let prefix = format!(" {label:<label_width$} ");
         let wraps = matches!(*field, DetailField::WorktreeError | DetailField::Bisect);
         let value = build_field_value(data, *field, is_rate_limit_row);
+        let value = if is_rate_limit_row {
+            fit_rate_limit_value(data, *field, value, available)
+        } else {
+            value
+        };
         let value = if wraps || value.width() <= available {
             value
         } else {
             fit_text(&value, available).into_owned()
         };
         let base_value_style = field_value_style(data, *field);
-        let vs = selection.patch(base_value_style);
+        let vs = base_value_style.patch(overlay);
         if wraps && !value.is_empty() {
             let prefix_len = prefix.width();
             if available > 0 && value.width() > available {
@@ -893,7 +922,8 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
                 && let Some(idx) = value.find(" resets ")
             {
                 let (base, reset) = value.split_at(idx);
-                let reset_style = selection.patch(Style::default().fg(inactive_border_color()));
+                let reset_style =
+                    selection.patch(Style::default().fg(tui_pane::secondary_text_color()));
                 spans.push(Span::styled(base.to_string(), vs));
                 spans.push(Span::styled(reset.to_string(), reset_style));
             } else {
@@ -901,7 +931,27 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
             }
             accum.lines.push(Line::from(spans));
         }
+        for line in &mut accum.lines[accum.row_spans.last().map_or(0, |row| row.start_y)..] {
+            line.style = line.style.patch(overlay);
+        }
     }
+}
+
+fn fit_rate_limit_value(
+    data: &GitData,
+    field: DetailField,
+    value: String,
+    available: usize,
+) -> String {
+    if value.width() <= available {
+        return value;
+    }
+    let quota = match field {
+        DetailField::RateLimitCore => data.rate_limit_core.as_ref(),
+        DetailField::RateLimitGraphQl => data.rate_limit_graphql.as_ref(),
+        _ => None,
+    };
+    quota.map_or(value, |quota| quota.remaining.to_string())
 }
 
 // `SyncColLayout` shares trailing column widths between Remotes and Worktrees.
@@ -1541,7 +1591,7 @@ mod tests {
         let text = line_text(&line);
 
         assert!(text.starts_with(" #1  ready"));
-        assert!(text.contains("..."));
+        assert!(text.contains(FIT_TEXT_ELLIPSIS));
     }
 
     #[test]
@@ -1671,8 +1721,8 @@ mod tests {
         ));
 
         // `remote_line` and `worktree_line` ellipsis-truncate their flexible columns...
-        assert!(remote_line.contains("..."));
-        assert!(worktree_line.contains("..."));
+        assert!(remote_line.contains(FIT_TEXT_ELLIPSIS));
+        assert!(worktree_line.contains(FIT_TEXT_ELLIPSIS));
         // ...while preserving the Sync delta at the right edge of both rows.
         assert!(remote_line.ends_with("☑️"));
         assert!(worktree_line.ends_with("☑️"));

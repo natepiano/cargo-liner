@@ -3,6 +3,8 @@ mod overlay;
 mod pane;
 #[cfg(test)]
 mod popup_padding_tests;
+#[cfg(test)]
+mod readability_tests;
 mod render;
 mod stats;
 mod status_line;

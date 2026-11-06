@@ -61,11 +61,14 @@ pub use git_data::git_fields_from_data;
 pub use git_data::git_has_description_row;
 pub use git_data::git_row_at;
 pub use package_data::PackageData;
+pub use package_data::PackageDeletion;
 #[cfg(test)]
 pub use package_data::PackagePresence;
 pub use package_data::PackageRow;
 pub use package_data::PackageSection;
 pub(in crate::tui) use package_data::PackageVersion;
+#[cfg(test)]
+pub use package_data::WorktreeGroupSummary;
 pub use pending::CargoPackageInvocation;
 pub use pending::CiFetchKind;
 pub use pending::PendingCiFetch;

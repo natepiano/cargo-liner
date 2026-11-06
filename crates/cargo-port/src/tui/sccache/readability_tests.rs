@@ -1,0 +1,99 @@
+use crate::tui::test_support;
+use crate::tui::test_support::HEIGHT;
+
+#[test]
+fn sccache_last_page_names_the_second_page() -> anyhow::Result<()> {
+    let mut app = test_support::stats_app(
+        (0..9)
+            .map(|i| format!("Compile request {i}  {i}"))
+            .collect(),
+    );
+    test_support::draw_stats(&mut app, 12)?;
+    app.overlays.sccache_pane.viewport.end();
+    let buffer = test_support::draw_stats(&mut app, 12)?;
+    test_support::position(&buffer, "▲ 2 of 2")?;
+    Ok(())
+}
+
+#[test]
+fn sccache_selection_fills_the_row_to_the_border() -> anyhow::Result<()> {
+    let mut app = test_support::stats_app(vec!["Cache hits  7".to_string()]);
+    let buffer = test_support::draw_stats(&mut app, HEIGHT)?;
+    let label = test_support::position(&buffer, "Cache hits")?;
+    let inner = app.overlays.sccache_pane.viewport.content_area();
+    assert_eq!(buffer[(inner.right() - 1, label.1)].bg, buffer[label].bg);
+    Ok(())
+}
+
+#[test]
+fn sccache_hints_name_first_and_last() -> anyhow::Result<()> {
+    let mut app = test_support::stats_app(Vec::new());
+    let buffer = test_support::draw_stats(&mut app, HEIGHT)?;
+    test_support::position(&buffer, "home/end first/last")?;
+    Ok(())
+}
+
+#[test]
+fn popup_titles_use_sentence_case() -> anyhow::Result<()> {
+    let mut app = test_support::stats_app(Vec::new());
+    let buffer = test_support::draw_stats(&mut app, HEIGHT)?;
+    test_support::position(&buffer, "Sccache stats")?;
+    Ok(())
+}
+
+#[test]
+fn sccache_reasons_explain_the_uncached_call() -> anyhow::Result<()> {
+    let mut app = test_support::stats_app(vec![
+        "Non-cacheable reasons:".to_string(),
+        "-  1".to_string(),
+        "-o  2".to_string(),
+        "missing output_dir  3".to_string(),
+        "multiple input files  4".to_string(),
+    ]);
+    let buffer = test_support::draw_stats(&mut app, HEIGHT)?;
+    for reason in [
+        "No reason reported",
+        "Output file named directly",
+        "No output directory",
+        "Multiple input files",
+    ] {
+        test_support::position(&buffer, reason)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn selected_sccache_label_has_readable_contrast() -> anyhow::Result<()> {
+    let mut app = test_support::stats_app(vec!["Cache hits  7".to_string()]);
+    let theme = test_support::shipped_dark_theme()?;
+    let previous = tui_pane::theme();
+    tui_pane::set_active_theme(std::sync::Arc::new(theme));
+    let buffer = test_support::draw_stats(&mut app, HEIGHT)?;
+    tui_pane::set_active_theme(previous);
+    let failures = test_support::contrast_failures(&buffer, &["Cache hits"], "selected sccache");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    Ok(())
+}
+
+#[test]
+fn sccache_all_reasons_use_plain_sentence_case() -> anyhow::Result<()> {
+    let mut app = test_support::stats_app(vec![
+        "Non-cacheable reasons:".to_string(),
+        "crate-type  1".to_string(),
+        "incremental  2".to_string(),
+        "missing input  3".to_string(),
+        "missing emit  4".to_string(),
+        "compiler option not supported  5".to_string(),
+    ]);
+    let buffer = test_support::draw_stats(&mut app, HEIGHT)?;
+    for text in [
+        "Unsupported crate type",
+        "Incremental compilation",
+        "No input file",
+        "No output kinds requested",
+        "Compiler option not supported",
+    ] {
+        test_support::position(&buffer, text)?;
+    }
+    Ok(())
+}

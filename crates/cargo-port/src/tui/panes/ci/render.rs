@@ -323,7 +323,7 @@ fn build_ci_widths(
             max: Some(commit_width),
         },
         ColumnSpec {
-            min: label_width("Branch"),
+            min: branch_width,
             max: Some(branch_width),
         },
         ColumnSpec::fixed(CI_TIMESTAMP_WIDTH),
@@ -353,8 +353,8 @@ fn build_ci_widths(
     let mut column_widths = ColumnWidths::new(column_specs);
 
     for run in ci_runs {
-        column_widths.observe_cell_usize(0, run.commit_title.as_deref().unwrap_or("").len() + 1);
-        column_widths.observe_cell_usize(1, run.branch.len());
+        column_widths.observe_cell_usize(0, run.commit_title.as_deref().unwrap_or("").width() + 1);
+        column_widths.observe_cell_usize(1, run.branch.width());
     }
     if show_durations {
         for (i, ci_display_column) in cols.iter().enumerate() {
@@ -381,7 +381,16 @@ fn build_ci_widths(
 
     let mut resolved: Vec<u16> = (0..spec_len).map(|i| column_widths.get(i)).collect();
     widen_ci_header_columns(&mut resolved, cols, inner_width);
-    resolved.into_iter().map(Constraint::Length).collect()
+    let mut used = 0;
+    resolved
+        .into_iter()
+        .enumerate()
+        .take_while(|(index, width)| {
+            used += usize::from(*width) + usize::from(*index > 0);
+            used <= usize::from(inner_width)
+        })
+        .map(|(_, width)| Constraint::Length(width))
+        .collect()
 }
 
 /// Display width of a header label, clamped to `u16`.
@@ -477,27 +486,44 @@ fn ci_description_widths(
     let commit_min = ci_commit_min_width(ci_runs);
     let branch_min = ci_branch_min_width(ci_runs);
     let min_total = commit_min + branch_min;
+    if min_total.saturating_add(1) > usize::from(inner_width) {
+        let branch = ci_runs
+            .iter()
+            .map(|run| run.branch.width())
+            .max()
+            .unwrap_or(0)
+            .max("Branch".width());
+        if branch + CI_COMMIT_MIN_WIDTH < usize::from(inner_width) {
+            let branch = u16::try_from(branch).unwrap_or(u16::MAX);
+            return (inner_width.saturating_sub(branch + 1), branch);
+        }
+        return (inner_width, 0);
+    }
     let available = usize::from(inner_width)
         .saturating_sub(ci_non_description_width(ci_runs, cols, show_durations))
         .max(min_total);
 
     let commit_observed = ci_runs
         .iter()
-        .map(|run| run.commit_title.as_deref().unwrap_or("").len() + 1)
+        .map(|run| run.commit_title.as_deref().unwrap_or("").width() + 1)
         .max()
         .unwrap_or(CI_COMMIT_MIN_WIDTH)
         .max(CI_COMMIT_MIN_WIDTH);
     let branch_observed = ci_runs
         .iter()
-        .map(|run| run.branch.len())
+        .map(|run| run.branch.width())
         .max()
         .unwrap_or(CI_BRANCH_MIN_WIDTH)
         .max(CI_BRANCH_MIN_WIDTH);
 
     let branch_ceiling = (available / 3).max(branch_min);
-    let branch = branch_observed
-        .min(branch_ceiling)
-        .clamp(branch_min, available.saturating_sub(commit_min));
+    let branch = if branch_observed <= branch_ceiling
+        && branch_observed <= available.saturating_sub(commit_min)
+    {
+        branch_observed
+    } else {
+        0
+    };
     let commit = commit_observed
         .min(available.saturating_sub(branch))
         .max(commit_min);
@@ -540,7 +566,7 @@ fn ci_description_min_width(ci_runs: &[CiRun]) -> usize {
 fn ci_commit_min_width(ci_runs: &[CiRun]) -> usize {
     let observed = ci_runs
         .iter()
-        .map(|run| run.commit_title.as_deref().unwrap_or("").len() + 1)
+        .map(|run| run.commit_title.as_deref().unwrap_or("").width() + 1)
         .max()
         .unwrap_or(CI_COMMIT_MIN_WIDTH);
     ci_content_aware_min_width(observed, CI_COMMIT_MIN_WIDTH, CI_COMMIT_LONG_MIN_WIDTH)
@@ -549,7 +575,7 @@ fn ci_commit_min_width(ci_runs: &[CiRun]) -> usize {
 fn ci_branch_min_width(ci_runs: &[CiRun]) -> usize {
     let observed = ci_runs
         .iter()
-        .map(|run| run.branch.len())
+        .map(|run| run.branch.width())
         .max()
         .unwrap_or(CI_BRANCH_MIN_WIDTH);
     ci_content_aware_min_width(observed, CI_BRANCH_MIN_WIDTH, CI_BRANCH_LONG_MIN_WIDTH)
@@ -592,7 +618,7 @@ fn ci_display_table_shows_durations(
 
 fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
     let title = tui_pane::pane_title(
-        "CI Runs",
+        "CI runs",
         &PaneTitleCount::Single {
             len:    data.runs.len(),
             cursor: focused_pos,
@@ -617,7 +643,7 @@ pub fn render_ci_pane_body(
     pane_render_ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
     let Some(ci_data) = pane.content().cloned() else {
-        return empty_ci_chrome(" No CI Runs ");
+        return empty_ci_chrome(" No CI runs ");
     };
 
     if !ci_data.has_runs() {
@@ -785,7 +811,7 @@ mod tests {
             empty_state:    CiEmptyState::NoRuns,
         };
 
-        assert_eq!(ci_panel_title(&data, Some(0)), " CI Runs (1 of 1) ");
+        assert_eq!(ci_panel_title(&data, Some(0)), " CI runs (1 of 1) ");
     }
 
     #[test]
@@ -799,9 +825,9 @@ mod tests {
 
         assert_eq!(
             ci_panel_title(&data, Some(0)),
-            " CI Runs (1 of 2) branch: main "
+            " CI runs (1 of 2) branch: main "
         );
-        assert_eq!(ci_panel_title(&data, None), " CI Runs (2) branch: main ");
+        assert_eq!(ci_panel_title(&data, None), " CI runs (2) branch: main ");
     }
 
     #[test]

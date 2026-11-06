@@ -5,10 +5,12 @@ use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
+use tui_pane::BLOCK_BORDER_WIDTH;
 use tui_pane::Renderable;
 use unicode_width::UnicodeWidthStr;
 
 use super::GitPane;
+use super::render::SPLIT_ROW_MIN_INNER_WIDTH;
 use crate::constants::IN_SYNC;
 use crate::http::RateLimitQuota;
 use crate::tui::panes::GitCheckout;
@@ -77,21 +79,21 @@ fn git_description_at_80_columns_keeps_the_middle_of_fleet() -> anyhow::Result<(
 }
 
 #[test]
-fn git_inner_width_nine_shows_branch_label_without_value() -> anyhow::Result<()> {
-    assert_branch_label_only(11)
+fn git_below_split_width_shows_branch_label_without_value() -> anyhow::Result<()> {
+    assert_branch_label_only(split_outer_width() - 1, "Bran…")
 }
 
 #[test]
-fn git_inner_width_nine_shows_rate_labels_without_values() -> anyhow::Result<()> {
-    assert_rate_labels_only(11, &format!("Rate {FIT_TEXT_ELLIPSIS}"))
+fn git_below_split_width_shows_distinct_rate_labels_without_values() -> anyhow::Result<()> {
+    assert_rate_labels_only(split_outer_width() - 1, ["Core", "Grap…"])
 }
 
 #[test]
-fn git_inner_width_ten_uses_nine_cells_for_rate_labels() -> anyhow::Result<()> {
-    assert_rate_labels_only(12, &format!("Rate l{FIT_TEXT_ELLIPSIS}"))
+fn git_one_cell_below_label_width_keeps_rate_labels_distinct() -> anyhow::Result<()> {
+    assert_rate_labels_only(split_outer_width() - 2, ["Core", "Gra…"])
 }
 
-fn assert_rate_labels_only(outer_width: u16, expected: &str) -> anyhow::Result<()> {
+fn assert_rate_labels_only(outer_width: u16, expected: [&str; 2]) -> anyhow::Result<()> {
     let quota = RateLimitQuota {
         limit:     5000,
         used:      42,
@@ -105,13 +107,16 @@ fn assert_rate_labels_only(outer_width: u16, expected: &str) -> anyhow::Result<(
             ..GitData::default()
         };
         let rows = render_git_value(data, outer_width)?;
-        let rate_rows: Vec<_> = rows.iter().filter(|row| row.contains("Rat")).collect();
+        let rate_rows: Vec<_> = rows
+            .iter()
+            .filter(|row| row.contains("Core") || row.contains("Gra"))
+            .collect();
         assert_eq!(
             rate_rows.len(),
             2,
             "both rate-limit labels must render: {rows:?}"
         );
-        for row in rate_rows {
+        for (row, expected) in rate_rows.into_iter().zip(expected) {
             assert_eq!(row.trim(), expected);
         }
     }
@@ -119,16 +124,16 @@ fn assert_rate_labels_only(outer_width: u16, expected: &str) -> anyhow::Result<(
 }
 
 #[test]
-fn git_inner_width_ten_keeps_label_only_mode() -> anyhow::Result<()> {
-    assert_branch_label_only(12)
+fn git_one_cell_below_split_width_keeps_label_only_mode() -> anyhow::Result<()> {
+    assert_branch_label_only(split_outer_width() - 2, "Bra…")
 }
 
 #[test]
-fn git_inner_width_eleven_restores_end_shortened_value() -> anyhow::Result<()> {
-    let rows = render_git_value(branch_data(), 13)?;
+fn git_at_split_width_restores_end_shortened_value() -> anyhow::Result<()> {
+    let rows = render_git_value(branch_data(), split_outer_width())?;
     let row = rows
         .iter()
-        .find(|row| row.contains("B..."))
+        .find(|row| row.contains("B…"))
         .context("the fitted branch label must render")?;
     assert_eq!(
         row.trim(),
@@ -147,15 +152,15 @@ fn branch_data() -> GitData {
     }
 }
 
-fn assert_branch_label_only(outer_width: u16) -> anyhow::Result<()> {
+fn assert_branch_label_only(outer_width: u16, expected: &str) -> anyhow::Result<()> {
     let rows = render_git_value(branch_data(), outer_width)?;
     let row = rows
         .iter()
-        .find(|row| row.contains("Branch"))
-        .context("the whole branch label must render")?;
+        .find(|row| row.contains(expected))
+        .context("the fitted branch label must render")?;
     assert_eq!(
         row.trim(),
-        "Branch",
+        expected,
         "the narrow row must contain only its label"
     );
     assert!(
@@ -198,7 +203,7 @@ fn render_git_value(data: GitData, pane_width: u16) -> anyhow::Result<Vec<String
 
 #[test]
 fn shortened_text_keeps_the_ellipsis_within_the_available_columns() {
-    for (width, expected) in [(0, ""), (1, "."), (2, ".."), (3, "...")] {
+    for (width, expected) in [(0, ""), (1, "…"), (2, "f…"), (3, "fl…")] {
         assert_eq!(
             crate::tui::render::truncate_with_ellipsis("fleet", width, FIT_TEXT_ELLIPSIS),
             expected
@@ -254,4 +259,19 @@ fn partial_redraw_anchors_the_cursor_after_variation_selector_glyphs() -> anyhow
         );
     }
     Ok(())
+}
+
+#[test]
+fn compact_git_rows_distinguish_rate_labels_and_keep_values() -> anyhow::Result<()> {
+    let rows = render_git_value(GitData::default(), 20)?;
+    for label in ["Core", "GraphQL"] {
+        assert!(rows.iter().any(|row| row.contains(label)), "{rows:?}");
+    }
+    let rows = render_git_value(branch_data(), split_outer_width())?;
+    assert!(rows.iter().any(|row| row.trim() == "B… f…"), "{rows:?}");
+    Ok(())
+}
+
+fn split_outer_width() -> u16 {
+    u16::try_from(*SPLIT_ROW_MIN_INNER_WIDTH + BLOCK_BORDER_WIDTH).unwrap_or(u16::MAX)
 }
