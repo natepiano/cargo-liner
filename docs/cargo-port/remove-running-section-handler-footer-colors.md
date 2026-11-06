@@ -604,7 +604,9 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** unrounded-only coverage (a byte blend dropped an ink under 4.5:1).
 
-### Phase 25 — Shared chrome text and overlay polish  · status: todo
+### Phase 25 — Shared chrome text and overlay polish  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
+
+**Kept from this phase:** Spec 10 (cargo-port selected-row inks under 4.5:1) goes to the port unit through the showrunner, 2026-11-06.
 
 **Depends on:** Phase 18
 
@@ -983,7 +985,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. Live: a shot of a tile with named writer and reviewer subagents shows "writer" and "reviewer" in the role column. The checkpoint adds a Change-Review line.
 
-### Phase 31 — Session colours stay apart  · status: todo
+### Phase 31 — Session colours stay apart  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
 
 **Depends on:** Phase 18, Phase 27, Phase 30, Phase 35, Phase 53
 
@@ -1024,13 +1026,13 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 34 — Tests leave no folders  · status: todo
 
-**Depends on:** Phase 18, Phase 31
+**Depends on:** Phase 18
 
 #### Work Order
 
 **Goal:** the cargo-handler startup-note tests leave no temporary folder behind, also when a test fails.
 
-**Source:** showrunner add-ons, 2026-10-26: the theme-note tests leave /tmp/.tmpXXXXXX folders that hold broken-default-dark.toml. Run order (showrunner): after phase 31. The timeout test named in the same add-on and its `ShortDeadlineRunner` no longer exist, so that repair left this phase.
+**Source:** showrunner add-ons, 2026-10-26: the theme-note tests leave /tmp/.tmpXXXXXX folders that hold broken-default-dark.toml. The timeout test named in the same add-on and its `ShortDeadlineRunner` no longer exist, so that repair left this phase.
 
 **Constraints from prior phases:**
 - Phase 18: `crates/cargo-handler/src/terminal/theme_note_tests.rs` builds the app through `terminal::startup_theme_notes` (`terminal.rs` ≈79) and `App::new_for_test_with_startup` (`app.rs` ≈246). Its `theme_directory()` keeps the theme folder in a `static DIRECTORY: OnceLock<TempDir>`, which is never dropped, so the folder stays after the run. The fixture function that gives the folder path takes no `self`.
@@ -1079,7 +1081,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 20 — Click a word to highlight every instance  · status: todo
 
-**Depends on:** Phase 16, Phase 27, Phase 31
+**Depends on:** Phase 16, Phase 27
 
 #### Work Order
 
@@ -1092,7 +1094,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `content_click` excludes tile frames, titles and readouts. Word clicks also work on tile titles, so tui_pane `tiles/host.rs` forwards a title press to the host; the word logic stays in cargo-handler. The status bar, the readouts and the overlays are out of scope (showrunner, 2026-10-23).
 - An open modal overlay takes a click first. Esc clears the highlight only when no overlay is open.
 - Phase 27: `summary::truncated_line` (`summary/mod.rs` ≈846) cuts styled text by terminal cells and grapheme clusters, and `SummarySessionTable::OmittedForWidth` (≈226) removes session lines fully. The omitted state is already visible to the user and its 34x50 regression is green.
-- Phase 56: the readout is hidden by default (`RowsReadoutVisibility::{Hidden, Shown}`), and a hidden readout gives its row back to content when the host has no foot content. Drawing and `content_click` read Phase 56's one visibility-aware content allocation (`content_area`, `tui_pane/src/tiles/draw.rs` ≈928). Word targets and the empty-space clear map through that same allocation in both readout states.
+- Drawing and `content_click` read one content allocation (`content_area`, `tui_pane/src/tiles/draw.rs` ≈928). Word targets and the empty-space clear map through that same allocation.
 - Phase 36: the readout text comes from `TileCells::rows_readout` (`tui_pane/src/tiles/draw.rs`): `RowsReadout::Selected` draws `content rows: 3 of 12` for a surface with a selected row, `RowsReadout::Count` draws `content rows: 12`. The readout is chrome, so a press on it is not a word target.
 - The content, title and chrome outcomes cross the public host boundary. The pointer payload is exported in `tiles/mod.rs` (≈48) and `lib.rs` (≈502).
 - Theme roles live in `theme/mod.rs` (`Role` ≈91) and the built-in theme files in `crates/cargo-handler/themes/`; text colors stay as they are drawn.
@@ -1104,7 +1106,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 1. A word is a token between spaces in any drawn cell, with leading and trailing punctuation removed. A match is the whole word with exact case: a click on `claude1` marks every `claude1` and no `claude12`.
 2. One click marks every instance in the whole window: every agent tile, the unassigned tile, the summary and the accounts table. The highlighted word is one type, `enum WordHighlight { Off, Word(HighlightWord) }`, where `HighlightWord` can only hold a non-empty word.
 3. A click on a row selects the row (Phase 16) and sets the word. A click on the highlighted word, at any place, a click on empty space, or Esc clears it. A click on another word moves the highlight to that word.
-4. The highlight is a new theme role, `word_match`, with a background in each built-in theme: subtle but easy to see in light and dark themes. The text keeps its color and stays readable on it (ink contrast measured as in Phase 15, bound named in the checkpoint). One color for every match. Where the selected row and a match overlap, the match background draws on top. The session-separating channel phase 31 chose (colour, glyph, bold or tint) stays visible on a matched cell and on a matched selected cell; a rendered test in `render/word_contrast_tests.rs` proves it.
+4. The highlight is a new theme role, `word_match`, with a background in each built-in theme: subtle but easy to see in light and dark themes. The text keeps its color and stays readable on it (ink contrast measured as in Phase 15, bound named in the checkpoint). One color for every match. Where the selected row and a match overlap, the match background draws on top. The session ink stays visible on a matched cell and on a matched selected cell; a rendered test in `render/word_contrast_tests.rs` proves it.
 5. The mark is one pass over the drawn frame after every tile draws, and runs only while a word is set. So it follows the word through every redraw, a new row that holds the word gets it too, and it costs nothing when no word is set.
 6. Tests, each red before its fix: the token rules (punctuation removed at the ends, whole-word match, exact case); matches marked in two tiles and in the accounts table; a new row with the word is marked on the next frame; clear on empty space, on Esc, on a second click on the same word and on a click on the word at another place; a click on another word moves the highlight; a render test that reads the background colors back from the frame.
 7. A contrast test reads the drawn match background and each ink on it in all four themes and asserts at least 4.5:1 with glyph coverage, on the base, focused and unfocused grounds, selection overlap included.
@@ -1124,7 +1126,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 21 — Astra designer and Astra reviewer roles  · status: todo
 
-**Depends on:** Phase 17, Phase 16, Phase 18, Phase 26, Phase 29, Phase 20, Phase 31
+**Depends on:** Phase 17, Phase 16, Phase 18, Phase 26, Phase 29, Phase 20
 
 #### Work Order
 
@@ -1145,8 +1147,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - The config gives pink to both `role.astra-designer` and `account.codex1`, and both solve to the same ink. Showrunner ruling, 2026-10-21: `role.astra-designer` moves off pink and `account.codex1` keeps it; no existing color name clears every ink, so the new name is `mauve` = xterm 139 (#af87af; solved dark #af87af, tint on #c2a4c2; light #734c73, tint on #5e3f5e; at least CIEDE2000 15.56 from every account, role, status, header, plain-text and rainbow ink; 4.51–4.77:1 at 208/255). natedev adds `mauve` = `38;5;139` to `statusline.jq` and sets `role.astra-designer=mauve`; this phase adds `mauve` (index 139) to `FooterColor` in `footer_colors/mod.rs`, parsed from `mauve`. This phase does not wait for natedev's change: its distance test uses a fixture with the `statusline.conf` values and `role.astra-designer=mauve`, and the live shots use the real config: the change is on `~/.claude` main at a06402f7.
 - The run order is 18, 25, 26, 29, 27, 20, 9, 21, with phase 28 when tile-fixes phase 24 has merged, so this phase runs after phases 19, 26, 29 and 20.
 - Colour limits for the Astra role inks, as built. Measure them through the production role API (`FooterColors::hierarchy_role` ≈827 with the new variants, `named_role` ≈818) and `SessionRowInk::Management`, not through fixed colors, on the final drawn output with the two-way 208/255 coverage of phase 18 (the lower of the unrounded and the byte-rounded blend).
-  - Temporary floors (phase 26 as built, `render/role_title_tests.rs` ≈710–731). Light themes: dE >= 15 from every session ink and from every other ink that can share the row. Default Dark: dE >= 12.2, and High Contrast Dark: dE >= 14.8, for the same two classes. The dark floors hold until phase 31 ("Session colours stay apart") lands. Phase 31 runs first: its chosen row design (which fields draw in colour, any second channel) and its floors replace these temporary floors. Astra labels use the style path phase 31 chose; this phase does not restore the old exceptions.
-  - Final targets, separate from those floors: row-fixed dE >= 15, session dE >= 20, covered contrast >= 4.5:1. Phase 31's final floors or named replacement channels apply in all themes; this phase restores no earlier dark exemption. Covered contrast >= 4.5:1 applies now, in all four themes.
+  - Floors (phase 26 as built, `render/role_title_tests.rs` ≈710–731). Light themes: dE >= 15 from every session ink and from every other ink that can share the row. Default Dark: dE >= 12.2, and High Contrast Dark: dE >= 14.8, for the same two classes. This phase does not restore the old exceptions.
+  - Covered contrast >= 4.5:1 applies in all four themes.
   - Consecutive session hue spacing applies only to the session inks, not to role inks.
 - Keep the wire-boundary rejection rules below. Phase 16 selection: an Astra row keeps its stable thread identity and the selected band through busy/idle updates and manager placement. Contrast tests compute the expected ratio with their own literal 208/255 glyph coverage, not by reading `ANTIALIASED_GLYPH_COVERAGE`.
 - The Codex startup lookup reads through the typed layouts Phase 41 shipped. `ThreadsLayout::WithThreadSource` runs `CODEX_THREADS_QUERY` (`constants.rs` ≈387: `thread_source = 'user'` with `source` not `'exec'`, or `codex-tui` rows with no `thread_source`). `ThreadsLayout::OriginatorOnly` runs `CODEX_LEGACY_THREADS_QUERY` (≈392: `codex-tui` only). Both leave out exec threads and worker threads at startup. `astra_review.py` runs `codex exec` (`originator` `codex_exec`), so its thread is not in the startup result.
@@ -1228,6 +1230,19 @@ Do this phase first when the unit resumes, before Phase 42.
 - Keep every Phase 62 result: `verify.sh` runs still show their step name, and a finished run still releases its row.
 - A run with an unknown command shows `waiting`; never hide the run because its command has no step name.
 - The run must still need a live supervisor that names the exact record, so a dead run never shows.
+
+**Spec:**
+1. Write a red test from the two herdr records. It proves or rejects the probable cause. Name the proved cause in the summary.
+2. A live run with an eligible record shows its worker as `waiting` or the step name, whatever command the run executes.
+3. Tests cover a `bash -c` run, an unknown command, a `verify.sh` run with its step name, a finished run and a dead supervisor. Each test takes under 1 s.
+4. CHANGELOG: one Fixed line.
+
+**Files:**
+- `crates/cargo-handler/src/census/activity.rs` — run eligibility and the row state
+- `crates/cargo-handler/src/census/activity_tests.rs`, `crates/cargo-handler/src/census/activity_regression_tests.rs` — the tests
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer.
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live check: with a real worker in a detached `bash -c` run, a capture shows its row as `waiting`, then back to normal after the run ends. The checkpoint carries a new Change-Review line for the user.
 
@@ -1731,7 +1746,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - The disk sweeper deletes a release binary soon after a build. Build and copy the binary in one detached step.
 - Two render tests took over 1 s in one full run at high machine load. Phase 50 holds them.
 
-### Phase 58 — The focus tint reaches the frame and stands apart from selection  · status: todo
+### Phase 58 — The focus tint reaches the frame and stands apart from selection  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
 
 **Depends on:** Phase 48, Phase 54; runs before Phase 25 and Phase 50 (shared `render/selected_ink_tests.rs`)
 
@@ -1916,7 +1931,9 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live on natedev: every live worker shows the same unit and role as before.
 
-### Phase 55 — Narrow tiles keep tree guides, readable names and one header inset  · status: todo
+### Phase 55 — Narrow tiles keep tree guides, readable names and one header inset  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
+
+**Kept from this phase:** Specs 1 and 2 moved to Phase 66.
 
 **Depends on:** Phase 48
 
@@ -1949,7 +1966,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: shots at 200×50 and 120×40 pass a fresh design check. The checkpoint adds a Change-Review line.
 
-### Phase 56 — The rows readout is off by default  · status: todo
+### Phase 56 — The rows readout is off by default  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
 
 **Depends on:** Phase 48, Phase 54, Phase 57
 
@@ -1988,6 +2005,38 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 **Workers:** 1 writer (tui_pane and hosts).
 
 **Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: shots of cargo-handler and cargo-tile with the readout hidden and shown. The checkpoint adds a Change-Review line.
+
+### Phase 66 — Narrow tiles keep guides and readable names; the unassigned count matches its rows  · status: todo
+
+**Depends on:** none. Runs after Phase 62h, Phase 42 and Phase 65 (showrunner, 2026-11-06).
+
+#### Work Order
+
+**Goal:** at every tile width, each row keeps its tree guides and its session name stays readable, and the unassigned pane's count matches the rows it draws.
+
+**Source:** showrunner order 6d8cdb12, 2026-11-06: a Spec of a dropped phase stays only when it fixes something broken today. These came from Phase 55 (design check 2026-10-30, `phases/43/shots/ages_120x40.png`) and Phase 51 (design check 2026-10-29, `phases/41/live/handler_named.png`).
+
+**Constraints from prior phases:**
+- Phase 27 keeps the core columns on narrow tiles; `TreeColumns::for_lines` (`agent_cell.rs` ≈453) keeps a column only when a drawn row has a value. Phase 49b adds model and effort columns in the same file and runs after this phase.
+- `tree_cell_line` (`agent_cell.rs` ≈2602) drops the whole guide prefix when fewer than two name cells remain after it.
+- Both width paths drop Directory, Branch, Type, Age and Account in that order: local fitting through `ColumnDrop::ORDER` (`agent_cell.rs` ≈504) and shared-column fitting through `GroupFitStep::ORDER` (≈936).
+- `SurfaceSelection::rows_readout` (`crates/cargo-handler/src/interaction.rs` ≈361) counts selectable identities. An unassigned table also draws its header line, which the count does not include.
+- Phase 41's shot: the unassigned pane says "content rows: 2 of 2" and draws 3 rows; the third, `phase41-check`, has the same status, account, branch and age as `cargo-liner-handler-c6`, with only its session cell lit.
+
+**Spec:**
+1. Reproduce each defect below on today's tree with a red test first. A defect with no reproduction leaves this phase; report it to the director.
+2. Tree guides are cut (Phase 55 Spec 1). At 120×40 the natedev tile drew two depth-3 rows ("ws-impl…", "Dispatch…") at the tile's left edge with no guides. Draw every row's guides at its own depth at every width; cut the name after the guides, never the guides.
+3. Session names are cut (Phase 55 Spec 2). The same tile cut session names to two letters ("re…" for both "report" and "resources") beside a type column empty in 17 of 19 rows. Give an empty column's space to the session column. A column that is empty on most rows never takes room from session names.
+4. The unassigned count is wrong (Phase 51 Spec 2). Find out whether `phase41-check` is a real second session or a row left from an earlier frame. Stale: the pane clears every row it no longer draws. Real: the count includes it. The test reproduces the extra session identity or the stale cells across consecutive frames; equality of the drawn line count and the readout count is not the rule.
+5. CHANGELOG: one Fixed line.
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/agent_cell/tests/` — tree guides, column space, unassigned rows and count
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: shots at 200×50 and 120×40 show the guides and the readable names. The checkpoint adds a Change-Review line.
 
 ### Phase 49a — The census reads each agent's model and effort  · status: todo
 
@@ -2031,7 +2080,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 ### Phase 49b — Agent tiles show model and effort columns  · status: todo
 
-**Depends on:** Phase 49a, Phase 43, Phase 55
+**Depends on:** Phase 49a, Phase 43, Phase 66
 
 #### Work Order
 
@@ -2046,7 +2095,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - Phase 49a gives each row `ModelName` and `ReasoningEffort`, both with an `Unrecorded` case.
 
 **Spec:**
-1. `TreeColumn::Model` (header `model`) and `TreeColumn::Effort` (header `effort`), after `Role`, left-aligned; `Unrecorded` draws nothing. Phase 55's rule applies to both columns: a column that is empty on most rows never takes room from session names.
+1. `TreeColumn::Model` (header `model`) and `TreeColumn::Effort` (header `effort`), after `Role`, left-aligned; `Unrecorded` draws nothing. Phase 66's rule applies to both columns: a column that is empty on most rows never takes room from session names.
 2. On a narrow tile the two columns drop before `Branch` and `Directory` keep their place (effort first, then model).
 3. Red-first tests, each under 1 s: a tile with a Claude and a Codex row shows `opus`/`sol` and their efforts; a tile of shells drops both columns; a narrow tile drops effort, then model, before the core columns. Sparse values: a tile where model and effort are recorded on few rows gives their space to session names, in local fitting and in shared-column fitting. Update fixture text the suite names.
 4. CHANGELOG: one line under Added.
@@ -2104,7 +2153,9 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean with no test over one second; lint clean. Change-Review: none (test time only).
 
-### Phase 51 — Design check follow-ups: the timer shot, a stale unassigned row and the account notice inset  · status: todo
+### Phase 51 — Design check follow-ups: the timer shot, a stale unassigned row and the account notice inset  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
+
+**Kept from this phase:** Spec 2 moved to Phase 66.
 
 **Depends on:** Phase 47
 
@@ -2181,7 +2232,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - `summary/accounts_gradient_tests.rs` is also in Phase 50's **Files** (its slow gradient test); they run one after the other, never together.
 - `theme::ResetRank::color` (`crates/cargo-handler/src/theme/mod.rs` ≈128) is the one reset source. Today it blends the `reset_nearest` to the `reset_farthest` theme role at rank/(n-1) in plain sRGB (`tui_pane::blend_color`); the rank comes from `reset_colors` (`summary/accounts.rs` ≈145). The stepped colours replace that blend in this one owner. Do not add a second reset source. The readability correction (`footer_colors::readable_status_style`) applies after it.
 - Measured on the C71 shot (Default Dark, 6 accounts): neighbouring reset colours step only dE 2.3–2.7, and the ramp ends are about dE 12 apart in every theme. `accounts_gradient_tests.rs` holds the C113 floors (`check_rendered_reset_ramp` ≈389), the ends floor (≈501) and the chroma and plain-text floors (≈532), and its formula tests (≈185, ≈232, ≈266) follow the sRGB blend. C115 is `SessionResetFloor` (`render/role_title_tests.rs` ≈715); dark is `DarkNotMeasured`.
-- The reset colour work of Phase 35 (C71) moved here on 2026-10-30. Phase 31 runs after this phase and assesses these stepped colours.
+- The reset colour work of Phase 35 (C71) moved here on 2026-10-30.
 
 **Spec:**
 1. A stepped ramp of 3 or 4 distinct steps per theme, soonest the strongest, each step meeting text contrast on its ground; no red; no step equal to a session name color. It applies in all four themes.
