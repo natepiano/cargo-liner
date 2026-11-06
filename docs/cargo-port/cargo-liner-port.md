@@ -257,35 +257,20 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 
 No code. On hana `39e5c19033`, rustc 1.99.0 stops with `assertion failed: !deep_decl.is_glob_import()` (rustc_resolve imports.rs:583) when it builds test code; mend hits it only because it builds `--all-targets`. The construct: `use super::*;` in the cfg(test) module `rear_patch_panel::tests` (`crates/hana/src/tool/rear_patch_panel/mod.rs`), which brings a helper that the parent module also re-exports. Widget replaced the glob with explicit imports in `0c4e265f32`. Neither widget's worker nor this unit made a small sample that reproduces the panic; Codex refused the reduction task three times (content filter). The rustc issue can cite the commit pair `39e5c19033` / `0c4e265f32`.
 
-### Phase 2w — mend --fix never makes a function too long for clippy  · status: todo
+### Phase 2w — mend --fix never makes a function too long for clippy  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `mend --fix` never moves a function past clippy `too_many_lines`, so a lint run that was green stays green after the fix.
-
-**Source:** showrunner, 2026-11-05, from the performance showrunner's report. The module-import rewrite makes names longer, rustfmt then wraps the calls, and the function grows. `switch_dimming_and_the_patch_edit_fade_restore_in_either_order` in `crates/hana/tests/tool_switch/mod.rs` went from under the limit to 106/100, and hana `4590aeeb22` split it by hand. `opening_one_pocket_among_many_tools_touches_only_its_own_cards_and_rows` in `crates/hana/tests/pocket_open_work/mod.rs` reached 102/100 on the metrics-gathering tree. Showrunner: "mend --fix must not leave lint red."
-
-**Constraints:**
-- mend does not split a function. Splitting stays with the person who owns the function.
-- A function that is already over the limit before the fix keeps its current behavior.
-- A function with `#[allow(clippy::too_many_lines)]` or `#[expect(clippy::too_many_lines)]` is not limited.
-- Read the limit from the workspace `clippy.toml` key `too-many-lines-threshold`. Without that key, use the clippy default.
-
-**Spec:**
-1. **Red first:** the smallest fixture through the real fix path where the rewrite wraps calls and moves one function past the limit, with a second function in the same file that stays under the limit.
-2. Measure each function that a fix changes. Format the new file text with the rustfmt settings of the workspace, and count the body lines as clippy counts them: no blank lines and no comment lines.
-3. When a function goes from within the limit to over the limit, drop every rewrite in that function. Its imports at function scope stay too. Other functions in the file keep their rewrites.
-4. Report and fix agree: a kept function gives no warning and no failed exit in either mode. A notice names the file, the function and the count, and says to split the function. A second `--fix` run changes nothing and gives the same notice.
-5. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
+`mend --fix` measures each function that a fix changes. It formats the new file text with the workspace rustfmt settings and counts body lines as clippy counts them: no blank lines and no comment lines. The limit comes from the workspace `clippy.toml` key `too-many-lines-threshold`, else the clippy default. A function that a fix moves from within the limit to over the limit keeps all its names and its function-scope imports; other functions in the file keep their rewrites. A function already over the limit, or with `allow` or `expect` on `clippy::too_many_lines`, keeps its earlier behavior. A kept function gives no warning and no failed exit. A notice names the file, the function and the count, and says to split the function; a second `--fix` run changes nothing and gives the same notice. mend never splits a function.
 
 **Files:**
-- `crates/cargo-mend/` — the fix path, the measure, the notice and their tests
+- `crates/cargo-mend/src/fixes/runner/function_length/` — the plan, the formatter, the function collector, the limits and the fixture
+- `crates/cargo-mend/src/fixes/runner/apply.rs`, `combine.rs`, `execute.rs`, `mend_runner.rs`, `mod.rs`, `plan.rs` — the fix path holds the plan
+- `crates/cargo-mend/src/fixes/imports/import_scan.rs`, `src/rust_syntax/lexical_regions.rs` — scans and the line count
+- `crates/cargo-mend/src/reporting/outcome.rs` — the notices
+- `crates/cargo-mend/CHANGELOG.md`
 
-**Workers:** 1 writer owns the code and the tests.
-
-**State:** none.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second; the red test fails on the pre-fix tree and passes after. Director gate: the new mend binary runs `--fix` on a clean copy of hana `4590aeeb22^`, then `verify.sh lint hana` on that copy shows no `too_many_lines` error, and the notice names the kept function.
+**Gotchas:** `Formatter::detect` starts up to two short processes per mend scan. A relocation pass that depends on a kept function stays out as a whole, which keeps more relocations than the one caller needs.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: done
 
