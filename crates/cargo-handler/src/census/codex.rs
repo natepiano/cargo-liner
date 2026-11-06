@@ -91,8 +91,10 @@ pub(super) fn resume_request(process: &ProcessEntry) -> ResumeRequest<'_> {
 pub(super) fn read_resumed_threads(process: &ProcessEntry, codex_home: &Path) -> Vec<CodexThread> {
     match resume_request(process) {
         ResumeRequest::NewSession => Vec::new(),
-        ResumeRequest::NamedId(id) => read_threads_by_id(codex_home, &[id.to_owned()])
-            .into_values()
+        ResumeRequest::NamedId(id) => OpenThreadRows::default()
+            .read(codex_home, &[id.to_owned()])
+            .values()
+            .cloned()
             .collect(),
         ResumeRequest::LastThread => process
             .directory
@@ -193,29 +195,15 @@ pub(super) fn read_threads(codex_dir: &Path, created: &RangeInclusive<u64>) -> V
         .unwrap_or_default()
 }
 
-/// The threads among `ids` found in the newest thread database in
-/// `codex_dir`, whoever started them, by id.
-///
-/// None when there is no database or it cannot be read as this build
-/// expects; a thread's row then goes by its id.
-pub(super) fn read_threads_by_id(codex_dir: &Path, ids: &[String]) -> HashMap<String, CodexThread> {
-    if ids.is_empty() {
-        return HashMap::new();
-    }
-    state_database(codex_dir)
-        .and_then(|path| query_threads_by_id(&path, ids).ok())
-        .unwrap_or_default()
-}
-
 /// The rows [`CODEX_THREAD_BY_ID_QUERY`] finds for each of `ids` in the
 /// database at `path`, opened read-only.
-fn query_threads_by_id(
-    path: &Path,
-    ids: &[String],
-) -> rusqlite::Result<HashMap<String, CodexThread>> {
+fn query_threads_by_id(path: &Path, ids: &[String]) -> rusqlite::Result<OpenThreadAccount> {
     let account_home = CodexAccountHome::from_database(path)?;
     let connection = open_read_only(path)?;
     let mut statement = connection.prepare(CODEX_THREAD_BY_ID_QUERY)?;
+    // SQLite can create the WAL during query preparation. Record that revision
+    // before reading rows, so a later write still invalidates this answer.
+    let revision = ThreadDatabaseRevision::of_database(path);
     let mut threads = HashMap::new();
     for id in ids {
         let found = statement.query_row(params![id], |row| decode_thread(row, &account_home));
@@ -227,7 +215,11 @@ fn query_threads_by_id(
             Err(error) => return Err(error),
         }
     }
-    Ok(threads)
+    Ok(OpenThreadAccount {
+        revision,
+        requested: ids.iter().cloned().collect(),
+        rows: threads,
+    })
 }
 
 /// Decode the shared column order of every thread query.
@@ -278,6 +270,90 @@ fn versioned_database(codex_dir: &Path, prefix: &str) -> Option<PathBuf> {
         })
         .max_by_key(|(version, _)| *version)
         .map(|(_, path)| path)
+}
+
+/// App-server thread names retained while the account database files stay equal.
+#[derive(Debug, Default)]
+pub(super) struct OpenThreadRows {
+    homes:                     HashMap<PathBuf, OpenThreadAccount>,
+    #[cfg(test)]
+    pub(super) database_reads: usize,
+}
+
+#[derive(Debug)]
+struct OpenThreadAccount {
+    revision:  ThreadDatabaseRevision,
+    requested: HashSet<String>,
+    rows:      HashMap<String, CodexThread>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ThreadDatabaseRevision {
+    Missing,
+    Present {
+        path:     PathBuf,
+        database: FileRevision,
+        wal:      FileRevision,
+    },
+}
+
+impl ThreadDatabaseRevision {
+    fn read(codex_home: &Path) -> Self {
+        let Some(path) = state_database(codex_home) else {
+            return Self::Missing;
+        };
+        Self::of_database(&path)
+    }
+
+    fn of_database(path: &Path) -> Self {
+        let revision = |file: &Path| {
+            fs::metadata(file).map_or(FileRevision::Missing, |metadata| {
+                FileRevision::of(&metadata)
+            })
+        };
+        let wal = revision(&PathBuf::from(format!("{}-wal", path.display())));
+        Self::Present {
+            database: revision(path),
+            path: path.to_owned(),
+            wal,
+        }
+    }
+}
+
+impl OpenThreadRows {
+    /// A new requested id or a database revision refreshes the account answer.
+    pub(super) fn read(
+        &mut self,
+        codex_home: &Path,
+        ids: &[String],
+    ) -> &HashMap<String, CodexThread> {
+        let revision = ThreadDatabaseRevision::read(codex_home);
+        let requested: HashSet<_> = ids.iter().cloned().collect();
+        if self.homes.get(codex_home).is_none_or(|cached| {
+            cached.revision != revision || !requested.is_subset(&cached.requested)
+        }) {
+            #[cfg(test)]
+            {
+                self.database_reads += 1;
+            }
+            let answer = match &revision {
+                ThreadDatabaseRevision::Missing => None,
+                ThreadDatabaseRevision::Present { path, .. } => query_threads_by_id(path, ids).ok(),
+            }
+            .unwrap_or(OpenThreadAccount {
+                revision,
+                requested,
+                rows: HashMap::new(),
+            });
+            self.homes.insert(codex_home.to_owned(), answer);
+        }
+        &self.homes[codex_home].rows
+    }
+
+    pub(super) fn retain_homes<'h>(&mut self, homes: impl Iterator<Item = &'h PathBuf>) {
+        let live: HashSet<_> = homes.collect();
+        self.homes.retain(|codex_home, _| live.contains(codex_home));
+    }
 }
 
 /// The current database answer for a requested thread.
@@ -1227,8 +1303,8 @@ mod tests {
         let ids = ["0199-named", "0199-mesh", "0199-gone"].map(str::to_string);
 
         assert_eq!(
-            read_threads_by_id(directory.path(), &ids),
-            HashMap::from([
+            OpenThreadRows::default().read(directory.path(), &ids),
+            &HashMap::from([
                 (
                     "0199-named".to_string(),
                     thread(directory.path(), 1_500, Some("codex test"), ""),
@@ -1239,10 +1315,15 @@ mod tests {
                 ),
             ])
         );
-        assert!(read_threads_by_id(directory.path(), &[]).is_empty());
+        assert!(
+            OpenThreadRows::default()
+                .read(directory.path(), &[])
+                .is_empty()
+        );
 
         let changed = TempDir::new().expect("a temporary directory should open");
-        assert!(read_threads_by_id(changed.path(), &ids).is_empty());
+        let mut rows = OpenThreadRows::default();
+        assert!(rows.read(changed.path(), &ids).is_empty());
         Connection::open(changed.path().join("state_6.sqlite"))
             .expect("the fixture database should open")
             .execute(
@@ -1250,7 +1331,7 @@ mod tests {
                 [],
             )
             .expect("the fixture table should create");
-        assert!(read_threads_by_id(changed.path(), &ids).is_empty());
+        assert!(rows.read(changed.path(), &ids).is_empty());
     }
 
     /// A name wins over the first prompt; a prompt stands in for a

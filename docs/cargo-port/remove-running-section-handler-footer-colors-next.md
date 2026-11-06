@@ -25,4 +25,4 @@ Tests: one red-first test for each. The checkpoint adds a Change-Review line.
 
 **Source:** the showrunner, 2026-10-31, from Phase 57c: these are configuration values in code.
 
-`census/command_inputs.rs` holds `HIERARCHY_REFRESH_INTERVAL` (30 s), `HIERARCHY_TIMEOUT` (10 s) and the 300 s reuse window. Move all three to cargo-handler's config, next to `hierarchy_command`, with the current values as the defaults. The census reads them from the loaded config; no copy stays in code. Red-first tests under 1 s: each value from config reaches the census, and a missing entry gives the default. The checkpoint adds a Change-Review line only if a user can see the change.
+Move the accounts-command timeout and reuse window into typed `[census]` settings beside `accounts_command`. Keep defaults of 10 seconds and 300 seconds. Preserve immediate staff-file revision checks; add no hierarchy polling setting. Preserve the remote probe deadline when removing the shared timeout constant. Add red-first tests under one second for configured values and defaults. The checkpoint adds a Change-Review line only if users can see the change.
