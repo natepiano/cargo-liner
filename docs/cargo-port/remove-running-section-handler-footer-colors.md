@@ -1224,40 +1224,27 @@ An interactive Codex session that the user renamed shows its name in its tile an
 
 ### Phase 42 — A dispatch shell folds into its Codex worker row  · status: done
 
-**Depends on:** Phase 40
+#### As-built
 
-#### Work Order
-
-**Goal:** a dispatch shell (`implement.sh`, `codex_mesh.py follow` or `start`) never draws separately when its Codex worker row draws. The worker uses its staff name when one exists. The dispatch job remains the fallback name. The same rule applies to a Claude seat dispatch.
-
-**Source:** change reviews C86 and C87 back (showrunner, 2026-10-28 ≈20:00 EDT). User: "there is no point to seeing the thing that dispatched the codex work for me - there is always one". One new Change-Review line covers both. Unit session `phases/42/source.md`.
-
-**Constraints from prior phases:**
-- `census/scan.rs` belongs to Phase 47 until its checkpoint; keep Phase 47's CPU acceptance test green.
-- Live case on natedev (cables unit, claude2): the director's Bash call zsh 3399214 → `implement.sh` 3399229 → `codex_mesh.py follow` 3576715 draws a shell row "Dispatch the drag seat to run the Phase 54b tes…" beside its worker row "drag · Phase 33" (codex1). The follow process has no app-server child: that worker's app-server has systemd as its parent, because an earlier dispatch that has ended started it. A case that folds: zsh 2700456 → `implement.sh` 2700461 → `codex_mesh.py follow` 2949144 → `codex app-server` 1570363.
-- Scan time: `worker_dispatches` (`census/scan.rs` ≈840) parses each launcher (`ParsedDispatch`, `census/worker_dispatch/mod.rs` ≈874), takes the seat from a `codex_mesh.py` process below it (`MESH_SEAT_FLAGS`, `process_is_below`), and resolves it through `mesh_roster.json` (`ParsedDispatch::resolve` ≈1117: `--to` seat, else the entry whose `launcher_pid` is the dispatch's pid) into `WorkerDispatch::Worker(ResolvedWorkerDispatch)` with `identity: WorkerIdentity::CodexThread(thread id)`.
-- Draw time: `AgentPlacement::resolve_dispatches` (`census/placement.rs` ≈265) collects the children of each final tile; a `CodexThreadHost` row's child joins only when the hierarchy moved it (`moved`), else it is skipped. `tree::join_dispatches` (`census/tree.rs` ≈344) folds a shell only into a `ChildKind::Thread` row in the same tile whose `CodexThreadId::Recorded` equals the dispatch identity. `folds_dispatch` (≈307) hides the shell; `dispatch_label` (≈328) gives the worker row the job. Claude seats fold through `ClaudeDispatchFold` and `fold_claude_dispatches` (`scan.rs` ≈929).
-- `census/scan.rs` is in Phase 40's **Files** and its working tree; this phase starts after Phase 40's checkpoint.
-- Keep `pending_dispatch_to_a_different_seat_keeps_its_wrapper_visible` and `unresolved_and_cross_tile_dispatches_keep_their_shell_rows` (`worker_dispatch/tests.rs`) unless the fixture capture shows the cables case is one of them; then name the changed rule in the summary.
-
-**Spec:**
-1. Capture the live process table, `mesh_roster.json` and the configured schema-2 staff file for a follow dispatch. Select a worker whose app-server that dispatch did not start. Build a fixture from those inputs. Name the failing fold stage in the summary: seat resolution, worker placement, or the join. Do not run `production_tree.py`.
-2. Pair by the dispatch's own identity (its `--to` seat or roster entry in its `--session-dir`, and the thread that seat records), not by process descent. The pairing is a type, for example `DispatchPairing { shell, worker, dispatch }` built once at placement, that the draw reads; no name filter in the draw. A shell whose worker row draws in its final tile folds into it wherever that worker's app-server sits in the process tree.
-3. Claude seats (C87) use the same pairing: a seat dispatch folds into the seat's session row by the seat identity.
-4. Add red-first tests in `census/worker_dispatch/tests.rs` for the captured follow dispatch, with its app-server under pid 1. Place the worker through its staff edge. Draw one worker row and no dispatch shell row. Assert the staff name when one exists, and the dispatch job otherwise. Keep the existing fold, pending and cross-tile tests. Add the same case for a Claude seat. Each test takes less than one second.
-5. CHANGELOG: one line under Fixed.
+- A dispatch shell never draws beside its worker. `DispatchPairing` in `census/placement.rs`, built once at placement, pairs the shell and the worker by seat identity, wherever the worker's app-server sits in the process tree. `DispatchPairing::join` replaces the old fold, and `DispatchFold` and `join_dispatches` do not exist.
+- A Claude seat uses the same pairing. Its shell descendants draw under the seat row.
+- A pending dispatch to another seat, an unresolved dispatch and a cross-tile dispatch keep their shell rows.
+- `census/worker_dispatch/options.rs` parses launcher flags by `DispatchFlagArity` and stops at the first positional argument, so a job text that looks like a flag cannot change the seat.
+- `DispatchDirectory::{Recorded, FromChild}` lets a current assign launcher take its session directory from its live mesh child. The live child's seat overrides the launcher's seat.
 
 **Files:**
 - `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/tree.rs` — the typed pairing and the join
-- `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — seat identity at scan time, Claude seat fold
-- `crates/cargo-handler/src/census/worker_dispatch/tests.rs`, `crates/cargo-handler/src/census/fixtures/` — the captured fixture and tests
+- `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — seat identity at scan time
+- `crates/cargo-handler/src/census/worker_dispatch/options.rs` — launcher option parsing
+- `crates/cargo-handler/src/constants.rs` — launcher flags and assign paths
+- `crates/cargo-handler/src/agent_cell.rs` — paired worker rows and Claude shell descendants
+- `crates/cargo-handler/src/census/worker_dispatch/tests.rs`, `crates/cargo-handler/src/census/fixtures/dispatch_pairing.json` — captured dispatch and pairing tests
+- `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs`, `crates/cargo-handler/src/census/scan/activity_scan_tests.rs`, `crates/cargo-handler/src/census/hierarchy_file_tests.rs` — tests on the new pairing
 - `crates/cargo-handler/CHANGELOG.md`
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — the capture, the pairing type, scan and placement changes and the CHANGELOG; hub: `crates/cargo-handler/src/census/placement.rs`.
-- `test` — opens as impl: the census has no `tests/` lane; it writes the fixture and the tests in `worker_dispatch/tests.rs` from the capture.
+**Binds later work:** "Worker roles come from the staff file" moves `DispatchPairing` to staff-only identities and keeps its behavior.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of a director tile during a `follow` dispatch to a worker whose app-server an earlier dispatch started shows only the worker row with its job. The checkpoint adds one Change-Review line for C86 and C87.
+**Gotchas:** a future unknown flag whose value is an absolute path can read as the review directory. The result is a visible shell row.
 
 ### Phase 43 — Ages read d:hh:mm, right-aligned  · status: done
 
@@ -1886,7 +1873,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Spec:**
 1. Read the announced 3n worker role through the existing schema-2 `StaffFileReader`. Extend `StaffFields`, `StaffRoster` and the shared `StaffSnapshot`; add no second reader. Reuse the checked staff ID, current session and parent session that the staff reader retains. Derive the unit from that validated parent identity. Replace `HierarchyEdges::with_worker_roles` with the staff role result. Use named results for unavailable membership, a root member and a managed member when extending the identity lookups. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
-2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
+2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing in `census/worker_dispatch/options.rs` and `DispatchDirectory::{Recorded, FromChild}`. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
 3. Remove the `role_map_cache.json` read in `census/command_inputs.rs`.
 4. Keep `mesh_runs` and `WorkerReference::{Staff, LegacyThread}` semantics. Resolve staff IDs again when the staff snapshot changes, even when run files do not change. Preserve live-supervisor record-path checks, finite start times and discovered run directories. A recognized command supplies only the step name; every other live run shows `waiting`. Keep one row per current thread, waiting or gate-step activity, independent director activity and completion removal. Keep legacy `director` fallback where legacy identity still needs it. A script name inside `bash -c` gives no step name.
 5. Tests under 1 s: staff role and unit; a worker without a role; unavailable membership; no roster file on disk. Migrate the detached-run fixtures to staff-only membership. Keep their assertions for no launcher or open thread, staff handoff, a restarted director, one worker row, verification activity and completion removal.
