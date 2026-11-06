@@ -30,6 +30,7 @@ use super::git_data::WorktreeInfo;
 use super::package;
 use super::package_data;
 use super::package_data::PackageData;
+use super::package_data::PackageDeletion;
 use super::package_data::PackagePresence;
 use super::package_data::PackageSection;
 use super::package_data::PackageVersion;
@@ -301,6 +302,11 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
 
     DetailPaneData {
         package: PackageData {
+            deletion:                 if app.project_list.is_deleted(abs_path) {
+                PackageDeletion::Deleted
+            } else {
+                PackageDeletion::Present
+            },
             title:                    "Submodule".to_string(),
             name:                     submodule.name.clone(),
             worktree_group_summary:   None,
@@ -596,6 +602,7 @@ pub(super) fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
         description,
     } = args.manifest;
     PackageData {
+        deletion: PackageDeletion::Present,
         title: args.title,
         name: args.name,
         worktree_group_summary: args.worktree_group_summary,
@@ -693,7 +700,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let (lint_display, ci_display) =
         compute_package_displays(app, &abs_path_owned, runtime.ci, &src.title);
 
-    let package = build_package_data(BuildPackageDataArgs {
+    let mut package = build_package_data(BuildPackageDataArgs {
         title: src.title,
         name: src.name,
         display_path: src.display_path.to_owned(),
@@ -712,6 +719,11 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         lint_display,
         ci_display,
     });
+
+    if app.project_list.is_deleted(abs_path) {
+        package.deletion = PackageDeletion::Deleted;
+        package.disk = Some(0);
+    }
 
     let targets = targets::lookup_targets_data(app, &abs_path_owned, src.worktree_item);
     assemble_detail_pane_data(package, runtime.git_detail, runtime.worktrees, targets)
@@ -838,13 +850,13 @@ pub(super) fn collect_metadata_fields(
 pub(super) fn build_crates_io_rows(section: &CratesIoSection) -> Vec<(&'static str, String)> {
     match section {
         CratesIoSection::NotPublishable | CratesIoSection::AwaitingRelease => Vec::new(),
-        CratesIoSection::Unreachable => vec![("version", CRATES_IO_UNREACHABLE.to_string())],
+        CratesIoSection::Unreachable => vec![("Version", CRATES_IO_UNREACHABLE.to_string())],
         CratesIoSection::Released(release) => {
-            let mut rows = vec![("version", release.version.clone())];
+            let mut rows = vec![("Version", release.version.clone())];
             if let Some(prerelease) = &release.prerelease {
                 rows.push((prerelease_label(prerelease), prerelease.clone()));
             }
-            rows.push(("downloads", tui_pane::format_number(release.downloads)));
+            rows.push(("Downloads", tui_pane::format_number(release.downloads)));
             rows
         },
     }
@@ -944,9 +956,9 @@ mod tests {
         assert_eq!(
             build_crates_io_rows(&section),
             vec![
-                ("version", "0.20.2".to_string()),
+                ("Version", "0.20.2".to_string()),
                 ("rc", "0.21.0-rc.2".to_string()),
-                ("downloads", "663".to_string()),
+                ("Downloads", "663".to_string()),
             ],
         );
     }
@@ -957,8 +969,8 @@ mod tests {
         assert_eq!(
             build_crates_io_rows(&section),
             vec![
-                ("version", "1.0.0".to_string()),
-                ("downloads", "10".to_string())
+                ("Version", "1.0.0".to_string()),
+                ("Downloads", "10".to_string())
             ],
         );
     }
@@ -987,7 +999,7 @@ mod tests {
         }
         assert_eq!(
             build_crates_io_rows(&CratesIoSection::Unreachable),
-            vec![("version", CRATES_IO_UNREACHABLE.to_string())]
+            vec![("Version", CRATES_IO_UNREACHABLE.to_string())]
         );
     }
 
@@ -1012,8 +1024,8 @@ mod tests {
             assert_eq!(
                 build_crates_io_rows(&section),
                 vec![
-                    ("version", "1.0.0".to_string()),
-                    ("downloads", "10".to_string())
+                    ("Version", "1.0.0".to_string()),
+                    ("Downloads", "10".to_string())
                 ]
             );
         }

@@ -349,6 +349,30 @@ impl<'source> SourceEndpoint<'source> {
 }
 
 impl LexicalRegions {
+    /// Count lines with non-whitespace content outside comments in the supplied source range.
+    pub(crate) fn code_lines(&self, range: Range<usize>) -> usize {
+        let mut offset = range.start;
+        self.source[range]
+            .split_inclusive('\n')
+            .filter(|line| {
+                let start = offset;
+                offset += line.len();
+                line.char_indices().any(|(column, character)| {
+                    if character.is_whitespace() {
+                        return false;
+                    }
+                    let byte = start + column;
+                    let index = self
+                        .regions
+                        .partition_point(|region| region.bytes.end <= byte);
+                    !self.regions.get(index).is_some_and(|region| {
+                        region.bytes.start <= byte && region.kind == LexicalRegionKind::Comment
+                    })
+                })
+            })
+            .count()
+    }
+
     pub(crate) fn source(&self) -> &str { &self.source }
 
     /// Reject out-of-source offsets and bytes inside a UTF-8 character once, at entry.

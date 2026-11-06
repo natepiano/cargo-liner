@@ -63,12 +63,10 @@ impl App {
             "scan_result_applied"
         );
 
-        // Merge retained deletion states before restoring expansion identities.
+        // Install scanned roots before restoring expansion identities.
         let selected_path = self.project_list.paths.last_selected.clone();
-        let inline_dirs = self.config.current().tui.inline_dirs.clone();
         self.mutate_tree().projects.replace_roots_from(
             ProjectList::new(projects),
-            &inline_dirs,
             ReplacementExpansion::RestoreSavedTargets,
         );
         self.prune_inactive_project_state();

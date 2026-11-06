@@ -1,4 +1,6 @@
 mod pane;
+#[cfg(test)]
+mod readability_tests;
 mod render;
 #[cfg(test)]
 mod value_fit_tests;

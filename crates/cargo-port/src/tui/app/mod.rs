@@ -1308,6 +1308,14 @@ impl App {
     /// app state. Reads Selection (cursor → project), Scan (project
     /// data), Panes (pane content), Inflight (example output).
     pub(super) fn is_pane_tabbable(&self, pane: PaneId) -> bool {
+        if pane != PaneId::Toasts
+            && matches!(
+                panes::PaneVisibility::in_layout(&self.panes.tiled_layout, pane),
+                panes::PaneVisibility::Hidden
+            )
+        {
+            return false;
+        }
         match panes::behavior(pane) {
             PaneBehavior::ProjectList | PaneBehavior::Cpu => true,
             PaneBehavior::DetailFields => match pane {
@@ -2797,6 +2805,7 @@ mod tests {
         use crate::tui::panes::LintsData;
         use crate::tui::panes::LintsProjectKind;
         use crate::tui::panes::PackageData;
+        use crate::tui::panes::PackageDeletion;
         use crate::tui::panes::PackagePresence;
         use crate::tui::panes::PackageVersion;
         use crate::tui::panes::PaneId;
@@ -2983,6 +2992,7 @@ mod tests {
 
         fn package_data_no_version() -> PackageData {
             PackageData {
+                deletion:                 PackageDeletion::Present,
                 title:                    "Package".to_string(),
                 name:                     "demo".to_string(),
                 worktree_group_summary:   None,
@@ -5884,7 +5894,6 @@ mod tests {
                         Some(primary.as_path()),
                     ))],
                 ))]),
-                &[],
                 ReplacementExpansion::KeepValidKeys,
             );
             render_ui(&mut app);
@@ -6625,10 +6634,15 @@ mod tests {
                     .expect("project row");
                 let mut header = Buffer::empty(Rect::new(0, 0, buffer.area.width, 1));
                 crate::tui::columns::header_line(&widths, "Name").render(header.area, &mut header);
-                for label in ["Og", "Mn"] {
+                for label in ["Sync", "Main"] {
                     let (x, _) =
                         crate::tui::test_support::find_text_cell(&header, header.area, label)
                             .expect("sync column header");
+                    let x = x + u16::try_from(
+                        crate::tui::columns::display_width(label)
+                            - crate::tui::columns::display_width(GIT_STATUS_UNREADABLE),
+                    )
+                    .expect("sync column offset");
                     assert_eq!(
                         buffer[(x, y)].symbol(),
                         GIT_STATUS_UNREADABLE,
@@ -7125,8 +7139,13 @@ mod tests {
                 let y = app.panes.project_list.body_rect.y;
                 let (x, _) = find_text_cell_in_row(&buffer, y, "a !")
                     .expect("visible name and error marker in fitted pane");
-                assert_eq!(buffer[(x, y)].fg, tui_pane::error_color());
-                assert_eq!(buffer[(x + 2, y)].fg, tui_pane::error_color());
+                assert_eq!(
+                    buffer[(x, y)].fg,
+                    crate::tui::theme_roles::selection_style(tui_pane::PaneSelectionState::Active,)
+                        .fg
+                        .expect("selected text colour")
+                );
+                assert_eq!(buffer[(x + 2, y)].fg, buffer[(x, y)].fg);
                 let table_start = app.panes.project_list.body_rect.x;
                 let name_end = table_start
                     + u16::try_from(app.project_list.cached_fit_widths.get(COL_NAME))
@@ -7134,7 +7153,7 @@ mod tests {
                 assert!(x + 3 < name_end, "fit reserves marker and gutter");
                 let expected_header = crate::tui::columns::header_line(
                     &app.project_list.cached_fit_widths,
-                    "  Projects",
+                    "   Projects",
                 );
                 let expected_area = Rect::new(0, 0, 320, 1);
                 let mut expected = Buffer::empty(expected_area);
@@ -7900,7 +7919,7 @@ mod tests {
                 "detail pane must surface the target/ breakdown label"
             );
             assert!(
-                rendered.contains("other"),
+                rendered.contains("Other"),
                 "detail pane must surface the non-target (other) breakdown label"
             );
             assert!(
@@ -9031,7 +9050,7 @@ mod tests {
                     ("vendored", 2),
                     ("submodules", 2),
                     ("lib", 1),
-                    ("bin", 1),
+                    ("binary", 1),
                     ("example", 1),
                     ("bench", 1),
                 ]
@@ -9065,7 +9084,7 @@ mod tests {
                 .package
                 .content()
                 .expect("pane should have rendered test content");
-            assert_eq!(package.stats_rows, vec![("vendored", 2), ("bin", 1)]);
+            assert_eq!(package.stats_rows, vec![("vendored", 2), ("binary", 1)]);
         }
 
         /// Upsert minimal `WorkspaceMetadata` into `app`'s metadata store
@@ -9612,11 +9631,15 @@ mod tests {
             let crossed_out_non_suffix = line
                 .spans
                 .iter()
-                .filter(|span| span.content.as_ref() != " [x]")
+                .filter(|span| {
+                    span.content.as_ref() != " [x]"
+                        && !span.content.trim().is_empty()
+                        && span.content.trim() != "🦀"
+                })
                 .all(|span| span.style.add_modifier.contains(Modifier::CROSSED_OUT));
             assert!(
                 crossed_out_non_suffix,
-                "deleted row content should be crossed out"
+                "deleted row text should be crossed out"
             );
         }
 
@@ -10862,7 +10885,8 @@ mod tests {
             assert_eq!(
                 widths.get(COL_NAME),
                 crate::tui::panes::name_width_with_gutter(
-                    root_width.max(primary_entry_width).max(linked_entry_width)
+                    panes::PROJECT_LIST_LEFT_PADDING
+                        + root_width.max(primary_entry_width).max(linked_entry_width)
                 ),
                 "fit widths should use rendered worktree labels, not the absolute primary worktree path"
             );
@@ -10931,7 +10955,9 @@ mod tests {
 
             assert_eq!(
                 widths.get(COL_NAME),
-                crate::tui::panes::name_width_with_gutter(root_width.max(primary_entry_width)),
+                crate::tui::panes::name_width_with_gutter(
+                    panes::PROJECT_LIST_LEFT_PADDING + root_width.max(primary_entry_width),
+                ),
                 "fit widths should include the rendered primary marker"
             );
         }
@@ -11146,7 +11172,7 @@ mod tests {
             app.project_list.recompute_visibility(true);
             let rendered = rendered_root_name_cells(&mut app);
             assert!(
-                rendered.iter().any(|line| line.starts_with("└─▶ member")),
+                rendered.iter().any(|line| line.starts_with(" └─▶ member")),
                 "member with hidden vendored children should render a collapsed marker: {rendered:?}"
             );
             assert!(
@@ -11160,13 +11186,13 @@ mod tests {
             app.project_list.recompute_visibility(true);
             let rendered = rendered_root_name_cells(&mut app);
             assert!(
-                rendered.iter().any(|line| line.starts_with("└─▼ member")),
+                rendered.iter().any(|line| line.starts_with(" └─▼ member")),
                 "expanded member should render an expanded marker: {rendered:?}"
             );
             assert!(
                 rendered
                     .iter()
-                    .any(|line| line.starts_with("  └── helper (v)")),
+                    .any(|line| line.starts_with("   └── helper (v)")),
                 "vendored child should render two spaces deeper with an extended row marker: {rendered:?}"
             );
         }
@@ -11201,25 +11227,25 @@ mod tests {
             assert!(
                 rendered
                     .iter()
-                    .any(|line| line.starts_with("├─▼ fake_widgets")),
+                    .any(|line| line.starts_with(" ├─▼ fake_widgets")),
                 "expanded member should render as a non-final branch: {rendered:?}"
             );
             assert!(
                 rendered
                     .iter()
-                    .any(|line| line.starts_with("│ └── clay-layout (v)")),
+                    .any(|line| line.starts_with(" │ └── clay-layout (v)")),
                 "vendored child should carry the ancestor continuation: {rendered:?}"
             );
             assert!(
                 rendered
                     .iter()
-                    .any(|line| line.starts_with("├── bevy_lagrange")),
+                    .any(|line| line.starts_with(" ├── bevy_lagrange")),
                 "middle member should extend the branch through the sibling marker slot: {rendered:?}"
             );
             assert!(
                 rendered
                     .iter()
-                    .any(|line| line.starts_with("└── fairy_dust")),
+                    .any(|line| line.starts_with(" └── fairy_dust")),
                 "final member should extend the branch through the sibling marker slot: {rendered:?}"
             );
         }

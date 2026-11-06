@@ -81,6 +81,8 @@ pub(super) use pane_data::HEAD_UNREADABLE_LABEL;
 pub(super) use pane_data::HeadRelation;
 pub(super) use pane_data::PackageData;
 #[cfg(test)]
+pub(super) use pane_data::PackageDeletion;
+#[cfg(test)]
 pub(super) use pane_data::PackagePresence;
 pub(super) use pane_data::PackageRow;
 #[cfg(test)]
@@ -244,6 +246,10 @@ pub(super) fn navigate_package_detail(app: &mut App, nav_action: NavAction) {
 
 pub(super) fn request_clean(app: &mut App) { actions::request_clean(app); }
 
+#[cfg(test)]
+pub(super) use constants::PROJECT_LIST_LEFT_PADDING;
+pub(super) use constants::PROJECT_LIST_RIGHT_PADDING;
+pub(super) use layout::PaneVisibility;
 #[cfg(test)]
 pub(super) use pane_data::GitProbe;
 pub(super) use pane_data::GitReadHealth;

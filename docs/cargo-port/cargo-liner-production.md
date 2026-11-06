@@ -50,3 +50,12 @@
 - **The merge branch is `main`** (showrunner, 2026-10-06). Its units touch separate crates, so a separate merge branch would only add a promotion step. <PromoteMain/> does not apply. Each merge goes to main through `validate_and_push.sh --quick --to main`, and CI points through `validate_and_push.sh --to main`.
 - **No UX guide.** cargo-port names none, so the design check is skipped. The unit's smoke run proves the Targets pane shows only its table, filling the pane.
 - **Branch and session names** are the user's (2026-10-06): session `cargo-port-cleanup`, worktree `../cargo-port-cleanup`, branch `cleanup/running`.
+
+## Returned changes
+
+Changes the user sent back from change review. Each row stays until its fix merges and the user lands the new change. The showrunner checks this list when a unit resumes and at each merge from that unit.
+
+| Change | What the user said | Unit | Fix phase (plan commit) | State |
+| --- | --- | --- | --- | --- |
+| C201 — a waiting Codex worker shows in its unit's tree | screenshot 20:44 EST 2026-11-05: herdr workers with live detached runs showed `idle`; "yes send it back" | handler | Phase 62h in `remove-running-section-handler-footer-colors.md` (d7771e0c3) | todo; runs first when handler resumes |
+| C205 + C207 — project-list columns drop before names truncate | "i don't see columns for Type, Git, SYnc, Main - you're getting rid of columns before you make project names have an ellipipsis - columns should always be preserved - the project names should get ellipsis first"; C207: "i provided feedback about this - the choices in the project list aren't acceptable"; screenshot 2026-11-06: only Projects and Disk at about 95 columns | port | Phase 4c Spec 24 in `cargo-liner-port.md` (48db7e7be) | todo; in port's running 4c |

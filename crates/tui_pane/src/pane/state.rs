@@ -1,3 +1,5 @@
+use crossterm::style::Colored;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 
 use crate::Viewport;
@@ -109,8 +111,22 @@ pub const fn selection_state_for(
 #[must_use]
 pub fn selection_style(focus: PaneFocusState) -> Style {
     match focus {
-        PaneFocusState::Active => Style::default().bg(active_focus_color()),
-        PaneFocusState::Remembered => Style::default().bg(remembered_focus_color()),
+        PaneFocusState::Active => {
+            let style = Style::default().bg(active_focus_color());
+            if Colored::ansi_color_disabled_memoized() {
+                style.add_modifier(Modifier::REVERSED)
+            } else {
+                style
+            }
+        },
+        PaneFocusState::Remembered => {
+            let style = Style::default().bg(remembered_focus_color());
+            if Colored::ansi_color_disabled_memoized() {
+                style.add_modifier(Modifier::BOLD)
+            } else {
+                style
+            }
+        },
         PaneFocusState::Inactive => Style::default(),
     }
 }

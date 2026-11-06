@@ -55,6 +55,7 @@ use crate::tui::panes::constants::TESTS_IGNORED_LABEL;
 use crate::tui::panes::constants::TESTS_TITLE;
 use crate::tui::panes::constants::TESTS_TOTAL_LABEL;
 use crate::tui::panes::pane_data::CRATES_IO_UNREACHABLE;
+use crate::tui::panes::pane_data::PackageDeletion;
 use crate::tui::panes::pane_data::PackageSection;
 use crate::tui::panes::support;
 use crate::tui::render;
@@ -62,6 +63,7 @@ use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state;
 use crate::tui::state::CiDisplay;
 use crate::tui::state::LintDisplay;
+use crate::tui::theme_roles;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LintRenderMode {
@@ -488,8 +490,12 @@ fn package_field_render(
         label: field.label(),
         label_width,
         area_width: usize::from(area_width),
-        label_style: selection.patch(ctx.styles.readonly_label),
-        value_style: selection.patch(package_field_value_style(ctx, field)),
+        label_style: ctx
+            .styles
+            .readonly_label
+            .patch(theme_roles::selection_style(selection)),
+        value_style: package_field_value_style(ctx, field)
+            .patch(theme_roles::selection_style(selection)),
         value: package_field_value(ctx, field),
     }
 }
@@ -530,12 +536,27 @@ fn package_field_wrap(field: DetailField) -> Option<FieldWrapFn> {
 }
 
 fn push_package_field_lines(lines: &mut Vec<Line<'static>>, render: PackageFieldRender) {
+    let start = lines.len();
+    let mut render = render;
+    let style = render.label_style;
+    if render.label.width() > package_field_label_width(&render)
+        && render.label.width() < render.area_width
+    {
+        lines.push(Line::from(Span::styled(
+            format!(" {}", render.label),
+            render.label_style,
+        )));
+        render.label = "";
+    }
     if let Some(wrap) = package_field_wrap(render.field)
         && !render.value.is_empty()
     {
         push_wrapped_package_field_lines(lines, render, wrap);
     } else {
         push_single_package_field_line(lines, render);
+    }
+    for line in &mut lines[start..] {
+        line.style = line.style.patch(style);
     }
 }
 
@@ -568,16 +589,29 @@ fn push_wrapped_package_field_lines(
 }
 
 fn push_single_package_field_line(lines: &mut Vec<Line<'static>>, render: PackageFieldRender) {
+    let prefix = package_field_prefix(&render);
+    let available = render.area_width.saturating_sub(prefix.width());
+    let value = if render.value.width() <= available {
+        render.value
+    } else {
+        render::truncate_with_ellipsis(&render.value, available, "…")
+    };
     lines.push(Line::from(vec![
-        Span::styled(package_field_prefix(&render), render.label_style),
-        Span::styled(render.value, render.value_style),
+        Span::styled(prefix, render.label_style),
+        Span::styled(value, render.value_style),
     ]));
 }
 
 fn package_field_prefix(render: &PackageFieldRender) -> String {
     let label = render.label;
-    let label_width = render.label_width;
-    format!(" {label:<label_width$} ")
+    let label_width = package_field_label_width(render);
+    let label = render::truncate_with_ellipsis(label, label_width, "…");
+    let padding = " ".repeat(label_width.saturating_sub(label.width()));
+    format!(" {label}{padding} ")
+}
+
+fn package_field_label_width(render: &PackageFieldRender) -> usize {
+    render.label_width.min(render.area_width.saturating_sub(3))
 }
 
 fn visible_row_rects(
@@ -694,12 +728,7 @@ pub(super) fn render_package_pane_body(
 
     let rows = panes::package_rows_from_data(&pkg_data);
     sync_package_viewport(pane, &pkg_data, &rows, *synced_description_height);
-    let title = format!(" {} - {} ", pkg_data.title, pkg_data.name);
-    let mut chrome = PaneFrameChrome {
-        title,
-        focused: matches!(pane_focus_state, PaneFocusState::Active),
-        ..PaneFrameChrome::default()
-    };
+    let mut chrome = package_chrome(&pkg_data, pane_focus_state);
     let pane_inner = tui_pane::frame_inner(area);
     let metadata_state = ctx
         .selected_project_path
@@ -782,6 +811,7 @@ pub(super) fn render_package_pane_body(
     if description_height > 0 {
         row_rects.push((placed[DESCRIPTION_BOX].content, 0));
     }
+    paint_package_selection(frame, pane_inner, pane, &row_rects);
     pane.set_row_rects(row_rects);
     chrome.labels.extend(tui_pane::overflow_affordance_label(
         area,
@@ -789,6 +819,38 @@ pub(super) fn render_package_pane_body(
         Style::default().fg(label_color()),
     ));
     chrome
+}
+
+fn paint_package_selection(
+    frame: &mut Frame,
+    pane_inner: Rect,
+    pane: &PackagePane,
+    row_rects: &[(Rect, usize)],
+) {
+    for (rect, row) in row_rects {
+        theme_roles::paint_selection(
+            frame,
+            Rect {
+                x: pane_inner.x,
+                width: pane_inner.width,
+                ..*rect
+            },
+            tui_pane::selection_state(&pane.viewport, *row, pane.focus.pane_focus_state),
+        );
+    }
+}
+
+fn package_chrome(data: &PackageData, focus: PaneFocusState) -> PaneFrameChrome {
+    let deletion = if data.deletion == PackageDeletion::Deleted {
+        " (deleted)"
+    } else {
+        ""
+    };
+    PaneFrameChrome {
+        title: format!(" {} - {}{deletion} ", data.title, data.name),
+        focused: matches!(focus, PaneFocusState::Active),
+        ..PaneFrameChrome::default()
+    }
 }
 
 /// Render the "No project selected" placeholder, clear the pane's
@@ -1112,7 +1174,7 @@ fn crates_io_value_style(label: &str, value: &str) -> Style {
         return Style::default().fg(warning_color());
     }
     match label {
-        "version" | "downloads" => Style::default().fg(text_default()),
+        "Version" | "Downloads" => Style::default().fg(text_default()),
         _ => Style::default().fg(secondary_text_color()),
     }
 }
@@ -1188,6 +1250,7 @@ fn render_stat_section(
                     selection.patch(value_style(label, value)),
                 ),
             ])
+            .style(theme_roles::selection_style(selection))
         })
         .collect();
     let section_area = Rect {
@@ -1228,8 +1291,8 @@ fn lint_display_to_string(
     lint_mode: LintRenderMode,
 ) -> String {
     match display {
-        LintDisplay::NotRust => "No lint runs — not a Rust project".to_string(),
-        LintDisplay::NoRuns => "No lint runs".to_string(),
+        LintDisplay::NotRust => "Not a Rust project".to_string(),
+        LintDisplay::NoRuns => "—".to_string(),
         LintDisplay::Runs { count, status } => {
             let icon = if lint_mode.is_enabled() {
                 integration::lint_icon_for(status.kind()).frame_at(animation_elapsed)
@@ -1474,12 +1537,14 @@ mod moved_facade_tests {
     use crate::tui::panes::PackageVersion;
     use crate::tui::panes::pane_data;
     use crate::tui::panes::pane_data::PackageData;
+    use crate::tui::panes::pane_data::PackageDeletion;
     use crate::tui::panes::pane_data::PackagePresence;
     use crate::tui::state::CiDisplay;
     use crate::tui::state::LintDisplay;
 
     fn package_data(is_rust_project: bool) -> PackageData {
         PackageData {
+            deletion:                 PackageDeletion::Present,
             title:                    if is_rust_project {
                 "Package".to_string()
             } else {

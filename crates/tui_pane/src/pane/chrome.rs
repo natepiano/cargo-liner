@@ -1,9 +1,11 @@
+use crossterm::style::Colored;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::widgets::Block;
+use ratatui::widgets::BorderType;
 use ratatui::widgets::Borders;
 
 use super::constants::PANE_TINT_ALPHA_WHOLE;
@@ -61,7 +63,12 @@ impl PaneChrome {
             .borders(Borders::ALL)
             .title(title)
             .title_style(self.title_style(focused))
-            .border_style(self.border_style(focused));
+            .border_style(self.border_style(focused))
+            .border_type(if focused && Colored::ansi_color_disabled_memoized() {
+                BorderType::Thick
+            } else {
+                BorderType::Plain
+            });
         if let Some(fill) = pane_fill(focused) {
             block.style(fill)
         } else {
@@ -113,7 +120,13 @@ impl PaneChrome {
 #[must_use]
 pub fn default_pane_chrome() -> PaneChrome {
     PaneChrome {
-        active_border:   Style::default().fg(active_border_color()),
+        active_border:   if Colored::ansi_color_disabled_memoized() {
+            Style::default()
+                .fg(active_border_color())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(active_border_color())
+        },
         inactive_border: Style::default().fg(inactive_border_color()),
         active_title:    Style::default()
             .fg(title_color())

@@ -1,5 +1,6 @@
 #[cfg(test)]
-#[path = "render/status_bar_contrast_tests.rs"]
+mod readability_tests;
+#[cfg(test)]
 mod status_bar_contrast_tests;
 
 use std::collections::HashSet;
@@ -197,17 +198,49 @@ fn resolve_tiled_layout(
     )
 }
 
-pub(super) fn ui(frame: &mut Frame, app: &mut App) {
-    sync_hovered_pane_row(app);
-    app.panes.tiled_layout = ResolvedPaneLayout::default();
+fn clear_pane_surfaces(app: &mut App) {
     app.panes.project_list.body_rect = Rect::ZERO;
-    // `OutputPaneVisibility` selects diagnostics or Output, never both. Reset
-    // `app.lint.viewport`, `app.ci.viewport` and `app.panes.output.viewport` content
-    // areas to `Rect::ZERO` because hidden panes do not render and must not retain
-    // clickable rectangles from the last frame.
+    // Hidden panes must not keep mouse areas from the previous frame.
     app.lint.viewport.set_content_area(Rect::ZERO);
     app.ci.viewport.set_content_area(Rect::ZERO);
     app.panes.output.viewport.set_content_area(Rect::ZERO);
+    app.panes.package.viewport.set_content_area(Rect::ZERO);
+    app.panes.package.clear_row_rects();
+    app.panes.git.viewport.set_content_area(Rect::ZERO);
+    app.panes.git.clear_row_layout();
+    app.panes.lang.viewport.set_content_area(Rect::ZERO);
+    app.panes.cpu.viewport.set_content_area(Rect::ZERO);
+    app.panes.cpu.clear_row_rects();
+    app.panes.targets.viewport.set_content_area(Rect::ZERO);
+    app.panes.targets.clear_row_rects();
+}
+
+fn move_focus_from_hidden_pane(app: &mut App, bottom_row: panes::BottomRow) {
+    let focused = app.focused_pane_id();
+    if panes::tab_order(bottom_row).contains(&focused)
+        && matches!(
+            panes::PaneVisibility::in_layout(&app.panes.tiled_layout, focused),
+            panes::PaneVisibility::Hidden
+        )
+    {
+        let order = panes::tab_order(bottom_row);
+        let start = order.iter().position(|pane| *pane == focused).unwrap_or(0);
+        if let Some(next) = order
+            .iter()
+            .cycle()
+            .skip(start + 1)
+            .take(order.len())
+            .copied()
+            .find(|pane| app.is_pane_tabbable(*pane))
+        {
+            app.set_focus_to_pane(next);
+        }
+    }
+}
+
+pub(super) fn ui(frame: &mut Frame, app: &mut App) {
+    sync_hovered_pane_row(app);
+    clear_pane_surfaces(app);
     app.prune_toasts();
 
     // `app.themes.frame_background()` supplies a background only when active-theme
@@ -228,9 +261,12 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     // `left_width` combines `cached_fit_widths.total_width()` with `BLOCK_BORDER_WIDTH`
     // for the project column's left border and right gutter. The neighboring pane
     // supplies the right border in the grid pass, so it is not charged again.
-    let left_width =
-        u16::try_from(app.project_list.cached_fit_widths.total_width() + BLOCK_BORDER_WIDTH)
-            .unwrap_or(u16::MAX);
+    let left_width = u16::try_from(
+        app.project_list.cached_fit_widths.total_width()
+            + BLOCK_BORDER_WIDTH
+            + panes::PROJECT_LIST_RIGHT_PADDING,
+    )
+    .unwrap_or(u16::MAX);
 
     let bottom_row = match app.output_pane_visibility() {
         OutputPaneVisibility::Hidden => panes::BottomRow::Diagnostics,
@@ -238,6 +274,8 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     };
     let tiled = resolve_tiled_layout(app, outer_layout[0], left_width, bottom_row);
 
+    app.panes.tiled_layout = tiled;
+    move_focus_from_hidden_pane(app, bottom_row);
     // Call `app.reconcile_bottom_row_focus()` before `sync_pane_focus` so the
     // status bar reflects a visible bottom-row pane.
     app.reconcile_bottom_row_focus();
@@ -265,7 +303,8 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     // shared height — the same block is rebuilt by each pane's render
     // path with the same inputs, so the sync floor matches what each
     // pane actually draws (the structural enforcement).
-    let synced_description_height = sync_description_floor(app, &tiled);
+    let synced_description_height = sync_description_floor(app, &app.panes.tiled_layout);
+    let tiled = std::mem::take(&mut app.panes.tiled_layout);
 
     render_tiled_panes(
         frame,
@@ -278,8 +317,8 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
             synced_description_height,
         },
     );
-    app.panes.tiled_layout = tiled;
 
+    app.panes.tiled_layout = tiled;
     render_status_bar(frame, app, outer_layout[1]);
     let toasts_pane_focused = app.focus_is(PaneId::Toasts);
     let toasts_ctx = ToastsRenderCtx {
@@ -580,7 +619,17 @@ fn sync_pane_focus(app: &mut App) {
     ];
     for id in ids {
         let focus = RenderFocus {
-            pane_focus_state: app.pane_focus_state(id),
+            pane_focus_state: if app.framework.overlay().is_some()
+                || app.overlays.is_finder_open()
+                || app.overlays.is_sccache_open()
+                || matches!(
+                    app.confirmation_modal_state(),
+                    ConfirmationModalState::Open { .. }
+                ) {
+                PaneFocusState::Inactive
+            } else {
+                app.pane_focus_state(id)
+            },
         };
         match id {
             PaneId::Package => app.panes.package.focus = focus,

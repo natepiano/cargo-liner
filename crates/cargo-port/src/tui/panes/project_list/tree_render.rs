@@ -1,6 +1,7 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
@@ -19,8 +20,10 @@ use crate::scan;
 use crate::scan::ProjectStorage;
 use crate::scan::StorageHeadroom;
 use crate::tui::columns;
+use crate::tui::columns::ProjectListWidths;
 use crate::tui::dismiss_target::DismissTarget;
 use crate::tui::panes::constants::DISMISS_SUFFIX;
+use crate::tui::panes::constants::PROJECT_LIST_RIGHT_PADDING;
 use crate::tui::panes::constants::TITLE_ELLIPSIS;
 use crate::tui::project_list::VisibleRow;
 use crate::tui::project_list_state::ProjectList;
@@ -36,35 +39,14 @@ pub(super) fn render_project_list_pane_body(
 ) -> PaneFrameChrome {
     let projects = ctx.project_list;
     let (mut items, header, summary_lines, row_width) = {
-        let widths = &projects.cached_fit_widths;
+        let fitted = projects.cached_fit_widths.fitted(
+            usize::from(area.width)
+                .saturating_sub(PROJECT_LIST_RIGHT_PADDING + tui_pane::BLOCK_BORDER_WIDTH),
+        );
+        let widths = &fitted;
         let items: Vec<ListItem> = super::render_tree_items(ctx, pane, &pane.viewport, widths);
-        let total = projects.visible_project_disk_usage();
-        let total_str = render::format_bytes(total);
-        let header = columns::header_line(widths, "  Projects");
-        let mut summaries = vec![columns::row_to_line(
-            &columns::build_summary_cells(widths, &total_str),
-            widths,
-        )];
-        match projects.project_storage() {
-            ProjectStorage::Unknown => {},
-            ProjectStorage::Available(bytes) => {
-                let available = render::format_bytes(bytes);
-                let headroom_style = disk::headroom_style(StorageHeadroom::from(bytes));
-                summaries.push(columns::build_available_line(
-                    widths,
-                    &available,
-                    headroom_style,
-                ));
-            },
-            ProjectStorage::MultipleVolumes => {
-                let subtotal_style = Style::default().fg(theme_roles::language_subtotal_color());
-                summaries.push(columns::build_available_line(
-                    widths,
-                    "mixed",
-                    subtotal_style,
-                ));
-            },
-        }
+        let header = columns::header_line(widths, "   Projects");
+        let summaries = project_summary_lines(projects, widths);
         let row_width = u16::try_from(widths.total_width()).unwrap_or(u16::MAX);
         (items, header, summaries, row_width)
     };
@@ -123,8 +105,15 @@ pub(super) fn render_project_list_pane_body(
     pane.viewport.set_content_area(list_area);
     pane.viewport
         .set_viewport_rows(usize::from(list_area.height));
-    let project_list = List::new(items);
-    let mut list_state = ListState::default().with_selected(Some(projects.cursor()));
+    let selection = tui_pane::selection_state_for(
+        &pane.viewport,
+        projects.cursor(),
+        projects.cursor(),
+        pane.focus.pane_focus_state,
+    );
+    let project_list = List::new(items).highlight_style(theme_roles::selection_style(selection));
+    let selected = (projects.cursor() < total_project_rows).then_some(projects.cursor());
+    let mut list_state = ListState::default().with_selected(selected);
     *list_state.offset_mut() = pane.viewport.scroll_offset();
     frame.render_stateful_widget(project_list, list_area, &mut list_state);
     pane.body_rect = list_area;
@@ -149,6 +138,36 @@ pub(super) fn render_project_list_pane_body(
     ));
 
     chrome
+}
+
+fn project_summary_lines(projects: &ProjectList, widths: &ProjectListWidths) -> Vec<Line<'static>> {
+    let total = projects.visible_project_disk_usage();
+    let total_str = render::format_bytes(total);
+    let mut summaries = vec![columns::row_to_line(
+        &columns::build_summary_cells(widths, &total_str),
+        widths,
+    )];
+    match projects.project_storage() {
+        ProjectStorage::Unknown => {},
+        ProjectStorage::Available(bytes) => {
+            let available = render::format_bytes(bytes);
+            let headroom_style = disk::headroom_style(StorageHeadroom::from(bytes));
+            summaries.push(columns::build_available_line(
+                widths,
+                &available,
+                headroom_style,
+            ));
+        },
+        ProjectStorage::MultipleVolumes => {
+            let subtotal_style = Style::default().fg(theme_roles::language_subtotal_color());
+            summaries.push(columns::build_available_line(
+                widths,
+                "mixed",
+                subtotal_style,
+            ));
+        },
+    }
+    summaries
 }
 
 fn set_project_list_dismiss_actions(

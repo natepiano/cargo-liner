@@ -31,7 +31,7 @@ pub(super) const CARGO_RUN_SUBCOMMAND: &str = "run";
 // `TARGET_KIND_BENCH_LABEL`, `TARGET_KIND_BIN_LABEL` and `TARGET_KIND_EXAMPLE_LABEL`
 // identify Cargo target kinds.
 pub(super) const TARGET_KIND_BENCH_LABEL: &str = "bench";
-pub(super) const TARGET_KIND_BIN_LABEL: &str = "bin";
+pub(super) const TARGET_KIND_BIN_LABEL: &str = "binary";
 pub(super) const TARGET_KIND_EXAMPLE_LABEL: &str = "example";
 
 // `PERF_LOG_FILE` and `PREVIOUS_PERF_LOG_FILE` name current and previous TUI performance logs.
@@ -77,18 +77,22 @@ pub(super) const STRIP_SLOT_COUNT: usize = 1;
 // `theme_roles` maps the following role-key constants, collected in `ROLE_KEYS`,
 // to application colors.
 pub(super) const COLUMN_HEADER: &str = "cargo-port.column.header";
+pub(super) const CPU_BAR_LABEL: &str = "cargo-port.cpu.bar-label";
 pub(super) const DISCOVERY_SHIMMER: &str = "cargo-port.discovery.shimmer";
 pub(super) const GIT_IGNORED: &str = "cargo-port.git.ignored";
 pub(super) const GIT_MODIFIED: &str = "cargo-port.git.modified";
 pub(super) const GIT_UNTRACKED: &str = "cargo-port.git.untracked";
 pub(super) const LANGUAGE_SUBTOTAL: &str = "cargo-port.language.subtotal";
-pub(super) const ROLE_KEYS: [&str; 7] = [
+pub(super) const ROLE_KEYS: [&str; 9] = [
     COLUMN_HEADER,
+    CPU_BAR_LABEL,
     DISCOVERY_SHIMMER,
     GIT_IGNORED,
     GIT_MODIFIED,
     GIT_UNTRACKED,
     LANGUAGE_SUBTOTAL,
+    SELECTION_TEXT,
     TARGET_BENCH,
 ];
+pub(super) const SELECTION_TEXT: &str = "cargo-port.selection.text";
 pub(super) const TARGET_BENCH: &str = "cargo-port.target.bench";

@@ -33,21 +33,13 @@
 
 use std::cell::RefCell;
 
+use crossterm::style::Colored;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Margin;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::symbols::line::BOTTOM_LEFT;
-use ratatui::symbols::line::BOTTOM_RIGHT;
-use ratatui::symbols::line::CROSS;
-use ratatui::symbols::line::HORIZONTAL;
-use ratatui::symbols::line::HORIZONTAL_DOWN;
-use ratatui::symbols::line::HORIZONTAL_UP;
-use ratatui::symbols::line::TOP_LEFT;
-use ratatui::symbols::line::TOP_RIGHT;
-use ratatui::symbols::line::VERTICAL;
-use ratatui::symbols::line::VERTICAL_LEFT;
-use ratatui::symbols::line::VERTICAL_RIGHT;
+use ratatui::symbols::line;
+use ratatui::symbols::line::Set;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
@@ -760,7 +752,12 @@ impl GridLines {
                 let Some(cell) = self.cells.get(self.index(x, y)).copied() else {
                     continue;
                 };
-                let Some(glyph) = glyph(cell.sides) else {
+                let symbols = if cell.focused && Colored::ansi_color_disabled_memoized() {
+                    line::THICK
+                } else {
+                    line::NORMAL
+                };
+                let Some(glyph) = glyph(cell.sides, symbols) else {
                     continue;
                 };
                 let style = if lights_focus && cell.focused {
@@ -952,26 +949,25 @@ const fn run(at: u16, start: u16, end: u16, back: Side, on: Side) -> Sides {
 }
 
 /// The box-drawing glyph for a cell, or `None` when nothing reaches it.
-const fn glyph(sides: Sides) -> Option<&'static str> {
+const fn glyph(sides: Sides, symbols: Set<'static>) -> Option<&'static str> {
     let up = sides.has(Side::Up);
     let right = sides.has(Side::Right);
     let down = sides.has(Side::Down);
     let left = sides.has(Side::Left);
     match (up, right, down, left) {
         (false, false, false, false) => None,
-        // `VERTICAL` and `HORIZONTAL` cover straight runs and the one-sided stubs a
-        // clipped pane leaves behind, which read as their own axis.
-        (_, false, true, false) | (true, false, false, false) => Some(VERTICAL),
-        (false, true, false, _) | (false, false, false, true) => Some(HORIZONTAL),
-        (false, true, true, false) => Some(TOP_LEFT),
-        (false, false, true, true) => Some(TOP_RIGHT),
-        (true, true, false, false) => Some(BOTTOM_LEFT),
-        (true, false, false, true) => Some(BOTTOM_RIGHT),
-        (true, true, true, false) => Some(VERTICAL_RIGHT),
-        (true, false, true, true) => Some(VERTICAL_LEFT),
-        (false, true, true, true) => Some(HORIZONTAL_DOWN),
-        (true, true, false, true) => Some(HORIZONTAL_UP),
-        (true, true, true, true) => Some(CROSS),
+        // Straight glyphs cover stubs at a clipped pane edge, which read as their own axis.
+        (_, false, true, false) | (true, false, false, false) => Some(symbols.vertical),
+        (false, true, false, _) | (false, false, false, true) => Some(symbols.horizontal),
+        (false, true, true, false) => Some(symbols.top_left),
+        (false, false, true, true) => Some(symbols.top_right),
+        (true, true, false, false) => Some(symbols.bottom_left),
+        (true, false, false, true) => Some(symbols.bottom_right),
+        (true, true, true, false) => Some(symbols.vertical_right),
+        (true, false, true, true) => Some(symbols.vertical_left),
+        (false, true, true, true) => Some(symbols.horizontal_down),
+        (true, true, false, true) => Some(symbols.horizontal_up),
+        (true, true, true, true) => Some(symbols.cross),
     }
 }
 

@@ -5,6 +5,8 @@
 mod constants;
 mod data;
 mod pane;
+#[cfg(test)]
+mod readability_tests;
 mod render;
 
 pub use data::BuildMode;
@@ -16,4 +18,5 @@ pub use data::TargetsData;
 pub use data::build_target_list_from_data;
 pub use data::lookup_targets_data;
 pub use pane::TargetsPane;
+pub(super) use render::minimum_width;
 use render::render_targets_pane_body;

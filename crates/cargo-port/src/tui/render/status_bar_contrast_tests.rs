@@ -8,8 +8,6 @@ use tui_pane::ShortcutState;
 
 use super::*;
 use crate::tui::test_support;
-#[path = "../../../../tui_pane/src/bar/status_bar_contrast_support.rs"]
-mod contrast;
 fn check(theme_name: &str) {
     let previous = tui_pane::theme();
     let app = test_support::make_app(&[]);
@@ -23,7 +21,7 @@ fn check(theme_name: &str) {
     terminal
         .draw(|frame| render_status_bar(frame, &app, frame.area()))
         .expect("native app bar");
-    let mut failures = contrast::failures(
+    let mut failures = test_support::contrast_failures(
         terminal.backend().buffer(),
         &["Uptime:", "?"],
         &format!("native {theme_name}"),
@@ -47,7 +45,7 @@ fn check(theme_name: &str) {
                 );
             })
             .expect("app status span states");
-        failures.extend(contrast::failures(
+        failures.extend(test_support::contrast_failures(
             terminal.backend().buffer(),
             &["scanning", "Uptime:", "1m", "?", "shortcuts"],
             &format!("{theme_name} {state:?}"),

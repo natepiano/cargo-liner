@@ -1,5 +1,7 @@
 //! `ProjectList` pane render bodies.
 
+#[cfg(test)]
+mod readability_tests;
 use ratatui::widgets::ListItem;
 use tui_pane::Viewport;
 
