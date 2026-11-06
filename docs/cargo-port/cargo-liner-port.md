@@ -272,6 +272,35 @@ No code. On hana `39e5c19033`, rustc 1.99.0 stops with `assertion failed: !deep_
 
 **Gotchas:** `Formatter::detect` starts up to two short processes per mend scan. A relocation pass that depends on a kept function stays out as a whole, which keeps more relocations than the one caller needs.
 
+### Phase 2x — mend --fix keeps an import that a child module reaches through super  · status: todo
+
+**Depends on:** none
+
+#### Work Order
+
+**Goal:** `mend --fix` never takes away a parent import that a child module still reaches through `super::`, so the fix compiles and does not roll back.
+
+**Source:** Phase 4b lint run `20261106T101615-3963458-6d10`, 2026-11-06. `crates/cargo-port/src/tui/panes/cpu/pane.rs` has `#[cfg(test)] use crate::tui::test_support::contrast_failures;` at the top of the file, and its `mod tests` calls `super::contrast_failures(`. After the fix, rustc gives E0425 at that call, `cannot find function contrast_failures in module super`, and mend rolls back every rewrite. The user's rule: any bug in cargo-mend is always fixed, and it comes before the phase it blocks.
+
+**Constraints:**
+- The fix goes in `crates/cargo-mend/`. Phase 4b's source stays as it is until the gate below has run.
+- After the fix, the file compiles and a second `--fix` run changes nothing.
+
+**Spec:**
+1. **Red first:** the smallest fixture through the real fix path: a parent module with a `#[cfg(test)]` import that only its `#[cfg(test)] mod tests` uses, through a `super::<name>` path. The test fails on the current code with the same compiler error and rollback.
+2. Find the pass that takes the import away, and name the cause in the summary. When a child module still reaches the name through `super::`, the pass either keeps the import or rewrites that path with the move. Choose the simpler of the two that gives correct code, and state why.
+3. Cover the same case without `#[cfg(test)]`, and a `super::<name>` path in a nested module, when the pass reaches them.
+4. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
+
+**Files:**
+- `crates/cargo-mend/` — the fix pass and its tests
+
+**Workers:** 1 writer owns the code and the tests.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second; the red test fails on the pre-fix tree and passes after. Director gate: `verify.sh lint` with the new mend binary on the Phase 4b tree exits 0, with no rollback.
+
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: done
 
 **Depends on:** Phase 2b
