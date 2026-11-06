@@ -257,35 +257,20 @@ When `cargo mend --fix` moves an in-body `use` to module scope (`fixes/imports_a
 
 No code. On hana `39e5c19033`, rustc 1.99.0 stops with `assertion failed: !deep_decl.is_glob_import()` (rustc_resolve imports.rs:583) when it builds test code; mend hits it only because it builds `--all-targets`. The construct: `use super::*;` in the cfg(test) module `rear_patch_panel::tests` (`crates/hana/src/tool/rear_patch_panel/mod.rs`), which brings a helper that the parent module also re-exports. Widget replaced the glob with explicit imports in `0c4e265f32`. Neither widget's worker nor this unit made a small sample that reproduces the panic; Codex refused the reduction task three times (content filter). The rustc issue can cite the commit pair `39e5c19033` / `0c4e265f32`.
 
-### Phase 2w — mend --fix never makes a function too long for clippy  · status: todo
+### Phase 2w — mend --fix never makes a function too long for clippy  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `mend --fix` never moves a function past clippy `too_many_lines`, so a lint run that was green stays green after the fix.
-
-**Source:** showrunner, 2026-11-05, from the performance showrunner's report. The module-import rewrite makes names longer, rustfmt then wraps the calls, and the function grows. `switch_dimming_and_the_patch_edit_fade_restore_in_either_order` in `crates/hana/tests/tool_switch/mod.rs` went from under the limit to 106/100, and hana `4590aeeb22` split it by hand. `opening_one_pocket_among_many_tools_touches_only_its_own_cards_and_rows` in `crates/hana/tests/pocket_open_work/mod.rs` reached 102/100 on the metrics-gathering tree. Showrunner: "mend --fix must not leave lint red."
-
-**Constraints:**
-- mend does not split a function. Splitting stays with the person who owns the function.
-- A function that is already over the limit before the fix keeps its current behavior.
-- A function with `#[allow(clippy::too_many_lines)]` or `#[expect(clippy::too_many_lines)]` is not limited.
-- Read the limit from the workspace `clippy.toml` key `too-many-lines-threshold`. Without that key, use the clippy default.
-
-**Spec:**
-1. **Red first:** the smallest fixture through the real fix path where the rewrite wraps calls and moves one function past the limit, with a second function in the same file that stays under the limit.
-2. Measure each function that a fix changes. Format the new file text with the rustfmt settings of the workspace, and count the body lines as clippy counts them: no blank lines and no comment lines.
-3. When a function goes from within the limit to over the limit, drop every rewrite in that function. Its imports at function scope stay too. Other functions in the file keep their rewrites.
-4. Report and fix agree: a kept function gives no warning and no failed exit in either mode. A notice names the file, the function and the count, and says to split the function. A second `--fix` run changes nothing and gives the same notice.
-5. CHANGELOG: one line in `crates/cargo-mend/CHANGELOG.md`.
+`mend --fix` measures each function that a fix changes. It formats the new file text with the workspace rustfmt settings and counts body lines as clippy counts them: no blank lines and no comment lines. The limit comes from the workspace `clippy.toml` key `too-many-lines-threshold`, else the clippy default. A function that a fix moves from within the limit to over the limit keeps all its names and its function-scope imports; other functions in the file keep their rewrites. A function already over the limit, or with `allow` or `expect` on `clippy::too_many_lines`, keeps its earlier behavior. A kept function gives no warning and no failed exit. A notice names the file, the function and the count, and says to split the function; a second `--fix` run changes nothing and gives the same notice. mend never splits a function.
 
 **Files:**
-- `crates/cargo-mend/` — the fix path, the measure, the notice and their tests
+- `crates/cargo-mend/src/fixes/runner/function_length/` — the plan, the formatter, the function collector, the limits and the fixture
+- `crates/cargo-mend/src/fixes/runner/apply.rs`, `combine.rs`, `execute.rs`, `mend_runner.rs`, `mod.rs`, `plan.rs` — the fix path holds the plan
+- `crates/cargo-mend/src/fixes/imports/import_scan.rs`, `src/rust_syntax/lexical_regions.rs` — scans and the line count
+- `crates/cargo-mend/src/reporting/outcome.rs` — the notices
+- `crates/cargo-mend/CHANGELOG.md`
 
-**Workers:** 1 writer owns the code and the tests.
-
-**State:** none.
-
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; no test takes a second; the red test fails on the pre-fix tree and passes after. Director gate: the new mend binary runs `--fix` on a clean copy of hana `4590aeeb22^`, then `verify.sh lint hana` on that copy shows no `too_many_lines` error, and the notice names the kept function.
+**Gotchas:** `Formatter::detect` starts up to two short processes per mend scan. A relocation pass that depends on a kept function stays out as a whole, which keeps more relocations than the one caller needs.
 
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: done
 
@@ -342,12 +327,12 @@ The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame 
 
 #### As-built
 
-A project marked Deleted stays in its root, struck through and dismissable, through a full rescan and under `NO_COLOR=1`. `ProjectList::retain_for_rescan` keeps each Deleted entry when the rescan starts, and the completed scan result keeps it; retained rows merge into the new roots before expansion keys are pruned. Late zero-byte and positive disk replies do not bring back a dismissed row. A rescan restores the saved choice (`last_selected`) when it is selectable, else the first visible row, and never falls back to the current path. Navigation, a focus click and a dismissal each record the choice.
+A project marked Deleted stays in its root, struck through and dismissable, also under `NO_COLOR=1`, until the user dismisses it or rescans (the user, 2026-11-05; Phase 4a removed the rescan retain that Phase 4 added). Late zero-byte and positive disk replies do not bring back a dismissed row. A rescan restores the saved choice (`last_selected`) when it is selectable, else the first visible row, and never falls back to the current path. Navigation, a focus click and a dismissal each record the choice.
 
 `ProjectList::at_path` returns `ProjectPathLookup<T>` (`Found`, `UnknownPath`, `StaleRoute`), and each caller handles every outcome. Under `NO_COLOR`, the terminal output writes text attributes without colour codes and sends no colour reset that clears them. The sccache popup width is the widest row plus equal left and right padding. A Git pane value is cut at its end with an ellipsis, never from its middle; below inner width 11 a Git row shows only its label, in the full inner width.
 
 **Files:**
-- `crates/cargo-port/src/tui/project_list/list.rs`, `grouping.rs`, `visible_rows.rs`, `path_index_tests.rs` — retained rows, the named lookup and its tests
+- `crates/cargo-port/src/tui/project_list/list.rs`, `grouping.rs`, `visible_rows.rs`, `path_index_tests.rs` — the named lookup and its tests
 - `crates/cargo-port/src/tui/app/async_tasks/tree.rs`, `dispatch.rs`, `disk_handlers.rs`, `deleted_rescan_tests.rs` — rescan, completed scan, late replies and their tests
 - `crates/cargo-port/src/tui/app/navigation/selection.rs`, `app/selection_paths.rs`, `app/dismiss.rs`, `input/dispatch.rs`, `interaction.rs`, `finder/dispatch.rs` — record the choice
 - `crates/cargo-port/src/tui/terminal/mod.rs`, `no_color_tests.rs` — attributes without colour
@@ -357,37 +342,19 @@ A project marked Deleted stays in its root, struck through and dismissable, thro
 
 **Gotchas:** the restored selection depends on four selection handlers outside the rescan code; a new way to choose a row must record the choice. Only a live run showed that a rescan replaced the live selection; the tests that pin it now live in `deleted_rescan_tests.rs`.
 
-### Phase 4a — A rescan clears Deleted rows again  · status: todo
+### Phase 4a — A rescan clears Deleted rows again  · status: done
 
 **Depends on:** Phase 4
 
-Order (user, 2026-11-06): Phase 2w first, then this phase, then Phase 4b.
+#### As-built
 
-#### Work Order
-
-**Goal:** a deleted project stays on the list, struck through, until the user dismisses it or rescans. A full rescan drops every Deleted row.
-
-**Source:** the user, 2026-11-05, change review C196 (merged 7663c40e7): "i never asked for this. it's not what i want - you invented this", then "yes that is the actual feature i wanted - they stay on the list till i either dismiss them or i rescan. you removing rescan took that away from me". Phase 4 made a rescan keep Deleted rows. No user words asked for that; the old Phase 1 invariant ("until the user dismisses it") was this unit's own wording.
-
-**Constraints:**
-- Keep the live behavior from before Phase 4: when a folder is deleted while cargo-port runs, its row stays, struck through, and the user can dismiss it.
-- Keep the rest of Phase 4: the strike-through under `NO_COLOR`, the named path lookup, the sccache popup padding, the Git value fit, and the late disk replies that do not bring back a dismissed row.
-- A rescan still restores the saved choice (`last_selected`) when that row is still selectable, else the first visible row. A choice that pointed at a Deleted row goes to the first visible row.
-- Record each changed assertion in `deleted_rescan_tests.rs` in an Assertion-Change line.
-
-**Spec:**
-1. Remove the rescan retain: `ProjectList::retain_for_rescan` and the merge of retained rows into the new roots. A full rescan (`App::rescan`, `tui/app/async_tasks/tree.rs`) drops Deleted rows, as it did before Phase 4.
-2. Change the tests in `deleted_rescan_tests.rs` to prove the new rule: a Deleted row survives watcher events and stays until dismissed; a rescan removes it.
-3. Docs: the overview (`docs/cargo-port/as-built/overview.md`, data flow step 6) states the rule in the user's words. The `CHANGELOG.md` line "Keep Deleted rows ... through full rescans until dismissal" goes; add a line that a rescan clears Deleted rows. Rewrite Phase 4's as-built text so it no longer says the row survives a rescan.
+A deleted project stays on the list, struck through and dismissable, until the user dismisses it or rescans (the user, 2026-11-05: "they stay on the list till i either dismiss them or i rescan"). A full rescan clears the roots (`ProjectList::clear` from `prepare_rescan`) and installs only what the scan found. Individual project refreshes keep deletion states through `retain_deletion_states`, `preserve_replacement_deletion_states` and `preserve_submodule_deletion_states`. A saved choice (`last_selected`) that names a removed row stays saved; the first visible row is selected and is not saved as the choice.
 
 **Files:**
-- `crates/cargo-port/src/tui/project_list/list.rs`, `grouping.rs`
-- `crates/cargo-port/src/tui/app/async_tasks/tree.rs`, `deleted_rescan_tests.rs`
+- `crates/cargo-port/src/tui/project_list/list.rs`, `path_index_tests.rs` — the replacement without retained rows, and its tests
+- `crates/cargo-port/src/tui/app/async_tasks/tree.rs`, `dispatch.rs`, `deleted_rescan_tests.rs` — the rescan, the completed scan and their tests
+- `crates/cargo-port/src/tui/app/mod.rs` — the caller
 - `crates/cargo-port/CHANGELOG.md`, `docs/cargo-port/as-built/overview.md`
-
-**Workers:** 1 writer owns the code and the tests.
-
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Live check: delete a scratch project while cargo-port runs; the row stays struck through. Press the rescan key; the row is gone. The checkpoint carries a Change-Review line for the user to check this.
 
 ### Phase 4b — cargo-port's selection, contrast and narrow panes read clearly  · status: todo
 
@@ -395,9 +362,9 @@ Order (user, 2026-11-06): Phase 2w first, then this phase, then Phase 4b.
 
 #### Work Order
 
-**Goal:** every defect that the Phase 4 design check found on main's screens is gone: the selection shows without colour, text has readable contrast, nothing is cut without a mark, and narrow panes stay useful.
+**Goal:** every defect that the Phase 4 and Phase 4a design checks found on main's screens is gone: the selection shows without colour, text has readable contrast, nothing is cut without a mark, and narrow panes stay useful.
 
-**Source:** Phase 4 design check, 2026-11-05. The same live shots on the main build at `3fb98ed6e` show each defect, so Phase 4 did not cause them. Shots: `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_main/`.
+**Source:** Phase 4 and Phase 4a design checks, 2026-11-05 and 2026-11-06. The same live shots on the main build at `3fb98ed6e` show each defect, so neither phase caused them. Shots: `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_main/`.
 
 **Constraints:**
 - Phase 4 keeps its Deleted row, its strike-through under `NO_COLOR` and its Git pane value fit. This phase does not change those results except as Spec 2 and 3 say.
@@ -412,7 +379,7 @@ Order (user, 2026-11-06): Phase 2w first, then this phase, then Phase 4b.
 3. **Strike-through.** A Deleted row strikes only its name and value text, not the empty cells between them.
 4. **Scroll position.** The sccache popup shows `▲ 2 of 2` at its end, not `▲ 1 of 2`.
 5. **Row highlight.** The sccache popup's selected row highlight reaches the right border.
-6. **Contrast.** These pass the guide's `readable-contrast` rule: the selected sccache label (#96beb4 on #565656, 3.61:1), Disk values (#ff6464 on #505050), the selected project name (#ff8700 on #565656, 3.05:1), white CPU labels on yellow and green, the red System percentage (#cd0000 on #1e1e1e), and the grey `resets` text.
+6. **Contrast.** These pass the guide's `readable-contrast` rule: the selected sccache label and the selected Deleted row (#96beb4 on #565656, 3.61:1), Disk values (#ff6464 on #505050), the selected project name (#ff8700 on #565656, 3.05:1), white CPU labels on yellow and green, the red System percentage (#cd0000 on #1e1e1e), and the grey `resets` text.
 7. **One selection fill.** A selected row uses one fill across all its columns, Disk included. On an unselected row, the Disk column fill is clearly different from the selection fill.
 8. **Cut text.** The Languages header `comments` shows whole, and each row names its language. Package pane values that do not fit wrap or end in an ellipsis. The Languages rows separate parent rows from their child subtotals; the total keeps summing parents only (`lang/render.rs:102`), so it stays correct.
 9. **80 columns.** A pane too narrow to show text is hidden, and its width goes to the other panes. One named visibility result decides this. A hidden pane leaves the Tab order and has no mouse areas. When the focused pane hides, focus moves to the next visible pane. When width returns, the pane shows again and focus stays where it is. The Workspace pane shows values beside `Path` and `Disk`. The Git pane shows its values at 80 columns. The CI Runs pane shows only the columns that fit whole (`ci/render.rs:471` keeps minimum widths past the pane width), and the `No description available` placeholder is one row that ends in `…`.
@@ -421,6 +388,15 @@ Order (user, 2026-11-06): Phase 2w first, then this phase, then Phase 4b.
 12. **Letter case.** Pane titles and rows use sentence case: `Sccache stats`, `CI runs`, `Targets: binary`, `Multiple input files`.
 13. **sccache reasons.** Each non-cacheable reason row says in plain words why the call was not cached. No row reads `-`, `-o` or `missing output_dir`.
 14. **CPU bars.** In colour, the bars draw with cell background, so no dark line shows between rows. Under `NO_COLOR`, `prepare_terminal_buffer` (`tui/render.rs`) removes every background, so the bars keep their block glyphs and different utilization levels stay distinct.
+15. **Right margin.** The Projects pane has a right margin that matches its left margin. `Disk`, the values and `[x]` do not touch the border.
+16. **Disk colour.** The Disk colour follows the size, or the column has no size colour. `73 B` and `22.7 GiB` do not share one colour that seems to carry a meaning.
+17. **Project type column.** The column of crab icons has a short heading, or the column goes.
+18. **CI placeholder.** `No CI workflow configured` shows whole, or ends in `…`.
+19. **Status words.** The status text `sccache:` uses a common word, for example `Disk cache`.
+20. **Deleted project details.** The Package pane of a Deleted project says that the project is deleted. Its Disk rows agree: `other` does not read `74 B` under a Disk value of `0 B`.
+21. **One target word.** One target kind has one name in the Package pane, the Structure pane and the Targets pane, not `binary`, `Binary` and `bin`.
+22. **Lint said once.** `No lint runs` shows in one place, not as both a pane title and the Package `Lint` row.
+23. **Pane borders.** Vertical pane borders draw with no gap between rows, and the orange status dot draws as a colour glyph. When a real terminal already shows this, change the capture font of the live harness, not the app.
 
 **Files:**
 - `crates/cargo-port/src/tui/` — the project columns, the sccache popup, the System and Languages panes, the Package pane, the pane layout, the hint text and their tests

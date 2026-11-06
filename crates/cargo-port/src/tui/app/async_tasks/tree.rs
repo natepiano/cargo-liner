@@ -27,12 +27,9 @@ impl App {
             .map(AbsolutePath::from)
             .or_else(|| self.project_list.paths.last_selected.clone());
         let expanded = self.project_list.export_expanded();
-        let inline_dirs = self.config.current().tui.inline_dirs.clone();
-        self.mutate_tree().projects.replace_roots_from(
-            projects,
-            &inline_dirs,
-            ReplacementExpansion::RestoreSavedTargets,
-        );
+        self.mutate_tree()
+            .projects
+            .replace_roots_from(projects, ReplacementExpansion::RestoreSavedTargets);
         self.restore_expanded(&expanded);
         self.prune_inactive_project_state();
         self.register_lint_for_root_items();
@@ -68,7 +65,7 @@ impl App {
         let selected_path = self.project_list.paths.last_selected.clone();
         // `scan.manifest_metadata` survives row replacement. Rediscovered manifests
         // retain their last diagnostic until an accepted metadata reply replaces it.
-        self.mutate_tree().projects.retain_for_rescan();
+        self.mutate_tree().projects.clear();
         self.ci.fetch_tracker.clear();
         self.ci.clear_display_modes();
         self.clear_all_lint_state();
