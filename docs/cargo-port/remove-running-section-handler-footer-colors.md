@@ -1209,39 +1209,18 @@ An interactive Codex session that the user renamed shows its name in its tile an
 
 ### Phase 62h — Every detached run shows its worker as waiting  · status: done
 
-**Depends on:** Phase 62
+#### As-built
 
-Do this phase first when the unit resumes, before Phase 42.
-
-#### Work Order
-
-**Goal:** while a Codex worker has a live detached run (a `mesh_runs.py supervise` process naming its record), its row under its unit shows `waiting` or the run's step name, whatever command the run executes. The row returns to its normal state when the run ends.
-
-**Source:** change review C201 came back (user, 2026-11-05 20:44 EST): "yes send it back". The user's live `cargo-handler` (pid 3454803, started 20:41, build 19:20 from main a57fb3b6e) showed the herdr unit expanded with every Codex worker `idle`. At that moment two detached runs were live:
-- `herdr-e-labels`: record `/tmp/claude/unit/5f707c80-741b-4bcd-8258-fa3b7e0df65f/mesh_runs/20261105T204030-3408579-6c01.json`, 20:40:30 to 20:44:41 EST.
-- `herdr-rename4`: a run in the same folder that started 20:43:26 and ended 20:44:15 EST.
-
-**Probable cause (showrunner reading, not proven):** Phase 62's gotcha says an eligible run needs a recognized command, and a script name inside `bash -c` stays unrecognized. Both herdr runs execute `bash -c "env -u PYTHONPATH basedpyright ... && ... scripts/lib/py -m unittest ..."`. Prove or reject this cause with a red test built from those records before the fix.
-
-**Constraints:**
-- Keep every Phase 62 result: `verify.sh` runs still show their step name, and a finished run still releases its row.
-- A run with an unknown command shows `waiting`; never hide the run because its command has no step name.
-- The run must still need a live supervisor that names the exact record, so a dead run never shows.
-
-**Spec:**
-1. Write a red test from the two herdr records. It proves or rejects the probable cause. Name the proved cause in the summary.
-2. A live run with an eligible record shows its worker as `waiting` or the step name, whatever command the run executes.
-3. Tests cover a `bash -c` run, an unknown command, a `verify.sh` run with its step name, a finished run and a dead supervisor. Each test takes under 1 s.
-4. CHANGELOG: one Fixed line.
+- A live detached run holds its worker at `waiting` or the run's step name, whatever command the run executes. The row returns to its normal state when the run ends.
+- `RunRecord::{Ignored, Running(DetachedRun)}` keeps every running record with a live supervisor naming the exact record. A recognized command supplies only the step name; any other command gives `RequestedStep::Unknown`, which shows `waiting`.
+- The cause was that a record with no verification step read as `Ignored`, so its worker fell back to `idle`.
 
 **Files:**
-- `crates/cargo-handler/src/census/activity.rs` — run eligibility and the row state
-- `crates/cargo-handler/src/census/activity_tests.rs`, `crates/cargo-handler/src/census/activity_regression_tests.rs` — the tests
+- `crates/cargo-handler/src/census/activity.rs` — run records and the row state
+- `crates/cargo-handler/src/census/activity_regression_tests.rs` — Python, `bash -c` and unknown-command run tests
 - `crates/cargo-handler/CHANGELOG.md`
 
-**Workers:** 1 writer.
-
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live check: with a real worker in a detached `bash -c` run, a capture shows its row as `waiting`, then back to normal after the run ends. The checkpoint carries a new Change-Review line for the user.
+**Gotchas:** a script name inside `bash -c` gives no step name, so that run shows `waiting`.
 
 ### Phase 42 — A dispatch shell folds into its Codex worker row  · status: todo
 
@@ -1909,7 +1888,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 1. Read the announced 3n worker role through the existing schema-2 `StaffFileReader`. Extend `StaffFields`, `StaffRoster` and the shared `StaffSnapshot`; add no second reader. Reuse the checked staff ID, current session and parent session that the staff reader retains. Derive the unit from that validated parent identity. Replace `HierarchyEdges::with_worker_roles` with the staff role result. Use named results for unavailable membership, a root member and a managed member when extending the identity lookups. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
 2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
 3. Remove the `role_map_cache.json` read in `census/command_inputs.rs`.
-4. Keep `mesh_runs` and `WorkerReference::{Staff, LegacyThread}` semantics. Resolve staff IDs again when the staff snapshot changes, even when run files do not change. Preserve live-supervisor record-path checks, recognized commands, finite start times and discovered run directories. Keep one row per current thread, waiting or gate-step activity, independent director activity and completion removal. Keep legacy `director` fallback where legacy identity still needs it. Do not recognize a script name inside `bash -c`.
+4. Keep `mesh_runs` and `WorkerReference::{Staff, LegacyThread}` semantics. Resolve staff IDs again when the staff snapshot changes, even when run files do not change. Preserve live-supervisor record-path checks, finite start times and discovered run directories. A recognized command supplies only the step name; every other live run shows `waiting`. Keep one row per current thread, waiting or gate-step activity, independent director activity and completion removal. Keep legacy `director` fallback where legacy identity still needs it. A script name inside `bash -c` gives no step name.
 5. Tests under 1 s: staff role and unit; a worker without a role; unavailable membership; no roster file on disk. Migrate the detached-run fixtures to staff-only membership. Keep their assertions for no launcher or open thread, staff handoff, a restarted director, one worker row, verification activity and completion removal.
 6. CHANGELOG: one Changed line in cargo-handler.
 
