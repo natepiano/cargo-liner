@@ -1207,7 +1207,7 @@ An interactive Codex session that the user renamed shows its name in its tile an
 
 **Binds later work:** the work that reads Codex model and effort beside these thread rows keeps the once-per-open `ThreadsLayout` choice.
 
-### Phase 62h — Every detached run shows its worker as waiting  · status: todo
+### Phase 62h — Every detached run shows its worker as waiting  · status: done
 
 **Depends on:** Phase 62
 

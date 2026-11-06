@@ -424,16 +424,16 @@ struct RunPayload {
     cwd:        Option<PathBuf>,
 }
 
-/// Only validated, running verification records may compete for a worker's activity.
+/// Only validated, running detached records may compete for a worker's activity.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(from = "RunPayload")]
 pub(super) enum RunRecord {
     Ignored,
-    Verify(VerificationRun),
+    Running(DetachedRun),
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct VerificationRun {
+pub(super) struct DetachedRun {
     worker:     WorkerReference,
     pid:        u32,
     requested:  RequestedStep,
@@ -452,7 +452,7 @@ enum RunRecordPath {
 impl RunRecord {
     /// Bind the decoded record to the file that supplied it.
     pub(super) fn at_file(mut self, path: &Path) -> Self {
-        if let Self::Verify(run) = &mut self {
+        if let Self::Running(run) = &mut self {
             run.record = RunRecordPath::File(path.to_owned());
         }
         self
@@ -460,7 +460,7 @@ impl RunRecord {
 
     pub(super) fn session<'a>(&'a self, staff: &'a StaffRoster) -> Option<&'a str> {
         match self {
-            Self::Verify(run) => run.worker.session(staff),
+            Self::Running(run) => run.worker.session(staff),
             Self::Ignored => None,
         }
     }
@@ -493,18 +493,18 @@ impl From<RunPayload> for RunRecord {
         let Some(started_at) = payload.started_at.filter(|at| at.is_finite()) else {
             return Self::Ignored;
         };
-        let Some(arguments) = verification_arguments(&payload.command) else {
-            return Self::Ignored;
-        };
         if payload.status != RunStatus::Running {
             return Self::Ignored;
         }
-        Self::Verify(VerificationRun {
+        Self::Running(DetachedRun {
             worker,
             pid: payload.pid,
-            requested: arguments
-                .iter()
-                .find_map(|word| VerifyStep::from_word(word))
+            requested: verification_arguments(&payload.command)
+                .and_then(|arguments| {
+                    arguments
+                        .iter()
+                        .find_map(|word| VerifyStep::from_word(word))
+                })
                 .map_or(RequestedStep::Unknown, RequestedStep::Step),
             started_at,
             record: RunRecordPath::Unlocated,
@@ -597,7 +597,7 @@ impl VerificationProgress {
     }
 }
 
-/// The latest live verification run for one worker thread.
+/// The latest live detached run for one worker thread.
 #[derive(Clone, Debug)]
 pub(super) enum WorkerRun {
     Inactive,
@@ -680,7 +680,7 @@ impl<'a> VerificationProcesses<'a> {
         let latest = records
             .into_iter()
             .filter_map(|record| {
-                let RunRecord::Verify(run) = record else {
+                let RunRecord::Running(run) = record else {
                     return None;
                 };
                 let process = self.processes.get(*self.by_pid.get(&run.pid)?)?;
@@ -1045,7 +1045,7 @@ impl RunRecords {
             session,
             |bytes| serde_json::from_slice(bytes).ok(),
             |path| fs::read(path),
-            |record| matches!(record, RunRecord::Verify(run) if live.contains(&run.pid)),
+            |record| matches!(record, RunRecord::Running(run) if live.contains(&run.pid)),
         )
     }
 
