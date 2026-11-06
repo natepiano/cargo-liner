@@ -6,6 +6,7 @@ use super::DetailField;
 use super::GIT_CLONE;
 use super::GIT_DIR;
 use super::GIT_FORK;
+use super::GitReadHealth;
 use super::GitStatus;
 use super::HashSet;
 use super::HeadState;
@@ -37,6 +38,7 @@ use crate::project::PinnedCommit;
 use crate::project::ResolvedBranch;
 use crate::project::TrackedRef;
 use crate::project::WorktreeHealth;
+use crate::tui::panes::git::GitDescription;
 use crate::tui::state::RepoBranchProbe;
 
 /// How a branch relates to the repo, rendered as a qualifier after its
@@ -60,8 +62,8 @@ enum WorktreePlacement {
     NotLinked,
 }
 
-impl WorktreePlacement {
-    const fn of(status: Option<&WorktreeStatus>) -> Self {
+impl From<Option<&WorktreeStatus>> for WorktreePlacement {
+    fn from(status: Option<&WorktreeStatus>) -> Self {
         match status {
             Some(WorktreeStatus::Linked { .. }) => Self::Linked,
             Some(WorktreeStatus::Primary { .. } | WorktreeStatus::NotGit) | None => Self::NotLinked,
@@ -172,15 +174,26 @@ pub enum GitCheckout {
 }
 
 impl GitCheckout {
-    pub const fn head_value_is_unreadable(&self) -> bool {
-        matches!(
-            self,
+    pub(in crate::tui::panes) const fn head_read_health(&self) -> GitReadHealth {
+        match self {
             Self::UnreadableHead
-                | Self::Branch {
-                    relation: HeadRelation::Unreadable,
-                    ..
-                }
-        )
+            | Self::Branch {
+                relation: HeadRelation::Unreadable,
+                ..
+            } => GitReadHealth::Unreadable,
+            Self::Broken
+            | Self::AwaitingProbe
+            | Self::Unborn
+            | Self::Detached { .. }
+            | Self::Branch {
+                relation:
+                    HeadRelation::Default
+                    | HeadRelation::Feature
+                    | HeadRelation::Worktree
+                    | HeadRelation::AwaitingRepoProbe,
+                ..
+            } => GitReadHealth::Readable,
+        }
     }
 
     fn from_probe(
@@ -232,10 +245,6 @@ pub enum PullRequestPolling {
     Idle,
 }
 
-impl PullRequestPolling {
-    pub const fn is_polling(&self) -> bool { matches!(self, Self::Active) }
-}
-
 impl From<bool> for PullRequestPolling {
     fn from(is_polling: bool) -> Self { if is_polling { Self::Active } else { Self::Idle } }
 }
@@ -264,14 +273,6 @@ pub struct SubmoduleContext {
     pub pinned_commit: PinnedCommit,
 }
 
-impl GitData {
-    /// Whether the repo has no remotes — drives the `(📁 local)` branch
-    /// annotation in the git pane.
-    pub const fn is_local(&self) -> bool {
-        matches!(&self.remotes, RemoteRows::Listed(rows) if rows.is_empty())
-    }
-}
-
 /// Remote table rows retain whether the underlying listing failed.
 #[derive(Clone, Default)]
 pub enum RemoteRows {
@@ -288,7 +289,6 @@ impl RemoteRows {
             Self::AwaitingProbe | Self::Unreadable => &[],
         }
     }
-    pub const fn is_unreadable(&self) -> bool { matches!(self, Self::Unreadable) }
 }
 
 /// Per-remote row: identity text plus typed tracking and comparison evidence.
@@ -395,8 +395,9 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     if data.last_fetched.is_some() {
         fields.push(DetailField::LastFetched);
     }
-    if data.remotes.is_unreadable() {
-        fields.push(DetailField::RemotesUnreadable);
+    match &data.remotes {
+        RemoteRows::Unreadable => fields.push(DetailField::RemotesUnreadable),
+        RemoteRows::AwaitingProbe | RemoteRows::Listed(_) => {},
     }
     for field in data.failed_reads.fields() {
         if !(fields.contains(&field)
@@ -416,15 +417,18 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     fields
 }
 
-pub fn git_has_description_row(data: &GitData) -> bool {
-    data.description
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|description| !description.is_empty())
+pub fn git_has_description_row(data: &GitData) -> GitDescription {
+    match data.description.as_deref().map(str::trim) {
+        Some(description) if !description.is_empty() => GitDescription::Present,
+        Some(_) | None => GitDescription::Absent,
+    }
 }
 
 pub fn git_row_at(data: &GitData, pos: usize) -> Option<GitRow<'_>> {
-    let description_rows = usize::from(git_has_description_row(data));
+    let description_rows = match git_has_description_row(data) {
+        GitDescription::Present => 1,
+        GitDescription::Absent => 0,
+    };
     if description_rows > 0 && pos == 0 {
         return data.description.as_deref().map(GitRow::Description);
     }
@@ -515,7 +519,7 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
                 .map_or(WorktreeHealth::Normal, |info| info.worktree_health),
             head,
             local_main_probe,
-            WorktreePlacement::of(app.project_list.worktree_status_for(abs_path)),
+            WorktreePlacement::from(app.project_list.worktree_status_for(abs_path)),
         ),
         bisect,
         path: app.project_list.git_status_for(abs_path),
@@ -576,7 +580,7 @@ fn section_from_pr_info(
             pull_request_row(
                 pull_request,
                 &info.default_branch,
-                pr_check_polls.contains(&pull_request.number),
+                PullRequestPolling::from(pr_check_polls.contains(&pull_request.number)),
             )
         })
         .collect();
@@ -596,16 +600,16 @@ fn section_from_pr_info(
 fn pull_request_row(
     info: &PullRequestInfo,
     default_branch: &str,
-    is_polling: bool,
+    polling: PullRequestPolling,
 ) -> PullRequestRow {
     PullRequestRow {
-        number:      info.number,
-        title:       info.title.clone(),
-        url:         info.url.clone(),
+        number: info.number,
+        title: info.title.clone(),
+        url: info.url.clone(),
         state_label: info.state.label(),
-        polling:     PullRequestPolling::from(is_polling),
-        branch:      info.branch_label(default_branch),
-        base:        info.base.clone(),
+        polling,
+        branch: info.branch_label(default_branch),
+        base: info.base.clone(),
     }
 }
 
@@ -614,7 +618,7 @@ fn pull_request_row(
 /// tracked refs / ahead-behind values to placeholder runes.
 fn build_remote_rows(repo: &RepoInfo, default_host: &str, current_branch: &str) -> RemoteRows {
     let failures = GitReadFailures::of(None, Some(repo));
-    if failures.field_failed(DetailField::RemotesUnreadable) {
+    if failures.field_health(DetailField::RemotesUnreadable) == GitReadHealth::Unreadable {
         return RemoteRows::Unreadable;
     }
     RemoteRows::Listed(
@@ -631,12 +635,13 @@ fn build_remote_rows(repo: &RepoInfo, default_host: &str, current_branch: &str) 
                     .url
                     .as_deref()
                     .map_or_else(String::new, |raw| shorten_remote_url(raw, default_host));
-                let tracked_ref = if failures.remote_tracked_failed(index) {
-                    TrackedRef::Unreadable
-                } else {
-                    remote.tracked_ref.clone()
-                };
-                let status = if failures.remote_sync_failed(index) {
+                let tracked_ref =
+                    if failures.remote_tracked_health(index) == GitReadHealth::Unreadable {
+                        TrackedRef::Unreadable
+                    } else {
+                        remote.tracked_ref.clone()
+                    };
+                let status = if failures.remote_sync_health(index) == GitReadHealth::Unreadable {
                     Comparison::Unreadable
                 } else {
                     remote.ahead_behind
@@ -682,11 +687,6 @@ fn shorten_remote_url(url: &str, default_host: &str) -> String {
         .strip_suffix(GIT_DIR)
         .unwrap_or(stripped)
         .to_string()
-}
-
-/// Check whether a `RootItem` currently renders as a worktree group.
-pub(super) fn is_worktree_group(item: &RootItem) -> bool {
-    matches!(item, RootItem::Worktrees(group) if group.renders_as_group())
 }
 
 /// Collect worktree info from a worktree group item.
@@ -880,7 +880,7 @@ mod git_field_tests {
             },
         ));
         assert!(matches!(
-            WorktreePlacement::of(None),
+            WorktreePlacement::from(None),
             WorktreePlacement::NotLinked
         ));
     }
@@ -1010,6 +1010,9 @@ mod git_field_tests {
                 .git_value(&data)
                 .contains(HeadRelation::Feature.label())
         );
-        assert!(data.checkout.head_value_is_unreadable());
+        assert!(matches!(
+            data.checkout.head_read_health(),
+            GitReadHealth::Unreadable
+        ));
     }
 }

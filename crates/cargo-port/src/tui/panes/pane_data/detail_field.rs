@@ -1,4 +1,5 @@
 use super::GitCheckout;
+use super::GitReadHealth;
 use super::constants::HEAD_UNREADABLE_LABEL;
 use super::copy_data;
 use super::formatting;
@@ -169,7 +170,7 @@ impl DetailField {
 
     /// Get the display value for a git field from `GitData`.
     pub fn git_value(self, data: &GitData) -> String {
-        if self == Self::Head && data.failed_reads.field_failed(self) {
+        if self == Self::Head && data.failed_reads.field_health(self) == GitReadHealth::Unreadable {
             return match &data.checkout {
                 GitCheckout::Branch { name, .. } => format!("{name} · {GIT_UNREADABLE_LABEL}"),
                 GitCheckout::UnreadableHead => HEAD_UNREADABLE_LABEL.to_string(),

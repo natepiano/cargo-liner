@@ -191,10 +191,9 @@ enum WorktreeRootDisplay {
 
 impl From<&RootItem> for WorktreeRootDisplay {
     fn from(item: &RootItem) -> Self {
-        if git_data::is_worktree_group(item) {
-            Self::Grouped
-        } else {
-            Self::Single
+        match item {
+            RootItem::Worktrees(group) if group.renders_as_group() => Self::Grouped,
+            RootItem::Worktrees(_) | RootItem::Rust(_) | RootItem::NonRust(_) => Self::Single,
         }
     }
 }

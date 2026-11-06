@@ -69,6 +69,10 @@ use crate::tui::panes::constants::WORKTREES_NAME_HEADER;
 use crate::tui::panes::package;
 use crate::tui::panes::pane_data::GitCheckout;
 use crate::tui::panes::pane_data::GitProbe;
+use crate::tui::panes::pane_data::GitReadHealth;
+#[cfg(not(test))]
+use crate::tui::panes::pane_data::PullRequestPolling;
+use crate::tui::panes::pane_data::RemoteRows;
 use crate::tui::panes::support;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state::AvailabilityStatus;
@@ -491,19 +495,22 @@ fn pull_request_row_line(
     animation_elapsed: Duration,
 ) -> Line<'static> {
     let style = selection.patch(Style::default().fg(inactive_title_color()));
-    if !row.polling.is_polling() {
-        let state = pull_request_state_text(row, animation_elapsed);
-        let text = format!(
-            " {:<number$}  {:<status$}  {:<branch$}  {}",
-            fit_text(&format!("#{}", row.number), widths.number),
-            fit_text(&state, widths.status),
-            fit_text(&row.branch, widths.branch),
-            fit_text(&row.title, widths.title),
-            number = widths.number,
-            status = widths.status,
-            branch = widths.branch,
-        );
-        return Line::from(Span::styled(text, style));
+    match row.polling {
+        PullRequestPolling::Active => {},
+        PullRequestPolling::Idle => {
+            let state = pull_request_state_text(row, animation_elapsed);
+            let text = format!(
+                " {:<number$}  {:<status$}  {:<branch$}  {}",
+                fit_text(&format!("#{}", row.number), widths.number),
+                fit_text(&state, widths.status),
+                fit_text(&row.branch, widths.branch),
+                fit_text(&row.title, widths.title),
+                number = widths.number,
+                status = widths.status,
+                branch = widths.branch,
+            );
+            return Line::from(Span::styled(text, style));
+        },
     }
 
     let spinner = ACTIVITY_SPINNER.frame_at(animation_elapsed);
@@ -538,14 +545,13 @@ fn pull_request_row_line(
 }
 
 fn pull_request_state_text(row: &PullRequestRow, animation_elapsed: Duration) -> String {
-    if row.polling.is_polling() {
-        format!(
+    match row.polling {
+        PullRequestPolling::Active => format!(
             "{} {}",
             row.state_label,
             ACTIVITY_SPINNER.frame_at(animation_elapsed)
-        )
-    } else {
-        row.state_label.to_string()
+        ),
+        PullRequestPolling::Idle => row.state_label.to_string(),
     }
 }
 
@@ -702,13 +708,16 @@ fn build_field_value(
 ) -> String {
     if field == DetailField::Head {
         let raw = field.git_value(data);
-        return if data.is_local()
-            && !raw.is_empty()
-            && !matches!(data.checkout, GitCheckout::UnreadableHead)
-        {
-            format!("{raw} ({GIT_LOCAL} local)")
-        } else {
-            raw
+        // A readable repo with no remotes gets the local branch annotation.
+        return match &data.remotes {
+            RemoteRows::Listed(rows)
+                if rows.is_empty()
+                    && !raw.is_empty()
+                    && !matches!(data.checkout, GitCheckout::UnreadableHead) =>
+            {
+                format!("{raw} ({GIT_LOCAL} local)")
+            },
+            RemoteRows::Listed(_) | RemoteRows::AwaitingProbe | RemoteRows::Unreadable => raw,
         };
     }
     let raw = field.git_value(data);
@@ -765,9 +774,13 @@ impl GitValueStyle {
 
 fn field_value_style(data: &GitData, field: DetailField) -> Style {
     let role = match field {
-        field if data.failed_reads.field_failed(field) => GitValueStyle::Error,
+        field if data.failed_reads.field_health(field) == GitReadHealth::Unreadable => {
+            GitValueStyle::Error
+        },
         DetailField::WorktreeError => GitValueStyle::Broken,
-        DetailField::Head if data.checkout.head_value_is_unreadable() => GitValueStyle::Error,
+        DetailField::Head if data.checkout.head_read_health() == GitReadHealth::Unreadable => {
+            GitValueStyle::Error
+        },
         DetailField::GitStatus if matches!(data.status, Some(GitStatus::Unreadable)) => {
             GitValueStyle::Error
         },
@@ -1214,7 +1227,11 @@ pub(super) fn render_git_pane_body(
     };
 
     let flat_fields = panes::git_fields_from_data(&git_data);
-    let description_rows = usize::from(panes::git_has_description_row(&git_data));
+    let description = panes::git_has_description_row(&git_data);
+    let description_rows = match description {
+        GitDescription::Present => 1,
+        GitDescription::Absent => 0,
+    };
     let total_rows = description_rows
         + flat_fields.len()
         + git_data.pull_requests.rows.len()
@@ -1232,11 +1249,7 @@ pub(super) fn render_git_pane_body(
     // addressable `total_rows`, so the pager must use rendered height.
     pane.viewport.set_content_height(git_content_height(
         usize::from(ctx.synced_description_height.rows()),
-        if description_rows > 0 {
-            GitDescription::Present
-        } else {
-            GitDescription::Absent
-        },
+        description,
         git_lower_content_height(&git_data, flat_fields.len()),
     ));
     let pane_focus_state = pane.focus.pane_focus_state;
@@ -1443,7 +1456,7 @@ pub(in crate::tui::panes) fn git_lower_content_height(
 /// `GitDescription::Present` includes the About section in `git_content_height`;
 /// `GitDescription::Absent` omits its description and separator rows.
 #[derive(Clone, Copy)]
-pub(in crate::tui::panes) enum GitDescription {
+pub(in crate::tui) enum GitDescription {
     Present,
     Absent,
 }

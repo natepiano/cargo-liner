@@ -51,6 +51,7 @@ use crate::tui::panes::PaneBehavior;
 use crate::tui::panes::PaneId;
 use crate::tui::sccache;
 use crate::tui::settings;
+use crate::tui::state::inflight::OwnedRunActivity;
 use crate::tui::terminal;
 
 pub fn handle_event(app: &mut App, event: &Event) {
@@ -210,8 +211,12 @@ fn classify_output_cancel_preflight(
     let output_visual = is_output_cancel
         && app.focus_is(PaneId::Output)
         && app.panes.output.selection().is_visual();
-    let running_example =
-        can_handle_output_cancel && code == KeyCode::Esc && app.inflight.owned_run().is_running();
+    let running_example = can_handle_output_cancel
+        && code == KeyCode::Esc
+        && matches!(
+            app.inflight.owned_run().activity(),
+            OwnedRunActivity::Running
+        );
     let visible_output = is_output_cancel
         && matches!(
             app.output_copy_availability(),
@@ -832,7 +837,10 @@ pub fn dispatch_output_action(action: OutputAction, app: &mut App) {
 /// Stop the owned run if it is still running, and otherwise close its captured
 /// output and hand focus back to Targets.
 fn cancel_owned_output(app: &mut App) {
-    if app.inflight.owned_run().is_running() {
+    if matches!(
+        app.inflight.owned_run().activity(),
+        OwnedRunActivity::Running
+    ) {
         let _ = terminal::signal_owned_run(&mut app.inflight);
     } else if matches!(
         app.output_copy_availability(),

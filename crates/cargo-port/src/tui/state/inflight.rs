@@ -40,11 +40,11 @@ use crate::tui::panes::RunTargetKind;
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct OwnedRunId(NonZeroU64);
 
-impl OwnedRunId {
-    /// Name one owned-run identity directly, so classification tests can state
-    /// owned-root evidence without driving a launch.
-    #[cfg(test)]
-    pub(crate) const fn for_test(owned_run_id: NonZeroU64) -> Self { Self(owned_run_id) }
+/// From<NonZeroU64> names one owned-run identity directly in tests, so
+/// classification tests can state owned-root evidence without driving a launch.
+#[cfg(test)]
+impl From<NonZeroU64> for OwnedRunId {
+    fn from(owned_run_id: NonZeroU64) -> Self { Self(owned_run_id) }
 }
 
 /// Whether the monotonic counter still had an unused owned-run identity.
@@ -58,6 +58,24 @@ enum OwnedRunIdAllocation {
     Allocated(OwnedRunId),
     /// Every identity the counter can represent has already been issued.
     Exhausted,
+}
+
+/// `OwnedRunActivity` groups the live Running and `TerminationRequestPending`
+/// lifecycles for cancellation and spinner scheduling; all other phases are inactive.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::tui) enum OwnedRunActivity {
+    Running,
+    Inactive,
+}
+
+/// `OutputCorrelation` validates the retaining producer against the current lifecycle.
+#[derive(Debug, Eq, PartialEq)]
+enum OutputCorrelation {
+    Valid,
+    NotEarlierThanPendingRun,
+    DifferentRun,
+    MissingProducer,
+    ProducerWithoutRun,
 }
 
 /// The sole owner of the one Cargo Port-owned run's lifecycle and output.
@@ -85,9 +103,9 @@ impl OwnedRun {
     const fn identity(&self) -> OwnedRunIdentityRef<'_> { self.lifecycle.identity() }
 
     pub(in crate::tui) fn output(&self) -> &[String] {
-        debug_assert!(
-            self.lifecycle
-                .output_identity_is_valid(self.output_identity())
+        debug_assert_eq!(
+            self.lifecycle.output_correlation(self.output_identity()),
+            OutputCorrelation::Valid,
         );
         self.lifecycle.output()
     }
@@ -103,9 +121,9 @@ impl OwnedRun {
     /// [`Self::identity`]: run N's output stays labelled N while run N+1 is
     /// queued or starting.
     pub(in crate::tui) fn output_state(&self) -> OwnedRunOutputStateRef<'_> {
-        debug_assert!(
-            self.lifecycle
-                .output_identity_is_valid(self.output_identity())
+        debug_assert_eq!(
+            self.lifecycle.output_correlation(self.output_identity()),
+            OutputCorrelation::Valid,
         );
         match self.lifecycle.output_identity() {
             OwnedRunOutputIdentityRef::Uncorrelated => OwnedRunOutputStateRef::Absent,
@@ -123,11 +141,19 @@ impl OwnedRun {
         self.lifecycle.running_label()
     }
 
-    pub(in crate::tui) const fn is_running(&self) -> bool {
-        matches!(
-            self.lifecycle(),
-            OwnedRunLifecycle::Running(_) | OwnedRunLifecycle::TerminationRequestPending(_)
-        )
+    pub(in crate::tui) const fn activity(&self) -> OwnedRunActivity {
+        match self.lifecycle() {
+            OwnedRunLifecycle::Running(_) | OwnedRunLifecycle::TerminationRequestPending(_) => {
+                OwnedRunActivity::Running
+            },
+            OwnedRunLifecycle::Absent(_)
+            | OwnedRunLifecycle::Queued(_)
+            | OwnedRunLifecycle::Starting(_)
+            | OwnedRunLifecycle::Stopping(_)
+            | OwnedRunLifecycle::RetainedSuccess(_)
+            | OwnedRunLifecycle::GoneAfterSignal(_)
+            | OwnedRunLifecycle::Failed(_) => OwnedRunActivity::Inactive,
+        }
     }
 
     const fn allocate_id(&mut self) -> OwnedRunIdAllocation {
@@ -322,7 +348,8 @@ impl OwnedRun {
     fn acknowledge_started(&self, owned_run_id: OwnedRunId) -> OwnedRunMessageUpdate {
         match self.identity() {
             OwnedRunIdentityRef::Current(current_owned_run_id)
-                if *current_owned_run_id == owned_run_id && self.is_running() =>
+                if *current_owned_run_id == owned_run_id
+                    && matches!(self.activity(), OwnedRunActivity::Running) =>
             {
                 OwnedRunMessageUpdate::Applied
             },
@@ -757,46 +784,90 @@ impl OwnedRunLifecycle {
         }
     }
 
-    fn output_identity_is_valid(&self, output_identity: OwnedRunOutputIdentityRef<'_>) -> bool {
+    fn output_correlation(
+        &self,
+        output_identity: OwnedRunOutputIdentityRef<'_>,
+    ) -> OutputCorrelation {
         match (self, output_identity) {
             (
                 Self::Absent(_) | Self::Queued(_) | Self::Starting(_),
                 OwnedRunOutputIdentityRef::Uncorrelated,
-            ) => true,
+            ) => OutputCorrelation::Valid,
             (
                 Self::Queued(queued_owned_run),
                 OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
-            ) => output_owned_run_id < &queued_owned_run.owned_run_id,
+            ) => {
+                if output_owned_run_id < &queued_owned_run.owned_run_id {
+                    OutputCorrelation::Valid
+                } else {
+                    OutputCorrelation::NotEarlierThanPendingRun
+                }
+            },
             (
                 Self::Starting(starting_owned_run),
                 OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
-            ) => output_owned_run_id < &starting_owned_run.owned_run_id,
+            ) => {
+                if output_owned_run_id < &starting_owned_run.owned_run_id {
+                    OutputCorrelation::Valid
+                } else {
+                    OutputCorrelation::NotEarlierThanPendingRun
+                }
+            },
             (
                 Self::Running(running_owned_run),
                 OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
-            ) => output_owned_run_id == &running_owned_run.owned_run_id,
+            ) => {
+                if output_owned_run_id == &running_owned_run.owned_run_id {
+                    OutputCorrelation::Valid
+                } else {
+                    OutputCorrelation::DifferentRun
+                }
+            },
             (
                 Self::TerminationRequestPending(termination_request_pending_owned_run),
                 OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
             ) => {
-                output_owned_run_id
+                if output_owned_run_id
                     == &termination_request_pending_owned_run
                         .running_owned_run
                         .owned_run_id
+                {
+                    OutputCorrelation::Valid
+                } else {
+                    OutputCorrelation::DifferentRun
+                }
             },
             (
                 Self::Stopping(stopping_owned_run),
                 OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
-            ) => output_owned_run_id == &stopping_owned_run.owned_run_id,
+            ) => {
+                if output_owned_run_id == &stopping_owned_run.owned_run_id {
+                    OutputCorrelation::Valid
+                } else {
+                    OutputCorrelation::DifferentRun
+                }
+            },
             (
                 Self::RetainedSuccess(retained_owned_run)
                 | Self::GoneAfterSignal(retained_owned_run),
                 OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
-            ) => output_owned_run_id == &retained_owned_run.owned_run_id,
+            ) => {
+                if output_owned_run_id == &retained_owned_run.owned_run_id {
+                    OutputCorrelation::Valid
+                } else {
+                    OutputCorrelation::DifferentRun
+                }
+            },
             (
                 Self::Failed(failed_owned_run),
                 OwnedRunOutputIdentityRef::Correlated(output_owned_run_id),
-            ) => output_owned_run_id == &failed_owned_run.owned_run_id,
+            ) => {
+                if output_owned_run_id == &failed_owned_run.owned_run_id {
+                    OutputCorrelation::Valid
+                } else {
+                    OutputCorrelation::DifferentRun
+                }
+            },
             (
                 Self::Running(_)
                 | Self::TerminationRequestPending(_)
@@ -805,8 +876,10 @@ impl OwnedRunLifecycle {
                 | Self::GoneAfterSignal(_)
                 | Self::Failed(_),
                 OwnedRunOutputIdentityRef::Uncorrelated,
-            )
-            | (Self::Absent(_), OwnedRunOutputIdentityRef::Correlated(_)) => false,
+            ) => OutputCorrelation::MissingProducer,
+            (Self::Absent(_), OwnedRunOutputIdentityRef::Correlated(_)) => {
+                OutputCorrelation::ProducerWithoutRun
+            },
         }
     }
 
@@ -1220,7 +1293,7 @@ impl Inflight {
     /// Whether a cargo clean or owned run is in flight, so the render loop
     /// should keep ticking to advance their spinners.
     pub(crate) fn needs_animation(&self) -> bool {
-        !self.clean().is_empty() || self.owned_run.is_running()
+        !self.clean().is_empty() || matches!(self.owned_run.activity(), OwnedRunActivity::Running)
     }
 
     // `pending_cleans_mut` and the pending-CI-fetch accessors manage queued work.
@@ -1653,7 +1726,7 @@ mod tests {
     fn stale_termination_outcome_cannot_change_the_pending_run() {
         let mut inflight = fresh();
         let owned_run_id = submit_termination_request(&mut inflight);
-        let stale_owned_run_id = OwnedRunId::for_test(
+        let stale_owned_run_id = OwnedRunId::from(
             owned_run_id
                 .0
                 .checked_add(1)

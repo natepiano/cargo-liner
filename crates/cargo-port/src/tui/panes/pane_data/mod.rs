@@ -48,13 +48,11 @@ pub(in crate::tui) use git_data::GitProbe;
 pub use git_data::GitRow;
 #[cfg(test)]
 pub use git_data::HeadRelation;
-#[cfg(test)]
 pub use git_data::PullRequestPolling;
 pub use git_data::PullRequestRow;
 pub use git_data::PullRequestSection;
 pub use git_data::PullRequestSectionState;
 pub use git_data::RemoteRow;
-#[cfg(test)]
 pub(in crate::tui) use git_data::RemoteRows;
 pub use git_data::WorktreeInfo;
 pub use git_data::git_fields_from_data;
