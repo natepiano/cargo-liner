@@ -58,3 +58,4 @@ Changes the user sent back from change review. Each row stays until its fix merg
 | Change | What the user said | Unit | Fix phase (plan commit) | State |
 | --- | --- | --- | --- | --- |
 | C201 — a waiting Codex worker shows in its unit's tree | screenshot 20:44 EST 2026-11-05: herdr workers with live detached runs showed `idle`; "yes send it back" | handler | Phase 62h in `remove-running-section-handler-footer-colors.md` (d7771e0c3) | todo; runs first when handler resumes |
+| C205 — project-list columns drop before names truncate | "i don't see columns for Type, Git, SYnc, Main - you're getting rid of columns before you make project names have an ellipipsis - columns should always be preserved - the project names should get ellipsis first"; screenshot 2026-11-06: only Projects and Disk at about 95 columns | port | Phase 4c in `cargo-liner-port.md` (plan commit pending from port) | todo; in port's running 4c |
