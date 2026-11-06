@@ -18,6 +18,8 @@ use crate::tui::panes::cpu;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::startup_services::StartupEffect;
 use crate::tui::startup_services::StartupServices;
+#[cfg(test)]
+use crate::tui::test_support::contrast_failures;
 
 enum CpuMonitorSlot {
     Active(CpuMonitor),
@@ -189,6 +191,7 @@ impl Hittable<HoverTarget> for CpuPane {
 mod tests {
     use std::time::Duration;
 
+    use anyhow::Context;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -201,6 +204,7 @@ mod tests {
     use tui_pane::GpuUsage;
     use tui_pane::Hittable;
     use tui_pane::PaneBorders;
+    use tui_pane::PaneFocusState;
     use tui_pane::PaneFrameChrome;
 
     use super::CpuMonitorSlot;
@@ -208,6 +212,7 @@ mod tests {
     use super::CpuSamplePhase;
     use crate::channel;
     use crate::config::CpuConfig;
+    use crate::tui::panes::PaneId;
     use crate::tui::panes::constants::CPU_PANE_WIDTH;
     use crate::tui::panes::cpu::render;
     use crate::tui::startup_services::StartupServices;
@@ -305,6 +310,48 @@ mod tests {
 
     fn quiet_pane() -> CpuPane {
         CpuPane::new(&CpuConfig::default(), StartupServices::quiet_unit_test())
+    }
+
+    #[test]
+    fn selected_cpu_labels_use_selection_ink_on_both_fills() -> anyhow::Result<()> {
+        let previous = tui_pane::theme();
+        tui_pane::set_active_theme(std::sync::Arc::new(
+            crate::tui::test_support::shipped_dark_theme()?,
+        ));
+        let result = (|| -> anyhow::Result<()> {
+            for focus in [PaneFocusState::Active, PaneFocusState::Remembered] {
+                let mut pane = quiet_pane();
+                pane.sample_phase = CpuSamplePhase::Sampled(sampled_usage());
+                pane.focus.pane_focus_state = focus;
+                let mut terminal = Terminal::new(TestBackend::new(30, 20))?;
+                terminal.draw(|frame| {
+                    let area = frame.area();
+                    render::render_cpu_sample_phase(
+                        frame,
+                        tui_pane::frame_inner(area),
+                        area,
+                        &mut pane,
+                        &CpuConfig::default(),
+                        &mut PaneFrameChrome::default(),
+                    );
+                })?;
+                let buffer = terminal.backend().buffer();
+                let failures = crate::tui::test_support::contrast_failures(
+                    buffer,
+                    &["CPU cores"],
+                    "selected CPU label",
+                );
+                assert!(failures.is_empty(), "{}", failures.join("\n"));
+                let (_, y) = crate::tui::test_support::position(buffer, "CPU cores")?;
+                for x in 1..29 {
+                    assert_eq!(buffer[(x, y)].fg, ratatui::style::Color::Rgb(255, 255, 255));
+                    assert_eq!(buffer[(x, y)].bg, buffer[(2, y)].bg);
+                }
+            }
+            Ok(())
+        })();
+        tui_pane::set_active_theme(previous);
+        result
     }
 
     fn sampled_usage() -> CpuUsage {
@@ -575,6 +622,97 @@ mod tests {
             rows.iter().any(|row| row.trim() == "Device      73%"),
             "{rows:?}"
         );
+    }
+
+    #[test]
+    fn system_percentage_has_readable_contrast_in_the_shipped_dark_theme() -> anyhow::Result<()> {
+        let theme = crate::themes::builtins()
+            .into_iter()
+            .find(|variant| variant.id.as_str() == crate::constants::DEFAULT_DARK_THEME)
+            .context("the shipped dark theme")?
+            .theme;
+        let previous = tui_pane::theme();
+        let background = theme.text.bg_focus.color;
+        tui_pane::set_active_theme(std::sync::Arc::new(theme));
+        let mut pane = quiet_pane();
+        pane.sample_phase = CpuSamplePhase::Sampled(sampled_usage());
+        let mut terminal = Terminal::new(TestBackend::new(CPU_PANE_WIDTH, 24))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            frame.render_widget(
+                ratatui::widgets::Block::new()
+                    .style(ratatui::style::Style::default().bg(background)),
+                area,
+            );
+            render::render_cpu_sample_phase(
+                frame,
+                tui_pane::frame_inner(area),
+                area,
+                &mut pane,
+                &CpuConfig::default(),
+                &mut PaneFrameChrome::default(),
+            );
+        })?;
+        tui_pane::set_active_theme(previous);
+        let failures =
+            super::contrast_failures(terminal.backend().buffer(), &["12%"], "System percentage");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn cpu_bars_keep_distinct_levels_without_color() -> anyhow::Result<()> {
+        const CHILD_ENV: &str = "CARGO_PORT_CPU_NO_COLOR_CHILD";
+        const TEST: &str = "cpu_bars_keep_distinct_levels_without_color";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let module = module_path!()
+                .split_once("::")
+                .context("the test module")?
+                .1;
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", &format!("{module}::{TEST}")])
+                .env(CHILD_ENV, "1")
+                .env("NO_COLOR", "1")
+                .output()?;
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return Ok(());
+        }
+        let mut app = crate::tui::test_support::make_app(&[]);
+        let mut usage = usage_with_cores(2, 25);
+        usage.cores[1].percent = 75;
+        app.panes.cpu.sample_phase = CpuSamplePhase::Sampled(usage);
+        app.ensure_visible_rows_cached();
+        app.ensure_fit_widths_cached();
+        let mut terminal = Terminal::new(TestBackend::new(160, 45))?;
+        let frame = terminal.draw(|frame| crate::tui::render::ui(frame, &mut app))?;
+        let area = app.panes.tiled_layout.area(PaneId::Cpu);
+        let rows: Vec<String> = (area.y..area.bottom())
+            .map(|y| {
+                (area.x..area.right())
+                    .map(|x| frame.buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect();
+        let low = rows
+            .iter()
+            .find(|row| row.contains("25%") && row.contains('█'))
+            .context("the low utilization bar")?;
+        let high = rows
+            .iter()
+            .find(|row| row.contains("75%") && row.contains('█'))
+            .context("the high utilization bar")?;
+        assert!(
+            low.matches('█').count() < high.matches('█').count(),
+            "{rows:?}"
+        );
+        assert!(frame.buffer.content.iter().all(|cell| {
+            cell.fg == ratatui::style::Color::Reset && cell.bg == ratatui::style::Color::Reset
+        }));
+        Ok(())
     }
 
     #[test]

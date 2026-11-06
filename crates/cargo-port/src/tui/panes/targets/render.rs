@@ -107,6 +107,13 @@ fn render_targets_with_data(
         area,
         &mut pane_frame_chrome,
     );
+    for (rect, row) in &row_rects {
+        theme_roles::paint_selection(
+            frame,
+            *rect,
+            tui_pane::selection_state(&pane.viewport, *row, pane_focus_state),
+        );
+    }
     pane.set_row_rects(row_rects);
     pane_frame_chrome
 }
@@ -134,7 +141,7 @@ fn render_targets_table(
     let table = Table::new(rows, widths)
         .column_spacing(TARGET_TABLE_COLUMN_SPACING)
         .row_highlight_style(Style::default())
-        .header(build_header_row());
+        .header(build_header_row(&layout));
     let mut table_state = TableState::default().with_selected(Some(cursor));
     *table_state.offset_mut() = pane.viewport.scroll_offset();
     frame.render_stateful_widget(table, table_area, &mut table_state);
@@ -184,21 +191,21 @@ fn build_targets_title(focus: PaneFocusState, cursor: usize, data: &TargetsData)
     let mut pane_title_groups = Vec::new();
     if bin_count > 0 {
         pane_title_groups.push(PaneTitleGroup {
-            label:  "Binary".into(),
+            label:  "binary".into(),
             len:    bin_count,
             cursor: section_cursor(0, bin_count),
         });
     }
     if ex_count > 0 {
         pane_title_groups.push(PaneTitleGroup {
-            label:  "Examples".into(),
+            label:  "examples".into(),
             len:    ex_count,
             cursor: section_cursor(bin_count, ex_count),
         });
     }
     if bench_count > 0 {
         pane_title_groups.push(PaneTitleGroup {
-            label:  "Benches".into(),
+            label:  "benches".into(),
             len:    bench_count,
             cursor: section_cursor(bin_count + ex_count, bench_count),
         });
@@ -211,8 +218,14 @@ fn compute_layout(target_entries: &[TargetEntry], content_width: u16) -> Layout 
     let source = source_col_width_from(target_entries);
     let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
     let text_budget = usize::from(content_width).saturating_sub(kind + gaps);
-    let source = source.min(text_budget);
-    let target = text_budget.saturating_sub(source);
+    let minimum_target = TARGET_LEADING_PAD + columns::display_width(TARGET_HEADER);
+    let source = if source + minimum_target <= text_budget {
+        source
+    } else {
+        0
+    };
+    let target = text_budget.saturating_sub(source)
+        + usize::from(source == 0) * usize::from(TARGET_TABLE_COLUMN_SPACING);
     Layout {
         target,
         kind,
@@ -231,14 +244,17 @@ fn name_cell(display_name: &str, name_max: usize) -> Cell<'static> {
 fn target_row(entry: &TargetEntry, name_cell: Cell<'static>, layout: &Layout) -> Row<'static> {
     let source_label =
         render::truncate_with_ellipsis(entry.source.label(), layout.source, "\u{2026}");
-    Row::new(vec![
-        name_cell,
-        Cell::from(source_label).style(Style::default().fg(label_color())),
+    let mut cells = vec![name_cell];
+    if layout.source > 0 {
+        cells.push(Cell::from(source_label).style(Style::default().fg(label_color())));
+    }
+    cells.push(
         Cell::from(
             Line::from(format!("{} ", entry.run_target_kind.label())).alignment(Alignment::Right),
         )
         .style(Style::default().fg(entry.run_target_kind.color())),
-    ])
+    );
+    Row::new(cells)
 }
 
 fn build_rows(
@@ -263,21 +279,44 @@ fn build_rows(
 }
 
 fn build_widths(layout: &Layout) -> Vec<Constraint> {
-    vec![
-        Constraint::Length(u16::try_from(layout.target).unwrap_or(u16::MAX)),
-        Constraint::Length(u16::try_from(layout.source).unwrap_or(u16::MAX)),
-        Constraint::Length(u16::try_from(layout.kind).unwrap_or(u16::MAX)),
-    ]
+    let mut widths = vec![Constraint::Length(
+        u16::try_from(layout.target).unwrap_or(u16::MAX),
+    )];
+    if layout.source > 0 {
+        widths.push(Constraint::Length(
+            u16::try_from(layout.source).unwrap_or(u16::MAX),
+        ));
+    }
+    widths.push(Constraint::Length(
+        u16::try_from(layout.kind).unwrap_or(u16::MAX),
+    ));
+    widths
 }
 
-fn build_header_row() -> Row<'static> {
+fn build_header_row(layout: &Layout) -> Row<'static> {
     let header_style = Style::default().fg(theme_roles::column_header_color());
-    Row::new(vec![
-        Cell::from(Span::styled(format!(" {TARGET_HEADER}"), header_style)),
-        Cell::from(Span::styled(SOURCE_HEADER, header_style)),
-        Cell::from(Line::from(Span::styled("Kind ", header_style)).alignment(Alignment::Right)),
-    ])
-    .height(1)
+    let mut cells = vec![Cell::from(Span::styled(
+        format!(" {TARGET_HEADER}"),
+        header_style,
+    ))];
+    if layout.source > 0 {
+        cells.push(Cell::from(Span::styled(SOURCE_HEADER, header_style)));
+    }
+    cells.push(Cell::from(
+        Line::from(Span::styled("Kind ", header_style)).alignment(Alignment::Right),
+    ));
+    Row::new(cells).height(1)
+}
+
+pub(in crate::tui::panes) fn minimum_width() -> u16 {
+    u16::try_from(
+        columns::display_width(TARGET_HEADER)
+            + TARGET_LEADING_PAD
+            + panes::RunTargetKind::padded_label_width()
+            + usize::from(TARGET_TABLE_COLUMN_SPACING)
+            + tui_pane::BLOCK_BORDER_WIDTH,
+    )
+    .unwrap_or(u16::MAX)
 }
 
 /// Width of the Target column: the longest visible target label plus the

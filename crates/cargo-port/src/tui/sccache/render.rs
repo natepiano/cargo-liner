@@ -37,6 +37,7 @@ use crate::tui::integration::AppGlobalAction;
 use crate::tui::integration::AppPaneId;
 use crate::tui::keymap::SccacheAction;
 use crate::tui::overlays::PopupFrame;
+use crate::tui::theme_roles;
 
 struct SccacheLines {
     lines:            Vec<Line<'static>>,
@@ -45,7 +46,7 @@ struct SccacheLines {
 
 pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App) {
     let SccacheLines {
-        lines,
+        mut lines,
         selectable_lines,
     } = build_lines(&app.overlays.sccache_pane);
     let hints = shortcut_hints(app);
@@ -54,7 +55,7 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
         .min(frame.area().width.saturating_sub(POPUP_HORIZONTAL_MARGIN));
     let height = popup_height(lines.len() + 1, frame.area().height);
     let popup = PopupFrame {
-        title: Some(" Sccache Stats ".to_string()),
+        title: Some(" Sccache stats ".to_string()),
         border_color: title_color(),
         width,
         height,
@@ -82,20 +83,27 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
         .set_selectable_lines(selectable_lines);
     let visible_height = usize::from(inner.height);
     // A status-only popup starts at its first line.
-    let scroll_offset = app.overlays.sccache_pane.selected_line().map_or(0, |line| {
-        keep_visible_scroll_offset(line.line_index, visible_height, line_count)
-    });
+    let selected_line = app
+        .overlays
+        .sccache_pane
+        .selected_line()
+        .map_or(0, |line| line.line_index);
+    let scroll_offset = keep_visible_scroll_offset(selected_line, visible_height, line_count);
     let viewport = app.overlays.sccache_pane.viewport_mut();
     viewport.set_content_area(inner);
     viewport.set_viewport_rows(visible_height);
     viewport.set_scroll_offset(scroll_offset);
 
+    for line in &mut lines {
+        let padding = usize::from(inner.width).saturating_sub(line.width());
+        line.spans.push(Span::raw(" ".repeat(padding)));
+    }
     let paragraph = Paragraph::new(lines).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
     frame.render_widget(paragraph, inner);
     render_overflow_affordance(
         frame,
         popup.outer,
-        ViewportOverflow::new(line_count, scroll_offset, visible_height, scroll_offset),
+        ViewportOverflow::new(line_count, scroll_offset, visible_height, selected_line),
         Style::default().fg(label_color()),
     );
 }
@@ -124,7 +132,7 @@ fn shortcut_hints(app: &App) -> Line<'static> {
     if let Some(scope) = keymap.navigation() {
         for (backward, forward, label) in [
             (NavAction::Up, NavAction::Down, "nav"),
-            (NavAction::Home, NavAction::End, "ends"),
+            (NavAction::Home, NavAction::End, "first/last"),
             (NavAction::PageUp, NavAction::PageDown, "page"),
             (NavAction::HalfPageUp, NavAction::HalfPageDown, "half page"),
         ] {
@@ -234,17 +242,27 @@ fn push_parsed_stat_line(
             });
             let selection = selection_state(&pane.viewport, target, PaneFocusState::Active);
             let label_width = stat_label_width();
-            lines.push(Line::from(vec![
-                Span::styled(SECTION_ITEM_INDENT, selection.patch(Style::default())),
-                Span::styled(
-                    format!("{label:<label_width$} "),
-                    selection.patch(Style::default().fg(label_color())),
-                ),
-                Span::styled(
-                    alignment.format(&value),
-                    selection.patch(Style::default().fg(text_default())),
-                ),
-            ]));
+            lines.push(
+                Line::from(vec![
+                    Span::styled(
+                        SECTION_ITEM_INDENT,
+                        crate::tui::theme_roles::selection_style(selection),
+                    ),
+                    Span::styled(
+                        format!("{label:<label_width$} "),
+                        Style::default()
+                            .fg(label_color())
+                            .patch(crate::tui::theme_roles::selection_style(selection)),
+                    ),
+                    Span::styled(
+                        alignment.format(&value),
+                        Style::default()
+                            .fg(text_default())
+                            .patch(crate::tui::theme_roles::selection_style(selection)),
+                    ),
+                ])
+                .style(theme_roles::selection_style(selection)),
+            );
         },
         ParsedStatLine::Subheader { text, context: _ } => push_subheader(lines, text),
         ParsedStatLine::Text(text) => push_item(lines, text),
@@ -385,7 +403,7 @@ mod tests {
         let hints = shortcut_hints(&app).to_string();
         assert_eq!(
             hints,
-            "Esc close · y copy · ↑/↓ nav · home/end ends · pageup/pagedown page"
+            "Esc close · y copy · ↑/↓ nav · home/end first/last · pageup/pagedown page"
         );
         let mut terminal = Terminal::new(TestBackend::new(100, 12)).expect("terminal");
         terminal
@@ -419,7 +437,7 @@ mod tests {
         );
         assert_eq!(
             shortcut_hints(&app).to_string(),
-            "⌃w close · ⌃k/↓ nav · home/end ends · pageup/pagedown page"
+            "⌃w close · ⌃k/↓ nav · home/end first/last · pageup/pagedown page"
         );
         std::fs::write(&path, "[sccache]\ncancel = \"\"").expect("unbind close");
         let builder = Keymap::builder()

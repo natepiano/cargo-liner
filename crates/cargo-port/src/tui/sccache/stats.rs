@@ -35,6 +35,7 @@ fn parse_stat_line(text: &str, context: &mut StatContext) -> ParsedStatLine {
         return ParsedStatLine::Text(String::new());
     }
     if trimmed == "Non-cacheable reasons:" {
+        *context = StatContext::NonCacheableReasons;
         return ParsedStatLine::Subheader {
             text:    trimmed.to_string(),
             context: StatContext::NonCacheableReasons,
@@ -48,6 +49,7 @@ fn parse_stat_line(text: &str, context: &mut StatContext) -> ParsedStatLine {
         return ParsedStatLine::Field { label, value };
     }
     if trimmed.ends_with(':') {
+        *context = StatContext::Stats;
         return ParsedStatLine::Subheader {
             text:    trimmed.to_string(),
             context: StatContext::Stats,
@@ -68,9 +70,20 @@ fn normalize_stat_field(label: &str, value: &str, context: StatContext) -> (Stri
 
 fn normalize_reason_label(label: &str) -> String {
     match label {
-        "-" => "(no reason reported)".to_string(),
-        "-o" => "compiler flag -o".to_string(),
-        _ => label.to_string(),
+        "-" => "No reason reported".to_string(),
+        "-o" => "Output file named directly".to_string(),
+        "missing output_dir" => "No output directory".to_string(),
+        "multiple input files" => "Multiple input files".to_string(),
+        "crate-type" => "Unsupported crate type".to_string(),
+        "incremental" => "Incremental compilation".to_string(),
+        "missing input" => "No input file".to_string(),
+        "missing emit" => "No output kinds requested".to_string(),
+        _ => {
+            let mut letters = label.chars();
+            letters.next().map_or_else(String::new, |first| {
+                first.to_uppercase().collect::<String>() + letters.as_str()
+            })
+        },
     }
 }
 
@@ -172,14 +185,14 @@ mod tests {
         assert_eq!(
             parse_reason("-                                   297"),
             ParsedStatLine::Field {
-                label: "(no reason reported)".to_string(),
+                label: "No reason reported".to_string(),
                 value: "297".to_string(),
             },
         );
         assert_eq!(
             parse_reason("-o                                    6"),
             ParsedStatLine::Field {
-                label: "compiler flag -o".to_string(),
+                label: "Output file named directly".to_string(),
                 value: "6".to_string(),
             },
         );

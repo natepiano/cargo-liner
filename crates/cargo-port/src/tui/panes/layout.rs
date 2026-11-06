@@ -2,7 +2,6 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
-use tui_pane::PaneAxisSize;
 use tui_pane::PaneGridLayout;
 use tui_pane::PanePlacement;
 use tui_pane::ResolvedPane;
@@ -11,12 +10,33 @@ use tui_pane::ResolvedPaneLayout;
 use super::constants::CPU_PANE_WIDTH;
 use super::constants::PANE_BORDER_HEIGHT;
 use super::cpu;
+use super::lang;
 use super::spec::PaneId;
+use super::targets;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::tui) enum BottomRow {
     Diagnostics,
     Output,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::tui) enum PaneVisibility {
+    BeforeFirstDraw,
+    Hidden,
+    Visible,
+}
+
+impl PaneVisibility {
+    pub(in crate::tui) fn in_layout(layout: &ResolvedPaneLayout<PaneId>, pane: PaneId) -> Self {
+        if layout.panes.is_empty() {
+            Self::BeforeFirstDraw
+        } else if layout.area(pane).is_empty() {
+            Self::Hidden
+        } else {
+            Self::Visible
+        }
+    }
 }
 
 pub(super) fn derived_layout(bottom_row: BottomRow) -> PaneGridLayout<PaneId> {
@@ -117,7 +137,10 @@ pub(in crate::tui) fn resolve_layout(
         .split(area);
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(left_width), Constraint::Min(20)])
+        .constraints([
+            Constraint::Length(left_width.min(area.width / 2)),
+            Constraint::Min(0),
+        ])
         .split(area);
 
     let panes = derived_layout(bottom_row)
@@ -144,14 +167,29 @@ fn resolve_pane_area(rows: &[Rect], cols: &[Rect], pane: PaneId, bottom_row: Bot
             super::size_spec(PaneId::Git, CPU_PANE_WIDTH).width,
         ]))
         .split(top_right_area);
-    let middle_right = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(tui_pane::constraints_for_sizes(&[
-            super::size_spec(PaneId::Lang, CPU_PANE_WIDTH).width,
-            PaneAxisSize::Fixed(cpu_column_width()),
-            super::size_spec(PaneId::Targets, CPU_PANE_WIDTH).width,
-        ]))
-        .split(middle_right_area);
+    let language_min = lang::minimum_width();
+    let targets_min = targets::minimum_width();
+    let show_targets = middle_right_area.width >= cpu_column_width().saturating_add(targets_min);
+    let show_languages = middle_right_area.width
+        >= cpu_column_width()
+            .saturating_add(language_min)
+            .saturating_add(if show_targets { targets_min } else { 0 });
+    let mut middle_panes = Vec::new();
+    if show_languages {
+        middle_panes.push((PaneId::Lang, Constraint::Min(language_min)));
+    }
+    middle_panes.push((PaneId::Cpu, Constraint::Length(cpu_column_width())));
+    if show_targets {
+        middle_panes.push((PaneId::Targets, Constraint::Min(targets_min)));
+    }
+    let middle_areas =
+        Layout::horizontal(middle_panes.iter().map(|(_, size)| *size)).split(middle_right_area);
+    let middle_area = |id| {
+        middle_panes
+            .iter()
+            .position(|(pane, _)| *pane == id)
+            .map_or(Rect::ZERO, |index| middle_areas[index])
+    };
 
     match pane {
         PaneId::ProjectList => Rect::new(
@@ -165,9 +203,9 @@ fn resolve_pane_area(rows: &[Rect], cols: &[Rect], pane: PaneId, bottom_row: Bot
         ),
         PaneId::Package => top_right[0],
         PaneId::Git => top_right[1],
-        PaneId::Lang => middle_right[0],
-        PaneId::Cpu => middle_right[1],
-        PaneId::Targets => middle_right[2],
+        PaneId::Lang => middle_area(PaneId::Lang),
+        PaneId::Cpu => middle_area(PaneId::Cpu),
+        PaneId::Targets => middle_area(PaneId::Targets),
         PaneId::Lints => rows[2].intersection(project_col),
         PaneId::CiRuns => rows[2].intersection(right_col),
         PaneId::Output if matches!(bottom_row, BottomRow::Output) => rows[2],
@@ -235,7 +273,10 @@ const fn cpu_column_width() -> u16 { CPU_PANE_WIDTH }
 pub(in crate::tui) fn top_pane_widths(area: Rect, left_width: u16) -> (u16, u16) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(left_width), Constraint::Min(20)])
+        .constraints([
+            Constraint::Length(left_width.min(area.width / 2)),
+            Constraint::Min(0),
+        ])
         .split(area);
     let right_col = cols[1];
     let top_right = Layout::default()

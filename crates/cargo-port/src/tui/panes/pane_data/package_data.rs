@@ -115,9 +115,9 @@ pub enum PackageSection {
 impl PackageSection {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::WorktreeGroupSummary => "Worktree Group Summary",
-            Self::PrimaryWorkspace => "Primary Workspace",
-            Self::PrimaryPackage => "Primary Package",
+            Self::WorktreeGroupSummary => "Worktree group summary",
+            Self::PrimaryWorkspace => "Primary workspace",
+            Self::PrimaryPackage => "Primary package",
         }
     }
 }
@@ -174,6 +174,13 @@ pub enum PackageVersion {
     Submodule(PinnedCommit),
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum PackageDeletion {
+    #[default]
+    Present,
+    Deleted,
+}
+
 /// Per-pane data for the Package detail panel.
 #[derive(Clone, Default)]
 /// Per-project pane data the Package pane renders. The "value"
@@ -181,6 +188,7 @@ pub enum PackageVersion {
 /// without `&App` access. Pre-resolving `lint_display` and `ci_display`
 /// lets `PackagePane::render` operate on `&PackageData` alone.
 pub struct PackageData {
+    pub deletion:                 PackageDeletion,
     pub title:                    String,
     pub name:                     String,
     pub worktree_group_summary:   Option<WorktreeGroupSummary>,
@@ -311,13 +319,13 @@ pub(super) fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
     // sees which half of the bytes is build artifact vs source (the
     // two always sum to Disk for owners; for sharers the target line
     // reads 0 — target is redirected out of tree).
-    if data.in_project_target.is_some() {
+    if data.deletion == PackageDeletion::Present && data.in_project_target.is_some() {
         fields.push(DetailField::DiskTarget);
     }
-    if data.in_project_non_target.is_some() {
+    if data.deletion == PackageDeletion::Present && data.in_project_non_target.is_some() {
         fields.push(DetailField::DiskNonTarget);
     }
-    if data.out_of_tree_target_bytes.is_some() {
+    if data.deletion == PackageDeletion::Present && data.out_of_tree_target_bytes.is_some() {
         fields.push(DetailField::DiskOutOfTreeTarget);
     }
     fields.push(DetailField::Targets);
@@ -519,6 +527,7 @@ mod package_row_tests {
 
     fn package_data(is_rust_project: bool) -> PackageData {
         PackageData {
+            deletion:                 super::PackageDeletion::Present,
             title:                    if is_rust_project {
                 "Package".to_string()
             } else {

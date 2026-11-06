@@ -19,6 +19,7 @@ use std::path::Path;
 use super::constants;
 use super::constants::DiskCell;
 use super::constants::PREFIX_ROOT_COLLAPSED;
+use super::constants::PROJECT_LIST_LEFT_PADDING;
 use super::constants::TreeRowDepth;
 use crate::project::CheckoutInfo;
 use crate::project::MemberGroup;
@@ -73,7 +74,10 @@ pub(in crate::tui) const fn name_width_with_gutter(content_width: usize) -> usiz
 }
 
 fn observe_name_width(widths: &mut ProjectListWidths, content_width: usize) {
-    widths.observe(COL_NAME, name_width_with_gutter(content_width));
+    widths.observe(
+        COL_NAME,
+        name_width_with_gutter(PROJECT_LIST_LEFT_PADDING + content_width),
+    );
 }
 
 /// Project state shared by the name-marker and deletion-aware disk measurements.

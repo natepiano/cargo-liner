@@ -42,6 +42,7 @@ use crate::config::ScrollDirection;
 use crate::project::PinnedCommit;
 use crate::project::Submodule;
 use crate::tui::input;
+use crate::tui::panes::PaneId;
 
 fn package(path: &Path, name: &str) -> anyhow::Result<Package> {
     match test_support::make_package(name, path) {
@@ -84,6 +85,8 @@ fn assert_deleted_row(app: &mut App, path: &Path, name: &str) -> anyhow::Result<
         "the retained project must remain visible: {path:?}"
     );
     app.ensure_detail_cached();
+    app.ensure_fit_widths_cached();
+    app.ensure_disk_cache();
     let mut terminal = Terminal::new(TestBackend::new(TERMINAL_WIDTH, TERMINAL_HEIGHT))?;
     terminal.draw(|frame| render::ui(frame, app))?;
     let buffer = terminal.backend().buffer();
@@ -601,6 +604,9 @@ fn completed_scan_uses_first_visible_row_without_saving_missing_choice() {
 }
 
 fn selection_row_position(app: &mut App, name: &str) -> anyhow::Result<(u16, u16)> {
+    app.ensure_visible_rows_cached();
+    app.ensure_disk_cache();
+    app.ensure_fit_widths_cached();
     app.ensure_detail_cached();
     let mut terminal = Terminal::new(TestBackend::new(TERMINAL_WIDTH, TERMINAL_HEIGHT))?;
     terminal.draw(|frame| render::ui(frame, app))?;
@@ -902,5 +908,41 @@ fn rescan_and_quit_without_choice_do_not_persist_fallback() -> anyhow::Result<()
     let state: Value = toml::from_str(&serialized)?;
     assert!(state.get("selected").is_none(), "{serialized}");
     assert_eq!(app.project_list.paths.last_selected, None);
+    Ok(())
+}
+
+#[test]
+fn deleted_submodule_package_title_names_the_deleted_state() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("root");
+    let child = path.join("dependency");
+    fs::create_dir_all(&child)?;
+    let mut app = test_support::make_app(&[root(&path, "root")]);
+    let _ = app.handle_bg_msg(BackgroundMsg::Submodules {
+        path:       AbsolutePath::from(path),
+        submodules: vec![Submodule {
+            name:          "dependency".to_string(),
+            path:          AbsolutePath::from(child.clone()),
+            relative_path: "dependency".to_string(),
+            url:           None,
+            branch:        None,
+            commit:        PinnedCommit::Absent,
+            project_info:  crate::project::ProjectInfo::default(),
+            git_repo:      None,
+        }],
+    });
+    assert!(app.expand());
+    app.ensure_visible_rows_cached();
+    fs::remove_dir(&child)?;
+    let _ = app.handle_bg_msg(BackgroundMsg::DiskUsage {
+        path:  AbsolutePath::from(child),
+        bytes: 0,
+    });
+    app.ensure_visible_rows_cached();
+    app.project_list.set_cursor(1);
+    app.sync_selected_project();
+    app.ensure_detail_cached();
+    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 80)?;
+    test_support::position(&buffer, "Submodule - dependency (deleted)")?;
     Ok(())
 }

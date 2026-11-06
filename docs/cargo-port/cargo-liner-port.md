@@ -368,7 +368,7 @@ A deleted project stays on the list, struck through and dismissable, until the u
 - `crates/cargo-port/src/tui/app/mod.rs` — the caller
 - `crates/cargo-port/CHANGELOG.md`, `docs/cargo-port/as-built/overview.md`
 
-### Phase 4b — cargo-port's selection, contrast and narrow panes read clearly  · status: todo
+### Phase 4b — cargo-port's selection, contrast and narrow panes read clearly  · status: done
 
 **Depends on:** Phase 4a
 
@@ -441,7 +441,7 @@ A deleted project stays on the list, struck through and dismissable, until the u
 1. **Deleted project panes.** Languages and Targets of a Deleted project do not show the last data as if it were current.
 2. **Right margin in every pane.** Content does not touch the right border in Languages, Package and narrow panes (`total││`, `Branch│`, `workspace│`). The sccache popup hint row does not end on the border.
 3. **One column word.** `binary` does not sit under both `Type` and `Kind`. `Type` means one thing across the Projects, Package and Targets panes.
-4. **One name for the disk cache.** The status text and the popup title use one name. Spec 12 and Spec 19 of Phase 4b set `Sccache stats` and `Disk cache`. Before dispatch, the director records here the name the showrunner picks from the UX guide. The tests that assert the name that goes change, each with an Assertion-Change line.
+4. **One name for the disk cache.** The status text and the popup title use one name. Spec 12 and Spec 19 of Phase 4b set `Sccache stats` and `Disk cache`. The name is `sccache`, spelled as the tool spells it, for both the popup title and the status text (showrunner, 2026-11-06: it names the real tool, and `Disk cache` can be confused with cargo-port's own cache settings). The tests that assert another name change, each with an Assertion-Change line.
 5. **Counts and units whole at 80 columns.** The title `Targets: binary (…` keeps its count, and `23.8 G…` keeps its unit.
 6. **Sections at 80 columns.** `├─ Structure ─┤` does not sit above `Path` and `Disk`. Section titles start in one column, and the divider draws its `┬` over the vertical line.
 7. **Page marks.** A CPU pane that shows part of its bars shows a page mark, or hides the bar row. Page marks sit in one place in every pane.
@@ -451,21 +451,16 @@ A deleted project stays on the list, struck through and dismissable, until the u
 11. **Behind a popup.** A popup leaves no cut words or one-cell scraps behind it (`hQL`, `al`, `tem`, and `h`, `…`, `▶` at 80 columns): clear or dim all cells behind it.
 12. **Hints.** `enter activate` shows only on a row that acts on enter. The hints `nav` and `=/- all` use common words. Key names use one letter case (`Esc close`, `tab pane`).
 13. **Languages colours.** Languages columns use one value colour and one icon style, unless a colour carries a meaning.
-
-**Pending decision: can a target of a Deleted project still launch?**
-
-Actual problem:
-Spec 1 covers only what the Targets pane draws for a Deleted project. `handle_target_action` (`tui/panes/actions.rs:51`) launches a cached target with no deletion check, so enter on a Deleted project's target starts a cargo run in a folder that is gone.
-
-What exists now:
-- `TargetsPane::content` returns `Option<TargetsData>`; a Deleted project keeps its last data, and nothing in it says the project is deleted.
-- The user's rule for Deleted rows: they stay on the list until the user dismisses them or rescans. No user rule covers actions on them.
-
-What should change:
-- One named target availability, read from the project's `Visibility`, decides drawing, focus, mouse areas and launches. A Deleted project's targets do not launch; a recreated project's targets launch again. Tests cover deletion, recreation, dismissal and rescan.
-
-Recommendation:
-Add this to Spec 1. It is new visible behavior, so the showrunner rules on it from the user's words before dispatch.
+14. **Disk colours.** A Deleted row's `0 B` does not move the colour of another row. Disk values do not read as good and bad. Before dispatch, the director records here the showrunner's choice: a size colour with no good-or-bad reading, or one text colour.
+15. **CI runs at 80 columns.** `Branch` hides first at narrow width, because each row repeats the branch that the title names. Its cells go to `Commit` and a whole status column.
+16. **One total word.** The Projects footer and the Languages footer use `Total`, not `Σ` and `Total`.
+17. **sccache popup values.** Numbers right-align on one edge, with one unit style (`71.09 %` and `99%` use one form).
+18. **One active fill.** Only Projects and the focused pane show a filled row. The other panes keep their remembered row without a fill.
+19. **The `-` reason.** The sccache reason row for `-` reads `Source read from standard input`. `No reason reported` (`tui/sccache/stats.rs:73`) is false: sccache records `-` when rustc reads its source from standard input.
+20. **Popup focus under `NO_COLOR`.** An open popup draws the thick border of a focused pane. In colour its border shows focus; under `NO_COLOR` it now draws the thin border of an unfocused pane.
+21. **Rows after the reasons.** `Cache location`, `Base directories` and `Version (client)` do not read as reasons: a blank row or a heading follows the last `Non-cacheable reasons:` row.
+22. **Git rates while loading.** The `Core` and `GraphQL` rows show `…` until the first result comes.
+23. **One title separator.** Pane titles use one separator, not `Package - alpha` and `CI runs — not a git repository`.
 
 **Files:**
 - `crates/cargo-port/src/tui/` — the panes, the status text, the sccache popup and their tests
@@ -476,7 +471,51 @@ Add this to Spec 1. It is new visible behavior, so the showrunner rules on it fr
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` when it changes, and `verify.sh lint cargo-port` clean; no test takes a second. The unit director takes live shots at 160x45 in colour, 160x45 under `NO_COLOR=1` and 80x30 in colour. A fresh design check on those shots raises none of these items.
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` when it changes, and `verify.sh lint cargo-port` clean; no test takes a second. The unit director takes live shots at 160x45 in colour, 160x45 under `NO_COLOR=1` and 80x30 in colour. A fresh design check on those shots raises none of these items. The Phase 4b `NO_COLOR` shots show single `#d4d4d4` pixels in blank cells, where the `.ansi` capture has only spaces; the director finds their cause in the live harness before those shots.
+
+### Phase 4d — A target of a Deleted project does not launch  · status: todo
+
+**Depends on:** Phase 4c
+
+#### Work Order
+
+**Pending decision: can a target of a Deleted project still launch?**
+
+Actual problem:
+`handle_target_action` (`tui/panes/actions.rs:51`) launches a cached target with no deletion check, so enter on a Deleted project's target starts a cargo run in a folder that is gone.
+
+What exists now:
+- `TargetsPane::content` returns `Option<TargetsData>`; a Deleted project keeps its last data, and nothing in it says the project is deleted.
+- The user's rule for Deleted rows: they stay on the list until the user dismisses them or rescans. No user rule covers actions on them. The showrunner filed the question for the user on 2026-11-06.
+
+What should change:
+- The Spec below.
+
+Recommendation:
+Build the Spec below when the user agrees.
+
+**Goal:** a target of a Deleted project does not launch, and it launches again when the project comes back.
+
+**Source:** Phase 2x architect review, 2026-11-06.
+
+**Constraints:**
+- Phase 4b and 4c results stay as they are.
+- Each item gets a red test under one second.
+
+**Spec:**
+1. One named target availability, read from the project's `Visibility`, decides drawing, focus, mouse areas and launches in the Targets pane. It replaces the use of `Option<TargetsData>` to mean a Deleted project.
+2. Enter or a click on a Deleted project's target does not start a run. A recreated project's targets launch again.
+3. Tests cover deletion, recreation, dismissal and rescan.
+
+**Files:**
+- `crates/cargo-port/src/tui/panes/actions.rs` — the launch check and its tests
+- `crates/cargo-port/src/tui/panes/targets/` — the target availability and its tests
+
+**Workers:** 1 writer owns the code and the tests.
+
+**State:** target availability (available, or held because the project is Deleted), owned by the Targets pane, read from the project's `Visibility` at each draw and action.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. The director presses enter on a Deleted project's target in the live app, and no run starts.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 

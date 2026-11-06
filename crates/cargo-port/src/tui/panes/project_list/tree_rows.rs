@@ -31,6 +31,7 @@ use crate::tui::panes::constants::DiskCell;
 use crate::tui::panes::constants::PREFIX_ROOT_COLLAPSED;
 use crate::tui::panes::constants::PREFIX_ROOT_EXPANDED;
 use crate::tui::panes::constants::PREFIX_ROOT_LEAF;
+use crate::tui::panes::constants::PROJECT_LIST_LEFT_PADDING;
 use crate::tui::panes::constants::TREE_PREFIX_BLANK;
 use crate::tui::panes::constants::TREE_PREFIX_CONTINUATION;
 use crate::tui::panes::constants::TreeRowDepth;
@@ -47,6 +48,7 @@ use crate::tui::project_list_state::ProjectList;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state;
 use crate::tui::state::Lint;
+use crate::tui::theme_roles;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TreeSegment {
@@ -484,7 +486,7 @@ impl ProjectRowPresentation {
         }
     }
 
-    fn into_item(self, widths: &ProjectListWidths) -> ListItem<'static> {
+    fn into_item(self, widths: &ProjectListWidths, selection: Style) -> ListItem<'static> {
         let mut line = columns::row_to_line(&self.cells, widths);
         if self.name_decoration == NameDecoration::MetadataError {
             // Preserve deletion strike-through while keeping the error role
@@ -500,7 +502,10 @@ impl ProjectRowPresentation {
                 x += columns::display_width(&span.content);
             }
         }
-        ListItem::new(line)
+        for span in &mut line.spans {
+            span.style = span.style.patch(selection);
+        }
+        ListItem::new(line).style(selection)
     }
 }
 
@@ -1290,15 +1295,13 @@ pub(super) fn render_tree_items(
         .into_iter()
         .enumerate()
         .map(|(row_index, row)| {
-            row.into_item(widths).style(
-                tui_pane::selection_state_for(
-                    viewport,
-                    cursor,
-                    row_index,
-                    pane.focus.pane_focus_state,
-                )
-                .overlay_style(),
-            )
+            let selection = theme_roles::selection_style(tui_pane::selection_state_for(
+                viewport,
+                cursor,
+                row_index,
+                pane.focus.pane_focus_state,
+            ));
+            row.into_item(widths, selection)
         })
         .collect()
 }
@@ -1329,7 +1332,12 @@ fn project_row_presentations_for(
     rows.iter()
         .enumerate()
         .map(|(row_index, row)| {
-            let prefix = tree_prefix(ctx.project_list, row, &rows[row_index + 1..]);
+            let prefix = format!(
+                "{:padding$}{}",
+                "",
+                tree_prefix(ctx.project_list, row, &rows[row_index + 1..]),
+                padding = PROJECT_LIST_LEFT_PADDING,
+            );
             render_tree_item(ctx, row.row, &prefix, &root_labels, sorted)
         })
         .collect()

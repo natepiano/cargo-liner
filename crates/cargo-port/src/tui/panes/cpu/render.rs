@@ -32,6 +32,7 @@ use crate::tui::panes::constants::CPU_GPU_ROWS;
 use crate::tui::panes::constants::CPU_PINNED_HEAD_ROWS;
 use crate::tui::panes::constants::CPU_STATIC_INNER_HEIGHT;
 use crate::tui::render_context::PaneRenderCtx;
+use crate::tui::theme_roles;
 
 /// The GPU section expands only when the platform has metrics to show.
 #[derive(Clone, Copy)]
@@ -161,7 +162,9 @@ fn cpu_bar_line(
     let (number_on_filled, number_past_fill) = number_text.split_at(filled.min(number_text.len()));
     let number_filled_span = Span::styled(
         number_on_filled.to_string(),
-        Style::default().fg(text_default()).bg(severity),
+        Style::default()
+            .fg(theme_roles::cpu_bar_label_color())
+            .bg(severity),
     );
     let number_empty_span = Span::styled(
         number_past_fill.to_string(),
@@ -169,7 +172,7 @@ fn cpu_bar_line(
     );
     let filled_span = Span::styled(
         "█".repeat(filled.saturating_sub(number_text.len())),
-        Style::default().fg(severity),
+        Style::default().fg(severity).bg(severity),
     );
     let empty_span = Span::styled(
         " ".repeat(CPU_BAR_WIDTH.saturating_sub(filled.max(number_text.len()))),
@@ -371,10 +374,6 @@ struct BreakdownRowSpec<'a> {
 
 const fn cpu_panel_title() -> &'static str { " CPU / GPU " }
 
-fn cpu_row_overlay_style(viewport: &Viewport, logical_row: usize, focus: PaneFocusState) -> Style {
-    tui_pane::selection_state(viewport, logical_row, focus).overlay_style()
-}
-
 fn render_selectable_row(
     frame: &mut Frame,
     viewport: &Viewport,
@@ -384,9 +383,11 @@ fn render_selectable_row(
     focus: PaneFocusState,
     paragraph: Paragraph<'static>,
 ) {
-    frame.render_widget(
-        paragraph.style(cpu_row_overlay_style(viewport, logical_row, focus)),
+    frame.render_widget(paragraph, area);
+    theme_roles::paint_selection(
+        frame,
         area,
+        tui_pane::selection_state(viewport, logical_row, focus),
     );
     row_rects.push((area, logical_row));
 }
@@ -852,6 +853,47 @@ mod tests {
     }
 
     #[test]
+    fn cpu_filled_cells_use_background_and_readable_number_ink() -> anyhow::Result<()> {
+        let previous = tui_pane::theme();
+        tui_pane::set_active_theme(std::sync::Arc::new(
+            crate::tui::test_support::shipped_dark_theme()?,
+        ));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 3))?;
+        terminal.draw(|frame| {
+            for (y, percent) in [(0, 40), (1, 100), (2, 10)] {
+                frame.render_widget(
+                    ratatui::widgets::Paragraph::new(bar_line_for_test(
+                        usize::from(y) + 1,
+                        1,
+                        percent,
+                    )),
+                    Rect::new(0, y, 30, 1),
+                );
+            }
+        })?;
+        let buffer = terminal.backend().buffer();
+        for y in 0..3 {
+            let label = &buffer[(1, y)];
+            let fill = &buffer[(3, y)];
+            assert_eq!(
+                fill.bg, label.bg,
+                "bar fill must have a continuous background"
+            );
+            assert_ne!(fill.bg, ratatui::style::Color::Reset);
+            assert_ne!(
+                label.fg,
+                tui_pane::text_default(),
+                "bar labels need contrasting ink"
+            );
+        }
+        let failures =
+            crate::tui::test_support::contrast_failures(buffer, &["1", "2", "3"], "CPU labels");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        tui_pane::set_active_theme(previous);
+        Ok(())
+    }
+
+    #[test]
     fn band_offset_tracks_cursor_inside_the_band() {
         // `cores_offset(14, 14, 0)` places logical cursor 14 (core-band row 12) on the last full
         // page.
@@ -897,7 +939,10 @@ mod tests {
         // entirely on shaded fill, leaving one block glyph in `line.spans[3]`.
         let line = bar_line_for_test(12, 2, 35);
         assert_eq!(line.spans[1].content, "12 ");
-        assert_eq!(line.spans[1].style.fg, Some(text_default()));
+        assert_eq!(
+            line.spans[1].style.fg,
+            Some(crate::tui::theme_roles::cpu_bar_label_color())
+        );
         assert!(line.spans[1].style.bg.is_some());
         assert_eq!(line.spans[2].content, "");
         assert_eq!(line.spans[3].content, "█");

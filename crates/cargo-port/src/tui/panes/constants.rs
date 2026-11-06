@@ -24,13 +24,13 @@ use crate::project::WorktreeHealth;
 use crate::tui::columns;
 use crate::tui::columns::RowLifecycle;
 
-pub(super) const FIT_TEXT_ELLIPSIS: &str = "...";
+pub(super) const FIT_TEXT_ELLIPSIS: &str = "…";
 pub(super) const PULL_REQUEST_MIN_TITLE_WIDTH: usize = 8;
 
 // Tree prefixes such as `PREFIX_ROOT_EXPANDED` and `TreeRowExpansion::prefix` provide the single
 // source of text for width calculation and rendering.
 
-const DELETED_DISK_TEXT: &str = "0.0";
+const DELETED_DISK_TEXT: &str = "";
 
 /// Disk-cell suffix on a `WorktreeHealth::Broken` row; measured by
 /// `panes::widths` and drawn by `panes::project_list`.
@@ -246,10 +246,6 @@ pub(super) const SYNC_HEADER: &str = "Sync";
 pub(super) const TRACKED_HEADER: &str = "Tracked";
 pub(super) const WORKTREES_NAME_HEADER: &str = "Name";
 
-// `LANG_NUM_COL` sizes the Languages pane numeric column.
-/// Fixed numeric column width for language stats.
-pub(super) const LANG_NUM_COL: u16 = 8;
-
 // `PANE_BORDER_HEIGHT` contributes border rows to pane layout.
 /// Rows a bordered pane spends on its top and bottom border. Outer pane height
 /// is inner content height plus this.
@@ -276,3 +272,7 @@ pub(super) const TESTS_TITLE: &str = "Tests";
 // `DISMISS_SUFFIX` marks dismissible project-list rows; `TITLE_ELLIPSIS` marks truncated titles.
 pub(in crate::tui) const DISMISS_SUFFIX: &str = " [x]";
 pub(super) const TITLE_ELLIPSIS: &str = "\u{2026}";
+
+/// Keep the project values clear of the right border.
+pub(in crate::tui) const PROJECT_LIST_LEFT_PADDING: usize = 1;
+pub(in crate::tui) const PROJECT_LIST_RIGHT_PADDING: usize = 1;

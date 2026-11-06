@@ -5,6 +5,9 @@
     reason = "tests should panic on unexpected values"
 )]
 
+#[path = "../../../../tui_pane/src/bar/status_bar_contrast_support.rs"]
+mod contrast;
+mod readability;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::path::Path;
@@ -15,8 +18,22 @@ use std::sync::MutexGuard;
 use std::sync::OnceLock;
 use std::time::Instant;
 
+pub(super) use contrast::failures as contrast_failures;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+pub(super) use readability::HEIGHT;
+pub(super) use readability::PROJECT;
+pub(super) use readability::PROJECT_PATH;
+pub(super) use readability::WIDTH;
+pub(super) use readability::draw_pane;
+pub(super) use readability::draw_stats;
+pub(super) use readability::draw_ui;
+pub(super) use readability::position;
+pub(super) use readability::project_app;
+pub(super) use readability::rows;
+pub(super) use readability::shipped_dark_theme;
+pub(super) use readability::stats_app;
+pub(super) use readability::target_data;
 use tempfile::TempDir;
 use tui_pane::Appearance;
 use tui_pane::SettingsFileSpec;

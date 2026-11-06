@@ -218,6 +218,7 @@ mod tests {
     use crate::tui::panes::pane_data;
     use crate::tui::panes::pane_data::CiEmptyState;
     use crate::tui::panes::pane_data::LintsProjectKind;
+    use crate::tui::panes::pane_data::PackageDeletion;
     use crate::tui::panes::pane_data::PackagePresence;
     use crate::tui::panes::pane_data::PullRequestPolling;
     use crate::tui::panes::pane_data::PullRequestRow;
@@ -236,6 +237,7 @@ mod tests {
 
     fn package_data(is_rust_project: bool) -> PackageData {
         PackageData {
+            deletion:                 PackageDeletion::Present,
             title:                    if is_rust_project {
                 "Package".to_string()
             } else {
