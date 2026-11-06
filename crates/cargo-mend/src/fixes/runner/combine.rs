@@ -5,10 +5,12 @@ use std::path::PathBuf;
 
 use super::FixScans;
 use super::MendRunner;
+use super::function_length::FunctionLengthPlan;
 use crate::fixes::imports;
 use crate::fixes::imports::ImportPlan;
 use crate::fixes::imports::TaggedFix;
 use crate::fixes::imports::UseFix;
+#[cfg(test)]
 use crate::fixes::imports::ValidatedFixSet;
 use crate::fixes::prefer_module_import::PreferModuleImportScan;
 use crate::reporting::FixKind;
@@ -19,14 +21,38 @@ use crate::rust_syntax::ParsedSources;
 type FileRange<'a> = (&'a Path, usize, usize);
 
 impl MendRunner<'_> {
+    #[cfg(test)]
     pub(super) fn combined_fixes(
         fix_scans: FixScans<'_>,
         sources: &ParsedSources,
         package_roots: &[PathBuf],
     ) -> Result<ValidatedFixSet, MendFailure> {
-        let plan = Self::combined_import_plan(fix_scans, sources, package_roots)
-            .map_err(MendFailure::Unexpected)?;
-        ValidatedFixSet::try_from(plan.fixes).map_err(MendFailure::Unexpected)
+        let workspace = package_roots
+            .first()
+            .map_or_else(|| Path::new("."), PathBuf::as_path);
+        Self::combined_function_plan(fix_scans, sources, package_roots, workspace)
+            .map(|plan| plan.fixes)
+    }
+
+    pub(super) fn combined_function_plan(
+        fix_scans: FixScans<'_>,
+        sources: &ParsedSources,
+        package_roots: &[PathBuf],
+        workspace: &Path,
+    ) -> Result<FunctionLengthPlan, MendFailure> {
+        FunctionLengthPlan::check(
+            &Self::combined_proposals(fix_scans),
+            &fix_scans
+                .subtree_reexports
+                .map(|scan| &scan.fixes)
+                .into_iter()
+                .chain(fix_scans.pub_use.map(|scan| &scan.fixes))
+                .collect::<Vec<_>>(),
+            sources,
+            package_roots,
+            workspace,
+        )
+        .map_err(MendFailure::Unexpected)
     }
 
     pub(super) fn combined_import_plan(
@@ -34,6 +60,10 @@ impl MendRunner<'_> {
         sources: &ParsedSources,
         package_roots: &[PathBuf],
     ) -> anyhow::Result<ImportPlan> {
+        imports::plan_module_imports(Self::combined_proposals(fix_scans), sources, package_roots)
+    }
+
+    fn combined_proposals(fix_scans: FixScans<'_>) -> Vec<TaggedFix> {
         let prefer_ranges: Vec<FileRange<'_>> = fix_scans
             .module_imports
             .iter()
@@ -105,8 +135,7 @@ impl MendRunner<'_> {
             fixes.extend(tag(Some(FixKind::Import), scan.fixes.iter()));
         }
 
-        let fixes = drop_conflicting_import_groups(fixes);
-        imports::plan_module_imports(fixes, sources, package_roots)
+        drop_conflicting_import_groups(fixes)
     }
 }
 
@@ -323,7 +352,10 @@ fn drop_conflicting_import_groups(fixes: Vec<TaggedFix>) -> Vec<TaggedFix> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
+
+    use anyhow::Context;
 
     use super::FixScans;
     use super::MendRunner;
@@ -336,7 +368,114 @@ mod tests {
     use crate::fixes::imports_at_top::ImportsAtTopScan;
     use crate::fixes::prefer_module_import::PreferModuleImportScan;
     use crate::fixes::pub_use_fixes::PubUseFixScan;
+    use crate::fixes::runner::function_length::FunctionLengthFixture;
     use crate::fixes::subtree_reexport::SubtreeReexportScan;
+
+    #[test]
+    fn function_length_keeps_local_import_and_rewrites_other_function() -> anyhow::Result<()> {
+        let fixture = FunctionLengthFixture::new(
+            concat!(
+                "use crate::unusually_long_module_name::update;\n",
+                "fn kept() {\n",
+                "    use crate::auxiliary::VALUE;\n",
+                "    std::hint::black_box(VALUE);\n",
+                "    update(1111111111, 2222222222, 3333333333);\n",
+                "    update(1111111111, 2222222222, 3333333333);\n",
+                "}\n",
+                "fn changed() {\n",
+                "    update(1, 2, 3);\n",
+                "}\n",
+            ),
+            5,
+        )?;
+        let selection = fixture.selection()?;
+        let path = selection.manifest_dir.join("src/scenarios.rs");
+        let sources = crate::rust_syntax::ParsedSources::default();
+        let module_imports =
+            crate::fixes::prefer_module_import::scan_selection(&selection, &sources)?;
+        assert!(
+            !module_imports.fixes.is_empty(),
+            "the fixture has module rewrites"
+        );
+        let imports = import_scan(Vec::new())?;
+        let moved = crate::fixes::imports_at_top::scan_selection(&selection, &sources)?;
+        let fixes = MendRunner::combined_fixes(
+            FixScans {
+                imports_at_top: Some(&moved),
+                ..fix_scans_with_imports(&imports, &module_imports)
+            },
+            &sources,
+            &selection.package_roots,
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        crate::fixes::imports::apply_fixes(&fixes)?;
+        let rewritten = std::fs::read_to_string(&path)?;
+        let kept = rewritten
+            .split("fn kept() {")
+            .nth(1)
+            .context("kept function")?
+            .split("fn changed()")
+            .next()
+            .context("kept body")?;
+        assert!(
+            kept.contains("use crate::auxiliary::VALUE;"),
+            "the retained function keeps its local import: {rewritten}"
+        );
+        assert_eq!(kept.matches("    update(").count(), 2);
+        assert!(rewritten.contains("unusually_long_module_name::update(1, 2, 3)"));
+        syn::parse_file(&rewritten)?;
+        Ok(())
+    }
+
+    #[test]
+    fn retained_caller_keeps_its_subtree_reexport_dependency() -> anyhow::Result<()> {
+        let fixture = FunctionLengthFixture::new(
+            concat!(
+                "use crate::unusually_long_module_name::update;\n",
+                "fn retained() {\n",
+                "    crate::owner::ping();\n",
+                "    update(1111111111, 2222222222, 3333333333);\n",
+                "}\nfn changed() { update(1, 2, 3); }\n",
+            ),
+            3,
+        )?;
+        let selection = fixture.selection()?;
+        let root = &selection.manifest_dir;
+        let lib = root.join("src/lib.rs");
+        let report = fixture.subtree_report()?;
+        let sources = crate::rust_syntax::ParsedSources::default();
+        let module_imports =
+            crate::fixes::prefer_module_import::scan_selection(&selection, &sources)?;
+        let subtree =
+            crate::fixes::subtree_reexport::scan_selection(&selection, &report, &sources, |_| {
+                Ok(BTreeSet::default())
+            })?;
+        assert!(
+            !subtree.fixes.is_empty(),
+            "the real scanner relocates the re-export"
+        );
+        let plan = MendRunner::combined_function_plan(
+            FixScans {
+                module_imports: Some(&module_imports),
+                subtree_reexports: Some(&subtree),
+                ..FixScans::default()
+            },
+            &sources,
+            &selection.package_roots,
+            &selection.workspace_root,
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        crate::fixes::imports::apply_fixes(&plan.fixes)?;
+        let caller = std::fs::read_to_string(root.join("src/scenarios.rs"))?;
+        assert!(caller.contains("crate::owner::ping();"));
+        assert!(
+            std::fs::read_to_string(root.join("src/owner.rs"))?
+                .contains("pub(crate) use crate::source::ping;")
+        );
+        assert!(std::fs::read_to_string(lib)?.contains("mod owner;"));
+        assert!(caller.contains("unusually_long_module_name::update(1, 2, 3)"));
+        Ok(())
+    }
 
     fn tagged(path: &str, start: usize, replacement: &str, bare: &str, full: &str) -> UseFix {
         range_fix(
