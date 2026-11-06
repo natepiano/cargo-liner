@@ -1,6 +1,5 @@
 # port
 
-> **Production: cargo-liner** — unit `port-unit`; production doc `docs/cargo-port/cargo-liner-production.md`
 
 ## Source
 
