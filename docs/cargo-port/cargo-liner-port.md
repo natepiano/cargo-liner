@@ -409,7 +409,7 @@ A deleted project stays on the list, struck through and dismissable, until the u
 **Spec:**
 
 1. **The value.** `tui_pane` gets `pub enum ColorMode { Colored, NoColor }` with `ColorMode::from_environment()`. That function is the only caller of `Colored::ansi_color_disabled_memoized()` in the workspace.
-2. **The app edge.** `cargo-port`, `cargo-tile` and `cargo-handler` each call `ColorMode::from_environment()` once at startup and hold the value in their render state. No global, `static` or thread-local holds the mode.
+2. **The app edge.** `cargo-port`, `cargo-tile`, `cargo-handler` and the `cargo-berth` board each call `ColorMode::from_environment()` once at startup and hold the value in their render state. No global, `static` or thread-local holds the mode.
 3. **The drawing code.** Each read below takes the value instead:
    - `default_pane_chrome(mode)` stores it in a new `PaneChrome` field. `PaneChrome::block` and `GridLines::render` read that field.
    - `selection_style(focus, mode)` and `PaneSelectionState::overlay_style(self, mode)` take it as an argument.
@@ -421,6 +421,7 @@ A deleted project stays on the list, struck through and dismissable, until the u
 - `crates/cargo-port/src/` — the app edge, `prepare_terminal_buffer`, callers and tests
 - `crates/cargo-tile/src/` — the app edge and callers
 - `crates/cargo-handler/src/` — the app edge, callers and tests
+- `crates/cargo-berth/src/board/tui.rs` — the board's app edge and its `PaneChrome` value
 - `crates/tui_pane/CHANGELOG.md` — the changed public functions
 
 **Workers:** 1 writer. The signature change crosses all the files, so the set cannot split.
@@ -429,9 +430,42 @@ A deleted project stays on the list, struck through and dismissable, until the u
 
 **Acceptance gate:** the six named tests and the whole `tui_pane` suite pass with `NO_COLOR=1` (`verify.sh test tui_pane --local`, from the worker shell that carries it) and without it (`verify.sh test tui_pane`). `verify.sh test cargo-port`, `verify.sh test cargo-tile`, `verify.sh test cargo-handler` and `verify.sh lint tui_pane` pass. No existing assertion about drawn output changes. `git grep ansi_color_disabled_memoized -- crates` names one site.
 
+### Phase 4f — Bold and reverse survive NO_COLOR in every tui_pane app  · status: todo
+
+**Depends on:** Phase 4d
+
+#### Work Order
+
+**Goal:** under `NO_COLOR=1` in a real terminal, the focused title is bold and the selected row is reversed in `cargo-handler`, `cargo-tile` and the `cargo-berth` board, as they are in `cargo-port` today.
+
+**Why:** handler found this live. Under `NO_COLOR`, crossterm writes `ESC[;m`, a full style reset, for each `SetColors` (`crossterm-0.29.0` `style/types/colored.rs:100`). `ratatui-crossterm` sets modifiers first and colours second (`ratatui-crossterm-0.1.2` `lib.rs:259`), so each reset clears bold and reverse. `cargo-port` does not show the defect: `prepare_terminal_buffer` sets each cell's `fg` and `bg` to `Reset`, so the backend writes no `SetColors`. The other apps have no such step.
+
+**Constraints:** `cargo-port`'s drawn output does not change. In colour mode no app's output changes. Showrunner: this phase runs after 4d and before 4c, and the proof is the terminal bytes.
+
+**Spec:**
+
+1. **One step.** `tui_pane` owns the colour-clearing step that `prepare_terminal_buffer` holds today: under `ColorMode::NoColor`, each cell of the finished frame gets `fg` and `bg` `Reset`. Under `ColorMode::Colored` it changes nothing. `cargo-port`'s `prepare_terminal_buffer` calls it and keeps its VS16 work.
+2. **Every app.** `cargo-handler`, `cargo-tile` and the `cargo-berth` board call the step at the end of each frame, with the mode that Phase 4d gives them.
+3. **No global change.** Do not call `force_color_output`. Crossterm keeps its own suppression for any write outside the buffer.
+4. **The byte test.** A `tui_pane` test draws a frame with colour, bold and reverse through the real `CrosstermBackend` into a byte buffer, in a child process with `NO_COLOR=1`. It requires `ESC[1m` and `ESC[7m` with no reset before the text they style, and no colour code. The test fails when the step is removed, and it takes under a second.
+
+**Files:**
+- `crates/tui_pane/src/` — the step and the byte test
+- `crates/tui_pane/CHANGELOG.md` — the new public function
+- `crates/cargo-port/src/tui/render/mod.rs` — calls the step
+- `crates/cargo-handler/src/` — calls the step
+- `crates/cargo-tile/src/` — calls the step
+- `crates/cargo-berth/src/board/tui.rs` — calls the step
+
+**Workers:** 1 writer. The step and its calls are one change.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-port`, `verify.sh test cargo-handler`, `verify.sh test cargo-tile`, `verify.sh test cargo-berth` and `verify.sh lint tui_pane` pass. The director captures raw pty bytes of `cargo-port` and `cargo-handler` under `NO_COLOR=1`: each capture holds `ESC[1m` and `ESC[7m` with no reset before the text they style, no `ESC[;m` and no colour code.
+
 ### Phase 4c — cargo-port's remaining screen defects read clearly  · status: todo
 
-**Depends on:** Phase 4b, Phase 4d (the Spec 20 popup border takes the colour mode value)
+**Depends on:** Phase 4b, Phase 4d (the Spec 20 popup border takes the colour mode value), Phase 4f
 
 #### Work Order
 
