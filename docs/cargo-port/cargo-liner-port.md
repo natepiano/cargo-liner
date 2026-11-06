@@ -402,19 +402,29 @@ A deleted project stays on the list, struck through and dismissable, until the u
 
 **Goal:** the screen defects that the Phase 4b design check found outside the Phase 4b Work Order are gone: the words are common and used once, the margins are even, and a popup leaves no scraps behind it.
 
-**Source:** Phase 4b design checks, 2026-11-06. Most rows also show on main's shots at `3fb98ed6e`. Shots: `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4b/` and `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_main/`.
+**Source:** Phase 4b design checks, 2026-11-06, the Phase 2x architect review for Deleted targets, and the user's change reviews of Phase 4b for Projects columns. Most rows also show on main's shots at `3fb98ed6e`. Shots: `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4b/` and `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_main/`.
 
 **Constraints:**
 - Phase 4b's results stay as they are, except where a Spec below changes them.
 - Colours stay in the theme. Do not hard-code a new value at a draw site.
 - Each item gets a red test that reads the drawn buffer, under one second.
 - These existing assertions change. Record each one in an Assertion-Change line, and weaken no other assertion:
+  - Spec 3: `fields_place_lint_and_ci_before_disk_for_rust_projects`, `Type` to `Kind`.
   - Spec 4: `status_names_the_disk_cache`, `popup_titles_use_sentence_case`.
+  - Spec 7: three CPU pager tests, the pager moves from the body to the bottom border; the page count, core contents and one-pager checks stay.
+  - Spec 7, the row the pager leaves: `absent_gpu_data_uses_one_row_and_returns_space_to_cores` (5 cores to 6), `cpu_phase_shots_match_the_framed_pane_at_its_fixed_width` (the empty row becomes core 6), `band_offset_tracks_cursor_inside_the_band` (macOS 11 to 10, other platforms 8 to 7), `band_offset_holds_prior_on_a_pinned_tail_row` (macOS 13 to 12, other platforms 10 to 9).
+  - Spec 10: `parse_stat_line_preserves_percent_values`, `clicking_a_scrolled_stat_line_copies_its_own_value_across_headings` (click positions only), and any other assertion that changes only a Spec 10 label.
+  - Spec 12: navigation assertions, `nav` to `move` and `=/- all` to `=/- expand/collapse all`; the key, order and action checks stay.
   - Spec 15: `narrow_ci_draws_only_complete_columns`, which requires `Branch` at width 24.
   - Spec 16: `narrow_projects_keep_the_total_mark`, `summary_row_places_sigma_next_to_disk_total`, `availability_label_ends_below_summary_sigma`, `lint_column_collapses_when_disabled`.
   - Spec 18: `no_color_focus_uses_heavy_borders_and_one_active_selection`, and the `selected_*_on_both_fills` tests.
   - Spec 19: `sccache_reasons_explain_the_uncached_call`, `parse_stat_line_explains_raw_reason_keys`.
   - Spec 22: `rate_limit_bucket_empty_without_quota`.
+  - Spec 23: `deleted_non_rust_details_keep_the_project_fields`, `deleted_package_details_name_the_state_and_clear_disk_breakdown`, and any other pane title assertion that changes only `-` or `:` to `—`, including `ci_panel_title_appends_branch_name_for_branch_mode` and the `prefixed_pane_title` tests.
+  - Spec 12, key case: `display_short_abbreviates_escape_but_display_keeps_full_form`, the favorites overlay footers, and the golden rows in `crates/cargo-handler/src/render/mod.rs` and `crates/cargo-tile/src/render.rs`, `Esc` to `esc`. `KeyBind::parse` keeps every old spelling.
+  - Spec 12, shared label: `OVERLAY_STATUS` in `crates/cargo-handler/src/render/mod.rs`, `nav` to `move`, and its uptime gap.
+  - Spec 17: `parse_stat_line_preserves_percent_values` and the `sccache/status_line.rs` value test, `78.20 %` to `78.20%` and ` - hit rate` to ` · hit rate`.
+  - Spec 18: any assertion that the Languages footer is bold, because the remembered row now owns bold in that pane.
 - **Constraints from prior phases:**
   - `theme_roles::paint_selection` applies the selection style last across the inner row width. A selected row keeps one fill and one text colour, floor 4.5:1 by `covered_contrast`.
   - Keep `narrow_layout_keeps_git_values_and_hides_unreadable_panes` and `narrow_layout_moves_focus_once_and_restores_panes_without_moving_focus` in `tui/render/readability_tests.rs`.
@@ -422,7 +432,11 @@ A deleted project stays on the list, struck through and dismissable, until the u
   - `PackageDeletion` already owns the Package pane's deleted title and Disk rows.
 
 **Spec:**
-1. **Deleted project panes.** Languages and Targets of a Deleted project do not show the last data as if it were current. One named presentation state says so, and both panes read it. `Option<TargetsData>` keeps its meaning of absent content (`tui/panes/targets/pane.rs:20`).
+1. **Deleted project panes.** Languages of a Deleted project does not show the last data as if it were current. One named presentation state says so, and the pane reads it. Targets of a Deleted package do not launch, and they launch again when the project comes back (user, 2026-11-06, via the showrunner: "correct a deleted project's targets do not launch"):
+   - `handle_target_action` (`tui/panes/actions.rs:51`) starts a cached target with no deletion check, so enter starts a cargo run in a folder that is gone. Enter or a click on such a target starts no run.
+   - Availability belongs to each target's owning package. A workspace selection combines every member's cached targets (`tui/panes/targets/data.rs:242`), so a check of the selected workspace's `Visibility` cannot tell a Deleted member from a live member.
+   - The Targets pane draws no row for a target of a Deleted package, and the run hint hides when no row remains. A whole Deleted project draws an empty pane. A live workspace keeps the rows of its live members.
+   - Tests cover deletion, recreation, dismissal and rescan, a live workspace with both Deleted and live target owners, and the data path through normal selection and finder selection.
 2. **Right margin in every pane.** Content does not touch the right border in Languages, Package and narrow panes (`total││`, `Branch│`, `workspace│`). The sccache popup hint row does not end on the border.
 3. **One column word.** `binary` does not sit under both `Type` and `Kind`. `Type` means one thing across the Projects, Package and Targets panes.
 4. **One name for the disk cache.** The status text and the popup title use one name. Phase 4b set `Sccache stats` and `Disk cache`. The name is `sccache`, spelled as the tool spells it, for both the popup title and the status text (showrunner, 2026-11-06: it names the real tool, and `Disk cache` can be confused with cargo-port's own cache settings). The tests that assert another name change, each with an Assertion-Change line.
@@ -434,7 +448,7 @@ A deleted project stays on the list, struck through and dismissable, until the u
 10. **sccache popup words.** The heading `Stats:` goes. The labels `Cache hits rate`, `Use direct/preprocessor mode?`, `Version (client)` and `Forced recaches` use common words.
 11. **Behind a popup.** A popup leaves no cut words or one-cell scraps behind it (`hQL`, `al`, `tem`, and `h`, `…`, `▶` at 80 columns): clear or dim all cells behind it.
 12. **Hints.** `enter activate` shows only on a row that acts on enter. The hints `nav` and `=/- all` use common words. Key names use one letter case (`Esc close`, `tab pane`).
-13. **Languages colours.** Languages columns use one value colour and one icon style, unless a colour carries a meaning.
+13. **Languages colours.** Languages columns use one value colour, unless a colour carries a meaning. The icon style is not in this phase: a change removes or changes something the user sees today with no user rule, so the showrunner filed it as a user question on 2026-11-06. The answer goes to a later phase.
 14. **Disk colours.** Disk values use one hue from dim to bright, set from the size alone (showrunner, 2026-11-06). The scale comes from rows that are not Deleted, so a Deleted row's `0 B` moves no other row. A Deleted row keeps its `[x]` look. Disk values do not read as good and bad.
 15. **CI runs at 80 columns.** In branch mode, `Branch` hides first at narrow width, because the title names the branch (`ci_panel_title`, `tui/panes/ci/render.rs:619`). Its cells go to `Commit` and a whole status column. In all mode, the title names no branch and rows can show several branches, so `Branch` stays. Drawn tests cover both modes.
 16. **One total word.** The Projects footer and the Languages footer use `Total`, not `Σ` and `Total`.
@@ -445,68 +459,71 @@ A deleted project stays on the list, struck through and dismissable, until the u
 21. **Rows after the reasons.** `Cache location`, `Base directories` and `Version (client)` do not read as reasons: a blank row or a heading follows the last `Non-cacheable reasons:` row.
 22. **Git rates while loading.** The `Core` and `GraphQL` rows show `…` until the first result comes. One named display state for each rate replaces the bare quota options (`tui/panes/pane_data/git_data.rs:145`): pending, reported or unavailable. Absence alone does not prove an active request, and `…` never replaces an outage or authentication message. Tests cover independent Core and GraphQL arrival, an initial failure, an authentication failure and recovery.
 23. **One title separator.** Pane titles use `—`, not `Package - alpha` and `CI runs — not a git repository` (showrunner, 2026-11-06).
+24. **Project list columns stay.** User, 2026-11-06, on the change reviews of Phase 4b's selected row and narrow windows: "you're getting rid of columns before you make project names have an ellipipsis - columns should always be preserved - the project names should get ellipsis first". The user's window is about 95 columns wide, with long worktree names such as `proof_crate [claude-build-followups-sdlc-merge-gate/scripts/aws_target/pr…`, and shows only `Projects` and `Disk`.
+   - Cause: Phase 4b's `ProjectListWidths::fitted` (`tui/columns/project.rs:366`) sets whole columns to width 0 while the name keeps its full measured width. It cuts the name only after that.
+   - The name gives up its width first and takes the `…`. Its floor keeps the whole `Projects` heading and the cells that the `Lint` heading borrows.
+   - The Projects pane keeps half the window, as it does now. It takes more only when every column needs more with the name at its floor. `resolve_layout` and `top_pane_widths` (`tui/panes/layout.rs`) each hold `left_width.min(area.width / 2)`, and one function replaces both.
+   - A column goes only when the window cannot draw it with the name at its floor. The order stays: `Main`, `Sync`, `Git`, `Type`, `CI`, `Lint`.
+   - A row prefix wider than the name's floor does not push the row's other columns out of line.
+   - Tests read the drawn buffer at widths 95 and 80, with short names and with the user's long worktree names: every heading is whole, each row's `Disk` value ends on one right edge, and each long name ends in `…`.
 
 **Files:**
 - `crates/cargo-port/src/tui/` — the panes, the status text, the sccache popup and their tests
 - `crates/cargo-port/src/themes/builtins.rs` and `crates/cargo-port/themes/*.toml` — only when a colour changes; the compiled themes and the files stay equal
 - `crates/tui_pane/src/` — only when the cause of an item lives there
+- `.cargo/config.toml` — tests do not read the shell's `NO_COLOR`
 
 **Workers:** 1 writer + 1 tester
 - Writer: production files, shared render files, module declarations and tests inside production files.
 - Tester: the per-pane `readability_tests.rs` files, `tui/render/readability_tests.rs`, `tui/sccache/readability_tests.rs` and `tui/terminal/no_color_tests.rs`.
 
-**State:** none.
+**State:** target availability (available, or held because the owning package is Deleted), owned by the Targets pane, read from the owning package's `Visibility` at each draw and action.
 
-**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` when it changes, and `verify.sh lint cargo-port` clean; no test takes a second. The unit director takes live shots at 160x45 in colour, 160x45 under `NO_COLOR=1` and 80x30 in colour. A fresh design check on those shots raises none of these items. The Phase 4b `NO_COLOR` shots show single `#d4d4d4` pixels in blank cells, where the `.ansi` capture has only spaces; the director finds their cause in the live harness before those shots.
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` when it changes, and `verify.sh lint cargo-port` clean; no test takes a second. The director presses enter on a Deleted project's target in the live app, and no run starts. Live shots at 95 and 80 columns, with long worktree names, show every Projects column. The unit director takes live shots at 160x45 in colour, 160x45 under `NO_COLOR=1` and 80x30 in colour. A fresh design check on those shots raises none of these items. The Phase 4b `NO_COLOR` shots show single `#d4d4d4` pixels in blank cells, where the `.ansi` capture has only spaces; the director finds their cause in the live harness before those shots.
 
-### Phase 4d — A target of a Deleted project does not launch  · status: todo
+### Phase 4e — cargo-port's popups and remaining words read clearly  · status: todo
 
 **Depends on:** Phase 4c
 
 #### Work Order
 
-**Pending decision: can a target of a Deleted project still launch?**
+**Goal:** the screen defects that the Phase 4c design check found outside the Phase 4c Work Order are gone.
 
-Actual problem:
-`handle_target_action` (`tui/panes/actions.rs:51`) launches a cached target with no deletion check, so enter on a Deleted project's target starts a cargo run in a folder that is gone.
-
-What exists now:
-- `TargetsPane::content` returns `Option<TargetsData>`; a Deleted project keeps its last data, and nothing in it says the project is deleted.
-- The user's rule for Deleted rows: they stay on the list until the user dismisses them or rescans. No user rule covers actions on them. The showrunner filed the question for the user on 2026-11-06.
-
-What should change:
-- The Spec below.
-
-Recommendation:
-Build the Spec below when the user agrees.
-
-**Goal:** a target of a Deleted project does not launch, and it launches again when the project comes back.
-
-**Source:** Phase 2x architect review, 2026-11-06.
+**Source:** Phase 4c design check, 2026-11-06, moved here by the production's rule that a phase fixes only its own change. Shots: `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4c/`.
 
 **Constraints:**
-- Phase 4b and 4c results stay as they are.
-- Each item gets a red test under one second.
+- Phase 4b and 4c results stay as they are, except where a Spec below changes them.
+- Colours stay in the theme. Do not hard-code a new value at a draw site.
+- Each item gets a red test that reads the drawn buffer, under one second.
+- Spec 8 and Spec 10 change what other units draw or what the user sees of a past choice. Send each one to the showrunner with its buildable answers before the build.
 
 **Spec:**
-1. Phase 4c's named presentation state stays the one owner of how a Deleted project's targets draw. This phase adds the launch policy. Availability belongs to each target's owning package: a workspace selection combines every member's cached targets (`tui/panes/targets/data.rs:242`), so a check of the selected workspace's `Visibility` cannot tell a Deleted member from a live member.
-2. Enter or a click on a target of a Deleted package does not start a run. A recreated project's targets launch again.
-3. Tests cover deletion, recreation, dismissal and rescan, a live workspace with both Deleted and live target owners, and the data path through normal selection and finder selection.
+1. **Settings popup text.** Settings wraps to the real popup width at 80 columns, so no text is lost (`global`, `04cfd1/pha`). Paths keep one blank cell before the border and break at `/`.
+2. **Settings selection.** A selected Settings row has one text colour on the fill, floor 4.5:1 by `covered_contrast` (`Invert scroll` measures 2.86:1 and `ON` 4.25:1). The fill reaches the inner edge, as in sccache and Shortcuts.
+3. **Languages names.** Names keep their meaning at the normal pane width: `└ integration`, `Python`, `Markdown`, `Autoconf`. Write `Bash`, not `BASH`.
+4. **Package values.** `🔴 local 7 / g…` shows both CI counts. `No CI workflo…` and `No description …` use a shorter text that fits.
+5. **Startup toast.** The toast leaves no one-cell `│` scraps, no cut `┌ No lint runs ───` and no blank row across the panes.
+6. **Narrow hints.** The status row shows each hint that fits with its gap. At 80 columns it has 21 empty cells and shows no hint.
+7. **CI columns.** In branch mode `Branch` hides at every width, because the title names the branch; `Commit` takes its cells. The `Total` column shows a true total, or takes a name that says what it shows (`Other` reads `13m 59s` above `Total` `4m 16s`).
+8. **Deleted Package values.** The deleted Package pane still shows `Kind`, `Version` and `Edition` in normal style, and `No description available`. Decide the look through the showrunner: path and deleted state only, or the old values dimmed.
+9. **Package value colours.** One value colour, which differs from the label colour, across Package and its Structure and Tests sections.
+10. **One hint spacing.** The status row uses 3 cells on the left and 2 on the right, the sccache popup uses ` · `, and popup keys have no key colour. Page marks have no space inside the border (`─1 of 2 ▼─`). This reaches cargo-tile and cargo-handler.
+11. **sccache popup.** A blank row sits above `Non-cacheable reasons:`. The labels `Non-cacheable`, `Non-compilation calls`, `Forced cache refreshes` and `Failed distributed compilations` use common words.
+12. **Common words and one form.** `Incept`, `Core` and `GraphQL` with no GitHub limit label, `Poll ms`, `Discovery shimmer secs`, `Inline dirs`, `Dismiss overlay / output`, `Open keymap viewer` and `Show sccache stats` use common words. `Cache size` does not state its limit twice. Each empty Settings value shows `—`. `< ON >` is lower case, as `< dark >` is.
+13. **Popup structure.** Settings and Shortcuts have one hint row that shows how to close. Write `Global shortcuts` and `Global navigation:`. The title does not repeat as a section heading. Settings and Shortcuts use one selection mark, and a blank row above each section.
 
 **Files:**
-- `crates/cargo-port/src/tui/panes/actions.rs` — the launch check and its tests
-- `crates/cargo-port/src/tui/panes/targets/` — the target availability and its tests
-- `crates/cargo-port/src/tui/app/mod.rs` — focus eligibility that reads Targets content (`:1340`)
-- `crates/cargo-port/src/tui/panes/pane_data/detail_data.rs` — target data on its way to the pane
-- `crates/cargo-port/src/tui/panes/system.rs` — target data on its way to the pane
-- `crates/cargo-port/src/tui/app/navigation/cache.rs` — target data on its way to the pane
-- `crates/cargo-port/src/tui/finder/dispatch.rs` — the finder's target data setter
+- `crates/cargo-port/src/tui/` — the panes, the popups, the status text and their tests
+- `crates/tui_pane/src/` — only when the cause of an item lives there
+- `.cargo/config.toml` — tests do not read the shell's `NO_COLOR`
 
-**Workers:** 1 writer owns the code and the tests.
+**Workers:** 1 writer + 1 tester
+- Writer: production files, shared render files, module declarations and tests inside production files.
+- Tester: the per-pane `readability_tests.rs` files, `tui/render/readability_tests.rs` and `tui/sccache/readability_tests.rs`.
 
-**State:** target availability (available, or held because the owning package is Deleted), owned by the Targets pane, read from the owning package's `Visibility` at each draw and action.
+**State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. The director presses enter on a Deleted project's target in the live app, and no run starts.
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` when it changes, and `verify.sh lint cargo-port` clean; no test takes a second. The unit director takes live shots at 160x45 in colour, 160x45 under `NO_COLOR=1` and 80x30 in colour. A fresh design check on those shots raises none of these items.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 
