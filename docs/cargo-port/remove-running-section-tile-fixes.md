@@ -1326,7 +1326,7 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 
 **Seats:** as Phase 25.
 
-### Phase 29 — Move-only splits  · status: dropped (director, 2026-11-06: code move only; nothing is broken and no user words ask for it)
+### Phase 29 — Move-only splits  · status: todo
 
 **Depends on:** none (Phase 28 was dropped, 2026-10-29).
 
@@ -1368,7 +1368,7 @@ Port of the approved capture shim cost work (one process per call apart from car
 
 ### Phase 35m — Summary arguments on main  · status: todo
 
-**Sort (2026-11-06):** the ANSI handling (B) stays: it fixes wrong header text. The summary-arguments rule (A) has no user words in the plan, so it waits for the showrunner's answer.
+**Sort (2026-11-06):** the ANSI handling (B) stays: it fixes wrong header text. The summary-arguments rule (A) stays. The user asked for it on 2026-10-29 (phases/35/implementation_prompt.md).
 
 Port of the summary-arguments rule and the nextest header ANSI handling onto main. Work order: phases/35m/implementation_prompt.md.
 
@@ -1503,7 +1503,7 @@ User, 2026-10-30: this work goes in Phase 42, and Phase 42 does not hold full in
 - **Goal:** every cargo-tile test runs under 1 s on the Mac and on natedev.
 - **Acceptance:** the Mac and natedev suites show no test at 1 s or more; no assertion is weakened.
 
-### Phase 43d — Capture text and constants follow the style guide  · status: dropped (director, 2026-11-06: code style only; nothing is broken and no user words ask for it; the `_capture_parent` item stays in Phase 30m)
+### Phase 43d — Capture text and constants follow the style guide  · status: todo
 
 **Depends on:** Phase 43c
 
@@ -1973,7 +1973,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 ### Phase 35 — Phase 20's follow-ups: one table walk, plain caches, and whole marks  · status: todo
 
-**Sort (2026-11-06):** items 4, 20, 22, 24, 29, 30, 36, 37 and 39 are dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for'). Items 1, 3, 11, 13, 15, 16, 27, 31 and 32 are dropped (director, 2026-11-06: code tidy only; nothing is broken). Item 2 was met. Items 5 to 10, 12, 14, 17 to 19, 21, 23, 25, 26, 28, 33, 34, 35 and 38 stay: each fixes a wrong, clipped or unreadable result.
+**Sort (2026-11-06):** items 4, 20, 22, 24, 29, 30, 36, 37 and 39 are dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for'). Item 2 was met. Items 1, 3, 11, 13, 15, 16, 27, 31 and 32 stay (showrunner, 2026-11-06: the user's rule covers visible changes only). Items 5 to 10, 12, 14, 17 to 19, 21, 23, 25, 26, 28, 33, 34, 35 and 38 stay: each fixes a wrong, clipped or unreadable result.
 
 **Depends on:** Phase 20, Phase 21, Phase 23, Phase 32, Phase 33, Phase 34
 
