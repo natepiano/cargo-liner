@@ -361,33 +361,15 @@ A project marked Deleted stays in its root, struck through and dismissable, also
 
 **Depends on:** Phase 4
 
-Order (user, 2026-11-06): Phase 2w first, then this phase, then Phase 4b.
+#### As-built
 
-#### Work Order
-
-**Goal:** a deleted project stays on the list, struck through, until the user dismisses it or rescans. A full rescan drops every Deleted row.
-
-**Source:** the user, 2026-11-05, change review C196 (merged 7663c40e7): "i never asked for this. it's not what i want - you invented this", then "yes that is the actual feature i wanted - they stay on the list till i either dismiss them or i rescan. you removing rescan took that away from me". Phase 4 made a rescan keep Deleted rows. No user words asked for that; the old Phase 1 invariant ("until the user dismisses it") was this unit's own wording.
-
-**Constraints:**
-- Keep the live behavior from before Phase 4: when a folder is deleted while cargo-port runs, its row stays, struck through, and the user can dismiss it.
-- Keep the rest of Phase 4: the strike-through under `NO_COLOR`, the named path lookup, the sccache popup padding, the Git value fit, and the late disk replies that do not bring back a dismissed row.
-- A rescan still restores the saved choice (`last_selected`) when that row is still selectable, else the first visible row. A choice that pointed at a Deleted row goes to the first visible row.
-- Record each changed assertion in `deleted_rescan_tests.rs` in an Assertion-Change line.
-
-**Spec:**
-1. Remove the rescan retain: `ProjectList::retain_for_rescan` and the merge of retained rows into the new roots. A full rescan (`App::rescan`, `tui/app/async_tasks/tree.rs`) drops Deleted rows, as it did before Phase 4.
-2. Change the tests in `deleted_rescan_tests.rs` to prove the new rule: a Deleted row survives watcher events and stays until dismissed; a rescan removes it.
-3. Docs: the overview (`docs/cargo-port/as-built/overview.md`, data flow step 6) states the rule in the user's words. The `CHANGELOG.md` line "Keep Deleted rows ... through full rescans until dismissal" goes; add a line that a rescan clears Deleted rows. Rewrite Phase 4's as-built text so it no longer says the row survives a rescan.
+A deleted project stays on the list, struck through and dismissable, until the user dismisses it or rescans (the user, 2026-11-05: "they stay on the list till i either dismiss them or i rescan"). A full rescan clears the roots (`ProjectList::clear` from `prepare_rescan`) and installs only what the scan found. Individual project refreshes keep deletion states through `retain_deletion_states`, `preserve_replacement_deletion_states` and `preserve_submodule_deletion_states`. A saved choice (`last_selected`) that names a removed row stays saved; the first visible row is selected and is not saved as the choice.
 
 **Files:**
-- `crates/cargo-port/src/tui/project_list/list.rs`, `grouping.rs`
-- `crates/cargo-port/src/tui/app/async_tasks/tree.rs`, `deleted_rescan_tests.rs`
+- `crates/cargo-port/src/tui/project_list/list.rs`, `path_index_tests.rs` — the replacement without retained rows, and its tests
+- `crates/cargo-port/src/tui/app/async_tasks/tree.rs`, `dispatch.rs`, `deleted_rescan_tests.rs` — the rescan, the completed scan and their tests
+- `crates/cargo-port/src/tui/app/mod.rs` — the caller
 - `crates/cargo-port/CHANGELOG.md`, `docs/cargo-port/as-built/overview.md`
-
-**Workers:** 1 writer owns the code and the tests.
-
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Live check: delete a scratch project while cargo-port runs; the row stays struck through. Press the rescan key; the row is gone. The checkpoint carries a Change-Review line for the user to check this.
 
 ### Phase 4b — cargo-port's selection, contrast and narrow panes read clearly  · status: todo
 
@@ -395,9 +377,9 @@ Order (user, 2026-11-06): Phase 2w first, then this phase, then Phase 4b.
 
 #### Work Order
 
-**Goal:** every defect that the Phase 4 design check found on main's screens is gone: the selection shows without colour, text has readable contrast, nothing is cut without a mark, and narrow panes stay useful.
+**Goal:** every defect that the Phase 4 and Phase 4a design checks found on main's screens is gone: the selection shows without colour, text has readable contrast, nothing is cut without a mark, and narrow panes stay useful.
 
-**Source:** Phase 4 design check, 2026-11-05. The same live shots on the main build at `3fb98ed6e` show each defect, so Phase 4 did not cause them. Shots: `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_main/`.
+**Source:** Phase 4 and Phase 4a design checks, 2026-11-05 and 2026-11-06. The same live shots on the main build at `3fb98ed6e` show each defect, so neither phase caused them. Shots: `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_main/`.
 
 **Constraints:**
 - Phase 4 keeps its Deleted row, its strike-through under `NO_COLOR` and its Git pane value fit. This phase does not change those results except as Spec 2 and 3 say.
