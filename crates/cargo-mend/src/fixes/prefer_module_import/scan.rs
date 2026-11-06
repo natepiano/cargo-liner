@@ -695,6 +695,103 @@ mod tests {
     use crate::fixes::imports::ModuleImports;
     use crate::rust_syntax::ParsedSources;
 
+    #[test]
+    fn module_import_keeps_test_binding_reached_through_super() -> anyhow::Result<()> {
+        assert_super_reference_preserved(
+            "#[cfg(test)]",
+            "#[cfg(test)] mod tests { #[test] fn check() { super::contrast_failures(); } }",
+            &[],
+        )
+    }
+
+    #[test]
+    fn module_import_keeps_ungated_binding_reached_through_super() -> anyhow::Result<()> {
+        assert_super_reference_preserved(
+            "",
+            "mod child { pub fn check() { super::contrast_failures(); } }",
+            &[],
+        )
+    }
+
+    #[test]
+    fn module_import_keeps_binding_reached_through_nested_super() -> anyhow::Result<()> {
+        assert_super_reference_preserved(
+            "",
+            "mod child { mod nested { pub fn check() { super::super::contrast_failures(); } } }",
+            &[],
+        )
+    }
+
+    #[test]
+    fn module_import_keeps_binding_reached_through_file_child_super() -> anyhow::Result<()> {
+        assert_super_reference_preserved(
+            "#[cfg(test)]",
+            "#[cfg(test)] mod tests;",
+            &[(
+                "tests.rs",
+                "#[test] fn check() { super::contrast_failures(); }",
+            )],
+        )
+    }
+
+    #[test]
+    fn module_import_keeps_binding_reached_through_macro_super() -> anyhow::Result<()> {
+        assert_super_reference_preserved(
+            "#[cfg(test)]",
+            "#[cfg(test)] mod tests { #[test] fn check() { assert_eq!(super::contrast_failures(), ()); } }",
+            &[],
+        )
+    }
+
+    fn assert_super_reference_preserved(
+        gate: &str,
+        child: &str,
+        child_sources: &[(&str, &str)],
+    ) -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("lib.rs");
+        let text = format!(
+            "mod helpers {{ mod contrast {{ pub fn failures() {{}} }}\n\
+             pub mod support {{ pub(crate) use super::contrast::failures as contrast_failures; }} }}\n\
+             {gate}\nuse crate::helpers::support::contrast_failures;\n{child}\n"
+        );
+        std::fs::write(&path, &text)?;
+        for (file, source) in child_sources {
+            std::fs::write(dir.path().join(file), source)?;
+        }
+        for pass in 0..2 {
+            let sources = ParsedSources::default();
+            let module_map = sources.module_map(dir.path());
+            let (findings, fixes) = super::scan_file(
+                dir.path(),
+                super::CrateSources {
+                    source_root: dir.path(),
+                    sources:     &sources,
+                },
+                &path,
+                &module_map,
+            )?;
+            if pass == 1 {
+                assert!(findings.is_empty(), "the second scan must keep the binding");
+                assert!(fixes.is_empty(), "the second scan must propose no edit");
+            }
+            crate::fixes::imports::apply_fixes(&fixes.try_into()?)?;
+            let output = std::process::Command::new("rustc")
+                .args(["--edition=2024", "--test", "--emit=metadata"])
+                .arg(&path)
+                .arg("-o")
+                .arg(dir.path().join("fixture.rmeta"))
+                .output()?;
+            assert!(
+                output.status.success(),
+                "rewritten child reference must compile: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(std::fs::read_to_string(&path)?, text);
+        }
+        Ok(())
+    }
+
     fn rewrite_fixture(text: &str) -> anyhow::Result<String> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("lib.rs");
