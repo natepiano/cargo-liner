@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `--fix` keeps a parent import when a child module uses its binding through a qualified path, including `super::` paths in macro arguments.
 - `--fix` keeps a function and its imports when formatted edits would exceed Clippy's function length limit.
 - `--fix` keeps a local import when a glob in its destination scope can supply the same binding or trait.
 - `--fix` preserves imports used by macro fields, macro bindings, field shorthand, and child modules, so rewritten code keeps its field syntax and bindings.
