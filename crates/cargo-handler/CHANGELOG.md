@@ -56,6 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Show workers as waiting during every live detached run, including Python commands and shell strings.
 
+- Dispatch shells fold into their Codex or Claude worker rows by seat identity, including detached servers and current assign launchers.
+
 - Keep waiting workers in their unit tree while detached verification runs remain live, including workers on another Codex account.
 
 - Codex sessions that use a detached daemon show their thread names through their socket connection.

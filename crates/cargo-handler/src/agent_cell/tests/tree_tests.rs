@@ -976,3 +976,48 @@ fn summary_agent_values_follow_the_same_frame_account_decision() {
         );
     }
 }
+
+#[test]
+fn claude_dispatch_work_draws_under_its_seat_session() {
+    let mut root = agent(10, "director", 100, None);
+    let mut shell = child(
+        0,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
+        Some(600),
+        "dispatch shell",
+        80,
+    );
+    shell.dispatch = serde_json::from_value(serde_json::json!({"worker": {
+        "seat":"fixture-fix", "identity":{"claude_session":"seat-session"},
+        "job":"repair the seat", "short_seat":"fix", "role":{"worker":"fix"}
+    }}))
+    .expect("Claude dispatch identity");
+    let work = child(
+        1,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
+        Some(601),
+        "seat child command",
+        70,
+    );
+    root.children = vec![shell, work];
+    let mut seat = agent(20, "Claude seat", 90, Some(10));
+    seat.session_id = SessionIdentity::Claude("seat-session".into());
+    let state = MachineState::Answered(vec![root, seat], HierarchyEdges::default().into());
+    let cells = natedev_cells(&state);
+    let seat_index = cells[0]
+        .lines
+        .iter()
+        .position(|line| matches!(line.subject, LineSubject::Agent(_)))
+        .expect("seat row");
+    let work_index = cells[0].lines.iter().position(|line| matches!(line.subject, LineSubject::Work(work) if work.child.name == "seat child command")).expect("seat work");
+    assert_eq!(work_index, seat_index + 1);
+    assert_eq!(
+        cells[0].lines[work_index].rails.len(),
+        cells[0].lines[seat_index].rails.len() + 1
+    );
+    assert_eq!(
+        cells[0].lines.len(),
+        2,
+        "the shell folds and its work appears once"
+    );
+}

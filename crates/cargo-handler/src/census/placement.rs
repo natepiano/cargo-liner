@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ops::Range;
 
 #[cfg(test)]
 use super::Account;
@@ -25,8 +26,8 @@ use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 #[cfg(test)]
 use super::scan::ScanStage;
+#[cfg(test)]
 use super::tree;
-use super::tree::DispatchFold;
 #[cfg(test)]
 use super::tree::ThreadEntry;
 #[cfg(test)]
@@ -143,12 +144,66 @@ pub(crate) struct ManagedThread<'a> {
     pub(crate) role:        HierarchyRole,
 }
 
-/// A live Claude seat joins a dispatch shell to a listed session.
+/// `DispatchWorker` identifies the thread or session that receives a dispatch label.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum DispatchWorker<'a> {
+    Thread(&'a super::ChildRow),
+    Session {
+        identity: RowIdentity<'a>,
+        row:      &'a AgentRow,
+    },
+}
+
+/// `DispatchPairing` joins a shell to its exact worker in one final tile.
 #[derive(Debug)]
-struct ClaudeDispatchFold<'a> {
+pub(super) struct DispatchPairing<'a> {
     shell:    &'a super::ChildRow,
-    worker:   RowIdentity<'a>,
+    worker:   DispatchWorker<'a>,
     dispatch: &'a ResolvedWorkerDispatch,
+}
+
+/// The rows do not prove one visible dispatch pair.
+#[derive(Debug)]
+pub(super) struct UnmatchedDispatch;
+
+impl<'a> DispatchPairing<'a> {
+    /// Validate the worker identity and both tile roots, each represented by `RowIdentity`.
+    pub(super) fn join(
+        shell_tile: RowIdentity<'a>,
+        shell: &'a super::ChildRow,
+        worker_tile: RowIdentity<'a>,
+        worker: DispatchWorker<'a>,
+    ) -> Result<Self, UnmatchedDispatch> {
+        let WorkerDispatch::Worker(dispatch) = &shell.dispatch else {
+            return Err(UnmatchedDispatch);
+        };
+        let matches = match (&dispatch.identity, worker) {
+            (WorkerIdentity::CodexThread(id), DispatchWorker::Thread(thread)) => {
+                thread.is_thread(id)
+            },
+            (WorkerIdentity::ClaudeSession(id), DispatchWorker::Session { row, .. }) => {
+                matches!(&row.session_id, SessionIdentity::Claude(session) if session == id)
+            },
+            _ => false,
+        };
+        if shell_tile == worker_tile && matches!(shell.kind, ChildKind::Shell(_)) && matches {
+            Ok(Self {
+                shell,
+                worker,
+                dispatch,
+            })
+        } else {
+            Err(UnmatchedDispatch)
+        }
+    }
+}
+
+/// The shell work that a `DispatchPairing` places under its Claude session.
+pub(crate) struct SessionDispatchWork<'a> {
+    pub(crate) owner:       RowIdentity<'a>,
+    pub(crate) row:         &'a AgentRow,
+    pub(crate) worker:      RowIdentity<'a>,
+    pub(crate) descendants: Range<usize>,
 }
 
 /// The one forest shared by tile ordering and summary membership.
@@ -160,9 +215,8 @@ pub(crate) struct AgentPlacement<'a> {
     pub(crate) threads: Vec<super::ManagedThread<'a>>,
     /// Launcher-cycle rows promoted after the ordinary roots.
     rescued_roots:      HashSet<RowIdentity<'a>>,
-    claude_dispatches:  Vec<ClaudeDispatchFold<'a>>,
     /// Shell/thread pairs joined after their tile membership is normalized.
-    dispatch_folds:     Vec<DispatchFold<'a>>,
+    dispatch_folds:     Vec<DispatchPairing<'a>>,
 }
 
 impl<'a> AgentPlacement<'a> {
@@ -218,19 +272,8 @@ impl<'a> AgentPlacement<'a> {
             rows,
             threads,
             rescued_roots,
-            claude_dispatches: Vec::new(),
             dispatch_folds: Vec::new(),
         };
-        placement.claude_dispatches = machines.iter().flat_map(|machine| {
-            machine.state.rows().iter().flat_map(|row| row.children.iter()).filter_map(|child| {
-                let WorkerDispatch::Worker(dispatch) = &child.dispatch else { return None; };
-                let WorkerIdentity::ClaudeSession(id) = &dispatch.identity else { return None; };
-                if !matches!(child.kind, ChildKind::Shell(_)) { return None; }
-                placement.rows.iter().find(|row| row.identity.machine == machine.name
-                    && matches!(&row.row.session_id, SessionIdentity::Claude(session) if session == id))
-                    .map(|row| ClaudeDispatchFold { shell: child, worker: row.identity, dispatch })
-            }).collect::<Vec<_>>()
-        }).collect();
         placement.dispatch_folds = placement.resolve_dispatches(machines);
         placement
     }
@@ -254,7 +297,7 @@ impl<'a> AgentPlacement<'a> {
     }
 
     /// Include only visible work, assigning moved threads to their manager's tile.
-    fn resolve_dispatches(&self, machines: &[Machine<'a>]) -> Vec<DispatchFold<'a>> {
+    fn resolve_dispatches(&self, machines: &[Machine<'a>]) -> Vec<DispatchPairing<'a>> {
         let mut children = Vec::new();
         for machine in machines {
             for row in machine.state.rows() {
@@ -286,7 +329,28 @@ impl<'a> AgentPlacement<'a> {
                 }
             }
         }
-        tree::join_dispatches(&children)
+        let workers: Vec<_> = children
+            .iter()
+            .filter(|(_, child)| child.kind == ChildKind::Thread)
+            .map(|(tile, child)| (*tile, DispatchWorker::Thread(child)))
+            .chain(self.rows.iter().map(|placed| {
+                (
+                    self.tile_root(placed.identity),
+                    DispatchWorker::Session {
+                        identity: placed.identity,
+                        row:      placed.row,
+                    },
+                )
+            }))
+            .collect();
+        children
+            .iter()
+            .filter_map(|(tile, shell)| {
+                workers.iter().find_map(|(worker_tile, worker)| {
+                    DispatchPairing::join(*tile, shell, *worker_tile, *worker).ok()
+                })
+            })
+            .collect()
     }
 
     /// Whether this shell's worker is already visible in its tile.
@@ -294,17 +358,45 @@ impl<'a> AgentPlacement<'a> {
         self.dispatch_folds
             .iter()
             .any(|fold| std::ptr::eq(fold.shell, child))
-            || self
-                .claude_dispatches
-                .iter()
-                .any(|fold| std::ptr::eq(fold.shell, child))
+    }
+
+    /// Place the descendants of each paired shell under its Claude session.
+    pub(crate) fn session_dispatch_work(&self) -> Vec<SessionDispatchWork<'a>> {
+        self.dispatch_folds
+            .iter()
+            .filter_map(|pair| {
+                let DispatchWorker::Session {
+                    identity: worker, ..
+                } = pair.worker
+                else {
+                    return None;
+                };
+                self.rows.iter().find_map(|owner| {
+                    let index = owner
+                        .row
+                        .children
+                        .iter()
+                        .position(|child| std::ptr::eq(child, pair.shell))?;
+                    let start = index + 1;
+                    let end = (start..owner.row.children.len())
+                        .find(|&next| owner.row.children[next].depth <= pair.shell.depth)
+                        .unwrap_or(owner.row.children.len());
+                    Some(SessionDispatchWork {
+                        owner: owner.identity,
+                        row: owner.row,
+                        worker,
+                        descendants: start..end,
+                    })
+                })
+            })
+            .collect()
     }
 
     /// The dispatch label for a Claude session matched in its final tile.
     pub(crate) fn row_dispatch_label(&self, identity: RowIdentity<'a>) -> DispatchLabel<'a> {
-        self.claude_dispatches
+        self.dispatch_folds
             .iter()
-            .find(|fold| fold.worker == identity)
+            .find(|fold| matches!(fold.worker, DispatchWorker::Session { identity: worker, .. } if worker == identity))
             .map_or(DispatchLabel::Original, |fold| {
                 DispatchLabel::Worker(fold.dispatch)
             })
@@ -314,7 +406,7 @@ impl<'a> AgentPlacement<'a> {
     pub(crate) fn dispatch_label(&self, child: &'a super::ChildRow) -> DispatchLabel<'a> {
         self.dispatch_folds
             .iter()
-            .find(|fold| std::ptr::eq(fold.thread, child))
+            .find(|fold| matches!(fold.worker, DispatchWorker::Thread(thread) if std::ptr::eq(thread, child)))
             .map_or_else(
                 || match &child.dispatch {
                     WorkerDispatch::Worker(dispatch) if child.kind == ChildKind::Thread => {

@@ -23,6 +23,7 @@ use crate::census::CodexThreadId;
 use crate::census::HierarchyEdge;
 use crate::census::HierarchyEdges;
 use crate::census::HierarchyRole;
+use crate::census::HierarchySource;
 use crate::census::Machine;
 use crate::census::MachineState;
 use crate::census::SessionIdentity;
@@ -68,7 +69,11 @@ fn explicit_dispatch_seat_resolves_from_the_fixture_roster() {
         &format!("--phase 1 --to {SEAT}"),
     ))
     .expect("literal dispatch parses");
-    let roster = WorkerRoster::read(&parsed.session_dir);
+    let roster = WorkerRoster::read(
+        parsed
+            .session_directory()
+            .expect("recorded session directory"),
+    );
     let WorkerDispatch::Worker(dispatch) = parsed.resolve(&roster, 999) else {
         panic!("an explicit seat resolves independently of the launcher pid");
     };
@@ -156,7 +161,11 @@ fn dispatch_without_to_selects_the_seat_by_its_launcher_pid() {
     let directory = roster_fixture();
     let parsed = ParsedDispatch::parse(&command(directory.path(), "--phase 1"))
         .expect("new dispatch parses");
-    let roster = WorkerRoster::read(&parsed.session_dir);
+    let roster = WorkerRoster::read(
+        parsed
+            .session_directory()
+            .expect("recorded session directory"),
+    );
     let WorkerDispatch::Worker(dispatch) = parsed.resolve(&roster, 701) else {
         panic!("the matching launcher pid resolves its worker");
     };
@@ -1653,4 +1662,474 @@ fn directory_and_environment_prefixes_fold_only_the_seat_delivery() {
 #[test]
 fn cables_relaunch_binding_and_directory_fold_into_the_resumed_seat() {
     assert_live_sender_folds(LiveSenderForm::CablesRelaunch);
+}
+
+/// The launcher form used by a dispatch pairing fixture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PairingSenderForm {
+    Legacy,
+    Follow,
+    Start,
+    Assign,
+    AssignShell,
+    AssignFlags,
+    AssignFuture,
+    AssignChildDirectory,
+}
+
+/// The live worker family determines its identity files and visible row.
+#[derive(Clone, Copy)]
+enum PairingWorkerFamily {
+    Codex,
+    Claude,
+}
+
+/// Build the captured launcher arguments with one selected flag case.
+fn pairing_arguments(
+    directory: &Path,
+    prompt: &Path,
+    form: PairingSenderForm,
+    fixture: &Value,
+) -> Vec<String> {
+    let mut arguments = if form == PairingSenderForm::Legacy {
+        let mut args = launcher_arguments(directory);
+        args.splice(
+            2..2,
+            [
+                "--to".into(),
+                SEAT.into(),
+                "--fix-cause".into(),
+                "repair dispatch pairing".into(),
+            ],
+        );
+        args
+    } else {
+        fixture[match form {
+            PairingSenderForm::Legacy | PairingSenderForm::Follow | PairingSenderForm::Start => {
+                "follow"
+            },
+            PairingSenderForm::Assign
+            | PairingSenderForm::AssignShell
+            | PairingSenderForm::AssignFlags
+            | PairingSenderForm::AssignFuture
+            | PairingSenderForm::AssignChildDirectory => "assign",
+        }]
+        .as_array()
+        .expect("argv form")
+        .iter()
+        .map(|word| match word.as_str().expect("argv word") {
+            "SESSION" => directory.display().to_string(),
+            "PROMPT" => prompt.display().to_string(),
+            word => word.to_owned(),
+        })
+        .collect()
+    };
+    if form == PairingSenderForm::AssignChildDirectory {
+        let index = arguments
+            .iter()
+            .position(|word| word == SESSION_DIRECTORY_FLAG)
+            .expect("session flag");
+        arguments.drain(index..index + 2);
+    }
+    if form == PairingSenderForm::AssignShell {
+        arguments[0] = "bash".into();
+        arguments[1] = "/fixture/.claude/scripts/direct/assign.sh".into();
+    }
+    append_pairing_flags(&mut arguments, form);
+    if form == PairingSenderForm::Start {
+        arguments[2] = "start".into();
+        let seat_flag = arguments
+            .iter()
+            .position(|word| word == "--to")
+            .expect("seat flag");
+        arguments[seat_flag] = "--name".into();
+        let prompt_flag = arguments
+            .iter()
+            .position(|word| word == "--message-file")
+            .expect("prompt flag");
+        arguments[prompt_flag] = "--prompt-file".into();
+        arguments.push("--resident".into());
+    }
+    arguments
+}
+
+/// Append the current and future flag variants to the captured arguments.
+fn append_pairing_flags(arguments: &mut Vec<String>, form: PairingSenderForm) {
+    if form == PairingSenderForm::AssignFuture {
+        arguments
+            .extend(["--future-switch", "--future-value", "future setting"].map(str::to_owned));
+    }
+    if form == PairingSenderForm::AssignFlags {
+        for flag in [
+            "--operation",
+            "--model",
+            "--effort",
+            "--summary",
+            "--paths",
+            "--early-ready",
+            "--style-since",
+            "--style-until",
+            "--held-design",
+            "--log",
+            "--id-file",
+            "--from-session-dir",
+            "--held-role",
+            "--family",
+            "--lens",
+            "--diff",
+            "--pass",
+            "--image",
+            "--image",
+        ] {
+            arguments.extend([flag.to_owned(), "fixture value".to_owned()]);
+        }
+    }
+}
+
+/// Attach a live Claude seat or a detached Codex thread to the fixture.
+fn pairing_worker(
+    directory: &Path,
+    session: &str,
+    family: PairingWorkerFamily,
+    processes: &mut Vec<ProcessEntry>,
+    rows: &mut Vec<AgentRow>,
+    sources: &mut crate::census::tree::TreeSources<'_>,
+) {
+    use crate::census::tree::ThreadEntry;
+    if matches!(family, PairingWorkerFamily::Claude) {
+        fs::write(
+            directory.join("impl_worker_impl7.json"),
+            serde_json::json!({
+                "name":SEAT,"slot":"impl7","family":"claude","worker_id":session
+            })
+            .to_string(),
+        )
+        .expect("Claude seat");
+        fs::write(
+            directory.join("impl_claim_impl7.json"),
+            serde_json::json!({
+                "worker":SEAT,"pid":701
+            })
+            .to_string(),
+        )
+        .expect("live Claude claim");
+        processes.push(process(900, 1, "claude", vec!["claude".into()]));
+        let mut seat = agent(900, &[]);
+        seat.session_id = SessionIdentity::Claude(session.into());
+        rows.push(seat);
+    } else {
+        // The earlier server has no process ancestry under this dispatch.
+        let mut server = process(900, 1, "codex", vec!["codex".into(), "app-server".into()]);
+        server.started = 800;
+        processes.push(server);
+        let mut host = agent(900, &[]);
+        host.agent = Agent::CodexThreadHost;
+        rows.push(host);
+        sources.threads.insert(
+            900,
+            vec![ThreadEntry {
+                activity:     crate::census::AgentActivity::Idle,
+                thread_id:    CodexThreadId::Recorded(session.into()),
+                name:         "original worker title".into(),
+                started:      800,
+                service_tier: crate::census::ServiceTier::Standard,
+                account:      crate::census::Account::Unrecorded,
+            }],
+        );
+    }
+}
+
+/// Build the observed wrapper, launcher and optional mesh child.
+fn pairing_processes(
+    arguments: Vec<String>,
+    form: PairingSenderForm,
+    directory: &Path,
+) -> Vec<ProcessEntry> {
+    let literal = arguments
+        .iter()
+        .map(|arg| format!("'{}'", arg.replace('\'', "'\\''")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let wrapper = process(
+        600,
+        10,
+        "zsh",
+        vec![
+            "zsh".into(),
+            "-c".into(),
+            format!(
+                "source /fixture/.claude/shell-snapshots/snapshot-test.sh && eval '{}'",
+                literal.replace('\'', "'\\''")
+            ),
+        ],
+    );
+    let launcher = process(701, 600, &arguments[0].clone(), arguments);
+    let mut processes = vec![
+        process(10, 1, "claude", vec!["claude".into()]),
+        wrapper,
+        launcher,
+    ];
+    if form == PairingSenderForm::AssignChildDirectory {
+        processes.push(process(
+            702,
+            701,
+            "python3",
+            vec![
+                "python3".into(),
+                "/fixture/.claude/scripts/agents/codex_mesh.py".into(),
+                "follow".into(),
+                SESSION_DIRECTORY_FLAG.into(),
+                directory.display().to_string(),
+                SEAT_FLAG.into(),
+                SEAT.into(),
+                MESSAGE_FLAG.into(),
+                JOB.into(),
+            ],
+        ));
+    }
+    processes
+}
+
+/// The fixture preserves the current argv forms and uses isolated identity files.
+fn paired_dispatch_fixture(
+    form: PairingSenderForm,
+    family: PairingWorkerFamily,
+    staff_name: &str,
+) -> String {
+    use crate::census::classify;
+    use crate::census::hierarchy::StaffFileReader;
+    use crate::census::tree::TreeSources;
+    use crate::census::tree::{self};
+
+    let directory = roster_fixture();
+    let prompt = directory.path().join("prompt.md");
+    fs::write(&prompt, JOB).expect("dispatch prompt");
+    let fixture: Value = serde_json::from_str(include_str!("../fixtures/dispatch_pairing.json"))
+        .expect("captured argv fixture");
+    fs::write(
+        directory.path().join(ROSTER_FILE),
+        serde_json::json!({
+            SEAT: {"staff_id": fixture["staff_id"], "launcher_pid":701, "role":"fix"}
+        })
+        .to_string(),
+    )
+    .expect("staff roster");
+    let session = if matches!(family, PairingWorkerFamily::Claude) {
+        "claude-seat-session"
+    } else {
+        "worker-thread"
+    };
+    let staff_path = directory.path().join("staff.json");
+    fs::write(&staff_path, serde_json::json!({"schema":2,"rows":[
+        {"id":"director","kind":"showrunner","name":"director","parent":null,"current_session":"manager-id"},
+        {"id":"fixture-worker","kind":"worker","name":staff_name,"parent":"director","current_session":session}
+    ]}).to_string()).expect("staff file");
+    let staff = StaffFileReader::default().roster(&HierarchySource::File(
+        staff_path.to_string_lossy().into_owned(),
+    ));
+    assert_eq!(staff.edges.0.len(), 1, "the staff file places the worker");
+    let arguments = pairing_arguments(directory.path(), &prompt, form, &fixture);
+    let mut processes = pairing_processes(arguments, form, directory.path());
+    let mut root = agent(10, &[]);
+    root.session_id = SessionIdentity::Claude("manager-id".into());
+    let mut rows = vec![root];
+    let mut sources = TreeSources::default();
+    pairing_worker(
+        directory.path(),
+        session,
+        family,
+        &mut processes,
+        &mut rows,
+        &mut sources,
+    );
+    sources.dispatches = scan::find_staff_dispatches(&processes, std::sync::Arc::clone(&staff));
+    tree::attach_children(&mut rows, &processes, &sources);
+    classify::attach_staff_names(&mut rows, &staff, &std::collections::HashMap::new());
+    let text = drawn_tiles_with_edges(rows, staff.edges.clone()).join("\n");
+    assert!(
+        !text.contains("assign.py")
+            && !text.contains("implement.sh")
+            && !text.contains("codex_mesh.py"),
+        "{form:?}: {text}"
+    );
+    let expected = if staff_name.is_empty() {
+        JOB
+    } else {
+        staff_name
+    };
+    assert_eq!(
+        text.lines().filter(|line| line.contains(expected)).count(),
+        1,
+        "{form:?}: {text}"
+    );
+    assert!(!text.contains("original worker title"), "{form:?}: {text}");
+    text
+}
+
+#[test]
+fn captured_follow_with_fix_cause_folds_detached_worker() {
+    for staff_name in ["staff worker", ""] {
+        paired_dispatch_fixture(
+            PairingSenderForm::Legacy,
+            PairingWorkerFamily::Codex,
+            staff_name,
+        );
+        paired_dispatch_fixture(
+            PairingSenderForm::Follow,
+            PairingWorkerFamily::Codex,
+            staff_name,
+        );
+        paired_dispatch_fixture(
+            PairingSenderForm::Start,
+            PairingWorkerFamily::Codex,
+            staff_name,
+        );
+    }
+}
+
+#[test]
+fn current_assign_dispatch_folds_detached_worker() {
+    for staff_name in ["staff worker", ""] {
+        paired_dispatch_fixture(
+            PairingSenderForm::Assign,
+            PairingWorkerFamily::Codex,
+            staff_name,
+        );
+        paired_dispatch_fixture(
+            PairingSenderForm::AssignShell,
+            PairingWorkerFamily::Codex,
+            staff_name,
+        );
+        paired_dispatch_fixture(
+            PairingSenderForm::AssignFlags,
+            PairingWorkerFamily::Codex,
+            staff_name,
+        );
+        paired_dispatch_fixture(
+            PairingSenderForm::AssignFuture,
+            PairingWorkerFamily::Codex,
+            staff_name,
+        );
+    }
+}
+
+#[test]
+fn claude_seat_dispatch_uses_the_same_pairing() {
+    for staff_name in ["staff Claude", ""] {
+        paired_dispatch_fixture(
+            PairingSenderForm::Assign,
+            PairingWorkerFamily::Claude,
+            staff_name,
+        );
+    }
+}
+
+#[test]
+fn review_future_flag_values_preserve_the_session_directory() {
+    let directory = roster_fixture();
+    for tail in [
+        format!("--future-limit 5 '{}'", directory.path().display()),
+        format!(
+            "--future-option value --to {SEAT} '{}' /work /prompt",
+            directory.path().display()
+        ),
+    ] {
+        let parsed = ParsedDispatch::parse(&format!(
+            "bash /fixture/.claude/scripts/direct/review.sh {tail}"
+        ))
+        .expect("review command");
+        let roster = WorkerRoster::read(directory.path());
+        let WorkerDispatch::Worker(worker) = parsed.resolve(&roster, 701) else {
+            panic!("the future flag preserves the review identity");
+        };
+        assert_eq!(worker.seat(), SEAT);
+        assert_eq!(
+            worker.identity,
+            WorkerIdentity::CodexThread("worker-thread".into())
+        );
+        // Resolve through the parsed directory, as the census does.
+        let found = scan::find_worker_dispatches(&[process(
+            701,
+            10,
+            "bash",
+            command_words(&format!(
+                "bash /fixture/.claude/scripts/direct/review.sh {tail}"
+            ))
+            .expect("review argv"),
+        )]);
+        assert!(
+            matches!(found.get(&701), Some(WorkerDispatch::Worker(worker)) if worker.seat() == SEAT)
+        );
+    }
+}
+
+#[test]
+fn legacy_flag_like_job_text_does_not_change_the_seat() {
+    let directory = roster_fixture();
+    let literal =
+        command(directory.path(), &format!("--to {SEAT}")).replace(JOB, "--to=missing-seat");
+    let parsed = ParsedDispatch::parse(&literal).expect("literal job");
+    let WorkerDispatch::Worker(worker) = parsed.resolve(&WorkerRoster::read(directory.path()), 701)
+    else {
+        panic!("the job text cannot replace the seat");
+    };
+    assert_eq!(worker.seat(), SEAT);
+    assert!(worker.label().contains("--to=missing-seat"));
+}
+
+#[test]
+fn live_mesh_child_overrides_the_launcher_seat() {
+    let directory = roster_fixture();
+    let mut arguments = launcher_arguments(directory.path());
+    arguments.splice(2..2, ["--to".into(), "missing-seat".into()]);
+    let launcher = process(701, 10, "bash", arguments);
+    let mesh = process(
+        702,
+        701,
+        "python3",
+        vec![
+            "python3".into(),
+            "/fixture/.claude/scripts/agents/codex_mesh.py".into(),
+            "follow".into(),
+            "--session-dir".into(),
+            directory.path().display().to_string(),
+            "--to".into(),
+            SEAT.into(),
+            "--message".into(),
+            JOB.into(),
+        ],
+    );
+    let found = scan::find_worker_dispatches(&[launcher, mesh]);
+    assert!(
+        matches!(found.get(&701), Some(WorkerDispatch::Worker(worker)) if worker.seat() == SEAT)
+    );
+}
+
+#[test]
+fn assign_inherits_the_session_directory_from_its_live_child() {
+    paired_dispatch_fixture(
+        PairingSenderForm::AssignChildDirectory,
+        PairingWorkerFamily::Codex,
+        "staff worker",
+    );
+}
+
+#[test]
+fn assign_without_a_session_directory_or_child_keeps_its_shell_row() {
+    let arguments = vec![
+        "bash".into(),
+        "/fixture/.claude/scripts/direct/assign.sh".into(),
+        "--role".into(),
+        "fix".into(),
+        "--to".into(),
+        SEAT.into(),
+    ];
+    let found = scan::find_worker_dispatches(&[process(701, 10, "bash", arguments)]);
+    let mut shell = child("shell", "unresolved assign shell");
+    shell.dispatch = found.get(&701).cloned().unwrap_or(WorkerDispatch::Plain);
+    let mut worker = child("thread", "unpaired worker");
+    worker.thread_id = CodexThreadId::Recorded("worker-thread".into());
+    let text = drawn_tiles(vec![agent(10, &[shell, worker])]).join("\n");
+    assert!(text.contains("unresolved assign shell"), "{text}");
+    assert!(text.contains("unpaired worker"), "{text}");
 }
