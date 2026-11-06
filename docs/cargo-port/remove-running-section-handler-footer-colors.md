@@ -1209,6 +1209,29 @@ An interactive Codex session that the user renamed shows its name in its tile an
 
 **Binds later work:** the work that reads Codex model and effort beside these thread rows keeps the once-per-open `ThreadsLayout` choice.
 
+### Phase 62h — Every detached run shows its worker as waiting  · status: todo
+
+**Depends on:** Phase 62
+
+Do this phase first when the unit resumes, before Phase 42.
+
+#### Work Order
+
+**Goal:** while a Codex worker has a live detached run (a `mesh_runs.py supervise` process naming its record), its row under its unit shows `waiting` or the run's step name, whatever command the run executes. The row returns to its normal state when the run ends.
+
+**Source:** change review C201 came back (user, 2026-11-05 20:44 EST): "yes send it back". The user's live `cargo-handler` (pid 3454803, started 20:41, build 19:20 from main a57fb3b6e) showed the herdr unit expanded with every Codex worker `idle`. At that moment two detached runs were live:
+- `herdr-e-labels`: record `/tmp/claude/unit/5f707c80-741b-4bcd-8258-fa3b7e0df65f/mesh_runs/20261105T204030-3408579-6c01.json`, 20:40:30 to 20:44:41 EST.
+- `herdr-rename4`: a run in the same folder that started 20:43:26 and ended 20:44:15 EST.
+
+**Probable cause (showrunner reading, not proven):** Phase 62's gotcha says an eligible run needs a recognized command, and a script name inside `bash -c` stays unrecognized. Both herdr runs execute `bash -c "env -u PYTHONPATH basedpyright ... && ... scripts/lib/py -m unittest ..."`. Prove or reject this cause with a red test built from those records before the fix.
+
+**Constraints:**
+- Keep every Phase 62 result: `verify.sh` runs still show their step name, and a finished run still releases its row.
+- A run with an unknown command shows `waiting`; never hide the run because its command has no step name.
+- The run must still need a live supervisor that names the exact record, so a dead run never shows.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live check: with a real worker in a detached `bash -c` run, a capture shows its row as `waiting`, then back to normal after the run ends. The checkpoint carries a new Change-Review line for the user.
+
 ### Phase 42 — A dispatch shell folds into its Codex worker row  · status: todo
 
 **Depends on:** Phase 40
