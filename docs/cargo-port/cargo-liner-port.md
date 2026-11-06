@@ -361,7 +361,7 @@ A project marked Deleted stays in its root, struck through and dismissable, thro
 
 **Depends on:** Phase 4
 
-Do this phase first, before Phase 4b and Phase 2w.
+Order (user, 2026-11-06): Phase 2w first, then this phase, then Phase 4b.
 
 #### Work Order
 
@@ -433,7 +433,7 @@ Do this phase first, before Phase 4b and Phase 2w.
 
 **Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` when it changes, and `verify.sh lint cargo-port` clean; no test takes a second. The unit director takes live shots at 160x45 in colour, 160x45 under `NO_COLOR=1` and 80x30 in colour. A fresh design check on those shots raises none of these items.
 
-### Phase 5 — A CPU sample costs only the CPU pane  · status: todo
+### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 
 **Depends on:** Phase 3b (both edit `tui/terminal/event_loop.rs`) and Phase 4b (it changes CPU drawing and pane geometry, and this phase measures after it)
 

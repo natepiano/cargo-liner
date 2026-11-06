@@ -57,5 +57,5 @@ Changes the user sent back from change review. Each row stays until its fix merg
 
 | Change | What the user said | Unit | Fix phase (plan commit) | State |
 | --- | --- | --- | --- | --- |
-| C196 — a Deleted row stays through a rescan | "i never asked for this ... you invented this"; the wanted rule: a deleted project stays on the list "till i either dismiss them or i rescan" | port | Phase 4a in `cargo-liner-port.md` (16bb3ff13) | todo; runs first when port resumes |
+| C196 — a Deleted row stays through a rescan | "i never asked for this ... you invented this"; the wanted rule: a deleted project stays on the list "till i either dismiss them or i rescan" | port | Phase 4a in `cargo-liner-port.md` (16bb3ff13) | todo; runs after port's mend phase 2w (user order 2026-11-06) |
 | C201 — a waiting Codex worker shows in its unit's tree | screenshot 20:44 EST 2026-11-05: herdr workers with live detached runs showed `idle`; "yes send it back" | handler | Phase 62h in `remove-running-section-handler-footer-colors.md` (d7771e0c3) | todo; runs first when handler resumes |
