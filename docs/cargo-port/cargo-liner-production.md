@@ -50,3 +50,12 @@
 - **The merge branch is `main`** (showrunner, 2026-10-06). Its units touch separate crates, so a separate merge branch would only add a promotion step. <PromoteMain/> does not apply. Each merge goes to main through `validate_and_push.sh --quick --to main`, and CI points through `validate_and_push.sh --to main`.
 - **No UX guide.** cargo-port names none, so the design check is skipped. The unit's smoke run proves the Targets pane shows only its table, filling the pane.
 - **Branch and session names** are the user's (2026-10-06): session `cargo-port-cleanup`, worktree `../cargo-port-cleanup`, branch `cleanup/running`.
+
+## Returned changes
+
+Changes the user sent back from change review. Each row stays until its fix merges and the user lands the new change. The showrunner checks this list when a unit resumes and at each merge from that unit.
+
+| Change | What the user said | Unit | Fix phase (plan commit) | State |
+| --- | --- | --- | --- | --- |
+| C196 — a Deleted row stays through a rescan | "i never asked for this ... you invented this"; the wanted rule: a deleted project stays on the list "till i either dismiss them or i rescan" | port | Phase 4a in `cargo-liner-port.md` (16bb3ff13) | todo; runs first when port resumes |
+| C201 — a waiting Codex worker shows in its unit's tree | screenshot 20:44 EST 2026-11-05: herdr workers with live detached runs showed `idle`; "yes send it back" | handler | Phase 62h in `remove-running-section-handler-footer-colors.md` (d7771e0c3) | todo; runs first when handler resumes |
