@@ -2,12 +2,14 @@ use super::CheckedSelection;
 use super::FixScans;
 use super::MendRunner;
 use super::RunPlan;
+use super::function_length::FunctionLengthPlan;
 use super::mend_runner::NextAnalysis;
 use crate::compiler::BuildOutputMode;
 use crate::config::DiagnosticCode;
 use crate::config::DiagnosticStatus;
 use crate::config::FixKind;
 use crate::config::FixKindSelection;
+use crate::config::OperationIntent;
 use crate::config::OperationMode;
 use crate::fixes::field_visibility;
 use crate::fixes::narrow_pub_crate;
@@ -57,11 +59,13 @@ impl MendRunner<'_> {
         let output_mode =
             BuildOutputMode::from(PassOutputPolicy::for_pass(self.output_format, pub_use));
         let checked = match std::mem::replace(&mut self.next_analysis, NextAnalysis::Required) {
-            NextAnalysis::Required => self.build_selection(output_mode)?,
-            NextAnalysis::Validated(mut checked) => {
+            NextAnalysis::Validated(mut planned) if planned.operation_mode == operation_mode => {
                 // The previous pass already charged this validation.
-                checked.result.check_duration = std::time::Duration::ZERO;
-                *checked
+                planned.check_duration = std::time::Duration::ZERO;
+                return Ok(*planned);
+            },
+            NextAnalysis::Required | NextAnalysis::Validated(_) => {
+                self.build_selection(output_mode)?
             },
         };
         self.scan_fixes(operation_mode, checked, pub_use)
@@ -69,7 +73,7 @@ impl MendRunner<'_> {
 
     /// Runs every fixer `operation_mode` enables against the checked
     /// selection, reusing its syntax scans and the sources they read.
-    fn scan_fixes(
+    pub(super) fn scan_fixes(
         &self,
         operation_mode: OperationMode,
         checked: CheckedSelection,
@@ -151,6 +155,7 @@ impl MendRunner<'_> {
         });
         let pub_use_scan = self.scan_parent_facades(pub_use, &report, &sources)?;
         let mut planned = RunPlan {
+            function_plan: FunctionLengthPlan::default(),
             sources,
             operation_mode,
             report,
@@ -169,6 +174,20 @@ impl MendRunner<'_> {
             compiler_fixable,
         };
         planned.subtree_reexport_scan = self.scan_subtree_reexports(&planned)?;
+        self.guard_function_lengths(planned)
+    }
+
+    fn guard_function_lengths(&self, mut planned: RunPlan) -> Result<RunPlan, MendFailure> {
+        planned.function_plan = Self::combined_function_plan(
+            planned.fix_scans(),
+            &planned.sources,
+            &self.selection.package_roots,
+            &self.selection.workspace_root,
+        )?;
+        planned
+            .function_plan
+            .filter_report(&mut planned.report, &self.selection.analysis_root)
+            .map_err(MendFailure::Unexpected)?;
         Ok(planned)
     }
 
@@ -250,18 +269,19 @@ impl MendRunner<'_> {
         fix_kind: FixKind,
         codes: &[DiagnosticCode],
     ) -> FixKindSelection {
-        match operation_mode.fixes.selection(fix_kind) {
-            FixKindSelection::NotSelected => FixKindSelection::NotSelected,
-            FixKindSelection::Selected => {
-                if codes.iter().any(|&code| {
-                    self.loaded_config.diagnostics_config.is_enabled(code)
-                        == DiagnosticStatus::Enabled
-                }) {
-                    FixKindSelection::Selected
-                } else {
-                    FixKindSelection::NotSelected
-                }
-            },
+        let enabled = if codes.iter().any(|&code| {
+            self.loaded_config.diagnostics_config.is_enabled(code) == DiagnosticStatus::Enabled
+        }) {
+            FixKindSelection::Selected
+        } else {
+            FixKindSelection::NotSelected
+        };
+        match (
+            operation_mode.intent,
+            operation_mode.fixes.selection(fix_kind),
+        ) {
+            (OperationIntent::ReadOnly, _) | (_, FixKindSelection::Selected) => enabled,
+            (_, FixKindSelection::NotSelected) => FixKindSelection::NotSelected,
         }
     }
 }
