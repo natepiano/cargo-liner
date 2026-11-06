@@ -159,63 +159,6 @@ pub(in crate::tui) enum ReplacementExpansion {
     KeepValidKeys,
 }
 
-/// Rows that remain owned by the user during a scan replacement.
-struct RetainedProjectTree {
-    entries: Vec<ProjectEntry>,
-}
-
-impl RetainedProjectTree {
-    fn take_from(list: &mut ProjectList) -> Self {
-        let entries = std::mem::take(&mut list.roots)
-            .into_values()
-            .filter_map(|mut entry| retain_root(&mut entry.root_item).then_some(entry))
-            .collect();
-        Self { entries }
-    }
-
-    fn retain(mut root: RootItem) -> Option<RootItem> { retain_root(&mut root).then_some(root) }
-
-    fn merge_into(self, list: &mut ProjectList, inline_dirs: &[String]) {
-        if self.entries.is_empty() {
-            return;
-        }
-        for retained in self.entries {
-            let path = retained.path().clone();
-            if let Some(current) = list.roots.get_mut(&path) {
-                merge_retained_root(&mut current.root_item, retained.root_item, inline_dirs);
-            } else {
-                list.insert_into_hierarchy_without_index(retained.root_item);
-                if let Some(current) = list.roots.get_mut(&path) {
-                    current.git_repo = retained.git_repo;
-                }
-            }
-        }
-        list.regroup_members_without_index(inline_dirs);
-        list.rebuild_path_index();
-    }
-
-    fn preserve_replacement(current: &mut RootItem, previous: RootItem, inline_dirs: &[String]) {
-        if let Some(retained) = Self::retain(previous) {
-            merge_retained_root(current, retained, inline_dirs);
-        }
-    }
-
-    fn preserve_submodules(
-        current: &mut Vec<crate::project::Submodule>,
-        previous: Vec<crate::project::Submodule>,
-    ) {
-        merge_by_path(
-            current,
-            previous
-                .into_iter()
-                .filter(|child| child.visibility() != Visibility::Visible),
-            |current, retained| {
-                current.project_info = retained.project_info;
-            },
-        );
-    }
-}
-
 fn retain_info(info: &mut ProjectInfo) -> bool {
     info.submodules
         .retain_mut(|child| retain_info(&mut child.project_info));
@@ -255,6 +198,36 @@ fn retain_root(root: &mut RootItem) -> bool {
             retained || !group.linked.is_empty()
         },
     }
+}
+
+/// Keep deletion states during individual project refreshes.
+fn retain_deletion_states(mut root: RootItem) -> Option<RootItem> {
+    retain_root(&mut root).then_some(root)
+}
+
+fn preserve_replacement_deletion_states(
+    current: &mut RootItem,
+    previous: RootItem,
+    inline_dirs: &[String],
+) {
+    if let Some(retained) = retain_deletion_states(previous) {
+        merge_retained_root(current, retained, inline_dirs);
+    }
+}
+
+fn preserve_submodule_deletion_states(
+    current: &mut Vec<crate::project::Submodule>,
+    previous: Vec<crate::project::Submodule>,
+) {
+    merge_by_path(
+        current,
+        previous
+            .into_iter()
+            .filter(|child| child.visibility() != Visibility::Visible),
+        |current, retained| {
+            current.project_info = retained.project_info;
+        },
+    );
 }
 
 fn merge_retained_info(current: &mut ProjectInfo, retained: ProjectInfo) {
@@ -398,13 +371,6 @@ impl ProjectList {
         projects
     }
 
-    /// Keep user-owned deletion states while the scan rebuilds live entries.
-    pub(in crate::tui) fn retain_for_rescan(&mut self) {
-        self.roots
-            .retain(|_, entry| retain_root(&mut entry.root_item));
-        self.rebuild_path_index();
-    }
-
     /// Production-only seeding: load `last_selected` from the terminal-state
     /// file and stamp lint column visibility into the column-width cache.
     /// Tests build via `ProjectList::new` / `ProjectList::default` and skip
@@ -491,14 +457,12 @@ impl ProjectList {
         }
     }
 
-    /// Replace the hierarchy after merging retained rows and rebuilding its index.
+    /// Install the scanned hierarchy and its index without previous deletion states.
     pub(in crate::tui) fn replace_roots_from(
         &mut self,
-        mut replacement: Self,
-        inline_dirs: &[String],
+        replacement: Self,
         expansion: ReplacementExpansion,
     ) {
-        RetainedProjectTree::take_from(self).merge_into(&mut replacement, inline_dirs);
         self.roots = replacement.roots;
         self.path_index = replacement.path_index;
         self.row_generation += 1;
@@ -737,7 +701,7 @@ impl ProjectList {
                                 && current.commit == accepted.commit
                         });
                 let mut submodules = submodules;
-                RetainedProjectTree::preserve_submodules(
+                preserve_submodule_deletion_states(
                     &mut submodules,
                     std::mem::take(&mut info.submodules),
                 );
@@ -1381,7 +1345,7 @@ impl ProjectList {
                             "replacement path must match target path"
                         );
                         std::mem::swap(item, &mut replacement);
-                        RetainedProjectTree::preserve_replacement(item, replacement.clone(), &[]);
+                        preserve_replacement_deletion_states(item, replacement.clone(), &[]);
                         return Some(replacement);
                     }
                 },
@@ -1391,7 +1355,7 @@ impl ProjectList {
                             && let RootItem::Rust(project) = replacement
                         {
                             let mut updated = RootItem::Rust(project);
-                            RetainedProjectTree::preserve_replacement(
+                            preserve_replacement_deletion_states(
                                 &mut updated,
                                 RootItem::Rust(checkout.clone()),
                                 &[],
@@ -1555,9 +1519,7 @@ impl ProjectList {
         }
     }
 
-    // Test helpers change the roots and update the path index.
-
-    #[cfg(test)]
+    /// Clear the roots and their index for a full rescan.
     pub(in crate::tui) fn clear(&mut self) {
         if !self.roots.is_empty() {
             self.roots.clear();

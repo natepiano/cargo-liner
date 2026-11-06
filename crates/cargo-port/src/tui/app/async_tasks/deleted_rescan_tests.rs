@@ -77,7 +77,7 @@ fn assert_deleted_row(app: &mut App, path: &Path, name: &str) -> anyhow::Result<
     assert_eq!(
         project.visibility,
         Visibility::Deleted,
-        "the completed rescan must retain the Deleted state"
+        "watcher events must retain the Deleted state until dismissal or rescan"
     );
     assert!(
         shows_path(app, path),
@@ -130,8 +130,23 @@ fn dismiss_and_check_late_replies(app: &mut App, path: &Path) -> anyhow::Result<
     Ok(())
 }
 
+fn assert_rescan_removed(app: &mut App, path: &Path) {
+    for bytes in [0, 42] {
+        let _ = app.handle_bg_msg(BackgroundMsg::DiskUsage {
+            path: AbsolutePath::from(path),
+            bytes,
+        });
+        app.ensure_visible_rows_cached();
+        assert!(matches!(
+            app.project_list.at_path(path),
+            ProjectPathLookup::UnknownPath
+        ));
+        assert!(!shows_path(app, path));
+    }
+}
+
 #[test]
-fn deleted_plain_project_survives_completed_rescan_and_late_disk_replies() -> anyhow::Result<()> {
+fn deleted_plain_project_stays_until_rescan() -> anyhow::Result<()> {
     let scratch = tempfile::tempdir()?;
     let path = scratch.path().join("deleted-plain");
     fs::create_dir(&path)?;
@@ -139,15 +154,14 @@ fn deleted_plain_project_survives_completed_rescan_and_late_disk_replies() -> an
     fs::remove_dir(&path)?;
     app.handle_disk_usage(&path, 0);
 
-    complete_rescan(&mut app, Vec::new());
-
     assert_deleted_row(&mut app, &path, "deleted-plain")?;
-    dismiss_and_check_late_replies(&mut app, &path)
+    complete_rescan(&mut app, Vec::new());
+    assert_rescan_removed(&mut app, &path);
+    Ok(())
 }
 
 #[test]
-fn deleted_member_keeps_selection_and_open_group_when_rescan_reorders_roots() -> anyhow::Result<()>
-{
+fn rescan_removes_deleted_member_and_prunes_its_open_group() -> anyhow::Result<()> {
     let scratch = tempfile::tempdir()?;
     let workspace_path = scratch.path().join("z-workspace");
     let member_path = workspace_path.join("crates/deleted-member");
@@ -188,6 +202,7 @@ fn deleted_member_keeps_selection_and_open_group_when_rescan_reorders_roots() ->
     }
     fs::remove_dir_all(workspace_path.join("crates"))?;
     app.handle_disk_usage(&member_path, 0);
+    assert_deleted_row(&mut app, &member_path, "deleted-member")?;
     let fresh_workspace = Workspace {
         path: AbsolutePath::from(workspace_path.as_path()),
         ..Workspace::default()
@@ -201,19 +216,24 @@ fn deleted_member_keeps_selection_and_open_group_when_rescan_reorders_roots() ->
         ],
     );
 
-    assert_deleted_row(&mut app, &member_path, "deleted-member")?;
+    assert_rescan_removed(&mut app, &member_path);
     assert_eq!(
         app.project_list.selected_project_path(),
-        Some(member_path.as_path())
+        Some(scratch.path().join("a-new-root").as_path())
     );
     for target in expanded {
-        assert!(app.project_list.export_expanded().contains(&target));
+        assert!(!app.project_list.export_expanded().contains(&target));
     }
-    dismiss_and_check_late_replies(&mut app, &member_path)
+    Ok(())
 }
 
 #[test]
-fn deleted_worktree_survives_completed_rescan_and_late_disk_replies() -> anyhow::Result<()> {
+fn deleted_worktree_stays_dismissable_until_rescan() -> anyhow::Result<()> {
+    enum DeletedWorktreeAction {
+        KeepUntilRescan,
+        DismissBeforeRescan,
+    }
+
     let scratch = tempfile::tempdir()?;
     let primary_path = scratch.path().join("primary");
     let linked_path = scratch.path().join("deleted-worktree");
@@ -231,27 +251,37 @@ fn deleted_worktree_survives_completed_rescan_and_late_disk_replies() -> anyhow:
         RustProject::Package(primary.clone()),
         vec![RustProject::Package(linked)],
     ));
-    let mut app = test_support::make_app(&[group]);
-    app.project_list
-        .apply_expanded(&[ExpandTarget::Root(AbsolutePath::from(
-            primary_path.as_path(),
-        ))]);
-    app.ensure_visible_rows_cached();
     fs::remove_dir(&linked_path)?;
-    app.handle_disk_usage(&linked_path, 0);
-
-    complete_rescan(
-        &mut app,
-        vec![RootItem::Rust(RustProject::Package(primary))],
-    );
-
-    assert_deleted_row(&mut app, &linked_path, "deleted-worktree")?;
-    dismiss_and_check_late_replies(&mut app, &linked_path)
+    for action in [
+        DeletedWorktreeAction::KeepUntilRescan,
+        DeletedWorktreeAction::DismissBeforeRescan,
+    ] {
+        let mut app = test_support::make_app(std::slice::from_ref(&group));
+        app.project_list
+            .apply_expanded(&[ExpandTarget::Root(AbsolutePath::from(
+                primary_path.as_path(),
+            ))]);
+        app.ensure_visible_rows_cached();
+        app.handle_disk_usage(&linked_path, 0);
+        assert_deleted_row(&mut app, &linked_path, "deleted-worktree")?;
+        match action {
+            DeletedWorktreeAction::KeepUntilRescan => {},
+            DeletedWorktreeAction::DismissBeforeRescan => {
+                dismiss_and_check_late_replies(&mut app, &linked_path)?;
+            },
+        }
+        complete_rescan(
+            &mut app,
+            vec![RootItem::Rust(RustProject::Package(primary.clone()))],
+        );
+        assert_rescan_removed(&mut app, &linked_path);
+    }
+    Ok(())
 }
 
 #[test]
-fn removed_discovery_folder_keeps_both_projects_and_dismissals_after_rescan() -> anyhow::Result<()>
-{
+fn rescan_clears_deleted_projects_and_dismissals_from_removed_discovery_folder()
+-> anyhow::Result<()> {
     let scratch = tempfile::tempdir()?;
     let discovery = scratch.path().join("discovery");
     let paths = [
@@ -273,25 +303,13 @@ fn removed_discovery_folder_keeps_both_projects_and_dismissals_after_rescan() ->
         app.handle_disk_usage(path, 0);
     }
 
-    complete_rescan(&mut app, Vec::new());
-
     for (path, name) in paths.iter().zip(names) {
         assert_deleted_row(&mut app, path, name)?;
         dismiss_and_check_late_replies(&mut app, path)?;
     }
     complete_rescan(&mut app, Vec::new());
     for path in &paths {
-        for bytes in [0, 42] {
-            let _ = app.handle_bg_msg(BackgroundMsg::DiskUsage {
-                path: AbsolutePath::from(path.as_path()),
-                bytes,
-            });
-        }
-        let project = app
-            .project_list
-            .at_path(path)
-            .expect_found("dismissal after rescan");
-        assert_eq!(project.visibility, Visibility::Dismissed);
+        assert_rescan_removed(&mut app, path);
     }
     assert_eq!(app.project_list.row_count(), 0);
     Ok(())
@@ -319,7 +337,7 @@ fn rescan_restores_live_selection_after_retained_row_clamps_cursor() {
 }
 
 #[test]
-fn submodule_refresh_preserves_dismissal_after_rescan() {
+fn submodule_refresh_preserves_dismissal_until_rescan() {
     let owner = Path::new("/repo");
     let child = Path::new("/repo/child");
     let submodule = Submodule {
@@ -341,7 +359,6 @@ fn submodule_refresh_preserves_dismissal_after_rescan() {
         .at_path_mut(child)
         .expect_found("child fixture")
         .visibility = Visibility::Dismissed;
-    complete_rescan(&mut app, vec![root(owner, "repo")]);
     let _ = app.handle_bg_msg(BackgroundMsg::Submodules {
         path:       AbsolutePath::from(owner),
         submodules: vec![submodule],
@@ -359,6 +376,8 @@ fn submodule_refresh_preserves_dismissal_after_rescan() {
         Visibility::Dismissed
     );
     assert!(!shows_path(&app, child));
+    complete_rescan(&mut app, vec![root(owner, "repo")]);
+    assert_rescan_removed(&mut app, child);
 }
 
 fn app_with_deleted_member() -> App {
@@ -384,17 +403,11 @@ fn app_with_deleted_member() -> App {
 }
 
 #[test]
-fn rescan_keeps_deleted_member_when_workspace_becomes_non_rust() {
+fn rescan_removes_deleted_member_when_workspace_becomes_non_rust() {
     let mut app = app_with_deleted_member();
     let non_rust = crate::project::NonRustProject::new(AbsolutePath::from("/workspace"), None);
     complete_rescan(&mut app, vec![RootItem::NonRust(non_rust)]);
-    assert_eq!(
-        app.project_list
-            .at_path(Path::new("/workspace/crates/member"))
-            .expect_found("retained member")
-            .visibility,
-        Visibility::Deleted
-    );
+    assert_rescan_removed(&mut app, Path::new("/workspace/crates/member"));
 }
 
 #[test]
@@ -484,12 +497,20 @@ fn assert_selection_choice(app: &App, path: &Path) {
 }
 
 #[test]
-fn rescan_keeps_user_keyboard_choice_of_deleted_row() {
+fn rescan_uses_first_live_row_when_saved_choice_was_deleted() {
     let mut app = selection_fixture(Visibility::Deleted);
-    app.prepare_rescan();
     selection_key(&mut app, KeyCode::Home);
-    finish_selection_scan(&mut app, Vec::new());
     assert_selection_choice(&app, Path::new("/a-choice"));
+    app.prepare_rescan();
+    finish_selection_scan(&mut app, vec![root(Path::new("/live"), "live")]);
+    assert_eq!(
+        app.project_list.selected_project_path(),
+        Some(Path::new("/live"))
+    );
+    assert_eq!(
+        app.project_list.paths.last_selected.as_deref(),
+        Some(Path::new("/a-choice"))
+    );
 }
 
 #[test]
@@ -529,13 +550,14 @@ fn rescan_click_on_clamped_row_records_user_choice() -> anyhow::Result<()> {
         .expect_found("retained row")
         .visibility = Visibility::Deleted;
     app.prepare_rescan();
+    let projects = discover_selection_roots(&mut app);
     app.sync_selected_project();
     assert_eq!(
         app.project_list.selected_project_path(),
         Some(Path::new("/a-choice"))
     );
     selection_mouse(&mut app, MouseEventKind::Down(MouseButton::Left))?;
-    finish_selection_scan(&mut app, vec![root(Path::new("/z-choice"), "z-choice")]);
+    finish_selection_scan(&mut app, projects);
     assert_selection_choice(&app, Path::new("/a-choice"));
     Ok(())
 }
@@ -606,10 +628,12 @@ fn selection_mouse(app: &mut App, kind: MouseEventKind) -> anyhow::Result<()> {
 
 #[test]
 fn rescan_keeps_user_wheel_choice() -> anyhow::Result<()> {
-    let mut app = selection_fixture(Visibility::Deleted);
+    let mut app = selection_fixture(Visibility::Visible);
     app.prepare_rescan();
+    let projects = discover_selection_roots(&mut app);
+    selection_key(&mut app, KeyCode::End);
     selection_mouse(&mut app, MouseEventKind::ScrollUp)?;
-    finish_selection_scan(&mut app, Vec::new());
+    finish_selection_scan(&mut app, projects);
     assert_selection_choice(&app, Path::new("/a-choice"));
     Ok(())
 }
@@ -630,22 +654,32 @@ fn rescan_keeps_user_finder_choice() {
 
 #[test]
 fn rescan_keeps_user_expansion_choice() {
-    let mut app = selection_fixture(Visibility::Deleted);
+    let mut app = selection_fixture(Visibility::Visible);
     app.prepare_rescan();
+    let projects = discover_selection_roots(&mut app);
     selection_key(&mut app, KeyCode::Left);
-    finish_selection_scan(&mut app, Vec::new());
+    finish_selection_scan(&mut app, projects);
     assert_selection_choice(&app, Path::new("/a-choice"));
 }
 
 #[test]
-fn completed_scan_does_not_save_fallback_for_dismissed_choice() {
-    let mut app = selection_fixture(Visibility::Deleted);
+fn completed_scan_does_not_save_fallback_for_dismissed_choice() -> anyhow::Result<()> {
+    let mut app = selection_fixture(Visibility::Visible);
     app.prepare_rescan();
+    let mut dismissed = package(Path::new("/z-choice"), "z-choice")?;
+    dismissed.visibility = Visibility::Dismissed;
+    let projects = vec![
+        root(Path::new("/a-choice"), "a-choice"),
+        RootItem::Rust(RustProject::Package(dismissed)),
+    ];
+    for item in &projects {
+        let _ = app.handle_bg_msg(BackgroundMsg::ProjectDiscovered { item: item.clone() });
+    }
     app.project_list
         .at_path_mut(Path::new("/z-choice"))
         .expect_found("dismissed choice")
         .visibility = Visibility::Dismissed;
-    finish_selection_scan(&mut app, Vec::new());
+    finish_selection_scan(&mut app, projects);
     assert_eq!(
         app.project_list.selected_project_path(),
         Some(Path::new("/a-choice"))
@@ -654,6 +688,7 @@ fn completed_scan_does_not_save_fallback_for_dismissed_choice() {
         app.project_list.paths.last_selected.as_deref(),
         Some(Path::new("/z-choice"))
     );
+    Ok(())
 }
 
 fn discover_selection_roots(app: &mut App) -> Vec<RootItem> {
@@ -734,15 +769,16 @@ fn dismissal_button_keeps_clamped_selection_after_rescan() -> anyhow::Result<()>
     assert_selection_choice(&app, Path::new("/a-choice"));
     assert!(app.project_list.sync().is_changed());
     assert!(!shows_path(&app, Path::new("/z-choice")));
-    complete_rescan(&mut app, Vec::new());
+    complete_rescan(&mut app, vec![root(Path::new("/a-choice"), "a-choice")]);
     assert_selection_choice(&app, Path::new("/a-choice"));
     Ok(())
 }
 
 #[test]
 fn focus_gained_during_rescan_saves_selected_project_row() -> anyhow::Result<()> {
-    let mut app = selection_fixture(Visibility::Deleted);
+    let mut app = selection_fixture(Visibility::Visible);
     app.prepare_rescan();
+    let projects = discover_selection_roots(&mut app);
     app.project_list.mark_sync_stable();
     let position = selection_row_position(&mut app, "a-choice")?;
     input::set_last_mouse_pos_for_test(Some(position));
@@ -752,7 +788,7 @@ fn focus_gained_during_rescan_saves_selected_project_row() -> anyhow::Result<()>
 
     assert_selection_choice(&app, Path::new("/a-choice"));
     assert!(app.project_list.sync().is_changed());
-    finish_selection_scan(&mut app, Vec::new());
+    finish_selection_scan(&mut app, projects);
     assert_selection_choice(&app, Path::new("/a-choice"));
     Ok(())
 }
@@ -786,10 +822,7 @@ fn unrelated_input_during_rescan_keeps_saved_selection() {
         .expect_found("retained fallback")
         .visibility = Visibility::Deleted;
     app.prepare_rescan();
-    assert_eq!(
-        app.project_list.selected_project_path(),
-        Some(Path::new("/a-choice")),
-    );
+    assert_eq!(app.project_list.selected_project_path(), None,);
     app.project_list.mark_sync_stable();
 
     selection_key(&mut app, KeyCode::F(12));

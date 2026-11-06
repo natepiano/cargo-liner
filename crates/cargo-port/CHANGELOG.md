@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Keep Deleted rows, their selection, and their expansion state through full rescans until dismissal.
+- Clear Deleted rows on a full rescan; keep them struck through until dismissal or rescan.
 - Keep text attributes, including strike-through, when `NO_COLOR` suppresses terminal colours.
 - Give the widest sccache popup row equal left and right padding.
 - Shorten Git pane values at their end with an ellipsis when the value exceeds its column.

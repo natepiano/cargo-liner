@@ -82,7 +82,6 @@ fn indexed_paths_survive_insert_replace_regroup_and_rescan() {
         ProjectList::new(vec![RootItem::Rust(RustProject::Package(package(
             "/rescanned",
         )))]),
-        &[],
         ReplacementExpansion::KeepValidKeys,
     );
     assert_matches_linear(&list, &["/rescanned"]);
@@ -351,7 +350,7 @@ fn stale_routes_cannot_read_or_mutate_another_projects_runtime_state() {
 }
 
 #[test]
-fn retained_roots_follow_the_scan_sort_order() {
+fn scan_replacement_removes_deleted_roots() {
     let mut first = package("/a-deleted");
     first.visibility = Visibility::Deleted;
     let mut list = ProjectList::new(vec![RootItem::Rust(RustProject::Package(first))]);
@@ -359,24 +358,18 @@ fn retained_roots_follow_the_scan_sort_order() {
         ProjectList::new(vec![RootItem::Rust(RustProject::Package(package(
             "/z-live",
         )))]),
-        &[],
         ReplacementExpansion::KeepValidKeys,
     );
 
     assert_eq!(
-        list.get(0).expect("retained first row").path().as_path(),
-        Path::new("/a-deleted")
+        list.get(0).expect("scanned first row").path().as_path(),
+        Path::new("/z-live")
     );
-    assert_eq!(
-        list.at_path(Path::new("/a-deleted"))
-            .expect_found("retained root")
-            .visibility,
-        Visibility::Deleted
-    );
+    assert!(matches!(list.at_path(Path::new("/a-deleted")), UnknownPath));
 }
 
 #[test]
-fn retained_root_merges_into_rediscovered_member_without_duplicate_rows() {
+fn scan_replacement_uses_rediscovered_member_state_without_duplicate_rows() {
     let member_path = Path::new("/workspace/member");
     for visibility in [Visibility::Deleted, Visibility::Dismissed] {
         let mut retained = package("/workspace/member");
@@ -392,7 +385,6 @@ fn retained_root_merges_into_rediscovered_member_without_duplicate_rows() {
 
         list.replace_roots_from(
             ProjectList::new(vec![RootItem::Rust(RustProject::Workspace(workspace))]),
-            &[],
             ReplacementExpansion::RestoreSavedTargets,
         );
         list.apply_expanded(&[ExpandTarget::Root(AbsolutePath::from("/workspace"))]);
@@ -415,14 +407,14 @@ fn retained_root_merges_into_rediscovered_member_without_duplicate_rows() {
             list.at_path(member_path)
                 .expect_found("retained member")
                 .visibility,
-            visibility
+            Visibility::Visible
         );
         let rows = list
             .visible_rows()
             .iter()
             .filter(|row| list.path_for_row(**row) == Some(member_path))
             .count();
-        assert_eq!(rows, usize::from(visibility == Visibility::Deleted));
+        assert_eq!(rows, 1);
     }
 }
 

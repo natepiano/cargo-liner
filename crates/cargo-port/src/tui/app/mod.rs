@@ -5884,7 +5884,6 @@ mod tests {
                         Some(primary.as_path()),
                     ))],
                 ))]),
-                &[],
                 ReplacementExpansion::KeepValidKeys,
             );
             render_ui(&mut app);

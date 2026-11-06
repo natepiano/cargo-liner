@@ -342,12 +342,12 @@ The event loop (`tui/terminal/event_loop.rs`) draws a frame only when the frame 
 
 #### As-built
 
-A project marked Deleted stays in its root, struck through and dismissable, through a full rescan and under `NO_COLOR=1`. `ProjectList::retain_for_rescan` keeps each Deleted entry when the rescan starts, and the completed scan result keeps it; retained rows merge into the new roots before expansion keys are pruned. Late zero-byte and positive disk replies do not bring back a dismissed row. A rescan restores the saved choice (`last_selected`) when it is selectable, else the first visible row, and never falls back to the current path. Navigation, a focus click and a dismissal each record the choice.
+A project marked Deleted stays in its root, struck through and dismissable, also under `NO_COLOR=1`, until the user dismisses it or rescans (the user, 2026-11-05; Phase 4a removed the rescan retain that Phase 4 added). Late zero-byte and positive disk replies do not bring back a dismissed row. A rescan restores the saved choice (`last_selected`) when it is selectable, else the first visible row, and never falls back to the current path. Navigation, a focus click and a dismissal each record the choice.
 
 `ProjectList::at_path` returns `ProjectPathLookup<T>` (`Found`, `UnknownPath`, `StaleRoute`), and each caller handles every outcome. Under `NO_COLOR`, the terminal output writes text attributes without colour codes and sends no colour reset that clears them. The sccache popup width is the widest row plus equal left and right padding. A Git pane value is cut at its end with an ellipsis, never from its middle; below inner width 11 a Git row shows only its label, in the full inner width.
 
 **Files:**
-- `crates/cargo-port/src/tui/project_list/list.rs`, `grouping.rs`, `visible_rows.rs`, `path_index_tests.rs` — retained rows, the named lookup and its tests
+- `crates/cargo-port/src/tui/project_list/list.rs`, `grouping.rs`, `visible_rows.rs`, `path_index_tests.rs` — the named lookup and its tests
 - `crates/cargo-port/src/tui/app/async_tasks/tree.rs`, `dispatch.rs`, `disk_handlers.rs`, `deleted_rescan_tests.rs` — rescan, completed scan, late replies and their tests
 - `crates/cargo-port/src/tui/app/navigation/selection.rs`, `app/selection_paths.rs`, `app/dismiss.rs`, `input/dispatch.rs`, `interaction.rs`, `finder/dispatch.rs` — record the choice
 - `crates/cargo-port/src/tui/terminal/mod.rs`, `no_color_tests.rs` — attributes without colour
@@ -357,7 +357,7 @@ A project marked Deleted stays in its root, struck through and dismissable, thro
 
 **Gotchas:** the restored selection depends on four selection handlers outside the rescan code; a new way to choose a row must record the choice. Only a live run showed that a rescan replaced the live selection; the tests that pin it now live in `deleted_rescan_tests.rs`.
 
-### Phase 4a — A rescan clears Deleted rows again  · status: todo
+### Phase 4a — A rescan clears Deleted rows again  · status: done
 
 **Depends on:** Phase 4
 
@@ -412,7 +412,7 @@ Order (user, 2026-11-06): Phase 2w first, then this phase, then Phase 4b.
 3. **Strike-through.** A Deleted row strikes only its name and value text, not the empty cells between them.
 4. **Scroll position.** The sccache popup shows `▲ 2 of 2` at its end, not `▲ 1 of 2`.
 5. **Row highlight.** The sccache popup's selected row highlight reaches the right border.
-6. **Contrast.** These pass the guide's `readable-contrast` rule: the selected sccache label (#96beb4 on #565656, 3.61:1), Disk values (#ff6464 on #505050), the selected project name (#ff8700 on #565656, 3.05:1), white CPU labels on yellow and green, the red System percentage (#cd0000 on #1e1e1e), and the grey `resets` text.
+6. **Contrast.** These pass the guide's `readable-contrast` rule: the selected sccache label and the selected Deleted row (#96beb4 on #565656, 3.61:1), Disk values (#ff6464 on #505050), the selected project name (#ff8700 on #565656, 3.05:1), white CPU labels on yellow and green, the red System percentage (#cd0000 on #1e1e1e), and the grey `resets` text.
 7. **One selection fill.** A selected row uses one fill across all its columns, Disk included. On an unselected row, the Disk column fill is clearly different from the selection fill.
 8. **Cut text.** The Languages header `comments` shows whole, and each row names its language. Package pane values that do not fit wrap or end in an ellipsis. The Languages rows separate parent rows from their child subtotals; the total keeps summing parents only (`lang/render.rs:102`), so it stays correct.
 9. **80 columns.** A pane too narrow to show text is hidden, and its width goes to the other panes. One named visibility result decides this. A hidden pane leaves the Tab order and has no mouse areas. When the focused pane hides, focus moves to the next visible pane. When width returns, the pane shows again and focus stays where it is. The Workspace pane shows values beside `Path` and `Disk`. The Git pane shows its values at 80 columns. The CI Runs pane shows only the columns that fit whole (`ci/render.rs:471` keeps minimum widths past the pane width), and the `No description available` placeholder is one row that ends in `…`.
@@ -421,6 +421,15 @@ Order (user, 2026-11-06): Phase 2w first, then this phase, then Phase 4b.
 12. **Letter case.** Pane titles and rows use sentence case: `Sccache stats`, `CI runs`, `Targets: binary`, `Multiple input files`.
 13. **sccache reasons.** Each non-cacheable reason row says in plain words why the call was not cached. No row reads `-`, `-o` or `missing output_dir`.
 14. **CPU bars.** In colour, the bars draw with cell background, so no dark line shows between rows. Under `NO_COLOR`, `prepare_terminal_buffer` (`tui/render.rs`) removes every background, so the bars keep their block glyphs and different utilization levels stay distinct.
+15. **Right margin.** The Projects pane has a right margin that matches its left margin. `Disk`, the values and `[x]` do not touch the border.
+16. **Disk colour.** The Disk colour follows the size, or the column has no size colour. `73 B` and `22.7 GiB` do not share one colour that seems to carry a meaning.
+17. **Project type column.** The column of crab icons has a short heading, or the column goes.
+18. **CI placeholder.** `No CI workflow configured` shows whole, or ends in `…`.
+19. **Status words.** The status text `sccache:` uses a common word, for example `Disk cache`.
+20. **Deleted project details.** The Package pane of a Deleted project says that the project is deleted. Its Disk rows agree: `other` does not read `74 B` under a Disk value of `0 B`.
+21. **One target word.** One target kind has one name in the Package pane, the Structure pane and the Targets pane, not `binary`, `Binary` and `bin`.
+22. **Lint said once.** `No lint runs` shows in one place, not as both a pane title and the Package `Lint` row.
+23. **Pane borders.** Vertical pane borders draw with no gap between rows, and the orange status dot draws as a colour glyph. When a real terminal already shows this, change the capture font of the live harness, not the app.
 
 **Files:**
 - `crates/cargo-port/src/tui/` — the project columns, the sccache popup, the System and Languages panes, the Package pane, the pane layout, the hint text and their tests
