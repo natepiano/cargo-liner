@@ -1,5 +1,6 @@
 use crossterm::event::KeyCode;
 use ratatui::Frame;
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use toml::Table;
@@ -10,6 +11,7 @@ use tui_pane::NavAction;
 use tui_pane::Navigation;
 use tui_pane::OverlayAction;
 use tui_pane::PaneFocusState;
+use tui_pane::PaneSelectionState;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::SettingCodecs;
@@ -50,6 +52,7 @@ use super::keymap_ui;
 use super::overlays::PopupFrame;
 use super::render;
 use super::render_context::PaneRenderCtx;
+use super::theme_roles;
 use crate::cache_paths;
 use crate::config;
 use crate::config::CargoPortConfig;
@@ -1505,10 +1508,10 @@ pub(super) struct SettingsRenderInputs {
 /// records line-target metadata on the pane.
 pub(super) fn prepare_settings_render_inputs(
     app: &mut App,
-    frame_area_height: u16,
+    frame_area: Rect,
 ) -> SettingsRenderInputs {
     let rows = settings_rows(app, app.config.current());
-    let content_width = usize::from(SETTINGS_POPUP_WIDTH.saturating_sub(2));
+    let content_width = usize::from(SETTINGS_POPUP_WIDTH.min(frame_area.width).saturating_sub(3));
     let framework_rows = framework_settings_rows(app, &rows);
     let render_options = SettingsRenderOptions {
         focus: if app.framework.overlay() == Some(FrameworkOverlayId::Settings) {
@@ -1526,7 +1529,10 @@ pub(super) fn prepare_settings_render_inputs(
         success_style: Style::default().fg(success_color()),
         error_style: Style::default().fg(error_color()),
         inline_error_style: Style::default().fg(inline_error_color()),
-        active_style: tui_pane::selection_style(PaneFocusState::Active, app.framework.color_mode),
+        active_style: theme_roles::selection_style(
+            PaneSelectionState::Active,
+            app.framework.color_mode,
+        ),
         remembered_style: tui_pane::selection_style(
             PaneFocusState::Remembered,
             app.framework.color_mode,
@@ -1537,7 +1543,7 @@ pub(super) fn prepare_settings_render_inputs(
         .framework
         .settings_pane
         .render_rows(&framework_rows, render_options);
-    let popup_height = settings_popup_height(rendered.lines.len(), frame_area_height);
+    let popup_height = settings_popup_height(rendered.lines.len(), frame_area.height);
     SettingsRenderInputs {
         lines: rendered.lines,
         popup_height,
@@ -1624,7 +1630,11 @@ fn framework_settings_rows(app: &App, rows: &[SettingsUiRow]) -> Vec<FrameworkSe
         if setting == SettingOption::LintCacheSize {
             let used = render::format_bytes(app.lint.cache_usage.bytes);
             let limit = &app.config.current().lint.cache_size;
-            row = row.with_suffix(format!("  {used} / {limit}"));
+            row = FrameworkSettingsRow::stepper(
+                selection_index,
+                label.clone(),
+                format!("{used} / {limit}"),
+            );
         }
         framework_rows.push(row);
         selection_index += 1;

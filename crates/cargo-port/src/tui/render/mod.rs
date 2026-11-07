@@ -145,10 +145,21 @@ struct TiledRenderInputs<'a> {
     synced_description_height: SyncedDescriptionHeight,
 }
 
-/// Render the tiled grid: every pane draws its contents inside its own
-/// rect, and the one grid pass afterwards lays down the borders, rules and
-/// titles they reported -- so a line two panes share is drawn once, by the
-/// grid, rather than twice by its neighbours.
+/// Draw toast cards through the shared renderer.
+fn render_toasts_over_panes(frame: &mut Frame, app: &mut App, area: Rect) {
+    let toasts_pane_focused = app.focus_is(PaneId::Toasts);
+    let toasts_ctx = ToastsRenderCtx {
+        now:              Instant::now(),
+        pane_focus_state: if toasts_pane_focused {
+            PaneFocusState::Active
+        } else {
+            PaneFocusState::Inactive
+        },
+    };
+    Renderable::render(&mut app.framework.toasts, frame, area, &toasts_ctx);
+}
+
+/// Render each pane and then draw its borders and titles.
 fn render_tiled_panes(
     frame: &mut Frame,
     app: &mut App,
@@ -232,7 +243,8 @@ fn move_focus_from_hidden_pane(app: &mut App, bottom_row: panes::BottomRow) {
         && (matches!(
             panes::PaneVisibility::in_layout(&app.panes.tiled_layout, focused),
             panes::PaneVisibility::Hidden
-        ) || (focused == PaneId::Targets && !app.is_pane_tabbable(focused)))
+        ) || (matches!(focused, PaneId::Targets | PaneId::Lang)
+            && !app.is_pane_tabbable(focused)))
     {
         let order = panes::tab_order(bottom_row);
         let start = order.iter().position(|pane| *pane == focused).unwrap_or(0);
@@ -342,21 +354,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     {
         frame.render_widget(Clear, outer_layout[0]);
     }
-    let toasts_pane_focused = app.focus_is(PaneId::Toasts);
-    let toasts_ctx = ToastsRenderCtx {
-        now:              Instant::now(),
-        pane_focus_state: if toasts_pane_focused {
-            PaneFocusState::Active
-        } else {
-            PaneFocusState::Inactive
-        },
-    };
-    Renderable::render(
-        &mut app.framework.toasts,
-        frame,
-        outer_layout[0],
-        &toasts_ctx,
-    );
+    render_toasts_over_panes(frame, app, outer_layout[0]);
 
     if app.framework.overlay() == Some(FrameworkOverlayId::Settings) {
         dispatch_settings_overlay(app, frame);
@@ -565,8 +563,7 @@ fn dispatch_settings_overlay(app: &mut App, frame: &mut Frame) {
     app.framework.settings_pane.focus = RenderFocus {
         pane_focus_state: PaneFocusState::Active,
     };
-    let frame_height = frame.area().height;
-    let inputs = settings::prepare_settings_render_inputs(app, frame_height);
+    let inputs = settings::prepare_settings_render_inputs(app, frame.area());
     let animation_elapsed = app.animation_started.elapsed();
     let selected_path: Option<PathBuf> = app
         .selected_project_path_for_render()

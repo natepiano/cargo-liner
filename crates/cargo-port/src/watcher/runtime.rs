@@ -3158,7 +3158,12 @@ mod tests {
         let mut got_git = false;
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                BackgroundMsg::DiskUsage { path, .. } if *path == *project_dir => {
+                BackgroundMsg::DiskUsageBatch { root_path, entries }
+                    if *root_path == *project_dir
+                        && entries
+                            .iter()
+                            .any(|(path, _)| path.as_path() == project_dir.as_path()) =>
+                {
                     got_disk = true;
                 },
                 BackgroundMsg::CheckoutInfo { path, .. } | BackgroundMsg::RepoInfo { path, .. }
@@ -3479,9 +3484,15 @@ mod tests {
 
         let mut got_zero = false;
         while let Ok(msg) = background_rx.try_recv() {
-            if let BackgroundMsg::DiskUsage { path, bytes } = msg
-                && path.as_path() == linked_dir
-                && bytes == 0
+            if let BackgroundMsg::DiskUsageBatch { root_path, entries } = msg
+                && root_path.as_path() == linked_dir
+                && entries.len() == 1
+                && entries.iter().any(|(path, sizes)| {
+                    path.as_path() == linked_dir
+                        && sizes.total == 0
+                        && sizes.in_project_target == 0
+                        && sizes.in_project_non_target == 0
+                })
             {
                 got_zero = true;
             }

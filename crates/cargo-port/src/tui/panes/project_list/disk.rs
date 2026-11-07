@@ -73,17 +73,16 @@ pub(super) fn headroom_style(headroom: StorageHeadroom) -> Style {
 }
 
 pub(super) fn formatted_disk(projects: &ProjectList, path: &Path) -> String {
-    let bytes = (match projects.at_path(path) {
-        Found(project) => project.disk_usage_bytes,
+    match projects.at_path(path) {
+        Found(project) => project.disk.total(),
         UnknownPath | StaleRoute => None,
-    })
-    .unwrap_or(0);
-    render::format_bytes(bytes)
+    }
+    .map_or_else(|| "…".to_string(), render::format_bytes)
 }
 
 pub(super) fn formatted_disk_for_item(item: &RootItem) -> String {
     item.disk_usage_bytes()
-        .map_or_else(|| render::format_bytes(0), render::format_bytes)
+        .map_or_else(|| "…".to_string(), render::format_bytes)
 }
 
 // Body of `ProjectListPane::render`. Same pattern as the

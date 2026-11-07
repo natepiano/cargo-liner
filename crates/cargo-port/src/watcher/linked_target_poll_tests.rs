@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use super::disk_probe_scope;
 use super::fire_disk_updates;
-use super::project_disk_bytes;
+use super::project_disk_sizes;
 use super::schedule_disk_poll;
 use crate::channel;
 use crate::project::AbsolutePath;
@@ -60,7 +60,10 @@ fn target_symlink_artifacts_reach_polled_project_size() -> Result<(), Box<dyn Er
     );
     done_receiver.recv_timeout(Duration::from_millis(250))?;
     assert!(
-        matches!(receiver.try_recv()?, BackgroundMsg::DiskUsage { path, bytes } if path == project && bytes == 4108)
+        matches!(receiver.try_recv()?, BackgroundMsg::DiskUsageBatch { root_path, entries }
+            if root_path == project && entries.len() == 1 && entries[0].0 == project
+                && entries[0].1.total == 4108 && entries[0].1.in_project_target == 4096
+                && entries[0].1.in_project_non_target == 12)
     );
     Ok(())
 }
@@ -78,7 +81,7 @@ fn target_symlink_to_in_tree_artifacts_is_counted_once() -> Result<(), Box<dyn E
     drop(receiver);
     let dispatch = watch_test_support::target_metadata(sender, project.clone(), target);
     assert_eq!(
-        project_disk_bytes(&project, &disk_probe_scope(&dispatch, &project)),
+        project_disk_sizes(&project, &disk_probe_scope(&dispatch, &project)).total,
         4096
     );
     Ok(())

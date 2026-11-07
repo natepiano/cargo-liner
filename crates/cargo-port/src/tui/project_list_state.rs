@@ -14,6 +14,7 @@ use super::project_list::ExpandKey;
 use super::project_list::VisibleRow;
 use crate::project::AbsolutePath;
 use crate::project::Comparison;
+use crate::project::DiskMeasurement;
 use crate::project::ProjectEntry;
 use crate::scan::ProjectStorage;
 
@@ -88,7 +89,7 @@ pub(super) struct DiskCacheKey {
 #[derive(PartialEq)]
 pub(super) struct FitWidthsCacheKey {
     pub(super) presentation:     Vec<ProjectRowWidthInput>,
-    pub(super) summary_bytes:    u64,
+    pub(super) summary_bytes:    DiskMeasurement,
     pub(super) visible_rows:     Vec<VisibleRow>,
     pub(super) include_non_rust: bool,
     pub(super) lint_enabled:     bool,

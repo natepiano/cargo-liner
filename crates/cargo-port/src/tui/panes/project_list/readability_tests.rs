@@ -3,22 +3,151 @@ use std::path::Path;
 use anyhow::Context;
 use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
+use tui_pane::ColorMode;
 
+use crate::project::AheadBehind;
 use crate::project::CheckoutInfo;
+use crate::project::CiPagination;
 use crate::project::CommitDate;
 use crate::project::Comparison;
+use crate::project::DiskMeasurement;
 use crate::project::GitStatus;
 use crate::project::HeadState;
 use crate::project::LocalGitState;
+use crate::project::ProjectCiData;
+use crate::project::ProjectCiInfo;
+use crate::project::RepoInfo;
+use crate::project::ResolvedBranch;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::TrackedRef;
 use crate::project::Visibility;
+use crate::scan::BackgroundMsg;
 use crate::tui::panes::PaneId;
+use crate::tui::project_list::ExpandKey;
 use crate::tui::test_support;
 use crate::tui::test_support::PROJECT;
 use crate::tui::test_support::PROJECT_PATH;
 use crate::tui::test_support::WIDTH;
+
+#[test]
+fn phase4e_disk_loading_changes_to_measured_zero_and_completes_the_sum() -> anyhow::Result<()> {
+    let mut items = [
+        test_support::make_package("pending", Path::new("/tmp/pending")),
+        test_support::make_package("known", Path::new("/tmp/known")),
+    ];
+    if let RootItem::Rust(RustProject::Package(package)) = &mut items[0] {
+        package.disk = DiskMeasurement::NotMeasured;
+    }
+    if let RootItem::Rust(RustProject::Package(package)) = &mut items[1] {
+        package.disk = DiskMeasurement::TotalOnly(73);
+    }
+    let mut app = test_support::make_app(&items);
+    app.framework.color_mode = ColorMode::Colored;
+    app.ensure_visible_rows_cached();
+    let pending = test_support::draw_pane(&mut app, PaneId::ProjectList, 80)?;
+    let rows = test_support::rows(&pending);
+    let (_, project_y) = test_support::position(&pending, "pending")?;
+    let (_, sum_y) = test_support::position(&pending, "Σ")?;
+    let project_row = &rows[usize::from(project_y)];
+    let sum_row = &rows[usize::from(sum_y)];
+    assert!(
+        !project_row.contains("0 B"),
+        "a missing size is not zero: {project_row}"
+    );
+    assert!(
+        !sum_row.contains("73 B"),
+        "an incomplete sum needs a loading mark: {sum_row}"
+    );
+    let pending_size = project_row
+        .trim_end_matches([' ', '│'])
+        .rsplit_once(' ')
+        .context("the project loading mark")?
+        .1;
+    assert!(!pending_size.is_empty(), "{project_row}");
+    assert!(
+        sum_row.contains(pending_size),
+        "the sum needs the same loading mark: {sum_row}"
+    );
+    app.project_list
+        .at_path_mut(Path::new("/tmp/pending"))
+        .expect_found("pending project")
+        .disk = DiskMeasurement::Measured {
+        total:  0,
+        target: 0,
+        other:  0,
+    };
+    let complete = test_support::draw_pane(&mut app, PaneId::ProjectList, 80)?;
+    let rows = test_support::rows(&complete);
+    let (_, project_y) = test_support::position(&complete, "pending")?;
+    let (_, sum_y) = test_support::position(&complete, "Σ")?;
+    assert!(rows[usize::from(project_y)].contains("0 B"), "{rows:?}");
+    assert!(rows[usize::from(sum_y)].contains("73 B"), "{rows:?}");
+    Ok(())
+}
+
+#[test]
+fn phase4e_selected_status_glyphs_meet_the_contrast_floor() -> anyhow::Result<()> {
+    let previous = tui_pane::theme();
+    tui_pane::set_active_theme(std::sync::Arc::new(test_support::shipped_dark_theme()?));
+    let result = (|| -> anyhow::Result<()> {
+        for status in [GitStatus::Clean, GitStatus::Untracked, GitStatus::Modified] {
+            let mut app = test_support::project_app();
+            app.framework.color_mode = ColorMode::Colored;
+            app.project_list
+                .at_path_mut(Path::new(PROJECT_PATH))
+                .expect_found("project")
+                .local_git_state = LocalGitState::Detected(Box::new(CheckoutInfo {
+                status,
+                head: HeadState::Branch("fleet".to_string()),
+                last_commit: CommitDate::At("2026-11-05 12:00".to_string()),
+                ahead_behind_local: Comparison::Counted(AheadBehind {
+                    ahead:  0,
+                    behind: 0,
+                }),
+                primary_tracked_ref: TrackedRef::Named("origin/fleet".to_string()),
+                bisect: None,
+            }));
+            let run = serde_json::from_value(serde_json::json!({
+                "run_id": 1, "created_at": "2026-11-05T12:00:00Z", "branch": "fleet",
+                "url": "", "ci_status": "passed", "jobs": [], "wall_clock_secs": 60
+            }))?;
+            app.project_list
+                .ensure_git_repo_for(Path::new(PROJECT_PATH))
+                .context("Git repo")?
+                .repo_info = Some(RepoInfo {
+                local_main_branch: ResolvedBranch::Named("fleet".to_string()),
+                default_branch: ResolvedBranch::Named("fleet".to_string()),
+                ..crate::project::RepoInfo::default()
+            });
+            app.project_list
+                .ensure_git_repo_for(Path::new(PROJECT_PATH))
+                .context("Git repo")?
+                .ci_data = ProjectCiData::Loaded(ProjectCiInfo {
+                runs:          vec![run],
+                github_total:  1,
+                ci_pagination: CiPagination::Exhausted,
+            });
+            let buffer = test_support::draw_ui(&mut app, WIDTH)?;
+            let body = app.panes.project_list.body_rect;
+            let (_, y) =
+                test_support::find_text_cell(&buffer, body, PROJECT).context("selected row")?;
+            let mut row = Buffer::empty(ratatui::layout::Rect::new(body.x, y, body.width, 1));
+            for x in body.x..body.right() {
+                row[(x, y)] = buffer[(x, y)].clone();
+            }
+            let mut words = vec!["🟢", status.icon(), "1.0 GiB"];
+            if status == GitStatus::Clean {
+                words.push("☑");
+            }
+            let failures = test_support::contrast_failures(&row, &words, "selected status cells");
+            assert!(failures.is_empty(), "{}", failures.join("\n"));
+        }
+        Ok(())
+    })();
+    tui_pane::set_active_theme(previous);
+    result
+}
 
 #[test]
 fn deleted_project_icon_keeps_its_shape_without_a_strike() -> anyhow::Result<()> {
@@ -152,7 +281,7 @@ fn disk_colors_distinguish_small_and_large_values() -> anyhow::Result<()> {
     let projects = [("small", 73), ("large", 24_374_440_755)].map(|(name, bytes)| {
         let mut project = test_support::make_package(name, Path::new(&format!("/tmp/{name}")));
         if let RootItem::Rust(RustProject::Package(package)) = &mut project {
-            package.disk_usage_bytes = Some(bytes);
+            package.disk = DiskMeasurement::TotalOnly(bytes);
         }
         project
     });
@@ -248,7 +377,7 @@ fn unselected_disk_has_no_separate_fill() -> anyhow::Result<()> {
     app.project_list
         .at_path_mut(Path::new("/tmp/test/other-project"))
         .expect_found("the unselected project")
-        .disk_usage_bytes = Some(73);
+        .disk = DiskMeasurement::TotalOnly(73);
     app.scan.bump_generation();
     app.ensure_visible_rows_cached();
     let buffer = test_support::draw_ui(&mut app, WIDTH)?;
@@ -294,7 +423,7 @@ fn project_disk_units_stay_whole_at_eighty_columns() -> anyhow::Result<()> {
     app.project_list
         .at_path_mut(Path::new(PROJECT_PATH))
         .expect_found("the project")
-        .disk_usage_bytes = Some(25_555_055_411);
+        .disk = DiskMeasurement::TotalOnly(25_555_055_411);
     app.scan.bump_generation();
     app.ensure_visible_rows_cached();
     let buffer = test_support::draw_ui(&mut app, 80)?;
@@ -314,7 +443,7 @@ fn deleted_disk_values_do_not_change_the_live_size_scale() -> anyhow::Result<()>
     .map(|(name, bytes)| {
         let mut project = test_support::make_package(name, Path::new(&format!("/tmp/test/{name}")));
         if let RootItem::Rust(RustProject::Package(package)) = &mut project {
-            package.disk_usage_bytes = Some(bytes);
+            package.disk = DiskMeasurement::TotalOnly(bytes);
         }
         project
     });
@@ -330,7 +459,7 @@ fn deleted_disk_values_do_not_change_the_live_size_scale() -> anyhow::Result<()>
     app.project_list
         .at_path_mut(removed)
         .expect_found("the removed project")
-        .disk_usage_bytes = Some(1_099_511_627_776);
+        .disk = DiskMeasurement::TotalOnly(1_099_511_627_776);
     app.scan.bump_generation();
     app.ensure_visible_rows_cached();
     let after = test_support::draw_pane(&mut app, PaneId::ProjectList, 80)?;
@@ -340,5 +469,107 @@ fn deleted_disk_values_do_not_change_the_live_size_scale() -> anyhow::Result<()>
         assert_eq!(before[first].fg, after[second].fg, "{value}");
     }
     test_support::position(&after, "[x]")?;
+    Ok(())
+}
+
+#[test]
+fn removed_measured_project_clears_its_drawn_size_and_sum() -> anyhow::Result<()> {
+    let scratch = tempfile::tempdir()?;
+    let path = scratch.path().join("removed");
+    std::fs::create_dir(&path)?;
+    let item = test_support::make_package("removed", &path);
+    let mut app = test_support::make_app(&[item]);
+    app.framework.color_mode = ColorMode::Colored;
+    let sender = app.background.background_sender();
+    sender.send(BackgroundMsg::DiskUsageBatch {
+        root_path: crate::project::AbsolutePath::from(path.as_path()),
+        entries:   vec![(
+            crate::project::AbsolutePath::from(path.as_path()),
+            crate::scan::DirSizes {
+                total:                 4096,
+                in_project_target:     3072,
+                in_project_non_target: 1024,
+                max_source_mtime:      None,
+            },
+        )],
+    })?;
+    app.poll_background();
+    let before = test_support::draw_pane(&mut app, PaneId::ProjectList, 80)?;
+    test_support::position(&before, "4.0 KiB")?;
+    std::fs::remove_dir(&path)?;
+    sender.send(BackgroundMsg::DiskUsage {
+        path:  crate::project::AbsolutePath::from(path.as_path()),
+        bytes: 0,
+    })?;
+    app.poll_background();
+    assert_eq!(
+        app.project_list
+            .at_path(&path)
+            .expect_found("removed project")
+            .disk,
+        DiskMeasurement::TotalOnly(0)
+    );
+    let after = test_support::draw_pane(&mut app, PaneId::ProjectList, 80)?;
+    let rows = test_support::rows(&after);
+    let (x, y) = test_support::position(&after, "removed")?;
+    assert!(after[(x, y)].modifier.contains(Modifier::CROSSED_OUT));
+    assert!(!rows[usize::from(y)].contains("4.0 KiB"));
+    let (_, sum_y) = test_support::position(&after, "Σ")?;
+    assert!(rows[usize::from(sum_y)].contains("0 B"), "{rows:?}");
+    Ok(())
+}
+
+#[test]
+fn hovered_clean_git_glyph_uses_the_selected_row_ink() -> anyhow::Result<()> {
+    let RootItem::Rust(primary) = test_support::make_package(PROJECT, Path::new(PROJECT_PATH))
+    else {
+        anyhow::bail!("primary Rust project");
+    };
+    let RootItem::Rust(linked) = test_support::make_package("linked", Path::new("/tmp/linked"))
+    else {
+        anyhow::bail!("linked Rust project");
+    };
+    let RootItem::Rust(other) = test_support::make_package("other", Path::new("/tmp/other")) else {
+        anyhow::bail!("other Rust project");
+    };
+    let mut app = test_support::make_app(&[]);
+    app.project_list = crate::tui::project_list_state::ProjectList::new(vec![RootItem::Worktrees(
+        crate::project::WorktreeGroup::new(primary, vec![linked, other]),
+    )]);
+    app.project_list.expanded.expand(ExpandKey::Node(0), 0);
+    app.framework.color_mode = ColorMode::Colored;
+    app.project_list
+        .at_path_mut(Path::new(PROJECT_PATH))
+        .expect_found("project")
+        .local_git_state = LocalGitState::Detected(Box::new(CheckoutInfo {
+        status:              GitStatus::Clean,
+        head:                HeadState::Branch("master".to_string()),
+        last_commit:         CommitDate::At("2026-11-07 12:00".to_string()),
+        ahead_behind_local:  Comparison::Counted(AheadBehind {
+            ahead:  0,
+            behind: 0,
+        }),
+        primary_tracked_ref: TrackedRef::Named("origin/master".to_string()),
+        bisect:              None,
+    }));
+    app.project_list
+        .select_project_in_tree(Path::new(PROJECT_PATH), true);
+    app.ensure_visible_rows_cached();
+    app.set_focus_to_pane(PaneId::ProjectList);
+    let first = test_support::draw_ui(&mut app, 80)?;
+    let body = app.panes.project_list.body_rect;
+    let mark = test_support::find_text_cell(&first, body, "(p)")
+        .with_context(|| format!("primary mark: {:?}", test_support::rows(&first)))?;
+    let row = ratatui::layout::Rect::new(body.x, mark.1, body.width, 1);
+    let glyph = test_support::find_text_cell(&first, row, "✨").context("clean Git glyph")?;
+    app.mouse_pos = Some(ratatui::layout::Position::new(glyph.0, glyph.1));
+    let buffer = test_support::draw_ui(&mut app, 80)?;
+    assert_eq!(buffer[glyph].fg, buffer[mark].fg);
+    let mut selected = Buffer::empty(row);
+    for x in row.x..row.right() {
+        selected[(x, row.y)] = buffer[(x, row.y)].clone();
+    }
+    let failures = test_support::contrast_failures(&selected, &["✨"], "selected clean Git");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
     Ok(())
 }

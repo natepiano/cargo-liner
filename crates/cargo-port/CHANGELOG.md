@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Wrap Settings paths within the popup margin and use one readable ink on selected rows.
+- Keep language names, CI counts, shortened values, and duplicate project names readable.
+- Update Disk totals and parts together. Show a loading mark until measurements arrive.
+- Keep Workspace statistics, page selections, and column joins visible in Package panes.
+- Limit descriptions to two rows in short panes and retain useful target source text.
+- Show summed CI job time under Total and show the lint cache limit once.
+- Skip empty Deleted language panes during navigation and preserve panes behind startup toasts.
+
 - Show the selected row and focused border without colour. Strike only Deleted row text, and show only its dismiss mark in Disk.
 - Fill the selected project row across all columns. Keep unselected Disk cells without a fill and use size-based colours.
 - Improve the dark theme contrast for selection, Disk values, and System percentages. Draw CPU bars with continuous backgrounds and readable labels.

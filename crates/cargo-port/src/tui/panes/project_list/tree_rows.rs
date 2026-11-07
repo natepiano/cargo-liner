@@ -990,7 +990,7 @@ fn render_path_only_entry(
 ) -> ProjectRowPresentation {
     let path = entry.path().as_path();
     let disk = disk::formatted_disk(ctx.project_list, path);
-    let ds = disk::disk_style(entry.info().disk_usage_bytes, sorted);
+    let ds = disk::disk_style(entry.info().disk.total(), sorted);
     let git_status = ctx.project_list.git_row_status_for(path);
     let deleted =
         ctx.project_list.is_deleted(inherited_deleted_path) || ctx.project_list.is_deleted(path);
@@ -1506,6 +1506,7 @@ fn render_group_header(
 mod tests {
     use super::*;
     use crate::project::AbsolutePath;
+    use crate::project::DiskMeasurement;
     use crate::project::Package;
     use crate::project::ProjectInfo;
     use crate::project::RustInfo;
@@ -1522,7 +1523,7 @@ mod tests {
             worktree_status,
             rust: RustInfo {
                 project_info: ProjectInfo {
-                    disk_usage_bytes: Some(bytes),
+                    disk: DiskMeasurement::TotalOnly(bytes),
                     ..ProjectInfo::default()
                 },
                 ..RustInfo::default()

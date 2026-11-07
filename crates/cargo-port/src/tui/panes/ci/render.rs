@@ -184,9 +184,7 @@ fn build_ci_data_row(
     mode: ColorMode,
 ) -> Row<'static> {
     let timestamp = pane_data::format_timestamp(&ci_run.created_at);
-    let total_dur = ci_run
-        .wall_clock_secs
-        .map_or_else(|| "—".to_string(), ci::format_secs);
+    let total_dur = ci_total_seconds(ci_run).map_or_else(|| "—".to_string(), ci::format_secs);
 
     let commit = ci_run.commit_title.as_deref().unwrap_or("");
     let commit_style = Style::default();
@@ -371,7 +369,7 @@ fn build_ci_widths(
         }
         let total_idx = 3 + cols.len();
         for run in ci_runs {
-            if let Some(seconds) = run.wall_clock_secs {
+            if let Some(seconds) = ci_total_seconds(run) {
                 column_widths.observe_cell_usize(
                     total_idx,
                     ci_metric_content_width(ci::format_secs(seconds).trim().width()),
@@ -543,10 +541,20 @@ fn ci_total_width(ci_runs: &[CiRun], show_durations: bool) -> usize {
     }
 }
 
+fn ci_total_seconds(run: &CiRun) -> Option<u64> {
+    if run.jobs.is_empty() {
+        run.wall_clock_secs
+    } else {
+        run.jobs.iter().try_fold(0_u64, |total, job| {
+            Some(total.saturating_add(job.duration_secs?))
+        })
+    }
+}
+
 fn ci_total_duration_width(ci_runs: &[CiRun]) -> usize {
     ci_runs
         .iter()
-        .filter_map(|run| run.wall_clock_secs)
+        .filter_map(ci_total_seconds)
         .map(|seconds| ci::format_secs(seconds).trim().width())
         .max()
         .unwrap_or(0)
@@ -804,8 +812,7 @@ impl CiTableLayout {
             cells.push(Cell::from(ci_header_label_for_width(&run.branch, branch)));
         }
         cells.push(ci_metric_cell(
-            &run.wall_clock_secs
-                .map_or_else(|| "—".to_string(), ci::format_secs),
+            &ci_total_seconds(run).map_or_else(|| "—".to_string(), ci::format_secs),
             run.ci_status,
             true,
             render::ci_status_style(Some(run.ci_status)),

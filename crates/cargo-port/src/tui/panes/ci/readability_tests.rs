@@ -7,6 +7,7 @@ use tui_pane::ColorMode;
 use tui_pane::PaneBorders;
 use unicode_width::UnicodeWidthStr;
 
+use crate::ci::CiJob;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::tui::panes::CiData;
@@ -266,5 +267,42 @@ fn status_only_ci_total_header_aligns_in_an_eighty_column_frame() -> anyhow::Res
     assert!(test_support::find_text_cell(buffer, area, "Commit").is_none());
     assert!(test_support::find_text_cell(buffer, area, "Branch").is_none());
     assert_total_header_edge(buffer, area)?;
+    Ok(())
+}
+
+#[test]
+fn phase4e_ci_total_does_not_understate_a_job_duration() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    let mut run = display_run("fleet")?;
+    run.wall_clock_secs = Some(256);
+    run.jobs = (0..8)
+        .map(|index| CiJob {
+            name:          format!("test-{index}"),
+            ci_status:     CiStatus::Passed,
+            duration:      "1m 45s".to_string(),
+            duration_secs: Some(105),
+        })
+        .collect();
+    app.ci.set_content(CiData {
+        runs:           vec![run],
+        mode_label:     Some("all".to_string()),
+        current_branch: None,
+        empty_state:    CiEmptyState::NoRuns,
+    });
+    let buffer = test_support::draw_pane(&mut app, PaneId::CiRuns, 80)?;
+    let rows = test_support::rows(&buffer);
+    if let Some((x, y)) = test_support::find_text_cell(&buffer, buffer.area, "4m 16s") {
+        let header: String = (x.saturating_sub(2)..buffer.area.right() - 1)
+            .map(|column| buffer[(column, y - 1)].symbol())
+            .collect();
+        assert!(
+            header.contains("Elapsed") || header.contains("Wall"),
+            "the elapsed duration needs an accurate label: {rows:?}"
+        );
+    } else {
+        test_support::position(&buffer, "Total")?;
+        test_support::position(&buffer, "14m  0s")?;
+    }
     Ok(())
 }

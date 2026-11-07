@@ -5,6 +5,7 @@ use tui_pane::PERF_LOG_TARGET;
 
 use crate::http::ServiceSignal;
 use crate::project::AbsolutePath;
+use crate::project::DiskMeasurement;
 use crate::project::RootItem;
 use crate::project::Submodule;
 use crate::project::Visibility;
@@ -399,9 +400,7 @@ mod tests {
 enum DiskRowInput {
     Missing,
     Present {
-        bytes:      MeasuredBytes,
-        target:     MeasuredBytes,
-        non_target: MeasuredBytes,
+        disk:       DiskMeasurement,
         visibility: Visibility,
     },
 }
@@ -409,27 +408,14 @@ enum DiskRowInput {
 fn disk_row_input(projects: &ProjectList, path: &Path) -> DiskRowInput {
     match projects.at_path(path) {
         Found(info) => DiskRowInput::Present {
-            bytes:      MeasuredBytes::from(info.disk_usage_bytes),
-            target:     MeasuredBytes::from(info.in_project_target),
-            non_target: MeasuredBytes::from(info.in_project_non_target),
+            disk:       info.disk,
             visibility: info.visibility,
         },
         UnknownPath | StaleRoute => DiskRowInput::Missing,
     }
 }
 
-/// A disk field is unknown until a measurement supplies its byte count.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MeasuredBytes {
-    Unknown,
-    Known(u64),
-}
-
-impl From<Option<u64>> for MeasuredBytes {
-    fn from(bytes: Option<u64>) -> Self { bytes.map_or(Self::Unknown, Self::Known) }
-}
-
-/// Only list-row inputs may invalidate the list's width cache.
+/// Only list-row inputs can change the list's width cache.
 enum MessageRowInput {
     Unaffected,
     Rows(ProjectListPresentation),

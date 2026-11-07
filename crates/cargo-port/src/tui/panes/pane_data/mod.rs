@@ -145,6 +145,5 @@ use crate::tui::app::App;
 use crate::tui::constants::TARGET_KIND_BENCH_LABEL;
 use crate::tui::constants::TARGET_KIND_BIN_LABEL;
 use crate::tui::constants::TARGET_KIND_EXAMPLE_LABEL;
-use crate::tui::project_list_state::ProjectList;
 use crate::tui::state::AvailabilityStatus;
 use crate::tui::state::ServiceStatus;
