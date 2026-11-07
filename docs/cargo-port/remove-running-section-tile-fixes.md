@@ -1536,7 +1536,7 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 
 **Acceptance gate:** the Mac and natedev suites show no test at 1 s or more; no assertion is weakened.
 
-### Phase 43e — Mac tests start without a stall  · status: todo
+### Phase 43e — Mac tests start without a stall  · status: done
 
 **Depends on:** Phase 43c (parked), whose copy `/tmp/claude/scratch/until-2026-11-13T0500Z-phase-tile-unit-43c-xjt40o/src` holds its commits up to 76d05343
 
@@ -1563,6 +1563,7 @@ Both runs used `--no-cache`, which skips saved test results; it does not make op
 - `crates/cargo-tile/src/progress/capture.rs`
 - `crates/cargo-tile/src/render.rs`
 - `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/root_scan/`, `crates/cargo-tile/src/census/scan.rs` — their test modules, only for a measured slow test.
+- `crates/cargo-tile/src/terminal.rs` — one closure parameter on `run_with_capture_parent`, only. Amendment, showrunner ruling 2026-11-07 (43e ruling A): a test over 1 s is a defect, and this hook lets a reader test start the reader during fixture setup. Product `run()` passes a no-op closure, so its behavior does not change. The parameter adds no public item outside the crate. Its name says what it does, with one doc line. Second amendment, showrunner ruling 2026-11-07 (43e rulings, item 1): the `GridMotion::settle_if_immediate` call goes before the `app.tiles.tick()` check, at the dd42cf2c position. `GridMotion::Animated` makes it a no-op, so product behavior does not change.
 
 **Workers:** 1 writer — `test`, the listed test modules and their helpers.
 
@@ -1582,9 +1583,44 @@ Both runs used `--no-cache`, which skips saved test results; it does not make op
 - `crates/cargo-tile/src/census/command_text.rs` — `CargoTransport::from_argv`, `CargoArgvAbsence::map_reason`.
 - `crates/cargo-tile/src/constants.rs` — the ordered capture shim constants.
 
-### Phase 43f — The Mac census reads executable names through libproc  · status: todo
+### Phase 43h — Mac reader tests stay under 1 s under load  · status: todo
 
 **Depends on:** Phase 43e
+
+#### Work Order
+
+Director, 2026-11-07, from Phase 43e's landing call after 3 repair rounds. Phase 43e removed the Mac start clusters (copy staging), the first reader load (setup script `setup_reader.py`, 0.458 s to 0.010 s) and the hook test's serial waits. Phase 43e lands as a partial delivery. Its final head a4fef59a also restores the `run_with_capture_parent` test hook and the `settle_if_immediate` position (showrunner rulings 2026-11-07). In its gate natedev passed 1150 of 1151 tests with no test at 1 s; the failure is F011, the `shim_modes` interrupt test, routed to Phase 43g. A natedev rerun at load 57 passed 1151 of 1151, with `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` at 1.159 s (phases/43e/rerun_natedev.txt). The Mac suites ran at load 12-17 (24.4 s and 23.3 s) and still have tests at 1 s or more, so findings F001 and F009 stay open until this phase's checkpoint (showrunner ruling 2026-11-07, 43e rulings item 3). F009 is the reader-test time lost when Phase 43e restored main's `terminal.rs`; its Phase 43e rule (each reader faster than at 87df087c) is replaced by this phase's acceptance gate, by that ruling. F010 (Spec 4) is also due at this checkpoint. Mac times at a4fef59a, suite 1 / suite 2: `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` 1.690 / 1.798 s, `reader_excludes_a_live_command_without_sweeping_its_capture` 1.271 / 1.229 s, `reader_opens_settings_when_resize_and_key_are_pending_together` 1.222 / 0.923 s, `reader_keeps_one_direct_row_for_quiet_json` 1.041 / 0.921 s, `reader_ignores_foreign_owned_account_and_reports_its_owner_in_settings` 1.035 / 0.832 s, `reader_scenario_sigkill_ends_its_waiting_writer_group` 1.006 s (suite 1), `installed::same_pid_and_calendar_second_receive_different_generations` 1.333 s, the four `installed::*darwin_birth_conversion*` tests 1.018-1.082 s, `installed::publication_after_final_confirmation_survives_delayed_unlinks` 1.005 / 1.044 s, `installed::versioned_fields_preserve_original_argument_bytes` 1.019 s (suite 2), `shim_modes::tests::shared_parent_is_created_without_configuration` 1.117 s (suite 1), `root_scan::sweep_authority::tests::incomplete_log_inventory_still_sweeps_directly_named_pairs` 1.079 s (suite 2), `cli_lifecycle::tests::install_status_execution_and_uninstall_restore_the_original_cargo` 1.163 s (suite 2). In one instrumented Mac suite at load 9-12, every reader scenario finished under 1 s (0.38-0.85 s); the CPU scenario spends 0.416 s from its CPU rows to the finished observation. Evidence: the session's phases/43e/gate_repair3.txt, repair3_cpu_stages.md, gate_repair6.txt and repair6_stages.md; the Astra review /tmp/claude/astra/20261107T105101Z-3320370/review.md; the attempts log in project memory (attempts-43c-mac-test-startup-stall).
+
+CPU test stages on the Mac (one instrumented suite, 1.020 s; intervals overlap): fixture startup 0.234 s; 5 scan calls 0.430 s in sum (68-104 ms each, census assembly 0.116 s); observation 0.387 s; kernel anchor 0.378 s; cleanup 0.015 s. The reader runs at `CensusCadence::for_test()` (50 ms poll, 50 ms report, 100 ms smoothing: a 250 ms observation span); the accepted scan stamps span 398 ms.
+
+**Goal:** every cargo-tile test runs under 1 s on the Mac and on natedev, at the load the gate meets, with no suite slower beyond the pair spread (acceptance item 3).
+
+**Spec:**
+1. For each listed test, measure its stages in a full Mac suite and name the stage that grows under load. Quote the source line that starts it. For the CPU test, split each scan call into its refresh wait (`thread::sleep(self.cadence.poll / 2)` in `census/scan.rs`), its capture reads and the rest, before any cut.
+2. Cut the cost each test does not need, starting with the largest part that step 1 names. A change to the test cadence (`CensusCadence::for_test` in `census/invocation_cpu_accounting.rs`) must keep coverage of the reader's real cadence and the Phase 43b census rules; the Python window arguments alone do not set it. Do not change product scan code in this phase: if step 1 names product scan work as the limit, report it to the director, who routes it to its own Work Order.
+3. Keep scheduling rules out of the cut unless 3 alternating pairs show no slower suite: Phase 43e measured every-slot readers at 4.1-8.2 s slower.
+4. Find why the Mac compiler CPU value can exceed its kernel counter (showrunner ruling 2026-11-07, 43e rulings item 2). In a Phase 43e Mac suite at 5ceebc9d, `assert_compiler_counter` (`reader_scenario_cases.py:848`) failed with recorded 0.077 s against kernel 0.0769975 s: 2.5 us over the bound `recorded <= independent + 0.000000001`. main has the same bound. Name the source of the excess, reproduce it, and fix that cause. Add a focused test that fails without the fix where the cause allows one: a passing suite alone does not prove the fix. Do not widen the bound. If the fix needs product code outside these Files, report it to the director; F010 stays open and goes to its own Work Order.
+
+**Files:**
+- `crates/cargo-tile/src/shim_registration/`
+- `crates/cargo-tile/src/root_scan/` — its test module, only for its listed test.
+- `crates/cargo-tile/tests/cli_lifecycle.rs` — only its listed test; serialize with Phase 43g.
+- `crates/cargo-tile/tests/shim_modes.rs` — only `shared_parent_is_created_without_configuration` and its helpers; serialize shared helper changes with Phase 43g.
+- `crates/cargo-tile/src/census/invocation_cpu_accounting.rs` — only `CensusCadence::for_test` and its test constants.
+- `.config/nextest.toml`
+
+**Workers:** 1 writer — `test`, the listed test modules and their helpers.
+
+**Constraints from prior phases:** Phase 43e's copy staging, setup script, queued CPU frames, shell reads in the delayed-unlink fixture and `python3 -S` stay. The strict CPU oracle (integer scan and publication times, smoothing, hold replay, unique contributions, the exact charged pid set), both client-pid readiness waits, the kernel anchor and the named cleanup waits stay. A product retention rule change belongs to Phase 33. No assertion is weakened.
+
+**Acceptance gate:**
+1. Two Mac full suites and one natedev full suite, all `--no-cache` and uninstrumented, with no test at 1 s or more and no failure of `assert_compiler_counter`.
+2. Three alternating Mac pairs (old, new, new, old, old, new) of the Phase 43e checkpoint and the new head. Each suite time runs from the start of listing and setup to the end of the tests. Report the first suite after a build apart from the later ones.
+3. The suite-time rule: the new head's median suite time minus the checkpoint's median is at most the spread. The spread is the largest minus the smallest of the three pair differences (new minus old).
+
+### Phase 43f — The Mac census reads executable names through libproc  · status: todo
+
+**Depends on:** Phase 43h
 
 #### Work Order
 
@@ -1622,10 +1658,14 @@ Showrunner, 2026-11-07, from the Phase 43e gate fed9d76a: nextest marks `cli_lif
 1. On the Mac, find the child process or handle that outlives the test. Record its pid, its command and the parent that started it.
 2. Close it inside the test path that started it: wait for or kill the child the test owns, or close the handle. If the product leaves the process (a child of `cargo-tile install` that outlives a SIGKILL of its parent), fix it in the product and add a test that fails without the fix.
 3. Check the sibling tests that share `assert_local_report_before_completion` (`uninstall_…`, `status_…`) for the same leak, and fix them by the same cause.
+4. The Phase 43e repair 1 gate (2b342b57) also marked `app_global_action::tests::control_s_saves_a_favorite` leaky on the Mac (0.222 s). Find and close its leak the same way.
+5. The Phase 43e round 6 natedev suite (a4fef59a, load 37-44) failed `shim_modes::tests::interrupt_to_the_process_group_lets_cargo_finish_first` at `crates/cargo-tile/tests/shim_modes.rs:1195` ("the shim returned before cargo finished stopping"). Phase 30m's suite failed it the same way under load. Find the race between the shim's return and cargo's stop, and fix its cause. Keep the assertion.
 
 **Files:**
 - `crates/cargo-tile/tests/cli_lifecycle.rs`
 - `crates/cargo-tile/src/cli.rs` and `crates/cargo-tile/src/shim_registration/` — only if step 1 shows the product leaves the child.
+- `crates/cargo-tile/src/app_global_action.rs` — its test module, for item 4; product code only if the product leaves the handle.
+- `crates/cargo-tile/tests/shim_modes.rs` — its interrupt test, for item 5; the shim product code only if the shim returns early.
 
 **Workers:** 1 writer — `test`, the lifecycle test and its helpers.
 
