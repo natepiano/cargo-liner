@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Refresh GitHub quota after each reset and update the Git pane without input.
+- After a reset, fetch the quota again every 10 s, up to 3 times, until GitHub opens the new window.
+- Hide expired countdowns and retain quota limits when they fit.
+- Show one GitHub outage row and distinguish repository applicability from pending Stars data.
 - Wrap Settings paths within the popup margin and use one readable ink on selected rows.
 - Keep language names, CI counts, shortened values, and duplicate project names readable.
 - Update Disk totals and parts together. Show a loading mark until measurements arrive.
