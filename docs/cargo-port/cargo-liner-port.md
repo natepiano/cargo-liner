@@ -532,54 +532,25 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 ### Phase 4j — Package, Git and Targets rows read clearly at narrow widths  · status: done
 
-**Depends on:** Phase 4e (both edit `crates/cargo-port/src/tui/panes/`) and Phase 4g (both edit `crates/cargo-port/src/tui/panes/git/render.rs`)
+#### As-built
 
-#### Work Order
-
-**Goal:** at 80 and 95 columns, the Package CI row names its counts, the Git Worktrees table keeps every column, and the Targets rows of same-name worktrees read differently.
-
-**Source:** Phase 4e design check of `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4e_4/`, 2026-11-07. Phase 4e moved these rows here under the hard landing (repair round 4):
-- `focus-1-project-row` r8 c78-c88: Workspace `CI` reads `🔴 9 / 2104`, with no `local` and `gh` words, so it reads as "9 of 2104". Before the gh count loads, `color-3a-repo-row` r8 reads only `🔴 9`, with no loading mark.
-- `long95-1-expanded` r10-r11 c84-c93: the Git Worktrees third column draws as one `…` cell while the name column could be cut more. User rule C205: "columns should always be preserved - the project names should get ellipsis first".
-- `long80-1-expanded` r18-r20 c61-c71: the three same-name worktrees all read `proof_crate proof_crat… binary` in Targets. `shots_4c_7` shows the same.
-
-**Decision:** showrunner, 2026-11-07, the CI wording ruling and the Worktrees header ruling:
-1. Workspace CI: `🔴 local 9` on the CI row, `gh 2104` on the next row of the same column, `gh …` while the gh count loads. If the column has no next row at a size, show only `🔴 local 9`; never cut a label.
-2. Worktrees headers: the Git pane is 15 cells inside at window 80 and 22 at 95, and four whole headers need 24. Keep the four columns and the one-row table. Cut the headers by the same rule as the values: Name first, and each column keeps at least one letter plus an ellipsis. Cut each header only as much as the width needs. Values that fit draw whole. The 4j shots show the 80 and 95 headers.
-
-**Constraints:**
-- Change no other look.
-- Reuse the same-name root text code of the Projects pane for the Targets Source column. Make no second copy.
-
-**Spec:**
-1. **CI counts named.** The Package CI row follows Decision 1 at every width. `CiDisplay` (`tui/state/ci.rs:125`) cannot tell loading from a known zero, so the state that feeds it gets a loading case. Test loading, known zero, a positive count and a failed fetch apart (Astra review, 2026-11-07). The distinction is lost before render: `app/async_tasks/repo_handlers.rs:83` turns `CacheOnly(runs)` into zero. Carry a semantic GitHub count type through `ProjectCiInfo`, `CachedRepoData` and `BackgroundMsg::CiRuns`. Both fetch functions in `scan/ci_cache.rs` (from line 177) already turn an empty success and a failure into `CacheOnly` before the handler; keep the outcome from there. Test those producers: empty success, failure, and a kept count. A failed fetch shows `gh ?`. Test message-to-buffer transitions that keep a known count.
-2. **Worktree columns kept.** The Worktrees table shows the Name, Branch, Tracked and Sync headers and values at 80 and 95 columns. It cuts Name first. `fit_table_line` (`git/render.rs`) cuts the whole row today; give each column a width instead. `SyncColLayout` (`git/render.rs:1087`) owns the shared column widths of the Remotes and Worktrees sections; repair it there, and test both sections together at 80 and 95 columns. A value that fits draws whole, with no `…` beside it.
-3. **Targets rows differ.** The Targets Source of same-name worktrees shows the part of each path that differs, through `grouping::differing_path_labels`, as `resolved_root_labels` does for the Projects pane. `relabel_as_worktree` (`targets/data.rs:194`) builds the labels today. Each target keeps its launch path. Test distinct drawn Source values after the cut. `differing_path_labels` (`project_list/grouping.rs:58`) can collide: `/tmp/work-a/proof_crate` and `/tmp/work_a/proof_crate` both give `work` after delimiter removal. Fix the collision in the helper, and test those paths in Projects and Targets after the width cut.
-4. **Tests.** A drawn test at 80 and 95 columns for each spec item reads the buffer.
-5. **Disk loading shown.** Package disk rows show `…` and the Projects sum shows `Σ …` until the disk scan measures the project. The watcher test in `test_support/mod.rs:375` starts at `Measured`, so add a message-driven test from loading to measured that reads the buffer, using the existing disk tests.
-6. **Test names.** Rename the `phase4<x>_` tests in the files this phase touches to the behavior each one pins.
-
-**Constraints from prior phases:**
-- Keep the 37-cell two-column threshold, the two-row description cap below 12 body rows, and selection in one column only.
-- New drawing tests set `ColorMode` explicitly. Keep the application-boundary environment tests.
-- Phase 4g changed `git/render.rs` before this phase. Build on its GitHub applicability type.
+- The GitHub run count is `GithubRunCount` (`Loading`, `Failed`, `Known(n)`) in `tui/state/ci.rs`. Both CI fetch functions in `scan/ci_cache.rs` classify the list reply through one function, and the count passes through `ProjectCiInfo`, `CachedRepoData` and `BackgroundMsg::CiRuns`. A known count stays through a later failed fetch.
+- The Package CI row draws the status icon and `local N`; the next row draws `gh N`, `gh …` while the count loads, or `gh ?` after a failed fetch. The `gh` row starts at the drawn column of `local`, so the icon width does not move it. With no next row, only the CI row draws. `CiDisplay::NoRuns` draws `No CI runs` for a known zero here and on GitHub.
+- The Git Worktrees and Remotes tables share one column layout (`sync_col_layout`, `SyncTableMode` in `git/render.rs`). Name, Branch, Tracked and Sync stay at narrow widths: Name is cut first, every column keeps at least one letter and `…`, and a value that fits draws whole. Headers may be cut when four whole headers do not fit. Each row keeps one blank cell at each edge, and columns pad by display width.
+- The Targets Source of same-name worktrees shows the differing part of each path through `grouping::differing_path_labels`, the code of the Projects pane. When two labels read the same after the width cut, `fit_distinct_path_labels` cuts in the middle. A worktree source gives the Source column a floor of its header width; each target keeps its whole name before Source takes width. Launch paths do not change.
+- Package disk rows show `…` and the Projects sum `Σ …` until the disk scan measures the project.
 
 **Files:**
-- `crates/cargo-port/src/tui/panes/package/`, `crates/cargo-port/src/tui/panes/git/`, `crates/cargo-port/src/tui/panes/targets/` — the rows and their tests
-- `crates/cargo-port/src/tui/state/ci.rs` — the CI display state and the cache updates that feed it
-- `crates/cargo-port/src/scan/ci_cache.rs` — the CI fetch functions that produce the run outcome
-- `crates/cargo-port/src/tui/app/async_tasks/repo_handlers.rs` — the CI run handler; the GitHub count type also passes through `ProjectCiInfo`, `CachedRepoData` and `BackgroundMsg::CiRuns`
-- `crates/cargo-port/src/tui/project_list/grouping.rs` — `differing_path_labels`, its collision fix and visibility
-- `crates/cargo-port/src/tui/test_support/` — the disk loading fixture
+- `crates/cargo-port/src/tui/state/ci.rs` — `GithubRunCount`, `CiDisplay`
+- `crates/cargo-port/src/scan/ci_cache.rs` — the CI list classification
+- `crates/cargo-port/src/tui/panes/package/render.rs`, `package/ci_count_tests.rs` — the CI rows and their drawn tests
+- `crates/cargo-port/src/tui/panes/git/render.rs`, `git/sync_column_tests.rs` — the shared sync table layout
+- `crates/cargo-port/src/tui/panes/targets/render.rs`, `crates/cargo-port/src/tui/project_list/grouping.rs` — the Source labels
 - `crates/cargo-port/CHANGELOG.md`
 
-**Workers:** 1 writer + 1 tester
-- Writer: production files and tests inside production files.
-- Tester: new `*_tests.rs` files beside the changed render code, and the existing Package, Git and Targets `readability_tests.rs` files, with the test renames in them.
+**Gotchas:** an end cut can make two differing path labels read the same; the middle cut is the guard. `fit_sync_trio` cuts Tracked to its floor before Branch.
 
-**State:** none.
-
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. The drawn-line pagination, column-fit and mixed-workspace deleted-owner tests still pass unchanged. Live shots at 80 and 95 columns, judged by the design check, show each row. An early live shot shows the disk `…` rows, and a later one shows them measured. The checkpoint carries a `Change-Review:` line.
+**Ruled out:** a placeholder exception to the right-margin cell at a 15-cell interior; one margin rule covers every Package row.
 
 ### Phase 4k — Loading and empty values read whole in narrow panes  · status: todo
 
@@ -587,23 +558,23 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 #### Work Order
 
-**Goal:** the Git pane shows a GitHub quota row only when that bucket has data, the empty description takes one row when it fits, and the startup toast keeps its bottom gap row while it opens.
+**Goal:** the Git pane shows a GitHub quota row only when that bucket has data, the empty description keeps one blank right-margin cell, and the startup toast keeps its bottom gap row while it opens.
 
 **Source:** Phase 4g and 4h design check of `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4gh_4/`, 2026-11-07. Both defects are older than Phase 4e (`shots_4e_4`):
 - `toast80-color-a` r2-r3: the Core and GraphQL rows draw with blank values before the first quota poll. Finding F015 in the 4g ledger.
 - `toast80-color-a` r2-r3: the empty description wraps to `No` / `description` in a 15-cell interior. ` No description` fits one row, as `Disk      73 B` fills the same width. Finding F016 in the 4h ledger.
 - `shots_4gh_6/toast160-color-c.png` (Phase 4g design check, 2026-11-07): at 160x45 the Startup card fills the gap row above the CI runs pane's bottom border while it opens. The `.txt` 0.28 s earlier shows the gap row. Both show `1 of 2`. Phase 4h's toast code, merged in c2d6bf139.
 
-**Decision:** showrunner, 2026-11-07, the empty-description ruling: ` No description` on one row when the interior is 15 cells or more. Below 15, keep the wrap. Show it only when it is true (Spec 8 of Phase 4e). Astra review, 2026-11-07 (`/tmp/claude/astra/20261107T141905Z-504472/review.md`): omit a quota row until its bucket has data, because no data does not prove that a fetch is running.
+**Decision:** showrunner, 2026-11-07, the empty-description ruling, revised the same day: ` No description` takes one row when the interior is 16 cells or more, and wraps at 15 cells or less. Why: the right-margin cell of Phase 4l applies to every Package row, with no exception. Show it only when it is true (Spec 8 of Phase 4e). Astra review, 2026-11-07 (`/tmp/claude/astra/20261107T141905Z-504472/review.md`): omit a quota row until its bucket has data, because no data does not prove that a fetch is running.
 
 **Constraints:**
 - Change no other look.
 - Keep a measured or cached quota through later refreshes and failures.
 
 **Spec:**
-1. **Quota rows wait for data.** `git_fields_from_data` (`pane_data/git_data.rs:423`) adds each quota row only when its bucket has data. `format_rate_limit_bucket` (`pane_data/formatting.rs:402`) then never returns empty text for a drawn row. A bucket with no data is a named state, not a bare `None`. Convert at `build_git_detail_fields`; `GitData` and `GitDetailFields` carry the state, and `fit_rate_limit_value` (`git/render.rs:1054`) reads it. Keep its compact-quota tests green.
-2. **One-row description.** `DescriptionBlock::for_pane` (`panes/description.rs:116`) takes two margin cells, so a 15-cell interior leaves 13 cells for the 14-cell text. The placeholder alone uses the right margin when that keeps it whole. Keep the left inset, real descriptions and the wrap below 15 cells.
-3. **Tests.** Quota-state tests read the drawn Git buffer: no data, data, and a failure after data. Description tests read interiors of 14, 15 and 16 cells. Update `empty_description_wraps_inside_the_inset_at_each_window_width` (`package/readability_tests.rs:875`) to the decision.
+1. **Quota rows wait for data.** `git_fields_from_data` (`pane_data/git_data.rs:358`, the quota rows near line 422) adds each quota row only when its bucket has data. `format_rate_limit_bucket` (`pane_data/formatting.rs:402`) then never returns empty text for a drawn row. A bucket with no data is a named state, not a bare `None`. Convert the external `Option` once, in `build_git_detail_fields` (`git_data.rs:482`). `GitData`, `GitDetailFields`, both `detail_data.rs` construction paths (near lines 346 and 900) and `pane_data/detail_field.rs` (`RateLimitCore`, `RateLimitGraphQl`) carry the state. `format_rate_limit_bucket` takes an observed quota, not an `Option`. `fit_rate_limit_value` (`git/render.rs:1054`) reads the state. Keep its compact-quota tests green.
+2. **Description width stays.** `DescriptionBlock::for_pane` (`panes/description.rs:116`) keeps one inset cell on each side. A 16-cell interior leaves 14 cells, so the 14-cell text takes one row. A 15-cell interior leaves 13 cells, so it wraps to `No` / `description`. The code already does this: change no production code.
+3. **Tests.** Quota-state tests read the drawn Git buffer: no data, data, and a failure after data. Description tests read the drawn Package pane at interiors of 15 and 16 cells: the wrap and the blank right-margin cell at 15, one row at 16. Put them beside `empty_description_wraps_inside_the_inset_at_each_window_width` (`package/readability_tests.rs:882`).
 4. **The gap row stays while the toast opens.** Likely cause (Astra review, `/tmp/claude/astra/20261107T162018Z-369399/review.md`): with nine interior rows and eight body rows, the whole card asks for ten rows, so `drawing.rs:98` reserves no gap. As the opening animation grows the card from eight to nine rows, `edge_gap` drops from one to zero. Page capacity comes from the allocated height (`layout.rs:88`), not the animated height.
    - Rule: nine interior rows give eight card rows plus one bottom gap. The five-row short pane keeps three body rows on the gap rows (`placement_tests.rs:123`). Name the threshold between the two cases in code.
    - Page capacity stays fixed while pane geometry and toast allocation stay unchanged. A resize may change it. Page count may change when content arrives.
@@ -616,18 +587,18 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Files:**
 - `crates/cargo-port/src/tui/panes/pane_data/` — the quota rows and their tests
-- `crates/cargo-port/src/tui/panes/git/render.rs` — `fit_rate_limit_value` and its compact-quota tests
-- `crates/cargo-port/src/tui/panes/description.rs` — the placeholder width
+- `crates/cargo-port/src/tui/panes/git/` — `fit_rate_limit_value` in `render.rs`, its compact-quota tests and the drawn quota-state tests
 - `crates/cargo-port/src/tui/panes/package/readability_tests.rs` — the description tests
 - `crates/tui_pane/src/toasts/render/` — the toast gap row and its drawn tests
 - `crates/cargo-port/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md`
 
-**Workers:** 1 writer
-- Writer: production files and their tests. The specs are small and share the changelogs.
+**Workers:** 2 writers
+- Writer 1 (cargo-port): Specs 1-3, the `crates/cargo-port/` files above and their tests, and `crates/cargo-port/CHANGELOG.md`.
+- Writer 2 (tui_pane): Spec 4, `crates/tui_pane/src/toasts/render/` and its drawn tests, and `crates/tui_pane/CHANGELOG.md`. Each crate has its own changelog, so the two file sets do not touch.
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. An 80x30 live capture in colour and under NO_COLOR, judged by the design check, shows no blank quota row before the first poll and ` No description` on one row. A 160x45 startup capture shows the gap row in every toast frame; its first frame is not blank (a blank PNG in `shots_4gh_6/toast160-color-a` beside a full `.txt` was read as xterm lag). Close the routes of F015, F016 and the toast gap row at this checkpoint. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. An 80x30 live capture in colour and under NO_COLOR, judged by the design check, shows no blank quota row before the first poll, and the 15-cell Package interior keeps its right-margin cell. A 160x45 startup capture shows the gap row in every toast frame; its first frame is not blank (a blank PNG in `shots_4gh_6/toast160-color-a` beside a full `.txt` was read as xterm lag). Close the routes of F015, F016 and the toast gap row at this checkpoint. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 4l — Labels, titles and columns read whole in narrow panes  · status: todo
 
@@ -658,7 +629,40 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 - Change no other look.
 - Never cut a label. Cut a value, a name or a message first.
 
-**Spec:** the unit director writes the Spec, Files, Workers, State and Acceptance gate before dispatch, from the live cause of each row.
+**Spec:**
+1. **Targets keeps its Source column.** `targets/render.rs::compute_layout` reserves the Source header width only for `TargetSourceKind::Worktree`. Give workspace sources the same floor, and cut target names before the Source column drops. Keep `differing_path_labels`, `fit_distinct_path_labels` (`tui/project_list/grouping.rs`) and the launch paths as they are. `TargetSourceKind` stays implementation-only.
+2. **Section titles keep their label.** `git/render.rs::section_title_with_count` (line 718) cuts the label first. Keep the label whole and cut the count text first: `Worktrees (3)` before `Work… (3 of 3)`.
+3. **Field labels draw whole.** A Git field label such as `Ahead/Behind` never draws cut. Cut or wrap its value.
+4. **Pane titles keep their label.** The Package title (`Worktree Group - <name>`) keeps its label whole and cuts the project name. Find the title creation in `package/`. The shared title renderer is `crates/tui_pane/src/pane/title.rs`; a fix there goes in `tui_pane`.
+5. **Startup labels draw whole.** Startup rows come from `progress_panel_body` (`crates/tui_pane/src/progress/render.rs:58`), through `app/async_tasks/startup_phase/toast_bodies.rs`, not from `toasts/render/card.rs::tracked_item_line`. Keep each label whole (`Cargo metadata`) and cut its count or detail first, for active, waiting, failed and complete rows.
+6. **The CI title message.** `ci/data.rs::CiEmptyState::title` (line 23) gives `CI runs — requires a GitHub or…` at 80 columns. Keep `CI runs` whole. Ask the showrunner for the wording or placement of the message before dispatch, and write its answer here.
+7. **Package value margin (F015).** Each Package and Workspace row keeps one blank right-margin cell, as the Git pane does. Reserve the margin before wrapping and pagination in every Package fitting path: `support::field_value_lines` (`panes/support.rs:84`, shared with Git), the Package Head wrap and the GitHub count rows in `package/render.rs`. Fit each label with its value, so `Worktrees 2` stays on one row.
+8. **Worktrees and Remotes columns (F014).** `git/render.rs::fit_sync_trio` (line 1247) cuts `[tracked, branch, sync]` in order, so Tracked reaches its floor before Branch is cut. After Name reaches its floor, cut the wider of Branch and Tracked one cell at a time, so a short Tracked value draws whole. Keep the Phase 4j header exception, the shared Remotes layout, both margin cells and whole Sync values. `SyncTableMode` stays implementation-only.
+
+**Constraints from prior phases:**
+- Keep the Phase 4j CI rows: `gh …`, `gh ?`, a retained known count, and `No CI runs` for `CiDisplay::NoRuns`.
+- Keep the Phase 4k description rule: ` No description` takes one row at 16 interior cells or more and wraps at 15.
+- New drawing tests set `ColorMode` explicitly. Name each test for the behavior it pins.
+
+**Files:**
+- `crates/cargo-port/src/tui/panes/targets/` — the Source floor and its tests
+- `crates/cargo-port/src/tui/panes/git/` — section titles, field labels, `fit_sync_trio`, `git/sync_column_tests.rs`
+- `crates/cargo-port/src/tui/panes/package/` — the Package title, value margin and their tests
+- `crates/cargo-port/src/tui/panes/support.rs` — `field_value_lines`
+- `crates/cargo-port/src/tui/panes/ci/data.rs` — the CI title message
+- `crates/cargo-port/src/tui/app/async_tasks/startup_phase/toast_bodies.rs` — Startup label rows
+- `crates/cargo-port/src/tui/render/readability_tests.rs` — replace the `Cargo meta…` assertion with whole-label checks
+- `crates/tui_pane/src/progress/render.rs` — `progress_panel_body`
+- `crates/tui_pane/src/pane/title.rs` — the shared pane title renderer
+- `crates/cargo-port/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md`
+
+**Workers:** 2 writers
+- Writer 1 (cargo-port): Specs 1-4, 6-8, every `crates/cargo-port/` file above, the cargo-port drawing tests and `crates/cargo-port/CHANGELOG.md`.
+- Writer 2 (tui_pane): Spec 5's `progress_panel_body` and the shared title renderer, their tests and `crates/tui_pane/CHANGELOG.md`.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests at 80 and 95 columns check: Targets Source cells for workspace and worktree fixtures; whole section titles with focused counts and the Package `Structure` divider; whole field labels; whole Startup labels in each row state; the Package right-margin cell; short Tracked values whole with Remotes aligned. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check, show every row of both Source lists fixed. Keep the Phase 4k gap tests green. Close the routes of F014 and F015 (Phase 4j) at this checkpoint. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 
