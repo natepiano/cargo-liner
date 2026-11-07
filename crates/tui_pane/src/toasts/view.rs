@@ -46,6 +46,7 @@ pub struct ToastView {
     pub(super) tracked_items:  Vec<TrackedItemView>,
     pub(super) min_height:     u16,
     pub(super) desired_height: u16,
+    pub(super) settled_height: u16,
 }
 
 impl ToastView {
@@ -88,6 +89,10 @@ impl ToastView {
     /// Return the desired card height when space is available.
     #[must_use]
     pub const fn desired_height(&self) -> u16 { self.desired_height }
+
+    /// Return the card height after the entrance animation ends.
+    #[must_use]
+    pub(super) const fn settled_height(&self) -> u16 { self.settled_height }
 }
 
 /// Click target geometry for one rendered toast.

@@ -18,12 +18,13 @@ use super::format;
 use crate::ACTIVITY_SPINNER;
 use crate::ToastPlacement;
 use crate::ToastSettings;
-use crate::constants::ELISION;
+use crate::ViewportOverflow;
 use crate::constants::TOAST_BODY_HORIZONTAL_PADDING;
 use crate::constants::TOAST_ROW_GAP;
 use crate::constants::TOAST_SIDE_GAP;
 use crate::inactive_border_color;
 use crate::inactive_title_color;
+use crate::render_overflow_affordance;
 use crate::title_color;
 use crate::toasts::ToastCountdownState;
 use crate::toasts::ToastFocus;
@@ -43,6 +44,7 @@ pub(super) fn render_toast(
     card: Rect,
     toast: &ToastView,
     focus: ToastFocus,
+    page_height: u16,
 ) -> Rect {
     let palette = fallback_toast_palette();
     let card = card.intersection(area);
@@ -116,6 +118,7 @@ pub(super) fn render_toast(
         close_rect,
     );
 
+    let mut page_area = card;
     if let ToastCountdownState::CountingDown {
         remaining_secs: secs,
     } = toast.countdown()
@@ -128,6 +131,7 @@ pub(super) fn render_toast(
             width:  countdown_width,
             height: 1,
         };
+        page_area.width = countdown_rect.x.saturating_sub(card.x).saturating_add(1);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 countdown,
@@ -139,13 +143,15 @@ pub(super) fn render_toast(
 
     if inner.height > 0 {
         let alloc_interior = card.height.saturating_sub(2);
-        render_toast_body(
+        let overflow = render_toast_body(
             frame,
             toast,
             body_style,
             toast_body_area(inner),
             alloc_interior,
+            page_height.saturating_sub(2),
         );
+        render_overflow_affordance(frame, page_area, overflow, border_style);
     }
 
     close_rect
@@ -180,9 +186,6 @@ pub(super) fn area_between_pane_borders(
         let candidate = Rect::new(area.x, start, area.width, row.saturating_sub(start));
         if !candidate.is_empty() {
             selected = candidate;
-            // The preceding border already supplies the top gap.
-            selected.y = start.saturating_sub(TOAST_ROW_GAP).max(area.top());
-            selected.height = row.saturating_sub(selected.y);
             if settings.placement == ToastPlacement::TopRight {
                 break;
             }
@@ -336,13 +339,19 @@ const fn toast_body_area(inner: Rect) -> Rect {
     }
 }
 
+pub(super) struct ToastBodyRows {
+    pub(super) lines: Vec<Line<'static>>,
+    overflow:         ViewportOverflow,
+}
+
 fn render_toast_body(
     frame: &mut Frame,
     toast: &ToastView,
     body_style: Style,
     body_area: Rect,
     alloc_interior: u16,
-) {
+    page_interior: u16,
+) -> ViewportOverflow {
     let palette = fallback_toast_palette();
     let alloc_body = usize::from(alloc_interior);
     let has_action = toast.has_action() && alloc_body >= 2;
@@ -351,17 +360,23 @@ fn render_toast_body(
     } else {
         alloc_body
     };
-    let (lines, body_was_cut) = if toast.tracked_items().is_empty() {
-        body_lines_plain(toast, body_style, lines_for_body, body_area.width)
+    let page_rows = usize::from(page_interior)
+        .saturating_sub(usize::from(toast.has_action() && page_interior >= 2));
+    let body = if toast.tracked_items().is_empty() {
+        body_lines_plain(
+            toast,
+            body_style,
+            lines_for_body,
+            body_area.width,
+            page_rows,
+        )
     } else {
-        (
-            body_lines_tracked(
-                toast.tracked_items(),
-                body_style,
-                lines_for_body,
-                usize::from(body_area.width),
-            ),
-            false,
+        body_lines_tracked(
+            toast.tracked_items(),
+            body_style,
+            lines_for_body,
+            usize::from(body_area.width),
+            page_rows,
         )
     };
 
@@ -370,7 +385,7 @@ fn render_toast_body(
             height: body_area.height.saturating_sub(1),
             ..body_area
         };
-        frame.render_widget(Paragraph::new(lines).style(body_style), text_area);
+        frame.render_widget(Paragraph::new(body.lines).style(body_style), text_area);
         let hint_area = Rect {
             y: body_area.y + body_area.height.saturating_sub(1),
             height: 1,
@@ -386,37 +401,9 @@ fn render_toast_body(
             hint_area,
         );
     } else {
-        frame.render_widget(Paragraph::new(lines).style(body_style), body_area);
+        frame.render_widget(Paragraph::new(body.lines).style(body_style), body_area);
     }
-    if body_was_cut {
-        render_body_elision(frame, toast, body_style, body_area, lines_for_body);
-    }
-}
-
-fn render_body_elision(
-    frame: &mut Frame,
-    toast: &ToastView,
-    body_style: Style,
-    body_area: Rect,
-    lines_for_body: usize,
-) {
-    if lines_for_body == 0 || body_area.width == 0 {
-        return;
-    }
-    let row = u16::try_from(lines_for_body.saturating_sub(1)).unwrap_or(u16::MAX);
-    let style = match toast.linger() {
-        ToastLingerState::Live => body_style,
-        ToastLingerState::Lingering { progress } => format::fade_to_style(f64::from(progress)),
-    };
-    frame.render_widget(
-        Paragraph::new(ELISION).style(style),
-        Rect {
-            x:      body_area.right().saturating_sub(1),
-            y:      body_area.y.saturating_add(row),
-            width:  1,
-            height: 1,
-        },
-    );
+    body.overflow
 }
 
 fn body_lines_plain(
@@ -424,7 +411,8 @@ fn body_lines_plain(
     body_style: Style,
     lines_for_body: usize,
     width: u16,
-) -> (Vec<Line<'static>>, bool) {
+    page_rows: usize,
+) -> ToastBodyRows {
     let mut lines = match toast.linger() {
         ToastLingerState::Live => toast.render_body.wrapped_lines(width, body_style),
         ToastLingerState::Lingering { progress } => toast
@@ -439,9 +427,9 @@ fn body_lines_plain(
             })
             .collect(),
     };
-    let body_was_cut = lines.len() > lines_for_body;
+    let overflow = ViewportOverflow::new(lines.len(), 0, page_rows, 0);
     lines.truncate(lines_for_body);
-    (lines, body_was_cut)
+    ToastBodyRows { lines, overflow }
 }
 
 pub(super) fn body_lines_tracked(
@@ -449,28 +437,36 @@ pub(super) fn body_lines_tracked(
     body_style: Style,
     lines_for_body: usize,
     line_width: usize,
-) -> Vec<Line<'static>> {
+    page_rows: usize,
+) -> ToastBodyRows {
     let total_items = tracked.len();
-    let needs_truncation = total_items > lines_for_body;
-    let (visible_items, overflow_line) = if needs_truncation && lines_for_body >= 1 {
-        let show = lines_for_body.saturating_sub(1);
-        let remaining = total_items.saturating_sub(show);
-        (&tracked[..show], Some(format!("(+{remaining} more)")))
-    } else {
-        (tracked, None)
+    let visible_count = |rows: usize| {
+        if total_items > rows {
+            rows.saturating_sub(1)
+        } else {
+            total_items
+        }
     };
+    let visible = visible_count(lines_for_body);
+    let visible_items = &tracked[..visible];
 
     let mut result = visible_items
         .iter()
         .map(|item| tracked_item_line(item, body_style, line_width))
         .collect::<Vec<_>>();
-    if let Some(overflow) = overflow_line {
+    if visible < total_items && lines_for_body > 0 {
         let overflow_style = Style::default()
             .fg(fallback_toast_palette().label)
             .add_modifier(Modifier::ITALIC);
-        result.push(Line::from(Span::styled(overflow, overflow_style)));
+        result.push(Line::from(Span::styled(
+            format!("(+{} more)", total_items - visible),
+            overflow_style,
+        )));
     }
-    result
+    ToastBodyRows {
+        lines:    result,
+        overflow: ViewportOverflow::new(total_items, 0, visible_count(page_rows).max(1), 0),
+    }
 }
 
 /// A running item's spinner takes the palette's error color while the item is
@@ -501,7 +497,10 @@ pub(super) fn tracked_item_line(
         TrackedItemLifecycle::CompletedFading { progress } => format::fade_to_style(progress),
     };
     let TrackedItemElapsed::Measured(elapsed) = item.elapsed else {
-        return Line::from(Span::styled(item.label.clone(), label_style));
+        return Line::from(Span::styled(
+            format::truncate_with_ellipsis(&item.label, line_width),
+            label_style,
+        ));
     };
 
     let spinner_text = match item.lifecycle {
@@ -513,6 +512,21 @@ pub(super) fn tracked_item_line(
     let duration_text = format::format_elapsed(elapsed);
     let duration_suffix = format!("{duration_text} ");
     let suffix_width = duration_suffix.len();
+    if item.label.width() + suffix_width + SPINNER_SLOT + 1 > line_width {
+        let label = format::truncate_with_ellipsis(&item.label, line_width);
+        let label_width = label.width();
+        let mut spans = vec![Span::styled(label, label_style)];
+        if label_width + SPINNER_SLOT < line_width {
+            spans.push(Span::raw(
+                " ".repeat(line_width - label_width - SPINNER_SLOT),
+            ));
+            spans.push(Span::styled(
+                spinner_text,
+                spinner_style(item.lifecycle, item.activity),
+            ));
+        }
+        return Line::from(spans);
+    }
     let label_budget = line_width.saturating_sub(suffix_width + SPINNER_SLOT + 1);
     let label = format::truncate_with_ellipsis(&item.label, label_budget);
     let used = label.width() + spinner_text.width() + suffix_width;
@@ -529,4 +543,108 @@ pub(super) fn tracked_item_line(
         Span::styled(spinner_text, spinner_style(item.lifecycle, item.activity)),
         Span::styled(duration_suffix, duration_style),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::time::Duration;
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    use super::render_toast;
+    use crate::ColorMode;
+    use crate::ToastActivation;
+    use crate::ToastId;
+    use crate::toasts::ToastBody;
+    use crate::toasts::ToastCountdownState;
+    use crate::toasts::ToastFocus;
+    use crate::toasts::ToastLingerState;
+    use crate::toasts::ToastStyle;
+    use crate::toasts::ToastView;
+    use crate::toasts::TrackedItemActivity;
+    use crate::toasts::TrackedItemElapsed;
+    use crate::toasts::TrackedItemLifecycle;
+    use crate::toasts::TrackedItemView;
+
+    fn toast() -> ToastView {
+        let body = "Metadata\nDisk\nLanguages\nGit\nTests\nLints".to_owned();
+        ToastView {
+            id: ToastId(1),
+            title: "Startup".to_owned(),
+            render_body: ToastBody::Text(body.clone()).into(),
+            body,
+            style: ToastStyle::Normal,
+            activation: ToastActivation::Informational,
+            linger: ToastLingerState::Live,
+            countdown: ToastCountdownState::NoCountdown,
+            tracked_items: Vec::new(),
+            min_height: 3,
+            desired_height: 8,
+            settled_height: 8,
+        }
+    }
+
+    #[test]
+    fn hidden_rows_keep_the_countdown_and_action_hint_whole() -> Result<(), Box<dyn Error>> {
+        let mut toast = toast();
+        toast.activation = ToastActivation::Opens(());
+        toast.countdown = ToastCountdownState::CountingDown { remaining_secs: 12 };
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            let mut terminal = Terminal::new(TestBackend::new(40, 6))?;
+            terminal.draw(|frame| {
+                render_toast(
+                    frame,
+                    frame.area(),
+                    frame.area(),
+                    &toast,
+                    ToastFocus::PaneUnfocused,
+                    6,
+                );
+                mode.clear_colors(frame.buffer_mut());
+            })?;
+            let buffer = terminal.backend().buffer();
+            let row = |y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+            let bottom = row(5);
+            assert!(bottom.contains("1 of 2 ▼"), "{mode:?}: {bottom}");
+            assert!(bottom.contains(" Closing in 12 "), "{mode:?}: {bottom}");
+            assert!(row(4).contains("Enter open"));
+            assert!(row(3).contains("Languages"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_narrow_tracked_card_cuts_elapsed_detail_before_the_label() -> Result<(), Box<dyn Error>> {
+        let mut toast = toast();
+        toast.tracked_items = vec![TrackedItemView {
+            label:     "Cargo metadata".to_owned(),
+            lifecycle: TrackedItemLifecycle::Running,
+            elapsed:   TrackedItemElapsed::Measured(Duration::from_secs(123)),
+            activity:  TrackedItemActivity::Progressing,
+        }];
+        for (width, detail_fits) in [(20, false), (40, true)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 4))?;
+            terminal.draw(|frame| {
+                let card = Rect::new(0, 0, width, 4);
+                render_toast(
+                    frame,
+                    frame.area(),
+                    card,
+                    &toast,
+                    ToastFocus::PaneUnfocused,
+                    card.height,
+                );
+                ColorMode::Colored.clear_colors(frame.buffer_mut());
+            })?;
+            let buffer = terminal.backend().buffer();
+            let row: String = (1..width - 1).map(|x| buffer[(x, 1)].symbol()).collect();
+            assert!(row.contains("Cargo metadata"), "{row}");
+            assert!(!row.contains('…'), "{row}");
+            assert_eq!(row.contains("2m 03s"), detail_fits, "{row}");
+        }
+        Ok(())
+    }
 }

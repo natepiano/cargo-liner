@@ -38,6 +38,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 
+- Opening toast cards keep their bottom gap when the drawn rows fit. Progress labels use the space beside their own suffix.
+- Toasts mark hidden rows on the bottom border with the shared page mark. The page count stays fixed during opening. Small panes keep their titles and borders. Startup rows keep their progress bars and percentages inside the corner pane.
 - Toast stacks stay in their placement corner and show fewer rows when space is short. Cards preserve pane borders, titles, and unrelated content.
 - Wrap long Settings paths at slashes when a path part fits the content width.
 
