@@ -2113,28 +2113,13 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 ### Phase 59 — Shift-left and shift-right move the tile focus  · status: done
 
-**Depends on:** none.
+#### As-built
 
-#### Work Order
-
-**Goal:** wherever shift-up and shift-down move the tile focus, shift-left and shift-right move it to the left and right tile, and the shortcuts overlay shows them in the same rows.
-
-**Source:** the user, 2026-10-31, via the showrunner: "seems as if you should support shift-left and shift-right if you have these up and down - this should go to the end of the list for sure". The showrunner placed it as the last phase.
-
-**Constraints from prior phases:**
-- Phase 45 binds all four focus moves to the shift arrows (`crates/cargo-handler/src/globals.rs` ≈76–79). Plain arrows now select rows and control expansion. The keymap and overlay captures already show the four keys.
-- cargo-tile binds all four focus moves to the plain arrows (`crates/cargo-tile/src/app_global_action.rs`) and has no shift focus keys, so this phase does not change cargo-tile.
-- `TileAction::FocusLeft` and `TileAction::FocusRight` already exist in tui_pane; no new grid action is needed.
-- Keep focus bindings in the default keymap so the user can rebind them.
-
-**Spec:**
-1. The bindings and overlay rows are in place. Do not change them.
-2. Add only the missing evidence. A red-first test under 1 s for each direction that no test proves: the shift arrow moves focus one tile and stays at the edge.
-3. No CHANGELOG line: the change adds only tests. Phase 21 owns `CHANGELOG.md` while both phases run. If a binding must change, post blocked and the unit director adds the line at the checkpoint.
+- The four shift-arrow focus bindings in `crates/cargo-handler/src/globals.rs` and their shortcuts overlay rows did not change. They live in the default keymap, so the user can rebind them.
+- Four tests in `globals.rs` (`shift_arrow_{right,left,up,down}_moves_one_tile_and_stays_at_the_edge`) press a shift arrow, check that focus moves one tile in that direction, press it again and check that focus stays at the edge. Shift-up from the top row reaches the summary tile.
+- Shared test helpers in `globals.rs` build a three-agent app (`focus_application`), click a tile to focus it, and assert one shift-arrow edge move (`assert_shift_arrow_edge`).
 
 **Files:**
-- `crates/cargo-handler/src/globals.rs` — the direction and edge tests
+- `crates/cargo-handler/src/globals.rs` — the focus bindings and the four direction and edge tests
 
-**Workers:** 1 writer.
-
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: in cargo-handler on natedev, shift-left and shift-right move the focus, and the shortcuts overlay shows the four focus keys. The checkpoint adds a Change-Review line.
+**Gotchas:** cargo-tile binds the focus moves to the plain arrows and has no shift focus keys; plain arrows in cargo-handler select rows and control expansion.
