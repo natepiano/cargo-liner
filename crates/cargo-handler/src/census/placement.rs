@@ -13,6 +13,7 @@ use super::CodexThreadId;
 use super::HierarchyEdge;
 use super::HierarchyRole;
 use super::Machine;
+#[cfg(test)]
 use super::SessionIdentity;
 #[cfg(test)]
 use super::account::AccountLabels;
@@ -182,7 +183,7 @@ impl<'a> DispatchPairing<'a> {
                 thread.is_thread(id)
             },
             (WorkerIdentity::ClaudeSession(id), DispatchWorker::Session { row, .. }) => {
-                matches!(&row.session_id, SessionIdentity::Claude(session) if session == id)
+                row.session_id.ids().any(|session| session == id)
             },
             _ => false,
         };
@@ -259,11 +260,7 @@ impl<'a> AgentPlacement<'a> {
         edges.sort_by(|left, right| left.manager.cmp(&right.manager));
         let managers: HashMap<_, _> = rows
             .iter()
-            .filter(|row| row.row.agent == Agent::Claude)
-            .filter_map(|row| match &row.row.session_id {
-                SessionIdentity::Claude(id) => Some((id.as_str(), row.identity)),
-                SessionIdentity::Unrecorded => None,
-            })
+            .flat_map(|row| row.row.session_id.ids().map(|id| (id, row.identity)))
             .collect();
         Self::resolve_managers(&mut rows, &edges, &managers);
         let rescued_roots = Self::rescue_launcher_cycles(&mut rows);
@@ -493,12 +490,12 @@ impl<'a> AgentPlacement<'a> {
             .map(|row| (row.identity, row.placement))
             .collect();
         for row in rows.iter_mut() {
-            let SessionIdentity::Claude(member) = &row.row.session_id else {
+            let Some(member) = row.row.session_id.ids().next() else {
                 continue;
             };
             if let Some((manager, role)) = edges
                 .iter()
-                .filter(|edge| edge.member == *member)
+                .filter(|edge| edge.member == member)
                 .filter_map(|edge| {
                     managers
                         .get(edge.manager.as_str())
@@ -509,17 +506,14 @@ impl<'a> AgentPlacement<'a> {
                 row.placement = Placement::Managed { manager, role };
             }
         }
-        // Sort `candidates` by `SessionIdentity::Claude` `id`, so the result is
+        // Sort `candidates` by their session id, so the result is
         // independent of machine and row order; restore `launchers[identity]`
         // when a `Managed` link closes a cycle, repeating because the restored
         // `Placement` can expose another cycle.
         let mut candidates: Vec<_> = rows
             .iter()
             .enumerate()
-            .filter_map(|(index, row)| match &row.row.session_id {
-                SessionIdentity::Claude(id) => Some((id.as_str(), index)),
-                SessionIdentity::Unrecorded => None,
-            })
+            .flat_map(|(index, row)| row.row.session_id.ids().map(move |id| (id, index)))
             .collect();
         candidates.sort_unstable_by_key(|(id, _)| *id);
         loop {

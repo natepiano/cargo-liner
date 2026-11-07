@@ -68,22 +68,90 @@ pub(super) enum ResumeRequest<'a> {
     LastThread,
 }
 
-/// A resume can identify a thread explicitly or select the latest in the cwd.
+/// Codex options whose next argument is a value, including values named resume.
+const CODEX_VALUE_OPTIONS: &[&str] = &[
+    "-c",
+    "--config",
+    "--enable",
+    "--disable",
+    "-i",
+    "--image",
+    "-m",
+    "--model",
+    "--local-provider",
+    "-p",
+    "--profile",
+    "-s",
+    "--sandbox",
+    "-a",
+    "--ask-for-approval",
+    "-C",
+    "--cd",
+    "--add-dir",
+];
+
+/// Codex flags that do not consume the next argument.
+const CODEX_SWITCHES: &[&str] = &[
+    "--no-daemon",
+    "--oss",
+    "--full-auto",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--no-alt-screen",
+    "--search",
+    "-h",
+    "--help",
+    "-V",
+    "--version",
+];
+
+/// Separator positions in a complete UUID.
+const UUID_HYPHEN_POSITIONS: [usize; 4] = [8, 13, 18, 23];
+
+/// `ResumePosition` separates the subcommand from its requested thread.
+#[derive(Clone, Copy)]
+enum ResumePosition {
+    Command,
+    Thread,
+}
+
+/// A resume identifies a thread only after the first positional argument names the command.
 pub(super) fn resume_request(process: &ProcessEntry) -> ResumeRequest<'_> {
-    process
-        .arguments
-        .windows(2)
-        .find_map(|pair| {
-            if pair[0] != CODEX_RESUME_SUBCOMMAND {
-                return None;
+    let mut arguments = process.arguments.iter().skip(1);
+    let mut position = ResumePosition::Command;
+    while let Some(argument) = arguments.next() {
+        let argument = argument.as_str();
+        if CODEX_VALUE_OPTIONS.contains(&argument) {
+            if arguments.next().is_none() {
+                return ResumeRequest::NewSession;
             }
-            match pair[1].as_str() {
-                CODEX_RESUME_LAST_ARGUMENT => Some(ResumeRequest::LastThread),
-                id if id.len() == UUID_TEXT_LENGTH => Some(ResumeRequest::NamedId(id)),
-                _ => None,
-            }
-        })
-        .unwrap_or(ResumeRequest::NewSession)
+            continue;
+        }
+        if CODEX_SWITCHES.contains(&argument)
+            || (argument.starts_with("--") && argument.contains('='))
+        {
+            continue;
+        }
+        match (position, argument) {
+            (ResumePosition::Command, CODEX_RESUME_SUBCOMMAND) => position = ResumePosition::Thread,
+            (ResumePosition::Thread, CODEX_RESUME_LAST_ARGUMENT) => {
+                return ResumeRequest::LastThread;
+            },
+            (ResumePosition::Thread, id)
+                if id.len() == UUID_TEXT_LENGTH
+                    && id.bytes().enumerate().all(|(index, byte)| {
+                        if UUID_HYPHEN_POSITIONS.contains(&index) {
+                            byte == b'-'
+                        } else {
+                            byte.is_ascii_hexdigit()
+                        }
+                    }) =>
+            {
+                return ResumeRequest::NamedId(id);
+            },
+            _ => return ResumeRequest::NewSession,
+        }
+    }
+    ResumeRequest::NewSession
 }
 
 /// Older resume candidates from this process's own home, outside the startup window.
