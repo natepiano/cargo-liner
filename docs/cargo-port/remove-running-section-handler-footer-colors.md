@@ -1496,7 +1496,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: shots of the accounts table on natedev with live counts, a design check line, and a Change-Review line.
 
-### Phase 65 — Tiles settle at once when the accounts table wraps  · status: todo
+### Phase 65 — Tiles settle at once when the accounts table wraps  · status: done
 
 **Depends on:** none. Runs now, beside Phase 62's checkpoint and Phase 42. Where it shares files with Phase 42, Phase 42 lands first, and this phase merges main and builds on it (showrunner, 2026-11-05).
 
@@ -1540,7 +1540,15 @@ Each layout state has one owning record. Item 6 is the one new record.
 3. Held layout (rows, focus, summary span, summary depth). Owner: `TileGrid.held`. Changed by `replan_layout_endpoints`, `sync_demands`, `resolve_destination_depth`, `advance` and `complete_arrangement`.
 4. Motion and destinations. Owner: `TileGrid.motion` and `TileGrid.pending`. Changed by `replan_layout_endpoints`, `open_waiting_commands_in_current_motion`, `queue_steps`, `advance` and `resize_for_focus`. `settle_for_test` is test-only.
 5. Admission decision. Owner: `TileGrid.layout_admission`, a cache of items 2 and 3 with the layout rules. It holds no fact of its own.
-6. Selected plan (new). Owner: one `TileGrid` field that holds the plan inputs and the selected widths, demands and depth. Built only by the candidate search in `sync_measured_demands`. The search tests each permitted column count at that count's own widths. The inputs are one named type, compared whole, and hold no state that the selection itself writes. Equal inputs reuse the selection and make no candidate `cells.demands` call; the rest of `sync_demands` still runs. Item 1 stays before every measurement. The first run of this design failed because its inputs held `held` and `slots` and the current widths; phase 65's worker records the final form in unit session `phases/65/state_model.md`, and this item takes it at the checkpoint.
+6. Selected plan (new). Owner: the `TileGrid` field `LayoutSelection`.
+   1. Inputs: `LayoutSelectionInputs`, compared whole. It holds the area, target arrangement, growth, `EndpointLayoutRules`, and the `LayoutDemandMeasurement` at each candidate width list.
+   2. Selected: the widths, demands and depth. The widths determine the column count.
+   3. Built only by the candidate search in `sync_measured_demands`. The search tests each permitted column count at that count's own widths, and measures each distinct width list once.
+   4. A draw replaces the measurement at its current widths, then compares the complete inputs. Equal inputs reuse the selection with no candidate call; an unchanged draw makes two `cells.demands` calls.
+   5. The search reads no held rows, current slots, frame row usage or retargeted destination constraints.
+   6. Item 1 stays before every demand call. Nothing prepares again after selection.
+   7. The handler keeps requested tree rows apart from allocation height (`CellView::requested_at_width`). Width compression stays part of the provider's demand.
+   8. Known reuse limit (accepted, showrunner 70b8dbf4): a change that affects only an unmeasured candidate width is not seen until a current-width input changes. A current width list absent from the record forces a search; motion can produce one.
 
 Draw order: prepare, measure at current widths, search only when the inputs changed, sync, draw. An unchanged draw makes exactly 2 `cells.demands` calls, as main does.
 
@@ -1548,30 +1556,11 @@ Draw order: prepare, measure at current widths, search only when the inputs chan
 - Phase 64: `census::schedule::spawn` takes the configured `herdr_read_timeout` (`terminal.rs` ≈81, `census/schedule.rs` ≈694). This phase's `terminal.rs` change keeps that argument.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs`
-- `crates/tui_pane/src/tiles/draw.rs`
-- `crates/cargo-handler/src/agent_cell.rs`
-- `crates/cargo-handler/src/summary/mod.rs`
-- `crates/cargo-handler/src/render/mod.rs`
-- `crates/cargo-handler/src/terminal.rs`
-- `crates/cargo-handler/src/interaction.rs`
-- `crates/cargo-handler/src/summary/accounts.rs`
-- `crates/cargo-handler/src/summary/constants.rs`
-- `crates/cargo-handler/src/summary/accounts_tests.rs`
-- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs`
-- `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`
-- `crates/cargo-handler/src/summary/accounts_refresh_tests.rs`
-- `crates/cargo-handler/src/sort.rs`
+- `crates/tui_pane/src/tiles/grid.rs`, `draw.rs`, `crates/tui_pane/CHANGELOG.md`
+- `crates/cargo-handler/src/agent_cell.rs`, `interaction.rs`, `sort.rs`, `terminal.rs`, `CHANGELOG.md`
+- `crates/cargo-handler/src/summary/mod.rs`, `accounts.rs`, `constants.rs`
 - `crates/cargo-handler/src/census/accounts.rs`
-- `crates/cargo-handler/src/census/account.rs`
-- `crates/cargo-handler/src/census/account/`
-- `crates/cargo-handler/src/census/accounts_wire_tests.rs`
-- `crates/cargo-handler/src/summary/role_span_tests.rs`
-- `crates/cargo-handler/src/render/accounts_grid_tests.rs`
-- `crates/cargo-handler/src/render/selected_ink_tests.rs`
-- `crates/cargo-handler/src/render/pinned_accounts_tests.rs`
-- `crates/cargo-handler/src/render/narrow_width_tests.rs`
-- `crates/cargo-handler/src/summary/hierarchy_note_tests.rs`
+- Tests: `summary/{accounts_tests,accounts_gradient_tests,accounts_header_sort_tests,role_span_tests,hierarchy_note_tests}.rs`, `census/accounts_wire_tests.rs`, `render/{accounts_grid_tests,pinned_accounts_tests,narrow_width_tests}.rs`
 
 **Workers:** 1 writer.
 
@@ -1971,9 +1960,9 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 #### Work Order
 
-**Goal:** at every tile width, each row keeps its tree guides and its session name stays readable, and the unassigned pane's count matches the rows it draws.
+**Goal:** at every tile width, each row keeps its tree guides and its session name stays readable, the unassigned pane's count matches the rows it draws, `cargo-handler probe` reports a refused config value, and the hung-host census test has no race.
 
-**Source:** showrunner order 6d8cdb12, 2026-11-06: a Spec of a dropped phase stays only when it fixes something broken today. These came from Phase 55 (design check 2026-10-30, `phases/43/shots/ages_120x40.png`) and Phase 51 (design check 2026-10-29, `phases/41/live/handler_named.png`).
+**Source:** showrunner order 6d8cdb12, 2026-11-06: a Spec of a dropped phase stays only when it fixes something broken today. These came from Phase 55 (design check 2026-10-30, `phases/43/shots/ages_120x40.png`) and Phase 51 (design check 2026-10-29, `phases/41/live/handler_named.png`). Showrunner ruling 70b8dbf4, 2026-11-06, adds the probe fix: "The probe reports a refused config value the same way the TUI does. It adds no new check."
 
 **Constraints from prior phases:**
 - Phase 27 keeps the core columns on narrow tiles; `TreeColumns::for_lines` (`agent_cell.rs` ≈453) keeps a column only when a drawn row has a value. Phase 49b adds model and effort columns in the same file and runs after this phase.
@@ -1981,16 +1970,21 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - Both width paths drop Directory, Branch, Type, Age and Account in that order: local fitting through `ColumnDrop::ORDER` (`agent_cell.rs` ≈504) and shared-column fitting through `GroupFitStep::ORDER` (≈936).
 - `SurfaceSelection::rows_readout` (`crates/cargo-handler/src/interaction.rs` ≈361) counts selectable identities. An unassigned table also draws its header line, which the count does not include.
 - Phase 41's shot: the unassigned pane says "content rows: 2 of 2" and draws 3 rows; the third, `phase41-check`, has the same status, account, branch and age as `cargo-liner-handler-c6`, with only its session cell lit.
+- `census::probe::print` (`census/probe.rs` ≈402) calls `LoadedConfig::load` and reads only `loaded.config`, so it drops `loaded.error`. The TUI keeps the defaults and shows that error in the settings overlay. Stdout carries one JSON report, which a remote caller parses.
 
 **Spec:**
 1. Reproduce each defect below on today's tree with a red test first. A defect with no reproduction leaves this phase; report it to the director.
 2. Tree guides are cut (Phase 55 Spec 1). At 120×40 the natedev tile drew two depth-3 rows ("ws-impl…", "Dispatch…") at the tile's left edge with no guides. Draw every row's guides at its own depth at every width; cut the name after the guides, never the guides.
 3. Session names are cut (Phase 55 Spec 2). The same tile cut session names to two letters ("re…" for both "report" and "resources") beside a type column empty in 17 of 19 rows. Give an empty column's space to the session column. A column that is empty on most rows never takes room from session names.
 4. The unassigned count is wrong (Phase 51 Spec 2). Find out whether `phase41-check` is a real second session or a row left from an earlier frame. Stale: the pane clears every row it no longer draws. Real: the count includes it. The test reproduces the extra session identity or the stale cells across consecutive frames; equality of the drawn line count and the readout count is not the rule.
-5. CHANGELOG: one Fixed line.
+5. The probe drops a refused config value (showrunner, 2026-11-06). As in the TUI, the probe keeps the defaults and reports `LoadedConfig.error`, with the same text. The text goes to stderr, because stdout carries the JSON report. Add no new check.
+6. The hung-host census test races (Phase 65 repair round 1, 2026-11-06). `census::schedule::tests::a_hung_host_delays_neither_this_machine_nor_another_host` (`census/schedule.rs` ≈1767) asserts `Some(1)` blocked-host starts after three local and three quick-host answers, but the blocked probe's thread can start later; one full-suite run on an unchanged file got `None`. Make the test wait for the blocked probe's start signal before it asserts, with no sleep and no new check. The test has been there since 1bcc4135f; Phase 65 did not touch the file.
+7. CHANGELOG: one Fixed line.
 
 **Files:**
 - `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/agent_cell/tests/` — tree guides, column space, unassigned rows and count
+- `crates/cargo-handler/src/census/probe.rs` — the probe reports a refused config value, with its test in the file's `tests` module
+- `crates/cargo-handler/src/census/schedule.rs` — the hung-host test waits for the blocked probe's start
 - `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer.

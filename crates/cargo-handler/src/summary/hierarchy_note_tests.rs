@@ -40,6 +40,12 @@ fn lines(buffer: &Buffer) -> Vec<String> {
         .collect()
 }
 
+fn accounts_below_diagnostic() -> AccountsTable {
+    AccountsTable::Ready(crate::census::accounts::AccountsReading::parse(
+        br#"{"accounts":[{"label":"account-after-note","tool":"claude","roles":[],"weekly_left_percent":null,"resets_at":null,"credits":null,"use_credits":false,"read_at":null}],"problems":[]}"#,
+    ).expect("account section below discovery note"))
+}
+
 #[test]
 fn hierarchy_notes_failed_unmatched_and_disabled_draw_below_agents_at_measured_demand() {
     for (notice, expected) in [
@@ -70,9 +76,7 @@ fn hierarchy_notes_failed_unmatched_and_disabled_draw_below_agents_at_measured_d
         }];
         let placement = AgentPlacement::from_machines(&machines);
         let cells = agent_cell::cell_order_placed(&placement);
-        let accounts = AccountsTable::Ready(crate::census::accounts::AccountsReading::parse(
-            br#"{"accounts":[{"label":"account-after-note","tool":"claude","roles":[],"weekly_left_percent":null,"resets_at":null,"credits":null,"use_credits":false,"read_at":null}],"problems":[]}"#,
-        ).expect("account section below discovery note"));
+        let accounts = accounts_below_diagnostic();
         let colors = FooterColors::default();
         let frame = SummaryFrame {
             accounts_sort:  AccountsSort::SourceOrder,
@@ -107,11 +111,17 @@ fn hierarchy_notes_failed_unmatched_and_disabled_draw_below_agents_at_measured_d
             .position(|line| line.contains("visible-production-session"))
             .expect("agents remain visible");
         assert!(
+            output[output.len() - 2].contains("account-after-note"),
+            "accounts fit below the diagnostic: {output:?}"
+        );
+        assert_eq!(
             output
                 .last()
                 .expect("final measured row")
-                .contains("account-after-note"),
-            "accounts fit below the diagnostic: {output:?}"
+                .split_whitespace()
+                .next(),
+            Some("total"),
+            "the total fits after the account: {output:?}"
         );
         if expected.is_empty() {
             assert!(
