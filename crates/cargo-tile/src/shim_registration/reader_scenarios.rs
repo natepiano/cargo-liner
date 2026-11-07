@@ -27,6 +27,7 @@ use tui_pane::SettingsRowIdentity;
 use tui_pane::SettingsRowPayload;
 use tui_pane::TerminalApp;
 
+use super::python_cache;
 use crate::app::App;
 use crate::census::CensusCadence;
 use crate::census::CensusScope;
@@ -36,6 +37,10 @@ use crate::constants::READER_TIMESTAMPS_ENV;
 use crate::render;
 use crate::settings;
 use crate::terminal::GridMotion;
+
+#[cfg(target_os = "macos")]
+#[path = "reader_executable.rs"]
+mod reader_executable;
 
 /// Exercise the built binary using actual shim publications and a reconstructed PTY screen.
 ///
@@ -56,22 +61,22 @@ fn reader_child() -> std::io::Result<()> {
         let root = std::env::current_dir()?;
         if scenario == "cpu-cache-server" {
             cpu_observation::start()?;
-            let mut ready = [0];
-            File::open(root.join("reader-start"))?.read_exact(&mut ready)?;
-            assert_eq!(ready, [b'R']);
         }
         let parent = root.join("capture");
-        let grid_motion = if matches!(scenario.to_str(), Some("child-source-switch" | "locale")) {
-            GridMotion::Immediate
-        } else {
-            GridMotion::Animated
-        };
+        let grid_motion = GridMotion::Immediate;
         assert_eq!(
             crate::terminal::run_with_capture_parent(
                 parent,
                 CensusCadence::for_test(),
                 scenario_scope(),
                 grid_motion,
+                || {
+                    let mut ready = [0];
+                    File::open(root.join("reader-start"))
+                        .and_then(|mut barrier| barrier.read_exact(&mut ready))
+                        .expect("release the reader after fixture setup");
+                    assert_eq!(ready, [b'R']);
+                },
             ),
             std::process::ExitCode::SUCCESS
         );
@@ -175,21 +180,19 @@ fn run_reader_script(scenario: &str) {
 fn reader_script_result(scenario: &str, deadline: ScenarioDeadline) -> ReaderScenarioResult {
     let directory = tempfile::tempdir().expect("isolate writer and reader processes");
     let executable = std::env::current_exe().expect("integration reader executable");
-    // Foundation reads the executable directory when it first reads system
-    // appearance. Keep that read inside the fixture, away from build artifacts.
+    // Only a reader starts Foundation. Parser checks use the original executable path.
     #[cfg(target_os = "macos")]
-    let executable = {
-        let staged = directory
-            .path()
-            .join(executable.file_name().expect("reader executable file name"));
-        fs::copy(&executable, &staged).expect("stage isolated reader executable");
-        staged
+    let executable = if scenario.starts_with("--") {
+        executable
+    } else {
+        reader_executable::stage(&executable).expect("stage the reader outside the build directory")
     };
     let stdout_path = directory.path().join("scenario.stdout");
     let stderr_path = directory.path().join("scenario.stderr");
     // The script times its CPU observation against the reader's own windows.
     let cadence = CensusCadence::for_test();
     let mut command = Command::new("python3");
+    python_cache::cache_python_modules(&mut command);
     command
         .arg("-S")
         .arg(READER_SCENARIO_SCRIPT)

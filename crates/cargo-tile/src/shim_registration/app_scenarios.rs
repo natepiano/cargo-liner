@@ -100,7 +100,7 @@ exec(sys.argv[2])
         ])
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/src/shim_registration/reader_scenario.py"
+            "/src/shim_registration/reader_scenario_cases.py"
         ))
         .arg(assertions)
         .output()

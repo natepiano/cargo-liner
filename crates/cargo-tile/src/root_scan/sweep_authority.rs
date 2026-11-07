@@ -462,7 +462,7 @@ mod tests {
     fn incomplete_log_inventory_still_sweeps_directly_named_pairs() {
         let root = inspected_directory::capture_root();
         for number in 0..CAPTURE_INVENTORY_LIMIT {
-            fs::write(root.path().join(format!("unrelated-{number}")), "")
+            fs::write(root.path().join(format!("unrelated-{number}")), b"")
                 .expect("unrelated entry");
         }
         write_pair(root.path());

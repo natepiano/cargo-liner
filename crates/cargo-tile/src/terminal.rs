@@ -93,20 +93,24 @@ pub(crate) fn run() -> ExitCode {
         CensusCadence::default(),
         CensusScope::default(),
         GridMotion::Animated,
+        || {},
     )
 }
 
 /// The executable supplies the fixed parent, the production cadence and
 /// every cargo on the machine; PTY tests supply an isolated path, a shorter
 /// cadence and only their own processes.
+/// `before_first_scan` lets a test start the reader during fixture setup.
 pub(crate) fn run_with_capture_parent(
     parent: PathBuf,
     cadence: CensusCadence,
     scope: CensusScope,
     grid_motion: GridMotion,
+    before_first_scan: impl FnOnce(),
 ) -> ExitCode {
     run_with_scanner(
         move |excluded| {
+            before_first_scan();
             census::spawn_with_resolver(excluded, cadence, scope, move || {
                 crate::progress::capture_roots::CaptureRoots::from_parent(&parent)
             })
@@ -231,8 +235,8 @@ impl PollWork<App> for Workers {
             // Advance motion even when two polls resolve to equal geometry.
             // Only a change from the last body paint requests another frame.
             dirty |= app.grid_view.advance(now) == Repaint::Needed;
+            self.grid_motion.settle_if_immediate(app);
             if app.tiles.tick() {
-                self.grid_motion.settle_if_immediate(app);
                 dirty = true;
             }
             // The attract screen is the other: it asks for frames on its
