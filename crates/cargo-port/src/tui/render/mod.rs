@@ -17,6 +17,7 @@ use ratatui::buffer::CellDiffOption;
 use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
 use ratatui::layout::Layout;
+use ratatui::layout::Margin;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -147,6 +148,8 @@ struct TiledRenderInputs<'a> {
 
 /// Draw toast cards through the shared renderer.
 fn render_toasts_over_panes(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.refresh_startup_panel_for_layout(area);
+    let area = app.toast_area(area);
     let toasts_pane_focused = app.focus_is(PaneId::Toasts);
     let toasts_ctx = ToastsRenderCtx {
         now:              Instant::now(),
@@ -157,6 +160,19 @@ fn render_toasts_over_panes(frame: &mut Frame, app: &mut App, area: Rect) {
         },
     };
     Renderable::render(&mut app.framework.toasts, frame, area, &toasts_ctx);
+}
+
+impl App {
+    /// Keep toast cards inside the pane at their placement corner.
+    pub(in crate::tui) fn toast_area(&self, bounds: Rect) -> Rect {
+        let corner = self.framework.toasts.placement_corner(bounds);
+        self.panes
+            .tiled_layout
+            .panes
+            .iter()
+            .find(|pane| pane.area.contains(corner))
+            .map_or(bounds, |pane| pane.area.inner(Margin::new(1, 1)))
+    }
 }
 
 /// Render each pane and then draw its borders and titles.

@@ -1,12 +1,14 @@
 use std::time::Instant;
 
 use ratatui::Frame;
+use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
 use super::card;
 use super::layout;
 use super::layout::StackLayout;
+use crate::BLOCK_BORDER_WIDTH;
 use crate::PaneFocusState;
 use crate::ToastPlacement;
 use crate::ToastSettings;
@@ -15,6 +17,7 @@ use crate::constants::TOAST_SIDE_GAP;
 use crate::toasts::ToastFocus;
 use crate::toasts::ToastHitbox;
 use crate::toasts::ToastView;
+use crate::toasts::body;
 use crate::toasts::manager;
 
 /// Compiled-in palette consumed by toast rendering.
@@ -73,8 +76,16 @@ fn render_toasts(
     let max_visible = settings.max_visible.get().max(1);
     let start = toasts.len().saturating_sub(max_visible);
     let visible_toasts = &toasts[start..];
+    let complete_toasts: Vec<_> = visible_toasts
+        .iter()
+        .map(|toast| {
+            let mut complete = toast.clone();
+            complete.desired_height = toast.settled_height();
+            complete
+        })
+        .collect();
     let gap = TOAST_ROW_GAP;
-    let required_height = visible_toasts
+    let required_height = complete_toasts
         .iter()
         .map(ToastView::desired_height)
         .fold(TOAST_ROW_GAP.saturating_mul(2), u16::saturating_add)
@@ -82,11 +93,36 @@ fn render_toasts(
             u16::try_from(visible_toasts.len().saturating_sub(1)).unwrap_or(u16::MAX),
         ));
     let area = card::area_between_pane_borders(frame, area, settings, required_height);
-    let available = area.height.saturating_sub(TOAST_ROW_GAP.saturating_mul(2));
-    let allocated = layout::allocate_toast_heights(visible_toasts, available, gap);
+    let minimum_card_height =
+        u16::try_from(BLOCK_BORDER_WIDTH.saturating_add(1)).unwrap_or(u16::MAX);
+    let gap_rows = if area == frame.area() {
+        (area.height.saturating_sub(minimum_card_height) / 2)
+            .min(TOAST_ROW_GAP)
+            .saturating_mul(2)
+    } else {
+        let stack_height = required_height.saturating_sub(TOAST_ROW_GAP.saturating_mul(2));
+        area.height
+            .saturating_sub(stack_height)
+            .min(TOAST_ROW_GAP.saturating_mul(2))
+    };
+    let available = area.height.saturating_sub(gap_rows);
+    let allocated = layout::allocate_toast_heights(&complete_toasts, available, gap);
+    let drawn_height = visible_toasts
+        .iter()
+        .zip(&allocated)
+        .map(|(toast, allocated)| toast.desired_height().min(*allocated))
+        .filter(|height| *height > 0)
+        .reduce(|height, next| height.saturating_add(gap).saturating_add(next))
+        .unwrap_or(0);
+    let edge_gap = area.height.saturating_sub(drawn_height).min(TOAST_ROW_GAP);
     let width = manager::toast_card_width(settings, area.width);
 
-    let layout = StackLayout { width, gap, focus };
+    let layout = StackLayout {
+        width,
+        gap,
+        edge_gap,
+        focus,
+    };
     let hitboxes = match settings.placement {
         ToastPlacement::TopRight => {
             layout::render_top_down(frame, area, visible_toasts, &allocated, layout)
@@ -131,6 +167,22 @@ impl<Ctx: crate::AppContext> crate::Renderable<ToastsRenderCtx> for super::super
 }
 
 impl<Ctx: crate::AppContext> super::super::Toasts<Ctx> {
+    /// Return the body width inside a card constrained to this area.
+    #[must_use]
+    pub fn body_width_for_area(&self, area: Rect) -> usize {
+        body::card_body_width(manager::toast_card_width(self.settings(), area.width))
+    }
+
+    /// Return the configured placement corner within the allowed area.
+    #[must_use]
+    pub const fn placement_corner(&self, area: Rect) -> Position {
+        let y = match self.settings().placement {
+            ToastPlacement::TopRight => area.top(),
+            ToastPlacement::BottomRight => area.bottom().saturating_sub(1),
+        };
+        Position::new(area.right().saturating_sub(1), y)
+    }
+
     /// Keep toast cards and their cleared gaps outside protected frame feet.
     /// Frames in other columns leave the toast's original area available.
     #[must_use]
@@ -529,17 +581,16 @@ mod tests {
             );
         })?;
         let card = toasts.hits[0].card_rect;
-        assert!(card.top() > 33 && card.bottom() < 40, "{card:?}");
+        assert!(card.top() > 33 && card.bottom() <= 40, "{card:?}");
         let buffer = terminal.backend().buffer();
         let header: String = (90..158).map(|x| buffer[(x, 16)].symbol()).collect();
         for text in ["Files Code Comments", "CPU cores 32", "Target Kind Source"] {
             assert!(header.contains(text), "{header:?}");
         }
         assert!(
-            (card.top()..card.bottom()).any(|y| {
-                (card.left()..card.right()).any(|x| buffer[(x, y)].symbol().contains(ELISION))
-            }),
-            "the card must show the existing hidden-row mark"
+            (card.left()..card.right())
+                .any(|x| buffer[(x, card.bottom() - 1)].symbol().contains('▼')),
+            "the bottom border must show the shared page mark"
         );
         Ok(())
     }
@@ -1014,7 +1065,8 @@ mod tests {
         let (_, rows) = rendered_plain_toast(TestToastAction::Absent, 6);
         let last_body_row = rows[3].chars().skip(2).take(12).collect::<String>();
 
-        assert!(last_body_row.trim_end().ends_with(ELISION));
+        assert_eq!(last_body_row.trim(), "ghijkl");
+        assert!(rows[4].contains('▼'), "{}", rows[4]);
     }
 
     #[test]
@@ -1111,7 +1163,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let lines = card::body_lines_tracked(&tracked, Style::default(), 2, 20);
+        let lines = card::body_lines_tracked(&tracked, Style::default(), 2, 20, 2).lines;
 
         assert_eq!(lines.len(), 2);
         assert_eq!(line_text(&lines[0]), "one");
