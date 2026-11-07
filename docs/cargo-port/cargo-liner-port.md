@@ -682,11 +682,15 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 - Change no other look.
 - Keep the Phase 4k description rule: ` No description` takes one row at 16 interior cells or more and wraps at 15, but only when the description is known to be empty.
 
+**Constraints from prior phases:**
+- Keep the Phase 4l rules: every Package and Workspace row keeps one right-margin cell (`support::field_value_lines`, `package/constants.rs::PATH_VALUE_RESERVE`) and one blank cell before the `Structure` divider; Workspace values share one Disk indent; Git section titles cut the count before the label, and Git field labels never cut.
+- Keep the Phase 4l Package and Git readability tests green, with their 95-column cases.
+
 **Spec:**
-1. **No false empty description.** While the GitHub data loads, the Workspace pane does not show `No description`. It shows the description row only when the description is known. The page count follows the page-count decision above. The producers are `App::empty_package_description` (the placeholder choice) and `build_git_detail_fields`, which merges a pending and a known-empty GitHub description into `Option<String>`. The height comes from `pane_data/detail_data.rs` and `render/mod.rs`; the row from `panes/description.rs` and `package/render.rs`. Model the loading and known states as types through each of these, not as a flag or an empty string. Drawn tests cover loading, a failed fetch, a known empty description and a project with no GitHub remote.
-4. **No false count while loading.** While the pull requests load, the Git `Pull Requests` section title shows no count. It shows the count only when the count is known. Find the title in `git/render.rs::section_title_with_count` and its caller.
-2. **The Structure column keeps its width.** The Package `Structure` column does not grow when the crates.io data arrives. Reserve its width from the start, so the divider stays in place.
+1. **No false empty description.** While the GitHub data loads, the Workspace pane does not show `No description`. It shows the description row only when the description is known. The page count follows the page-count decision above. The producers are `App::empty_package_description` (the placeholder choice) and `build_git_detail_fields`, which merges a pending and a known-empty GitHub description into `Option<String>`. The height comes from `pane_data/detail_data.rs` and `render/mod.rs`; the row from `panes/description.rs` and `package/render.rs`. Model the loading and known states as types through each of these, not as a flag or an empty string. The Cargo producer `version_and_description` (`pane_data/package_data.rs`) and `ManifestFields.description` also merge missing metadata and a known empty description into `None`; carry the same states through them. Drawn tests cover loading, a failed fetch, a known empty description, and a project with no GitHub remote before its Cargo metadata loads, with a description, and with a known empty one.
+2. **The Structure column keeps its width.** The Package `Structure` column does not grow when the crates.io data arrives, so the divider stays in place. `package/render.rs::stats_column_width` measures the crates.io labels and values after they load. Take the label width from every crates.io label, loaded or not, and give values a fixed 8-cell budget (as wide as `0.12.34` or `12.3K`), widened only by a longer count. A longer value (a long version, `Unreachable`) is cut with `…` in `render_stat_section`; the divider and the margins do not move. Drawn tests cover a long version and `Unreachable`.
 3. **The CPU / GPU page count is in the border.** The CPU / GPU pane draws `1 of 5 ▼` in its bottom border, as every other pane does, not as a content row. Find the pager row in `panes/cpu/`. Use the shared border pager that the other panes use; do not add a second pager style.
+4. **No false count while loading.** The Git `Pull Requests` section title shows a count only when the count is known. While the pull requests load, and when the fetch is `Unavailable` with no known count (`pane_data/git_data.rs::build_pull_request_section`), the title shows no count. Stale data keeps its last known count. Find the title in `git/render.rs::section_title_with_count` and its caller.
 
 **Files:**
 - `crates/cargo-port/src/tui/panes/description.rs` and `crates/cargo-port/src/tui/panes/package/` — the description row and the Structure width, and their tests
@@ -699,7 +703,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **State:** the Workspace description is either loading or known. A known description is either text or empty.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: no `No description` row while the description loads or after a failed fetch, the three description states, and no page count change or row move when a placeholder goes away; the `Structure` divider column before and after the crates.io data; the CPU / GPU page count in the bottom border; no Pull Requests count while the pull requests load. 80- and 160-column live captures in colour and under NO_COLOR, before and after the data, judged by the design check. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: no `No description` row while the description loads or after a failed fetch, the three description states, and no page count change or row move when a placeholder goes away; the `Structure` divider column before and after the crates.io data, with a long version and `Unreachable`; the CPU / GPU page count in the bottom border; no Pull Requests count while the pull requests load or when the fetch is unavailable, and the last known count on stale data. 80- and 160-column live captures in colour and under NO_COLOR, before and after the data, judged by the design check. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 4n — Targets, cut titles and the footer read clean in narrow windows  · status: todo
 
@@ -722,7 +726,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 - Never cut a label. Cut a value, a name or a message first. User rule C205: "columns should always be preserved - the project names should get ellipsis first".
 
 **Spec:**
-1. **Targets width and Source cut.** `panes/layout.rs` gives Targets `targets::minimum_width()` (`targets/render.rs:370`). Give Targets the width for its longest target name plus Source and Kind when the window has room, at 95 and 160 columns. When the names still do not fit, Source shrinks to its floor (one letter and `…`) before any target name is cut. Keep the Phase 4l Source floor for workspace and worktree sources.
+1. **Targets width and Source cut.** `panes/layout.rs` gives Targets `targets::minimum_width()` (`targets/render.rs:370`). Give Targets the width for its longest target name plus Source and Kind when the window has room, at 95 and 160 columns. When the names still do not fit, Source shrinks to a two-cell floor (one letter and `…`) for every source kind before any target name is cut; this replaces the six-cell floor in `targets/render.rs::compute_layout`, which drops Source below six cells. The Source header cuts the same way (`S…`).
 2. **One blank cell after a cut pane title.** `GridLines::write_overlay` (`crates/tui_pane/src/pane/frame.rs:855`) fits the title. A cut title keeps one blank cell before the corner or a column joint (`Workspace - c… ┐`, `cargo-liner-… ─┬`), as an uncut title does.
 3. **The footer gap.** `crates/tui_pane/src/bar/status_line.rs` lays out the key hints and the notes; `cargo_port_status_line_notes` (`crates/cargo-port/src/tui/render/mod.rs:838`) gives the disk cache note and does not change. Keep a fixed 3-cell gap between the last key hint and a note, the same as the gap between hints. When the row is too narrow, drop key hints from the right before the gap gets smaller. The gap does not change when the note text changes width.
 4. **The on-branch-rows shot (unit director).** The live script adds a scene that shows `CI runs — on branch rows`. This is a shot, not a look change.
@@ -745,7 +749,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 ### Phase 4o — Cut values and dim text read clean in narrow panes  · status: todo
 
-**Depends on:** Phase 4m (both edit `crates/cargo-port/src/tui/panes/package/`, `crates/cargo-port/src/tui/panes/git/`, `crates/cargo-port/src/tui/render/mod.rs` and `crates/cargo-port/CHANGELOG.md`)
+**Depends on:** Phase 4m (both edit `crates/cargo-port/src/tui/panes/package/`, `crates/cargo-port/src/tui/panes/git/`, `crates/cargo-port/src/tui/render/mod.rs` and `crates/cargo-port/CHANGELOG.md`) and Phase 4n (both edit `crates/tui_pane/CHANGELOG.md`, and Spec 5 records Phase 4n's Targets change)
 
 #### Work Order
 
