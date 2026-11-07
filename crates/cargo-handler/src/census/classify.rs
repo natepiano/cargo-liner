@@ -39,6 +39,7 @@ use super::Agent;
 use super::AgentActivity;
 use super::AgentRow;
 use super::CodexThreadId;
+use super::ProvenCodexThread;
 use super::RoleFallback;
 use super::ServiceTier;
 use super::SessionIdentity;
@@ -47,14 +48,15 @@ use super::StaffRowNames;
 use super::account;
 use super::account::AccountLabels;
 use super::account::ConfigHome;
+use super::codex;
 use super::codex::CodexLogs;
 use super::codex::CodexThread;
+use super::codex::ResumeRequest;
 use super::codex::ThreadRows;
 use super::hierarchy::StaffName;
 use super::hierarchy::StaffRoster;
 use super::tmux;
 use super::transcript::BashCall;
-use super::tree;
 use crate::config::CodexStartWindow;
 use crate::constants::CALL_LOOKAHEAD;
 use crate::constants::CALL_LOOKBACK;
@@ -211,22 +213,12 @@ impl SessionRecord {
 }
 
 /// Staff names replace fallback names only on rows that the census proved live.
-pub(super) fn attach_staff_names(
-    rows: &mut [AgentRow],
-    staff: &StaffRoster,
-    links: &HashMap<u32, CodexSessionLink>,
-) {
+pub(super) fn attach_staff_names(rows: &mut [AgentRow], staff: &StaffRoster) {
     for row in rows {
         row.staff_names = StaffRowNames::default();
-        let session = match &row.session_id {
-            SessionIdentity::Claude(session) => Some(session.clone()),
-            SessionIdentity::Unrecorded => match links.get(&row.pid) {
-                Some(CodexSessionLink::Named(thread)) => tree::thread_id(&thread.rollout),
-                _ => None,
-            },
-        };
+        let session = row.session_id.ids().next();
         if let Some(session) = session
-            && let StaffName::Named(name) = staff.name(&session)
+            && let StaffName::Named(name) = staff.name(session)
         {
             name.clone_into(&mut row.name);
             row.staff_names.own = StaffRowName::Named(name.to_owned());
@@ -532,7 +524,18 @@ fn codex_row(
         staff_names: StaffRowNames::default(),
         agent,
         role_fallback: crate::census::RoleFallback::None,
-        session_id: SessionIdentity::Unrecorded,
+        session_id: if process.is_app_server() {
+            SessionIdentity::Unrecorded
+        } else {
+            match codex::resume_request(process) {
+                ResumeRequest::NamedId(id) => {
+                    SessionIdentity::Codex(ProvenCodexThread::ResumeArgument(id.to_owned()))
+                },
+                ResumeRequest::NewSession | ResumeRequest::LastThread => {
+                    SessionIdentity::Unrecorded
+                },
+            }
+        },
         service_tier: ServiceTier::Unrecorded,
         account: account::account_of(process, home, account_labels),
         name,

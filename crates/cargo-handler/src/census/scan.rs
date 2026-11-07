@@ -47,6 +47,7 @@ use super::Agent;
 use super::AgentActivity;
 use super::AgentRow;
 use super::CodexThreadId;
+use super::ProvenCodexThread;
 use super::ServiceTier;
 use super::SessionIdentity;
 use super::account;
@@ -129,16 +130,6 @@ struct WorkerRuns {
     sessions:   HashSet<PathBuf>,
     threads:    HashMap<u32, Vec<RunThread>>,
     activities: HashMap<String, WorkerRun>,
-}
-
-impl SessionIdentity {
-    /// A stable Claude id joins a director record to its live census row.
-    pub(super) fn claude_id(&self) -> Option<&str> {
-        match self {
-            Self::Claude(id) => Some(id),
-            Self::Unrecorded => None,
-        }
-    }
 }
 
 /// Shell argv flag whose next argument contains the command text.
@@ -256,7 +247,7 @@ pub(crate) enum ScanStage {
 impl LocalScanner {
     /// Adapt existing row-only fixtures to the staged scan implementation.
     #[cfg(test)]
-    fn scan_stages(
+    pub(super) fn scan_stages(
         &mut self,
         processes: &[ProcessEntry],
         sessions: &[SessionRecord],
@@ -313,14 +304,15 @@ impl LocalScanner {
                 &self.account_labels,
             )
         });
+        attach_pane_codex_identities(&mut rows, processes, home, &staff.roster);
         if matches!(self.publication, LocalPublication::FirstAnswerPending) {
             self.attach_codex_names(&mut rows);
-            classify::attach_staff_names(&mut rows, &staff.roster, &self.codex_links);
+            classify::attach_staff_names(&mut rows, &staff.roster);
             publish(ScanStage::Classified, rows.clone(), &staff);
         }
         startup_log::startup_stage("details", || read_details(self, &mut rows));
         self.attach_codex_names(&mut rows);
-        classify::attach_staff_names(&mut rows, &staff.roster, &self.codex_links);
+        classify::attach_staff_names(&mut rows, &staff.roster);
         publish(ScanStage::Completed, rows, &staff);
         self.publication = LocalPublication::CompletedAnswerPublished;
         staff
@@ -419,7 +411,7 @@ impl LocalScanner {
         let snapshot = self.scan_staged(|_, answer, _| rows = answer);
         self.herdr.finish_initial(&mut self.codex_links, deadline);
         self.attach_codex_names(&mut rows);
-        classify::attach_staff_names(&mut rows, &snapshot.roster, &self.codex_links);
+        classify::attach_staff_names(&mut rows, &snapshot.roster);
         (rows, snapshot)
     }
 
@@ -1360,6 +1352,66 @@ const fn settled(started: u64, now: u64) -> bool {
     now.saturating_sub(started) >= CALL_SEARCH_SETTLE.as_secs()
 }
 
+/// `open_rollouts` reads the session files held by one live Codex process.
+fn open_rollouts(process: &ProcessEntry, home: Option<&Path>) -> Vec<(String, PathBuf)> {
+    if !cfg!(target_os = "linux") {
+        return Vec::new();
+    }
+    let Some(codex_home) = codex::session_home(process, home) else {
+        return Vec::new();
+    };
+    let Ok(conversations) = fs::canonicalize(codex_home.join(CODEX_SESSIONS_DIRNAME)) else {
+        return Vec::new();
+    };
+    let descriptors = Path::new(PROC_DIRNAME)
+        .join(process.pid.to_string())
+        .join(PROC_FD_DIRNAME);
+    let mut ids: Vec<_> = fs::read_dir(descriptors)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| fs::read_link(entry.path()).ok())
+        .filter(|target| target.starts_with(&conversations))
+        .filter_map(|target| Some((tree::thread_id(&target)?, target)))
+        .collect();
+    ids.sort();
+    ids.dedup_by(|left, right| left.0 == right.0);
+    ids
+}
+
+/// `attach_pane_codex_identities` accepts one held staff rollout for each unproven pane.
+fn attach_pane_codex_identities(
+    rows: &mut [AgentRow],
+    processes: &[ProcessEntry],
+    home: Option<&Path>,
+    staff: &super::hierarchy::StaffRoster,
+) {
+    for row in rows {
+        if row.agent != Agent::Codex || row.session_id != SessionIdentity::Unrecorded {
+            continue;
+        }
+        let Some(process) = processes.iter().find(|process| process.pid == row.pid) else {
+            continue;
+        };
+        if process.is_app_server() {
+            continue;
+        }
+        let held: Vec<_> = open_rollouts(process, home)
+            .into_iter()
+            .filter(|(id, _)| {
+                matches!(
+                    staff.session_membership(id),
+                    super::hierarchy::StaffSessionMembership::Listed
+                )
+            })
+            .collect();
+        if let [(id, _)] = held.as_slice() {
+            row.session_id =
+                SessionIdentity::Codex(ProvenCodexThread::OpenStaffRollout(id.clone()));
+        }
+    }
+}
+
 /// The threads each Codex app server in `processes` holds open, by its
 /// pid, named from each server's own account database, each with the
 /// tier its rollout in `rollouts` or `pacer` names. Only Linux lists a
@@ -1381,20 +1433,7 @@ fn app_server_threads(
         .filter(|process| process.is_codex() && process.is_app_server())
         .filter_map(|process| {
             let codex_home = codex::session_home(process, home)?;
-            let conversations = fs::canonicalize(codex_home.join(CODEX_SESSIONS_DIRNAME)).ok()?;
-            let descriptors = Path::new(PROC_DIRNAME)
-                .join(process.pid.to_string())
-                .join(PROC_FD_DIRNAME);
-            let mut ids: Vec<(String, PathBuf)> = fs::read_dir(descriptors)
-                .into_iter()
-                .flatten()
-                .filter_map(Result::ok)
-                .filter_map(|entry| fs::read_link(entry.path()).ok())
-                .filter(|target| target.starts_with(&conversations))
-                .filter_map(|target| Some((tree::thread_id(&target)?, target)))
-                .collect();
-            ids.sort();
-            ids.dedup_by(|left, right| left.0 == right.0);
+            let ids = open_rollouts(process, home);
             by_home
                 .entry(codex_home.clone())
                 .or_default()

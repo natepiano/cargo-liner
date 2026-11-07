@@ -30,6 +30,8 @@ mod herdr;
 pub(crate) mod hierarchy;
 #[cfg(test)]
 mod incremental_read_tests;
+#[cfg(test)]
+mod pane_worker_placement_tests;
 mod placement;
 pub(crate) mod probe;
 pub(crate) mod remote;
@@ -39,6 +41,7 @@ mod restart_hierarchy_tests;
 mod reviewer_tests;
 pub(crate) mod scan;
 pub(crate) mod schedule;
+mod session_identity;
 pub(crate) mod tier;
 pub(crate) mod tmux;
 pub(crate) mod transcript;
@@ -77,6 +80,8 @@ pub(crate) use placement::mesh_worker_fixture;
 use scan::ScanStage;
 use serde::Deserialize;
 use serde::Serialize;
+pub(crate) use session_identity::ProvenCodexThread;
+pub(crate) use session_identity::SessionIdentity;
 use sysinfo::System;
 use transcript::SubagentRole;
 use worker_dispatch::ResolvedWorkerDispatch;
@@ -161,27 +166,6 @@ impl From<&str> for ServiceTier {
             Self::Fast
         } else {
             Self::Standard
-        }
-    }
-}
-
-/// A Claude Code session's stable identity, absent for other agents or old probes.
-#[derive(Clone, Debug, Default, Eq, Hash, PartialEq, Serialize)]
-#[serde(untagged)]
-pub(crate) enum SessionIdentity {
-    /// No Claude Code session record identifies this row.
-    #[default]
-    Unrecorded,
-    /// The `sessionId` in a Claude Code session record.
-    Claude(String),
-}
-
-impl From<String> for SessionIdentity {
-    fn from(id: String) -> Self {
-        if id.is_empty() {
-            Self::Unrecorded
-        } else {
-            Self::Claude(id)
         }
     }
 }
@@ -338,7 +322,8 @@ pub(crate) enum StaffRowName {
 pub(crate) struct AgentRow {
     /// Claude Code, Codex, or an app server retained only for worker placement.
     pub(crate) agent:           Agent,
-    /// Claude Code session identity, or unrecorded for other rows.
+    /// The proven identity; Codex uses a defaulted probe extension.
+    #[serde(flatten)]
     pub(crate) session_id:      SessionIdentity,
     pub(crate) role_fallback:   RoleFallback,
     /// The tier a Codex agent asked for; [`ServiceTier::Unrecorded`] for
