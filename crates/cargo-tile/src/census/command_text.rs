@@ -544,21 +544,26 @@ pub(super) enum CargoArgvAbsence {
     ProgramRejected,
 }
 
+impl CargoArgvAbsence {
+    /// Map this `CargoArgvAbsence` to its target reason: `argv_unavailable` for
+    /// `ArgvUnavailable`, `program_rejected` for `ProgramRejected`.
+    fn map_reason<T>(self, argv_unavailable: T, program_rejected: T) -> T {
+        match self {
+            Self::ArgvUnavailable => argv_unavailable,
+            Self::ProgramRejected => program_rejected,
+        }
+    }
+}
+
 impl From<CargoArgvAbsence> for RowAbsence {
     fn from(absence: CargoArgvAbsence) -> Self {
-        match absence {
-            CargoArgvAbsence::ArgvUnavailable => Self::ArgvUnavailable,
-            CargoArgvAbsence::ProgramRejected => Self::ProgramRejected,
-        }
+        absence.map_reason(Self::ArgvUnavailable, Self::ProgramRejected)
     }
 }
 
 impl From<CargoArgvAbsence> for SubcommandAbsence {
     fn from(absence: CargoArgvAbsence) -> Self {
-        match absence {
-            CargoArgvAbsence::ArgvUnavailable => Self::ArgvUnavailable,
-            CargoArgvAbsence::ProgramRejected => Self::ProgramRejected,
-        }
+        absence.map_reason(Self::ArgvUnavailable, Self::ProgramRejected)
     }
 }
 
@@ -602,7 +607,7 @@ impl<'argv> CargoTransport<'argv> {
     /// Recognize the installed entry's complete protocol before interpreting cargo argv.
     pub(super) fn from_argv(argv: &'argv [OsString]) -> Self {
         match argv {
-            [program, flag, executable, _capture_parent, arguments @ ..]
+            [program, flag, executable, _, arguments @ ..]
                 if Path::new(program).file_name() == Some(OsStr::new(CAPTURE_RUNNER_NAME))
                     && (flag == CAPTURE_SHIM_ARGUMENT
                         || flag == CAPTURE_SHIM_PASSTHROUGH_ARGUMENT)

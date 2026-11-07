@@ -651,68 +651,23 @@ pub(crate) const ACCOUNT_GROUPS_INITIAL_CAPACITY: usize = 32;
 pub(crate) const ACCOUNT_GROUPS_MAX_CAPACITY: usize = 65_536;
 /// Hidden per-account hook protocol shared by the admin command and account process.
 pub(crate) const ACCOUNT_HOOK_REPORT_FLAG: &str = "account-hook-report";
-/// Name of the real cargo once the shim takes its place beside it. The
-/// shim resolves it as a sibling, so a hardcoded-path invocation of a
-/// toolchain's cargo is captured the same as one found through `PATH`.
-pub(crate) const REAL_CARGO_NAME: &str = "cargo-tile-real";
-/// The binary the shim stands in for, in each toolchain's `bin`.
-pub(crate) const CARGO_NAME: &str = "cargo";
-/// Line the installer recognises its own shim by. A `cargo` without it
-/// is the real binary, whatever else it may be, and is moved aside
-/// rather than overwritten.
-pub(crate) const SHIM_MARKER: &str = "cargo-tile-capture-shim";
-/// The shell that forwards a captured command.
-pub(crate) const CAPTURE_SHELL_NAME: &str = "sh";
+/// How long the toast announcing a shim the grid just installed stays
+/// up. Longer than a notice: it names a change to every toolchain on
+/// the machine and the command that reverses it.
+pub(crate) const CAPTURE_INSTALLED_TOAST_VISIBLE: Duration = Duration::from_secs(12);
 /// The native capture entry owns this executable name.
 pub(crate) const CAPTURE_RUNNER_NAME: &str = "cargo-tile-capture";
+/// The shell that forwards a captured command.
+pub(crate) const CAPTURE_SHELL_NAME: &str = "sh";
 /// Entry argument that selects native output capture.
 pub(crate) const CAPTURE_SHIM_ARGUMENT: &str = "--capture-shim";
 /// Entry argument that runs cargo without opening another capture.
 pub(crate) const CAPTURE_SHIM_PASSTHROUGH_ARGUMENT: &str = "--capture-shim-passthrough";
-/// Permissions the shim is written with: readable and executable by
-/// all, writable by its owner.
-pub(crate) const SHIM_MODE: u32 = 0o755;
-/// Directory under the rustup home holding one directory per toolchain.
-pub(crate) const TOOLCHAINS_DIR: &str = "toolchains";
-/// Directory under a toolchain holding its binaries.
-pub(crate) const TOOLCHAIN_BIN_DIR: &str = "bin";
-/// Where rustup keeps its toolchains, under the home directory.
-pub(crate) const RUSTUP_DIRNAME: &str = ".rustup";
-/// Environment variable moving the rustup home away from
-/// [`RUSTUP_DIRNAME`].
-pub(crate) const RUSTUP_HOME_ENV: &str = "RUSTUP_HOME";
-/// How much of a `cargo` is read to look for [`SHIM_MARKER`]. The real
-/// cargo is a thirty-megabyte binary and the marker is in the shim's
-/// opening comment, so there is no reason to read further.
-pub(crate) const SHIM_MARKER_SEARCH_BYTES: usize = 1024;
-/// Name the shim is written under, beside `cargo`, before it is renamed
-/// over the top. A shim that is running is still being read by its
-/// `sh`, which does not `exec` the real cargo but waits on it, so the
-/// file it was started from is never written in place.
-pub(crate) const SHIM_STAGING_NAME: &str = "cargo-tile-shim.staging";
-/// The installer compares this header before replacing an existing shim.
-pub(crate) const SHIM_VERSION_PREFIX: &str = "# cargo-tile-shim-version: ";
-/// Exclusive-create lock beside the shim, held across state inspection
-/// and installation so concurrent installers cannot overwrite real cargo.
-pub(crate) const SHIM_LOCK_NAME: &str = "cargo-tile-shim.lock";
-/// An abandoned exclusive-create lock persists after its owner exits,
-/// so exhausted retries must explain how to recover without racing it.
-pub(crate) const SHIM_LOCK_RECOVERY: &str =
-    "confirm no install is still running, remove this lock file, and run cargo-tile install again";
-/// Brief retries let a concurrent installer finish without waiting
-/// indefinitely for a lock left behind by a terminated process.
-pub(crate) const SHIM_LOCK_RETRY_ATTEMPTS: usize = 10;
-/// Match the favorites lock's short wait between competing writers.
-pub(crate) const SHIM_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
-/// A saved cargo fixture that echoes its arguments. Its marker proves
-/// interrupted-install repair depends on the filenames, not its bytes.
-#[cfg(test)]
-pub(crate) const HOOK_TEST_REAL_CARGO: &str =
-    "#!/bin/sh\n# cargo-tile-capture-shim inside the saved cargo\nprintf '%s\\n' \"$@\"\n";
-/// The shim passes version requests straight through, so repair tests
-/// can execute the saved cargo without creating capture state.
-#[cfg(test)]
-pub(crate) const HOOK_TEST_VERSION_ARGUMENT: &str = "--version";
+/// The binary the shim stands in for, in each toolchain's `bin`.
+pub(crate) const CARGO_NAME: &str = "cargo";
+/// Whether the grid puts the shim in front of cargo when it opens,
+/// when `config.toml` says nothing.
+pub(crate) const DEFAULT_CAPTURE_AUTO_INSTALL: bool = true;
 /// Observe cargo's original invocation when a directory wins the final
 /// registration name after the shim's preliminary existence check.
 #[cfg(test)]
@@ -734,13 +689,58 @@ printf 'preserved\n' > "$2/keep"
 printf '%s' "$2" > "$HOOK_TEST_OBSERVATIONS/registration-path"
 exec "$HOOK_TEST_REAL_LINK" "$@"
 "#;
-/// Whether the grid puts the shim in front of cargo when it opens,
-/// when `config.toml` says nothing.
-pub(crate) const DEFAULT_CAPTURE_AUTO_INSTALL: bool = true;
-/// How long the toast announcing a shim the grid just installed stays
-/// up. Longer than a notice: it names a change to every toolchain on
-/// the machine and the command that reverses it.
-pub(crate) const CAPTURE_INSTALLED_TOAST_VISIBLE: Duration = Duration::from_secs(12);
+/// A saved cargo fixture that echoes its arguments. Its marker proves
+/// interrupted-install repair depends on the filenames, not its bytes.
+#[cfg(test)]
+pub(crate) const HOOK_TEST_REAL_CARGO: &str =
+    "#!/bin/sh\n# cargo-tile-capture-shim inside the saved cargo\nprintf '%s\\n' \"$@\"\n";
+/// The shim passes version requests straight through, so repair tests
+/// can execute the saved cargo without creating capture state.
+#[cfg(test)]
+pub(crate) const HOOK_TEST_VERSION_ARGUMENT: &str = "--version";
+/// Name of the real cargo once the shim takes its place beside it. The
+/// shim resolves it as a sibling, so a hardcoded-path invocation of a
+/// toolchain's cargo is captured the same as one found through `PATH`.
+pub(crate) const REAL_CARGO_NAME: &str = "cargo-tile-real";
+/// Where rustup keeps its toolchains, under the home directory.
+pub(crate) const RUSTUP_DIRNAME: &str = ".rustup";
+/// Environment variable moving the rustup home away from
+/// [`RUSTUP_DIRNAME`].
+pub(crate) const RUSTUP_HOME_ENV: &str = "RUSTUP_HOME";
+/// Exclusive-create lock beside the shim, held across state inspection
+/// and installation so concurrent installers cannot overwrite real cargo.
+pub(crate) const SHIM_LOCK_NAME: &str = "cargo-tile-shim.lock";
+/// An abandoned exclusive-create lock persists after its owner exits,
+/// so exhausted retries must explain how to recover without racing it.
+pub(crate) const SHIM_LOCK_RECOVERY: &str =
+    "confirm no install is still running, remove this lock file, and run cargo-tile install again";
+/// Brief retries let a concurrent installer finish without waiting
+/// indefinitely for a lock left behind by a terminated process.
+pub(crate) const SHIM_LOCK_RETRY_ATTEMPTS: usize = 10;
+/// Match the favorites lock's short wait between competing writers.
+pub(crate) const SHIM_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
+/// Line the installer recognises its own shim by. A `cargo` without it
+/// is the real binary, whatever else it may be, and is moved aside
+/// rather than overwritten.
+pub(crate) const SHIM_MARKER: &str = "cargo-tile-capture-shim";
+/// How much of a `cargo` is read to look for [`SHIM_MARKER`]. The real
+/// cargo is a thirty-megabyte binary and the marker is in the shim's
+/// opening comment, so there is no reason to read further.
+pub(crate) const SHIM_MARKER_SEARCH_BYTES: usize = 1024;
+/// Permissions the shim is written with: readable and executable by
+/// all, writable by its owner.
+pub(crate) const SHIM_MODE: u32 = 0o755;
+/// Name the shim is written under, beside `cargo`, before it is renamed
+/// over the top. A shim that is running is still being read by its
+/// `sh`, which does not `exec` the real cargo but waits on it, so the
+/// file it was started from is never written in place.
+pub(crate) const SHIM_STAGING_NAME: &str = "cargo-tile-shim.staging";
+/// The installer compares this header before replacing an existing shim.
+pub(crate) const SHIM_VERSION_PREFIX: &str = "# cargo-tile-shim-version: ";
+/// Directory under the rustup home holding one directory per toolchain.
+pub(crate) const TOOLCHAINS_DIR: &str = "toolchains";
+/// Directory under a toolchain holding its binaries.
+pub(crate) const TOOLCHAIN_BIN_DIR: &str = "bin";
 
 // birth stamps
 /// An empty cached boot response cannot verify any registration in this session.

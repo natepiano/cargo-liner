@@ -1570,7 +1570,7 @@ Both runs used `--no-cache`, which skips saved test results; it does not make op
 
 **Acceptance gate:** first, a repeatable start-cluster cause with its variant measurements; then two alternating Mac full suites and one natedev full suite, all `--no-cache` and uninstrumented, with no test at 1 s or more; no assertion is weakened.
 
-### Phase 43d — Capture text and constants follow the style guide  · status: todo
+### Phase 43d — Capture text and constants follow the style guide  · status: done
 
 **Depends on:** Phase 43e (Phase 43c is parked; 43d's files are disjoint from 43e's)
 
