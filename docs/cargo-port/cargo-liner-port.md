@@ -576,86 +576,35 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 ### Phase 4l — Labels, titles and columns read whole in narrow panes  · status: done
 
-**Depends on:** Phase 4j (both edit `crates/cargo-port/src/tui/panes/targets/` and `crates/cargo-port/src/tui/panes/git/`) and Phase 4k (both edit `crates/tui_pane/src/toasts/render/`)
+#### As-built
 
-#### Work Order
-
-**Goal:** at 80 and 95 columns, every pane title, section title, field label and toast label reads whole, and the Targets pane keeps its Source column.
-
-**Source:** Phase 4j design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4j/live/shots_4j_2/`, 2026-11-07. Each look is older than Phase 4j: the Phase 4e and 4g shots show it too.
-- `ci95-2-measured` r17 c69-c94: the Targets pane of the cargo-liner-port workspace drops the Source column (`Target … Kind`), and does not cut the target names first. `ci80-2-measured` r12 keeps `Target Source Kind`. User rule C205: "columns should always be preserved - the project names should get ellipsis first".
-- `long80-2-git-page2` r2 c66-c79: the Git section title reads `Work… (3 of 3)`. `Worktrees (3)` is 13 cells and fits the 15-cell pane.
-- `ci95-2-measured` r13 and `ci95-4-gh-unreachable-later` r4, c74-c82: the Git field label reads `Ahead/Be…`.
-- `long80-1-expanded`, `long80-2-git-page2` and `pair80-1-expanded` r1 c49-c62: the pane title reads `Worktree Grou…`, with no project name. `ci80-2-measured` keeps `Workspace - c…` whole in its label.
-- `ci80-0-early-a` r26 c51-c61: the Startup toast label reads `Cargo meta…`.
-- `long80-1-expanded`, `long80-2-git-page2` and `pair80-1-expanded` r34 c49-c79: the CI pane title message reads `CI runs — requires a GitHub or…`.
-- `pair80-1-expanded` r7-r8: the Package `Worktrees` value `2` draws alone on the next row, while `long80-1-expanded` r7 draws `Worktrees 3` on one row in the same 15-cell pane.
-
-**Source (moved from Phase 4j under the hard landing):** Phase 4j final design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4j/live/shots_4j_4/`, 2026-11-07.
-- `long95-1-expanded` r11-r13: the Worktrees Branch column keeps 11 cells (c77-c87, `verify-run…`) and Tracked gets 2 (c89-c90, `m…`). `pair95-1-expanded` r12 reads `ma…`. `ci95-5-gh-loading` r13, Remotes: `o… cargo-line… o…`. Cause: `fit_sync_trio` (`git/render.rs`) cuts Tracked to its floor before it cuts Branch. A fix cuts the wider of Branch and Tracked one cell at a time, after Name reaches its floor, so a short Tracked value draws whole. Ledger F014 of Phase 4j.
-- `ci95-2-measured` r2 and `ci80-0-early-a`, `ci80-2-measured`, `ci80-6-measured-45` r3-r9: Package and Workspace values end in the cell beside the right border, with no blank margin cell. The Git pane keeps one. This look is older than Phase 4j. Ledger F015 of Phase 4j.
-
-**Source (Phase 4k):** Phase 4k design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4k/live/shots_4k_2/`, 2026-11-07. Each look is older than Phase 4k.
-- `quota80-*-3-doomed-loading` and `toast80-*-a`: the Git pane title reads `Not a git rep…` at 80 columns, but `Not a git repo` fits in the same 14 cells.
-- `quota80-*` and `desc80-*`: Package and Workspace values touch the right border (`Disk      74 B│`, `~/rust/cargo-…│`). In `toast160-*`, the Path value touches the Structure divider.
-- `quota80-*-1-loading` and `toast80-*`: the toast label reads `Cargo meta…`, because the 8-cell bar takes the space.
-- `quota80-*-2-measured`: CI runs rows touch the right border (`19m 15s 🔴│`, `Total│`).
-
-**Source (Phase 4k final check):** Phase 4k final design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4k/live/shots_4k_3/`, 2026-11-07. Each look is older than Phase 4k.
-- `quota80-*-1-loading-git-3_of_3`: the Git Pull Requests body reads `loading pull r`, cut in the middle of a word with no ellipsis, and touches the right border (`git/render.rs:436`).
-- `quota80-*-1-loading-git-2_of_2` and `quota80-*-2-measured-git-5_of_5`: at 80 columns the Remotes table reads `R… Bra… T… S…` and `o… car… o…`, and the focused title reads `Remo… (1 of 1)`.
-- `quota80-*-1-loading-git-2_of_2`: the error toast title `! crates.io unreachable[x]` touches the close button.
-- `quota80-*-1-loading-git-2_of_2`: at 80x30 the error toast shows one body row, `Crate metadata is`, at `1 of 3`, so its first sentence breaks across pages.
-- `toast160-*`: the Languages `Total` column touches the right border.
-
-**Decision (Phase 4k sources):** showrunner, 2026-11-07: the four looks of the first Phase 4k check go to this phase, under Specs 4, 5 and 7. Of the final check, the Pull Requests body and the Languages column go to Spec 7, the Remotes case to Specs 2 and 8, and the two toast looks to Spec 9.
-
-**Decision (F014, F015):** showrunner, 2026-11-07: keep one blank right-margin cell in each Package and Workspace row, as the Git pane does, because side-by-side panes use one margin rule. The Tracked fix (cut the wider of Branch and Tracked first) is accepted.
-
-**Decision:** showrunner, 2026-11-07: these seven looks go to this phase. A fix that lives in `tui_pane` (pane titles, toast labels) goes in `tui_pane`. The dim grey of `No CI` and `—` (4.16:1) stays: it is a deliberate dim and readable.
-
-**Constraints:**
-- Change no other look.
-- Never cut a label. Cut a value, a name or a message first.
-
-**Spec:**
-1. **Targets keeps its Source column.** `targets/render.rs::compute_layout` reserves the Source header width only for `TargetSourceKind::Worktree`. Give workspace sources the same floor, and cut target names before the Source column drops. Keep `differing_path_labels`, `fit_distinct_path_labels` (`tui/project_list/grouping.rs`) and the launch paths as they are. `TargetSourceKind` stays implementation-only.
-2. **Section titles keep their label.** `git/render.rs::section_title_with_count` (line 718) cuts the label first. Keep the label whole and cut the count text first: `Worktrees (3)` before `Work… (3 of 3)`. The focused Remotes title at 80 columns keeps `Remotes` whole (`Remo… (1 of 1)` today).
-3. **Field labels draw whole.** A Git field label such as `Ahead/Behind` never draws cut. Cut or wrap its value.
-4. **Pane titles keep their label.** The Package title (`Worktree Group - <name>`) keeps its label whole and cuts the project name. Find the title creation in `package/`. `crates/tui_pane/src/pane/title.rs` only formats title strings; `GridLines::write_overlay` (`crates/tui_pane/src/pane/frame.rs:855`) measures the title width and adds the ellipsis. A fix there goes in `tui_pane`. A title that fits whole draws whole: at 80 columns the Git title `Not a git repo` fit in 14 cells but drew `Not a git rep…`. Phase 4k removed that title (the empty Git pane is always titled `Git`), but the cause is in the title renderer: find it and fix it there. Pin it with a drawn test in `pane/frame.rs` of a title that fits only without its trailing space.
-5. **Startup labels draw whole.** Startup rows come from `progress_panel_body` (`crates/tui_pane/src/progress/render.rs:58`), through `app/async_tasks/startup_phase/toast_bodies.rs`, not from `toasts/render/card.rs::tracked_item_line`. Keep each label whole (`Cargo metadata`) and cut its count or detail first, for active, waiting, failed and complete rows. Cause at 80 columns: the 8-cell bar takes the space the label needs. Cut the bar or the count first, never the label.
-6. **The CI title message.** `ci/data.rs::CiEmptyState::title` (line 23) gives `CI runs — requires a GitHub or…` at 80 columns. Keep `CI runs` whole. **Decision:** showrunner, 2026-11-07, option B: keep each message in the title and use words that fit at 80 columns. `RequiresGithubRemote` reads `CI runs — no GitHub remote`, `NotGitRepo` reads `CI runs — not a git repo` (the Git pane's words), and `BranchScopedOnly` reads `CI runs — on branch rows`. The other titles stay. Why: one word set fits every width, and the placement and look stay as on main. A drawn test shows that each `CiEmptyState` title draws whole in the 80-column CI pane. `NoRunsForBranch(String)` holds any branch name: its fixed words `No CI runs for branch` stay whole and the branch name takes the ellipsis; the test includes a long branch name.
-7. **Package value margin (F015).** Each Package and Workspace row keeps one blank right-margin cell, as the Git pane does. Reserve the margin before wrapping and pagination in every Package fitting path: `support::field_value_lines` (`panes/support.rs:84`, shared with Git), the Package Head wrap and the GitHub count rows in `package/render.rs`. Fit each label with its value, so `Worktrees 2` stays on one row. A column divider is a border too: keep one blank cell before the Package `Structure` divider, so the Path value does not touch it at 160 columns. CI runs rows (`ci/render.rs`) and the Languages `Total` column (`panes/lang/`) keep the same one-cell right margin (`19m 15s 🔴│` and `Total│` today). A cut message ends in `…` and keeps the margin cell: the Git Pull Requests body (`git/render.rs:436`) reads `loading pull r` at 80 columns today.
-8. **Worktrees and Remotes columns (F014).** `git/render.rs::fit_sync_trio` (line 1247) cuts `[tracked, branch, sync]` in order, so Tracked reaches its floor before Branch is cut. After Name reaches its floor, cut the wider of Branch and Tracked one cell at a time, so a short Tracked value draws whole. Keep the Phase 4j header exception, the shared Remotes layout, both margin cells and whole Sync values. At 80 columns the Remotes table reads `R… Bra… T… S…` / `o… car… o…` today. Four whole headers need 28 cells and the 80-column Git pane has 15, so the Phase 4j header exception stays (user rule C205: columns are always kept). At 80 columns each column keeps at least one letter and `…`, the cut order follows this spec, and the focused `Remotes` title stays whole (Spec 2). `SyncTableMode` stays implementation-only.
-9. **Toast title gap and body sentences.** Every toast keeps one blank cell between its title and `[x]` (`! crates.io unreachable[x]` today). A toast body page never breaks a sentence when the toast can grow: give the body enough rows for its first sentence before it adds pages (`Crate metadata is` at `1 of 3` at 80x30 today). The fix lives in `crates/tui_pane/src/toasts/render/`.
-
-**Constraints from prior phases:**
-- Keep the Phase 4j CI rows: `gh …`, `gh ?`, a retained known count, and `No CI runs` for `CiDisplay::NoRuns`.
-- Keep the Phase 4k description rule: ` No description` takes one row at 16 interior cells or more and wraps at 15.
-- New drawing tests set `ColorMode` explicitly. Name each test for the behavior it pins.
+- Labels never cut; names, values and counts take the ellipsis. Git section titles (`git/render.rs::section_title_with_count`) keep the label and cut the count first (`Worktrees (3)`), and Git field labels such as `Ahead/Behind` draw whole.
+- The Targets pane keeps its Source column for workspace and worktree sources; under user rule C205 Source takes the ellipsis before a target name.
+- Pane titles keep their label and cut the project name. `GridLines::write_overlay` (`tui_pane/src/pane/frame.rs`) draws a title that fits without its trailing space whole.
+- Startup rows from `progress_panel_body` (`tui_pane/src/progress/render.rs`) keep each label whole and shrink the bar and count first.
+- `CiEmptyState` titles fit at 80 columns: `CI runs — no GitHub remote`, `CI runs — not a git repo`, `CI runs — on branch rows`; `NoRunsForBranch` cuts only the branch name.
+- Package, Workspace, CI runs and Languages rows keep one right-margin cell (`support::field_value_lines`, `package/constants.rs::PATH_VALUE_RESERVE`) and one blank cell before the Package `Structure` divider. A Package label shares a row with its value when both fit; values share one value column, not right-aligned. Package Disk children (`target/`, `Other`) share one indent, which shrinks only when a label and its value then share a row.
+- `fit_sync_trio` cuts the wider of Branch and Tracked one cell at a time after Name reaches its floor, so a short Tracked value draws whole. At 80 columns all four Worktrees and Remotes columns stay, each with at least one letter and `…`.
+- Every toast keeps one blank cell before `[x]`; at the widest card an error toast's `[x]` may use the last border cell before the corner so the title stays whole. A visible toast's body is tall enough for its first sentence before it adds pages; `ToastExitState { Visible, Exiting }` (`tui_pane/src/toasts/view.rs`) keeps an exiting toast at its height.
 
 **Files:**
-- `crates/cargo-port/src/tui/panes/targets/` — the Source floor and its tests
-- `crates/cargo-port/src/tui/panes/git/` — section titles, field labels, `fit_sync_trio`, `git/sync_column_tests.rs`
-- `crates/cargo-port/src/tui/panes/package/` — the Package title, value margin and their tests
+- `crates/cargo-port/src/tui/panes/targets/` — the Source floor
+- `crates/cargo-port/src/tui/panes/git/` — section titles, field labels, `fit_sync_trio`, `git/readability_tests.rs`, `git/sync_column_tests.rs`
+- `crates/cargo-port/src/tui/panes/package/` — the Package title, value margin, Disk indent, `package/readability_tests.rs`
 - `crates/cargo-port/src/tui/panes/support.rs` — `field_value_lines`
-- `crates/cargo-port/src/tui/panes/ci/data.rs` — the CI title message
-- `crates/cargo-port/src/tui/panes/ci/render.rs` — the CI runs right margin
+- `crates/cargo-port/src/tui/panes/ci/` — the CI title words and the CI runs margin
+- `crates/cargo-port/src/tui/panes/lang/` — the Languages `Total` margin
 - `crates/cargo-port/src/tui/app/async_tasks/startup_phase/toast_bodies.rs` — Startup label rows
-- `crates/cargo-port/src/tui/render/readability_tests.rs` — replace the `Cargo meta…` assertion with whole-label checks
-- `crates/tui_pane/src/progress/render.rs` — `progress_panel_body`
-- `crates/tui_pane/src/pane/title.rs` and `crates/tui_pane/src/pane/frame.rs` — the pane title text and its fit in `GridLines::write_overlay`
-- `crates/tui_pane/src/toasts/render/` — the toast title gap and body pages (Spec 9)
-- `crates/cargo-port/src/tui/panes/lang/` — the Languages right margin
+- `crates/tui_pane/src/progress/render.rs`, `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/pane/title.rs` — Startup rows and the title fit
+- `crates/tui_pane/src/toasts/render/` — the `[x]` gap and first-sentence pages, `sentence_tests.rs`
+- `crates/cargo-tile/src/render.rs` — the toast frame test expects the `[x]` gap
 - `crates/cargo-port/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md`
 
-**Workers:** 2 writers
-- Writer 1 (cargo-port): Specs 1-4, 6-8, every `crates/cargo-port/` file above, the cargo-port drawing tests and `crates/cargo-port/CHANGELOG.md`.
-- Writer 2 (tui_pane): Spec 5's `progress_panel_body`, Spec 4's title fit in `pane/frame.rs` and `pane/title.rs`, Spec 9's toast title gap and body pages, their tests and `crates/tui_pane/CHANGELOG.md`.
+**Binds later work:** a loading Git section draws no count with the same whole-label rule; the Structure width reserve keeps the right-margin cell and the blank cell before the divider; the Package and Git readability tests stay green.
 
-**State:** none.
+**Gotchas:** a tui_pane look change can break frame tests in other crates (`cargo-tile`), so run the cargo-tile and cargo-handler suites when a shared toast or pane frame changes.
 
-**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests at 80 and 95 columns check: Targets Source cells for workspace and worktree fixtures; whole section titles with focused counts and the Package `Structure` divider; whole field labels; whole Startup labels in each row state; the Package right-margin cell and the blank cell before the `Structure` divider; the CI runs right-margin cell; a pane title that fits only without its trailing space draws whole; each `CiEmptyState` title whole in the 80-column CI pane, with a long branch name cut in `NoRunsForBranch`; the Languages `Total` margin; a cut Pull Requests body ending in `…`; short Tracked values whole with Remotes aligned; at 80 columns all four Remotes columns kept, cut in this spec's order, with the focused `Remotes` title whole; one blank cell before every toast `[x]`; an error toast first sentence on one page at 80x30. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check, show every row of both Source lists fixed. Keep the Phase 4k gap tests green. Close the routes of F014 and F015 (Phase 4j) at this checkpoint. The checkpoint carries a `Change-Review:` line.
+**Ruled out:** cutting target names before Source; right-aligned Package values.
 
 ### Phase 4m — Panes keep their layout while data loads  · status: todo
 
