@@ -25,7 +25,7 @@ impl App {
     pub(in crate::tui) fn ensure_fit_widths_cached(&mut self) {
         let desired = FitWidthsCacheKey {
             presentation:     self.project_row_presentation().width_inputs(),
-            summary_bytes:    self.project_list.visible_project_disk_usage(),
+            summary_bytes:    self.project_list.visible_disk_total(),
             visible_rows:     self.visible_rows().to_vec(),
             include_non_rust: self.config.include_non_rust().includes_non_rust(),
             lint_enabled:     self.config.lint_enabled(),
@@ -45,11 +45,12 @@ impl App {
             0,
         );
         let mut widths = widths;
-        let total = self.project_list.visible_project_disk_usage();
-        widths.observe(
-            COL_DISK,
-            columns::display_width(&render::format_bytes(total)),
-        );
+        let total = self
+            .project_list
+            .visible_disk_total()
+            .total()
+            .map_or_else(|| "…".to_string(), render::format_bytes);
+        widths.observe(COL_DISK, columns::display_width(&total));
         if let ProjectStorage::Available(bytes) = self.project_list.project_storage() {
             widths.observe(
                 COL_DISK,

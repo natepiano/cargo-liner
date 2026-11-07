@@ -49,6 +49,7 @@ pub use grid::TilePlacement;
 pub use growth::TileGrowth;
 pub use host::CellClick;
 pub use host::CellPoint;
+pub use host::CellPress;
 pub use host::TileGridHost;
 pub use host::TileGridPane;
 pub use host::TilePick;

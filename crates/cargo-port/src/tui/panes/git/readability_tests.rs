@@ -24,6 +24,60 @@ use crate::tui::state::AvailabilityStatus;
 use crate::tui::test_support;
 
 #[test]
+fn phase4e_cut_worktree_and_remote_values_end_with_an_ellipsis() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.git.set_content(GitData {
+        worktrees: ["verify-run-long", "sdlc-merge-long"]
+            .into_iter()
+            .map(|branch| WorktreeInfo {
+                name:         "proof_crate".to_string(),
+                path:         format!("/tmp/{branch}"),
+                branch:       Some(branch.to_string()),
+                tracked:      None,
+                ahead_behind: Comparison::NotCompared,
+            })
+            .collect(),
+        remotes: RemoteRows::Listed(vec![RemoteRow {
+            name:            "origin".to_string(),
+            icon:            "",
+            display_url:     "github.com/nate/proof".to_string(),
+            branch:          "master".to_string(),
+            tracked_ref:     TrackedRef::Untracked,
+            status:          Comparison::NotCompared,
+            full_url:        None,
+            push_annotation: None,
+        }]),
+        ..GitData::default()
+    });
+    for width in [14, 17] {
+        let buffer = test_support::draw_pane(&mut app, PaneId::Git, width)?;
+        let rows = test_support::rows(&buffer);
+        for (prefix, whole) in [
+            ("ver", "verify-run-long"),
+            ("sdl", "sdlc-merge-long"),
+            ("ori", "origin"),
+        ] {
+            let row = rows
+                .iter()
+                .find(|row| row.contains(prefix))
+                .context(whole)?;
+            let value = row.split_once(prefix).context("value prefix")?.1;
+            let first = value
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_end_matches('│');
+            assert!(
+                row.contains(whole) || first.ends_with('…'),
+                "a cut value needs an ellipsis at width {width}: {row}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn git_selected_field_fills_the_whole_row() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.git.set_content(GitData {
@@ -298,5 +352,110 @@ fn wrapped_worktree_error_continuation_selects_its_field() -> anyhow::Result<()>
     let selected = test_support::draw_pane(&mut app, PaneId::Git, 40)?;
     assert_eq!(selected[label].bg, selected[continuation].bg);
     assert_eq!(selected[label].fg, selected[continuation].fg);
+    Ok(())
+}
+
+#[test]
+fn worktree_branches_keep_an_ellipsis_at_medium_widths() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.git.set_content(GitData {
+        worktrees: ["verify-run-place", "sdlc-merge-gate"]
+            .into_iter()
+            .map(|branch| WorktreeInfo {
+                name:         "proof_crate".to_string(),
+                path:         format!("/tmp/{branch}"),
+                branch:       Some(branch.to_string()),
+                tracked:      None,
+                ahead_behind: Comparison::NotCompared,
+            })
+            .collect(),
+        ..GitData::default()
+    });
+    for width in [22, 24] {
+        let buffer = test_support::draw_pane(&mut app, PaneId::Git, width)?;
+        let rows = test_support::rows(&buffer);
+        for branch in ["verify", "sdlc"] {
+            let row = rows
+                .iter()
+                .find(|row| row.contains(branch))
+                .context("branch row")?;
+            assert!(row.trim_end_matches('│').trim_end().ends_with('…'), "{row}");
+            assert_eq!(
+                buffer[(
+                    width - 2,
+                    u16::try_from(
+                        rows.iter()
+                            .position(|candidate| candidate == row)
+                            .context("row")?
+                    )?
+                )]
+                    .symbol(),
+                " "
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn remote_track_cuts_before_the_right_margin() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.git.set_content(GitData {
+        remotes: RemoteRows::Listed(vec![RemoteRow {
+            name:            "origin".to_string(),
+            icon:            "👯",
+            display_url:     "github.com/nate/cargo-liner".to_string(),
+            branch:          "cargo-liner-port".to_string(),
+            tracked_ref:     TrackedRef::Named("origin/main".to_string()),
+            status:          Comparison::NotCompared,
+            full_url:        None,
+            push_annotation: None,
+        }]),
+        ..GitData::default()
+    });
+    let buffer = test_support::draw_pane(&mut app, PaneId::Git, 47)?;
+    let rows = test_support::rows(&buffer);
+    let row = rows
+        .iter()
+        .find(|row| row.contains("cargo-liner-port"))
+        .context("remote row")?;
+    assert!(row.contains("ori…"), "{rows:?}");
+    for (y, row) in rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.contains("Branch") || row.contains("cargo-liner-port"))
+    {
+        assert_eq!(buffer[(45, u16::try_from(y)?)].symbol(), " ", "{row}");
+    }
+    Ok(())
+}
+
+#[test]
+fn narrow_worktree_divider_keeps_its_count() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.git.set_content(GitData {
+        worktrees: (0..3)
+            .map(|i| WorktreeInfo {
+                name:         format!("tree-{i}"),
+                path:         format!("/tmp/tree-{i}"),
+                branch:       Some("master".to_string()),
+                tracked:      None,
+                ahead_behind: Comparison::NotCompared,
+            })
+            .collect(),
+        ..GitData::default()
+    });
+    for width in [16, 17] {
+        let buffer = test_support::draw_pane(&mut app, PaneId::Git, width)?;
+        let rows = test_support::rows(&buffer);
+        let title = rows
+            .iter()
+            .find(|row| row.contains("(3)"))
+            .context("whole count")?;
+        assert!(title.contains('├') && title.contains('┤'), "{title}");
+    }
     Ok(())
 }

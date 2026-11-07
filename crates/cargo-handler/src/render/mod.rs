@@ -19,6 +19,7 @@ use tui_pane::AttractWork;
 use tui_pane::BarPalette;
 use tui_pane::CellClick;
 use tui_pane::CellPoint;
+use tui_pane::CellPress;
 use tui_pane::ColorMode;
 use tui_pane::FocusLocation;
 use tui_pane::Keymap;
@@ -209,6 +210,18 @@ fn draw_panes_at(
         &cells,
         app.framework.color_mode,
     );
+    app.painted_words
+        .refresh(&app.word_highlight, frame.buffer_mut(), || {
+            app.tiles.pointer_regions()
+        });
+    if let Some(background) = Role::WordMatch.style().bg {
+        app.painted_words.apply_with_inks(
+            &app.word_highlight,
+            frame.buffer_mut(),
+            background,
+            &mut app.match_inks,
+        );
+    }
     *app.painted_summary.get_mut() = cells.painted_summary.into_inner();
     app.tree_layouts = cells.layouts.into_inner();
     app.selections = cells.selections.into_inner();
@@ -231,6 +244,26 @@ fn draw_panes_at(
         )) {
             app.tiles.focus_cell(index);
         }
+    }
+}
+
+/// Resolve the word and row action from one painted press.
+pub(crate) fn cell_pressed(app: &mut App, press: CellPress<TileKey>) {
+    if matches!(
+        app.attract.configuration().grid_presentation(),
+        AttractGridPresentation::ReplacesGrid
+    ) {
+        return;
+    }
+    match press {
+        CellPress::Content { click, position } | CellPress::EmptyContent { click, position } => {
+            app.press_word(position);
+            cell_clicked(app, click);
+        },
+        CellPress::Title { position, .. } => {
+            app.press_word(position);
+        },
+        CellPress::Chrome | CellPress::Retired => {},
     }
 }
 
@@ -1206,6 +1239,7 @@ fraying = "leading"
         "│       │   Previous pane                                 shift-tab    │       │",
         "│       │ Global Shortcuts:                                            │       │",
         "│       │   Add a tile                                    +            │       │",
+        "│       │   Clear the word highlight                      escape       │       │",
         "│       │   Collapse all to first level                   -            │       │",
         "│       │   Collapse the selected row                     left         │       │",
         "│       │   Dismiss overlay / output                      x            │       │",
@@ -1216,7 +1250,6 @@ fraying = "leading"
         "│       │   Focus the tile to the left                    shift-left   │       │",
         "│       │   Focus the tile to the right                   shift-right  │       │",
         "│       │   Open attract favorites                        ctrl-o       │       │",
-        "│       │   Open keymap viewer                            ctrl-k       │       │",
         "│       └───────────────────────────1 of 7 ▼───────────────────────────┘       │",
         "│                                             content rows: 1 of 1  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
@@ -1232,6 +1265,7 @@ fraying = "leading"
         "│             │   Previous pane                     shift-tab    │             │",
         "│             │ Global Shortcuts:                                │             │",
         "│             │   Add a tile                        +            │             │",
+        "│             │   Clear the word highlight          escape       │             │",
         "│             │   Collapse all to first level       -            │             │",
         "│             │   Collapse the selected row         left         │             │",
         "│             │   Expand all rows                   =            │             │",
@@ -1244,8 +1278,7 @@ fraying = "leading"
         "│             │   Open keymap viewer                ctrl-k       │             │",
         "│             │   Open settings                     s            │             │",
         "│             │   Quit                              q            │             │",
-        "│             │   Randomize the attract screen      r            │             │",
-        "│             │   Remove an empty tile              shift-delete │  r/c: 21/78 │",
+        "│             │   Randomize the attract screen      r            │  r/c: 21/78 │",
         "└─────────────└─────────────────────1 of 3 ▼─────────────────────┘─────────────┘",
     ];
 
@@ -2298,3 +2331,9 @@ mod pinned_accounts_tests;
 
 #[cfg(test)]
 mod narrow_width_tests;
+
+#[cfg(test)]
+mod word_click_tests;
+
+#[cfg(test)]
+mod word_contrast_tests;

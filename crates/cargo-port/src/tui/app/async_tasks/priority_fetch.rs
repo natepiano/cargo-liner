@@ -82,7 +82,7 @@ impl App {
             .selected_display_path()
             .unwrap_or_else(|| abs_key.display_path());
         if match self.project_list.at_path(abs_key.as_path()) {
-            Found(p) => p.disk_usage_bytes.is_none(),
+            Found(p) => p.disk.total().is_none(),
             UnknownPath | StaleRoute => true,
         } && self.scan.priority_fetch_path() != Some(&abs_key)
         {

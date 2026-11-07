@@ -54,6 +54,41 @@ pub(super) fn shortest_unique_suffixes(paths: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Remove shared words from both ends of the distinguishing path text.
+pub(super) fn differing_path_labels(paths: &[String]) -> Vec<String> {
+    let labels = shortest_unique_suffixes(paths);
+    if labels.len() < 2 {
+        return labels;
+    }
+    let words: Vec<Vec<&str>> = labels
+        .iter()
+        .map(|label| label.split_inclusive(['-', '_', '.', '/']).collect())
+        .collect();
+    let mut start = 0;
+    while words
+        .iter()
+        .all(|parts| parts.len() > start + 1 && parts[start] == words[0][start])
+    {
+        start += 1;
+    }
+    let mut end = 0;
+    while words.iter().all(|parts| {
+        parts.len() > start + end + 1
+            && parts[parts.len() - end - 1] == words[0][words[0].len() - end - 1]
+    }) {
+        end += 1;
+    }
+    words
+        .iter()
+        .map(|parts| {
+            parts[start..parts.len() - end]
+                .concat()
+                .trim_matches(['-', '_', '.', '/'])
+                .to_string()
+        })
+        .collect()
+}
+
 fn display_path_segments(path: &str) -> Vec<&str> {
     path.split('/')
         .filter(|segment| !segment.is_empty())

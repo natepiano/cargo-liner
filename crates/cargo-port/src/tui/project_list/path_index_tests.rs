@@ -8,6 +8,7 @@ use super::ProjectPathLookup::Found;
 use super::ProjectPathLookup::StaleRoute;
 use super::ProjectPathLookup::UnknownPath;
 use super::*;
+use crate::project::DiskMeasurement;
 use crate::project::MemberGroup;
 use crate::project::PinnedCommit;
 use crate::project::RepoInfo;
@@ -130,7 +131,7 @@ fn direct_root_precedes_a_duplicate_descendant_during_rescan() {
         members: vec![package("/workspace/member")],
     });
     let mut root = package("/workspace/member");
-    root.project_info.disk_usage_bytes = Some(42);
+    root.project_info.disk = DiskMeasurement::TotalOnly(42);
     let list = ProjectList::new(vec![
         RootItem::Rust(RustProject::Workspace(workspace)),
         RootItem::Rust(RustProject::Package(root)),
@@ -139,7 +140,8 @@ fn direct_root_precedes_a_duplicate_descendant_during_rescan() {
         (list
             .at_path(Path::new("/workspace/member"))
             .expect_found("direct root"))
-        .disk_usage_bytes,
+        .disk
+        .total(),
         Some(42)
     );
 }
@@ -191,12 +193,13 @@ fn index_routes_linked_members_vendored_and_submodules_mutably() {
         (list
             .at_path_mut(Path::new(path))
             .expect_found("mutable indexed node"))
-        .disk_usage_bytes = Some(index as u64 + 10);
+        .disk = DiskMeasurement::TotalOnly(index as u64 + 10);
         assert_eq!(
             (list
                 .at_path(Path::new(path))
                 .expect_found("same indexed node"))
-            .disk_usage_bytes,
+            .disk
+            .total(),
             Some(index as u64 + 10)
         );
     }
@@ -293,12 +296,12 @@ fn indexed_lookup_finds_the_same_project_for_read_and_write() {
         "/indexed",
     )))]);
     match list.at_path_mut(path) {
-        Found(project) => project.disk_usage_bytes = Some(37),
+        Found(project) => project.disk = DiskMeasurement::TotalOnly(37),
         UnknownPath => panic!("the installed path must be indexed"),
         StaleRoute => panic!("the installed route must be current"),
     }
     match list.at_path(path) {
-        Found(project) => assert_eq!(project.disk_usage_bytes, Some(37)),
+        Found(project) => assert_eq!(project.disk.total(), Some(37)),
         UnknownPath => panic!("the installed path must remain indexed"),
         StaleRoute => panic!("a data edit must preserve the route"),
     }

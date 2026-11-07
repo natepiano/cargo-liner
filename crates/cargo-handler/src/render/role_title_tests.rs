@@ -311,7 +311,7 @@ fn dark_title_accent_stays_distinct_and_readable_in_the_composed_grid() {
                     ];
                     for (label, ink) in entries {
                         let other = ink.style(Style::default()).fg.expect("fixture ink");
-                        let distance = tests::perceptual_distance(cell.fg, other);
+                        let distance = footer_colors::perceptual_distance(cell.fg, other);
                         eprintln!("{name} tint={tint} title / {label}: CIEDE2000={distance:.6}");
                         if distance < 12.0 {
                             failures.push(format!(
@@ -538,7 +538,7 @@ fn light_title_accent_stays_distinct_from_session_role_and_account_inks() {
                     ));
                 }
                 for (label, ink) in inks {
-                    let distance = tests::perceptual_distance(cell.fg, ink);
+                    let distance = footer_colors::perceptual_distance(cell.fg, ink);
                     eprintln!("{name} tint={tint} {surface}/{label} dE={distance:.6}");
                     if distance < 12.0 {
                         failures.push(format!(
@@ -804,7 +804,7 @@ impl SessionPaletteCheck<'_> {
             let session_ink = Role::Session(session).style().fg.expect("session ink");
             for (rank, reset_ink) in resets.iter().enumerate() {
                 let gap = tests::hue_gap(session_ink, *reset_ink);
-                let distance = tests::perceptual_distance(session_ink, *reset_ink);
+                let distance = footer_colors::perceptual_distance(session_ink, *reset_ink);
                 self.measurements
                     .entry("session/reset".into())
                     .or_default()
@@ -840,7 +840,7 @@ impl SessionPaletteCheck<'_> {
         )
         .expect("write current gamut measurement");
         for (neighbor, ink) in palette {
-            let distance = tests::perceptual_distance(session_ink, *ink);
+            let distance = footer_colors::perceptual_distance(session_ink, *ink);
             self.measurements
                 .entry("session/fixed".into())
                 .or_default()
@@ -885,7 +885,7 @@ impl SessionPaletteCheck<'_> {
                 ));
             }
             for (second, second_ink) in &session_inks[index + 1..] {
-                let distance = tests::perceptual_distance(*first_ink, *second_ink);
+                let distance = footer_colors::perceptual_distance(*first_ink, *second_ink);
                 let gap = tests::hue_gap(*first_ink, *second_ink);
                 let floor = self.floors.session_distance;
                 self.measurements

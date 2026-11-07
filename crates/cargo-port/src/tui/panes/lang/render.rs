@@ -171,26 +171,11 @@ fn lang_entry_row(render_entry: &LangRenderEntry<'_>, name_width: usize) -> Row<
     } else {
         String::new()
     };
-    let label = parent.map_or_else(
-        || entry.language.clone(),
-        |language| {
-            if entry
-                .language
-                .chars()
-                .next()
-                .is_some_and(char::is_lowercase)
-            {
-                let label = format!("└ {language}: {}", entry.language);
-                if label.width() <= name_width {
-                    label
-                } else {
-                    format!("└ {}", entry.language)
-                }
-            } else {
-                format!("└ {}", entry.language)
-            }
-        },
-    );
+    let label = if parent.is_some() {
+        format!("└ {}", entry.language)
+    } else {
+        entry.language.clone()
+    };
     let name = render::truncate_with_ellipsis(&label, name_width, "\u{2026}");
     let total = entry.code + entry.comments + entry.blanks;
     let is_subtotal = parent.is_some();

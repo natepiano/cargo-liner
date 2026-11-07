@@ -210,6 +210,7 @@ mod tests {
     use crate::project::AheadBehind;
     use crate::project::CommitDate;
     use crate::project::Comparison;
+    use crate::project::DiskMeasurement;
     use crate::project::FirstCommit;
     use crate::project::ProjectType;
     use crate::project::ResolvedBranch;
@@ -251,7 +252,7 @@ mod tests {
             description:              None,
             crates_io_rows:           Vec::new(),
             types:                    Some(vec![ProjectType::Library]),
-            disk:                     Some(38_989_922_304),
+            disk:                     DiskMeasurement::TotalOnly(38_989_922_304),
             stats_rows:               Vec::new(),
             test_rows:                Vec::new(),
             package_presence:         PackagePresence::Present,
@@ -259,8 +260,6 @@ mod tests {
             license:                  None,
             homepage:                 None,
             repository:               None,
-            in_project_target:        None,
-            in_project_non_target:    None,
             out_of_tree_target_bytes: None,
             lint_display:             LintDisplay::default(),
             ci_display:               CiDisplay::default(),

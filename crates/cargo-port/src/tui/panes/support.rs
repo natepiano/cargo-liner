@@ -142,8 +142,35 @@ pub(super) fn paginate_detail_lines(
     height: u16,
     focus: PaneFocusState,
 ) -> DetailPages {
+    paginate_detail_sections(
+        lines,
+        fields,
+        &DetailSectionHeaders {
+            groups:   headers,
+            repeated: &[],
+        },
+        focused_line,
+        height,
+        focus,
+    )
+}
+
+/// Headers used for grouping and for page continuations.
+pub(super) struct DetailSectionHeaders<'a> {
+    pub groups:   &'a [VisualRowSpan],
+    pub repeated: &'a [VisualRowSpan],
+}
+
+pub(super) fn paginate_detail_sections(
+    lines: &mut Vec<Line<'static>>,
+    fields: &[VisualRowSpan],
+    headers: &DetailSectionHeaders<'_>,
+    focused_line: usize,
+    height: u16,
+    focus: PaneFocusState,
+) -> DetailPages {
     let height = usize::from(height).max(1);
-    let mut groups: Vec<_> = fields.iter().chain(headers).copied().collect();
+    let mut groups: Vec<_> = fields.iter().chain(headers.groups).copied().collect();
     groups.sort_by_key(|span| span.start_y);
     let mut merged: Vec<VisualRowSpan> = Vec::new();
     for group in groups {
@@ -160,7 +187,7 @@ pub(super) fn paginate_detail_lines(
     let source = std::mem::take(lines);
     let mut positions = Vec::with_capacity(source.len());
     let mut groups = merged.iter().peekable();
-    for (source_y, line) in source.into_iter().enumerate() {
+    for (source_y, line) in source.iter().enumerate() {
         if let Some(group) = groups.peek()
             && group.start_y == source_y
         {
@@ -170,8 +197,9 @@ pub(super) fn paginate_detail_lines(
             }
             groups.next();
         }
+        repeat_section_header(lines, &source, headers.repeated, source_y, height);
         positions.push(lines.len());
-        lines.push(line);
+        lines.push(line.clone());
     }
     let focused_y = positions.get(focused_line).copied().unwrap_or(0);
     let offset = usize::from(package::detail_column_scroll_offset(
@@ -184,6 +212,27 @@ pub(super) fn paginate_detail_lines(
     DetailPages {
         positions,
         scroll_offset: u16::try_from(offset).unwrap_or(u16::MAX),
+    }
+}
+
+fn repeat_section_header(
+    lines: &mut Vec<Line<'static>>,
+    source: &[Line<'static>],
+    headers: &[VisualRowSpan],
+    source_y: usize,
+    height: usize,
+) {
+    if !lines.len().is_multiple_of(height) {
+        return;
+    }
+    if let Some(header) = headers
+        .iter()
+        .rev()
+        .find(|header| header.start_y <= source_y)
+        && header.start_y + header.height <= source_y
+        && header.height < height
+    {
+        lines.extend_from_slice(&source[header.start_y..header.start_y + header.height]);
     }
 }
 

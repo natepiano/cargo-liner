@@ -93,7 +93,7 @@ impl ProjectFitContext<'_> {
         let deleted =
             self.projects.is_deleted(self.ancestor) || self.projects.is_deleted(entry.path());
         DiskCell::for_row(
-            formatted_disk(entry.info().disk_usage_bytes),
+            formatted_disk(entry.info().disk.total()),
             columns::RowLifecycle::from(deleted),
             entry.info().worktree_health,
         )
@@ -412,7 +412,7 @@ fn observe_worktree_group_fit_widths(
 }
 
 fn formatted_disk(bytes: Option<u64>) -> String {
-    bytes.map_or_else(|| render::format_bytes(0), render::format_bytes)
+    bytes.map_or_else(|| "…".to_string(), render::format_bytes)
 }
 
 fn git_sync_label(checkout: Option<&CheckoutInfo>, repo: Option<&RepoInfo>) -> String {

@@ -9,6 +9,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- `CellPress` forwards tile title presses through `TileGridHost::cell_pressed` and preserves the content hook for existing hosts.
 - `SummaryFoot::WithOptionalSuffix` preserves the prefix when the suffix does not fit.
 - `StatusLineGlobal::fixed` uses the shared hint renderer for fixed modal keys.
 - `TileGrid::prepare_covered` updates covered grid geometry without painting. `cell_travel_duration` exposes the shared travel duration.
@@ -37,6 +38,9 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `PaneChrome::paint_tile_ground` paints the tile ground only on opaque screens and returns the fade colour, so transparent tiles keep fading toward the theme ground.
 
 ### Fixed
+
+- Toast stacks stay in their placement corner and show fewer rows when space is short. Cards preserve pane borders, titles, and unrelated content.
+- Wrap long Settings paths at slashes when a path part fits the content width.
 
 - Optional status hints keep one trailing cell after the shortcuts hint.
 

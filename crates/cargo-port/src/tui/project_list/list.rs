@@ -46,6 +46,7 @@ use crate::project::Cargo;
 use crate::project::CheckoutInfo;
 use crate::project::CratesIoRelease;
 use crate::project::CratesIoReleaseState;
+use crate::project::DiskMeasurement;
 use crate::project::DisplayPath;
 use crate::project::GitHubInfo;
 use crate::project::GitRepo;
@@ -390,18 +391,20 @@ impl ProjectList {
         self.roots.values()
     }
 
-    /// Disk space represented by top-level rows currently visible in the pane.
-    pub(in crate::tui) fn visible_project_disk_usage(&self) -> u64 {
+    /// Return no total while any visible root has no measurement.
+    pub(in crate::tui) fn visible_disk_total(&self) -> DiskMeasurement {
         self.cached_visible_rows
             .iter()
             .filter_map(|row| match row {
                 VisibleRow::Root { node_index } => self
                     .get(*node_index)
-                    .filter(|entry| !self.is_deleted(entry.root_item.path()))
-                    .and_then(|entry| entry.root_item.disk_usage_bytes()),
+                    .filter(|entry| !self.is_deleted(entry.root_item.path())),
                 _ => None,
             })
-            .sum()
+            .try_fold(0_u64, |total, entry| {
+                Some(total.saturating_add(entry.root_item.disk_usage_bytes()?))
+            })
+            .map_or(DiskMeasurement::NotMeasured, DiskMeasurement::TotalOnly)
     }
 
     /// Mounted-volume probe paths for all currently visible top-level rows.
@@ -452,7 +455,7 @@ impl ProjectList {
             row => self
                 .path_for_row(row)
                 .and_then(|path| match self.at_path(path) {
-                    ProjectPathLookup::Found(info) => info.disk_usage_bytes,
+                    ProjectPathLookup::Found(info) => info.disk.total(),
                     ProjectPathLookup::UnknownPath | ProjectPathLookup::StaleRoute => None,
                 }),
         }
@@ -529,7 +532,7 @@ impl ProjectList {
             .into_values()
             .filter(|indices| indices.len() > 1)
         {
-            let suffixes = grouping::shortest_unique_suffixes(
+            let suffixes = grouping::differing_path_labels(
                 &indices
                     .iter()
                     .map(|&index| self.roots[index].root_item.display_path().into_string())
