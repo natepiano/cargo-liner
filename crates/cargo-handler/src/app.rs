@@ -20,7 +20,8 @@ use tui_pane::AppIdentity;
 use tui_pane::Appearance;
 use tui_pane::AttractHost;
 use tui_pane::AttractMode;
-use tui_pane::CellClick;
+use tui_pane::CellPointer;
+use tui_pane::CellPress;
 use tui_pane::ColorMode;
 use tui_pane::FavoritesHost;
 use tui_pane::FavoritesOverlay;
@@ -43,7 +44,6 @@ use tui_pane::ToastVisualDeadline;
 use tui_pane::VisualDeadline;
 
 use crate::agent_cell;
-use crate::agent_cell::TreeMetrics;
 use crate::census;
 use crate::census::AgentPlacement;
 use crate::census::Census;
@@ -65,6 +65,7 @@ use crate::globals::AppGlobalAction;
 use crate::interaction::Selections;
 use crate::keymap;
 use crate::render;
+use crate::render::PaintedSurface;
 use crate::settings;
 use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
@@ -77,6 +78,10 @@ use crate::theme::StartupThemeNotes;
 use crate::tiles::AgentCell;
 use crate::tiles::TileGrid;
 use crate::tiles::TileKey;
+use crate::word_highlight::MatchInkCache;
+use crate::word_highlight::PaintedWords;
+use crate::word_highlight::WordHighlight;
+use crate::word_highlight::WordHit;
 
 #[path = "expansion.rs"]
 pub(crate) mod expansion;
@@ -117,7 +122,14 @@ enum FrameRequest {
     StatusClock,
 }
 
-/// Geometry and toast timing belong to the retained body they validate.
+/// `BodyReuse` controls repaint reuse without removing input pixels.
+#[derive(Clone, Copy)]
+enum BodyReuse {
+    Reusable,
+    Invalidated,
+}
+
+/// `PaintedFrame` retains the last painted pixels and toast timing.
 #[derive(Default)]
 enum PaintedFrame {
     #[default]
@@ -125,7 +137,14 @@ enum PaintedFrame {
     Current {
         buffer:       Box<Buffer>,
         toast_change: ToastVisualDeadline,
+        reuse:        BodyReuse,
     },
+}
+
+/// A missing retained frame cannot clear or replace the highlighted word.
+enum PaintedWordLookup {
+    Unavailable,
+    Hit(WordHit),
 }
 
 /// Top-level application state.
@@ -153,9 +172,12 @@ pub(crate) struct App {
     /// Per-root preferences, discarded when that root leaves the census.
     pub(crate) selection_area:    Rect,
     pub(crate) selections:        Selections,
+    pub(crate) word_highlight:    WordHighlight,
+    pub(crate) painted_words:     PaintedWords,
+    pub(crate) match_inks:        MatchInkCache,
     pub(crate) expansion:         HandlerExpansion,
     pub(crate) tree_sorts:        HashMap<TileKey, TreeSort>,
-    pub(crate) tree_layouts:      HashMap<TileKey, TreeMetrics>,
+    pub(crate) painted_surfaces:  Vec<PaintedSurface>,
     /// The summary allocation retained for header clicks until the next paint.
     pub(crate) painted_summary:   RefCell<PaintedSummary>,
     /// One preference shared by the summary machine groups.
@@ -189,14 +211,30 @@ impl App {
     #[cfg(test)]
     pub(crate) const fn full_frame_count(&self) -> usize { self.full_frames }
 
+    /// Resolve a tile press before its row action invalidates the retained frame.
+    pub(crate) fn press_word(&mut self, position: Position) {
+        let lookup =
+            match &self.painted_frame {
+                PaintedFrame::Absent => PaintedWordLookup::Unavailable,
+                PaintedFrame::Current { buffer, .. } => PaintedWordLookup::Hit(
+                    PaintedWords::word_at(buffer, self.tiles.pointer_regions(), position),
+                ),
+            };
+        if let PaintedWordLookup::Hit(hit) = lookup {
+            self.word_highlight.press(hit);
+        }
+    }
+
     /// Request the status clock without changing the tile body.
     pub(crate) const fn request_clock_frame(&mut self) {
         self.frame_request = FrameRequest::StatusClock;
     }
 
-    /// Events and changed data require a new body, including selection hit geometry.
-    pub(crate) fn invalidate_body(&mut self) {
-        self.painted_frame = PaintedFrame::Absent;
+    /// `invalidate_body` requires a repaint and preserves the last painted input pixels.
+    pub(crate) const fn invalidate_body(&mut self) {
+        if let PaintedFrame::Current { reuse, .. } = &mut self.painted_frame {
+            *reuse = BodyReuse::Invalidated;
+        }
         self.frame_request = FrameRequest::Full;
     }
 
@@ -268,10 +306,13 @@ impl App {
             startup_note,
             tiles: TileGrid::new(),
             selections: crate::interaction::Selections::default(),
+            word_highlight: crate::word_highlight::WordHighlight::default(),
+            painted_words: crate::word_highlight::PaintedWords::default(),
+            match_inks: crate::word_highlight::MatchInkCache::default(),
             selection_area: Rect::ZERO,
             expansion: expansion::HandlerExpansion::default(),
             tree_sorts: HashMap::new(),
-            tree_layouts: HashMap::new(),
+            painted_surfaces: Vec::new(),
             painted_summary: std::cell::RefCell::new(PaintedSummary::NotDrawn),
             summary_sort: SummarySort::default(),
             accounts_sort: AccountsSort::SourceOrder,
@@ -391,6 +432,7 @@ impl TerminalApp for App {
             && let PaintedFrame::Current {
                 buffer,
                 toast_change: painted_toast_change,
+                reuse: BodyReuse::Reusable,
             } = &self.painted_frame
             && buffer.area == frame.area()
             && *painted_toast_change == toast_change
@@ -417,6 +459,7 @@ impl TerminalApp for App {
             PaintedFrame::Current {
                 buffer: Box::new(frame.buffer_mut().clone()),
                 toast_change,
+                reuse: BodyReuse::Reusable,
             }
         } else {
             PaintedFrame::Absent
@@ -430,8 +473,8 @@ impl TerminalApp for App {
     }
 
     fn click(&mut self, position: Position) {
-        self.invalidate_body();
         tui_pane::handle_tile_click(self, position);
+        self.invalidate_body();
     }
 
     /// Settling the window costs several round trips to the window
@@ -494,11 +537,13 @@ impl TileGridHost for App {
 
     fn tile_grid_mut(&mut self) -> &mut TileGrid { &mut self.tiles }
 
-    fn cell_scrolled(&mut self, cell: CellClick<TileKey>, direction: ScrollDirection) {
+    fn cell_scrolled(&mut self, cell: CellPointer<TileKey>, direction: ScrollDirection) {
         render::cell_scrolled(self, &cell, direction);
     }
 
-    fn cell_clicked(&mut self, click: CellClick<TileKey>) { render::cell_clicked(self, click); }
+    fn cell_clicked(&mut self, click: CellPointer<TileKey>) { render::cell_clicked(self, click); }
+
+    fn cell_pressed(&mut self, press: CellPress<TileKey>) { render::cell_pressed(self, press); }
 }
 
 /// Each attract animation's keys hang off an [`AppPaneId::Attract`] of

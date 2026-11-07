@@ -9,6 +9,8 @@ mod app_scenarios;
 )]
 mod installed;
 #[cfg(test)]
+mod python_cache;
+#[cfg(test)]
 mod reader_scenarios;
 #[cfg(test)]
 mod rows_readout;

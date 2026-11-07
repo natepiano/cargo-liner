@@ -9,11 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Clicks use the headers and rows from the last painted frame, including during tile motion and repeated input.
+
 - Subagent rows show their role word instead of the agent name.
 
 - Narrow session rows retain tree guides and give sparse optional columns to names. The probe reports refused configuration values on stderr.
 
 ### Added
+
+- Click a word to highlight matching words across tile content and titles. Esc or a repeated word click clears the highlight.
 
 - Click a row marker to toggle its children. Use digits 0 to 9 to set the focused tile depth.
 

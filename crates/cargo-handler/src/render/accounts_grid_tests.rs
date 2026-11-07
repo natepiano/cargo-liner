@@ -114,9 +114,28 @@ fn draw_grid(app: &mut App) -> Buffer {
             content[(x, y)] = buffer[(x, y)].clone();
         }
     }
+    app.painted_surfaces = cells.painted_surfaces.into_inner();
     *app.painted_summary.borrow_mut() = cells.painted_summary.into_inner();
     app.selections = cells.selections.into_inner();
     content
+}
+
+fn press_summary_header(app: &mut App, buffer: &Buffer, header: CellPoint) {
+    cell_clicked(
+        app,
+        CellPointer {
+            index:   0,
+            content: TileContent::Summary,
+            area:    Rect {
+                height: buffer.area.height.saturating_sub(1),
+                ..buffer.area
+            },
+            point:   CellPoint {
+                column: header.column - buffer.area.x,
+                row:    header.row - buffer.area.y,
+            },
+        },
+    );
 }
 
 #[test]
@@ -161,18 +180,7 @@ fn accounts_grid_measured_tables_sort_account_headers_without_changing_agent_ord
     );
     let account_header = locate(&before, "left");
     let original_sort = app.summary_sort;
-    cell_clicked(
-        &mut app,
-        CellClick {
-            index:   0,
-            content: TileContent::Summary,
-            area:    before.area,
-            point:   CellPoint {
-                column: account_header.column - before.area.x,
-                row:    account_header.row - before.area.y,
-            },
-        },
-    );
+    press_summary_header(&mut app, &before, account_header);
     assert_eq!(app.summary_sort, original_sort);
     let after = draw_grid(&mut app);
     for name in ["zeta-session", "alpha-session", "codex2", "claude1"] {
@@ -183,36 +191,14 @@ fn accounts_grid_measured_tables_sort_account_headers_without_changing_agent_ord
         );
     }
     let account_header = locate(&after, "left ▲");
-    cell_clicked(
-        &mut app,
-        CellClick {
-            index:   0,
-            content: TileContent::Summary,
-            area:    after.area,
-            point:   CellPoint {
-                column: account_header.column - after.area.x,
-                row:    account_header.row - after.area.y,
-            },
-        },
-    );
+    press_summary_header(&mut app, &after, account_header);
     let reversed = draw_grid(&mut app);
     assert!(locate(&reversed, "claude1").row < locate(&reversed, "codex2").row);
     assert!(locate(&reversed, "zeta-session").row < locate(&reversed, "alpha-session").row);
     assert_eq!(app.summary_sort, original_sort);
     // An actual agents header still changes ordering through the same handler.
     let header = locate(&reversed, "session ▼");
-    cell_clicked(
-        &mut app,
-        CellClick {
-            index:   0,
-            content: TileContent::Summary,
-            area:    reversed.area,
-            point:   CellPoint {
-                column: header.column - reversed.area.x,
-                row:    header.row - reversed.area.y,
-            },
-        },
-    );
+    press_summary_header(&mut app, &reversed, header);
     assert_eq!(app.summary_sort.direction, SortDirection::Ascending);
     let sorted = draw_grid(&mut app);
     assert!(locate(&sorted, "alpha-session").row < locate(&sorted, "zeta-session").row);
@@ -296,6 +282,11 @@ pub(super) fn interactive_accounts() -> App {
 }
 
 pub(super) fn paint_accounts_viewport(app: &mut App, width: u16, height: u16) -> Buffer {
+    // Read the selection frame after Esc clears the word match.
+    tui_pane::dispatch_key(
+        app,
+        crossterm::event::KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE),
+    );
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
         .expect("test terminal");
     let keymap = app.keymap();

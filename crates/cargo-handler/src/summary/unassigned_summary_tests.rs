@@ -4,8 +4,8 @@
 #![expect(clippy::panic, reason = "missing drawn fixture labels fail the test")]
 
 use ratatui::style::Color;
-use tui_pane::CellClick;
 use tui_pane::CellPoint;
+use tui_pane::CellPointer;
 
 use super::*;
 use crate::agent_cell::AgentTile;
@@ -135,9 +135,10 @@ fn click_pool_header(app: &mut App, machine: &str, column: TreeColumn) {
             row:    span.row,
         }
     };
+    render::paint_tree_headers_for_test(app, key(machine), AREA);
     render::cell_clicked(
         app,
-        CellClick {
+        CellPointer {
             index: 1,
             content: TileContent::Group(key(machine)),
             area: AREA,

@@ -17,8 +17,9 @@ use ratatui::text::Span;
 use tui_pane::AttractGridPresentation;
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
-use tui_pane::CellClick;
-use tui_pane::CellPoint;
+use tui_pane::CellIndex;
+use tui_pane::CellPointer;
+use tui_pane::CellPress;
 use tui_pane::ColorMode;
 use tui_pane::FocusLocation;
 use tui_pane::Keymap;
@@ -46,11 +47,8 @@ use crate::agent_cell::AgentEntry;
 use crate::agent_cell::AgentTile;
 use crate::agent_cell::TreeColumn;
 use crate::agent_cell::TreeMeasurement;
-use crate::agent_cell::TreeMetrics;
 use crate::app::App;
-use crate::app::expansion;
 use crate::app::expansion::HandlerExpansion;
-use crate::app::expansion::HandlerExpansionAction;
 use crate::census;
 use crate::census::AccountColumn;
 use crate::census::AgentPlacement;
@@ -70,7 +68,6 @@ use crate::constants::UNASSIGNED_CELL_TITLE;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterTint;
 use crate::globals::AppGlobalAction;
-use crate::interaction::RowClick;
 use crate::interaction::RowLocation;
 use crate::interaction::SelectableSurface;
 use crate::interaction::SelectedSpan;
@@ -81,12 +78,8 @@ use crate::interaction::TileSelection;
 use crate::interaction::ViewportLine;
 use crate::interaction::ViewportMapping;
 use crate::settings;
-use crate::sort;
-use crate::sort::AccountsColumn;
 use crate::sort::AccountsSort;
-use crate::sort::HeaderHit;
 use crate::sort::HeaderSpan;
-use crate::sort::SummaryColumn;
 use crate::sort::SummarySort;
 use crate::sort::TreeSort;
 use crate::summary;
@@ -97,6 +90,12 @@ use crate::theme::Role;
 use crate::tiles::TileContent;
 use crate::tiles::TileDemands;
 use crate::tiles::TileKey;
+
+mod painted_surface;
+
+pub(crate) use painted_surface::PaintedSurface;
+use painted_surface::PaintedSurfaceContent;
+pub(crate) use painted_surface::cell_clicked;
 
 /// Draw one frame: the grid fills the body above the status line, and
 /// toasts are drawn inside the grid's outer frame. The favorites modal
@@ -162,6 +161,14 @@ fn draw_panes_at(
     contents: TileGridContents,
     now: u64,
 ) {
+    let focused = focused_surface(app, area);
+    let followed = match &focused {
+        SelectableSurface::EmptyCell => TileSelection::NoRows,
+        SelectableSurface::Surface(surface) => app.selections.surface(surface).map_or(
+            TileSelection::NoRows,
+            super::interaction::SurfaceSelection::selection,
+        ),
+    };
     app.tiles
         .set_summary_row_allocation(SummaryRowAllocation::BeforeTiles);
     let growth = app.loaded_config.config.tiles.growth();
@@ -184,7 +191,7 @@ fn draw_panes_at(
     app.tiles
         .set_tile_width_floor(TileWidthFloor::CompressSingleColumn);
     app.tiles.set_view(app.loaded_config.config.tiles.view);
-    let focused = app
+    *cells.focused.borrow_mut() = app
         .tiles
         .placements(area, growth)
         .into_iter()
@@ -192,14 +199,6 @@ fn draw_panes_at(
         .map_or(SelectableSurface::EmptyCell, |placement| {
             selection_surface(&placement.content)
         });
-    let followed = match &focused {
-        SelectableSurface::EmptyCell => TileSelection::NoRows,
-        SelectableSurface::Surface(surface) => app.selections.surface(surface).map_or(
-            TileSelection::NoRows,
-            super::interaction::SurfaceSelection::selection,
-        ),
-    };
-    *cells.focused.borrow_mut() = focused.clone();
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
         &mut app.tiles,
@@ -209,44 +208,71 @@ fn draw_panes_at(
         &cells,
         app.framework.color_mode,
     );
+    app.painted_words
+        .refresh(&app.word_highlight, frame.buffer_mut(), || {
+            app.tiles.pointer_regions()
+        });
+    if let Some(background) = Role::WordMatch.style().bg {
+        app.painted_words.apply_with_inks(
+            &app.word_highlight,
+            frame.buffer_mut(),
+            background,
+            &mut app.match_inks,
+        );
+    }
+    app.painted_surfaces = cells.painted_surfaces.into_inner();
     *app.painted_summary.get_mut() = cells.painted_summary.into_inner();
-    app.tree_layouts = cells.layouts.into_inner();
     app.selections = cells.selections.into_inner();
     if let TileSelection::Row(identity) = followed
         && let RowLocation::Found(destination) = app.selections.containing(&focused, &identity)
         && focused != SelectableSurface::Surface(destination.clone())
-        && let Some(placement) = app
-            .tiles
-            .placements(area, growth)
-            .into_iter()
-            .find(|placement| {
-                selection_surface(&placement.content)
-                    == SelectableSurface::Surface(destination.clone())
-            })
     {
-        let rect = placement.frame.rect();
-        if let Some(index) = app.tiles.cell_at(ratatui::layout::Position::new(
-            rect.x + rect.width / 2,
-            rect.y + rect.height / 2,
-        )) {
+        let content = match destination {
+            SelectionSurface::Summary => TileContent::Summary,
+            SelectionSurface::Tile(key) => TileContent::Group(key),
+        };
+        if let CellIndex::Current(index) = app.tiles.cell_index(&content) {
             app.tiles.focus_cell(index);
         }
     }
 }
 
-/// Map a content press through the same census and header layouts as drawing.
-pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
-    match app.attract.configuration().grid_presentation() {
-        AttractGridPresentation::ReplacesGrid => return,
-        AttractGridPresentation::OverGrid => {},
+/// `focused_surface` reads logical focus without the held focus used during motion.
+fn focused_surface(app: &App, area: Rect) -> SelectableSurface {
+    let FocusLocation::Cell(focused) = app.tiles.focused_cell() else {
+        return SelectableSurface::EmptyCell;
+    };
+    app.tiles
+        .placements(area, app.loaded_config.config.tiles.growth())
+        .into_iter()
+        .find(|placement| app.tiles.cell_index(&placement.content) == CellIndex::Current(focused))
+        .map_or(SelectableSurface::EmptyCell, |placement| {
+            selection_surface(&placement.content)
+        })
+}
+
+/// `cell_pressed` resolves the word and row action from one painted press.
+pub(crate) fn cell_pressed(app: &mut App, press: CellPress<TileKey>) {
+    if matches!(
+        app.attract.configuration().grid_presentation(),
+        AttractGridPresentation::ReplacesGrid
+    ) {
+        return;
     }
-    let CellClick {
-        content,
-        area,
-        point,
-        ..
-    } = click;
-    let header_area = Rect::new(0, 0, area.width, area.height);
+    match press {
+        CellPress::Content { click, position } | CellPress::EmptyContent { click, position } => {
+            app.press_word(position);
+            cell_clicked(app, click);
+        },
+        CellPress::Title { position, .. } => {
+            app.press_word(position);
+        },
+        CellPress::Chrome | CellPress::Retired => {},
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn paint_tree_headers_for_test(app: &mut App, id: TileKey, area: Rect) {
     let cells = Cells::new(
         app.census
             .machines(&app.loaded_config.config.machines.remote),
@@ -254,99 +280,46 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
         app.footer_colors.colors(),
         &app.tree_sorts,
         app.summary_sort,
+    );
+    cells.draw(
+        &mut Buffer::empty(area),
+        &TileContent::Group(id),
+        area,
+        Color::Reset,
+    );
+    app.painted_surfaces = cells.painted_surfaces.into_inner();
+}
+
+#[cfg(test)]
+pub(crate) fn draw_summary_for_test(app: &mut App, area: Rect) -> Buffer {
+    let cells = Cells::new(
+        app.census.machines(&[]),
+        census::unix_now(),
+        app.footer_colors.colors(),
+        &app.tree_sorts,
+        app.summary_sort,
     )
-    .with_color_mode(app.framework.color_mode)
-    .with_expansion(&app.expansion)
     .with_accounts(&app.accounts.table)
     .with_accounts_sort(app.accounts_sort);
-    for tile in &cells.tiles {
-        if let Some(metrics) = app.tree_layouts.get(&tile.key()) {
-            tile.share_metrics(metrics.clone());
-        }
-    }
-    match content {
-        TileContent::Summary => match summary_header_hit(app, header_area, point) {
-            SummaryHeaderHit::Missed => {},
-            SummaryHeaderHit::AgentColumn(column) => {
-                app.summary_sort.select(column);
-                return;
-            },
-            SummaryHeaderHit::AccountColumn(column) => {
-                app.accounts_sort.select(column);
-                return;
-            },
-        },
-        TileContent::Group(ref id) => {
-            if let Some(tile) = cells.tile(id)
-                && let HeaderHit::Column(column) =
-                    sort::header_hit(&cells.header_spans(tile, header_area), point)
-            {
-                let default = tile.default_sort();
-                app.tree_sorts
-                    .entry(id.clone())
-                    .or_insert(default)
-                    .select(column);
-                return;
-            }
-        },
-        TileContent::Empty(_) => return,
-    }
-    if let SelectableSurface::Surface(surface) = selection_surface(&content)
-        && let SurfaceLookup::Current(state) = app.selections.surface_mut(&surface)
-    {
-        let hit = state.click(ratatui::layout::Position::new(
-            area.x.saturating_add(point.column),
-            area.y.saturating_add(point.row),
-        ));
-        if let RowClick::Toggled(identity) = hit {
-            expansion::dispatch(app, HandlerExpansionAction::Marker(identity));
-        }
-    }
+    let mut buffer = Buffer::empty(area);
+    cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
+    app.painted_surfaces = cells.painted_surfaces.into_inner();
+    *app.painted_summary.get_mut() = cells.painted_summary.into_inner();
+    buffer
 }
 
-/// The two independent tables share one painted summary surface.
-enum SummaryHeaderHit {
-    Missed,
-    AgentColumn(SummaryColumn),
-    AccountColumn(AccountsColumn),
+/// `TileLookup` names current and retired census tiles.
+enum TileLookup<'t, 'a> {
+    Retired,
+    Current(&'t AgentTile<'a>),
 }
 
-/// Header-only summary draws retain their layout without a selectable row surface.
-fn summary_header_hit(app: &App, area: Rect, point: CellPoint) -> SummaryHeaderHit {
-    let painted = app.painted_summary.borrow();
-    let PaintedSummary::Drawn(layout) = &*painted else {
-        return SummaryHeaderHit::Missed;
-    };
-    let source = match app.selections.surface(&SelectionSurface::Summary) {
-        SurfaceLookup::Current(state) => {
-            state.painted_mapping().source_line(usize::from(point.row))
-        },
-        SurfaceLookup::Retired => ViewportMapping::Linear {
-            offset: 0,
-            height: usize::from(area.height),
+impl<'t, 'a> TileLookup<'t, 'a> {
+    fn map_or<T>(self, retired: T, current: impl FnOnce(&'t AgentTile<'a>) -> T) -> T {
+        match self {
+            Self::Retired => retired,
+            Self::Current(tile) => current(tile),
         }
-        .source_line(usize::from(point.row)),
-    };
-    let row = match source {
-        ViewportLine::Header(row) | ViewportLine::Body(row) => row,
-        ViewportLine::Outside => return SummaryHeaderHit::Missed,
-    };
-    let point = CellPoint {
-        row: u16::try_from(row).unwrap_or(u16::MAX),
-        ..point
-    };
-    let area = Rect {
-        height: u16::try_from(layout.height()).unwrap_or(u16::MAX),
-        ..area
-    };
-    if let HeaderHit::Column(column) = sort::header_hit(&layout.header_spans(area), point) {
-        SummaryHeaderHit::AgentColumn(column)
-    } else if let HeaderHit::Column(column) =
-        sort::header_hit(&layout.accounts_header_spans(area), point)
-    {
-        SummaryHeaderHit::AccountColumn(column)
-    } else {
-        SummaryHeaderHit::Missed
     }
 }
 
@@ -377,7 +350,11 @@ pub(crate) fn navigate_selection(app: &mut App, action: NavAction) {
     }
 }
 
-pub(crate) fn cell_scrolled(app: &mut App, cell: &CellClick<TileKey>, direction: ScrollDirection) {
+pub(crate) fn cell_scrolled(
+    app: &mut App,
+    cell: &CellPointer<TileKey>,
+    direction: ScrollDirection,
+) {
     if let SelectableSurface::Surface(surface) = selection_surface(&cell.content)
         && let SurfaceLookup::Current(state) = app.selections.surface_mut(&surface)
     {
@@ -411,9 +388,9 @@ struct Cells<'a> {
     summary_layout:    RefCell<FrameSummaryLayout>,
     summary_selection: RefCell<SummarySelectionLayout>,
     painted_summary:   RefCell<PaintedSummary>,
+    painted_surfaces:  RefCell<Vec<PaintedSurface>>,
     selections:        RefCell<Selections>,
     focused:           RefCell<SelectableSurface>,
-    layouts:           RefCell<HashMap<TileKey, TreeMetrics>>,
     measurements:      RefCell<HashMap<TileKey, TreeMeasurement>>,
     /// This machine, then each configured remote.
     machines:          Vec<Machine<'a>>,
@@ -559,9 +536,9 @@ impl<'a> Cells<'a> {
             summary_layout: RefCell::new(FrameSummaryLayout::Unallocated),
             summary_selection: RefCell::new(SummarySelectionLayout::DirectDraw),
             painted_summary: RefCell::new(PaintedSummary::NotDrawn),
+            painted_surfaces: RefCell::new(Vec::new()),
             selections: RefCell::new(Selections::default()),
             focused: RefCell::new(SelectableSurface::EmptyCell),
-            layouts: RefCell::new(HashMap::new()),
             measurements: RefCell::new(HashMap::new()),
             machines,
             agents,
@@ -705,8 +682,61 @@ impl<'a> Cells<'a> {
     }
 
     /// The tile named by a stable session or machine-pool identity.
-    fn tile(&self, id: &TileKey) -> Option<&AgentTile<'a>> {
-        self.tiles.iter().find(|tile| tile.key() == *id)
+    fn tile(&self, id: &TileKey) -> TileLookup<'_, 'a> {
+        self.tiles
+            .iter()
+            .find(|tile| tile.key() == *id)
+            .map_or(TileLookup::Retired, TileLookup::Current)
+    }
+
+    /// `record_painted_surface` retains the headers and rows used by this source allocation.
+    fn record_painted_surface(&self, content: &TileContent, inner: Rect) {
+        if let SelectableSurface::Surface(surface) = selection_surface(content) {
+            let painted_content = match content {
+                TileContent::Group(key) => match self.tile(key) {
+                    TileLookup::Current(tile) => PaintedSurfaceContent::Tree {
+                        key:     key.clone(),
+                        spans:   self
+                            .header_spans(tile, Rect::new(0, 0, inner.width, inner.height)),
+                        default: tile.default_sort(),
+                    },
+                    TileLookup::Retired => return,
+                },
+                TileContent::Summary => {
+                    let summary = self.painted_summary.borrow();
+                    let PaintedSummary::Drawn(layout) = &*summary else {
+                        return;
+                    };
+                    let area = Rect::new(
+                        0,
+                        0,
+                        inner.width,
+                        u16::try_from(layout.height()).unwrap_or(u16::MAX),
+                    );
+                    PaintedSurfaceContent::Summary {
+                        agents:   layout.header_spans(area),
+                        accounts: layout.accounts_header_spans(area),
+                    }
+                },
+                TileContent::Empty(_) => return,
+            };
+            let mut rows = self.selections.borrow().surface(&surface).map_or(
+                {
+                    let mut state = crate::interaction::SurfaceSelection::default();
+                    state.set_area(inner);
+                    state
+                },
+                Clone::clone,
+            );
+            if matches!(content, TileContent::Group(_)) {
+                rows.clip_markers(agent_cell::tree_marker_columns(inner));
+            }
+            self.painted_surfaces.borrow_mut().push(PaintedSurface {
+                area: inner,
+                rows,
+                content: painted_content,
+            });
+        }
     }
 
     /// Resolve either tile's headers through its shared drawing layout.
@@ -746,7 +776,7 @@ impl TileCells<TileKey> for Cells<'_> {
         let tiles: Vec<_> = allocations
             .iter()
             .filter_map(|(content, area)| match content {
-                TileContent::Group(id) => self.tile(id).map(|tile| (tile, *area)),
+                TileContent::Group(id) => self.tile(id).map_or(None, |tile| Some((tile, *area))),
                 _ => None,
             })
             .collect();
@@ -764,11 +794,8 @@ impl TileCells<TileKey> for Cells<'_> {
                             .map(|source| source.allocated(*area, state))
                     })
             }));
-        let mut layouts = self.layouts.borrow_mut();
-        layouts.clear();
         for ((tile, _), metrics) in tiles.into_iter().zip(measurements) {
-            tile.share_metrics(metrics.clone());
-            layouts.insert(tile.key(), metrics);
+            tile.share_metrics(metrics);
         }
         let mut selections = self.selections.borrow_mut();
         for (content, area) in &allocations {
@@ -777,9 +804,8 @@ impl TileCells<TileKey> for Cells<'_> {
             {
                 match content {
                     TileContent::Group(key) => {
-                        if let Some(tile) = self.tile(key) {
+                        if let TileLookup::Current(tile) = self.tile(key) {
                             state.set_area(tile.row_area(*area, self.now, self.account_column));
-                            state.clip_markers(agent_cell::tree_marker_columns(*area));
                             tile.set_viewport(state.viewport());
                         }
                     },
@@ -851,6 +877,16 @@ impl TileCells<TileKey> for Cells<'_> {
     }
 
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, _: Color) {
+        if let TileContent::Group(key) = content
+            && let TileLookup::Current(tile) = self.tile(key)
+            && let SurfaceLookup::Current(state) = self
+                .selections
+                .borrow_mut()
+                .surface_mut(&SelectionSurface::Tile(key.clone()))
+        {
+            state.set_area(tile.row_area(inner, self.now, self.account_column));
+            tile.set_viewport(state.viewport());
+        }
         match content {
             TileContent::Summary => {
                 let layout = self.summary_layout(inner.width);
@@ -913,7 +949,7 @@ impl TileCells<TileKey> for Cells<'_> {
                 }
             },
             TileContent::Group(id) => match self.tile(id) {
-                Some(AgentTile::Agent(entry)) => agent_cell::draw(
+                TileLookup::Current(AgentTile::Agent(entry)) => agent_cell::draw(
                     buffer,
                     inner,
                     entry,
@@ -922,7 +958,7 @@ impl TileCells<TileKey> for Cells<'_> {
                     self.account_column,
                     self.footer_colors,
                 ),
-                Some(AgentTile::Unassigned(entry)) => agent_cell::draw_unassigned(
+                TileLookup::Current(AgentTile::Unassigned(entry)) => agent_cell::draw_unassigned(
                     buffer,
                     inner,
                     entry,
@@ -930,40 +966,43 @@ impl TileCells<TileKey> for Cells<'_> {
                     self.account_column,
                     self.footer_colors,
                 ),
-                None => {},
+                TileLookup::Retired => {},
             },
             // The grid draws an empty cell's number itself.
             TileContent::Empty(_) => {},
         }
         self.paint_selection(buffer, content, inner);
+        self.record_painted_surface(content, inner);
     }
 
     /// Session titles retain their hue; pooled titles use the theme's title color.
     fn group_title(&self, id: &TileKey) -> Option<Line<'static>> {
-        self.tile(id).map(|tile| match tile {
-            AgentTile::Unassigned(entry) => Line::from(Span::styled(
-                format!(
-                    "{AGENT_CELL_TITLE_LEAD}{}{HEADING_SEPARATOR}{}",
-                    UNASSIGNED_CELL_TITLE, entry.machine
-                ),
-                Style::default().fg(title_color()),
-            )),
-            AgentTile::Agent(entry) => Line::from(vec![
-                Span::styled(
-                    format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name),
-                    Role::Session(entry.hue).style(),
-                ),
-                Span::styled(
-                    entry.role_label.suffix(),
-                    match entry.role_label {
-                        RoleLabel::Stated(role) | RoleLabel::Inferred(role) => {
-                            self.footer_colors.hierarchy_role(role)
-                        },
-                        RoleLabel::ReviewFallback | RoleLabel::Unlabeled => FooterTint::Plain,
-                    }
-                    .style(Style::default().fg(label_color())),
-                ),
-            ]),
+        self.tile(id).map_or(None, |tile| {
+            Some(match tile {
+                AgentTile::Unassigned(entry) => Line::from(Span::styled(
+                    format!(
+                        "{AGENT_CELL_TITLE_LEAD}{}{HEADING_SEPARATOR}{}",
+                        UNASSIGNED_CELL_TITLE, entry.machine
+                    ),
+                    Style::default().fg(title_color()),
+                )),
+                AgentTile::Agent(entry) => Line::from(vec![
+                    Span::styled(
+                        format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name),
+                        Role::Session(entry.hue).style(),
+                    ),
+                    Span::styled(
+                        entry.role_label.suffix(),
+                        match entry.role_label {
+                            RoleLabel::Stated(role) | RoleLabel::Inferred(role) => {
+                                self.footer_colors.hierarchy_role(role)
+                            },
+                            RoleLabel::ReviewFallback | RoleLabel::Unlabeled => FooterTint::Plain,
+                        }
+                        .style(Style::default().fg(label_color())),
+                    ),
+                ]),
+            })
         })
     }
 }
@@ -1206,6 +1245,7 @@ fraying = "leading"
         "│       │   Previous pane                                 shift-tab    │       │",
         "│       │ Global Shortcuts:                                            │       │",
         "│       │   Add a tile                                    +            │       │",
+        "│       │   Clear the word highlight                      escape       │       │",
         "│       │   Collapse all to first level                   -            │       │",
         "│       │   Collapse the selected row                     left         │       │",
         "│       │   Dismiss overlay / output                      x            │       │",
@@ -1216,7 +1256,6 @@ fraying = "leading"
         "│       │   Focus the tile to the left                    shift-left   │       │",
         "│       │   Focus the tile to the right                   shift-right  │       │",
         "│       │   Open attract favorites                        ctrl-o       │       │",
-        "│       │   Open keymap viewer                            ctrl-k       │       │",
         "│       └───────────────────────────1 of 7 ▼───────────────────────────┘       │",
         "│                                             content rows: 1 of 1  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
@@ -1232,6 +1271,7 @@ fraying = "leading"
         "│             │   Previous pane                     shift-tab    │             │",
         "│             │ Global Shortcuts:                                │             │",
         "│             │   Add a tile                        +            │             │",
+        "│             │   Clear the word highlight          escape       │             │",
         "│             │   Collapse all to first level       -            │             │",
         "│             │   Collapse the selected row         left         │             │",
         "│             │   Expand all rows                   =            │             │",
@@ -1244,8 +1284,7 @@ fraying = "leading"
         "│             │   Open keymap viewer                ctrl-k       │             │",
         "│             │   Open settings                     s            │             │",
         "│             │   Quit                              q            │             │",
-        "│             │   Randomize the attract screen      r            │             │",
-        "│             │   Remove an empty tile              shift-delete │  r/c: 21/78 │",
+        "│             │   Randomize the attract screen      r            │  r/c: 21/78 │",
         "└─────────────└─────────────────────1 of 3 ▼─────────────────────┘─────────────┘",
     ];
 
@@ -1717,8 +1756,8 @@ fraying = "leading"
     }
 
     /// Resolve the role header in the current frame after each sort selection.
-    fn role_header_click(app: &App) -> CellClick<TileKey> {
-        let area = Rect::new(0, 0, 220, 30);
+    fn role_header_click(app: &mut App) -> CellPointer<TileKey> {
+        let area = Rect::new(8, 5, 220, 30);
         let (id, point) = {
             let cells = Cells::new(
                 app.census.machines(&[]),
@@ -1730,20 +1769,29 @@ fraying = "leading"
             .with_color_mode(app.framework.color_mode)
             .with_expansion(&app.expansion);
             let tile = &cells.tiles[0];
+            let mut buffer = Buffer::empty(area);
+            cells.draw(
+                &mut buffer,
+                &TileContent::Group(tile.key()),
+                area,
+                Color::Reset,
+            );
             let span = cells
-                .header_spans(tile, area)
+                .header_spans(tile, Rect::new(0, 0, area.width, area.height))
                 .into_iter()
                 .find(|span| span.column == TreeColumn::Role)
                 .expect("a role header");
+            let key = tile.key();
+            app.painted_surfaces = cells.painted_surfaces.into_inner();
             (
-                tile.key(),
+                key,
                 CellPoint {
                     column: span.columns.start,
                     row:    span.row,
                 },
             )
         };
-        CellClick {
+        CellPointer {
             index: 2,
             content: TileContent::Group(id),
             area: Rect::new(8, 5, area.width, area.height),
@@ -1764,7 +1812,7 @@ fraying = "leading"
             &mut app,
             HandlerExpansionAction::Shared(ExpansionAction::ExpandAll),
         );
-        let mut click = role_header_click(&app);
+        let mut click = role_header_click(&mut app);
         cell_clicked(&mut app, click.clone());
         assert_eq!(app.tree_sorts.len(), 1, "only the clicked tile gets a sort");
         let id = app
@@ -1781,14 +1829,14 @@ fraying = "leading"
             }
         );
         assert_eq!(app.summary_sort, SummarySort::default());
-        click = role_header_click(&app);
+        click = role_header_click(&mut app);
         cell_clicked(&mut app, click.clone());
         assert_eq!(app.tree_sorts[&id].direction, SortDirection::Descending);
         let selected = app.tree_sorts[&id];
         let point = click.point;
         cell_clicked(
             &mut app,
-            CellClick {
+            CellPointer {
                 point: CellPoint {
                     row: point.row + 1,
                     ..point
@@ -1831,7 +1879,7 @@ fraying = "leading"
                 .find(|span| span.column == SummaryColumn::Agent)
                 .expect("summary header");
             [
-                CellClick {
+                CellPointer {
                     index: 1,
                     content: TileContent::Group(tile.key()),
                     area,
@@ -1840,7 +1888,7 @@ fraying = "leading"
                         row:    tree.row,
                     },
                 },
-                CellClick {
+                CellPointer {
                     index: 0,
                     content: TileContent::Summary,
                     area,
@@ -2298,3 +2346,13 @@ mod pinned_accounts_tests;
 
 #[cfg(test)]
 mod narrow_width_tests;
+
+#[cfg(test)]
+mod word_click_tests;
+
+#[cfg(test)]
+mod word_contrast_tests;
+
+#[cfg(test)]
+#[path = "drawn_frame_tests.rs"]
+mod drawn_frame_tests;

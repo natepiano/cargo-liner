@@ -311,7 +311,7 @@ fn dark_title_accent_stays_distinct_and_readable_in_the_composed_grid() {
                     ];
                     for (label, ink) in entries {
                         let other = ink.style(Style::default()).fg.expect("fixture ink");
-                        let distance = tests::perceptual_distance(cell.fg, other);
+                        let distance = footer_colors::perceptual_distance(cell.fg, other);
                         eprintln!("{name} tint={tint} title / {label}: CIEDE2000={distance:.6}");
                         if distance < 12.0 {
                             failures.push(format!(
@@ -538,7 +538,7 @@ fn light_title_accent_stays_distinct_from_session_role_and_account_inks() {
                     ));
                 }
                 for (label, ink) in inks {
-                    let distance = tests::perceptual_distance(cell.fg, ink);
+                    let distance = footer_colors::perceptual_distance(cell.fg, ink);
                     eprintln!("{name} tint={tint} {surface}/{label} dE={distance:.6}");
                     if distance < 12.0 {
                         failures.push(format!(
@@ -553,6 +553,18 @@ fn light_title_accent_stays_distinct_from_session_role_and_account_inks() {
     tui_pane::set_transparent_background(transparent);
     tui_pane::set_focused_pane_tint(tinted);
     assert!(failures.is_empty(), "light chrome: {failures:#?}");
+}
+
+fn position(buffer: &Buffer, word: &str) -> (u16, u16) {
+    (0..buffer.area.height)
+        .find_map(|y| {
+            let line: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            line.find(word)
+                .map(|index| (summary::cell_width(&line[..index]), y))
+        })
+        .expect("drawn sort target")
 }
 
 #[test]
@@ -607,30 +619,23 @@ fn new_showrunner_and_unassigned_tiles_sort_names_and_first_click_reverses_them(
             area,
             Color::Reset,
         );
-        let (alpha, zeta) = if matches!(cells.tile(&key), Some(AgentTile::Unassigned(_))) {
+        let (alpha, zeta) = if matches!(
+            cells.tile(&key),
+            TileLookup::Current(AgentTile::Unassigned(_))
+        ) {
             ("alpha-alone", "zeta-alone")
         } else {
             ("alpha-unit", "zeta-unit")
-        };
-        let position = |buffer: &Buffer, word: &str| {
-            (0..buffer.area.height)
-                .find_map(|y| {
-                    let line: String = (0..buffer.area.width)
-                        .map(|x| buffer[(x, y)].symbol())
-                        .collect();
-                    line.find(word)
-                        .map(|index| (summary::cell_width(&line[..index]), y))
-                })
-                .expect("drawn sort target")
         };
         assert!(
             position(&before, alpha).1 < position(&before, zeta).1,
             "default {key:?}: {before:?}"
         );
         let (x, y) = position(&before, "session");
+        app.painted_surfaces = cells.painted_surfaces.into_inner();
         cell_clicked(
             &mut app,
-            CellClick {
+            CellPointer {
                 index: 0,
                 content: TileContent::Group(key.clone()),
                 area,
@@ -804,7 +809,7 @@ impl SessionPaletteCheck<'_> {
             let session_ink = Role::Session(session).style().fg.expect("session ink");
             for (rank, reset_ink) in resets.iter().enumerate() {
                 let gap = tests::hue_gap(session_ink, *reset_ink);
-                let distance = tests::perceptual_distance(session_ink, *reset_ink);
+                let distance = footer_colors::perceptual_distance(session_ink, *reset_ink);
                 self.measurements
                     .entry("session/reset".into())
                     .or_default()
@@ -840,7 +845,7 @@ impl SessionPaletteCheck<'_> {
         )
         .expect("write current gamut measurement");
         for (neighbor, ink) in palette {
-            let distance = tests::perceptual_distance(session_ink, *ink);
+            let distance = footer_colors::perceptual_distance(session_ink, *ink);
             self.measurements
                 .entry("session/fixed".into())
                 .or_default()
@@ -885,7 +890,7 @@ impl SessionPaletteCheck<'_> {
                 ));
             }
             for (second, second_ink) in &session_inks[index + 1..] {
-                let distance = tests::perceptual_distance(*first_ink, *second_ink);
+                let distance = footer_colors::perceptual_distance(*first_ink, *second_ink);
                 let gap = tests::hue_gap(*first_ink, *second_ink);
                 let floor = self.floors.session_distance;
                 self.measurements

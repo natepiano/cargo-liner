@@ -449,7 +449,7 @@ fn check_rendered_reset_ramp(variant_name: &str) {
             ("left warning", warning, &mut warning_pairs),
             ("left alarm", alarm, &mut alarm_pairs),
         ] {
-            let distance = tests::perceptual_distance(ink, other);
+            let distance = footer_colors::perceptual_distance(ink, other);
             if distance < 20.0 {
                 failures.push(format!(
                     "{name} {label} {ink:?}/{other_name} {other:?} dE={distance:.6}"
@@ -525,7 +525,7 @@ fn reset_endpoints_remain_perceptually_distinct_on_every_theme() {
             let buffer = drawn(&app);
             let nearest = reset_color(&buffer, "nearest");
             let farthest = reset_color(&buffer, "furthest");
-            let distance = tests::perceptual_distance(nearest, farthest);
+            let distance = footer_colors::perceptual_distance(nearest, farthest);
             if distance < 12.0 {
                 failures.push(format!("{name} tint={tint} nearest={nearest:?} farthest={farthest:?} dE={distance:.9} floor=12"));
             }
@@ -593,7 +593,7 @@ fn check_reset_chroma(theme_name: &str) {
             );
             let ink = cell.fg;
             let chroma = footer_colors::Oklch::from_color(ink).chroma;
-            let distance = tests::perceptual_distance(ink, text);
+            let distance = footer_colors::perceptual_distance(ink, text);
             if chroma < 0.10 || distance < 15.0 {
                 failures.push(format!(
                         "{name} tint={tint} {label} reset={ink:?} text={text:?} C={chroma:.9} floor=0.10 dE={distance:.9} floor=15"

@@ -24,7 +24,6 @@ use crate::Pane;
 use crate::ScrollDirection;
 use crate::SettingsHost;
 use crate::dispatch_hit_test;
-use crate::frame_inner;
 use crate::wheel_framework_overlay;
 
 /// A terminal cell position relative to a tile's content origin.
@@ -36,17 +35,49 @@ pub struct CellPoint {
     pub row:    u16,
 }
 
-/// A content press resolved before focus changes the grid's layout.
+/// A content pointer position resolved before focus changes the grid layout.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CellClick<Id> {
-    /// The clicked cell's grid index.
+pub struct CellPointer<Id> {
+    /// The current grid index of the painted cell.
     pub index:   usize,
     /// The content assigned to that cell.
     pub content: TileContent<Id>,
     /// The content rectangle in terminal coordinates.
     pub area:    Rect,
-    /// The press relative to the content origin.
+    /// The pointer position relative to the content origin.
     pub point:   CellPoint,
+}
+
+/// A painted pointer target resolved before tile focus changes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CellPress<Id> {
+    /// A press in a tile with content.
+    Content {
+        /// The source content coordinates.
+        click:    CellPointer<Id>,
+        /// The position in the painted frame.
+        position: Position,
+    },
+    /// A press on the title row inside its corner cells.
+    Title {
+        /// The current grid index.
+        index:    usize,
+        /// The content assigned to the tile.
+        content:  TileContent<Id>,
+        /// The position in the painted frame.
+        position: Position,
+    },
+    /// A press in an empty tile's content allocation.
+    EmptyContent {
+        /// The source content coordinates.
+        click:    CellPointer<Id>,
+        /// The position in the painted frame.
+        position: Position,
+    },
+    /// A border or reserved readout row.
+    Chrome,
+    /// A painted tile that no longer owns a live slot.
+    Retired,
 }
 
 /// An app whose body is one [`TileGrid`], registered as one pane.
@@ -66,10 +97,20 @@ pub trait TileGridHost: AppContext + 'static {
     fn tile_grid_mut(&mut self) -> &mut TileGrid<Self::TileId>;
 
     /// Handle a wheel step inside a cell without moving tile focus.
-    fn cell_scrolled(&mut self, _cell: CellClick<Self::TileId>, _direction: ScrollDirection) {}
+    fn cell_scrolled(&mut self, _cell: CellPointer<Self::TileId>, _direction: ScrollDirection) {}
+
+    /// Handle a painted press after focus moves to a current tile.
+    fn cell_pressed(&mut self, press: CellPress<Self::TileId>) {
+        match press {
+            CellPress::Content { click, .. } | CellPress::EmptyContent { click, .. } => {
+                self.cell_clicked(click);
+            },
+            CellPress::Title { .. } | CellPress::Chrome | CellPress::Retired => {},
+        }
+    }
 
     /// Handle a left press inside a focused cell's content, after focus moves.
-    fn cell_clicked(&mut self, _click: CellClick<Self::TileId>) {}
+    fn cell_clicked(&mut self, _click: CellPointer<Self::TileId>) {}
 }
 
 /// Keymap host for the grid. It has no keys of its own, so `A`, the app
@@ -150,10 +191,11 @@ where
 {
     match dispatch_hit_test(app, position) {
         Some(TilePick::Cell(index)) => {
-            let click = content_click(app.tile_grid_mut().cell_hit(position), position);
+            let press = painted_press(app.tile_grid_mut().cell_hit(position), position);
             app.tile_grid_mut().focus_cell(index);
-            if let Some(click) = click {
-                app.cell_clicked(click);
+            match press {
+                CellPress::Chrome | CellPress::Retired => {},
+                press => app.cell_pressed(press),
             }
         },
         Some(TilePick::OverlayRow { id, row }) => {
@@ -178,25 +220,46 @@ where
     }
 }
 
-/// Translate a painted press back to the source coordinates used by its content.
-fn content_click<Id>(hit: CellHit<Id>, position: Position) -> Option<CellClick<Id>> {
-    let CellHit::Current {
-        index,
-        content,
-        frame,
-    } = hit
-    else {
-        return None;
-    };
-    let area = content_area(frame.inner());
-    let source = Position::new(
-        position.x,
-        u16::try_from(i32::from(position.y) - frame.shift()).ok()?,
-    );
-    if !frame_inner(frame.clip()).contains(position) || !area.contains(source) {
-        return None;
+/// Translate a wheel position through the same allocation as a press.
+fn content_click<Id>(hit: CellHit<Id>, position: Position) -> Option<CellPointer<Id>> {
+    match painted_press(hit, position) {
+        CellPress::Content { click, .. } | CellPress::EmptyContent { click, .. } => Some(click),
+        CellPress::Title { .. } | CellPress::Chrome | CellPress::Retired => None,
     }
-    Some(CellClick {
+}
+
+/// Resolve a painted press before focus can change the grid allocation.
+fn painted_press<Id>(hit: CellHit<Id>, position: Position) -> CellPress<Id> {
+    let (index, content, frame) = match hit {
+        CellHit::Current {
+            index,
+            content,
+            frame,
+        } => (index, content, frame),
+        CellHit::Retired => return CellPress::Retired,
+        CellHit::Missed => return CellPress::Chrome,
+    };
+    let Ok(source_y) = u16::try_from(i32::from(position.y) - frame.shift()) else {
+        return CellPress::Chrome;
+    };
+    let source = Position::new(position.x, source_y);
+    let clip = frame.clip();
+    if clip.contains(position)
+        && i32::from(position.y) == i32::from(frame.rect().y) + frame.shift()
+        && position.x > frame.rect().x
+        && position.x < frame.rect().right().saturating_sub(1)
+    {
+        return CellPress::Title {
+            index,
+            content,
+            position,
+        };
+    }
+    let area = content_area(frame.inner());
+    if !clip.contains(position) || !area.contains(source) {
+        return CellPress::Chrome;
+    }
+    let click = CellPointer {
         index,
         content,
         area,
@@ -204,7 +267,37 @@ fn content_click<Id>(hit: CellHit<Id>, position: Position) -> Option<CellClick<I
             column: source.x - area.x,
             row:    source.y - area.y,
         },
-    })
+    };
+    if matches!(click.content, TileContent::Empty(_)) {
+        CellPress::EmptyContent { click, position }
+    } else {
+        CellPress::Content { click, position }
+    }
+}
+
+/// The visible content and title allocations used by `painted_press`.
+pub(super) fn painted_regions(frame: crate::PaneFrame) -> Vec<Rect> {
+    let clip = frame.clip();
+    let content = content_area(frame.inner());
+    let shifted = |area: Rect| {
+        let top = (i32::from(area.y) + frame.shift()).max(0);
+        let bottom = (i32::from(area.bottom()) + frame.shift()).max(0);
+        Rect::new(
+            area.x,
+            u16::try_from(top).unwrap_or(u16::MAX),
+            area.width,
+            u16::try_from(bottom - top).unwrap_or(u16::MAX),
+        )
+    };
+    let content = shifted(content).intersection(clip);
+    let title = shifted(Rect::new(
+        frame.rect().x.saturating_add(1),
+        frame.rect().y,
+        frame.rect().width.saturating_sub(2),
+        1,
+    ))
+    .intersection(clip);
+    vec![content, title]
 }
 
 /// Move a framework overlay's selection to the row that was clicked.

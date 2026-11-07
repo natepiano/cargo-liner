@@ -874,6 +874,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_inventory_becomes_incomplete_at_the_capture_limit() {
+        let mut inventory = Inventory {
+            entries: Vec::new(),
+            outcome: Enumeration::Complete,
+        };
+        for _ in 1..CAPTURE_INVENTORY_LIMIT {
+            inventory.push(b"record");
+        }
+        assert!(matches!(inventory.outcome, Enumeration::Complete));
+        inventory.push(b"last-record");
+        assert!(matches!(inventory.outcome, Enumeration::Incomplete));
+        assert_eq!(inventory.entries.len(), CAPTURE_INVENTORY_LIMIT);
+    }
+
     /// A real getdents/readdir failure survives instead of becoming empty success.
     #[test]
     fn enumeration_errors_preserve_their_io_cause() {
