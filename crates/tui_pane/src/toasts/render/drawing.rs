@@ -4,6 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::style::Style;
 
 use super::card;
 use super::layout;
@@ -20,6 +21,7 @@ use crate::toasts::ToastHitbox;
 use crate::toasts::ToastView;
 use crate::toasts::body;
 use crate::toasts::manager;
+use crate::toasts::view::ToastExitState;
 
 /// Compiled-in palette consumed by toast rendering.
 ///
@@ -77,7 +79,7 @@ fn render_toasts(
     let max_visible = settings.max_visible.get().max(1);
     let start = toasts.len().saturating_sub(max_visible);
     let visible_toasts = &toasts[start..];
-    let complete_toasts: Vec<_> = visible_toasts
+    let mut complete_toasts: Vec<_> = visible_toasts
         .iter()
         .map(|toast| {
             let mut complete = toast.clone();
@@ -113,7 +115,30 @@ fn render_toasts(
         }
     };
     let available = area.height.saturating_sub(gap_rows);
+    let width = visible_toasts
+        .iter()
+        .map(card::title_card_width)
+        .fold(manager::toast_card_width(settings, area.width), u16::max)
+        .min(area.width.saturating_sub(TOAST_SIDE_GAP.saturating_mul(2)));
+    for toast in &mut complete_toasts {
+        if toast.exit_state == ToastExitState::Visible {
+            toast.min_height = toast.min_height.max(first_sentence_height(toast, width));
+            toast.desired_height = toast.desired_height.max(toast.min_height);
+        }
+    }
     let allocated = layout::allocate_toast_heights(&complete_toasts, available, gap);
+    let visible_toasts: Vec<_> = visible_toasts
+        .iter()
+        .map(|toast| {
+            let mut visible = toast.clone();
+            if toast.exit_state == ToastExitState::Visible {
+                visible.desired_height = visible
+                    .desired_height
+                    .max(first_sentence_height(toast, width));
+            }
+            visible
+        })
+        .collect();
     let drawn_height = visible_toasts
         .iter()
         .zip(&allocated)
@@ -122,8 +147,6 @@ fn render_toasts(
         .reduce(|height, next| height.saturating_add(gap).saturating_add(next))
         .unwrap_or(0);
     let edge_gap = area.height.saturating_sub(drawn_height).min(TOAST_ROW_GAP);
-    let width = manager::toast_card_width(settings, area.width);
-
     let layout = StackLayout {
         width,
         gap,
@@ -132,14 +155,56 @@ fn render_toasts(
     };
     let hitboxes = match settings.placement {
         ToastPlacement::TopRight => {
-            layout::render_top_down(frame, area, visible_toasts, &allocated, layout)
+            layout::render_top_down(frame, area, &visible_toasts, &allocated, layout)
         },
         ToastPlacement::BottomRight => {
-            layout::render_bottom_up(frame, area, visible_toasts, &allocated, layout)
+            layout::render_bottom_up(frame, area, &visible_toasts, &allocated, layout)
         },
     };
 
     ToastRenderResult { hitboxes }
+}
+
+/// Keep the first sentence together when the card has enough space.
+fn first_sentence_height(toast: &ToastView, card_width: u16) -> u16 {
+    if !toast.tracked_items().is_empty() {
+        return toast.min_height();
+    }
+    let text = toast.body();
+    let sentence_end = text.char_indices().find_map(|(index, character)| {
+        let end = index + character.len_utf8();
+        (matches!(character, '.' | '?' | '!')
+            && text[end..].chars().next().is_none_or(char::is_whitespace))
+        .then_some(end)
+    });
+    let Some(end) = sentence_end else {
+        return toast.min_height();
+    };
+    let sentence_chars = text[..end]
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .count();
+    let width = u16::try_from(body::card_body_width(card_width)).unwrap_or(u16::MAX);
+    let mut visible_chars = 0;
+    let mut rows = 0_u16;
+    for line in toast.render_body.wrapped_lines(width, Style::default()) {
+        rows = rows.saturating_add(1);
+        visible_chars += line
+            .spans
+            .iter()
+            .map(|span| {
+                span.content
+                    .chars()
+                    .filter(|character| !character.is_whitespace())
+                    .count()
+            })
+            .sum::<usize>();
+        if visible_chars >= sentence_chars {
+            break;
+        }
+    }
+    rows.saturating_add(2)
+        .saturating_add(u16::from(toast.has_action()))
 }
 
 /// Render-time context for [`super::super::Toasts`]'s
@@ -936,7 +1001,7 @@ mod tests {
 
     #[test]
     fn a_toast_keeps_one_cleared_cell_on_each_side() {
-        for (configured_width, area_width, expected_card_width) in [(12, 30, 12), (60, 20, 18)] {
+        for (configured_width, area_width, expected_card_width) in [(12, 30, 14), (60, 20, 18)] {
             let area = Rect::new(5, 1, area_width, 10);
             let mut toasts =
                 Toasts::<TestApp>::with_settings(settings_with_width(configured_width));

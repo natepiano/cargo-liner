@@ -2,11 +2,13 @@ use anyhow::Context;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use tui_pane::ColorMode;
+use tui_pane::PaneFocusState;
 use unicode_width::UnicodeWidthStr;
 
 use crate::project::AheadBehind;
 use crate::project::Comparison;
 use crate::project::TrackedRef;
+use crate::tui::panes;
 use crate::tui::panes::GitData;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::pane_data::RemoteRow;
@@ -346,5 +348,68 @@ fn compact_worktree_wide_branch_keeps_all_four_columns_and_whole_sync() -> anyho
     assert_eq!(values.len(), 4, "{row}");
     assert_eq!(values[1], "界界", "{row}");
     assert_eq!(values[3], "──", "{row}");
+    Ok(())
+}
+
+#[test]
+fn long_branches_give_short_tracked_values_space_in_both_tables() -> anyhow::Result<()> {
+    for (window, pane_width) in [(80, 17), (95, 24)] {
+        let tracked = if window == 80 { "ma" } else { "main" };
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        app.panes.git.set_content(GitData {
+            worktrees: vec![WorktreeInfo {
+                name:         "proof_crate".to_string(),
+                path:         "/tmp/proof_crate".to_string(),
+                branch:       Some("verify_a_very_long_branch".to_string()),
+                tracked:      Some(tracked.to_string()),
+                ahead_behind: Comparison::NotCompared,
+            }],
+            remotes: RemoteRows::Listed(vec![RemoteRow {
+                name:            "origin".to_string(),
+                icon:            "",
+                display_url:     "github.com/nate/proof_crate".to_string(),
+                branch:          "verify_a_very_long_branch".to_string(),
+                tracked_ref:     TrackedRef::Named(tracked.to_string()),
+                status:          Comparison::NotCompared,
+                full_url:        None,
+                push_annotation: None,
+            }]),
+            ..GitData::default()
+        });
+        app.panes.git.focus.pane_focus_state = PaneFocusState::Active;
+        let fields = panes::git_fields_from_data(app.panes.git.content().context("Git content")?);
+        for (offset, label) in [(0, "Remotes"), (1, "Worktrees")] {
+            app.panes.git.viewport.set_pos(fields.len() + offset);
+            let buffer =
+                test_support::draw_pane_in_window(&mut app, PaneId::Git, window, pane_width)?;
+            test_support::position(&buffer, label)?;
+            let worktree = test_support::position(&buffer, "Worktrees")?;
+            let remote = test_support::position(&buffer, "Remotes")?;
+            let area = Rect::new(0, 0, pane_width, buffer.area.height);
+            assert_shared_remote_columns(&buffer, area, remote.1 + 1, worktree.1 + 1)?;
+            for section in [remote, worktree] {
+                let row = Rect::new(0, section.1 + 2, pane_width, 1);
+                test_support::find_text_cell(&buffer, row, tracked)
+                    .context("Whole short Tracked value")?;
+                let text: String = (1..pane_width - 1)
+                    .map(|x| buffer[(x, row.y)].symbol())
+                    .collect();
+                let values: Vec<_> = text.split_whitespace().collect();
+                assert_eq!(values.len(), 4, "{text}");
+                assert!(values[1].ends_with('…'), "{text}");
+                assert_eq!(values[3], "──");
+                assert_eq!(buffer[(1, row.y)].symbol(), " ");
+                assert_eq!(buffer[(pane_width - 2, row.y)].symbol(), " ");
+            }
+            let title_row = &test_support::rows(&buffer)
+                [usize::from(if offset == 0 { remote.1 } else { worktree.1 })];
+            let count = if window == 80 { "(1)" } else { "(1 of 1)" };
+            assert!(
+                title_row.contains(&format!("{label} {count}")),
+                "{title_row}"
+            );
+        }
+    }
     Ok(())
 }

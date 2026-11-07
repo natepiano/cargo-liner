@@ -150,3 +150,24 @@ fn known_zero_ci_draws_the_empty_message_while_loading_keeps_both_counts() -> an
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     Ok(())
 }
+
+#[test]
+fn github_count_moves_left_to_keep_the_margin_at_the_exact_boundary() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(PackageData {
+        ci_display: CiDisplay::Runs {
+            ci_status:    Some(CiStatus::Failed),
+            local:        9,
+            github_total: GithubRunCount::Known(10_000_000),
+        },
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Package, 80, 17)?;
+    let local = test_support::position(&buffer, "local 9")?;
+    let github = test_support::position(&buffer, "gh 10000000")?;
+    assert_eq!(github.1, local.1 + 1);
+    assert!(github.0 < local.0);
+    assert_eq!(buffer[(15, github.1)].symbol(), " ");
+    Ok(())
+}

@@ -85,19 +85,17 @@ fn target_names_take_width_before_the_source_at_eighty_columns() -> anyhow::Resu
                 text.contains("binary").then_some(text)
             })
             .context("Target row")?;
+        let (source_x, _) =
+            test_support::find_text_cell(&buffer, area, "Source").context("Source header")?;
+        let target: String = row
+            .chars()
+            .take(usize::from(source_x - area.x - 1))
+            .collect();
         if name == "proof_crate" {
-            assert!(row.contains(name), "{area:?} {row}");
+            assert!(target.contains(name), "{area:?} {row}");
         } else {
-            assert!(row.contains("proof_crate"), "{row}");
-            assert!(
-                row.split_once("binary")
-                    .context("Kind cell")?
-                    .0
-                    .trim_end()
-                    .ends_with('…'),
-                "{row}"
-            );
-            assert!(test_support::find_text_cell(&buffer, area, "Source").is_none());
+            assert!(target.trim_end().ends_with('…'), "{row}");
+            assert!(target.contains("proof"), "{row}");
         }
     }
     Ok(())
@@ -150,5 +148,29 @@ fn binary_kind_returns_a_cell_to_source_at_eighty_columns() -> anyhow::Result<()
     app.panes.targets.set_content(data);
     let mixed = test_support::draw_ui(&mut app, 80)?;
     test_support::position(&mixed, "example")?;
+    Ok(())
+}
+
+#[test]
+fn workspace_sources_keep_their_column_at_ninety_five_columns() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    let mut data = test_support::target_data();
+    for (entry, source) in data.binaries.iter_mut().zip(["workspace_a", "workspace_b"]) {
+        entry.display_name = "proof_crate_with_a_long_target_name".to_string();
+        entry.source = crate::tui::panes::TargetSource::workspace_root(source.to_string());
+    }
+    app.panes.targets.set_content(data);
+    let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Targets, 95, 29)?;
+    let source = test_support::position(&buffer, "Source")?;
+    let kind = test_support::position(&buffer, "Kind")?;
+    for y in source.1 + 1..=source.1 + 2 {
+        let name: String = (1..source.0).map(|x| buffer[(x, y)].symbol()).collect();
+        let source_value: String = (source.0..kind.0)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        assert!(name.trim_end().ends_with('…'), "{name}");
+        assert!(!source_value.trim().is_empty(), "{source_value}");
+    }
     Ok(())
 }

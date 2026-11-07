@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod ci_count_tests;
+mod constants;
 #[cfg(test)]
 mod disk_loading_tests;
 mod pane;

@@ -398,7 +398,13 @@ fn append_pull_requests_section(
 
     if section.rows.is_empty() {
         accum.lines.push(Line::from(Span::styled(
-            format!(" {}", pull_request_status_text(section)),
+            format!(
+                " {}",
+                fit_text(
+                    &pull_request_status_text(section),
+                    usize::from(area_width).saturating_sub(2)
+                )
+            ),
             Style::default().fg(inactive_title_color()),
         )));
         return;
@@ -720,15 +726,22 @@ fn section_title_with_count(title: &str, width: usize) -> String {
     let Some((word, count)) = title.rsplit_once(" (") else {
         return render::truncate_with_ellipsis(title, width, "…");
     };
-    let count = format!(" ({count}");
     if title.width() <= width {
         return title.to_string();
     }
-    format!(
-        "{}{}",
-        render::truncate_with_ellipsis(word, width.saturating_sub(count.width()), "…"),
-        count
-    )
+    let total = count
+        .trim_end_matches(')')
+        .rsplit(" of ")
+        .next()
+        .unwrap_or(count);
+    let compact = format!("{word} ({total})");
+    if compact.width() <= width {
+        return compact;
+    }
+    if word.width() <= width {
+        return word.to_string();
+    }
+    render::truncate_with_ellipsis(word, width, "…")
 }
 
 struct RenderFlatArgs<'a> {
@@ -932,11 +945,10 @@ fn label_width_for_field(args: &RenderFlatArgs<'_>, field: DetailField) -> usize
     } else {
         args.label_width
     };
-    if width > *SPLIT_ROW_MIN_INNER_WIDTH
-        && width <= support::NARROW_FIELD_INNER_WIDTH
-        && desired < width
-    {
+    if width >= field.label().width() + 2 && width > *SPLIT_ROW_MIN_INNER_WIDTH {
         desired
+            .min(width.saturating_sub(2))
+            .max(field.label().width())
     } else {
         flat_field_label_width(
             args.area_width,
@@ -1260,11 +1272,23 @@ fn fit_sync_trio(layout: &mut SyncColLayout, values: (usize, usize, usize)) {
         *width -= cut;
         excess -= cut;
     }
-    for width in [&mut layout.tracked, &mut layout.branch, &mut layout.sync] {
-        let cut = excess.min(width.saturating_sub(*MIN_FITTED_TEXT_WIDTH));
-        *width -= cut;
-        excess -= cut;
+    while excess > 0
+        && (layout.branch > *MIN_FITTED_TEXT_WIDTH || layout.tracked > *MIN_FITTED_TEXT_WIDTH)
+    {
+        let width = if layout.branch >= layout.tracked {
+            &mut layout.branch
+        } else {
+            &mut layout.tracked
+        };
+        *width -= 1;
+        excess -= 1;
     }
+    let cut = excess.min(
+        layout
+            .sync
+            .saturating_sub(values.2.max(*MIN_FITTED_TEXT_WIDTH)),
+    );
+    layout.sync -= cut;
 }
 
 /// `lead` for the Remotes table, or 0 when there are no remotes (so an empty
@@ -1977,7 +2001,10 @@ mod tests {
             ));
             if width < 50 {
                 assert!(!text.contains("📁"), "{width}: {text}");
-                assert!(!text.contains("n…"), "{width}: {text}");
+                assert!(
+                    !text.split_whitespace().any(|token| token == "n…"),
+                    "{width}: {text}"
+                );
                 assert_eq!(text.split_whitespace().count(), 4, "{width}: {text}");
             } else {
                 assert!(text.starts_with(" 📁 "), "{width}: {text}");

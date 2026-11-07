@@ -554,55 +554,27 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 ### Phase 4k — Loading and empty values read whole in narrow panes  · status: done
 
-**Depends on:** Phase 4g (both edit `crates/cargo-port/src/tui/panes/pane_data/`) and Phase 4j (both edit `crates/cargo-port/src/tui/panes/package/readability_tests.rs`)
+#### As-built
 
-#### Work Order
-
-**Goal:** the Git pane shows a GitHub quota row only when that bucket has data, the empty description keeps one blank right-margin cell, and the startup toast keeps its bottom gap row while it opens.
-
-**Source:** Phase 4g and 4h design check of `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4gh_4/`, 2026-11-07. Both defects are older than Phase 4e (`shots_4e_4`):
-- `toast80-color-a` r2-r3: the Core and GraphQL rows draw with blank values before the first quota poll. Finding F015 in the 4g ledger.
-- `toast80-color-a` r2-r3: the empty description wraps to `No` / `description` in a 15-cell interior. ` No description` fits one row, as `Disk      73 B` fills the same width. Finding F016 in the 4h ledger.
-- `shots_4gh_6/toast160-color-c.png` (Phase 4g design check, 2026-11-07): at 160x45 the Startup card fills the gap row above the CI runs pane's bottom border while it opens. The `.txt` 0.28 s earlier shows the gap row. Both show `1 of 2`. Phase 4h's toast code, merged in c2d6bf139.
-
-**Decision:** showrunner, 2026-11-07, the empty-description ruling, revised the same day: ` No description` takes one row when the interior is 16 cells or more, and wraps at 15 cells or less. Why: the right-margin cell of Phase 4l applies to every Package row, with no exception. Show it only when it is true (Spec 8 of Phase 4e). Astra review, 2026-11-07 (`/tmp/claude/astra/20261107T141905Z-504472/review.md`): omit a quota row until its bucket has data, because no data does not prove that a fetch is running.
-
-**Decision:** showrunner, 2026-11-07, design check finding F009: the Git pane title of a project that is not a git repository is always `Git`, as on main, and its body stays empty until quota data arrives. Why: a title must not change when data arrives, and `Git` keeps main's look.
-
-**Constraints:**
-- Change no other look.
-- Keep a measured or cached quota through later refreshes and failures.
-
-**Spec:**
-1. **Quota rows wait for data.** `git_fields_from_data` (`pane_data/git_data.rs:358`, the quota rows near line 422) adds each quota row only when its bucket has data. `format_rate_limit_bucket` (`pane_data/formatting.rs:402`) then never returns empty text for a drawn row. A bucket with no data is a named state, not a bare `None`. Convert the external `Option` once, in `build_git_detail_fields` (`git_data.rs:482`). `GitData`, `GitDetailFields`, both `detail_data.rs` construction paths (near lines 346 and 900) and `pane_data/detail_field.rs` (`RateLimitCore`, `RateLimitGraphQl`) carry the state. `format_rate_limit_bucket` takes an observed quota, not an `Option`. `fit_rate_limit_value` (`git/render.rs:1054`) reads the state. Keep its compact-quota tests green.
-2. **Description width stays.** `DescriptionBlock::for_pane` (`panes/description.rs:116`) keeps one inset cell on each side. A 16-cell interior leaves 14 cells, so the 14-cell text takes one row. A 15-cell interior leaves 13 cells, so it wraps to `No` / `description`. The code already does this: change no production code.
-3. **Tests.** Quota-state tests read the drawn Git buffer: no data, data, and a failure after data. Description tests read the drawn Package pane at interiors of 15 and 16 cells: the wrap and the blank right-margin cell at 15, one row at 16. Put them beside `empty_description_wraps_inside_the_inset_at_each_window_width` (`package/readability_tests.rs:882`).
-4. **The gap row stays while the toast opens.** Likely cause (Astra review, `/tmp/claude/astra/20261107T162018Z-369399/review.md`): with nine interior rows and eight body rows, the whole card asks for ten rows, so `drawing.rs:98` reserves no gap. As the opening animation grows the card from eight to nine rows, `edge_gap` drops from one to zero. Page capacity comes from the allocated height (`layout.rs:88`), not the animated height.
-   - Rule: nine interior rows give eight card rows plus one bottom gap. The five-row short pane keeps three body rows on the gap rows (`placement_tests.rs:123`). Name the threshold between the two cases in code.
-   - Page capacity stays fixed while pane geometry and toast allocation stay unchanged. A resize may change it. Page count may change when content arrives.
-   - Tests: render the framed CI pane with nine interior rows in a 160x45 frame, with plain coloured lines as Startup uses (`startup_phase/tracker.rs:269`). Hold eight body rows and step explicit render times through the whole opening animation. At each step, assert the blank bottom gap, whole pane borders and the expected body rows. Test arriving lines on their own through `update_colored`. Add a thirteen-row case that tells six rows per page from seven.
-
-**Constraints from prior phases:**
-- Phase 4g's reset retry and its quota presentation stay as they are: fetch at the reset time, then at most 3 retries 10 s apart. The screen hides a reset at or before now.
-- Keep the 37-cell two-column threshold and the two-row description cap below 12 body rows.
-- New drawing tests set `ColorMode` explicitly. Name each test for the behavior it pins.
+- Each GitHub quota bucket is a `QuotaObservation` (`Unobserved`, `Observed(RateLimitQuota)`) in `GitData` and `GitDetailFields`. `build_git_detail_fields` converts the rate-limit cache `Option` once. `git_fields_from_data` adds a Core or GraphQL row only for an observed bucket, and `format_rate_limit_bucket` takes an observed quota, so a drawn quota row never has an empty value.
+- `HttpClient::set_rate_limit` keeps each cached bucket that a reply omits (`github_rate_limit.core.or(state.core)`), so a failed or partial refresh does not erase a known quota.
+- The empty Git pane of a project that is not a git repository is always titled `Git`; its body stays empty until quota data arrives.
+- ` No description` takes one row at a 16-cell Package interior and wraps to `No` / `description` at 15 cells, inside one inset cell on each side.
+- A toast keeps one blank gap row above the pane's bottom border while it opens when the pane has `MIN_PANE_ROWS_WITH_EDGE_GAP` (6, `tui_pane/src/constants.rs`) rows or more. Page capacity comes from the allocated height, not the animated height.
 
 **Files:**
-- `crates/cargo-port/src/tui/panes/pane_data/` — the quota rows and their tests
-- `crates/cargo-port/src/tui/panes/git/` — `fit_rate_limit_value` in `render.rs`, its compact-quota tests and the drawn quota-state tests
-- `crates/cargo-port/src/tui/panes/package/readability_tests.rs` — the description tests
-- `crates/tui_pane/src/toasts/render/` — the toast gap row and its drawn tests
+- `crates/cargo-port/src/tui/panes/pane_data/` — `QuotaObservation`, the quota rows, `rate_limit_tests.rs`
+- `crates/cargo-port/src/http/client.rs` — `set_rate_limit`
+- `crates/cargo-port/src/tui/panes/git/render.rs` — `fit_rate_limit_value` and the empty Git title
+- `crates/cargo-port/src/tui/panes/package/readability_tests.rs` — the 15- and 16-cell description tests
+- `crates/tui_pane/src/toasts/render/` — `drawing.rs` (the gap row), `opening_tests.rs`, `test_support.rs` (the shared toast test app)
 - `crates/cargo-port/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md`
 
-**Workers:** 2 writers
-- Writer 1 (cargo-port): Specs 1-3, the `crates/cargo-port/` files above and their tests, and `crates/cargo-port/CHANGELOG.md`.
-- Writer 2 (tui_pane): Spec 4, `crates/tui_pane/src/toasts/render/` and its drawn tests, and `crates/tui_pane/CHANGELOG.md`. Each crate has its own changelog, so the two file sets do not touch.
+**Gotchas:** under NO_COLOR a focused pane draws heavy borders (`┗`), so a capture script that finds page counts by the border must match both border sets.
 
-**State:** none.
+**Ruled out:** a `Not a git repo` title for the empty Git pane; a pane title does not change when data arrives.
 
-**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. An 80x30 live capture in colour and under NO_COLOR, judged by the design check, shows no blank quota row before the first poll, and the 15-cell Package interior keeps its right-margin cell. A 160x45 startup capture shows the gap row in every toast frame; its first frame is not blank (a blank PNG in `shots_4gh_6/toast160-color-a` beside a full `.txt` was read as xterm lag). Close the routes of F015, F016 and the toast gap row at this checkpoint. The checkpoint carries a `Change-Review:` line.
-
-### Phase 4l — Labels, titles and columns read whole in narrow panes  · status: todo
+### Phase 4l — Labels, titles and columns read whole in narrow panes  · status: done
 
 **Depends on:** Phase 4j (both edit `crates/cargo-port/src/tui/panes/targets/` and `crates/cargo-port/src/tui/panes/git/`) and Phase 4k (both edit `crates/tui_pane/src/toasts/render/`)
 
@@ -629,7 +601,14 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 - `quota80-*-1-loading` and `toast80-*`: the toast label reads `Cargo meta…`, because the 8-cell bar takes the space.
 - `quota80-*-2-measured`: CI runs rows touch the right border (`19m 15s 🔴│`, `Total│`).
 
-**Decision (Phase 4k sources):** showrunner, 2026-11-07: these four looks go to this phase, under Specs 4, 5 and 7.
+**Source (Phase 4k final check):** Phase 4k final design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4k/live/shots_4k_3/`, 2026-11-07. Each look is older than Phase 4k.
+- `quota80-*-1-loading-git-3_of_3`: the Git Pull Requests body reads `loading pull r`, cut in the middle of a word with no ellipsis, and touches the right border (`git/render.rs:436`).
+- `quota80-*-1-loading-git-2_of_2` and `quota80-*-2-measured-git-5_of_5`: at 80 columns the Remotes table reads `R… Bra… T… S…` and `o… car… o…`, and the focused title reads `Remo… (1 of 1)`.
+- `quota80-*-1-loading-git-2_of_2`: the error toast title `! crates.io unreachable[x]` touches the close button.
+- `quota80-*-1-loading-git-2_of_2`: at 80x30 the error toast shows one body row, `Crate metadata is`, at `1 of 3`, so its first sentence breaks across pages.
+- `toast160-*`: the Languages `Total` column touches the right border.
+
+**Decision (Phase 4k sources):** showrunner, 2026-11-07: the four looks of the first Phase 4k check go to this phase, under Specs 4, 5 and 7. Of the final check, the Pull Requests body and the Languages column go to Spec 7, the Remotes case to Specs 2 and 8, and the two toast looks to Spec 9.
 
 **Decision (F014, F015):** showrunner, 2026-11-07: keep one blank right-margin cell in each Package and Workspace row, as the Git pane does, because side-by-side panes use one margin rule. The Tracked fix (cut the wider of Branch and Tracked first) is accepted.
 
@@ -641,13 +620,14 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Spec:**
 1. **Targets keeps its Source column.** `targets/render.rs::compute_layout` reserves the Source header width only for `TargetSourceKind::Worktree`. Give workspace sources the same floor, and cut target names before the Source column drops. Keep `differing_path_labels`, `fit_distinct_path_labels` (`tui/project_list/grouping.rs`) and the launch paths as they are. `TargetSourceKind` stays implementation-only.
-2. **Section titles keep their label.** `git/render.rs::section_title_with_count` (line 718) cuts the label first. Keep the label whole and cut the count text first: `Worktrees (3)` before `Work… (3 of 3)`.
+2. **Section titles keep their label.** `git/render.rs::section_title_with_count` (line 718) cuts the label first. Keep the label whole and cut the count text first: `Worktrees (3)` before `Work… (3 of 3)`. The focused Remotes title at 80 columns keeps `Remotes` whole (`Remo… (1 of 1)` today).
 3. **Field labels draw whole.** A Git field label such as `Ahead/Behind` never draws cut. Cut or wrap its value.
-4. **Pane titles keep their label.** The Package title (`Worktree Group - <name>`) keeps its label whole and cuts the project name. Find the title creation in `package/`. The shared title renderer is `crates/tui_pane/src/pane/title.rs`; a fix there goes in `tui_pane`. A title that fits whole draws whole: at 80 columns the Git title `Not a git repo` fits in 14 cells but draws `Not a git rep…`. The cause is in the title renderer; find it and fix it there.
+4. **Pane titles keep their label.** The Package title (`Worktree Group - <name>`) keeps its label whole and cuts the project name. Find the title creation in `package/`. `crates/tui_pane/src/pane/title.rs` only formats title strings; `GridLines::write_overlay` (`crates/tui_pane/src/pane/frame.rs:855`) measures the title width and adds the ellipsis. A fix there goes in `tui_pane`. A title that fits whole draws whole: at 80 columns the Git title `Not a git repo` fit in 14 cells but drew `Not a git rep…`. Phase 4k removed that title (the empty Git pane is always titled `Git`), but the cause is in the title renderer: find it and fix it there. Pin it with a drawn test in `pane/frame.rs` of a title that fits only without its trailing space.
 5. **Startup labels draw whole.** Startup rows come from `progress_panel_body` (`crates/tui_pane/src/progress/render.rs:58`), through `app/async_tasks/startup_phase/toast_bodies.rs`, not from `toasts/render/card.rs::tracked_item_line`. Keep each label whole (`Cargo metadata`) and cut its count or detail first, for active, waiting, failed and complete rows. Cause at 80 columns: the 8-cell bar takes the space the label needs. Cut the bar or the count first, never the label.
-6. **The CI title message.** `ci/data.rs::CiEmptyState::title` (line 23) gives `CI runs — requires a GitHub or…` at 80 columns. Keep `CI runs` whole. Ask the showrunner for the wording or placement of the message before dispatch, and write its answer here.
-7. **Package value margin (F015).** Each Package and Workspace row keeps one blank right-margin cell, as the Git pane does. Reserve the margin before wrapping and pagination in every Package fitting path: `support::field_value_lines` (`panes/support.rs:84`, shared with Git), the Package Head wrap and the GitHub count rows in `package/render.rs`. Fit each label with its value, so `Worktrees 2` stays on one row. A column divider is a border too: keep one blank cell before the Package `Structure` divider, so the Path value does not touch it at 160 columns. CI runs rows (`ci/render.rs`) keep the same one-cell right margin (`19m 15s 🔴│` today).
-8. **Worktrees and Remotes columns (F014).** `git/render.rs::fit_sync_trio` (line 1247) cuts `[tracked, branch, sync]` in order, so Tracked reaches its floor before Branch is cut. After Name reaches its floor, cut the wider of Branch and Tracked one cell at a time, so a short Tracked value draws whole. Keep the Phase 4j header exception, the shared Remotes layout, both margin cells and whole Sync values. `SyncTableMode` stays implementation-only.
+6. **The CI title message.** `ci/data.rs::CiEmptyState::title` (line 23) gives `CI runs — requires a GitHub or…` at 80 columns. Keep `CI runs` whole. **Decision:** showrunner, 2026-11-07, option B: keep each message in the title and use words that fit at 80 columns. `RequiresGithubRemote` reads `CI runs — no GitHub remote`, `NotGitRepo` reads `CI runs — not a git repo` (the Git pane's words), and `BranchScopedOnly` reads `CI runs — on branch rows`. The other titles stay. Why: one word set fits every width, and the placement and look stay as on main. A drawn test shows that each `CiEmptyState` title draws whole in the 80-column CI pane. `NoRunsForBranch(String)` holds any branch name: its fixed words `No CI runs for branch` stay whole and the branch name takes the ellipsis; the test includes a long branch name.
+7. **Package value margin (F015).** Each Package and Workspace row keeps one blank right-margin cell, as the Git pane does. Reserve the margin before wrapping and pagination in every Package fitting path: `support::field_value_lines` (`panes/support.rs:84`, shared with Git), the Package Head wrap and the GitHub count rows in `package/render.rs`. Fit each label with its value, so `Worktrees 2` stays on one row. A column divider is a border too: keep one blank cell before the Package `Structure` divider, so the Path value does not touch it at 160 columns. CI runs rows (`ci/render.rs`) and the Languages `Total` column (`panes/lang/`) keep the same one-cell right margin (`19m 15s 🔴│` and `Total│` today). A cut message ends in `…` and keeps the margin cell: the Git Pull Requests body (`git/render.rs:436`) reads `loading pull r` at 80 columns today.
+8. **Worktrees and Remotes columns (F014).** `git/render.rs::fit_sync_trio` (line 1247) cuts `[tracked, branch, sync]` in order, so Tracked reaches its floor before Branch is cut. After Name reaches its floor, cut the wider of Branch and Tracked one cell at a time, so a short Tracked value draws whole. Keep the Phase 4j header exception, the shared Remotes layout, both margin cells and whole Sync values. At 80 columns the Remotes table reads `R… Bra… T… S…` / `o… car… o…` today. Four whole headers need 28 cells and the 80-column Git pane has 15, so the Phase 4j header exception stays (user rule C205: columns are always kept). At 80 columns each column keeps at least one letter and `…`, the cut order follows this spec, and the focused `Remotes` title stays whole (Spec 2). `SyncTableMode` stays implementation-only.
+9. **Toast title gap and body sentences.** Every toast keeps one blank cell between its title and `[x]` (`! crates.io unreachable[x]` today). A toast body page never breaks a sentence when the toast can grow: give the body enough rows for its first sentence before it adds pages (`Crate metadata is` at `1 of 3` at 80x30 today). The fix lives in `crates/tui_pane/src/toasts/render/`.
 
 **Constraints from prior phases:**
 - Keep the Phase 4j CI rows: `gh …`, `gh ?`, a retained known count, and `No CI runs` for `CiDisplay::NoRuns`.
@@ -664,51 +644,150 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 - `crates/cargo-port/src/tui/app/async_tasks/startup_phase/toast_bodies.rs` — Startup label rows
 - `crates/cargo-port/src/tui/render/readability_tests.rs` — replace the `Cargo meta…` assertion with whole-label checks
 - `crates/tui_pane/src/progress/render.rs` — `progress_panel_body`
-- `crates/tui_pane/src/pane/title.rs` — the shared pane title renderer
+- `crates/tui_pane/src/pane/title.rs` and `crates/tui_pane/src/pane/frame.rs` — the pane title text and its fit in `GridLines::write_overlay`
+- `crates/tui_pane/src/toasts/render/` — the toast title gap and body pages (Spec 9)
+- `crates/cargo-port/src/tui/panes/lang/` — the Languages right margin
 - `crates/cargo-port/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md`
 
 **Workers:** 2 writers
 - Writer 1 (cargo-port): Specs 1-4, 6-8, every `crates/cargo-port/` file above, the cargo-port drawing tests and `crates/cargo-port/CHANGELOG.md`.
-- Writer 2 (tui_pane): Spec 5's `progress_panel_body` and the shared title renderer, their tests and `crates/tui_pane/CHANGELOG.md`.
+- Writer 2 (tui_pane): Spec 5's `progress_panel_body`, Spec 4's title fit in `pane/frame.rs` and `pane/title.rs`, Spec 9's toast title gap and body pages, their tests and `crates/tui_pane/CHANGELOG.md`.
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests at 80 and 95 columns check: Targets Source cells for workspace and worktree fixtures; whole section titles with focused counts and the Package `Structure` divider; whole field labels; whole Startup labels in each row state; the Package right-margin cell and the blank cell before the `Structure` divider; the CI runs right-margin cell; the whole `Not a git repo` title at 80 columns; short Tracked values whole with Remotes aligned. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check, show every row of both Source lists fixed. Keep the Phase 4k gap tests green. Close the routes of F014 and F015 (Phase 4j) at this checkpoint. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests at 80 and 95 columns check: Targets Source cells for workspace and worktree fixtures; whole section titles with focused counts and the Package `Structure` divider; whole field labels; whole Startup labels in each row state; the Package right-margin cell and the blank cell before the `Structure` divider; the CI runs right-margin cell; a pane title that fits only without its trailing space draws whole; each `CiEmptyState` title whole in the 80-column CI pane, with a long branch name cut in `NoRunsForBranch`; the Languages `Total` margin; a cut Pull Requests body ending in `…`; short Tracked values whole with Remotes aligned; at 80 columns all four Remotes columns kept, cut in this spec's order, with the focused `Remotes` title whole; one blank cell before every toast `[x]`; an error toast first sentence on one page at 80x30. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check, show every row of both Source lists fixed. Keep the Phase 4k gap tests green. Close the routes of F014 and F015 (Phase 4j) at this checkpoint. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 4m — Panes keep their layout while data loads  · status: todo
 
-**Depends on:** Phase 4l (both edit `crates/cargo-port/src/tui/panes/package/`)
+**Depends on:** Phase 4l (both edit `crates/cargo-port/src/tui/panes/package/` and `crates/cargo-port/src/tui/panes/git/`)
 
 #### Work Order
 
-**Goal:** a pane does not show a false empty value, move a divider or change its page count when data arrives, and every pane draws its page count the same way.
+**Goal:** a pane does not show a false empty value or a false count, does not move a divider when data arrives, changes its page count only when a row with real data first appears, and every pane draws its page count the same way.
 
 **Source:** Phase 4k design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4k/live/shots_4k_2/`, 2026-11-07. Each look is older than Phase 4k.
 - `quota80-*-1-loading` then `quota80-*-2-measured`: while the GitHub data loads, the Workspace pane of cargo-liner-port shows `No description` on 2 rows. When the data arrives, that row goes away and the page count changes from `1 of 5` to `1 of 4`.
 - `toast160-*-a` then `toast160-*-b`: when the crates.io data arrives, the Package `Structure` column grows by 2 cells. The divider moves left and the Path value gets shorter.
 - `toast160-*-d-later`: the CPU / GPU page count `1 of 5 ▼` is a content row at the left of the pane. Every other pane draws its page count in the bottom border.
 
-**Decision:** showrunner, 2026-11-07: these three looks go to this new phase, after Phase 4l. Why for Spec 3: one style for every pane.
+- `quota80-*-1-loading-git-3_of_3` (Phase 4k final check, `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4k/live/shots_4k_3/`): the Git section title reads `Pull Requ… (0)` while its body says the pull requests are still loading.
+
+**Decision:** showrunner, 2026-11-07: these four looks go to this new phase, after Phase 4l. Why for Spec 3: one style for every pane.
+
+**Decision:** showrunner, 2026-11-07, description states: loading and a failed fetch are unknown and draw no description row. A known empty description draws ` No description`. A project with no GitHub remote is known: it draws its Cargo description or ` No description`. An enum holds the three states (for example `Pending`, `Known(String)`, `KnownEmpty`) in place of the `Option<String>`, so pending and known empty cannot merge again.
+
+**Decision:** showrunner, 2026-11-07, page count: the page count changes only when a row with real data first appears (quota rows, a loaded description). It never changes because a false row goes away, and rows never move up because a placeholder goes away.
 
 **Constraints:**
 - Change no other look.
 - Keep the Phase 4k description rule: ` No description` takes one row at 16 interior cells or more and wraps at 15, but only when the description is known to be empty.
 
 **Spec:**
-1. **No false empty description.** While the GitHub data loads, the Workspace pane does not show `No description`. It shows the description row only when the description is known. The page count does not change when the data arrives. Find the row choice in `panes/description.rs` and `package/render.rs`. Model the loading and known states as types, not as a flag or an empty string.
+1. **No false empty description.** While the GitHub data loads, the Workspace pane does not show `No description`. It shows the description row only when the description is known. The page count follows the page-count decision above. The producers are `App::empty_package_description` (the placeholder choice) and `build_git_detail_fields`, which merges a pending and a known-empty GitHub description into `Option<String>`. The height comes from `pane_data/detail_data.rs` and `render/mod.rs`; the row from `panes/description.rs` and `package/render.rs`. Model the loading and known states as types through each of these, not as a flag or an empty string. Drawn tests cover loading, a failed fetch, a known empty description and a project with no GitHub remote.
+4. **No false count while loading.** While the pull requests load, the Git `Pull Requests` section title shows no count. It shows the count only when the count is known. Find the title in `git/render.rs::section_title_with_count` and its caller.
 2. **The Structure column keeps its width.** The Package `Structure` column does not grow when the crates.io data arrives. Reserve its width from the start, so the divider stays in place.
 3. **The CPU / GPU page count is in the border.** The CPU / GPU pane draws `1 of 5 ▼` in its bottom border, as every other pane does, not as a content row. Find the pager row in `panes/cpu/`. Use the shared border pager that the other panes use; do not add a second pager style.
 
 **Files:**
 - `crates/cargo-port/src/tui/panes/description.rs` and `crates/cargo-port/src/tui/panes/package/` — the description row and the Structure width, and their tests
+- `crates/cargo-port/src/tui/app/`, `crates/cargo-port/src/tui/panes/pane_data/` and `crates/cargo-port/src/tui/render/mod.rs` — the description state (`App::empty_package_description`, `build_git_detail_fields`) and its height (`detail_data.rs`)
 - `crates/cargo-port/src/tui/panes/cpu/` — the CPU / GPU pager and its tests
+- `crates/cargo-port/src/tui/panes/git/` — the Pull Requests title count and its tests
 - `crates/cargo-port/CHANGELOG.md`
 
-**Workers:** 1 writer (cargo-port): Specs 1-3, their drawing tests and the changelog.
+**Workers:** 1 writer (cargo-port): Specs 1-4, their drawing tests and the changelog.
 
 **State:** the Workspace description is either loading or known. A known description is either text or empty.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: no `No description` row while the description loads, with the same page count before and after the data; the `Structure` divider column before and after the crates.io data; the CPU / GPU page count in the bottom border. 80- and 160-column live captures in colour and under NO_COLOR, before and after the data, judged by the design check. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: no `No description` row while the description loads or after a failed fetch, the three description states, and no page count change or row move when a placeholder goes away; the `Structure` divider column before and after the crates.io data; the CPU / GPU page count in the bottom border; no Pull Requests count while the pull requests load. 80- and 160-column live captures in colour and under NO_COLOR, before and after the data, judged by the design check. The checkpoint carries a `Change-Review:` line.
+
+### Phase 4n — Targets, cut titles and the footer read clean in narrow windows  · status: todo
+
+**Depends on:** Phase 4l (both edit `crates/cargo-port/src/tui/panes/targets/` and `crates/tui_pane/src/pane/frame.rs`). No file overlaps Phase 4m, so this phase runs beside it.
+
+#### Work Order
+
+**Goal:** at 95 and 160 columns the Targets pane is wide enough for its names, a cut pane title keeps one blank cell before its corner or joint, and the footer keeps an even gap before its note.
+
+**Source:** Phase 4l final design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4l/live/shots_4l_4/`, 2026-11-07, and the follow-ups recorded in Phases 4j-4l. Each look is older than Phase 4l.
+- `ci95-*-2-measured`, `wide160-*-measured`: the Targets pane cuts target names (`cargo-hand… cargo… binary`, `cargo-be… cargo… binary`) while Source stops at its 6-cell header width. At 160 the Targets pane has 25 inner cells and Git has 45.
+- Cut pane titles end against the corner or a column joint (`Workspace - c…┐`, `Worktree Group┐`, `cargo-liner-…─┬`), while the Projects title keeps one blank cell.
+- `ci80-*-2-measured-git-5_of_5`, `quota80-*-1-loading-git-3_of_3`: the footer drops key hints when the disk cache note shows, and leaves one space before the note (`enter activate Disk cache: 64 GiB …`); under NO_COLOR the hint and the note read as one phrase. At 95 the gap moves between 2 and 3 cells as Uptime changes.
+- No live shot shows the CI title `CI runs — on branch rows`.
+
+**Decision:** showrunner, 2026-11-07: the twelve looks of the Phase 4l design check and the recorded follow-ups are current work; Phase 4m keeps its scope. Start beside Phase 4m where the files do not overlap, and after Phase 4m where they do. Phase 4n holds the looks whose files do not overlap Phase 4m; Phase 4o holds the rest.
+
+**Constraints:**
+- Change no other look.
+- Never cut a label. Cut a value, a name or a message first. User rule C205: "columns should always be preserved - the project names should get ellipsis first".
+
+**Spec:**
+1. **Targets width and Source cut.** `panes/layout.rs` gives Targets `targets::minimum_width()` (`targets/render.rs:370`). Give Targets the width for its longest target name plus Source and Kind when the window has room, at 95 and 160 columns. When the names still do not fit, Source shrinks to its floor (one letter and `…`) before any target name is cut. Keep the Phase 4l Source floor for workspace and worktree sources.
+2. **One blank cell after a cut pane title.** `GridLines::write_overlay` (`crates/tui_pane/src/pane/frame.rs:855`) fits the title. A cut title keeps one blank cell before the corner or a column joint (`Workspace - c… ┐`, `cargo-liner-… ─┬`), as an uncut title does.
+3. **The footer gap.** `crates/tui_pane/src/bar/status_line.rs` lays out the key hints and the notes; `cargo_port_status_line_notes` (`crates/cargo-port/src/tui/render/mod.rs:838`) gives the disk cache note and does not change. Keep a fixed 3-cell gap between the last key hint and a note, the same as the gap between hints. When the row is too narrow, drop key hints from the right before the gap gets smaller. The gap does not change when the note text changes width.
+4. **The on-branch-rows shot (unit director).** The live script adds a scene that shows `CI runs — on branch rows`. This is a shot, not a look change.
+
+**Constraints from prior phases:**
+- Keep the Phase 4l rules: section titles cut the count before the label; a pane title keeps its label whole and cuts the project name; a title that fits draws whole.
+- New drawing tests set `ColorMode` explicitly. Name each test for the behavior it pins.
+
+**Files:**
+- `crates/cargo-port/src/tui/panes/targets/` and `crates/cargo-port/src/tui/panes/layout.rs` — Spec 1 and its tests
+- `crates/tui_pane/src/pane/frame.rs` — Spec 2 and its tests
+- `crates/tui_pane/src/bar/` — Spec 3 and its tests
+- `crates/tui_pane/CHANGELOG.md` — the entries of Specs 2 and 3
+
+**Workers:** 1 writer: Specs 1-3, their tests and `crates/tui_pane/CHANGELOG.md`. The writer does not edit `crates/cargo-port/CHANGELOG.md` (Phase 4m holds it); Phase 4o adds the Spec 1 entry.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: Targets width at 95 and 160, and Source cut to its floor before a target name; one blank cell after a cut title before a corner and before a joint; a 3-cell footer gap with notes of two widths, and hints dropped first at 80. 80-, 95- and 160-column live captures in colour and under NO_COLOR, with the on-branch-rows scene, judged by the design check. The checkpoint carries a `Change-Review:` line.
+
+### Phase 4o — Cut values and dim text read clean in narrow panes  · status: todo
+
+**Depends on:** Phase 4m (both edit `crates/cargo-port/src/tui/panes/package/`, `crates/cargo-port/src/tui/panes/git/`, `crates/cargo-port/src/tui/render/mod.rs` and `crates/cargo-port/CHANGELOG.md`)
+
+#### Work Order
+
+**Goal:** at 80 and 95 columns a cut value has no space before its ellipsis, the Tracked header reads whole, the Worktree Group CI row keeps one row, and dim value text meets the contrast floor.
+
+**Source:** Phase 4l final design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4l/live/shots_4l_4/`, 2026-11-07, and the follow-ups recorded in Phases 4j-4l. Each look is older than Phase 4l.
+- `ci80-*-2-measured-git-*`, `quota80-*-1-loading-git-*`, CI runs rows: a cut keeps a space before the ellipsis (`cargo tools …`, `↑5 ahead of …`, `phase …`).
+- `long95-*-1-expanded`: the Git Worktrees `Tracked` header draws `Track…` while Branch is one cell wider than its header.
+- `long80-*`, `pair80-*`: the Worktree Group `CI` label is alone on its row, and `No CI` is on the next row outside the value column.
+- `No CI` and `—` value text: contrast 4.16:1 on #1e1e1e, under the 4.5:1 floor.
+
+**Decision:** showrunner, 2026-11-07: see Phase 4n. These looks share files with Phase 4m, so this phase runs after it.
+
+**Constraints:**
+- Change no other look.
+- Never cut a label. Cut a value, a name or a message first.
+- Colours come from the theme, not from code.
+
+**Spec:**
+1. **No space before the ellipsis.** `render::truncate_with_ellipsis` (`crates/cargo-port/src/tui/render/mod.rs:748`) and its callers in `panes/support.rs`, `git/render.rs` and `ci/render.rs` trim trailing spaces before they add `…` (`cargo tools…`, `↑5 ahead of…`, `phase…`).
+2. **The Tracked header.** In the Git Worktrees table at 95 columns, `Tracked` draws whole when Branch has a spare cell: `fit_sync_trio` (`git/render.rs`) takes a header cell from the wider column first.
+3. **The Worktree Group CI row.** At 80 columns, `CI` and `No CI` share one row in the value column, as other Package rows do.
+4. **Dim value contrast.** `ci_display_style` (`package/render.rs`) draws `No CI`, `No CI runs` and `unpublished branch` with `inactive_border_color()` (Rgb 140,140,140 in `crates/tui_pane/src/theme/fallback.rs:92`). Give dim value text a theme colour with at least 4.5:1 contrast on the pane background; borders keep `inactive_border`.
+5. **Changelog.** Add the cargo-port entry for Phase 4n Spec 1 (Targets width and Source cut) beside this phase's entries.
+
+**Constraints from prior phases:**
+- Keep the Phase 4l rules: every Package and Workspace row keeps one right-margin cell (`support::field_value_lines`, `package/constants.rs::PATH_VALUE_RESERVE`) and one blank cell before the `Structure` divider; section titles cut the count before the label; at 80 columns all four Worktrees and Remotes columns stay; a short Tracked value draws whole.
+- Keep the Phase 4m description states and Structure width.
+- New drawing tests set `ColorMode` explicitly. Name each test for the behavior it pins.
+
+**Files:**
+- `crates/cargo-port/src/tui/render/mod.rs`, `crates/cargo-port/src/tui/panes/support.rs` and `crates/cargo-port/src/tui/panes/ci/` — Spec 1 and its tests
+- `crates/cargo-port/src/tui/panes/git/` — Specs 1 and 2
+- `crates/cargo-port/src/tui/panes/package/` — Specs 3 and 4
+- `crates/tui_pane/src/theme/` — Spec 4's dim value colour
+- `crates/cargo-port/CHANGELOG.md` and `crates/tui_pane/CHANGELOG.md`
+
+**Workers:** 1 writer: Specs 1-5, their tests and both changelogs.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: no space before `…` in Git values and CI commits; `Tracked` whole at 95; `CI` and `No CI` on one row at 80; dim value contrast at least 4.5:1. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 

@@ -33,7 +33,7 @@ use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::theme_roles;
 
-/// Map a tokei language name to a 2-char icon for the Lang column.
+/// Map a tokei language name to an icon for the Lang column.
 pub fn language_icon(language: &str) -> &'static str {
     // Each trailing comment shows the glyph rendered by its escape in `language_icon`.
     match language.to_ascii_lowercase().as_str() {
@@ -104,8 +104,15 @@ fn lang_totals(stats: &LanguageStats) -> [usize; 5] {
 
 fn lang_table_widths(stats: &LanguageStats) -> [Constraint; 7] {
     let totals = lang_totals(stats);
+    let icon_width = stats
+        .entries
+        .iter()
+        .map(|entry| language_icon(&entry.language).width())
+        .max()
+        .unwrap_or_else(|| language_icon("").width())
+        + 1;
     std::array::from_fn(|index| match index {
-        0 => Constraint::Length(LANG_ICON_WIDTH),
+        0 => Constraint::Length(u16::try_from(icon_width).unwrap_or(u16::MAX)),
         1 => Constraint::Fill(1),
         _ => Constraint::Length(
             u16::try_from(
@@ -331,7 +338,8 @@ pub fn render_lang_pane_body(
         };
 
     let title = lang_pane_title(lang_stats, pane);
-    let inner = tui_pane::frame_inner(area);
+    let mut inner = tui_pane::frame_inner(area);
+    inner.width = inner.width.saturating_sub(1);
     let mut chrome = PaneFrameChrome {
         title,
         focused: is_focused,

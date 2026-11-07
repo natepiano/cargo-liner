@@ -43,6 +43,12 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 
+- Pane titles use their trailing padding cell before they cut text.
+- Progress rows keep whole labels and reduce bars or counts first.
+- Toasts keep a blank cell before the close button. Opening cards keep their first sentence together when space permits.
+- Toast cards grow for their title before they cut it with an ellipsis.
+- Sentence cards reserve their required rows before stack allocation. Their exit animation still reduces their height.
+
 - Startup toast cards keep a bottom gap while opening in panes with at least six interior rows.
 - Toast page capacity reserves that gap before the opening animation starts.
 - Opening toast cards keep their bottom gap when the drawn rows fit. Progress labels use the space beside their own suffix.
