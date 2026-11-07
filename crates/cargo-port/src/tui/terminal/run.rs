@@ -230,9 +230,12 @@ pub fn run() -> ExitCode {
         background_tx,
         background_rx,
         startup_settings,
-        http_client,
-        scan_started_at,
-        metadata_store,
+        crate::tui::startup_services::StartupEnvironment::production(
+            http_client,
+            scan_started_at,
+            metadata_store,
+        ),
+        tui_pane::ColorMode::from_environment(),
     ) {
         Ok(app) => app,
         Err(e) => {

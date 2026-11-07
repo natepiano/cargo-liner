@@ -61,8 +61,13 @@ impl Renderable<PaneRenderCtx<'_>> for TargetsPane {
         &mut self,
         frame: &mut Frame<'_>,
         area: Rect,
-        _: &PaneRenderCtx<'_>,
+        ctx: &PaneRenderCtx<'_>,
     ) -> Option<PaneFrameChrome> {
-        Some(super::render_targets_pane_body(frame, area, self))
+        Some(super::render_targets_pane_body(
+            frame,
+            area,
+            self,
+            ctx.color_mode,
+        ))
     }
 }

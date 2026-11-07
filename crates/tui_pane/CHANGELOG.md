@@ -19,6 +19,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Shared `Viewport::navigate`, `Viewport::scroll_if_contains` and `table_row_at` support list navigation and table clicks. `TerminalApp::scroll` and `TileGridHost::cell_scrolled` forward wheel input to the tile under the pointer without moving focus.
 
 ### Changed
+
+- Pass `ColorMode` to pane chrome, selection styles, overlays, and tile drawing.
 - Tile grids request a frame only when the drawn geometry or appearance changes; input uses the same last-painted record.
 - `handle_tile_scroll` gives each wheel step to an open settings, keymap or global shortcuts overlay through `wheel_framework_overlay` first; the tile behind the overlay does not scroll.
 - On an opaque screen, the focus tint fills the whole interior of a focused tile, empty rows and the foot included. On a transparent screen, a tile paints no ground and focus shows only as the lit border.

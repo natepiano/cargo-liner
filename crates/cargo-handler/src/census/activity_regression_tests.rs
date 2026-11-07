@@ -424,7 +424,7 @@ fn idle_run_records_detect_same_size_rewrites_and_replacements() -> TestResult {
             .set_times(fs::FileTimes::new().set_modified(modified))?;
         let answer = records.read(directory.path());
         assert!(
-            matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == pid),
+            matches!(&answer[..], [RunRecord::Running(run)] if run.pid == pid),
             "equal-size records with restored mtime must replace the old answer"
         );
     }
@@ -478,7 +478,7 @@ fn idle_run_records_copy_only_live_verification_candidates() -> TestResult {
             1,
             "only live runs are copied out for worker matching"
         );
-        assert!(matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == 2));
+        assert!(matches!(&answer[..], [RunRecord::Running(run)] if run.pid == 2));
     }
     Ok(())
 }
@@ -526,7 +526,7 @@ fn idle_run_records_do_not_list_an_unchanged_watched_directory() -> TestResult {
     let live = HashSet::from([1]);
     for _ in 0..2 {
         let answer = records.read_for_processes(directory.path(), &live);
-        assert!(matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == 1));
+        assert!(matches!(&answer[..], [RunRecord::Running(run)] if run.pid == 1));
     }
     assert_eq!(
         records.directory_reads, 1,
@@ -559,7 +559,7 @@ fn idle_run_records_recover_events_and_directory_replacement() -> TestResult {
     assert!(
         answer
             .iter()
-            .any(|record| matches!(record, RunRecord::Verify(run) if run.pid == 3))
+            .any(|record| matches!(record, RunRecord::Running(run) if run.pid == 3))
     );
     assert_eq!(records.directory_reads, 3);
 
@@ -585,7 +585,7 @@ fn idle_run_records_recover_events_and_directory_replacement() -> TestResult {
         .ok_or("missing watch")?
         .recovery = Instant::now();
     let answer = records.read_for_processes(directory.path(), &live);
-    assert!(matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == 2));
+    assert!(matches!(&answer[..], [RunRecord::Running(run)] if run.pid == 2));
     assert_eq!(records.directory_reads, 5);
     records.retain_sessions(&HashSet::new());
     assert!(records.sessions.is_empty());
@@ -611,7 +611,7 @@ fn idle_run_records_recover_an_unavailable_watch_and_discover_a_new_session() ->
         .ok_or("missing watch")?
         .recovery = now;
     let answer = records.read_for_processes(&session, &live);
-    assert!(matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == 1));
+    assert!(matches!(&answer[..], [RunRecord::Running(run)] if run.pid == 1));
     assert_eq!(records.directory_reads, 2);
     Ok(())
 }
@@ -630,7 +630,7 @@ fn idle_run_records_patch_one_changed_record_without_listing_its_mates() -> Test
     let rows = records.read_for_processes(directory.path(), &live);
     assert!(
         rows.iter()
-            .any(|row| matches!(row, RunRecord::Verify(run) if run.pid == 4))
+            .any(|row| matches!(row, RunRecord::Running(run) if run.pid == 4))
     );
     assert_eq!(
         records.directory_reads, 1,
@@ -644,4 +644,89 @@ fn idle_run_records_patch_one_changed_record_without_listing_its_mates() -> Test
     assert_eq!(records.read_for_processes(directory.path(), &live).len(), 3);
     assert_eq!(records.directory_reads, 1);
     Ok(())
+}
+
+fn assert_live_detached_run_waits(encoded: &str) -> TestResult {
+    let mut payload: Value = serde_json::from_str(encoded)?;
+    payload["status"] = serde_json::json!("running");
+    let directory = tempfile::tempdir()?;
+    let runs = directory.path().join("mesh_runs");
+    fs::create_dir(&runs)?;
+    let path = runs.join("run.json");
+    fs::write(&path, serde_json::to_vec(&payload)?)?;
+    let mut records = RunRecords::for_test();
+    let records = records.read(directory.path());
+    let pid: u32 = serde_json::from_value(payload["pid"].clone())?;
+    let processes = [process(
+        pid,
+        1,
+        &[
+            "python3",
+            "mesh_runs.py",
+            "supervise",
+            &path.to_string_lossy(),
+        ],
+    )];
+    let mut verification = VerificationProcesses::new(&processes);
+    assert!(
+        matches!(verification.worker_run(&records), WorkerRun::Running { activity, .. }
+            if activity == AgentActivity::Active(Activity::Waiting)),
+        "a live detached run must show waiting for command {}",
+        payload["command"]
+    );
+    assert!(matches!(
+        VerificationProcesses::new(&[]).worker_run(&records),
+        WorkerRun::Inactive
+    ));
+    payload["status"] = serde_json::json!("finished");
+    let finished: RunRecord = serde_json::from_value(payload)?;
+    assert!(matches!(
+        verification.worker_run(&[finished.at_file(&path)]),
+        WorkerRun::Inactive
+    ));
+    Ok(())
+}
+
+#[test]
+fn unknown_detached_command_waits_without_a_step_name() -> TestResult {
+    assert_live_detached_run_waits(
+        r#"{
+        "command":["unrecognized-job","test"],"pid":100,
+        "thread_id":"worker","started_at":100,"status":"running"
+    }"#,
+    )
+}
+
+#[test]
+fn herdr_python_detached_run_waits_until_its_supervisor_ends() -> TestResult {
+    assert_live_detached_run_waits(
+        r#"{
+  "command": [
+    "python3",
+    "-c",
+    "import json, shlex, subprocess, sys\ncommands=json.loads(\"[[\\\"basedpyright\\\",\\\"scripts/direct/assign.py\\\",\\\"scripts/direct/assign_gate.py\\\",\\\"scripts/direct/test_assign_gate.py\\\",\\\"scripts/direct/test_assign_launcher.py\\\",\\\"scripts/direct/test_assign_claude_door.py\\\",\\\"scripts/direct/test_one_launch_path.py\\\"],[\\\"env\\\",\\\"-u\\\",\\\"PYTHONPATH\\\",\\\"-u\\\",\\\"STAFF_OPERATION_FD\\\",\\\"-u\\\",\\\"PYTHONUNBUFFERED\\\",\\\"-u\\\",\\\"REFUSAL_WATCH_INVENTORY\\\",\\\"HERDR_BIN=/nonexistent/herdr\\\",\\\"scripts/lib/py\\\",\\\"-m\\\",\\\"unittest\\\",\\\"scripts.direct.test_assign_gate\\\",\\\"scripts.direct.test_assign_launcher\\\",\\\"scripts.direct.test_assign_claude_door\\\",\\\"scripts.direct.test_one_launch_path\\\"]]\")\nresults=[]\nfor command in commands:\n print('COMMAND: '+shlex.join(command),flush=True)\n result=subprocess.run(command,check=False)\n print('EXIT: '+str(result.returncode),flush=True)\n results.append(result.returncode)\nsys.exit(0 if all(code == 0 for code in results) else 1)\n"
+  ],
+  "pid": 3410210,
+  "staff_id": "01a1a6ee-8b1d-7520-8d5d-d9fb8042e624",
+  "started_at": 1793929230.1851988,
+  "status": "finished"
+}"#,
+    )
+}
+
+#[test]
+fn herdr_shell_detached_run_waits_until_its_supervisor_ends() -> TestResult {
+    assert_live_detached_run_waits(
+        r#"{
+  "command": [
+    "bash",
+    "-c",
+    "env -u PYTHONPATH basedpyright scripts/herdr/side_pane.py scripts/herdr/test_side_pane.py scripts/herdr/herdr.py scripts/herdr/test_herdr.py && env -u PYTHONPATH -u STAFF_OPERATION_FD -u PYTHONUNBUFFERED -u REFUSAL_WATCH_INVENTORY HERDR_BIN=/nonexistent/herdr scripts/lib/py -m unittest scripts.herdr.test_side_pane scripts.herdr.test_herdr"
+  ],
+  "pid": 3492604,
+  "staff_id": "01a1a862-64ea-78a2-a637-2ff184ab8fe8",
+  "started_at": 1793929292.3816147,
+  "status": "finished"
+}"#,
+    )
 }

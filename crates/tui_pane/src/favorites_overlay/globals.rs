@@ -181,6 +181,7 @@ mod tests {
     use crate::Action;
     use crate::AttractGridPresentation;
     use crate::AttractVisibilityInstruction;
+    use crate::ColorMode;
     use crate::FavoritesMutationError;
     use crate::KeyBind;
     use crate::KeySequence;
@@ -235,7 +236,7 @@ mode = "future_mode"
         let mut terminal =
             Terminal::new(TestBackend::new(100, 20)).expect("test terminal should build");
         terminal
-            .draw(|frame| app.favorites_overlay.render(frame))
+            .draw(|frame| app.favorites_overlay.render(frame, ColorMode::Colored))
             .expect("favorites overlay should render");
         let buffer = terminal.backend().buffer();
         (buffer.area.y..buffer.area.bottom())

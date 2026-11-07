@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::collections::btree_map::Entry;
 use std::fs;
 use std::iter::Peekable;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::Chars;
@@ -26,12 +27,29 @@ use super::hierarchy::WorkerReference;
 use super::tier::ThreadWorktree;
 use super::transcript::DirectoryChange;
 use super::transcript::InputDirectoryWatch;
+use crate::constants::DISPATCH_ASSIGN_PYTHON_SCRIPT;
+use crate::constants::DISPATCH_ASSIGN_SHELL_SCRIPT;
+use crate::constants::DISPATCH_CWD_FLAG;
+use crate::constants::DISPATCH_LEASE_FLAG;
+use crate::constants::DISPATCH_NAME_FLAG;
+use crate::constants::DISPATCH_POOL_FLAG;
+use crate::constants::DISPATCH_PROMPT_FILE_FLAG;
+use crate::constants::DISPATCH_PROMPT_FLAG;
+use crate::constants::DISPATCH_SLOT_FLAG;
+use crate::constants::MESSAGE_FILE_FLAG;
+use crate::constants::MESSAGE_FLAG;
 use crate::constants::REVIEW_JOB_HEADING;
+use crate::constants::SEAT_FLAG;
+use crate::constants::SESSION_DIRECTORY_FLAG;
 use crate::constants::UUID_TEXT_LENGTH;
 use crate::constants::WORKER_DOCUMENT_EXTENSION;
 use crate::constants::WORKER_LABEL;
 
+mod options;
 mod sessions;
+
+use options::DispatchOptions;
+use options::DispatchPositionals;
 pub(super) use sessions::SessionRoots;
 
 /// The roster filename inside a dispatch's session directory.
@@ -54,11 +72,6 @@ const REVIEW_SCRIPTS: [&str; 2] = [
 ];
 const MESSENGER_SCRIPT: &str = ".claude/scripts/agents/codex_mesh.py";
 const PYTHON_INTERPRETERS: [&str; 3] = ["python", "python3", "py"];
-const MESSENGER_SEND: &str = "send";
-const SESSION_DIRECTORY_FLAG: &str = "--session-dir";
-const SEAT_FLAG: &str = "--to";
-const MESSAGE_FLAG: &str = "--message";
-const MESSAGE_FILE_FLAG: &str = "--message-file";
 const PROMPT_HEREDOC: &str = "cat <<";
 const PROMPT_CAT: &str = "cat";
 const PROMPT_SED: &str = "sed";
@@ -71,6 +84,7 @@ enum SeatSender {
     Implement,
     Review,
     Message,
+    Assign,
 }
 
 impl SeatSender {
@@ -79,8 +93,23 @@ impl SeatSender {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default();
-        let script = Path::new(script);
-        if program == LAUNCHER_INTERPRETER
+        let mut normalized = PathBuf::new();
+        for component in Path::new(script).components() {
+            match component {
+                Component::ParentDir => {
+                    normalized.pop();
+                },
+                Component::CurDir => {},
+                component => normalized.push(component.as_os_str()),
+            }
+        }
+        let script = normalized.as_path();
+        if (program == LAUNCHER_INTERPRETER && script.ends_with(DISPATCH_ASSIGN_SHELL_SCRIPT))
+            || (PYTHON_INTERPRETERS.contains(&program)
+                && script.ends_with(DISPATCH_ASSIGN_PYTHON_SCRIPT))
+        {
+            Ok(Self::Assign)
+        } else if program == LAUNCHER_INTERPRETER
             && LAUNCHER_SCRIPTS
                 .iter()
                 .any(|suffix| script.ends_with(suffix))
@@ -507,6 +536,22 @@ impl WorkerNames {
         &cached.1
     }
 
+    /// Resolve only dispatches with a known session directory.
+    pub(super) fn resolve_dispatch(
+        &mut self,
+        dispatch: &ParsedDispatch,
+        processes: &[ProcessEntry],
+        pid: u32,
+    ) -> WorkerDispatch {
+        match dispatch.session_directory() {
+            Ok(directory) => match self.resolve_claude(dispatch, processes, pid) {
+                WorkerDispatch::Plain => dispatch.resolve(self.roster(directory), pid),
+                worker @ WorkerDispatch::Worker(_) => worker,
+            },
+            Err(NotWorkerDispatch) => WorkerDispatch::Plain,
+        }
+    }
+
     /// Join a durable Claude seat only while its named claim process is live.
     pub(super) fn resolve_claude(
         &mut self,
@@ -514,7 +559,10 @@ impl WorkerNames {
         processes: &[ProcessEntry],
         dispatch_pid: u32,
     ) -> WorkerDispatch {
-        let documents = self.seat_documents(&dispatch.session_dir);
+        let Ok(session_dir) = dispatch.session_directory() else {
+            return WorkerDispatch::Plain;
+        };
+        let documents = self.seat_documents(session_dir);
         let job = self
             .jobs
             .entry(dispatch.job.clone())
@@ -534,12 +582,10 @@ impl WorkerNames {
             if !matches!(seat.family, SeatFamily::Claude) || seat.worker_id.is_empty() {
                 continue;
             }
-            let Some(SeatDocument::Claim(claim)) =
-                documents.get(&dispatch.session_dir.join(format!(
-                    "{CLAIM_FILE_PREFIX}{}.{WORKER_DOCUMENT_EXTENSION}",
-                    seat.slot
-                )))
-            else {
+            let Some(SeatDocument::Claim(claim)) = documents.get(&session_dir.join(format!(
+                "{CLAIM_FILE_PREFIX}{}.{WORKER_DOCUMENT_EXTENSION}",
+                seat.slot
+            ))) else {
                 continue;
             };
             if claim.worker != seat.name
@@ -1028,19 +1074,26 @@ impl SeatCheckout {
     }
 }
 
-/// A literal implement.sh invocation, before roster resolution.
+/// An assign launcher can defer its session directory to its child dispatch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DispatchDirectory {
+    Recorded(PathBuf),
+    FromChild,
+}
+
+/// A literal worker invocation, before roster resolution.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ParsedDispatch {
     /// The directory containing `mesh_roster.json`.
-    pub(super) session_dir: PathBuf,
+    session_dir: DispatchDirectory,
     /// The worktree whose basename prefixes its seat.
-    worktree:               SeatCheckout,
+    worktree:    SeatCheckout,
     /// How this invocation locates its roster entry.
-    seat:                   SeatSelection,
+    seat:        SeatSelection,
     /// The launcher's responsibility argument.
-    job:                    String,
+    job:         String,
     /// The pass role can differ from the durable seat slot.
-    pass_role:              DispatchRole,
+    pass_role:   DispatchRole,
 }
 
 /// The command cannot safely be interpreted as one worker invocation.
@@ -1048,8 +1101,25 @@ pub(super) struct ParsedDispatch {
 pub(super) struct NotWorkerDispatch;
 
 impl ParsedDispatch {
-    /// The live mesh child names a fresh or follow-up seat authoritatively.
+    /// The live mesh child names the seat authoritatively.
     pub(super) fn select_seat(&mut self, seat: String) { self.seat = SeatSelection::Named(seat); }
+
+    /// Resolve an omitted assign directory from its live child dispatch.
+    pub(super) fn select_session_directory(&mut self, child: &Self) {
+        if let (DispatchDirectory::FromChild, DispatchDirectory::Recorded(directory)) =
+            (&self.session_dir, &child.session_dir)
+        {
+            self.session_dir = DispatchDirectory::Recorded(directory.clone());
+        }
+    }
+
+    /// Only a recorded directory can supply roster and seat files.
+    pub(super) fn session_directory(&self) -> Result<&Path, NotWorkerDispatch> {
+        match &self.session_dir {
+            DispatchDirectory::Recorded(directory) => Ok(directory),
+            DispatchDirectory::FromChild => Err(NotWorkerDispatch),
+        }
+    }
 
     /// A live launcher's wrapper may set variables before its final dispatch.
     /// Commands following the dispatch still belong to the shell and must stay visible.
@@ -1098,25 +1168,12 @@ impl ParsedDispatch {
         if matches!(sender, SeatSender::Review) {
             return Self::review(args.collect());
         }
-        let mut args = args.peekable();
-        let mut seat = SeatSelection::Launcher;
-        while args.peek().is_some_and(|word| word.starts_with("--")) {
-            match args.next() {
-                Some(SEAT_FLAG) => {
-                    let name = args
-                        .next()
-                        .filter(|name| !name.is_empty())
-                        .ok_or(NotWorkerDispatch)?;
-                    seat = SeatSelection::Named(name.to_owned());
-                },
-                Some("--phase") => {
-                    args.next()
-                        .filter(|phase| !phase.is_empty())
-                        .ok_or(NotWorkerDispatch)?;
-                },
-                _ => return Err(NotWorkerDispatch),
-            }
+        if matches!(sender, SeatSender::Assign) {
+            return Self::assignment(args.collect());
         }
+        let options = DispatchOptions::read(args, DispatchPositionals::Implement)?;
+        let seat = options.seat();
+        let mut args = options.positional.into_iter();
         let session_dir = args
             .next()
             .filter(|dir| !dir.is_empty())
@@ -1152,7 +1209,7 @@ impl ParsedDispatch {
             _ => return Err(NotWorkerDispatch),
         };
         Ok(Self {
-            session_dir: PathBuf::from(session_dir),
+            session_dir: DispatchDirectory::Recorded(PathBuf::from(session_dir)),
             worktree: SeatCheckout::Launcher(PathBuf::from(worktree)),
             seat,
             job: job.to_owned(),
@@ -1162,33 +1219,21 @@ impl ParsedDispatch {
 
     /// review.sh defaults its trailing arguments and accepts named, new-slot and pooled seats.
     fn review(words: Vec<&str>) -> Result<Self, NotWorkerDispatch> {
-        let mut args = words.into_iter().peekable();
+        let options = DispatchOptions::read(words, DispatchPositionals::Review)?;
         let mut selection = ReviewSelection::Automatic;
-        let mut lease = None;
-        while args.peek().is_some_and(|word| word.starts_with("--")) {
-            let flag = args.next().ok_or(NotWorkerDispatch)?;
-            let value = args
-                .next()
-                .filter(|value| !value.is_empty())
-                .ok_or(NotWorkerDispatch)?;
-            match flag {
-                "--phase" => {},
-                SEAT_FLAG if matches!(selection, ReviewSelection::Automatic) => {
-                    selection = ReviewSelection::Existing(value.to_owned());
+        let lease = options.values.get(DISPATCH_LEASE_FLAG).copied();
+        for (flag, value) in &options.values {
+            let candidate = match *flag {
+                SEAT_FLAG => ReviewSelection::Existing((*value).to_owned()),
+                DISPATCH_SLOT_FLAG if shell_identifier(value) => {
+                    ReviewSelection::NewSlot((*value).to_owned())
                 },
-                "--slot"
-                    if matches!(selection, ReviewSelection::Automatic)
-                        && shell_identifier(value) =>
-                {
-                    selection = ReviewSelection::NewSlot(value.to_owned());
-                },
-                "--pool"
-                    if matches!(selection, ReviewSelection::Automatic)
-                        && matches!(value, "code" | "ui") =>
-                {
-                    selection = ReviewSelection::Pool;
-                },
-                "--lease" if lease.is_none() => lease = Some(value),
+                DISPATCH_POOL_FLAG if matches!(*value, "code" | "ui") => ReviewSelection::Pool,
+                DISPATCH_SLOT_FLAG | DISPATCH_POOL_FLAG => return Err(NotWorkerDispatch),
+                _ => continue,
+            };
+            match selection {
+                ReviewSelection::Automatic => selection = candidate,
                 _ => return Err(NotWorkerDispatch),
             }
         }
@@ -1199,7 +1244,7 @@ impl ParsedDispatch {
             (ReviewSelection::Pool, _) | (_, Some(_)) => return Err(NotWorkerDispatch),
             _ => {},
         }
-        let positional: Vec<_> = args.collect();
+        let positional = options.positional;
         let Some(session_dir) = positional.first().filter(|value| !value.is_empty()) else {
             return Err(NotWorkerDispatch);
         };
@@ -1227,7 +1272,7 @@ impl ParsedDispatch {
             ReviewSelection::Automatic | ReviewSelection::Pool => SeatSelection::Launcher,
         };
         Ok(Self {
-            session_dir: PathBuf::from(session_dir),
+            session_dir: DispatchDirectory::Recorded(PathBuf::from(session_dir)),
             worktree,
             seat,
             job: positional
@@ -1240,36 +1285,64 @@ impl ParsedDispatch {
         })
     }
 
-    /// Messenger flags name a roster and one exact seat; no shell operators are accepted.
+    /// Assign launchers select a roster and worker through value flags.
+    fn assignment(words: Vec<&str>) -> Result<Self, NotWorkerDispatch> {
+        let options = DispatchOptions::read(words, DispatchPositionals::None)?;
+        Ok(Self {
+            session_dir: options
+                .values
+                .get(SESSION_DIRECTORY_FLAG)
+                .filter(|path| !path.is_empty())
+                .map_or(DispatchDirectory::FromChild, |path| {
+                    DispatchDirectory::Recorded(PathBuf::from(path))
+                }),
+            worktree:    options
+                .values
+                .get(DISPATCH_CWD_FLAG)
+                .map_or(SeatCheckout::RosterOnly, |path| {
+                    SeatCheckout::Launcher(PathBuf::from(path))
+                }),
+            seat:        options.seat(),
+            job:         options.prompt_job(DISPATCH_PROMPT_FLAG),
+            pass_role:   options.role(),
+        })
+    }
+
+    /// Mesh verbs share exact roster identities across normalized script paths.
     fn message(words: Vec<&str>) -> Result<Self, NotWorkerDispatch> {
         let mut words = words.into_iter();
-        if words.next() != Some(MESSENGER_SEND) {
+        let verb = words.next().ok_or(NotWorkerDispatch)?;
+        if !matches!(verb, "send" | "follow" | "start") {
             return Err(NotWorkerDispatch);
         }
-        let mut directory = None;
-        let mut seat = None;
-        let mut job = None;
-        while let Some(flag) = words.next() {
-            let value = words
-                .next()
-                .filter(|value| !value.is_empty())
-                .ok_or(NotWorkerDispatch)?;
-            match flag {
-                SESSION_DIRECTORY_FLAG if directory.is_none() => directory = Some(value),
-                SEAT_FLAG if seat.is_none() => seat = Some(value),
-                MESSAGE_FLAG if job.is_none() => job = Some(value.to_owned()),
-                MESSAGE_FILE_FLAG if job.is_none() => {
-                    job = Some(fs::read_to_string(value).map_err(|_| NotWorkerDispatch)?);
-                },
-                _ => return Err(NotWorkerDispatch),
-            }
-        }
+        let options = DispatchOptions::read(words, DispatchPositionals::None)?;
+        let seat = match options.seat() {
+            SeatSelection::Launcher => options
+                .values
+                .get(DISPATCH_NAME_FLAG)
+                .map_or(SeatSelection::Launcher, |name| {
+                    SeatSelection::Named((*name).to_owned())
+                }),
+            named @ SeatSelection::Named(_) => named,
+        };
+        let job = match options.values.get(MESSAGE_FLAG) {
+            Some(message) => (*message).to_owned(),
+            None if verb == "send" => fs::read_to_string(options.required(MESSAGE_FILE_FLAG)?)
+                .map_err(|_| NotWorkerDispatch)?,
+            None => options.prompt_job(if verb == "start" {
+                DISPATCH_PROMPT_FILE_FLAG
+            } else {
+                MESSAGE_FILE_FLAG
+            }),
+        };
         Ok(Self {
-            session_dir: PathBuf::from(directory.ok_or(NotWorkerDispatch)?),
-            worktree:    SeatCheckout::RosterOnly,
-            seat:        SeatSelection::Named(seat.ok_or(NotWorkerDispatch)?.to_owned()),
-            job:         job.ok_or(NotWorkerDispatch)?,
-            pass_role:   DispatchRole::Unroled,
+            session_dir: DispatchDirectory::Recorded(PathBuf::from(
+                options.required(SESSION_DIRECTORY_FLAG)?,
+            )),
+            worktree: SeatCheckout::RosterOnly,
+            seat,
+            job,
+            pass_role: options.role(),
         })
     }
 
@@ -2275,7 +2348,7 @@ mod idle_prompt_tests {
     fn idle_worker_seats_do_not_list_an_unchanged_directory() -> std::io::Result<()> {
         let directory = tempfile::tempdir()?;
         let dispatch = ParsedDispatch {
-            session_dir: directory.path().to_path_buf(),
+            session_dir: DispatchDirectory::Recorded(directory.path().to_path_buf()),
             worktree:    SeatCheckout::RosterOnly,
             seat:        SeatSelection::Launcher,
             job:         "Test the change".into(),

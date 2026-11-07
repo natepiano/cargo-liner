@@ -663,7 +663,7 @@ impl FavoritesOverlay {
     }
 
     /// Draw only the cached lines intersecting the current viewport.
-    pub fn render(&mut self, frame: &mut Frame<'_>) {
+    pub fn render(&mut self, frame: &mut Frame<'_>, mode: crate::ColorMode) {
         if !self.is_open() {
             return;
         }
@@ -747,7 +747,7 @@ impl FavoritesOverlay {
         let state = &self.state;
         let visible = self.line_plan.lines[scroll_offset..end]
             .iter()
-            .map(|line| rendered_line(line, &selected, row_lifecycle(state, line), now))
+            .map(|line| rendered_line(line, &selected, row_lifecycle(state, line), now, mode))
             .collect::<Vec<_>>();
         frame.render_widget(Paragraph::new(visible), content_area);
         render_notice(frame, &self.notice, notice_area);
@@ -892,6 +892,7 @@ mod tests {
     use crate::AttractWork;
     use crate::BandDirection;
     use crate::BandFraying;
+    use crate::ColorMode;
     use crate::FavoriteId;
     use crate::PixelFill;
     use crate::PixelResolve;
@@ -1130,7 +1131,7 @@ fraying = "both"
         let mut terminal =
             Terminal::new(TestBackend::new(width, height)).expect("test terminal should build");
         terminal
-            .draw(|frame| overlay.render(frame))
+            .draw(|frame| overlay.render(frame, ColorMode::Colored))
             .expect("favorites overlay should render");
         rendered_buffer_lines(terminal.backend().buffer())
     }
@@ -1972,7 +1973,7 @@ travel_left = "界"
             Terminal::new(TestBackend::new(80, 24)).expect("test terminal should build");
 
         terminal
-            .draw(|frame| overlay.render(frame))
+            .draw(|frame| overlay.render(frame, ColorMode::Colored))
             .expect("favorites overlay should render");
 
         let rendered = rendered_buffer_lines(terminal.backend().buffer());
@@ -2004,7 +2005,7 @@ travel_left = "界"
             Terminal::new(TestBackend::new(80, 8)).expect("test terminal should build");
 
         terminal
-            .draw(|frame| overlay.render(frame))
+            .draw(|frame| overlay.render(frame, ColorMode::Colored))
             .expect("favorites overlay should render");
 
         let rendered = rendered_buffer_lines(terminal.backend().buffer());
@@ -2390,7 +2391,7 @@ travel_left = "界"
         let mut terminal =
             Terminal::new(TestBackend::new(100, 30)).expect("test terminal should be created");
         terminal
-            .draw(|frame| app.favorites_overlay.render(frame))
+            .draw(|frame| app.favorites_overlay.render(frame, ColorMode::Colored))
             .expect("favorites overlay should render");
 
         dispatch_key(&mut app, key(KeyCode::Char('x')));

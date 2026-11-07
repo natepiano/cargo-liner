@@ -197,6 +197,7 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
+    use tui_pane::ColorMode;
     use tui_pane::CpuBreakdown;
     use tui_pane::CpuCoreUsage;
     use tui_pane::CpuMonitor;
@@ -333,6 +334,7 @@ mod tests {
                         &mut pane,
                         &CpuConfig::default(),
                         &mut PaneFrameChrome::default(),
+                        ColorMode::Colored,
                     );
                 })?;
                 let buffer = terminal.backend().buffer();
@@ -384,6 +386,7 @@ mod tests {
                     pane,
                     &CpuConfig::default(),
                     &mut PaneFrameChrome::default(),
+                    ColorMode::Colored,
                 );
             })
             .unwrap();
@@ -408,6 +411,7 @@ mod tests {
                     pane,
                     &CpuConfig::default(),
                     &mut PaneFrameChrome::default(),
+                    ColorMode::Colored,
                 );
             })
             .unwrap();
@@ -651,6 +655,7 @@ mod tests {
                 &mut pane,
                 &CpuConfig::default(),
                 &mut PaneFrameChrome::default(),
+                ColorMode::Colored,
             );
         })?;
         tui_pane::set_active_theme(previous);
@@ -681,7 +686,8 @@ mod tests {
             );
             return Ok(());
         }
-        let mut app = crate::tui::test_support::make_app(&[]);
+        let mut app =
+            crate::tui::test_support::make_app_with_color_mode(&[], ColorMode::from_environment());
         let mut usage = usage_with_cores(2, 25);
         usage.cores[1].percent = 75;
         app.panes.cpu.sample_phase = CpuSamplePhase::Sampled(usage);
@@ -836,6 +842,7 @@ mod tests {
                         &mut pane,
                         &CpuConfig::default(),
                         &mut chrome,
+                        ColorMode::Colored,
                     );
                     let mut grid = tui_pane::GridLines::new(area);
                     grid.add_titled(pane_frame, " CPU / GPU ");
@@ -844,7 +851,7 @@ mod tests {
                     }
                     grid.render(
                         frame.buffer_mut(),
-                        tui_pane::default_pane_chrome(),
+                        tui_pane::default_pane_chrome(ColorMode::Colored),
                         PaneBorders::Separate,
                     );
                 })

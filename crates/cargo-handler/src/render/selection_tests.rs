@@ -85,7 +85,7 @@ fn assert_selected(buffer: &Buffer, label: &str) {
     let point = locate(buffer, label);
     assert_eq!(
         buffer[(point.x, point.y)].bg,
-        tui_pane::selection_style(PaneFocusState::Active)
+        tui_pane::selection_style(PaneFocusState::Active, tui_pane::ColorMode::Colored)
             .bg
             .expect("selected background"),
         "selected row {label}; rows:\n{}",

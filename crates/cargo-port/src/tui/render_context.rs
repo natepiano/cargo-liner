@@ -1,6 +1,8 @@
 use std::path::Path;
 use std::time::Duration;
 
+use tui_pane::ColorMode;
+
 use super::panes::OutputPresentation;
 use super::panes::SyncedDescriptionHeight;
 use super::project_list_state::ProjectList;
@@ -15,6 +17,7 @@ use super::state::Scan;
 /// the loop reads the same context. Per-pane state lives on the pane structs
 /// themselves, set by `App` immediately before `tui_pane::render_panes` runs.
 pub(super) struct PaneRenderCtx<'a> {
+    pub(super) color_mode:                ColorMode,
     pub(super) animation_elapsed:         Duration,
     pub(super) config:                    &'a Config,
     pub(super) project_list:              &'a ProjectList,

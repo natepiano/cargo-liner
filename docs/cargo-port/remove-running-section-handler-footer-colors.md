@@ -604,7 +604,9 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** unrounded-only coverage (a byte blend dropped an ink under 4.5:1).
 
-### Phase 25 — Shared chrome text and overlay polish  · status: todo
+### Phase 25 — Shared chrome text and overlay polish  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
+
+**Kept from this phase:** Spec 10 (cargo-port selected-row inks under 4.5:1) goes to the port unit through the showrunner, 2026-11-06.
 
 **Depends on:** Phase 18
 
@@ -955,15 +957,14 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `ProbeChildWork` (`census/probe.rs` ≈96) serializes `SubagentRole` directly. The checkpoint enum (`census/transcript.rs` ≈500) accepts `Review` and `Specialist`. It does not accept `Reviewer`, `Writer` or the other new variants.
 - `render/narrow_width_tests.rs` (≈360) and its `growth_app` (≈430) use a fifty-character specialist role, so that restored or newly visible rows change the width requirement (checked at ≈488 and ≈534). A change of that fixture to `Agent` removes the tested condition. Use supported role words and fixture widths that still test off-window width growth, End/Home/cursor restoration and the first enlarged frame. Keep the whole-core and below-core compression checks, the longer Astra labels included.
 - `agent_cell.rs`: `role_text` (≈1192) draws `role.text()`; the role ink comes from `colors.named_role(role.text())` (≈1349, `footer_colors/mod.rs` ≈839).
-- Session-row plan reviewers show "review" through `RoleLabel::ReviewFallback` (`census/placement.rs` ≈86), and Codex seats through `WorkerRole::text` (`census/worker_dispatch/mod.rs` ≈100); `WorkerRole::text` also feeds role matching, so the parsed words stay.
+- Session-row plan reviewers show "review" through `RoleLabel::ReviewFallback` (`census/placement.rs` ≈86), and Codex seats through `WorkerRole::text` (`census/worker_dispatch/mod.rs` ≈100). These rows stay as they are (showrunner, 2026-11-06: the user asked for subagent rows only).
 
 **Spec:**
 1. `SubagentRole` becomes a closed enum with no string payload: Writer, Reviewer, Impl, Test, Fix, Capture, Lint, Survey, Plan, Explore, Showrunner, and `Agent` for any name that matches no word. `text()` is a `const fn` returning a `&'static str`; the drawn word is always the variant's word, never part of a name. Reviewer draws "reviewer".
-1a. One word for one role (showrunner, 2026-10-27): session-row plan reviewers (`RoleLabel::ReviewFallback`) and Codex review seats (`WorkerRole::Review`) also draw "reviewer". Only the drawn word changes; the words read from seat names, leases and hierarchy files ("review") still parse.
 2. The role is decided once, at the meta file boundary (`running_subagents`). `SubagentMeta` reads `name` and `spawnedAgentType` too. Source order: the name, then `agentType`, then `spawnedAgentType`, then the description words. A name splits on non-letters into whole tokens, and a token matches a role word exactly (case-insensitive, with the listed synonyms: "review" → Reviewer, "impl" → Impl). "p36-reviewer" is Reviewer, "writer77" is Writer, "judge" is Agent. A general type ("general-purpose") gives no role.
 3. The role ink comes from a typed method on `SubagentRole`, not from looking up the drawn text.
 4. Wire: decode the old role forms (`{"Specialist":"<word>"}`, `"Review"`) into the closed domain enum: the closed role for that word, else Agent. Encode new roles through a wire form that older builds accept, or through a defaulted extension. Keep any string payload inside the wire adapter, so the domain model gets no `SpecialistRole(String)` back. No string role is stored after deserialization.
-5. Tests, red first: rendered subagent rows for writer77, writer78, p36-reviewer, review3, judge and a plain "Plan" subagent show "writer", "writer", "reviewer", "reviewer", "agent" and "plan"; a plan-mode reviewer session row and a Codex review seat row show "reviewer"; an old report on the new receiver, and a new report on the checkpoint receiver; callers that built a role from a free string build a variant. Every test under one second.
+5. Tests, red first: rendered subagent rows for writer77, writer78, p36-reviewer, review3, judge and a plain "Plan" subagent show "writer", "writer", "reviewer", "reviewer", "agent" and "plan"; an old report on the new receiver, and a new report on the checkpoint receiver; callers that built a role from a free string build a variant. Every test under one second.
 6. CHANGELOG: one line that subagent rows show their role word, not the agent's name.
 
 **Files:**
@@ -971,19 +972,17 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/cargo-handler/src/census/probe.rs` — old wire form
 - `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/footer_colors/mod.rs` — role word and typed role ink
 - `crates/cargo-handler/src/census/tree.rs`, `crates/cargo-handler/src/census/scan.rs` — variant construction
-- `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — "reviewer" for session-row and seat reviewers
-- `crates/cargo-handler/src/census/reviewer_tests.rs`, `crates/cargo-handler/src/census/claude_seat_tests.rs` — the drawn reviewer word
 - `crates/cargo-handler/src/census/subagent_activity_tests.rs`, `crates/cargo-handler/src/census/probe_role_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/subagent_row_tests.rs` — spec 5 tests
 - `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs`, `crates/cargo-handler/src/agent_cell/tests/repair_tests.rs`, `crates/cargo-handler/src/render/moving_role_tests.rs`, `crates/cargo-handler/src/render/selected_ink_tests.rs`, `crates/cargo-handler/src/render/selection_tests.rs`, `crates/cargo-handler/src/render/narrow_width_tests.rs` — callers build variants
 - `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer + 1 tester.
-- `impl` — spec 1, 1a, 2–4 and 6: production files, registrations and inline test migrations in production modules; hub: `crates/cargo-handler/src/census/transcript.rs`.
+- `impl` — spec 1–4 and 6: production files, registrations and inline test migrations in production modules; hub: `crates/cargo-handler/src/census/transcript.rs`.
 - `test` — spec 5: the listed separate test modules, including `narrow_width_tests.rs` and `moving_role_tests.rs`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. Live: a shot of a tile with named writer and reviewer subagents shows "writer" and "reviewer" in the role column. The checkpoint adds a Change-Review line.
 
-### Phase 31 — Session colours stay apart  · status: todo
+### Phase 31 — Session colours stay apart  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
 
 **Depends on:** Phase 18, Phase 27, Phase 30, Phase 35, Phase 53
 
@@ -1024,13 +1023,13 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 34 — Tests leave no folders  · status: todo
 
-**Depends on:** Phase 18, Phase 31
+**Depends on:** Phase 18
 
 #### Work Order
 
 **Goal:** the cargo-handler startup-note tests leave no temporary folder behind, also when a test fails.
 
-**Source:** showrunner add-ons, 2026-10-26: the theme-note tests leave /tmp/.tmpXXXXXX folders that hold broken-default-dark.toml. Run order (showrunner): after phase 31. The timeout test named in the same add-on and its `ShortDeadlineRunner` no longer exist, so that repair left this phase.
+**Source:** showrunner add-ons, 2026-10-26: the theme-note tests leave /tmp/.tmpXXXXXX folders that hold broken-default-dark.toml. The timeout test named in the same add-on and its `ShortDeadlineRunner` no longer exist, so that repair left this phase.
 
 **Constraints from prior phases:**
 - Phase 18: `crates/cargo-handler/src/terminal/theme_note_tests.rs` builds the app through `terminal::startup_theme_notes` (`terminal.rs` ≈79) and `App::new_for_test_with_startup` (`app.rs` ≈246). Its `theme_directory()` keeps the theme folder in a `static DIRECTORY: OnceLock<TempDir>`, which is never dropped, so the folder stays after the run. The fixture function that gives the folder path takes no `self`.
@@ -1079,7 +1078,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 20 — Click a word to highlight every instance  · status: todo
 
-**Depends on:** Phase 16, Phase 27, Phase 31
+**Depends on:** Phase 16, Phase 27
 
 #### Work Order
 
@@ -1092,7 +1091,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `content_click` excludes tile frames, titles and readouts. Word clicks also work on tile titles, so tui_pane `tiles/host.rs` forwards a title press to the host; the word logic stays in cargo-handler. The status bar, the readouts and the overlays are out of scope (showrunner, 2026-10-23).
 - An open modal overlay takes a click first. Esc clears the highlight only when no overlay is open.
 - Phase 27: `summary::truncated_line` (`summary/mod.rs` ≈846) cuts styled text by terminal cells and grapheme clusters, and `SummarySessionTable::OmittedForWidth` (≈226) removes session lines fully. The omitted state is already visible to the user and its 34x50 regression is green.
-- Phase 56: the readout is hidden by default (`RowsReadoutVisibility::{Hidden, Shown}`), and a hidden readout gives its row back to content when the host has no foot content. Drawing and `content_click` read Phase 56's one visibility-aware content allocation (`content_area`, `tui_pane/src/tiles/draw.rs` ≈928). Word targets and the empty-space clear map through that same allocation in both readout states.
+- Drawing and `content_click` read one content allocation (`content_area`, `tui_pane/src/tiles/draw.rs` ≈928). Word targets and the empty-space clear map through that same allocation.
 - Phase 36: the readout text comes from `TileCells::rows_readout` (`tui_pane/src/tiles/draw.rs`): `RowsReadout::Selected` draws `content rows: 3 of 12` for a surface with a selected row, `RowsReadout::Count` draws `content rows: 12`. The readout is chrome, so a press on it is not a word target.
 - The content, title and chrome outcomes cross the public host boundary. The pointer payload is exported in `tiles/mod.rs` (≈48) and `lib.rs` (≈502).
 - Theme roles live in `theme/mod.rs` (`Role` ≈91) and the built-in theme files in `crates/cargo-handler/themes/`; text colors stay as they are drawn.
@@ -1104,7 +1103,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 1. A word is a token between spaces in any drawn cell, with leading and trailing punctuation removed. A match is the whole word with exact case: a click on `claude1` marks every `claude1` and no `claude12`.
 2. One click marks every instance in the whole window: every agent tile, the unassigned tile, the summary and the accounts table. The highlighted word is one type, `enum WordHighlight { Off, Word(HighlightWord) }`, where `HighlightWord` can only hold a non-empty word.
 3. A click on a row selects the row (Phase 16) and sets the word. A click on the highlighted word, at any place, a click on empty space, or Esc clears it. A click on another word moves the highlight to that word.
-4. The highlight is a new theme role, `word_match`, with a background in each built-in theme: subtle but easy to see in light and dark themes. The text keeps its color and stays readable on it (ink contrast measured as in Phase 15, bound named in the checkpoint). One color for every match. Where the selected row and a match overlap, the match background draws on top. The session-separating channel phase 31 chose (colour, glyph, bold or tint) stays visible on a matched cell and on a matched selected cell; a rendered test in `render/word_contrast_tests.rs` proves it.
+4. The highlight is a new theme role, `word_match`, with a background in each built-in theme: subtle but easy to see in light and dark themes. The text keeps its color and stays readable on it (ink contrast measured as in Phase 15, bound named in the checkpoint). One color for every match. Where the selected row and a match overlap, the match background draws on top. The session ink stays visible on a matched cell and on a matched selected cell; a rendered test in `render/word_contrast_tests.rs` proves it.
 5. The mark is one pass over the drawn frame after every tile draws, and runs only while a word is set. So it follows the word through every redraw, a new row that holds the word gets it too, and it costs nothing when no word is set.
 6. Tests, each red before its fix: the token rules (punctuation removed at the ends, whole-word match, exact case); matches marked in two tiles and in the accounts table; a new row with the word is marked on the next frame; clear on empty space, on Esc, on a second click on the same word and on a click on the word at another place; a click on another word moves the highlight; a render test that reads the background colors back from the frame.
 7. A contrast test reads the drawn match background and each ink on it in all four themes and asserts at least 4.5:1 with glyph coverage, on the base, focused and unfocused grounds, selection overlap included.
@@ -1124,7 +1123,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 21 — Astra designer and Astra reviewer roles  · status: todo
 
-**Depends on:** Phase 17, Phase 16, Phase 18, Phase 26, Phase 29, Phase 20, Phase 31
+**Depends on:** Phase 17, Phase 16, Phase 18, Phase 26, Phase 29, Phase 20
 
 #### Work Order
 
@@ -1145,12 +1144,12 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - The config gives pink to both `role.astra-designer` and `account.codex1`, and both solve to the same ink. Showrunner ruling, 2026-10-21: `role.astra-designer` moves off pink and `account.codex1` keeps it; no existing color name clears every ink, so the new name is `mauve` = xterm 139 (#af87af; solved dark #af87af, tint on #c2a4c2; light #734c73, tint on #5e3f5e; at least CIEDE2000 15.56 from every account, role, status, header, plain-text and rainbow ink; 4.51–4.77:1 at 208/255). natedev adds `mauve` = `38;5;139` to `statusline.jq` and sets `role.astra-designer=mauve`; this phase adds `mauve` (index 139) to `FooterColor` in `footer_colors/mod.rs`, parsed from `mauve`. This phase does not wait for natedev's change: its distance test uses a fixture with the `statusline.conf` values and `role.astra-designer=mauve`, and the live shots use the real config: the change is on `~/.claude` main at a06402f7.
 - The run order is 18, 25, 26, 29, 27, 20, 9, 21, with phase 28 when tile-fixes phase 24 has merged, so this phase runs after phases 19, 26, 29 and 20.
 - Colour limits for the Astra role inks, as built. Measure them through the production role API (`FooterColors::hierarchy_role` ≈827 with the new variants, `named_role` ≈818) and `SessionRowInk::Management`, not through fixed colors, on the final drawn output with the two-way 208/255 coverage of phase 18 (the lower of the unrounded and the byte-rounded blend).
-  - Temporary floors (phase 26 as built, `render/role_title_tests.rs` ≈710–731). Light themes: dE >= 15 from every session ink and from every other ink that can share the row. Default Dark: dE >= 12.2, and High Contrast Dark: dE >= 14.8, for the same two classes. The dark floors hold until phase 31 ("Session colours stay apart") lands. Phase 31 runs first: its chosen row design (which fields draw in colour, any second channel) and its floors replace these temporary floors. Astra labels use the style path phase 31 chose; this phase does not restore the old exceptions.
-  - Final targets, separate from those floors: row-fixed dE >= 15, session dE >= 20, covered contrast >= 4.5:1. Phase 31's final floors or named replacement channels apply in all themes; this phase restores no earlier dark exemption. Covered contrast >= 4.5:1 applies now, in all four themes.
+  - Floors (phase 26 as built, `render/role_title_tests.rs` ≈710–731). Light themes: dE >= 15 from every session ink and from every other ink that can share the row. Default Dark: dE >= 12.2, and High Contrast Dark: dE >= 14.8, for the same two classes. This phase does not restore the old exceptions.
+  - Covered contrast >= 4.5:1 applies in all four themes.
   - Consecutive session hue spacing applies only to the session inks, not to role inks.
 - Keep the wire-boundary rejection rules below. Phase 16 selection: an Astra row keeps its stable thread identity and the selected band through busy/idle updates and manager placement. Contrast tests compute the expected ratio with their own literal 208/255 glyph coverage, not by reading `ANTIALIASED_GLYPH_COVERAGE`.
 - The Codex startup lookup reads through the typed layouts Phase 41 shipped. `ThreadsLayout::WithThreadSource` runs `CODEX_THREADS_QUERY` (`constants.rs` ≈387: `thread_source = 'user'` with `source` not `'exec'`, or `codex-tui` rows with no `thread_source`). `ThreadsLayout::OriginatorOnly` runs `CODEX_LEGACY_THREADS_QUERY` (≈392: `codex-tui` only). Both leave out exec threads and worker threads at startup. `astra_review.py` runs `codex exec` (`originator` `codex_exec`), so its thread is not in the startup result.
-- The wire and lease token `review` stays accepted; displayed reviewer words follow Phase 35.
+- The wire and lease token `review` stays accepted. Session rows and seat rows still draw "review"; only subagent rows draw "reviewer" (Phase 35).
 - `render/narrow_width_tests.rs` (≈360) and its `growth_app` (≈430) use a long role so that restored or newly visible rows change the width requirement (checked at ≈488 and ≈534). Use supported role words and fixture widths that still test off-window width growth, End/Home/cursor restoration and the first enlarged frame. Keep the whole-core and below-core compression checks, the longer Astra labels included.
 - `OpenThreadRows::read` in `census/codex.rs` accepts explicit thread IDs through `CODEX_THREAD_BY_ID_QUERY`, regardless of originator. `codex::read_threads_by_id` no longer exists. Use the named Astra Codex home. Collect the IDs of both consumers per home and read each home once: `OpenThreadRows::read` replaces a home's requested IDs (`codex.rs` ≈323), and `app_server_threads` retains only app-server homes (`scan.rs` ≈1418). Retain the combined homes. Preserve per-home caching and invalidation by database and WAL revision. Test an unchanged scan (no second read) and a WAL change (one new read). Keep startup queries restricted as before. Reuse `SessionNames`, home matching, resume handling and the no-dispatch regression.
 - The scanner captures one `StaffSnapshot` before classification. Its source and `Arc<StaffRoster>` supply names and links for that scan. Preserve this consistency when adding Astra membership. Keep database and rollout reads outside the scheduler thread and the publication lock. App-server discovery uses Linux file descriptors under the sessions directory.
@@ -1208,65 +1207,44 @@ An interactive Codex session that the user renamed shows its name in its tile an
 
 **Binds later work:** the work that reads Codex model and effort beside these thread rows keeps the once-per-open `ThreadsLayout` choice.
 
-### Phase 62h — Every detached run shows its worker as waiting  · status: todo
+### Phase 62h — Every detached run shows its worker as waiting  · status: done
 
-**Depends on:** Phase 62
+#### As-built
 
-Do this phase first when the unit resumes, before Phase 42.
+- A live detached run holds its worker at `waiting` or the run's step name, whatever command the run executes. The row returns to its normal state when the run ends.
+- `RunRecord::{Ignored, Running(DetachedRun)}` keeps every running record with a live supervisor naming the exact record. A recognized command supplies only the step name; any other command gives `RequestedStep::Unknown`, which shows `waiting`.
+- The cause was that a record with no verification step read as `Ignored`, so its worker fell back to `idle`.
 
-#### Work Order
+**Files:**
+- `crates/cargo-handler/src/census/activity.rs` — run records and the row state
+- `crates/cargo-handler/src/census/activity_regression_tests.rs` — Python, `bash -c` and unknown-command run tests
+- `crates/cargo-handler/CHANGELOG.md`
 
-**Goal:** while a Codex worker has a live detached run (a `mesh_runs.py supervise` process naming its record), its row under its unit shows `waiting` or the run's step name, whatever command the run executes. The row returns to its normal state when the run ends.
+**Gotchas:** a script name inside `bash -c` gives no step name, so that run shows `waiting`.
 
-**Source:** change review C201 came back (user, 2026-11-05 20:44 EST): "yes send it back". The user's live `cargo-handler` (pid 3454803, started 20:41, build 19:20 from main a57fb3b6e) showed the herdr unit expanded with every Codex worker `idle`. At that moment two detached runs were live:
-- `herdr-e-labels`: record `/tmp/claude/unit/5f707c80-741b-4bcd-8258-fa3b7e0df65f/mesh_runs/20261105T204030-3408579-6c01.json`, 20:40:30 to 20:44:41 EST.
-- `herdr-rename4`: a run in the same folder that started 20:43:26 and ended 20:44:15 EST.
+### Phase 42 — A dispatch shell folds into its Codex worker row  · status: done
 
-**Probable cause (showrunner reading, not proven):** Phase 62's gotcha says an eligible run needs a recognized command, and a script name inside `bash -c` stays unrecognized. Both herdr runs execute `bash -c "env -u PYTHONPATH basedpyright ... && ... scripts/lib/py -m unittest ..."`. Prove or reject this cause with a red test built from those records before the fix.
+#### As-built
 
-**Constraints:**
-- Keep every Phase 62 result: `verify.sh` runs still show their step name, and a finished run still releases its row.
-- A run with an unknown command shows `waiting`; never hide the run because its command has no step name.
-- The run must still need a live supervisor that names the exact record, so a dead run never shows.
-
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live check: with a real worker in a detached `bash -c` run, a capture shows its row as `waiting`, then back to normal after the run ends. The checkpoint carries a new Change-Review line for the user.
-
-### Phase 42 — A dispatch shell folds into its Codex worker row  · status: todo
-
-**Depends on:** Phase 40
-
-#### Work Order
-
-**Goal:** a dispatch shell (`implement.sh`, `codex_mesh.py follow` or `start`) never draws separately when its Codex worker row draws. The worker uses its staff name when one exists. The dispatch job remains the fallback name. The same rule applies to a Claude seat dispatch.
-
-**Source:** change reviews C86 and C87 back (showrunner, 2026-10-28 ≈20:00 EDT). User: "there is no point to seeing the thing that dispatched the codex work for me - there is always one". One new Change-Review line covers both. Unit session `phases/42/source.md`.
-
-**Constraints from prior phases:**
-- `census/scan.rs` belongs to Phase 47 until its checkpoint; keep Phase 47's CPU acceptance test green.
-- Live case on natedev (cables unit, claude2): the director's Bash call zsh 3399214 → `implement.sh` 3399229 → `codex_mesh.py follow` 3576715 draws a shell row "Dispatch the drag seat to run the Phase 54b tes…" beside its worker row "drag · Phase 33" (codex1). The follow process has no app-server child: that worker's app-server has systemd as its parent, because an earlier dispatch that has ended started it. A case that folds: zsh 2700456 → `implement.sh` 2700461 → `codex_mesh.py follow` 2949144 → `codex app-server` 1570363.
-- Scan time: `worker_dispatches` (`census/scan.rs` ≈840) parses each launcher (`ParsedDispatch`, `census/worker_dispatch/mod.rs` ≈874), takes the seat from a `codex_mesh.py` process below it (`MESH_SEAT_FLAGS`, `process_is_below`), and resolves it through `mesh_roster.json` (`ParsedDispatch::resolve` ≈1117: `--to` seat, else the entry whose `launcher_pid` is the dispatch's pid) into `WorkerDispatch::Worker(ResolvedWorkerDispatch)` with `identity: WorkerIdentity::CodexThread(thread id)`.
-- Draw time: `AgentPlacement::resolve_dispatches` (`census/placement.rs` ≈265) collects the children of each final tile; a `CodexThreadHost` row's child joins only when the hierarchy moved it (`moved`), else it is skipped. `tree::join_dispatches` (`census/tree.rs` ≈344) folds a shell only into a `ChildKind::Thread` row in the same tile whose `CodexThreadId::Recorded` equals the dispatch identity. `folds_dispatch` (≈307) hides the shell; `dispatch_label` (≈328) gives the worker row the job. Claude seats fold through `ClaudeDispatchFold` and `fold_claude_dispatches` (`scan.rs` ≈929).
-- `census/scan.rs` is in Phase 40's **Files** and its working tree; this phase starts after Phase 40's checkpoint.
-- Keep `pending_dispatch_to_a_different_seat_keeps_its_wrapper_visible` and `unresolved_and_cross_tile_dispatches_keep_their_shell_rows` (`worker_dispatch/tests.rs`) unless the fixture capture shows the cables case is one of them; then name the changed rule in the summary.
-
-**Spec:**
-1. Capture the live process table, `mesh_roster.json` and the configured schema-2 staff file for a follow dispatch. Select a worker whose app-server that dispatch did not start. Build a fixture from those inputs. Name the failing fold stage in the summary: seat resolution, worker placement, or the join. Do not run `production_tree.py`.
-2. Pair by the dispatch's own identity (its `--to` seat or roster entry in its `--session-dir`, and the thread that seat records), not by process descent. The pairing is a type, for example `DispatchPairing { shell, worker, dispatch }` built once at placement, that the draw reads; no name filter in the draw. A shell whose worker row draws in its final tile folds into it wherever that worker's app-server sits in the process tree.
-3. Claude seats (C87) use the same pairing: a seat dispatch folds into the seat's session row by the seat identity.
-4. Add red-first tests in `census/worker_dispatch/tests.rs` for the captured follow dispatch, with its app-server under pid 1. Place the worker through its staff edge. Draw one worker row and no dispatch shell row. Assert the staff name when one exists, and the dispatch job otherwise. Keep the existing fold, pending and cross-tile tests. Add the same case for a Claude seat. Each test takes less than one second.
-5. CHANGELOG: one line under Fixed.
+- A dispatch shell never draws beside its worker. `DispatchPairing` in `census/placement.rs`, built once at placement, pairs the shell and the worker by seat identity, wherever the worker's app-server sits in the process tree. `DispatchPairing::join` replaces the old fold, and `DispatchFold` and `join_dispatches` do not exist.
+- A Claude seat uses the same pairing. Its shell descendants draw under the seat row.
+- A pending dispatch to another seat, an unresolved dispatch and a cross-tile dispatch keep their shell rows.
+- `census/worker_dispatch/options.rs` parses launcher flags by `DispatchFlagArity` and stops at the first positional argument, so a job text that looks like a flag cannot change the seat.
+- `DispatchDirectory::{Recorded, FromChild}` lets a current assign launcher take its session directory from its live mesh child. The live child's seat overrides the launcher's seat.
 
 **Files:**
 - `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/tree.rs` — the typed pairing and the join
-- `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — seat identity at scan time, Claude seat fold
-- `crates/cargo-handler/src/census/worker_dispatch/tests.rs`, `crates/cargo-handler/src/census/fixtures/` — the captured fixture and tests
+- `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/worker_dispatch/mod.rs` — seat identity at scan time
+- `crates/cargo-handler/src/census/worker_dispatch/options.rs` — launcher option parsing
+- `crates/cargo-handler/src/constants.rs` — launcher flags and assign paths
+- `crates/cargo-handler/src/agent_cell.rs` — paired worker rows and Claude shell descendants
+- `crates/cargo-handler/src/census/worker_dispatch/tests.rs`, `crates/cargo-handler/src/census/fixtures/dispatch_pairing.json` — captured dispatch and pairing tests
+- `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs`, `crates/cargo-handler/src/census/scan/activity_scan_tests.rs`, `crates/cargo-handler/src/census/hierarchy_file_tests.rs` — tests on the new pairing
 - `crates/cargo-handler/CHANGELOG.md`
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — the capture, the pairing type, scan and placement changes and the CHANGELOG; hub: `crates/cargo-handler/src/census/placement.rs`.
-- `test` — opens as impl: the census has no `tests/` lane; it writes the fixture and the tests in `worker_dispatch/tests.rs` from the capture.
+**Binds later work:** "Worker roles come from the staff file" moves `DispatchPairing` to staff-only identities and keeps its behavior.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of a director tile during a `follow` dispatch to a worker whose app-server an earlier dispatch started shows only the worker row with its job. The checkpoint adds one Change-Review line for C86 and C87.
+**Gotchas:** a future unknown flag whose value is an absolute path can read as the review directory. The result is a visible shell row.
 
 ### Phase 43 — Ages read d:hh:mm, right-aligned  · status: done
 
@@ -1731,7 +1709,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - The disk sweeper deletes a release binary soon after a build. Build and copy the binary in one detached step.
 - Two render tests took over 1 s in one full run at high machine load. Phase 50 holds them.
 
-### Phase 58 — The focus tint reaches the frame and stands apart from selection  · status: todo
+### Phase 58 — The focus tint reaches the frame and stands apart from selection  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
 
 **Depends on:** Phase 48, Phase 54; runs before Phase 25 and Phase 50 (shared `render/selected_ink_tests.rs`)
 
@@ -1895,9 +1873,9 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Spec:**
 1. Read the announced 3n worker role through the existing schema-2 `StaffFileReader`. Extend `StaffFields`, `StaffRoster` and the shared `StaffSnapshot`; add no second reader. Reuse the checked staff ID, current session and parent session that the staff reader retains. Derive the unit from that validated parent identity. Replace `HierarchyEdges::with_worker_roles` with the staff role result. Use named results for unavailable membership, a root member and a managed member when extending the identity lookups. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
-2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
+2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing in `census/worker_dispatch/options.rs` and `DispatchDirectory::{Recorded, FromChild}`. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
 3. Remove the `role_map_cache.json` read in `census/command_inputs.rs`.
-4. Keep `mesh_runs` and `WorkerReference::{Staff, LegacyThread}` semantics. Resolve staff IDs again when the staff snapshot changes, even when run files do not change. Preserve live-supervisor record-path checks, recognized commands, finite start times and discovered run directories. Keep one row per current thread, waiting or gate-step activity, independent director activity and completion removal. Keep legacy `director` fallback where legacy identity still needs it. Do not recognize a script name inside `bash -c`.
+4. Keep `mesh_runs` and `WorkerReference::{Staff, LegacyThread}` semantics. Resolve staff IDs again when the staff snapshot changes, even when run files do not change. Preserve live-supervisor record-path checks, finite start times and discovered run directories. A recognized command supplies only the step name; every other live run shows `waiting`. Keep one row per current thread, waiting or gate-step activity, independent director activity and completion removal. Keep legacy `director` fallback where legacy identity still needs it. A script name inside `bash -c` gives no step name.
 5. Tests under 1 s: staff role and unit; a worker without a role; unavailable membership; no roster file on disk. Migrate the detached-run fixtures to staff-only membership. Keep their assertions for no launcher or open thread, staff handoff, a restarted director, one worker row, verification activity and completion removal.
 6. CHANGELOG: one Changed line in cargo-handler.
 
@@ -1916,7 +1894,9 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live on natedev: every live worker shows the same unit and role as before.
 
-### Phase 55 — Narrow tiles keep tree guides, readable names and one header inset  · status: todo
+### Phase 55 — Narrow tiles keep tree guides, readable names and one header inset  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
+
+**Kept from this phase:** Specs 1 and 2 moved to Phase 66.
 
 **Depends on:** Phase 48
 
@@ -1949,7 +1929,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: shots at 200×50 and 120×40 pass a fresh design check. The checkpoint adds a Change-Review line.
 
-### Phase 56 — The rows readout is off by default  · status: todo
+### Phase 56 — The rows readout is off by default  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
 
 **Depends on:** Phase 48, Phase 54, Phase 57
 
@@ -1988,6 +1968,38 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 **Workers:** 1 writer (tui_pane and hosts).
 
 **Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: shots of cargo-handler and cargo-tile with the readout hidden and shown. The checkpoint adds a Change-Review line.
+
+### Phase 66 — Narrow tiles keep guides and readable names; the unassigned count matches its rows  · status: todo
+
+**Depends on:** none. Runs after Phase 62h, Phase 42 and Phase 65 (showrunner, 2026-11-06).
+
+#### Work Order
+
+**Goal:** at every tile width, each row keeps its tree guides and its session name stays readable, and the unassigned pane's count matches the rows it draws.
+
+**Source:** showrunner order 6d8cdb12, 2026-11-06: a Spec of a dropped phase stays only when it fixes something broken today. These came from Phase 55 (design check 2026-10-30, `phases/43/shots/ages_120x40.png`) and Phase 51 (design check 2026-10-29, `phases/41/live/handler_named.png`).
+
+**Constraints from prior phases:**
+- Phase 27 keeps the core columns on narrow tiles; `TreeColumns::for_lines` (`agent_cell.rs` ≈453) keeps a column only when a drawn row has a value. Phase 49b adds model and effort columns in the same file and runs after this phase.
+- `tree_cell_line` (`agent_cell.rs` ≈2602) drops the whole guide prefix when fewer than two name cells remain after it.
+- Both width paths drop Directory, Branch, Type, Age and Account in that order: local fitting through `ColumnDrop::ORDER` (`agent_cell.rs` ≈504) and shared-column fitting through `GroupFitStep::ORDER` (≈936).
+- `SurfaceSelection::rows_readout` (`crates/cargo-handler/src/interaction.rs` ≈361) counts selectable identities. An unassigned table also draws its header line, which the count does not include.
+- Phase 41's shot: the unassigned pane says "content rows: 2 of 2" and draws 3 rows; the third, `phase41-check`, has the same status, account, branch and age as `cargo-liner-handler-c6`, with only its session cell lit.
+
+**Spec:**
+1. Reproduce each defect below on today's tree with a red test first. A defect with no reproduction leaves this phase; report it to the director.
+2. Tree guides are cut (Phase 55 Spec 1). At 120×40 the natedev tile drew two depth-3 rows ("ws-impl…", "Dispatch…") at the tile's left edge with no guides. Draw every row's guides at its own depth at every width; cut the name after the guides, never the guides.
+3. Session names are cut (Phase 55 Spec 2). The same tile cut session names to two letters ("re…" for both "report" and "resources") beside a type column empty in 17 of 19 rows. Give an empty column's space to the session column. A column that is empty on most rows never takes room from session names.
+4. The unassigned count is wrong (Phase 51 Spec 2). Find out whether `phase41-check` is a real second session or a row left from an earlier frame. Stale: the pane clears every row it no longer draws. Real: the count includes it. The test reproduces the extra session identity or the stale cells across consecutive frames; equality of the drawn line count and the readout count is not the rule.
+5. CHANGELOG: one Fixed line.
+
+**Files:**
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/agent_cell/tests/` — tree guides, column space, unassigned rows and count
+- `crates/cargo-handler/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: shots at 200×50 and 120×40 show the guides and the readable names. The checkpoint adds a Change-Review line.
 
 ### Phase 49a — The census reads each agent's model and effort  · status: todo
 
@@ -2031,7 +2043,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 ### Phase 49b — Agent tiles show model and effort columns  · status: todo
 
-**Depends on:** Phase 49a, Phase 43, Phase 55
+**Depends on:** Phase 49a, Phase 43, Phase 66
 
 #### Work Order
 
@@ -2046,7 +2058,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - Phase 49a gives each row `ModelName` and `ReasoningEffort`, both with an `Unrecorded` case.
 
 **Spec:**
-1. `TreeColumn::Model` (header `model`) and `TreeColumn::Effort` (header `effort`), after `Role`, left-aligned; `Unrecorded` draws nothing. Phase 55's rule applies to both columns: a column that is empty on most rows never takes room from session names.
+1. `TreeColumn::Model` (header `model`) and `TreeColumn::Effort` (header `effort`), after `Role`, left-aligned; `Unrecorded` draws nothing. Phase 66's rule applies to both columns: a column that is empty on most rows never takes room from session names.
 2. On a narrow tile the two columns drop before `Branch` and `Directory` keep their place (effort first, then model).
 3. Red-first tests, each under 1 s: a tile with a Claude and a Codex row shows `opus`/`sol` and their efforts; a tile of shells drops both columns; a narrow tile drops effort, then model, before the core columns. Sparse values: a tile where model and effort are recorded on few rows gives their space to session names, in local fitting and in shared-column fitting. Update fixture text the suite names.
 4. CHANGELOG: one line under Added.
@@ -2104,7 +2116,9 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean with no test over one second; lint clean. Change-Review: none (test time only).
 
-### Phase 51 — Design check follow-ups: the timer shot, a stale unassigned row and the account notice inset  · status: todo
+### Phase 51 — Design check follow-ups: the timer shot, a stale unassigned row and the account notice inset  · status: dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for')
+
+**Kept from this phase:** Spec 2 moved to Phase 66.
 
 **Depends on:** Phase 47
 
@@ -2181,7 +2195,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - `summary/accounts_gradient_tests.rs` is also in Phase 50's **Files** (its slow gradient test); they run one after the other, never together.
 - `theme::ResetRank::color` (`crates/cargo-handler/src/theme/mod.rs` ≈128) is the one reset source. Today it blends the `reset_nearest` to the `reset_farthest` theme role at rank/(n-1) in plain sRGB (`tui_pane::blend_color`); the rank comes from `reset_colors` (`summary/accounts.rs` ≈145). The stepped colours replace that blend in this one owner. Do not add a second reset source. The readability correction (`footer_colors::readable_status_style`) applies after it.
 - Measured on the C71 shot (Default Dark, 6 accounts): neighbouring reset colours step only dE 2.3–2.7, and the ramp ends are about dE 12 apart in every theme. `accounts_gradient_tests.rs` holds the C113 floors (`check_rendered_reset_ramp` ≈389), the ends floor (≈501) and the chroma and plain-text floors (≈532), and its formula tests (≈185, ≈232, ≈266) follow the sRGB blend. C115 is `SessionResetFloor` (`render/role_title_tests.rs` ≈715); dark is `DarkNotMeasured`.
-- The reset colour work of Phase 35 (C71) moved here on 2026-10-30. Phase 31 runs after this phase and assesses these stepped colours.
+- The reset colour work of Phase 35 (C71) moved here on 2026-10-30.
 
 **Spec:**
 1. A stepped ramp of 3 or 4 distinct steps per theme, soonest the strongest, each step meeting text contrast on its ground; no red; no step equal to a session name color. It applies in all four themes.

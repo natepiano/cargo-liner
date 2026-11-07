@@ -15,6 +15,7 @@ use crate::census::RoleFallback;
 use crate::census::RowIdentity;
 use crate::census::StaffFileSetting;
 use crate::census::account::ConfigHome;
+use crate::census::placement::DispatchWorker;
 use crate::census::worker_dispatch::DIRECTOR_FILE;
 
 const THREAD: &str = "01a1437d-1234-5678-9abc-0123456789ab";
@@ -365,14 +366,28 @@ fn detached_worker_launcher_and_run_share_one_visible_thread() {
             )
         })
         .collect();
-    let folded = tree::join_dispatches(&children);
+    let folded: Vec<_> = children
+        .iter()
+        .filter_map(|(tile, shell)| {
+            children.iter().find_map(|(worker_tile, thread)| {
+                crate::census::placement::DispatchPairing::join(
+                    *tile,
+                    shell,
+                    *worker_tile,
+                    DispatchWorker::Thread(thread),
+                )
+                .ok()
+                .map(|_| *thread)
+            })
+        })
+        .collect();
     assert_eq!(folded.len(), 1, "the launcher folds into its run thread");
     assert_eq!(
         children.len() - folded.len(),
         1,
         "only one worker row is visible"
     );
-    assert_eq!(folded[0].thread.activity.text(), "waiting");
+    assert_eq!(folded[0].activity.text(), "waiting");
     assert_eq!(rows[0].activity, AgentActivity::Idle);
 }
 
