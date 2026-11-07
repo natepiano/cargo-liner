@@ -20,6 +20,7 @@ use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::CommitDate;
 use crate::project::CratesIoRelease;
+use crate::project::GithubRunCount;
 use crate::project::LanguageStats;
 use crate::project::ManifestFingerprint;
 use crate::project::ProjectPrData;
@@ -53,7 +54,7 @@ pub(crate) enum BackgroundMsg {
     CiRuns {
         path:         AbsolutePath,
         runs:         Vec<CiRun>,
-        github_total: u32,
+        github_total: GithubRunCount,
     },
     /// A GitHub repo fetch has been queued (for startup tracking).
     RepoFetchQueued { repo: OwnerRepo },

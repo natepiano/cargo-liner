@@ -243,8 +243,8 @@ impl DetailField {
             },
             Self::RemotesUnreadable => GIT_UNREADABLE_LABEL.to_string(),
             Self::LastFetched => data.last_fetched.as_deref().unwrap_or("").to_string(),
-            Self::RateLimitCore => formatting::format_rate_limit_bucket(data.rate_limit_core),
-            Self::RateLimitGraphQl => formatting::format_rate_limit_bucket(data.rate_limit_graphql),
+            Self::RateLimitCore => quota_value(data.rate_limit_core),
+            Self::RateLimitGraphQl => quota_value(data.rate_limit_graphql),
             Self::Tracks => data
                 .submodule_ctx
                 .as_ref()
@@ -276,6 +276,13 @@ impl DetailField {
             | Self::Homepage
             | Self::Repository => String::new(),
         }
+    }
+}
+
+fn quota_value(observation: super::QuotaObservation) -> String {
+    match observation {
+        super::QuotaObservation::Unobserved => String::new(),
+        super::QuotaObservation::Observed(quota) => formatting::format_rate_limit_bucket(quota),
     }
 }
 
@@ -325,7 +332,9 @@ mod tests {
 
     #[test]
     fn rate_limit_bucket_empty_without_quota() {
-        assert_eq!(formatting::format_rate_limit_bucket(None), "");
+        let data = super::GitData::default();
+        assert_eq!(super::DetailField::RateLimitCore.git_value(&data), "");
+        assert_eq!(super::DetailField::RateLimitGraphQl.git_value(&data), "");
     }
 
     #[test]
@@ -336,10 +345,7 @@ mod tests {
             remaining: 4958,
             reset_at:  None,
         };
-        assert_eq!(
-            formatting::format_rate_limit_bucket(Some(quota)),
-            "4958/5000"
-        );
+        assert_eq!(formatting::format_rate_limit_bucket(quota), "4958/5000");
     }
 
     #[test]
@@ -350,10 +356,7 @@ mod tests {
             remaining: 5000,
             reset_at:  Some(u64::MAX),
         };
-        assert_eq!(
-            formatting::format_rate_limit_bucket(Some(quota)),
-            "5000/5000"
-        );
+        assert_eq!(formatting::format_rate_limit_bucket(quota), "5000/5000");
     }
 
     #[test]
@@ -364,10 +367,7 @@ mod tests {
             remaining: 4900,
             reset_at:  Some(0),
         };
-        assert_eq!(
-            formatting::format_rate_limit_bucket(Some(quota)),
-            "4900/5000"
-        );
+        assert_eq!(formatting::format_rate_limit_bucket(quota), "4900/5000");
     }
 }
 
@@ -401,8 +401,8 @@ mod git_detail_field_tests {
             inception:          FirstCommit::AwaitingProbe,
             last_commit:        crate::tui::panes::GitProbe::Probed(CommitDate::NoCommits),
             last_fetched:       None,
-            rate_limit_core:    None,
-            rate_limit_graphql: None,
+            rate_limit_core:    crate::tui::panes::pane_data::QuotaObservation::Unobserved,
+            rate_limit_graphql: crate::tui::panes::pane_data::QuotaObservation::Unobserved,
             github_status:      AvailabilityStatus::Reachable,
             pull_requests:      PullRequestSection::default(),
             remotes:            super::super::git_data::RemoteRows::default(),

@@ -43,6 +43,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 
+- Startup toast cards keep a bottom gap while opening in panes with at least six interior rows.
+- Toast page capacity reserves that gap before the opening animation starts.
 - Opening toast cards keep their bottom gap when the drawn rows fit. Progress labels use the space beside their own suffix.
 - Toasts mark hidden rows on the bottom border with the shared page mark. The page count stays fixed during opening. Small panes keep their titles and borders. Startup rows keep their progress bars and percentages inside the corner pane.
 - `TileGrid::cell_at` resolves the last painted piece during motion and between body paints.

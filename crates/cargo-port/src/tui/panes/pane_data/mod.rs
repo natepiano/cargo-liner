@@ -54,6 +54,7 @@ pub use git_data::PullRequestPolling;
 pub use git_data::PullRequestRow;
 pub use git_data::PullRequestSection;
 pub use git_data::PullRequestSectionState;
+pub use git_data::QuotaObservation;
 pub use git_data::RemoteRow;
 #[cfg(test)]
 pub(in crate::tui) use git_data::RemoteRows;

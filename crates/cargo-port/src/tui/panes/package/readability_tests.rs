@@ -10,6 +10,7 @@ use crate::ci::CiStatus;
 use crate::config::NonRustInclusion;
 use crate::project::CratesIoRelease;
 use crate::project::DiskMeasurement;
+use crate::project::GithubRunCount;
 use crate::project::RootItem;
 use crate::project::Visibility;
 use crate::scan::BackgroundMsg;
@@ -515,14 +516,14 @@ fn wrapped_package_values_share_selection_and_row_hits() -> anyhow::Result<()> {
 }
 
 #[test]
-fn phase4e_narrow_package_keeps_both_ci_counts_and_whole_empty_messages() -> anyhow::Result<()> {
+fn narrow_package_keeps_both_ci_counts_and_whole_empty_messages() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.package.set_content(PackageData {
         ci_display: CiDisplay::Runs {
             ci_status:    Some(CiStatus::Failed),
             local:        7,
-            github_total: 19,
+            github_total: GithubRunCount::Known(19),
         },
         ..PackageData::default()
     });
@@ -560,7 +561,7 @@ fn phase4e_narrow_package_keeps_both_ci_counts_and_whole_empty_messages() -> any
 }
 
 #[test]
-fn phase4e_deleted_metadata_keeps_its_style_and_accurate_description() -> anyhow::Result<()> {
+fn deleted_metadata_keeps_its_style_and_accurate_description() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     let data = PackageData {
@@ -595,7 +596,7 @@ fn phase4e_deleted_metadata_keeps_its_style_and_accurate_description() -> anyhow
     Ok(())
 }
 
-fn phase4e_workspace_data() -> PackageData {
+fn workspace_data() -> PackageData {
     PackageData {
         title: "Workspace".to_string(),
         path: "/tmp/workspace".to_string(),
@@ -612,10 +613,10 @@ fn phase4e_workspace_data() -> PackageData {
 }
 
 #[test]
-fn phase4e_one_column_workspace_pages_include_structure_and_tests() -> anyhow::Result<()> {
+fn one_column_workspace_pages_include_structure_and_tests() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
-    app.panes.package.set_content(phase4e_workspace_data());
+    app.panes.package.set_content(workspace_data());
     app.panes.package.focus.pane_focus_state = PaneFocusState::Active;
     let mut drawn = String::new();
     for position in 0..24 {
@@ -638,10 +639,10 @@ fn phase4e_one_column_workspace_pages_include_structure_and_tests() -> anyhow::R
 }
 
 #[test]
-fn phase4e_new_package_page_keeps_a_visible_selection() -> anyhow::Result<()> {
+fn new_package_page_keeps_a_visible_selection() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
-    app.panes.package.set_content(phase4e_workspace_data());
+    app.panes.package.set_content(workspace_data());
     app.panes.package.focus.pane_focus_state = PaneFocusState::Active;
     test_support::draw_pane_at_size(&mut app, PaneId::Package, 17, 10)?;
     app.panes.package.viewport.end();
@@ -659,10 +660,10 @@ fn phase4e_new_package_page_keeps_a_visible_selection() -> anyhow::Result<()> {
 }
 
 #[test]
-fn phase4e_package_selection_stays_in_its_own_column() -> anyhow::Result<()> {
+fn package_selection_stays_in_its_own_column() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
-    app.panes.package.set_content(phase4e_workspace_data());
+    app.panes.package.set_content(workspace_data());
     app.panes.package.focus.pane_focus_state = PaneFocusState::Active;
     let rows = panes::package_rows_from_data(app.panes.package.content().context("package")?);
     let path_index = rows
@@ -686,10 +687,10 @@ fn phase4e_package_selection_stays_in_its_own_column() -> anyhow::Result<()> {
 }
 
 #[test]
-fn phase4e_package_page_mark_stays_clear_of_the_column_join() -> anyhow::Result<()> {
+fn package_page_mark_stays_clear_of_the_column_join() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
-    app.panes.package.set_content(phase4e_workspace_data());
+    app.panes.package.set_content(workspace_data());
     let buffer = test_support::draw_pane_at_size(&mut app, PaneId::Package, 40, 8)?;
     let bottom = test_support::rows(&buffer).pop().context("bottom border")?;
     assert!(
@@ -793,7 +794,7 @@ fn workspace_ci_counts_stay_whole_in_two_columns() -> anyhow::Result<()> {
         ci_display: CiDisplay::Runs {
             ci_status:    Some(CiStatus::Failed),
             local:        9,
-            github_total: 17,
+            github_total: GithubRunCount::Known(17),
         },
         ..PackageData::default()
     });
@@ -803,7 +804,10 @@ fn workspace_ci_counts_stay_whole_in_two_columns() -> anyhow::Result<()> {
         .iter()
         .find(|row| row.contains("CI "))
         .context("CI row")?;
-    assert!(row.contains('9') && row.contains("17"), "{rows:?}");
+    assert!(row.contains("local 9"), "{rows:?}");
+    let local = test_support::position(&buffer, "local 9")?;
+    let github = test_support::position(&buffer, "gh 17")?;
+    assert_eq!(github, (local.0, local.1 + 1));
     assert!(!row.contains('…'), "{row}");
     Ok(())
 }
@@ -854,7 +858,7 @@ fn workspace_ci_uses_counts_when_the_metadata_column_is_short() -> anyhow::Resul
         ci_display: CiDisplay::Runs {
             ci_status:    Some(CiStatus::Failed),
             local:        9,
-            github_total: 27,
+            github_total: GithubRunCount::Known(27),
         },
         ..PackageData::default()
     });
@@ -865,7 +869,10 @@ fn workspace_ci_uses_counts_when_the_metadata_column_is_short() -> anyhow::Resul
             .iter()
             .find(|row| row.contains("CI "))
             .context("CI row")?;
-        assert!(row.contains('9') && row.contains("27"), "{width}: {row}");
+        assert!(row.contains("local 9"), "{width}: {row}");
+        let local = test_support::position(&buffer, "local 9")?;
+        let github = test_support::position(&buffer, "gh 27")?;
+        assert_eq!(github, (local.0, local.1 + 1));
         assert!(!row.contains('…'), "{width}: {row}");
     }
     Ok(())
@@ -894,6 +901,34 @@ fn empty_description_wraps_inside_the_inset_at_each_window_width() -> anyhow::Re
             assert_eq!(row(y).trim_end(), "No");
             assert_eq!(row(y + 1).trim_end(), "description");
             assert_eq!(buffer[(x - 1, y + 1)].symbol(), " ");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn empty_description_keeps_the_right_margin_at_fifteen_and_sixteen_inner_cells()
+-> anyhow::Result<()> {
+    for inner_width in [15, 16] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        let outer_width = inner_width + 2;
+        let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Package, 80, outer_width)?;
+        let row = |y| {
+            (2..outer_width - 2)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        };
+        assert_eq!(buffer[(1, 1)].symbol(), " ");
+        assert_eq!(buffer[(outer_width - 2, 1)].symbol(), " ");
+        if inner_width == 15 {
+            assert_eq!(row(1).trim_end(), "No");
+            assert_eq!(row(2).trim_end(), "description");
+            assert_eq!(buffer[(1, 2)].symbol(), " ");
+            assert_eq!(buffer[(outer_width - 2, 2)].symbol(), " ");
+        } else {
+            assert_eq!(row(1), "No description");
+            assert!(!row(2).contains("description"));
         }
     }
     Ok(())

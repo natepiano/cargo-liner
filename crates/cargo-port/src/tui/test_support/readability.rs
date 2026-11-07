@@ -4,6 +4,7 @@ use anyhow::Context;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use tui_pane::Appearance;
 use tui_pane::CpuBreakdown;
 use tui_pane::CpuCoreUsage;
@@ -93,6 +94,35 @@ pub(in crate::tui) fn draw_pane_at_size(
     width: u16,
     height: u16,
 ) -> anyhow::Result<Buffer> {
+    draw_pane_in_area(app, pane, width, width, height)
+}
+
+pub(in crate::tui) fn draw_pane_in_window(
+    app: &mut App,
+    pane: PaneId,
+    window_width: u16,
+    pane_width: u16,
+) -> anyhow::Result<Buffer> {
+    draw_pane_in_area(app, pane, window_width, pane_width, HEIGHT)
+}
+
+pub(in crate::tui) fn draw_pane_in_window_at_size(
+    app: &mut App,
+    pane: PaneId,
+    window_width: u16,
+    pane_width: u16,
+    height: u16,
+) -> anyhow::Result<Buffer> {
+    draw_pane_in_area(app, pane, window_width, pane_width, height)
+}
+
+fn draw_pane_in_area(
+    app: &mut App,
+    pane: PaneId,
+    window_width: u16,
+    pane_width: u16,
+    height: u16,
+) -> anyhow::Result<Buffer> {
     app.ensure_fit_widths_cached();
     app.ensure_disk_cache();
     let lookup = app.ci.status_lookup();
@@ -100,7 +130,7 @@ pub(in crate::tui) fn draw_pane_at_size(
         .project_list
         .selected_project_path()
         .map(Path::to_path_buf);
-    let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+    let mut terminal = Terminal::new(TestBackend::new(window_width, height))?;
     terminal.draw(|frame| {
         frame.render_widget(
             ratatui::widgets::Block::default()
@@ -117,7 +147,7 @@ pub(in crate::tui) fn draw_pane_at_size(
         );
         let layout = ResolvedPaneLayout::new(vec![ResolvedPane {
             pane,
-            area: frame.area(),
+            area: Rect::new(0, 0, pane_width.min(window_width), height),
         }]);
         tui_pane::render_panes(
             frame,

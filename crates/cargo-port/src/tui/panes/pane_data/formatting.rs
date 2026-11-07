@@ -391,18 +391,11 @@ pub fn format_timestamp(iso: &str) -> String {
     }
 }
 
-/// Render a rate-limit bucket as `"remaining/limit resets HH:MM:SS"`.
-/// Returns the empty string when the bucket has not been observed yet;
-/// drops the `resets …` suffix when no reset timestamp is available
-/// **or** when the bucket is fully unused (`used == 0`). GitHub
-/// re-bases the reset window on every `/rate_limit` poll for an
-/// unused bucket, so including the countdown for those rows makes
-/// the value oscillate between `HH:00:00` and `(HH-1):59:59` every
-/// second. Nothing has been consumed there — no countdown to show.
-pub(super) fn format_rate_limit_bucket(quota: Option<RateLimitQuota>) -> String {
-    let Some(quota) = quota else {
-        return String::new();
-    };
+/// `format_rate_limit_bucket` formats `quota.remaining`, `quota.limit`, and an active reset
+/// countdown. The countdown stays hidden when `quota.used == 0` or `quota.reset_at` has expired.
+/// GitHub resets the window on each poll when `quota.used == 0`.
+/// An unused bucket's countdown alternates between `HH:00:00` and `(HH-1):59:59` each second.
+pub(super) fn format_rate_limit_bucket(quota: RateLimitQuota) -> String {
     let base = format!("{}/{}", quota.remaining, quota.limit);
     if quota.used == 0 {
         return base;

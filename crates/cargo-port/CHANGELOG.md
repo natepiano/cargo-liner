@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hide GitHub quota rows until each bucket has data. Retain measured quota after refresh failures.
+- Keep the Git pane title unchanged when quota data arrives for a project without a Git repository.
+- Label local and GitHub CI counts. Show loading and failure states, retain known counts, and show `No CI runs` for known zero.
+- Keep the Git Worktrees columns visible at narrow widths. Cut Name first, preserve the margins, and align wide characters.
+- Keep target names whole before Source labels. Remove shared checkout words and preserve distinct ends when Source labels need a cut.
+
 - Refresh GitHub quota after each reset and update the Git pane without input.
 - After a reset, fetch the quota again every 10 s, up to 3 times, until GitHub opens the new window.
 - Hide expired countdowns and retain quota limits when they fit.
