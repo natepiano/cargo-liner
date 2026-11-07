@@ -1,6 +1,7 @@
 //! Progress row vocabulary and panel rendering.
 
 use ratatui::style::Color;
+use unicode_width::UnicodeWidthStr;
 
 use super::Percentage;
 use super::ProgressState;
@@ -59,11 +60,7 @@ pub fn progress_panel_body(
     body_width: usize,
     style: ProgressPanelStyle,
 ) -> (Vec<String>, Vec<Color>) {
-    let label_width = rows
-        .iter()
-        .map(|row| row.label.chars().count())
-        .max()
-        .unwrap_or(0);
+    let label_width = rows.iter().map(|row| row.label.width()).max().unwrap_or(0);
     let mut lines = Vec::with_capacity(rows.len());
     let mut colors = Vec::with_capacity(rows.len());
     for row in rows {
@@ -87,9 +84,13 @@ pub fn progress_panel_body(
                 "failed".to_string(),
             ),
         };
-        let mut line = format!("{label:<label_width$}  {bar} {suffix}", label = row.label);
+        let fitted_label_width =
+            label_width.min(body_width.saturating_sub(style.bar_width + suffix.width() + 3));
+        let label = truncate_detail(row.label, fitted_label_width);
+        let padding = fitted_label_width.saturating_sub(label.width());
+        let mut line = format!("{label}{}  {bar} {suffix}", " ".repeat(padding));
         if let ProgressDetail::Message(detail) = &row.detail {
-            let used = line.chars().count();
+            let used = line.width();
             let remaining = body_width.saturating_sub(used + 2);
             if remaining >= 4 {
                 line.push_str("  ");

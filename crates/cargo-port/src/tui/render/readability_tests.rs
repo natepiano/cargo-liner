@@ -6,6 +6,8 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use tui_pane::ColorMode;
+use tui_pane::Denominator;
+use tui_pane::PhaseLifecycle;
 
 use crate::config::LintIndicator;
 use crate::http::RateLimitQuota;
@@ -37,6 +39,289 @@ use crate::tui::sccache;
 use crate::tui::test_support;
 use crate::tui::test_support::PROJECT;
 use crate::tui::test_support::WIDTH;
+
+fn complete_startup_rows(app: &mut App) -> anyhow::Result<()> {
+    let completed_at = std::time::Instant::now()
+        .checked_sub(crate::tui::constants::STARTUP_ROW_MIN_VISIBLE)
+        .context("the startup visibility floor fits the test clock")?;
+    for (lifecycle, first_seen) in [
+        (
+            &mut app.startup.disk.lifecycle,
+            &mut app.startup.disk.first_seen,
+        ),
+        (
+            &mut app.startup.git.lifecycle,
+            &mut app.startup.git.first_seen,
+        ),
+        (
+            &mut app.startup.repo.lifecycle,
+            &mut app.startup.repo.first_seen,
+        ),
+        (
+            &mut app.startup.crates_io.lifecycle,
+            &mut app.startup.crates_io.first_seen,
+        ),
+        (
+            &mut app.startup.metadata.lifecycle,
+            &mut app.startup.metadata.first_seen,
+        ),
+        (
+            &mut app.startup.lint_phase.lifecycle,
+            &mut app.startup.lint_phase.first_seen,
+        ),
+        (
+            &mut app.startup.languages.lifecycle,
+            &mut app.startup.languages.first_seen,
+        ),
+        (
+            &mut app.startup.tests.lifecycle,
+            &mut app.startup.tests.first_seen,
+        ),
+    ] {
+        *lifecycle = PhaseLifecycle::Completed { at: completed_at };
+        *first_seen = Some(completed_at);
+    }
+    app.startup.details_declared.lifecycle = PhaseLifecycle::Completed { at: completed_at };
+    Ok(())
+}
+
+#[test]
+fn a_startup_percent_row_uses_the_space_its_hidden_detail_leaves() -> anyhow::Result<()> {
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = mode;
+        draw_short_ui(&mut app)?;
+        app.initialize_startup_phase_tracker();
+        app.startup.metadata.lifecycle = PhaseLifecycle::Completed {
+            at: std::time::Instant::now(),
+        };
+        app.startup.repo.lifecycle = PhaseLifecycle::Running;
+        app.startup.repo.expected = Denominator::Growing(std::collections::HashSet::new());
+        let pane = Rect::new(46, 22, 34, 7);
+        app.panes
+            .tiled_layout
+            .panes
+            .iter_mut()
+            .find(|pane| pane.pane == PaneId::CiRuns)
+            .context("CI runs pane")?
+            .area = pane;
+        let mut terminal = Terminal::new(TestBackend::new(80, 30))?;
+        terminal.draw(|frame| {
+            frame.render_widget(
+                tui_pane::default_pane_chrome(mode).block("CI runs".to_owned(), false),
+                pane,
+            );
+            super::render_toasts_over_panes(frame, &mut app, Rect::new(0, 0, 80, 29));
+            mode.clear_colors(frame.buffer_mut());
+        })?;
+        let buffer = terminal.backend().buffer();
+        let card = app
+            .framework
+            .toasts
+            .hits()
+            .first()
+            .context("startup card")?
+            .card_rect;
+        let text: String = (card.left() + 1..card.right() - 1)
+            .map(|x| buffer[(x, card.top() + 1)].symbol())
+            .collect();
+        assert!(text.contains("Cargo meta…"), "{mode:?}: {text}");
+        assert!(text.ends_with("100% "), "{mode:?}: {text}");
+        assert!(text.contains("▓▓▓▓▓▓▓▓"), "{mode:?}: {text}");
+    }
+    Ok(())
+}
+
+#[test]
+fn closing_startup_rows_fit_each_resized_frame() -> anyhow::Result<()> {
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = mode;
+        app.framework
+            .toasts
+            .settings_mut()
+            .animation
+            .entrance_duration = tui_pane::ToastDuration::try_from_secs("entrance_duration", 0.0)?;
+        app.initialize_startup_phase_tracker();
+        complete_startup_rows(&mut app)?;
+        draw_short_ui(&mut app)?;
+        let id = app
+            .framework
+            .toasts
+            .hits()
+            .first()
+            .context("startup card")?
+            .id;
+        app.tick_startup_panel();
+        assert!(!app.startup.is_collecting());
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 45))?;
+        terminal.draw(|frame| super::ui(frame, &mut app))?;
+        let card = app
+            .framework
+            .toasts
+            .hits()
+            .iter()
+            .find(|hit| hit.id == id)
+            .context("closing startup card")?
+            .card_rect;
+        let buffer = terminal.backend().buffer();
+        let row = |y| {
+            (card.left()..card.right())
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        };
+        assert!(
+            row(card.y + 1).contains("Cargo metadata"),
+            "{mode:?}: {}",
+            row(card.y + 1)
+        );
+        assert!(row(card.bottom() - 1).contains("Closing in"));
+
+        let buffer = draw_short_ui(&mut app)?;
+        let card = app
+            .framework
+            .toasts
+            .hits()
+            .iter()
+            .find(|hit| hit.id == id)
+            .context("resized closing startup card")?
+            .card_rect;
+        for y in card.top() + 1..card.bottom() - 1 {
+            let text: String = (card.left() + 1..card.right() - 1)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            assert!(text.contains("100%"), "{mode:?}: {text}");
+            assert!(text.contains("▓▓▓▓▓▓▓▓"), "{mode:?}: {text}");
+        }
+        let view = app
+            .framework
+            .toasts
+            .active_now()
+            .into_iter()
+            .find(|toast| toast.id() == id)
+            .context("closing startup view")?;
+        assert_eq!(view.body().lines().count(), 8);
+    }
+    Ok(())
+}
+
+#[test]
+fn startup_rows_keep_their_bar_percent_and_page_count_at_eighty_columns() -> anyhow::Result<()> {
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = mode;
+        app.framework
+            .toasts
+            .settings_mut()
+            .animation
+            .entrance_duration = tui_pane::ToastDuration::try_from_secs("entrance_duration", 0.0)?;
+        app.initialize_startup_phase_tracker();
+        let completed_at = std::time::Instant::now();
+        for lifecycle in [
+            &mut app.startup.disk.lifecycle,
+            &mut app.startup.git.lifecycle,
+            &mut app.startup.repo.lifecycle,
+            &mut app.startup.crates_io.lifecycle,
+            &mut app.startup.metadata.lifecycle,
+            &mut app.startup.lint_phase.lifecycle,
+            &mut app.startup.languages.lifecycle,
+            &mut app.startup.tests.lifecycle,
+        ] {
+            *lifecycle = PhaseLifecycle::Completed { at: completed_at };
+        }
+        let buffer = draw_short_ui(&mut app)?;
+        let card = app
+            .framework
+            .toasts
+            .hits()
+            .first()
+            .context("startup card")?
+            .card_rect;
+        let mut shown = 0;
+        for y in card.top() + 1..card.bottom() - 1 {
+            let text: String = (card.left() + 1..card.right() - 1)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            assert!(text.contains("100%"), "{mode:?}: {text}");
+            assert!(text.contains("▓▓▓▓▓▓▓▓"), "{mode:?}: {text}");
+            shown += 1usize;
+        }
+        let body = app.framework.toasts.active_views(std::time::Instant::now());
+        let startup = body
+            .iter()
+            .find(|toast| toast.title() == "Startup")
+            .context("startup view")?;
+        let pages = startup.body().lines().count().div_ceil(shown);
+        let bottom: String = (card.left()..card.right())
+            .map(|x| buffer[(x, card.bottom() - 1)].symbol())
+            .collect();
+        assert!(
+            bottom.contains(&format!("1 of {pages} ▼")),
+            "{mode:?}: {bottom}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn startup_toast_stays_inside_the_corner_pane_at_eighty_columns() -> anyhow::Result<()> {
+    for mode in [ColorMode::Colored, ColorMode::NoColor] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = mode;
+        let before = draw_short_ui(&mut app)?;
+        let corner = app.panes.tiled_layout.area(PaneId::CiRuns);
+        let lints = app.panes.tiled_layout.area(PaneId::Lints);
+        app.framework.toasts.push_timed(
+            "Startup",
+            "Cargo metadata\ncrates.io\nDisk usage\nGitHub repos\nLanguages\nLint history\nLocal git repos\nTest counts",
+            std::time::Duration::from_secs(30),
+            8,
+        );
+        let after = draw_short_ui(&mut app)?;
+        let card = app
+            .framework
+            .toasts
+            .hits()
+            .first()
+            .context("the startup toast draws")?
+            .card_rect;
+        assert!(
+            card.left() > corner.left(),
+            "{mode:?}: {card:?}, {corner:?}"
+        );
+        assert!(
+            card.right() < corner.right(),
+            "{mode:?}: {card:?}, {corner:?}"
+        );
+        assert!(card.top() > corner.top(), "{mode:?}: {card:?}, {corner:?}");
+        assert!(
+            card.bottom() < corner.bottom(),
+            "{mode:?}: {card:?}, {corner:?}"
+        );
+        assert_eq!(after[(card.x, card.y)].symbol(), "┌");
+        assert_eq!(after[(card.right() - 1, card.bottom() - 1)].symbol(), "┘");
+        for area in [lints, corner] {
+            for y in area.y..area.bottom() {
+                for x in area.x..area.right() {
+                    if area == lints
+                        || x == area.x
+                        || x == area.right() - 1
+                        || y == area.y
+                        || y == area.bottom() - 1
+                    {
+                        assert_eq!(
+                            after[(x, y)].symbol(),
+                            before[(x, y)].symbol(),
+                            "{mode:?}: the pane keeps cell {x},{y}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 #[test]
 fn a_toast_keeps_a_one_row_content_divider_outside_its_card() -> anyhow::Result<()> {

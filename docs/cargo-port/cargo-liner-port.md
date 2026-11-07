@@ -533,7 +533,7 @@ Phase 4e design check of `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. A live shot after a reset time passes shows no `resets 0s`.
 
-### Phase 4h — The startup toast marks hidden rows with a page mark  · status: todo
+### Phase 4h — The startup toast marks hidden rows with a page mark  · status: done
 
 **Depends on:** Phase 4e (both edit `crates/tui_pane/src/toasts/`)
 
