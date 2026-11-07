@@ -7,6 +7,7 @@
 )]
 
 use tui_pane::CellPoint;
+use tui_pane::TerminalApp;
 
 use super::*;
 use crate::census::RoleFallback;
@@ -448,5 +449,52 @@ fn unassigned_age_column_reaches_the_right_content_edge_at_each_width() {
             ),
             HeaderHit::Column(TreeColumn::Age)
         );
+    }
+}
+
+#[test]
+fn unassigned_session_count_tracks_real_rows_and_removes_a_finished_session() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::render;
+
+    let mut app = App::new_for_test().expect("test app");
+    app.loaded_config.config.tiles.widen_summary = false;
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
+    for (names, readout) in [
+        (
+            vec!["cargo-liner-handler-c6", "phase41-check"],
+            "content rows: 1 of 2",
+        ),
+        (vec!["cargo-liner-handler-c6"], "content rows: 1 of 1"),
+    ] {
+        app.census.apply(CensusUpdate::Local {
+            rows:      names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    let mut row = agent(u32::try_from(index + 10).expect("pid"), name, HOUR, None);
+                    row.directory = "~/rust/cargo-liner-handler".into();
+                    row
+                })
+                .collect(),
+            hierarchy: HierarchyEdges::default().into(),
+            stage:     ScanStage::Completed,
+        });
+        let keymap = app.keymap();
+        terminal
+            .draw(|frame| render::draw(frame, &mut app, &keymap))
+            .expect("updated frame");
+        app.tiles.settle_for_test();
+        terminal
+            .draw(|frame| render::draw(frame, &mut app, &keymap))
+            .expect("settled frame");
+        let buffer = terminal.backend().buffer();
+        let text = lines(buffer).join("\n");
+        assert!(text.contains(readout), "{text}");
+        assert_eq!(text.contains("phase41-check"), names.len() == 2, "{text}");
+        assert!(text.contains("cargo-liner-handler-c6"), "{text}");
     }
 }

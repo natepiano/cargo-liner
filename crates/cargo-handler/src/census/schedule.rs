@@ -1205,9 +1205,11 @@ mod tests {
     /// often each host is probed.
     struct Runner {
         /// Lets the blocked probe finish.
-        release: Mutex<Receiver<()>>,
+        release:         Mutex<Receiver<()>>,
+        /// Confirms that the blocked probe recorded its start.
+        blocked_started: Sender<()>,
         /// Probes started, by host.
-        started: Mutex<HashMap<String, usize>>,
+        started:         Mutex<HashMap<String, usize>>,
     }
 
     impl RemoteRunner for Runner {
@@ -1219,6 +1221,7 @@ mod tests {
                 .entry(host.to_string())
                 .or_default() += 1;
             if host == BLOCKED {
+                let _ = self.blocked_started.send(());
                 let _ = self.release.lock().expect("the release should lock").recv();
             }
             ProbeOutcome::Finished {
@@ -1226,6 +1229,27 @@ mod tests {
                 stdout: Vec::new(),
             }
         }
+    }
+
+    #[test]
+    fn a_blocked_probe_survives_a_closed_start_receiver() {
+        let (release, receiver) = mpsc::channel();
+        let (blocked_started, blocked_start) = mpsc::channel();
+        drop(blocked_start);
+        release.send(()).expect("release the probe");
+        let runner = Runner {
+            release: Mutex::new(receiver),
+            blocked_started,
+            started: Mutex::new(HashMap::new()),
+        };
+        assert!(matches!(
+            runner.probe(BLOCKED),
+            ProbeOutcome::Finished { .. }
+        ));
+        assert_eq!(
+            runner.started.lock().expect("probe counts").get(BLOCKED),
+            Some(&1)
+        );
     }
 
     /// A local Claude fixture whose process identity may change independently of its session.
@@ -1720,8 +1744,10 @@ mod tests {
     #[test]
     fn a_hung_host_delays_neither_this_machine_nor_another_host() {
         let (release, released) = mpsc::channel();
+        let (blocked_started, blocked_start) = mpsc::channel();
         let runner = Arc::new(Runner {
             release: Mutex::new(released),
+            blocked_started,
             started: Mutex::new(HashMap::new()),
         });
         let cadence = Cadence {
@@ -1764,6 +1790,9 @@ mod tests {
                 .get(BLOCKED)
                 .copied()
         };
+        blocked_start
+            .recv_timeout(PATIENCE)
+            .expect("the blocked probe starts");
         assert_eq!(blocked_probes(&runner), Some(1));
 
         release

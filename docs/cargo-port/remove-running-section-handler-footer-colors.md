@@ -1911,7 +1911,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: shots of cargo-handler and cargo-tile with the readout hidden and shown. The checkpoint adds a Change-Review line.
 
-### Phase 66 — Narrow tiles keep guides and readable names; the unassigned count matches its rows  · status: todo
+### Phase 66 — Narrow tiles keep guides and readable names; the unassigned count matches its rows  · status: done
 
 **Depends on:** none. Runs after Phase 62h, Phase 42 and Phase 65 (showrunner, 2026-11-06).
 
