@@ -15,6 +15,7 @@ use crate::project::FirstCommit;
 use crate::project::GitStatus;
 use crate::project::PinnedCommit;
 use crate::project::ResolvedBranch;
+use crate::tui::panes::GithubStars;
 use crate::tui::render;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +48,7 @@ pub enum DetailField {
     GitStatus,
     VsLocal,
     Stars,
+    GithubStatus,
     Inception,
     LastCommit,
     LastFetched,
@@ -81,6 +83,7 @@ impl DetailField {
             Self::GitStatus => "Status",
             Self::VsLocal => "Ahead/Behind",
             Self::Stars => "Stars",
+            Self::GithubStatus => "",
             Self::Inception => "Incept",
             Self::LastCommit => "Latest",
             Self::LastFetched => "Fetched",
@@ -163,6 +166,7 @@ impl DetailField {
             | Self::Pinned
             | Self::GitStatus
             | Self::VsLocal
+            | Self::GithubStatus
             | Self::Stars
             | Self::Inception
             | Self::LastCommit
@@ -222,9 +226,13 @@ impl DetailField {
                     },
                 }
             },
-            Self::Stars => data
-                .stars
-                .map_or_else(String::new, |count| format!("⭐ {count}")),
+            Self::Stars => match data.stars {
+                GithubStars::Measured(count) => format!("⭐ {count}"),
+                GithubStars::NotGithub | GithubStars::Pending | GithubStars::Unreachable => {
+                    String::new()
+                },
+            },
+            Self::GithubStatus => formatting::github_status_text(data.github_status).to_string(),
             Self::Inception => match &data.inception {
                 FirstCommit::AwaitingProbe => String::new(),
                 FirstCommit::Probed(commit_date) => formatting::format_commit_date(commit_date),
@@ -349,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn rate_limit_bucket_with_past_reset_renders_zero_countdown() {
+    fn rate_limit_bucket_with_past_reset_omits_countdown() {
         let quota = RateLimitQuota {
             limit:     5000,
             used:      100,
@@ -358,7 +366,7 @@ mod tests {
         };
         assert_eq!(
             formatting::format_rate_limit_bucket(Some(quota)),
-            "4900/5000 resets 0s"
+            "4900/5000"
         );
     }
 }
@@ -373,6 +381,7 @@ mod git_detail_field_tests {
     use crate::project::FirstCommit;
     use crate::project::GitStatus;
     use crate::project::ResolvedBranch;
+    use crate::tui::panes::GithubStars;
     use crate::tui::panes::pane_data::GitData;
     use crate::tui::panes::pane_data::PullRequestSection;
     use crate::tui::panes::pane_data::formatting::GitReadFailures;
@@ -387,7 +396,7 @@ mod git_detail_field_tests {
             status:             None,
             vs_local:           crate::tui::panes::GitProbe::Probed(Comparison::NotCompared),
             local_main_branch:  crate::tui::panes::GitProbe::Probed(ResolvedBranch::NotFound),
-            stars:              None,
+            stars:              GithubStars::NotGithub,
             description:        None,
             inception:          FirstCommit::AwaitingProbe,
             last_commit:        crate::tui::panes::GitProbe::Probed(CommitDate::NoCommits),

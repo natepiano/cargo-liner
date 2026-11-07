@@ -27,6 +27,7 @@ use crate::project::RemoteList;
 use crate::project::RepoInfo;
 use crate::project::ResolvedBranch;
 use crate::project::TrackedRef;
+use crate::tui::state::AvailabilityStatus;
 
 /// Whether any completed git read failed, independently of path status.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -413,6 +414,9 @@ pub(super) fn format_rate_limit_bucket(quota: Option<RateLimitQuota>) -> String 
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let secs = reset_at.saturating_sub(now);
+    if secs == 0 {
+        return base;
+    }
     format!("{base} resets {}", tui_pane::format_progressive(secs))
 }
 
@@ -506,6 +510,17 @@ pub(super) fn format_tracked_ref(reference: &TrackedRef) -> String {
         TrackedRef::Named(name) => name.clone(),
         TrackedRef::Untracked => NO_REMOTE_SYNC.to_string(),
         TrackedRef::Unreadable => GIT_UNREADABLE_LABEL.to_string(),
+    }
+}
+
+/// Shared GitHub status text for the Git pane.
+pub(super) const fn github_status_text(status: AvailabilityStatus) -> &'static str {
+    match status {
+        AvailabilityStatus::Reachable => "",
+        AvailabilityStatus::Unreachable => "GitHub unreachable",
+        AvailabilityStatus::RateLimited => "github rate-limited",
+        AvailabilityStatus::Unauthenticated => "unauthenticated — gh auth login",
+        AvailabilityStatus::NotInstalled => "gh not installed",
     }
 }
 

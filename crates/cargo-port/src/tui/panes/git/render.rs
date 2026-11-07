@@ -73,7 +73,6 @@ use crate::tui::panes::pane_data::GitProbe;
 use crate::tui::panes::support;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
-use crate::tui::state::AvailabilityStatus;
 use crate::tui::theme_roles;
 
 static MIN_FITTED_TEXT_WIDTH: LazyLock<usize> = LazyLock::new(|| FIT_TEXT_ELLIPSIS.width() + 1);
@@ -743,49 +742,27 @@ struct RenderFlatArgs<'a> {
     row_offset:  usize,
 }
 
-/// Compute the displayed value string for a flat git-pane row,
-/// including row-specific decorations (local-only suffix on `Branch`,
-/// `(github unreachable)` / `(github rate-limited)` /
-/// `(unauthenticated — gh auth login)` suffix on rate-limit rows).
-/// Also returns the "github unreachable" placeholder text for an empty
-/// Stars row when GitHub is down — the parallel of the crates.io
-/// unreachable placeholder on the Package pane.
-fn build_field_value(data: &GitData, field: DetailField, is_rate_limit_row: bool) -> String {
-    if field == DetailField::Head {
-        let raw = field.git_value(data);
-        return if data.is_local()
-            && !raw.is_empty()
-            && !matches!(data.checkout, GitCheckout::UnreadableHead)
+/// Add the local branch marker to the field value.
+fn build_field_value(data: &GitData, field: DetailField) -> String {
+    let raw = field.git_value(data);
+    match field {
+        DetailField::Head
+            if data.is_local()
+                && !raw.is_empty()
+                && !matches!(data.checkout, GitCheckout::UnreadableHead) =>
         {
             format!("{raw} ({GIT_LOCAL} local)")
-        } else {
-            raw
-        };
-    }
-    let raw = field.git_value(data);
-    if is_rate_limit_row && let Some(suffix) = github_status_suffix(data.github_status) {
-        return if raw.is_empty() {
-            format!("({suffix})")
-        } else {
-            format!("{raw} ({suffix})")
-        };
-    }
-    if field == DetailField::Stars
-        && raw.is_empty()
-        && panes::github_stars_is_unreachable_placeholder(data)
-    {
-        return "github unreachable".to_string();
-    }
-    raw
-}
-
-const fn github_status_suffix(status: AvailabilityStatus) -> Option<&'static str> {
-    match status {
-        AvailabilityStatus::Reachable => None,
-        AvailabilityStatus::Unreachable => Some("github unreachable"),
-        AvailabilityStatus::RateLimited => Some("github rate-limited"),
-        AvailabilityStatus::Unauthenticated => Some("unauthenticated — gh auth login"),
-        AvailabilityStatus::NotInstalled => Some("gh not installed"),
+        },
+        DetailField::RateLimitCore | DetailField::RateLimitGraphQl
+            if data.github_status.is_unauthenticated() =>
+        {
+            let hint = DetailField::GithubStatus.git_value(data);
+            match raw.as_str() {
+                "" => format!("({hint})"),
+                _ => format!("{raw} ({hint})"),
+            }
+        },
+        _ => raw,
     }
 }
 
@@ -857,7 +834,7 @@ fn field_value_style(data: &GitData, field: DetailField) -> Style {
             GitValueStyle::Error
         },
         DetailField::RemotesUnreadable => GitValueStyle::Error,
-        DetailField::RateLimitCore | DetailField::RateLimitGraphQl => {
+        DetailField::GithubStatus | DetailField::RateLimitCore | DetailField::RateLimitGraphQl => {
             if data.github_status.is_unauthenticated() {
                 GitValueStyle::Warning
             } else if !data.github_status.is_available() {
@@ -929,9 +906,27 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
     }
 }
 
+fn github_status_line(args: &RenderFlatArgs<'_>, row_index: usize) -> Line<'static> {
+    let selection = tui_pane::selection_state(args.pane, row_index, args.focus);
+    let overlay = theme_roles::selection_style(selection, args.styles.chrome.color_mode);
+    let value = DetailField::GithubStatus.git_value(args.data);
+    let width = usize::from(args.area_width).saturating_sub(2);
+    Line::from(Span::styled(
+        format!(" {}", fit_text(&value, width)),
+        field_value_style(args.data, DetailField::GithubStatus).patch(overlay),
+    ))
+    .style(overlay)
+}
+
 fn label_width_for_field(args: &RenderFlatArgs<'_>, field: DetailField) -> usize {
     let width = usize::from(args.area_width);
-    let desired = if args.area_height < 2 {
+    let desired = if width <= support::NARROW_FIELD_INNER_WIDTH
+        && matches!(
+            field,
+            DetailField::RateLimitCore | DetailField::RateLimitGraphQl
+        ) {
+        git_label_width(&[DetailField::RateLimitCore, DetailField::RateLimitGraphQl])
+    } else if args.area_height < 2 {
         field.label().width()
     } else {
         args.label_width
@@ -966,6 +961,9 @@ fn flat_field_lines(
     label_width: usize,
 ) -> Vec<Line<'static>> {
     let mode = args.styles.chrome.color_mode;
+    if field == DetailField::GithubStatus {
+        return vec![github_status_line(args, row_index)];
+    }
     let one_row = args.area_height < 2
         && usize::from(args.area_width) <= support::NARROW_FIELD_INNER_WIDTH
         && usize::from(args.area_width) > *SPLIT_ROW_MIN_INNER_WIDTH;
@@ -996,19 +994,14 @@ fn flat_field_lines(
         format!(" {label:<label_width$} ")
     };
     let wraps = matches!(field, DetailField::WorktreeError | DetailField::Bisect);
-    let value = build_field_value(args.data, field, is_rate_limit_row);
+    let value = build_field_value(args.data, field);
     let value = if is_rate_limit_row {
-        let rate_width = if field_uses_value_row(args, label_width) {
-            usize::from(args.area_width).saturating_sub(1)
-        } else {
-            available
-        };
-        fit_rate_limit_value(args.data, field, value, rate_width)
+        fit_rate_limit_value(args.data, field, value, available)
     } else {
         value
     };
     let value_style = field_value_style(args.data, field).patch(overlay);
-    let mut lines = if field_uses_value_row(args, label_width) {
+    let mut lines = if !is_rate_limit_row && field_uses_value_row(args, label_width) {
         support::field_value_lines(
             prefix,
             &value,
@@ -1072,7 +1065,14 @@ fn fit_rate_limit_value(
         DetailField::RateLimitGraphQl => data.rate_limit_graphql.as_ref(),
         _ => None,
     };
-    quota.map_or(value, |quota| quota.remaining.to_string())
+    quota.map_or(value, |quota| {
+        let base = format!("{}/{}", quota.remaining, quota.limit);
+        if base.width() <= available {
+            base
+        } else {
+            quota.remaining.to_string()
+        }
+    })
 }
 
 // `SyncColLayout` shares trailing column widths between Remotes and Worktrees.

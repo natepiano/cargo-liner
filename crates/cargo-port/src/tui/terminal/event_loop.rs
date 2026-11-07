@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
 
 use crossterm::event::Event;
 use ratatui::Frame;
@@ -193,9 +194,13 @@ pub(super) fn event_loop(
 /// disconnect (App keeps a clone of each), so only input and CPU samples
 /// are at risk; input disconnect is handled in [`process_input_frame`].
 fn wait_for_event(app: &App, input_rx: &Receiver<Event>) {
-    let timeout = app.animation_timeout();
+    let timeout = app.github_quota_timeout_at(SystemTime::now()).map_or_else(
+        || app.animation_timeout(),
+        |quota| quota.min(app.animation_timeout()),
+    );
     let mut select = Select::new();
     select.recv(input_rx);
+    select.recv(app.net.quota_refresh.receiver());
     select.recv(app.background.background_receiver());
     select.recv(app.background.ci_fetch_rx());
     select.recv(app.background.clean_rx());
@@ -602,3 +607,7 @@ struct ToastItemFrameKey {
     activity:  TrackedItemActivity,
     lifecycle: TrackedItemLifecycle,
 }
+
+#[cfg(test)]
+#[path = "quota_wake_tests.rs"]
+mod quota_wake_tests;

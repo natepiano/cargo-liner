@@ -68,6 +68,9 @@ mod target_index;
 mod toast_action;
 mod tree_mutation;
 
+#[cfg(test)]
+mod quota_transition_tests;
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
@@ -77,6 +80,13 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Error;
+pub(super) use async_tasks::GithubQuotaRefresh;
+pub(super) use async_tasks::QuotaFetchAdmission;
+pub(super) use async_tasks::QuotaFetchCompletion;
+pub(super) use async_tasks::QuotaFetchPermit;
+pub(super) use async_tasks::QuotaFetchReason;
+#[cfg(test)]
+pub(super) use async_tasks::QuotaScreenUpdate;
 use async_tasks::Startup;
 pub(super) use ci::CiRunDisplayMode;
 pub(crate) use confirm_action::ConfirmAction;

@@ -46,6 +46,7 @@ pub use git_data::GitCheckout;
 pub use git_data::GitData;
 pub(in crate::tui) use git_data::GitProbe;
 pub use git_data::GitRow;
+pub use git_data::GithubStars;
 #[cfg(test)]
 pub use git_data::HeadRelation;
 #[cfg(test)]
@@ -147,3 +148,6 @@ use crate::tui::constants::TARGET_KIND_BIN_LABEL;
 use crate::tui::constants::TARGET_KIND_EXAMPLE_LABEL;
 use crate::tui::state::AvailabilityStatus;
 use crate::tui::state::ServiceStatus;
+
+#[cfg(test)]
+mod rate_limit_tests;

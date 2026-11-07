@@ -95,6 +95,7 @@ impl App {
         service: ServiceKind,
         availability_kind: AvailabilityKind,
     ) {
+        let previous = self.net.availability_for(service).status();
         let spawn_retry = {
             let availability = self.net.availability_for(service);
             match availability_kind {
@@ -102,6 +103,9 @@ impl App {
                 AvailabilityKind::RateLimited => availability.mark_rate_limited(),
             }
         };
+        if previous != self.net.availability_for(service).status() {
+            self.scan.bump_generation();
+        }
         if spawn_retry {
             self.spawn_service_retry(service);
         }
@@ -180,6 +184,7 @@ impl App {
             self.background.background_sender(),
             self.net.http_client(),
             service_kind,
+            self.net.quota_refresh.clone(),
         );
     }
     /// Apply a `ServiceRecovered` message from the retry probe.
@@ -211,6 +216,7 @@ impl App {
                 self.show_timed_toast(title, body);
             },
         }
+        self.scan.bump_generation();
         if recovery_outcome.triggers_refetch() {
             self.refetch_missing_after_recovery(service);
         }
@@ -230,7 +236,7 @@ const fn service_unavailable_message(
     match (service, kind) {
         (ServiceKind::GitHub, AvailabilityKind::Unreachable) => (
             "GitHub unreachable",
-            "Rate limits and CI data are unavailable until GitHub recovers.",
+            "Rate limits and CI data return when GitHub recovers.",
         ),
         (ServiceKind::GitHub, AvailabilityKind::RateLimited) => (
             "GitHub rate-limited",
@@ -251,5 +257,53 @@ const fn service_recovered_message(service_kind: ServiceKind) -> (&'static str, 
     match service_kind {
         ServiceKind::GitHub => ("GitHub available", "Back online."),
         ServiceKind::CratesIo => ("crates.io available", "Back online."),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Context;
+    use tui_pane::ColorMode;
+
+    use crate::http::ServiceKind;
+    use crate::http::ServiceSignal;
+    use crate::tui::test_support;
+
+    #[test]
+    fn github_unreachable_toast_keeps_its_body_on_one_line() -> anyhow::Result<()> {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        app.framework
+            .toasts
+            .settings_mut()
+            .animation
+            .entrance_duration = tui_pane::ToastDuration::try_from_secs("entrance_duration", 0.0)?;
+        app.apply_service_signal(ServiceSignal::Unreachable(ServiceKind::GitHub));
+        app.confirm_service_unreachable(ServiceKind::GitHub);
+        let buffer = test_support::draw_ui(&mut app, 160)?;
+        let toast = app
+            .framework
+            .toasts
+            .hits()
+            .first()
+            .context("GitHub outage toast")?;
+        let body = "Rate limits and CI data return when GitHub recovers.";
+        let rows: Vec<String> = (toast.card_rect.top()..toast.card_rect.bottom())
+            .map(|y| {
+                (toast.card_rect.left()..toast.card_rect.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect();
+        assert!(
+            rows.iter().any(|row| row.contains("GitHub unreachable")),
+            "{rows:?}"
+        );
+        assert_eq!(
+            rows.iter().filter(|row| row.contains(body)).count(),
+            1,
+            "GitHub outage toast must draw the exact body on one line: {rows:?}"
+        );
+        Ok(())
     }
 }
