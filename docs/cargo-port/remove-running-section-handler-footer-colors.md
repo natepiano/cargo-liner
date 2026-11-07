@@ -1114,6 +1114,46 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Astra rows keep their stable thread identity and the selected band through busy/idle updates and manager placement. The session palette checks in `render/role_title_tests.rs` measure both Astra inks, the Astra word-match tests in `render/word_contrast_tests.rs` pass, and the Astra-vs-reset test in `summary/accounts_gradient_tests.rs` passes. Both Astra roles keep their configured ink and covered contrast on active and remembered selections, with pane tint on and off. Live: framed shots, in a dark and a light theme, of an Astra designer under a unit director and an Astra reviewer under a showrunner, with the real config. The checkpoint carries `Change-Review: cargo-handler shows Astra designer and Astra reviewer sessions under the unit director or showrunner that runs them, with their own role words and colors | open cargo-handler while an Astra review runs and find its row under its parent`.
 
+### Phase 67 — Pane Codex workers show under their unit  · status: todo
+
+**Depends on:** Phase 21
+
+#### Work Order
+
+**Goal:** each live Codex worker that runs in a herdr pane shows under its unit director or showrunner, not in the unassigned pool.
+
+**Source:** the showrunner, 2026-11-07, from a report by herdr-unit: under the herdr worker model, most workers show as 'unassigned'. Every run uses that model since 2026-11-07; no mesh app-server workers remain. Herdr facts:
+1. Each unit worker is a staff row in `~/.local/state/staff/staff.json` with kind `worker` and `parent` = the unit director's staff id. Its `current_session` is the Codex thread id (or the Claude session id).
+2. A working worker runs in a herdr pane in its unit's tab. A new worker's first pass runs a bare `codex --no-daemon ...` (`scripts/herdr/worker_panes.py` ≈592); Codex makes the thread id, and herdr then publishes it as `current_session`. Every later open runs `codex resume <thread id> --no-daemon --cd <dir>`. Since herdr phase 27, idle workers close after each pass, so most worker processes carry the id on the command line.
+3. The pane label and the herdr agent name are the worker name. herdr phase 24 changes the agent name to `<unit>-<worker>`. cargo-handler does not use either name for the link.
+4. An idle worker is closed: no pane and no process. Its staff row stays.
+
+**Constraints from prior phases:**
+- The staff reader links members by `current_session` only (`census/hierarchy.rs`, `StaffRoster::parse`): each edge holds the manager's and the member's `current_session`. No other key is needed.
+- `classify::codex_row` (`census/classify.rs` ≈493) builds a root interactive Codex row with `session_id: SessionIdentity::Unrecorded`; it uses the matched `CodexThread` only for the row label. `SessionIdentity` (`census/mod.rs` ≈171) has only `Unrecorded` and `Claude`.
+- `Placement::resolve_managers` (`census/placement.rs` ≈485) matches edges only on `SessionIdentity::Claude` for root rows. `resolve_threads` (≈422) matches Codex thread ids only on `ChildKind::Thread` children of an owner row (the app-server model). `HierarchySnapshot::matched` and `HierarchyEdges::with_worker_roles` (`census/hierarchy.rs` ≈123–165) have the same two cases.
+- `codex::resume_request` (`census/codex.rs` ≈72) reads the thread id from `codex resume <uuid>` as `ResumeRequest::NamedId`. A bare `codex` has its thread selected by working directory and start time (`classify::codex_thread_window`).
+- Phase 21 adds Astra Codex rows under their manager. Reuse its Codex identity and placement path where it fits; do not add a second one.
+- Probe rows carry `session_id`; older receivers must still accept a probe (keep the defaulted-extension rule of probe schema 3).
+
+**Spec:**
+1. A root interactive Codex row carries its thread id as its session identity when the thread is proven. A `codex resume <id>` process is proven by its command line. A bare `codex` is proven only by the staff `current_session` thread whose rollout file that process holds open (the open-file read that app-server discovery uses under the sessions directory). herdr-unit, 2026-11-07: do not link a staff worker by working directory and start time. The identity type names the proof. It is never a bare `Option` or a raw string at draw time.
+2. Placement, `HierarchySnapshot::matched` and `with_worker_roles` match a staff edge on that Codex identity as they do on a Claude session id. A pane Codex worker draws under its manager with its worker role.
+3. A staff row with no live process draws nothing. A closed worker never shows as a live unassigned session.
+4. App-server hosted threads keep their current placement.
+5. Tests, each red before its fix: a `codex resume <id>` worker draws under its unit director; a bare `codex` worker draws under its unit director when it holds its staff thread's rollout open, and stays unassigned when it does not; two workers with different managers on one machine each draw under their own manager; a staff row with no process draws nothing; a Codex row with no thread stays in the unassigned pool; an older probe receiver accepts the new row.
+6. CHANGELOG: one line.
+
+**Files:**
+- `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/pane_worker_placement_tests.rs` — new test module
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — the identity type, classification, placement, probe and the CHANGELOG; hub: `crates/cargo-handler/src/census/mod.rs`.
+- `test` — `census/pane_worker_placement_tests.rs`.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a framed shot of cargo-handler on natedev, started with my own process and the real staff file, shows each live pane Codex worker of a unit under that unit's director, and no pane worker in the unassigned pool. The checkpoint carries `Change-Review: cargo-handler shows each Codex worker running in a herdr pane under its unit director, not as unassigned | open cargo-handler while a unit has Codex workers working and find them under their unit`.
+
 ### Phase 41 — Renamed Codex sessions show in cargo-handler  · status: done
 
 #### As-built
