@@ -27,7 +27,6 @@ use super::AgentRow;
 use super::ChildKind;
 use super::ChildRow;
 use super::CodexThreadId;
-use super::RowIdentity;
 use super::ServiceTier;
 use super::ShellTimerObservation;
 use super::Timer;
@@ -387,46 +386,6 @@ impl ChildRow {
         self.kind == ChildKind::Thread
             && matches!(&self.thread_id, CodexThreadId::Recorded(thread) if thread == id)
     }
-}
-
-/// One shell and thread that occupy the same final tile.
-#[derive(Debug)]
-pub(super) struct DispatchFold<'a> {
-    /// The shell whose row is suppressed, retaining its descendants.
-    pub(super) shell:    &'a ChildRow,
-    /// The worker row that receives the responsibility label.
-    pub(super) thread:   &'a ChildRow,
-    /// The identity established by parsing and roster lookup during scanning.
-    pub(super) dispatch: &'a ResolvedWorkerDispatch,
-}
-
-/// Join typed dispatches to threads only within the same normalized tile.
-pub(super) fn join_dispatches<'a>(
-    children: &[(RowIdentity<'a>, &'a ChildRow)],
-) -> Vec<DispatchFold<'a>> {
-    children
-        .iter()
-        .filter_map(|(tile, shell)| {
-            let WorkerDispatch::Worker(dispatch) = &shell.dispatch else {
-                return None;
-            };
-            if !matches!(shell.kind, ChildKind::Shell(_)) {
-                return None;
-            }
-            let (_, thread) = children.iter().find(|(thread_tile, child)| {
-                thread_tile == tile
-                    && match &dispatch.identity {
-                        WorkerIdentity::CodexThread(id) => child.is_thread(id),
-                        WorkerIdentity::ClaudeSession(_) => false,
-                    }
-            })?;
-            Some(DispatchFold {
-                shell,
-                thread,
-                dispatch,
-            })
-        })
-        .collect()
 }
 
 /// Walks the process table below an agent.

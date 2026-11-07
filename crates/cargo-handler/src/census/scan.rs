@@ -44,7 +44,6 @@ use sysinfo::UpdateKind;
 use super::Agent;
 use super::AgentActivity;
 use super::AgentRow;
-use super::ChildKind;
 use super::CodexThreadId;
 use super::ServiceTier;
 use super::SessionIdentity;
@@ -72,6 +71,8 @@ use super::desktop;
 use super::desktop::TmuxLayout;
 use super::desktop::WindowEntry;
 use super::hierarchy::StaffFileReader;
+#[cfg(test)]
+use super::hierarchy::StaffRoster;
 use super::hierarchy::StaffSnapshot;
 use super::tier;
 use super::tier::PacerHistory;
@@ -91,7 +92,6 @@ use super::worker_dispatch::NotWorkerDispatch;
 use super::worker_dispatch::ParsedDispatch;
 use super::worker_dispatch::SessionRoots;
 use super::worker_dispatch::WorkerDispatch;
-use super::worker_dispatch::WorkerIdentity;
 use super::worker_dispatch::WorkerNames;
 use super::worker_dispatch::WorkerRoleSource;
 use super::worker_dispatch::WorkerTask;
@@ -715,7 +715,6 @@ impl LocalScanner {
                 }
             }
         }
-        fold_claude_dispatches(rows);
         self.transcript_activity
             .retain(|path, _| seen_transcripts.contains(path));
     }
@@ -839,7 +838,9 @@ impl LocalScanner {
                 .values()
                 .flat_map(|command| [&command.direct, &command.wrapped])
                 .filter_map(|launcher| match launcher {
-                    WorkerLauncher::Dispatch(dispatch) => Some(dispatch.session_dir.clone()),
+                    WorkerLauncher::Dispatch(dispatch) => {
+                        dispatch.session_directory().ok().map(Path::to_path_buf)
+                    },
                     WorkerLauncher::OtherCommand => None,
                 }),
         );
@@ -1088,6 +1089,17 @@ pub(super) fn find_worker_dispatches(processes: &[ProcessEntry]) -> HashMap<u32,
     )
 }
 
+/// Resolve fixture dispatches through the same staff snapshot as a census scan.
+#[cfg(test)]
+pub(super) fn find_staff_dispatches(
+    processes: &[ProcessEntry],
+    staff: Arc<StaffRoster>,
+) -> HashMap<u32, WorkerDispatch> {
+    let mut names = WorkerNames::default();
+    names.set_staff(staff);
+    worker_dispatches(processes, &mut names, &mut WorkerCommands::default())
+}
+
 /// Snapshot decoding belongs to shell calls; seat identity can also come from raw argv.
 fn seat_sender_command(process: &ProcessEntry) -> Option<String> {
     tree::shell_command(process).or_else(|| match process.arguments.as_slice() {
@@ -1204,19 +1216,21 @@ fn worker_dispatches(
                     .arguments
                     .windows(2)
                     .find(|pair| MESH_SEAT_FLAGS.contains(&pair[0].as_str()))
-                    .map(|pair| pair[1].clone())
+                    .map(|pair| (pair[1].clone(), candidate.pid))
             });
         let launcher = dispatch;
         let mut dispatch = dispatch.clone();
-        if let Some(seat) = selected {
+        if let Some((seat, child_pid)) = selected {
             dispatch.select_seat(seat);
+            if let Some(WorkerCommand {
+                direct: WorkerLauncher::Dispatch(child),
+                ..
+            }) = commands.get(&child_pid)
+            {
+                dispatch.select_session_directory(child);
+            }
         }
-        let worker = match names.resolve_claude(&dispatch, processes, process.pid) {
-            WorkerDispatch::Plain => {
-                dispatch.resolve(names.roster(&dispatch.session_dir), process.pid)
-            },
-            worker @ WorkerDispatch::Worker(_) => worker,
-        };
+        let worker = names.resolve_dispatch(&dispatch, processes, process.pid);
         found.insert(process.pid, worker.clone());
         let mut parent = process;
         let mut seen = HashSet::new();
@@ -1242,61 +1256,9 @@ fn worker_dispatches(
         if found.contains_key(&pid) {
             continue;
         }
-        found.insert(
-            pid,
-            match names.resolve_claude(dispatch, processes, pid) {
-                WorkerDispatch::Plain => dispatch.resolve(names.roster(&dispatch.session_dir), pid),
-                worker @ WorkerDispatch::Worker(_) => worker,
-            },
-        );
+        found.insert(pid, names.resolve_dispatch(dispatch, processes, pid));
     }
     found
-}
-
-/// Move a live Claude seat's launcher work into that session's own row.
-fn fold_claude_dispatches(rows: &mut [AgentRow]) {
-    let matches: Vec<_> = rows
-        .iter()
-        .flat_map(|row| row.children.iter())
-        .filter_map(|child| {
-            if !matches!(child.kind, ChildKind::Shell(_)) {
-                return None;
-            }
-            let WorkerDispatch::Worker(dispatch) = &child.dispatch else {
-                return None;
-            };
-            let WorkerIdentity::ClaudeSession(id) = &dispatch.identity else {
-                return None;
-            };
-            rows.iter()
-                .position(|row| row.session_id.claude_id() == Some(id))
-                .map(|target| (target, child.pid, dispatch.clone()))
-        })
-        .collect();
-    for (target, pid, dispatch) in matches {
-        rows[target].name = dispatch.label();
-        rows[target].role_fallback = dispatch.fallback();
-        let mut work = Vec::new();
-        for row in rows.iter_mut() {
-            if let Some(index) = row
-                .children
-                .iter()
-                .position(|child| matches!(child.kind, ChildKind::Shell(_)) && child.pid == pid)
-            {
-                let depth = row.children[index].depth;
-                let end = row.children[index + 1..]
-                    .iter()
-                    .position(|child| child.depth <= depth)
-                    .map_or(row.children.len(), |offset| index + 1 + offset);
-                work.extend(row.children.drain(index + 1..end).map(|mut child| {
-                    child.depth = child.depth.saturating_sub(depth + 1);
-                    child
-                }));
-                row.children.remove(index);
-            }
-        }
-        rows[target].children.extend(work);
-    }
 }
 
 /// The launcher of `held`, a row tmux holds, by its pid and start: the

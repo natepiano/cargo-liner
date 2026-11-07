@@ -278,7 +278,11 @@ fn staff_worker_roles_use_the_existing_roster_dispatch() {
         directory.path().display()
     );
     let parsed = ParsedDispatch::parse(&command).expect("dispatch command");
-    let roster = WorkerRoster::read(&parsed.session_dir);
+    let roster = WorkerRoster::read(
+        parsed
+            .session_directory()
+            .expect("recorded session directory"),
+    );
     let mut owner: AgentRow =
         serde_json::from_str(include_str!("fixtures/restarted_unit_codex.json"))
             .expect("worker carrier");
