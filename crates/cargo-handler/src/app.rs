@@ -403,6 +403,7 @@ impl TerminalApp for App {
             ])
             .areas(frame.area());
             render::draw_status_line(frame, self, keymap, status);
+            self.framework.color_mode.clear_colors(frame.buffer_mut());
             self.frame_request = FrameRequest::Full;
             return;
         }
@@ -411,6 +412,7 @@ impl TerminalApp for App {
             self.full_frames += 1;
         }
         render::draw(frame, self, keymap);
+        self.framework.color_mode.clear_colors(frame.buffer_mut());
         self.painted_frame = if stable_layers {
             PaintedFrame::Current {
                 buffer: Box::new(frame.buffer_mut().clone()),
@@ -527,6 +529,42 @@ impl FavoritesHost for App {
 )]
 mod tests {
     use crate::config::StaffFilePath;
+
+    #[test]
+    fn no_color_full_and_status_frames_keep_the_focused_title_bold() {
+        let mut app = App::new_for_test().expect("test app");
+        app.framework.color_mode = ColorMode::NoColor;
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        for expected_full_frames in [1, 1] {
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("app frame");
+            let buffer = terminal.backend().buffer();
+            assert!(
+                buffer
+                    .content
+                    .iter()
+                    .all(|cell| cell.fg == ratatui::style::Color::Reset
+                        && cell.bg == ratatui::style::Color::Reset),
+                "every frame clears colours"
+            );
+            let title = (0..buffer.area.width)
+                .map(|x| &buffer[(x, 0)])
+                .find(|cell| cell.symbol().chars().any(char::is_alphabetic))
+                .expect("focused title");
+            assert!(
+                title.modifier.contains(ratatui::style::Modifier::BOLD),
+                "the focused title stays bold"
+            );
+            assert_eq!(
+                app.full_frames, expected_full_frames,
+                "the status frame uses the cached body"
+            );
+            app.request_clock_frame();
+        }
+    }
 
     fn wheel_test_app_with_agents() -> App {
         let mut app = App::new_for_test().expect("test app");
