@@ -1,7 +1,12 @@
 //! Process discovery, attribution, and assembly of invocation groups.
 
+#[cfg(target_os = "linux")]
+#[path = "scan_linux_details.rs"]
+mod linux_details;
+
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
@@ -10,8 +15,6 @@ use std::ffi::OsString;
 use std::fs;
 use std::ops::Add;
 use std::os::unix::ffi::OsStrExt;
-#[cfg(target_os = "linux")]
-use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -33,11 +36,16 @@ use rustix::io::Errno;
 use rustix::process::Pid as KernelPid;
 use rustix::process::test_kill_process;
 use sysinfo::Pid;
+#[cfg(any(not(target_os = "linux"), test))]
 use sysinfo::Process;
+#[cfg(any(not(target_os = "linux"), test))]
 use sysinfo::ProcessRefreshKind;
+#[cfg(any(not(target_os = "linux"), test))]
 use sysinfo::ProcessesToUpdate;
 use sysinfo::System;
+#[cfg(any(not(target_os = "linux"), test))]
 use sysinfo::UpdateKind;
+#[cfg(any(not(target_os = "linux"), test))]
 use tui_pane::kernel_parent;
 
 use super::command_text;
@@ -76,7 +84,7 @@ use super::process_identity::VisibleParent;
 #[cfg(any(target_os = "linux", test))]
 use crate::birth_stamp;
 use crate::birth_stamp::LifetimeEvidence;
-#[cfg(test)]
+#[cfg(any(target_os = "linux", test))]
 use crate::birth_stamp::ProcessLifetime;
 use crate::constants::ARGUMENT_SEPARATOR;
 use crate::constants::CARGO_DISPLAY_NAME;
@@ -101,6 +109,8 @@ use crate::constants::START_TIME_FORMAT;
 use crate::constants::TRANSPARENT_PROCESS_NAMES;
 use crate::constants::UNRESOLVED_PATH;
 use crate::constants::UNRESOLVED_TIME;
+#[cfg(target_os = "linux")]
+use crate::linux_process_stat::LinuxProcessStat;
 use crate::progress::capture::Capture;
 use crate::progress::capture::CaptureKey;
 use crate::progress::capture::CaptureSelection;
@@ -839,13 +849,19 @@ impl<Source: ProcessRefreshSource> RefreshWorker<Source> {
 }
 
 /// This table belongs only to the refresh worker, never to a published snapshot.
+#[derive(Default)]
 struct SystemRefresh {
+    #[cfg(not(target_os = "linux"))]
     system: System,
 }
 
 impl ProcessRefreshSource for SystemRefresh {
     type Snapshot = ProcessDiscovery;
 
+    #[cfg(target_os = "linux")]
+    fn refresh(&mut self) -> Self::Snapshot { ProcessDiscovery::linux() }
+
+    #[cfg(not(target_os = "linux"))]
     fn refresh(&mut self) -> Self::Snapshot {
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::All,
@@ -863,9 +879,35 @@ impl ProcessRefreshSource for SystemRefresh {
                 .system
                 .processes()
                 .iter()
-                .map(|(&pid, process)| (pid, CpuBaseline::from(process)))
+                .map(|(&pid, process)| {
+                    #[cfg(test)]
+                    tests::SYSINFO_BASELINE_READS.with(|count| count.set(count.get() + 1));
+                    (pid, CpuBaseline::from(process))
+                })
                 .collect(),
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod system_refresh_tests {
+    use super::Pid;
+    use super::ProcessRefreshSource;
+    use super::SystemRefresh;
+    use super::tests::SYSINFO_BASELINE_READS;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_discovery_uses_the_stat_birth_without_independent_baseline_reads() {
+        SYSINFO_BASELINE_READS.with(|count| count.set(0));
+        let mut source = SystemRefresh::default();
+        let discovery = source.refresh();
+        assert!(
+            discovery
+                .processes
+                .contains_key(&Pid::from_u32(std::process::id()))
+        );
+        SYSINFO_BASELINE_READS.with(|count| assert_eq!(count.get(), 0));
     }
 }
 
@@ -876,6 +918,81 @@ struct ProcessDiscovery {
 }
 
 impl ProcessDiscovery {
+    /// One stat observation supplies discovery and its precise birth together.
+    #[cfg(target_os = "linux")]
+    fn linux() -> Self {
+        let mut discovery = Self {
+            processes: HashMap::new(),
+            baselines: HashMap::new(),
+        };
+        let ticks_per_second = rustix::param::clock_ticks_per_second();
+        let page_size = rustix::param::page_size() as u64;
+        let boot = System::boot_time();
+        let uptime = System::uptime();
+        let Ok(entries) = fs::read_dir("/proc") else {
+            return discovery;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            let Ok(bytes) = fs::read(entry.path().join("stat")) else {
+                continue;
+            };
+            let Ok(stat) = LinuxDiscoveryStat::parse(&bytes) else {
+                continue;
+            };
+            if stat.pid != Pid::from_u32(pid) {
+                continue;
+            }
+            let Some(started) = stat.start_ticks.checked_div(ticks_per_second) else {
+                continue;
+            };
+            let Some(accumulated) = stat
+                .own_ticks
+                .saturating_mul(1_000)
+                .checked_div(ticks_per_second)
+            else {
+                continue;
+            };
+            #[cfg(test)]
+            tests::NATIVE_DISCOVERY_READS.with(|count| count.set(count.get() + 1));
+            discovery.baselines.insert(
+                stat.pid,
+                CpuBaseline {
+                    lifetime: ProcessLifetime::linux(stat.start_ticks),
+                    #[cfg(test)]
+                    accumulated,
+                },
+            );
+            let arguments = if command_text::is_cargo_name(&stat.name)
+                || COMPILER_PROCESS_NAMES
+                    .iter()
+                    .any(|name| stat.name == OsStr::new(name))
+            {
+                Vec::new()
+            } else {
+                linux_details::candidate_arguments(&entry.path(), &stat.name)
+            };
+            discovery.processes.insert(
+                stat.pid,
+                DiscoveryProcess {
+                    name: stat.name,
+                    arguments,
+                    pid: stat.pid,
+                    parent: stat.parent,
+                    uid: ProcessField::Unavailable,
+                    cpu: DiscoveryCpuEvidence::NativeCounter,
+                    memory: stat.resident_pages.saturating_mul(page_size),
+                    accumulated,
+                    started: boot.saturating_add(started),
+                    elapsed: uptime.saturating_sub(started),
+                },
+            );
+        }
+        discovery
+    }
+
     #[cfg(test)]
     fn observations(&self, previous: &Self) -> ProcessObservations<'_> {
         self.observations_since(&previous.baselines)
@@ -895,14 +1012,55 @@ impl ProcessDiscovery {
         }
     }
 }
+
+/// Fields from one Linux stat read; a partial record cannot enter discovery.
+#[cfg(target_os = "linux")]
+struct LinuxDiscoveryStat {
+    pid:            Pid,
+    parent:         ProcessField<Pid>,
+    name:           OsString,
+    own_ticks:      u64,
+    start_ticks:    u64,
+    resident_pages: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxDiscoveryStat {
+    fn parse(bytes: &[u8]) -> Result<Self, ()> {
+        let stat = LinuxProcessStat::parse(bytes)?;
+        let parent = stat.parent()?;
+        Ok(Self {
+            pid:            Pid::from_u32(stat.pid()?),
+            parent:         if parent == 0 {
+                ProcessField::Unavailable
+            } else {
+                ProcessField::Observed(Pid::from_u32(parent))
+            },
+            name:           stat.name().to_os_string(),
+            own_ticks:      stat.own_ticks()?,
+            start_ticks:    stat.start_ticks()?,
+            resident_pages: stat.resident_pages()?,
+        })
+    }
+}
+
+/// Linux rates come from ordered native counter reads; other platforms supply a rate.
+enum DiscoveryCpuEvidence {
+    #[cfg(target_os = "linux")]
+    NativeCounter,
+    #[cfg(not(target_os = "linux"))]
+    SampledRate(f32),
+}
 /// Cheap process fields copied out while the refresh worker retains its OS table.
 /// Detailed metadata still comes only from the independent detail readers.
 struct DiscoveryProcess {
+    #[cfg(target_os = "linux")]
+    arguments:   Vec<OsString>,
     name:        OsString,
     pid:         Pid,
     parent:      ProcessField<Pid>,
     uid:         ProcessField<u32>,
-    cpu:         f32,
+    cpu:         DiscoveryCpuEvidence,
     memory:      u64,
     accumulated: u64,
     started:     u64,
@@ -910,6 +1068,7 @@ struct DiscoveryProcess {
 }
 
 impl DiscoveryProcess {
+    #[cfg(not(target_os = "linux"))]
     fn from_process(process: &Process) -> Self {
         Self {
             name:        Self::current_name(process),
@@ -919,7 +1078,7 @@ impl DiscoveryProcess {
                 .or_else(|| kernel_parent(process.pid()))
                 .into(),
             uid:         process.user_id().map(|uid| **uid).into(),
-            cpu:         process.cpu_usage(),
+            cpu:         DiscoveryCpuEvidence::SampledRate(process.cpu_usage()),
             memory:      process.memory(),
             accumulated: process.accumulated_cpu_time(),
             started:     process.start_time(),
@@ -929,19 +1088,8 @@ impl DiscoveryProcess {
 
     /// sysinfo retains its first name across exec; discovery needs the current image.
     /// Linux reads comm afresh; macOS requests an executable-path refresh each pass.
+    #[cfg(not(target_os = "linux"))]
     fn current_name(process: &Process) -> OsString {
-        #[cfg(target_os = "linux")]
-        {
-            std::fs::read(format!("/proc/{}/comm", process.pid())).map_or_else(
-                |_| OsString::new(),
-                |mut name| {
-                    if name.last() == Some(&b'\n') {
-                        name.pop();
-                    }
-                    OsString::from_vec(name)
-                },
-            )
-        }
         #[cfg(target_os = "macos")]
         {
             // The discovery refresh always rereads this path on macOS.
@@ -965,13 +1113,34 @@ impl DiscoveryProcess {
             name:        (!self.name.is_empty())
                 .then_some(self.name.as_os_str())
                 .into(),
-            argv:        ProcessField::Unavailable,
+            argv:        {
+                #[cfg(target_os = "linux")]
+                {
+                    (!self.arguments.is_empty())
+                        .then_some(self.arguments.as_slice())
+                        .into()
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    ProcessField::Unavailable
+                }
+            },
             directory:   ProcessField::Unavailable,
             executable:  ProcessField::Unavailable,
             uid:         self.uid,
             environment: &[],
             lifetime:    Cow::Borrowed(&baseline.lifetime),
-            cpu:         Census::measure_cpu(self.pid, self.cpu, baseline, previous),
+            cpu:         match self.cpu {
+                #[cfg(target_os = "linux")]
+                DiscoveryCpuEvidence::NativeCounter => {
+                    let _ = previous;
+                    Measurement::Unavailable(MeasurementAbsence::Unproven)
+                },
+                #[cfg(not(target_os = "linux"))]
+                DiscoveryCpuEvidence::SampledRate(rate) => {
+                    Census::measure_cpu(self.pid, rate, baseline, previous)
+                },
+            },
             memory:      self.memory,
             accumulated: self.accumulated,
             native_cpu:  Cell::new(Measurement::Unavailable(MeasurementAbsence::ReadFailed)),
@@ -1026,13 +1195,7 @@ pub(crate) fn spawn_with_resolver(
 ) -> (Receiver<Scan>, JoinHandle<()>) {
     spawn_resolved_scan_loop(cadence.poll / 2, resolve, move || {
         let mut worker = ScanWorker {
-            refresh: RefreshWorker::new(
-                || SystemRefresh {
-                    system: System::new(),
-                },
-                cadence,
-                Instant::now(),
-            ),
+            refresh: RefreshWorker::new(SystemRefresh::default, cadence, Instant::now()),
             history: RefreshHistory::FirstObservation,
             pace: RefreshPace::Active,
             smoothing: InvocationCpuAccounting::new(cadence),
@@ -1086,6 +1249,23 @@ impl ScannerHomeLocation {
     }
 }
 
+/// Only a fresh refresh can supply the next scan.
+enum ScanInput {
+    AwaitingRefresh,
+    Fresh(FreshProcessScan),
+}
+struct FreshProcessScan {
+    discovery: ProcessDiscovery,
+}
+impl From<StageAnswer<ProcessDiscovery>> for ScanInput {
+    fn from(answer: StageAnswer<ProcessDiscovery>) -> Self {
+        match answer {
+            StageAnswer::Pending => Self::AwaitingRefresh,
+            StageAnswer::Completed(discovery) => Self::Fresh(FreshProcessScan { discovery }),
+        }
+    }
+}
+
 /// The worker owns discovery, accounting and its last completed census's pace.
 struct ScanWorker {
     refresh:   RefreshWorker<SystemRefresh>,
@@ -1107,8 +1287,9 @@ impl ScanWorker {
                 self.pace = RefreshPace::Active;
             }
             let now = Instant::now();
-            if let StageAnswer::Completed(discovery) = self.refresh.sample(now, self.pace) {
-                return self.scan_discovery(discovery, capture, now);
+            match ScanInput::from(self.refresh.sample(now, self.pace)) {
+                ScanInput::Fresh(fresh) => return self.scan_discovery(fresh, capture, now),
+                ScanInput::AwaitingRefresh => {},
             }
             thread::sleep(self.cadence.poll / 2);
         }
@@ -1117,10 +1298,11 @@ impl ScanWorker {
     /// Assemble a publication from one fresh discovery and independently read details.
     fn scan_discovery(
         &mut self,
-        discovery: ProcessDiscovery,
+        fresh: FreshProcessScan,
         mut capture: Capture,
         now: Instant,
     ) -> Scan {
+        let FreshProcessScan { discovery } = fresh;
         let mut observations = self.history.observations(&discovery);
         let mut census = Census::take(observations.records.values());
         census.restrict_to(self.scope);
@@ -1139,7 +1321,13 @@ impl ScanWorker {
                 }
             }
         }
+        #[cfg(target_os = "linux")]
+        let details = linux_details::CurrentProcessDetails::read(&detailed, &discovery);
+        #[cfg(target_os = "linux")]
+        details.overlay(&mut observations);
+        #[cfg(not(target_os = "linux"))]
         let details = process_details(&detailed);
+        #[cfg(not(target_os = "linux"))]
         observations.overlay_details(&details);
         census.prepare(&observations, &capture, &self.excluded.snapshot());
         let attributed = census.attribute(&observations, &mut self.smoothing, now);
@@ -1161,6 +1349,7 @@ impl ScanWorker {
 ///
 /// Tasks are Linux threads. They inherit a process's name and command,
 /// so including them would draw one cargo invocation more than once.
+#[cfg(any(not(target_os = "linux"), test))]
 fn process_discovery_refresh_kind() -> ProcessRefreshKind {
     let kind = ProcessRefreshKind::nothing()
         .without_tasks()
@@ -1172,6 +1361,7 @@ fn process_discovery_refresh_kind() -> ProcessRefreshKind {
 }
 
 /// Fields read for cargo, its ancestors, and compiler ownership evidence.
+#[cfg(any(not(target_os = "linux"), test))]
 fn process_detail_refresh_kind() -> ProcessRefreshKind {
     ProcessRefreshKind::nothing()
         .without_tasks()
@@ -1185,6 +1375,7 @@ fn process_detail_refresh_kind() -> ProcessRefreshKind {
 /// sysinfo retains populated metadata even when a requested reread fails.
 /// Fresh detail records cannot carry cwd, argv or exe across a pid replacement
 /// that its whole-second start time cannot distinguish.
+#[cfg(any(not(target_os = "linux"), test))]
 fn process_details(pids: &[Pid]) -> System {
     let mut system = System::new();
     system.refresh_processes_specifics(
@@ -1235,6 +1426,7 @@ pub(crate) struct ProcessObservation<'scan> {
     details:                DetailPresence,
 }
 
+#[cfg(any(not(target_os = "linux"), test))]
 impl<'scan> ProcessObservation<'scan> {
     #[cfg(test)]
     fn from_process(
@@ -1274,30 +1466,6 @@ impl<'scan> ProcessObservation<'scan> {
         }
     }
 
-    const fn pid(&self) -> Pid { self.pid }
-    fn name(&self) -> &OsStr {
-        match self.name {
-            ProcessField::Observed(name) => name,
-            ProcessField::Unavailable => OsStr::new(""),
-        }
-    }
-    pub(super) const fn cmd(&self) -> &[OsString] {
-        match self.argv {
-            ProcessField::Observed(argv) => argv,
-            ProcessField::Unavailable => &[],
-        }
-    }
-    pub(super) const fn cwd(&self) -> WorkingDirectoryObservation<'_> {
-        match self.directory {
-            ProcessField::Observed(directory) => WorkingDirectoryObservation::Observed(directory),
-            ProcessField::Unavailable => WorkingDirectoryObservation::Unavailable,
-        }
-    }
-    const fn exe(&self) -> ProcessField<&Path> { self.executable }
-    pub(super) const fn environ(&self) -> &[OsString] { self.environment }
-    const fn start_time(&self) -> u64 { self.started }
-    const fn run_time(&self) -> u64 { self.elapsed }
-
     #[cfg(test)]
     pub(crate) fn cargo(pid: u32, argv: &'scan [OsString]) -> Self {
         Self {
@@ -1321,6 +1489,32 @@ impl<'scan> ProcessObservation<'scan> {
             details:     DetailPresence::Observed,
         }
     }
+}
+
+impl ProcessObservation<'_> {
+    const fn pid(&self) -> Pid { self.pid }
+    fn name(&self) -> &OsStr {
+        match self.name {
+            ProcessField::Observed(name) => name,
+            ProcessField::Unavailable => OsStr::new(""),
+        }
+    }
+    pub(super) const fn cmd(&self) -> &[OsString] {
+        match self.argv {
+            ProcessField::Observed(argv) => argv,
+            ProcessField::Unavailable => &[],
+        }
+    }
+    pub(super) const fn cwd(&self) -> WorkingDirectoryObservation<'_> {
+        match self.directory {
+            ProcessField::Observed(directory) => WorkingDirectoryObservation::Observed(directory),
+            ProcessField::Unavailable => WorkingDirectoryObservation::Unavailable,
+        }
+    }
+    const fn exe(&self) -> ProcessField<&Path> { self.executable }
+    pub(super) const fn environ(&self) -> &[OsString] { self.environment }
+    const fn start_time(&self) -> u64 { self.started }
+    const fn run_time(&self) -> u64 { self.elapsed }
 }
 
 /// A single PID index holds both discovery and fresh detail observations.
@@ -1348,26 +1542,40 @@ impl<'scan> ProcessObservations<'scan> {
         }
     }
 
-    /// Fresh detail fields replace metadata without rereading discovery parent or lifetime
-    /// evidence.
+    /// Established discovery parent and lifetime evidence remain authoritative.
+    #[cfg(any(not(target_os = "linux"), test))]
     fn overlay_details(&mut self, details: &'scan System) {
-        for (&pid, process) in details.processes() {
-            let record = self.records.entry(pid).or_insert_with(|| {
-                ProcessObservation::metadata(
-                    process,
-                    &LifetimeEvidence::Unavailable,
-                    Measurement::Unavailable(MeasurementAbsence::Unproven),
-                )
-            });
-            record.details = DetailPresence::Observed;
-            record.name = (!process.name().is_empty()).then(|| process.name()).into();
-            record.argv = (!process.cmd().is_empty()).then(|| process.cmd()).into();
-            record.directory = process.cwd().into();
-            record.executable = process.exe().into();
-            record.uid = process.user_id().map(|uid| **uid).into();
-            record.environment = process.environ();
-            record.started = process.start_time();
-            record.elapsed = process.run_time();
+        for process in details.processes().values() {
+            self.overlay_record(ProcessObservation::metadata(
+                process,
+                &LifetimeEvidence::Unavailable,
+                Measurement::Unavailable(MeasurementAbsence::Unproven),
+            ));
+        }
+    }
+
+    /// Both OS detail readers preserve the discovery evidence in the same PID index.
+    fn overlay_record(&mut self, mut detail: ProcessObservation<'scan>) {
+        detail.details = DetailPresence::Observed;
+        match self.records.entry(detail.pid) {
+            Entry::Vacant(entry) => {
+                entry.insert(detail);
+            },
+            Entry::Occupied(mut entry) => {
+                let record = entry.get_mut();
+                if matches!(record.parent, ProcessField::Unavailable) {
+                    record.parent = detail.parent;
+                }
+                record.details = detail.details;
+                record.name = detail.name;
+                record.argv = detail.argv;
+                record.directory = detail.directory;
+                record.executable = detail.executable;
+                record.uid = detail.uid;
+                record.environment = detail.environment;
+                record.started = detail.started;
+                record.elapsed = detail.elapsed;
+            },
         }
     }
 
@@ -1416,6 +1624,43 @@ impl CargoProcessRole {
     }
 }
 
+/// One scan owns the ancestry and read order derived from its parent index.
+struct PreparedCpuTopology {
+    ancestry: HashMap<Pid, Vec<Pid>>,
+    ordered:  Vec<Pid>,
+}
+impl PreparedCpuTopology {
+    fn new(parents: &HashMap<Pid, Pid>, pids: impl Iterator<Item = Pid>) -> Self {
+        let ancestry: HashMap<_, _> = pids.map(|pid| (pid, Self::walk(parents, pid))).collect();
+        let mut ordered: Vec<_> = ancestry.keys().copied().collect();
+        ordered.sort_by_key(|pid| ancestry[pid].len());
+        Self { ancestry, ordered }
+    }
+    fn walk(parents: &HashMap<Pid, Pid>, pid: Pid) -> Vec<Pid> {
+        #[cfg(test)]
+        tests::CPU_ANCESTRY_WALKS.with(|count| count.set(count.get() + 1));
+        let mut chain = vec![pid];
+        let mut current = pid;
+        for _ in 0..PARENT_WALK_LIMIT {
+            if current.as_u32() <= ROOT_PROCESS_PID {
+                break;
+            }
+            let Some(&parent) = parents.get(&current) else {
+                break;
+            };
+            if chain.contains(&parent) {
+                break;
+            }
+            chain.push(parent);
+            if parent.as_u32() <= ROOT_PROCESS_PID {
+                break;
+            }
+            current = parent;
+        }
+        chain
+    }
+}
+
 /// What phase one learned: the parent links, the cargo processes, and the
 /// compiler processes waiting to be attributed to one of them.
 pub(super) struct Census {
@@ -1437,6 +1682,7 @@ pub(super) struct Census {
     eligibility:              HashMap<Pid, Result<(), RowAbsence>>,
     /// Every process's parent, for walking a compiler up to its cargo.
     parents:                  HashMap<Pid, Pid>,
+    topology:                 OnceCell<PreparedCpuTopology>,
     /// Cargo invocations retained for row construction after selection.
     cargo:                    Vec<Pid>,
     /// Runs carried by hidden drivers to the process that represents their command.
@@ -1456,6 +1702,65 @@ pub(super) struct Census {
     /// Fixture rows enter group assembly without a process-row measurement.
     #[cfg(test)]
     registration_rows:        Vec<CargoProcess>,
+}
+
+#[cfg(test)]
+mod census_tests {
+    use super::Census;
+    use super::CpuAssignment;
+    use super::HashMap;
+    use super::OsStr;
+    use super::OsString;
+    use super::Pid;
+    use super::ProcessField;
+    use super::ProcessObservation;
+    use super::ProcessObservations;
+    use super::tests::CPU_ANCESTRY_WALKS;
+
+    #[test]
+    fn repeated_assignment_uses_one_scan_topology() {
+        let argv = [OsString::from("cargo"), OsString::from("build")];
+        let mut child = ProcessObservation::cargo(4_100_003, &argv);
+        child.parent = ProcessField::Observed(Pid::from_u32(4_100_001));
+        let records =
+            ProcessObservations::new([ProcessObservation::cargo(4_100_001, &argv), child]);
+        let census = Census::take(records.records.values());
+        let detached = HashMap::new();
+        let first = census.cpu_assignment(Pid::from_u32(4_100_003), &detached);
+        CPU_ANCESTRY_WALKS.with(|count| count.set(0));
+        let second = census.cpu_assignment(Pid::from_u32(4_100_003), &detached);
+        assert!(matches!(first, CpuAssignment::Direct(pid) if pid == Pid::from_u32(4_100_003)));
+        assert!(matches!(second, CpuAssignment::Direct(pid) if pid == Pid::from_u32(4_100_003)));
+        CPU_ANCESTRY_WALKS.with(|count| assert_eq!(count.get(), 0));
+    }
+
+    #[test]
+    fn unrelated_compilers_receive_no_detail_request() {
+        let cargo = [OsString::from("cargo"), OsString::from("build")];
+        let compiler = [OsString::from("rustc"), OsString::from("outside.rs")];
+        let records = ProcessObservations::new([
+            ProcessObservation::cargo(4_100_001, &cargo),
+            {
+                let mut record = ProcessObservation::cargo(4_100_002, &compiler);
+                record.name = ProcessField::Observed(OsStr::new("rustc"));
+                record
+            },
+            {
+                let mut record = ProcessObservation::cargo(4_100_003, &compiler);
+                record.name = ProcessField::Observed(OsStr::new("rustc"));
+                record.parent = ProcessField::Observed(Pid::from_u32(4_100_001));
+                record
+            },
+        ]);
+        let census = Census::take(records.records.values());
+        let requested = census.detailed();
+        assert!(requested.contains(&Pid::from_u32(4_100_001)));
+        assert!(requested.contains(&Pid::from_u32(4_100_003)));
+        assert!(
+            !requested.contains(&Pid::from_u32(4_100_002)),
+            "a compiler outside every cargo tree must receive no detail read: {requested:?}"
+        );
+    }
 }
 
 impl Census {
@@ -1672,6 +1977,7 @@ impl Census {
             eligibility:                    HashMap::new(),
             registration_eligibility:       HashMap::new(),
             parents:                        HashMap::new(),
+            topology:                       std::cell::OnceCell::new(),
             cargo:                          Vec::new(),
             rowless_cargo:                  Vec::new(),
             dispatched_runs:                HashMap::new(),
@@ -1732,6 +2038,7 @@ impl Census {
     /// are compared. A regression within that lifetime remains unproven.
     /// An unchanged counter cannot prove a positive rate: macOS retains the old one.
     /// Nonzero counters on both samples still support a measured zero rate.
+    #[cfg(any(not(target_os = "linux"), test))]
     fn measure_cpu(
         pid: Pid,
         cpu: f32,
@@ -1993,33 +2300,25 @@ impl Census {
         self.cargo.iter().chain(&self.rowless_cargo).copied()
     }
 
-    /// CPU accounting includes the root process and orders ancestors nearest first.
-    fn cpu_ancestry(&self, pid: Pid) -> Vec<Pid> {
-        let mut chain = vec![pid];
-        let mut current = pid;
-        for _ in 0..PARENT_WALK_LIMIT {
-            if current.as_u32() <= ROOT_PROCESS_PID {
-                break;
-            }
-            let Some(&parent) = self.parents.get(&current) else {
-                break;
-            };
-            if chain.contains(&parent) {
-                break;
-            }
-            chain.push(parent);
-            if parent.as_u32() <= ROOT_PROCESS_PID {
-                break;
-            }
-            current = parent;
-        }
-        chain
+    fn topology(&self) -> &PreparedCpuTopology {
+        self.topology.get_or_init(|| {
+            PreparedCpuTopology::new(&self.parents, self.accumulated.keys().copied())
+        })
+    }
+
+    /// Every consumer borrows the same scan ancestry.
+    fn cpu_ancestry(&self, pid: Pid) -> &[Pid] {
+        self.topology()
+            .ancestry
+            .get(&pid)
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Each live cargo in the process chain can own work, even without a displayed row.
     fn cpu_owners(&self, pid: Pid) -> impl Iterator<Item = Pid> + '_ {
         self.cpu_ancestry(pid)
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|ancestor| self.live_cargo().any(|cargo| cargo == *ancestor))
     }
 
@@ -2029,7 +2328,8 @@ impl Census {
             return CpuAssignment::Direct(owner);
         }
         self.cpu_ancestry(pid)
-            .into_iter()
+            .iter()
+            .copied()
             .find_map(|compiler| {
                 detached
                     .get(&compiler)
@@ -2048,9 +2348,7 @@ impl Census {
     ) {
         // Parents are read before children: a wait completed during this pass may
         // defer time until the next sample, but cannot charge both child and reaper.
-        let mut pids: Vec<_> = self.accumulated.keys().copied().collect();
-        pids.sort_by_key(|pid| self.cpu_ancestry(*pid).len());
-        for pid in pids {
+        for &pid in &self.topology().ordered {
             let assignment = self.cpu_assignment(pid, detached);
             let owner = match assignment {
                 CpuAssignment::Direct(owner) | CpuAssignment::Detached { owner, .. } => owner,
@@ -2068,15 +2366,16 @@ impl Census {
                     continue;
                 },
             };
-            if pid == owner
-                && (cfg!(target_os = "linux")
-                    || (matches!(
-                        evidence.get(&owner),
-                        Some(Measurement::Unavailable(
-                            MeasurementAbsence::FirstObservation | MeasurementAbsence::RetainedRate
-                        ))
-                    ) && !elapsed.is_zero()))
-            {
+            #[cfg(target_os = "linux")]
+            let owner_counter_is_readable = true;
+            #[cfg(not(target_os = "linux"))]
+            let owner_counter_is_readable = matches!(
+                evidence.get(&owner),
+                Some(Measurement::Unavailable(
+                    MeasurementAbsence::FirstObservation | MeasurementAbsence::RetainedRate
+                ))
+            ) && !elapsed.is_zero();
+            if pid == owner && owner_counter_is_readable {
                 // Linux's lifetime-checked stat read proves even an idle owner's
                 // zero counter independently of sysinfo's unavailable rate.
                 // Darwin's zero may still be a failed task-info read, while a
@@ -2539,7 +2838,16 @@ impl Census {
     /// processes.
     fn detailed(&self) -> Vec<Pid> {
         let mut pids = self.cargo.clone();
-        pids.extend(self.compilers.iter().map(|&(pid, _)| pid));
+        pids.extend(self.compilers.iter().filter_map(|&(pid, driver)| {
+            let attached = self.cpu_owners(pid).next().is_some();
+            let detached_candidate = !self.cargo.is_empty()
+                && driver == RUSTC_BINARY
+                && self
+                    .cpu_ancestry(pid)
+                    .iter()
+                    .any(|ancestor| self.compilers.contains(&(*ancestor, SCCACHE_BINARY)));
+            (attached || detached_candidate).then_some(pid)
+        }));
         for (&pid, parent) in &self.parents {
             if self.cargo.contains(parent) && !pids.contains(&pid) {
                 pids.push(pid);
@@ -3861,6 +4169,12 @@ impl CensusSequence {
 )]
 #[path = "."]
 pub(crate) mod tests {
+    thread_local! {
+        pub(super) static CPU_ANCESTRY_WALKS: Cell<usize> = const { Cell::new(0) };
+        pub(super) static NATIVE_DISCOVERY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+            pub(super) static SYSINFO_BASELINE_READS: Cell<usize> = const { Cell::new(0) };
+    }
+
     use crate::roster::Roster;
     #[derive(Clone, Copy)]
     pub(crate) enum FixtureExecution {
@@ -7258,6 +7572,7 @@ pub(crate) mod tests {
                 .iter()
                 .map(|&(child, parent)| (Pid::from_u32(child), Pid::from_u32(parent)))
                 .collect(),
+            topology:                 std::cell::OnceCell::new(),
             cargo:                    Vec::new(),
             rowless_cargo:            Vec::new(),
             dispatched_runs:          HashMap::new(),

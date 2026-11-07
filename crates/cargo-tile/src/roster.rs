@@ -44,7 +44,7 @@ use std::ops::DerefMut;
 
 use invocation_continuity::InvocationCompletion;
 use invocation_continuity::InvocationContinuity;
-use invocation_continuity::InvocationSnapshot;
+pub(crate) use invocation_continuity::InvocationSnapshot;
 use invocation_owners::InvocationOwners;
 
 /// Each row decides its entry only when its command text reaches the screen.
@@ -186,6 +186,9 @@ impl DerefMut for TrackedRow {
 }
 
 impl TrackedRow {
+    /// Derived products share the lifecycle snapshot without copying its process.
+    pub(crate) fn snapshot(&self) -> Rc<InvocationSnapshot> { self.continuity.shared_snapshot() }
+
     /// Whether the process behind this row has stopped.
     pub(crate) const fn is_ended(&self) -> bool {
         matches!(
@@ -528,12 +531,23 @@ impl TrackedGroup {
     }
 }
 
+/// Identity of the roster observations and fade shades used by a prepared frame.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RosterRevision(Rc<()>);
+
+impl PartialEq for RosterRevision {
+    fn eq(&self, other: &Self) -> bool { Rc::ptr_eq(&self.0, &other.0) }
+}
+
+impl Eq for RosterRevision {}
+
 /// Every group the display knows about, running or fading.
 #[derive(Clone)]
 pub(crate) struct Roster {
     /// Groups in scan order -- newest command first -- with finished
     /// ones held in place until they expire.
     groups:        Vec<TrackedGroup>,
+    revision:      RosterRevision,
     owners:        InvocationOwners,
     /// The only frame-time owner for rows and their painting snapshots.
     clock:         RosterClock,
@@ -562,6 +576,7 @@ impl Roster {
     pub(crate) fn new() -> Self {
         Self {
             groups:        Vec::new(),
+            revision:      RosterRevision::default(),
             owners:        InvocationOwners::default(),
             clock:         RosterClock(Rc::new(Cell::new(Instant::now()))),
             last:          Vec::new(),
@@ -582,6 +597,9 @@ impl Roster {
     /// The groups to display, newest first.
     #[cfg(test)]
     pub(crate) fn groups(&self) -> &[TrackedGroup] { &self.groups }
+
+    /// The renderer borrows immutable snapshots for this revision.
+    pub(crate) fn revision(&self) -> RosterRevision { self.revision.clone() }
 
     /// Metadata widths retained across every frame in this session.
     #[cfg(test)]
@@ -624,8 +642,12 @@ impl Roster {
             for row in self.groups.iter_mut().flat_map(TrackedGroup::rows_mut) {
                 changed |= row.continuity.advance_retained_clock(now);
             }
+            if changed {
+                self.revision = RosterRevision::default();
+            }
             return changed;
         }
+        self.revision = RosterRevision::default();
         self.clock.0.set(now);
         self.last.clone_from(&scan);
         let mut rows: Vec<_> = scan
@@ -767,6 +789,9 @@ impl Roster {
             changed |= group.advance(now, fade);
         }
         self.clock.0.set(now);
+        if changed {
+            self.revision = RosterRevision::default();
+        }
         changed
     }
 }

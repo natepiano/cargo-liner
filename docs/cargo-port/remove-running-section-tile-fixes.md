@@ -1440,7 +1440,7 @@ Model for 44b and 43a; no product change. Source: `6cadd2bd901e5d24ca6198ccc6e84
 
 - **Files:** decided by the cause; expected `crates/cargo-tile/src/census/scan.rs`, `census/command_text.rs`, `roster.rs`. Not `crates/tui_pane/src/tiles/` (handler unit).
 
-### Phase 43a — The reader uses less CPU, on one process identity  · status: todo
+### Phase 43a — The reader uses less CPU, on one process identity  · status: done
 
 **Depends on:** Phase 44b
 

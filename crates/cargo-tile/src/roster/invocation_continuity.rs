@@ -1,5 +1,6 @@
 //! One row owner retains process aliases, lifecycle data, and work readings.
 
+use std::rc::Rc;
 use std::time::Instant;
 
 use super::invocation_owners::InvocationKey;
@@ -34,7 +35,7 @@ impl ClockObservation {
 /// A live state owns the origin clock and the last valid work readings.
 #[derive(Clone)]
 struct LiveInvocation {
-    snapshot: InvocationSnapshot,
+    snapshot: Rc<InvocationSnapshot>,
     readings: WorkReadingHistory,
     observed: ClockObservation,
 }
@@ -42,14 +43,14 @@ struct LiveInvocation {
 /// A draining origin owns the retained executor snapshot.
 #[derive(Clone)]
 struct DrainingInvocation {
-    snapshot: InvocationSnapshot,
+    snapshot: Rc<InvocationSnapshot>,
     observed: ClockObservation,
 }
 
 /// A finished invocation owns its final snapshot and its fade origin.
 #[derive(Clone)]
 struct FinishedInvocation {
-    snapshot: InvocationSnapshot,
+    snapshot: Rc<InvocationSnapshot>,
     ended:    Instant,
 }
 
@@ -83,7 +84,7 @@ impl InvocationContinuity {
         );
         let live = LiveInvocation {
             readings: WorkReadingHistory::new(),
-            snapshot: InvocationSnapshot { process },
+            snapshot: Rc::new(InvocationSnapshot { process }),
             observed: ClockObservation::Incoming(now),
         };
         Self {
@@ -98,7 +99,7 @@ impl InvocationContinuity {
 
     pub(super) const fn key(&self) -> &InvocationId { &self.key.0 }
 
-    pub(super) const fn snapshot(&self) -> &InvocationSnapshot {
+    pub(super) fn snapshot(&self) -> &InvocationSnapshot {
         match &self.state {
             InvocationState::Starting(live) | InvocationState::Running(live) => &live.snapshot,
             InvocationState::Draining(draining) => &draining.snapshot,
@@ -106,11 +107,23 @@ impl InvocationContinuity {
         }
     }
 
-    pub(super) const fn snapshot_mut(&mut self) -> &mut InvocationSnapshot {
+    pub(super) fn shared_snapshot(&self) -> Rc<InvocationSnapshot> {
+        match &self.state {
+            InvocationState::Starting(live) | InvocationState::Running(live) => {
+                Rc::clone(&live.snapshot)
+            },
+            InvocationState::Draining(draining) => Rc::clone(&draining.snapshot),
+            InvocationState::Finished(finished) => Rc::clone(&finished.snapshot),
+        }
+    }
+
+    pub(super) fn snapshot_mut(&mut self) -> &mut InvocationSnapshot {
         match &mut self.state {
-            InvocationState::Starting(live) | InvocationState::Running(live) => &mut live.snapshot,
-            InvocationState::Draining(draining) => &mut draining.snapshot,
-            InvocationState::Finished(finished) => &mut finished.snapshot,
+            InvocationState::Starting(live) | InvocationState::Running(live) => {
+                Rc::make_mut(&mut live.snapshot)
+            },
+            InvocationState::Draining(draining) => Rc::make_mut(&mut draining.snapshot),
+            InvocationState::Finished(finished) => Rc::make_mut(&mut finished.snapshot),
         }
     }
 
@@ -173,7 +186,7 @@ impl InvocationContinuity {
                 .clone_from(&previous.subtree_resource_use);
             readings.restore(&mut process);
             self.state = InvocationState::Draining(DrainingInvocation {
-                snapshot: InvocationSnapshot { process },
+                snapshot: Rc::new(InvocationSnapshot { process }),
                 observed,
             });
         } else {
@@ -183,7 +196,7 @@ impl InvocationContinuity {
                 InvocationExecution::AwaitingExecutor(_) | InvocationExecution::RegistrationOnly
             );
             let live = LiveInvocation {
-                snapshot: InvocationSnapshot { process },
+                snapshot: Rc::new(InvocationSnapshot { process }),
                 readings,
                 observed,
             };
@@ -212,7 +225,7 @@ impl InvocationContinuity {
             OriginStart::Unavailable,
             now.saturating_duration_since(previous),
         );
-        snapshot.process.origin_start = advanced;
+        Rc::make_mut(snapshot).process.origin_start = advanced;
         *observed = ClockObservation::Retained(now);
         !start.same_duration(advanced)
     }
@@ -226,8 +239,8 @@ impl InvocationContinuity {
             live.readings.restore(&mut snapshot.process);
         }
         self.state = InvocationState::Finished(FinishedInvocation {
-            snapshot,
-            ended: now,
+            snapshot: Rc::new(snapshot),
+            ended:    now,
         });
     }
 }

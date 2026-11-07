@@ -61,6 +61,7 @@ use crate::keymap;
 use crate::probe::FrameLog;
 use crate::progress::capture_roots::AccountCaptureDirectory;
 use crate::render;
+use crate::render::PreparedTables;
 use crate::root_scan::SharedCaptureDirectory;
 use crate::roster::Roster;
 use crate::sccache::SccacheStats;
@@ -208,6 +209,7 @@ pub(crate) struct App {
     /// The commands the display is holding: what the last scan found,
     /// plus whatever has finished and is still fading out of it.
     pub(crate) roster:            Roster,
+    pub(crate) prepared_tables:   PreparedTables,
     /// The tile grid: how many cells the pane holds and the motion
     /// between one arrangement and the next.
     pub(crate) tiles:             TileGrid,
@@ -271,6 +273,7 @@ impl App {
             root_status: Vec::new(),
             shared_directory: SharedCaptureDirectory::default(),
             roster: Roster::new(),
+            prepared_tables: render::PreparedTables::default(),
             tiles,
             sccache: SccacheStats::new(),
             inline_error: None,
