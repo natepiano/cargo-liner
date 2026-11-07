@@ -13,6 +13,7 @@ mod command_cache;
 mod frame_preparation;
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
@@ -20,6 +21,7 @@ use std::rc::Rc;
 use std::sync::LazyLock;
 use std::sync::OnceLock;
 
+use cell_paint::CellColumnHeader;
 use cell_paint::CellPaintInputs;
 use cell_paint::CellPaintPatch;
 use cell_paint::CellPaintReach;
@@ -87,6 +89,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::app::ArgumentDetail;
+use crate::app::CellViewport;
+use crate::app::GridView;
 use crate::app::ProcessHierarchy;
 use crate::app::Updates;
 use crate::census::command_text::CommandWord;
@@ -149,6 +153,9 @@ use std::ops::Index;
 use std::ops::IndexMut;
 use std::sync::Arc;
 
+use tui_pane::CellTravel;
+use tui_pane::Repaint;
+use tui_pane::RowsReadout;
 use tui_pane::Theme;
 
 use crate::app_global_action::AppGlobalAction;
@@ -420,16 +427,755 @@ fn draw_visible_panes(
     let growth = app.loaded_config.config.tiles.growth();
     let cells = Cells::from_prepared(prepared, &app.sccache);
     app.tiles.set_view(app.loaded_config.config.tiles.view);
+    if contents == TileGridContents::Shown && matches!(app.grid_view, GridView::Expanded { .. }) {
+        app.tiles.prepare_covered(area, growth, &cells);
+    } else {
+        tui_pane::draw_tile_grid(
+            frame.buffer_mut(),
+            &mut app.tiles,
+            area,
+            growth,
+            contents,
+            &cells,
+            app.framework.color_mode,
+        );
+    }
+    if contents == TileGridContents::Shown {
+        draw_cell_view(frame, app, area);
+        match &app.grid_view {
+            GridView::Expanded { cell } => {
+                return DrawnSummaryFrames(vec![cell.displayed]);
+            },
+            GridView::Expanding { cell, .. } | GridView::Collapsing { cell, .. } => {
+                let mut frames = app.tiles.painted_summary_frames().to_vec();
+                frames.push(cell.displayed);
+                return DrawnSummaryFrames(frames);
+            },
+            GridView::Grid | GridView::Opening { .. } => {},
+        }
+    }
+    DrawnSummaryFrames(app.tiles.painted_summary_frames().to_vec())
+}
+
+/// Resolve the focused identity before any resolved view state can hold it.
+fn resolve_opening_cell(app: &mut App, area: Rect) {
+    let GridView::Opening { sampled, started } = app.grid_view else {
+        return;
+    };
+    let placements = app
+        .tiles
+        .placements(area, app.loaded_config.config.tiles.growth());
+    app.grid_view = match placements
+        .into_iter()
+        .find(|placement| placement.frame.is_focused())
+    {
+        Some(placement) => GridView::Expanding {
+            cell: CellViewport::new(placement.content, placement.frame.clip(), sampled),
+            started,
+        },
+        None => GridView::Grid,
+    };
+}
+
+/// Draw the selected cell through the grid's cell painter, over its unchanged grid.
+fn draw_cell_view(frame: &mut Frame, app: &mut App, area: Rect) {
+    resolve_opening_cell(app, area);
+    let state = app.grid_view.clone();
+    let (mut cell, started) = match &state {
+        GridView::Grid | GridView::Opening { .. } => return,
+        GridView::Expanding { cell, started } | GridView::Collapsing { cell, started } => {
+            (cell.clone(), *started)
+        },
+        GridView::Expanded { cell } => (cell.clone(), cell.sampled),
+    };
+    let growth = app.loaded_config.config.tiles.growth();
+    let placements = app.tiles.placements(area, growth);
+    let placement = placements
+        .iter()
+        .find(|placement| placement.content == cell.content);
+    let to = if matches!(state, GridView::Collapsing { .. }) {
+        let Some(placement) = placement else {
+            app.grid_view = GridView::Grid;
+            restore_grid_after_collapse(frame, app, area);
+            return;
+        };
+        placement.frame.clip()
+    } else {
+        area
+    };
+    let content = cell.content.clone();
+    let from = cell.origin.intersection(area);
+    let elapsed = if matches!(state, GridView::Expanded { .. }) {
+        std::time::Duration::MAX
+    } else {
+        cell.sampled.saturating_duration_since(started)
+    };
+    let view = CommandView::new(
+        app.tree,
+        app.arguments,
+        &app.loaded_config.config.commands.default_arguments,
+    );
+    let prepared = app.prepared_tables.for_cell_frame(
+        &mut app.roster,
+        &app.loaded_config.config.commands.hidden,
+        &view,
+    );
+    let mut cells = Cells::from_prepared(prepared, &app.sccache);
+    let command_remains = match &content {
+        TileContent::Group(id) => cells.roster.groups().iter().any(|group| &group.id == id),
+        TileContent::Summary | TileContent::Empty(_) => true,
+    };
+    if !command_remains {
+        app.grid_view = GridView::Grid;
+        restore_grid_after_collapse(frame, app, area);
+        return;
+    }
+    cells.view = state.clone();
+    let expanded = ExpandedCell {
+        cells,
+        scroll: Cell::new(cell.scroll),
+        rows: Cell::new(0),
+        shown: Cell::new(0),
+    };
+    let (rect, repaint) = app.tiles.draw_cell_view(
+        frame.buffer_mut(),
+        &content,
+        CellTravel {
+            from,
+            to: to.intersection(area),
+            elapsed,
+        },
+        &expanded,
+        app.framework.color_mode,
+    );
+    cell.displayed = rect;
+    cell.scroll = expanded.scroll.get();
+    cell.rows = expanded.rows.get();
+    cell.shown = expanded.shown.get();
+    app.grid_view = match state {
+        GridView::Expanding { .. } if repaint == Repaint::NotNeeded => GridView::Expanded { cell },
+        GridView::Expanding { started, .. } => GridView::Expanding { cell, started },
+        GridView::Collapsing { .. } if repaint == Repaint::NotNeeded => {
+            restore_grid_after_collapse(frame, app, area);
+            GridView::Grid
+        },
+        GridView::Collapsing { started, .. } => GridView::Collapsing { cell, started },
+        GridView::Expanded { .. } => GridView::Expanded { cell },
+        GridView::Grid | GridView::Opening { .. } => GridView::Grid,
+    };
+}
+
+/// Remove the expanded readout before the grid paints its shorter readout.
+fn restore_grid_after_collapse(frame: &mut Frame, app: &mut App, area: Rect) {
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            frame.buffer_mut()[(x, y)].reset();
+        }
+    }
+    let prepared = prepare_panes(app, area.height);
+    let cells = Cells::from_prepared(prepared, &app.sccache);
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
         &mut app.tiles,
         area,
-        growth,
-        contents,
+        app.loaded_config.config.tiles.growth(),
+        TileGridContents::Shown,
         &cells,
         app.framework.color_mode,
     );
-    DrawnSummaryFrames(app.tiles.painted_summary_frames().to_vec())
+}
+
+/// Scrolling changes the source allocation, while the ordinary cell painter draws its rows.
+struct ExpandedCell<'a> {
+    cells:  Cells<'a>,
+    scroll: Cell<usize>,
+    rows:   Cell<usize>,
+    shown:  Cell<usize>,
+}
+
+impl TileCells<InvocationId> for ExpandedCell<'_> {
+    fn summary_title(&self) -> &str { self.cells.summary_title() }
+
+    fn prepare_frame(&self, allocations: impl FnOnce() -> Vec<(TileContent, Rect)>) {
+        self.cells.prepare_frame(|| {
+            allocations()
+                .into_iter()
+                .map(|(content, area)| {
+                    (
+                        content,
+                        Rect {
+                            height: u16::MAX.saturating_sub(area.y),
+                            ..area
+                        },
+                    )
+                })
+                .collect()
+        });
+    }
+
+    fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands { self.cells.demands(widths) }
+
+    fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, ground: Color) {
+        let demand = self
+            .cells
+            .prepared_rows(content, inner.width, PreparedCellRows::demand);
+        let rows = u16::try_from(demand).unwrap_or(u16::MAX);
+        let rows = rows.min(u16::MAX.saturating_sub(inner.y.saturating_add(1)));
+        let scroll = self
+            .scroll
+            .get()
+            .min(usize::from(rows.saturating_sub(inner.height)));
+        self.scroll.set(scroll);
+        self.rows.set(usize::from(rows));
+        self.shown.set(usize::from(inner.height.min(rows)));
+        let allocation = Rect::new(
+            inner.x.saturating_sub(1),
+            inner.y.saturating_sub(1),
+            inner.width.saturating_add(2),
+            rows.saturating_add(2),
+        );
+        let clip = Rect::new(
+            inner.x.saturating_sub(1),
+            inner.y.saturating_sub(1),
+            inner.width.saturating_add(2),
+            inner.height.saturating_add(2),
+        );
+        let shift = -i32::try_from(scroll).unwrap_or(i32::MAX);
+        let mut header = Vec::new();
+        tui_pane::draw_clipped(
+            buffer,
+            tui_pane::PaneFrame::shifted(allocation, shift, clip),
+            |buffer, source| {
+                self.cells.draw(buffer, content, source, ground);
+                let paintings = self.cells.paintings.borrow();
+                if let Some(painted) = paintings.get(&CellRowIdentity::from(content))
+                    && let CellColumnHeader::Row(y) = painted.header
+                {
+                    self.rows.set(usize::from(rows.saturating_sub(1)));
+                    self.shown
+                        .set(usize::from(inner.height.min(rows).saturating_sub(1)));
+                    if y <= source
+                        .y
+                        .saturating_add(u16::try_from(scroll).unwrap_or(u16::MAX))
+                    {
+                        header.extend(
+                            (source.left()..source.right()).map(|x| buffer[(x, y)].clone()),
+                        );
+                    }
+                }
+            },
+        );
+        for (x, cell) in (inner.left()..inner.right()).zip(header) {
+            buffer[(x, inner.y)] = cell;
+        }
+    }
+
+    fn rows_readout(&self, _: &TileContent, _: Rect, measured: usize) -> RowsReadout {
+        let first = std::num::NonZeroUsize::new(self.scroll.get().saturating_add(1));
+        let last = std::num::NonZeroUsize::new(self.scroll.get().saturating_add(self.shown.get()));
+        match (first, last) {
+            (Some(first), Some(last)) => tui_pane::RowsReadout::shown(first, last, self.rows.get())
+                .unwrap_or(RowsReadout::Count(measured)),
+            _ => RowsReadout::Count(measured),
+        }
+    }
+
+    fn readout_progress(&self, content: &TileContent) -> CellFadeProgress {
+        self.cells.readout_progress(content)
+    }
+    fn readout_fade(&self, content: &TileContent) -> CellReadoutFade {
+        self.cells.readout_fade(content)
+    }
+    fn content_extent(&self, content: &TileContent) -> CellContentExtent {
+        self.cells.content_extent(content)
+    }
+    fn summary_foot(&self) -> SummaryFoot { self.cells.summary_foot() }
+    fn summary_labels(&self, rect: Rect) -> Vec<PaneFrameLabel> { self.cells.summary_labels(rect) }
+}
+
+#[cfg(test)]
+mod expanded_view_tests {
+
+    use std::error::Error;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use crossterm::event::KeyCode;
+    use crossterm::event::KeyEvent;
+    use crossterm::event::KeyModifiers;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use toml::Table;
+    use tui_pane::ScrollDirection;
+    use tui_pane::TerminalApp;
+    use tui_pane::ToastActivation;
+    use tui_pane::ToastStyle;
+
+    use super::App;
+    use super::TileGridContents;
+    use super::tests;
+    use crate::app::GridView;
+
+    fn app() -> Result<App, Box<dyn Error>> {
+        let mut app = App::new_for_test()?;
+        let groups = [4100, 5100]
+            .into_iter()
+            .map(|pid| {
+                let mut group = tests::cargo_group(tests::invocation(pid, &["check"]));
+                group.rest = (1..15)
+                    .map(|offset| tests::invocation(pid + offset, &["build"]))
+                    .collect();
+                group
+            })
+            .collect();
+        app.roster.observe(groups, Instant::now());
+        for _ in 0..3 {
+            paint(&mut app, Instant::now(), 160, 36)?;
+            app.tiles.settle_for_test();
+        }
+        Ok(app)
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        tui_pane::dispatch_key(app, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn paint(
+        app: &mut App,
+        now: Instant,
+        width: u16,
+        height: u16,
+    ) -> Result<Buffer, Box<dyn Error>> {
+        app.grid_view.advance(now);
+        app.roster
+            .advance(now, app.loaded_config.config.tiles.fade());
+        let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+        terminal.draw(|frame| {
+            super::draw_panes(frame, app, frame.area(), TileGridContents::Shown);
+        })?;
+        Ok(terminal.backend().buffer().clone())
+    }
+
+    fn summary_frame(buffer: &Buffer) -> Rect {
+        let row = tests::buffer_rows(buffer)
+            .into_iter()
+            .position(|line| line.contains(super::SUMMARY_CELL_TITLE.trim()));
+        let Some(y) = row.and_then(|row| u16::try_from(row).ok()) else {
+            return Rect::default();
+        };
+        let right = (1..buffer.area.width)
+            .find(|&x| matches!(buffer[(x, y)].symbol(), "┐" | "┬" | "┤" | "┼"))
+            .unwrap_or_else(|| buffer.area.width.saturating_sub(1));
+        let bottom = (y + 1..buffer.area.height)
+            .find(|&y| matches!(buffer[(0, y)].symbol(), "└" | "├" | "┼"))
+            .unwrap_or_else(|| buffer.area.height.saturating_sub(1));
+        Rect::new(0, y, right + 1, bottom - y + 1)
+    }
+
+    #[test]
+    fn enter_expands_the_focused_cell_to_the_grid_area() -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        press(&mut app, KeyCode::Enter);
+        let buffer = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        assert_eq!(summary_frame(&buffer), buffer.area);
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = Terminal::new(TestBackend::new(160, 1))?;
+        terminal.draw(|frame| {
+            super::draw_status_line(frame, &app, &keymap, Rect::new(0, 0, 160, 1));
+        })?;
+        let status = tests::buffer_rows(terminal.backend().buffer()).join("");
+        assert!(status.contains("esc collapse"), "{status:?}");
+        assert!(
+            tests::buffer_rows(&buffer)
+                .iter()
+                .any(|line| line.contains("5100"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn esc_returns_to_the_grid_with_focus_kept() -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        let before = paint(&mut app, Instant::now(), 160, 36)?;
+        let focus = app.tiles.focused_cell();
+        press(&mut app, KeyCode::Enter);
+        let expanded = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        assert_ne!(expanded, before);
+        press(&mut app, KeyCode::Esc);
+        let after = paint(&mut app, Instant::now() + Duration::from_secs(4), 160, 36)?;
+        assert_eq!(after, before);
+        assert_eq!(app.tiles.focused_cell(), focus);
+        Ok(())
+    }
+
+    #[test]
+    fn an_ended_cell_returns_to_the_grid() -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        app.tiles.focus_cell(2);
+        app.tiles.settle_for_test();
+        let grid = paint(&mut app, Instant::now(), 160, 36)?;
+        press(&mut app, KeyCode::Enter);
+        let expanded = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        assert_ne!(expanded, grid);
+        let now = Instant::now();
+        app.roster.observe(Vec::new(), now);
+        app.roster
+            .advance(now + Duration::from_secs(60), Duration::ZERO);
+        paint(&mut app, now + Duration::from_secs(60), 160, 36)?;
+        app.tiles.settle_for_test();
+        let after = paint(&mut app, now + Duration::from_secs(60), 160, 36)?;
+        assert_eq!(summary_frame(&after), after.area);
+        assert!(!tests::buffer_rows(&after).join("\n").contains("4100"));
+        Ok(())
+    }
+
+    #[test]
+    fn enter_grows_the_cell_and_esc_shrinks_it_to_its_current_grid_rectangle()
+    -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        let before = paint(&mut app, Instant::now(), 160, 36)?;
+        let grid = summary_frame(&before);
+        press(&mut app, KeyCode::Enter);
+        let midpoint = Instant::now() + app.tiles.cell_travel_duration() / 2;
+        let middle = paint(&mut app, midpoint, 160, 36)?;
+        let middle = summary_frame(&middle);
+        assert!(
+            middle.height > grid.height && middle.height < before.area.height,
+            "{grid:?} -> {middle:?}"
+        );
+        press(&mut app, KeyCode::Esc);
+        let reversed = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        assert_eq!(summary_frame(&reversed), grid);
+        press(&mut app, KeyCode::Enter);
+        let full = paint(&mut app, Instant::now() + Duration::from_secs(4), 160, 36)?;
+        assert_eq!(summary_frame(&full), full.area);
+        press(&mut app, KeyCode::Esc);
+        let resized = paint(&mut app, Instant::now() + Duration::from_secs(6), 140, 36)?;
+        app.tiles.settle_for_test();
+        let settled = paint(&mut app, Instant::now() + Duration::from_secs(8), 140, 36)?;
+        assert_eq!(summary_frame(&resized), summary_frame(&settled));
+        Ok(())
+    }
+
+    #[test]
+    fn expanded_rows_scroll_to_the_last_row() -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        app.tiles.focus_cell(3);
+        press(&mut app, KeyCode::Enter);
+        let start = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        press(&mut app, KeyCode::End);
+        let end = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        assert_ne!(end, start);
+        assert!(
+            tests::buffer_rows(&end)
+                .iter()
+                .any(|line| line.contains("5114"))
+        );
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?,
+            end
+        );
+        Ok(())
+    }
+
+    fn status(app: &App) -> Result<Buffer, Box<dyn Error>> {
+        let mut terminal = Terminal::new(TestBackend::new(160, 1))?;
+        terminal.draw(|frame| {
+            super::draw_status_line(frame, app, &app.keymap, frame.area());
+        })?;
+        Ok(terminal.backend().buffer().clone())
+    }
+
+    #[test]
+    fn collapse_uses_the_same_key_and_label_ink_as_expand() -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        let before = status(&app)?;
+        let before_text = tests::buffer_rows(&before).join("");
+        let enter = u16::try_from(before_text.find("enter expand").ok_or("expand hint")?)?;
+        press(&mut app, KeyCode::Enter);
+        paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        let after = status(&app)?;
+        let after_text = tests::buffer_rows(&after).join("");
+        let esc = u16::try_from(after_text.find("esc collapse").ok_or("collapse hint")?)?;
+        assert_eq!(after[(esc, 0)].style(), before[(enter, 0)].style());
+        assert_eq!(after[(esc + 4, 0)].style(), before[(enter + 6, 0)].style());
+        Ok(())
+    }
+
+    #[test]
+    fn expansion_keeps_the_version_and_shortcuts_at_their_grid_columns()
+    -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        let before = tests::buffer_rows(&status(&app)?).join("");
+        press(&mut app, KeyCode::Enter);
+        paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        let after = tests::buffer_rows(&status(&app)?).join("");
+        assert_eq!(after.find("cargo-tile"), before.find("cargo-tile"));
+        assert_eq!(after.find("? shortcuts"), before.find("? shortcuts"));
+        Ok(())
+    }
+
+    #[test]
+    fn collapse_during_a_resize_keeps_the_frame_inside_the_buffer() -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        press(&mut app, KeyCode::Enter);
+        paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        press(&mut app, KeyCode::Esc);
+        let GridView::Collapsing { started, .. } = &app.grid_view else {
+            return Err("collapse must start".into());
+        };
+        let midpoint = *started + app.tiles.cell_travel_duration() / 2;
+        let buffer = paint(&mut app, midpoint, 140, 36)?;
+        let frame = summary_frame(&buffer);
+        assert!(frame.intersection(buffer.area) == frame, "{frame:?}");
+        assert_eq!(
+            buffer[(frame.right() - 1, frame.bottom() - 1)].symbol(),
+            "┘"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shift_tab_keeps_focus_on_the_expanded_cell() -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        let before = paint(&mut app, Instant::now(), 160, 36)?;
+        let focus = app.tiles.focused_cell();
+        press(&mut app, KeyCode::Enter);
+        paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        tui_pane::dispatch_key(
+            &mut app,
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+        );
+        press(&mut app, KeyCode::Esc);
+        let after = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        assert_eq!(app.tiles.focused_cell(), focus);
+        assert_eq!(after, before);
+        Ok(())
+    }
+
+    #[test]
+    fn a_live_expanded_command_survives_a_summary_only_resize() -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        app.tiles.focus_cell(3);
+        press(&mut app, KeyCode::Enter);
+        paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        let narrow = paint(&mut app, Instant::now() + Duration::from_secs(2), 30, 36)?;
+        assert!(
+            tests::buffer_rows(&narrow)
+                .iter()
+                .any(|line| line.contains("content rows:"))
+        );
+        let restored = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        assert_eq!(restored[(159, 35)].symbol(), "┘");
+        assert!(
+            !tests::buffer_rows(&restored)
+                .join("")
+                .contains(super::SUMMARY_CELL_TITLE.trim())
+        );
+        assert!(tests::buffer_rows(&restored).join("").contains("5114"));
+        Ok(())
+    }
+
+    #[test]
+    fn an_expanded_summary_keeps_its_footer_above_a_bottom_right_toast()
+    -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        press(&mut app, KeyCode::Enter);
+        paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = Terminal::new(TestBackend::new(160, 36))?;
+        terminal.draw(|frame| super::draw(frame, &mut app, &keymap))?;
+        let before = terminal.backend().buffer().clone();
+        app.framework
+            .toasts
+            .set_settings(tui_pane::ToastSettings::from_table(
+                &"[toasts]\nplacement = 'bottom_right'\nwidth = 32\n".parse::<Table>()?,
+            )?);
+        app.framework.toasts.push_persistent(
+            "toast title",
+            "body",
+            ToastStyle::Normal,
+            ToastActivation::Informational,
+            8,
+        );
+        terminal.draw(|frame| super::draw(frame, &mut app, &keymap))?;
+        let after = terminal.backend().buffer();
+        for x in 0..160 {
+            assert_eq!(after[(x, 33)], before[(x, 33)], "footer cell {x}");
+        }
+        assert_ne!(app.framework.toasts.hits(), []);
+        Ok(())
+    }
+
+    #[test]
+    fn the_wheel_scrolls_only_the_expanded_cell() -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        app.tiles.focus_cell(3);
+        press(&mut app, KeyCode::Enter);
+        let before = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        app.scroll(ratatui::layout::Position::new(80, 7), ScrollDirection::Down);
+        let after = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        assert_ne!(after, before);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?,
+            before
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_settled_expanded_cell_does_not_paint_covered_cells() -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        press(&mut app, KeyCode::Enter);
+        paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        app.prepared_tables = super::PreparedTables::default();
+        tests::CELL_CONTENT_PAINTS.with(|count| count.set(0));
+        let buffer = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        assert_eq!(summary_frame(&buffer), buffer.area);
+        tests::CELL_CONTENT_PAINTS
+            .with(|count| assert_eq!(count.get(), 1, "only the visible cell paints"));
+        Ok(())
+    }
+
+    #[test]
+    fn command_motion_keeps_the_visible_summary_footer_above_a_tall_toast()
+    -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = Terminal::new(TestBackend::new(80, 64))?;
+        for _ in 0..3 {
+            terminal.draw(|frame| super::draw(frame, &mut app, &keymap))?;
+            app.tiles.settle_for_test();
+        }
+        app.tiles.focus_cell(3);
+        press(&mut app, KeyCode::Enter);
+        let GridView::Opening { started, .. } = app.grid_view else {
+            return Err("opening must start".into());
+        };
+        app.grid_view
+            .advance(started + app.tiles.cell_travel_duration() / 2);
+        terminal.draw(|frame| super::draw(frame, &mut app, &keymap))?;
+        let before = terminal.backend().buffer().clone();
+        let summary = app
+            .tiles
+            .painted_summary_frames()
+            .first()
+            .ok_or("summary frame")?;
+        let footer = summary.bottom() - 2;
+        assert!(tests::buffer_rows(&before)[usize::from(footer)].contains("content rows:"));
+        let mut settings = tui_pane::ToastSettings::from_table(
+            &"[toasts]\nplacement = 'bottom_right'\nwidth = 64\n".parse::<Table>()?,
+        )?;
+        settings.animation.entrance_duration = tui_pane::ToastDuration::try_from_secs("test", 0.0)?;
+        app.framework.toasts.set_settings(settings);
+        app.framework.toasts.push_persistent(
+            "toast title",
+            "body\n".repeat(55),
+            ToastStyle::Normal,
+            ToastActivation::Informational,
+            8,
+        );
+        terminal.draw(|frame| super::draw(frame, &mut app, &keymap))?;
+        let after = terminal.backend().buffer();
+        for x in 0..80 {
+            assert_eq!(
+                after[(x, footer)],
+                before[(x, footer)],
+                "summary footer cell {x}"
+            );
+        }
+        assert_ne!(app.framework.toasts.hits(), []);
+        Ok(())
+    }
+
+    #[test]
+    fn quit_after_enter_before_the_first_paint_quits_the_app() -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.framework.quit_requested());
+        Ok(())
+    }
+
+    #[test]
+    fn both_status_hints_have_two_cells_on_each_side() -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        for hint in ["enter expand", "esc collapse"] {
+            let mut terminal = Terminal::new(TestBackend::new(393, 1))?;
+            terminal.draw(|frame| {
+                super::draw_status_line(frame, &app, &app.keymap, frame.area());
+            })?;
+            let row = tests::buffer_rows(terminal.backend().buffer()).join("");
+            let hint_start = row.find(hint).ok_or("status hint")?;
+            let version_start = row.find(super::APP_VERSION).ok_or("version")?;
+            let shortcuts_start = row.find("? shortcuts").ok_or("shortcuts")?;
+            assert_eq!(
+                hint_start - (version_start + super::APP_VERSION.len()),
+                2,
+                "{row}"
+            );
+            assert_eq!(shortcuts_start - (hint_start + hint.len()), 2, "{row}");
+            press(&mut app, KeyCode::Enter);
+            paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shortcuts_keep_one_trailing_cell_with_each_view_hint() -> Result<(), Box<dyn Error>> {
+        let mut app = app()?;
+        for (width, hint) in [(393, "enter expand"), (393, "esc collapse"), (60, "")] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 1))?;
+            terminal.draw(|frame| {
+                super::draw_status_line(frame, &app, &app.keymap, frame.area());
+            })?;
+            let row = tests::buffer_rows(terminal.backend().buffer()).join("");
+            assert!(row.contains(hint), "{row}");
+            let shortcuts = row.find("? shortcuts").ok_or("shortcuts")?;
+            assert_eq!(&row[shortcuts + "? shortcuts".len()..], " ", "{row}");
+            press(&mut app, KeyCode::Enter);
+            paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 36)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_expanded_summary_keeps_its_header_above_scrolled_rows() -> Result<(), Box<dyn Error>> {
+        let mut app = App::new_for_test()?;
+        let groups = (4100..4130)
+            .map(|pid| tests::cargo_group(tests::invocation(pid, &["check"])))
+            .collect();
+        app.roster.observe(groups, Instant::now());
+        for _ in 0..3 {
+            paint(&mut app, Instant::now(), 160, 36)?;
+            app.tiles.settle_for_test();
+        }
+        press(&mut app, KeyCode::Enter);
+        let start = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        let header = tests::buffer_rows(&start)[1].clone();
+        assert!(
+            header.contains("pid") && header.contains("command"),
+            "{header}"
+        );
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Down);
+        }
+        let middle = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        let middle = tests::buffer_rows(&middle);
+        assert_eq!(middle[1], header);
+        assert!(middle[12].contains("6–15 of 31"), "{}", middle[12]);
+        press(&mut app, KeyCode::End);
+        let end = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        let end = tests::buffer_rows(&end);
+        assert_eq!(end[1], header);
+        assert!(end[11].contains("4129"), "{}", end[11]);
+        assert!(end[12].contains("22–31 of 31"), "{}", end[12]);
+        Ok(())
+    }
 }
 
 /// Summary frames resolved and painted by this draw's grid snapshot.
@@ -449,6 +1195,7 @@ struct Cells<'a> {
     paintings:  Rc<RefCell<HashMap<CellRowIdentity, PaintedCellContents>>>,
     /// Intrinsic column inputs shared by every allocation in this frame.
     grids:      FrameColumnGrids,
+    view:       GridView,
 }
 
 impl<'a> Cells<'a> {
@@ -500,6 +1247,7 @@ impl<'a> Cells<'a> {
             allocation: prepared.allocation,
             paintings: prepared.paintings,
             grids,
+            view: GridView::Grid,
             roster: prepared.roster,
         }
     }
@@ -747,6 +1495,7 @@ impl TileCells<InvocationId> for Cells<'_> {
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, ground: Color) {
         let inputs = CellPaintInputs {
             measurement: CellMeasurementKey::new(content, inner.width, &self.grids),
+            view: self.view.clone(),
             inner,
             buffer_area: buffer.area,
             ground,
@@ -770,6 +1519,7 @@ impl TileCells<InvocationId> for Cells<'_> {
             PaintedCellContents {
                 inputs,
                 commands: reach.commands,
+                header: reach.header,
                 changes: CellPaintPatch::between(&before, buffer),
                 before,
             },
@@ -2976,11 +3726,11 @@ struct FittedTableColumns {
 #[derive(Clone)]
 struct FrameTableColumnGrid {
     /// One gap for the command cells, independent of the summary's gap.
-    cell_gap:                 Rc<std::cell::Cell<CellTableGap>>,
+    cell_gap:                 Rc<Cell<CellTableGap>>,
     /// Shared row-end cells reserved only after a table omits process rows.
-    row_end:                  std::cell::Cell<TableRowEnd>,
+    row_end:                  Cell<TableRowEnd>,
     /// The frame decision remains shared when one whole Short table uses its edge.
-    frame_row_end:            Rc<std::cell::Cell<TableRowEnd>>,
+    frame_row_end:            Rc<Cell<TableRowEnd>>,
     /// Fully drawn Short tables that need the edge cells for a whole command name.
     whole_short_tables:       Rc<RefCell<Vec<WholeShortCommandTable>>>,
     layouts:                  Rc<RefCell<Vec<CachedTableLayout>>>,
@@ -4021,6 +4771,7 @@ fn frame_draw_process_table(
         return CellPaintReach {
             rows:     area.height,
             commands: Vec::new(),
+            header:   CellColumnHeader::Absent,
         };
     }
 
@@ -4062,6 +4813,7 @@ fn frame_draw_process_table(
         return CellPaintReach {
             rows:     header_area.height,
             commands: Vec::new(),
+            header:   CellColumnHeader::Row(header_area.y),
         };
     }
     apply_planned_row_readings(&mut drawn_groups, &mut plan, &layout, grid);
@@ -4095,6 +4847,7 @@ fn frame_draw_process_table(
         CellPaintReach {
             rows:     drawn.height,
             commands: drawn.commands,
+            header:   CellColumnHeader::Row(header_area.y),
         }
     } else {
         let faded = match &plan.visible_rows {
@@ -4106,6 +4859,7 @@ fn frame_draw_process_table(
         CellPaintReach {
             rows:     area.height,
             commands: drawn.commands,
+            header:   CellColumnHeader::Row(header_area.y),
         }
     }
 }
@@ -6021,7 +6775,18 @@ fn cell_width(text: &str) -> u16 { u16::try_from(UnicodeWidthStr::width(text)).u
 /// slots named here, so `?` lands in the bottom-right corner and stays
 /// bound to whatever `keymap.toml` maps it to.
 fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Rect) {
-    let globals = [StatusLineGlobal::global_shortcuts_help()];
+    let hint = if matches!(app.grid_view, GridView::Grid) {
+        StatusLineGlobal::app(AppGlobalAction::Expand)
+    } else {
+        StatusLineGlobal::fixed(
+            crate::constants::COLLAPSE_HINT_KEY,
+            crate::constants::COLLAPSE_HINT_LABEL,
+        )
+    };
+    let globals = [
+        hint.after_uptime(),
+        StatusLineGlobal::global_shortcuts_help(),
+    ];
     let mut notes = vec![StatusLineNote {
         label: APP_NAME.to_string(),
         value: APP_VERSION.to_string(),
@@ -19400,7 +20165,7 @@ mod tests {
 
         let inner = usize::from(WIDTH) - 2;
         let title = SUMMARY_CELL_TITLE;
-        let notes = format!("cargo-tile {APP_VERSION} attract  ? shortcuts ");
+        let notes = format!("cargo-tile {APP_VERSION} attract  enter expand  ? shortcuts ");
         let mut expected = vec![format!(
             "┌{title}{}┐",
             "─".repeat(inner - title.chars().count())
@@ -19474,8 +20239,8 @@ mod tests {
                 "│ │ Global Shortcuts:                                    │ │",
                 "│ │   Add a tile                                    +    │ │",
                 "│ │   Dismiss overlay / output                      x    │ │",
+                "│ │   Expand the focused cell                       enter│ │",
                 "│ │   Focus the tile above                          up   │ │",
-                "│ │   Focus the tile below                          down │ │",
                 "│ └──────────────────────1 of 11 ▼───────────────────────┘ │",
                 "└──────────────────────────────────────────────────────────┘",
                 " Uptime: 0s              cargo-tile <version>  ? shortcuts ",
@@ -19492,7 +20257,7 @@ mod tests {
                 "│ │  │   Previous pane                     shift-tab │   │ │",
                 "│ │  │ Global Shortcuts:                             │   │ │",
                 "│ │  │   Add a tile                        +         │   │ │",
-                "│ │  │   Focus the tile above              up        │   │ │",
+                "│ │  │   Expand the focused cell           enter     │   │ │",
                 "│ │  │   Focus the tile below              down      │   │ │",
                 "│ │  │   Focus the tile to the left        left      │   │ │",
                 "│ └──│   Focus the tile to the right       right     │───┘ │",
@@ -19501,6 +20266,20 @@ mod tests {
             ],
         ),
     ];
+
+    #[test]
+    fn the_expand_hint_yields_to_uptime_at_a_narrow_width() {
+        let app = App::new_for_test().expect("the test app builds");
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = Terminal::new(TestBackend::new(60, 1)).expect("the test terminal opens");
+        terminal
+            .draw(|frame| draw_status_line(frame, &app, &keymap, Rect::new(0, 0, 60, 1)))
+            .expect("the status line draws");
+        let row = buffer_rows(terminal.backend().buffer()).join("");
+        assert!(row.contains("Uptime: 0s"), "{row:?}");
+        assert!(row.contains("? shortcuts"), "{row:?}");
+        assert!(!row.contains("enter expand"), "{row:?}");
+    }
 
     #[test]
     fn a_toast_never_covers_the_status_line() {
@@ -19601,9 +20380,9 @@ mod tests {
                 expected[11] = "│                              content rows: 0  r/c: 11/58 │";
             }
             if matches!(opener, Some(GlobalAction::OpenGlobalShortcuts)) {
-                expected[9] = "│ └──│   Focus the tile below              down      │───┘ │";
-                expected[10] = "│    │   Focus the tile to the left        left      │     │";
-                expected[11] = "│    │   Focus the tile to the right       right     │1/58 │";
+                expected[9] = "│ └──│   Focus the tile above              up        │───┘ │";
+                expected[10] = "│    │   Focus the tile below              down      │     │";
+                expected[11] = "│    │   Focus the tile to the left        left      │1/58 │";
             }
             let mut app = App::new_for_test().expect("test app should build");
             app.started = Instant::now();

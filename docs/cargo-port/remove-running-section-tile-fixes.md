@@ -719,7 +719,7 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 - `crates/cargo-tile/src/shim_registration/shared_capture.rs` — item 12's pass-through test.
 - `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — one Fixed line each, and one cargo-tile Fixed line for items 11 and 12.
 
-**Seats:** 2 writers — the queue trim, admission, the shared enter and leave timing and the saturation cap all run through one grid path in `grid.rs` and `draw.rs`, with cargo-tile's roster and render callers, so they stay with one writer; items 11 and 12 touch only the census argv reader, the shim and its tests, disjoint from that path.
+**Workers:** 2 writers — the queue trim, admission, the shared enter and leave timing and the saturation cap all run through one grid path in `grid.rs` and `draw.rs`, with cargo-tile's roster and render callers, so they stay with one writer; items 11 and 12 touch only the census argv reader, the shim and its tests, disjoint from that path.
 - `impl` — every file above except item 11 and 12's, items 1 to 10, and their tests; items 5 and 8 begin with the live diagnosis. Owns both changelogs; a `crates/cargo-tile/src/constants.rs` constant it needs goes through `impl2`, which owns that file, posted on the board.
 - `impl2` — items 11 and 12: `census/command_text.rs`, `constants.rs`, `cargo-capture-shim.sh`, `hook.rs`, `shim_registration/shared_capture.rs`, and their tests; posts its changelog line on the board for `impl` to write.
 
@@ -823,7 +823,7 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 - `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — one Fixed line each, and one cargo-tile Fixed line for Phase 22 items 11 and 12.
 - Added during the phase: `.config/nextest.toml`; `crates/cargo-tile/Cargo.toml` and `crates/tui_pane/Cargo.toml` (the `test-clock` feature); `crates/cargo-tile/tests/support/foreign_load.rs`, `crates/cargo-tile/tests/cli_lifecycle.rs`, `crates/cargo-tile/tests/shim_modes.rs`; `crates/cargo-tile/src/shim_registration/wire.rs`, `crates/cargo-tile/src/shim_registration/reader_scenario.py`; `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/birth_stamp/process_lifetime.rs`, `crates/cargo-tile/src/census/command_text.rs`, `crates/cargo-tile/src/census/invocation_cpu_accounting.rs`; `crates/cargo-handler/src/render/role_title_tests.rs`, `crates/cargo-handler/src/render/accounts_grid_tests.rs`.
 
-**Seats:** as Phase 22 (`impl` for the lifecycle path, `impl2` for Phase 22 items 11 and 12), plus `test`, which owns the item 2 fixture and the paired live captures and writes no product file.
+**Workers:** as Phase 22 (`impl` for the lifecycle path, `impl2` for Phase 22 items 11 and 12), plus `test`, which owns the item 2 fixture and the paired live captures and writes no product file.
 
 **Constraints from prior phases:** Phase 22's Constraints hold, with one approved exception: ruling 2 changes `TileDemands.summary` to `SummaryDemand`, a `tui_pane` public signature change, and this phase updates its callers. Phase 23's argument setting, `…` rule and keys are on the branch; this phase keeps them and their tests. Phase 23 replaced the table Phase 22 items 11 and 12 name: `CARGO_GLOBAL_VALUED_OPTIONS` is now `COMMAND_VALUED_OPTIONS` (`constants.rs` ~509), each entry tagged with a `ValuedOptionScope` (`Global`, `Cargo`, `RustcLint`); retained subcommands come from parsed `CommandWord` values, and `Ancestor.command` is a `CommandText` parsed from argv (`census/scan.rs`). Read items 11 and 12 with that table: the free argv `subcommand` (`command_text.rs` ~624) and the shim's rendered skip list reuse its `Global` scope, with no second table. Phase 36 replaces the step queue later and keeps this phase's tests as binding regressions. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. No new `#[allow]` or `#[expect]`; no test takes a second.
 
@@ -862,7 +862,7 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 
 **Files:** Phase 24's Files, the paths added during Phase 24 included.
 
-**Seats:** as Phase 24: `impl` for the lifecycle path, `impl2` for the census, and `test` for the fixtures; a capture helper takes the paired live captures.
+**Workers:** as Phase 24: `impl` for the lifecycle path, `impl2` for the census, and `test` for the fixtures; a capture helper takes the paired live captures.
 
 **Constraints from prior phases:** Phase 24's Constraints hold. Its round 3 repairs and their tests stay, as do Phase 24's `DetailRead` read order and its tests. No new `#[allow]` or `#[expect]`; no test takes a second.
 
@@ -1324,7 +1324,7 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 - `.config/nextest.toml` — the entries `d22c672b` added.
 - `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md` — the lines `d22c672b` added.
 
-**Seats:** as Phase 25.
+**Workers:** as Phase 25.
 
 ### Phase 29 — Move-only splits  · status: todo
 
@@ -1345,7 +1345,7 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 - `crates/tui_pane/src/tiles/` — item 2: `grid.rs`, `draw.rs`, `mod.rs` and the new submodules.
 - `crates/tui_pane/src/tiles/settings.rs` — item 3.
 
-**Seats:** 1 writer — `impl`, every file above.
+**Workers:** 1 writer — `impl`, every file above.
 
 **Constraints from prior phases:** Phase 28's Constraints hold, on its landed checkpoint. A move changes no code: only module paths, `use` lines and visibility that the new module paths need. No `tui_pane` public signature changes. No new `#[allow]` or `#[expect]`; no test takes a second. Keep `linux_process_stat.rs` as the Linux stat parser when splitting census code.
 
@@ -1522,6 +1522,7 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 - `crates/cargo-tile/src/shim_registration/`
 - `crates/cargo-tile/src/progress/capture.rs`
 - `crates/cargo-tile/src/render.rs`
+- `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/root_scan/`, `crates/cargo-tile/src/census/scan.rs` — their test modules, only when a measured test there still takes 1 s or more after the shared Mac start delay is removed (showrunner, 2026-11-06, from handler's Phase 65 measurement on main).
 
 **Workers:** 1 writer — `test`, the listed test modules and their helpers.
 
@@ -1565,7 +1566,7 @@ Showrunner request (2026-10-29): the installed reader (main 043dc8c6, phase 32m'
 
 **Files:** decided by the profile. The likely set is in the reader's frame and census paths: `crates/cargo-tile/src/render.rs`, `roster.rs`, `terminal.rs`, `main.rs`, `census/scan.rs`, `census/cpu_observation.rs`. Name the final set in the done post.
 
-**Seats:** 1 writer (`impl`).
+**Workers:** 1 writer (`impl`).
 
 **Constraints from prior phases:** work in the isolated copy /tmp/claude/scratch/phase-tile-unit-43-5qlvls/src (git; base commit 2e0cc5a = branch commit 1e066ba6). Every assertion on main stays. No test of 1 s or more. No new allow or expect.
 
@@ -1612,7 +1613,7 @@ User (2026-10-29, via builds and the showrunner): "yes cargo-tile should strive 
 - `crates/cargo-tile/src/render.rs` — only under Spec item 6.
 - `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/roster.rs` — carry the shares from each scan to the summary (added at impl's request).
 
-**Seats:** 1 writer + 1 tester.
+**Workers:** 1 writer + 1 tester.
 - `impl` — owns `scan.rs`, `invocation_cpu_accounting.rs`, the `mod` line, `terminal.rs` and `roster.rs` share transport, and `render.rs` if needed.
 - `test` — owns `compile_memory_tests.rs`: one test per case (two cargos on one target directory; no target directory; no `--out-dir`; no uid; no request; sccache server counted once; totals add up), each with exact RSS values and red on main first. Then the live check below.
 
@@ -1690,7 +1691,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - `crates/cargo-tile/src/constants.rs`
 - `crates/cargo-tile/CHANGELOG.md`
 
-**Seats:** 1 writer (`impl`). The CHANGELOG gets one Changed line.
+**Workers:** 1 writer (`impl`). The CHANGELOG gets one Changed line.
 
 **Acceptance gate:**
 - `verify.sh lint cargo-tile` and the related `cargo-tile` tests green; no test takes 1 s or more.
@@ -1726,7 +1727,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - `crates/cargo-tile/src/render.rs`
 - `crates/cargo-tile/CHANGELOG.md`
 
-**Seats:** 1 writer (`impl`). The CHANGELOG gets one Added line for the `attract` feature.
+**Workers:** 1 writer (`impl`). The CHANGELOG gets one Added line for the `attract` feature.
 
 **Acceptance gate:**
 - `cargo build -p cargo-tile --no-default-features` passes on the Mac, and the link has no Swift library.
@@ -1734,7 +1735,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - `verify.sh lint cargo-tile` and the `cargo-tile` tests green; no test takes 1 s or more.
 - Change-review line: cargo-tile builds with no default features on the Mac, without Swift.
 
-### Phase 46 — Enter shows the focused cell on the full screen, and Esc returns to the grid  · status: todo
+### Phase 46 — Enter shows the focused cell on the full screen, and Esc returns to the grid  · status: done
 
 **Depends on:** Phase 42 (both change `render.rs` and the `tui_pane` frame; this phase starts on top of Phase 42's checkpoint)
 
@@ -1754,7 +1755,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 2. **All rows.** The expanded cell draws every row its content has (the summary's 77 rows in the screenshot), not the grid's height budget. When the rows do not fit, the keys above scroll them, and the frame's readout shows the shown range.
 3. **Live.** The expanded cell updates on each scan as it does in the grid. Pause (Phase 34, when it lands) holds it the same way.
 4. **Animated (user, 2026-10-30: "when i hit enter it should animate out to fill the whole screen and esc it should animate back to the size it should be").** Enter grows the cell from its grid rectangle to the full grid area; Esc shrinks it back to the rectangle the grid gives it on that frame (the size it should be now, not a saved old rectangle). The motion uses the grid's existing cell travel (its clock, easing and duration), not a second animation path. The growing cell draws over the cells under it; those cells stay where they are. Esc during the grow, or Enter during the shrink, turns the motion around from where it stands, with no jump. Pause holds the motion as it holds travel. Repaints are asked for only while the motion runs. The view enum carries the motion: `GridView::Expanding`, `Expanded` and `Collapsing` each name their cell, so no flag sits beside the enum.
-5. **Status bar.** The grid's hint row gains `enter expand`; while expanded it reads `esc collapse` in the same style as the hints today.
+5. **Status bar.** The grid's hint row gains `enter expand`; while expanded it reads `esc collapse` in the same style as the hints today. Where the hint and uptime do not both fit, the hint gives way: uptime and `? shortcuts` stay as they are today (director, 2026-11-06, under the user's rule that a look stays unless it is wrong).
 6. **Keymap.** A new action `global.expand = enter`, with its `?` overlay description "Expand the focused cell". Esc collapse is fixed, as Esc closes overlays today.
 7. **Tests, red first:**
    - `enter_expands_the_focused_cell_to_the_grid_area`: a grid with a summary and two command cells, focus on the summary, Enter; the drawn buffer has one frame on the whole grid area and shows rows the grid cell cut.
@@ -1771,9 +1772,13 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - `crates/cargo-tile/src/render/command_cache.rs` — retained command widths, wrapped text, row cells and table layouts.
 - `crates/cargo-tile/src/render/cell_paint.rs` — paint inputs, destination validation, command visibility and paint replay.
 - `crates/tui_pane/src/tiles/grid.rs` — and its exports, only if the cell rectangle is assigned there: the expanded rectangle goes where the grid assigns rectangles (fix where it lives), as one additive method, with a `tui_pane` CHANGELOG Added line.
+- `crates/tui_pane/src/tiles/draw.rs` — the shared row-range readout, so one owner draws it.
+- `crates/tui_pane/src/bar/status_line.rs` — the rule that a hint gives way before uptime.
+- `crates/tui_pane/src/bar/support.rs` — one hint styler for keymap hints and the fixed `esc collapse` hint.
+- `crates/cargo-tile/src/grid_view.rs` — `GridView` and its state tests.
 - `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` — the keys, and one Added line.
 
-**Seats:** 1 writer (`impl`): one state, one key path and one draw path.
+**Workers:** 1 writer (`impl`): one state, one key path and one draw path.
 
 **Constraints:** duplication is not allowed (user, 2026-10-30): the expanded cell uses the grid's cell draw path and the one view enum; a reviewer treats a second draw path or copied state as a blocker. No new `#[allow]` or `#[expect]`; no test takes a second. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. Include `GridView`, the expanded identity, scroll position, displayed allocation and motion time in the relevant preparation inputs. Keep one cell renderer.
 
@@ -1803,7 +1808,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/constants.rs` — item 5's install and version check, and their tests.
 - `crates/cargo-tile/CHANGELOG.md` — one line for the faster shim.
 
-**Seats:** 1 writer — `impl`, every file above.
+**Workers:** 1 writer — `impl`, every file above.
 
 **Constraints from prior phases:** Phase 28's Constraints hold, on its landed checkpoint. Each capture that the grid reads today stays. No new `#[allow]` or `#[expect]`; no test takes a second.
 
@@ -1834,7 +1839,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - `crates/cargo-tile/src/render/command_cache.rs` — retained command widths, wrapped text, row cells and table layouts.
 - `crates/cargo-tile/src/render/cell_paint.rs` — paint inputs, destination validation, command visibility and paint replay.
 
-**Seats:** 1 writer + 1 tester. `impl` owns source and regression fixtures; `test` owns paired captures.
+**Workers:** 1 writer + 1 tester. `impl` owns source and regression fixtures; `test` owns paired captures.
 
 **Constraints from prior phases:** Phase 28 did not land. These rules still hold on the current tree: Phase 25's Constraints, the exclusions from the rebuild sources, Phase 26's reader safeguards and Phase 27's CPU check. No new `#[allow]` or `#[expect]`; no test takes a second. `frame_draw_group` returns no content after its group leaves `VisibleRoster`, while the grid can retain a closing cell. The existing invocation snapshot keeps the ended rows, header and foot until that cell stops drawing. Include that retained content and its lifetime in preparation inputs; paint replay alone cannot supply missing content.
 
@@ -1889,7 +1894,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - `crates/cargo-handler/src/`, `crates/cargo-port/src/` — the readout's callers in each app, if the key needs one (today no file in either crate calls the readout functions; they draw it through `tui_pane`'s `draw.rs`).
 - `crates/cargo-tile/CHANGELOG.md` — one Fixed line.
 
-**Seats:** 1 writer — `impl`, every file above.
+**Workers:** 1 writer — `impl`, every file above.
 
 **Constraints from prior phases:** Phase 23's parsed command words, the argument setting and the `…` rule hold; this phase adds a layout, not a second reader. `InvocationContinuity` owns the invocation record; this phase changes only what the parsed command reads. The `tui_pane` key-hint change is additive, and no existing `tui_pane` public signature changes. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds. Route parsed-command and `CommandView` changes through preparation. Keep unchanged command widths and text reusable across resource updates. Keep hint toggles outside cell paintings.
 
@@ -1967,7 +1972,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - `crates/tui_pane/src/framework/mod.rs`, `crates/tui_pane/src/runner/deadline.rs`, `crates/tui_pane/src/runner/event_loop.rs` — item 7's persistent sampler and its once-a-second status-line deadline, and their cadence tests.
 - `crates/cargo-tile/CHANGELOG.md` — one Fixed line each for items 1, 2 and 6; `crates/tui_pane/CHANGELOG.md` — one Added line for item 7.
 
-**Seats:** 2 writers — the product fixes with the reader scenarios, and the other test speedups, touch disjoint files.
+**Workers:** 2 writers — the product fixes with the reader scenarios, and the other test speedups, touch disjoint files.
 - `impl` — items 1 to 3, 5, 6 and 7, and item 4's `reader_scenarios` tests (item 6 begins with the live Mac measurement): `progress/capture_read.rs`, `census/invocation_cpu_accounting.rs` and the census files it leads to, `shim_registration/reader_scenario.py` and `shim_registration/reader_scenarios.rs` (item 2's oracle retention branch lands in the same change as the product rule), `README.md`, `cargo-port/src/process_observation/identity.rs`, `CHANGELOG.md`, the `tui_pane` files of item 7, and their tests. Item 6 is diagnosed before any edit: when its repair lands in a file `test` owns (`shim_registration/wire.rs`, `shim_registration/shared_capture.rs`, `hook.rs`, `progress/capture.rs`), `impl` posts that file on the board first, and `test` leaves it until `impl` publishes the change.
 - `test` — item 4's other tests: `shim_registration/wire.rs`, `shim_registration/shared_capture.rs`, the tests in `hook.rs` and `progress/capture.rs`, and the one named render test in `render.rs`.
 
@@ -2015,7 +2020,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - `crates/tui_pane/src/attract/updates.rs`, `crates/tui_pane/src/attract/controller.rs`, `crates/tui_pane/src/favorites_overlay/globals.rs` — item 1's `Updates::Paused` rename, its consumers and their three tests.
 - `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` — item 4, and one Changed line; `crates/tui_pane/CHANGELOG.md` — one Added line for item 6 and one Changed line for the `Updates::Paused` rename.
 
-**Seats:** 1 writer: a rebinding, a rename and the pause clock it needs, one path from the key to the held frame. The `Updates` rename crosses `tui_pane` and cargo-tile and stays with this one writer.
+**Workers:** 1 writer: a rebinding, a rename and the pause clock it needs, one path from the key to the held frame. The `Updates` rename crosses `tui_pane` and cargo-tile and stays with this one writer.
 - `impl` — every file above, items 1 to 6, the whole rename and the pause path.
 
 **Constraints from prior phases:** space already parses as a key (`key_bind.rs` ~349). This phase makes two `tui_pane` changes: item 6's paused motion clock, which is additive, and item 1's rename of the public `Updates::Frozen` variant to `Updates::Paused`, which changes public API and gets its Changed line. No other existing `tui_pane` public signature changes. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. Phase 35 later reworks `render.rs`'s table walk; this phase touches only the status note there. Phase 33 runs beside this phase and owns `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` and `crates/tui_pane/CHANGELOG.md` while it runs: write item 4's README lines, the Changed line and item 6's `tui_pane` Added line only after Phase 33's checkpoint has landed, on top of its edits. Phase 33 adds a framework-owned `CPU:` segment and a once-a-second status-line tick; pause holds the cells, and the status line keeps its uptime and CPU current while paused. No new `#[allow]` or `#[expect]`; no test takes a second. Rename the app-local `Updates::Frozen` variant when `attract` is disabled. Include pause state and held cell time in preparation. Keep status time live.
@@ -2091,7 +2096,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - `crates/tui_pane/src/app_settings/draw.rs`, `crates/tui_pane/src/pane/state.rs` — item 35's selected-row contrast, where its diagnosis places it, and any `tui_pane` palette file it names (named in the summary); item 38's settings value wrapping, in `app_settings/draw.rs` or the overlay frame its diagnosis names, and its test.
 - `crates/cargo-tile/CHANGELOG.md` — item 10, and one Fixed line per item a user sees (1, 4, 5, 8, 12, 14); `crates/tui_pane/CHANGELOG.md` — a Changed line for item 11, and a Fixed line only when item 5 or 14 changes `draw.rs` or `grid.rs`.
 
-**Seats:** 2 writers — the overlay and pane items (9, 35, 38) touch only `tui_pane`'s pane and settings-overlay files, disjoint from the cargo-tile table work and the shared tile drawing and grid files.
+**Workers:** 2 writers — the overlay and pane items (9, 35, 38) touch only `tui_pane`'s pane and settings-overlay files, disjoint from the cargo-tile table work and the shared tile drawing and grid files.
 - `impl` — items 1 and 3 to 39 except 9, 35 and 38 (item 2 is met), and their tests: every cargo-tile file above, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/grid.rs`, and both changelogs.
 - `overlay` — items 9, 35 and 38: `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/pane/state.rs`, `crates/tui_pane/src/app_settings/draw.rs` and the palette files its diagnosis names, with their tests; posts its changelog text on the board for `impl` to write.
 
@@ -2538,7 +2543,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - `crates/cargo-tile/src/shim_registration/app_scenarios.rs` — the whole-frame test helpers, where the preparation step reaches them; the in-module tests in `draw.rs`, `grid.rs` and both apps' `render.rs` that call `draw_tile_grid` move with it.
 - `crates/tui_pane/CHANGELOG.md` — one Fixed line, one Changed line for the group title, and one Added line for the preparation API.
 
-**Seats:** 1 writer + 1 tester — the items sit in one motion path, so one seat writes.
+**Workers:** 1 writer + 1 tester — the items sit in one motion path, so one seat writes.
 - `impl` — every source file above: the motion and painter code, the exports, both apps' render callers and their test callers, cargo-tile's column widths (items 17 and 18), item 19's CPU frame stamp pairing in `app.rs` and `census/cpu_observation.rs`, and the `tui_pane` changelog; lists each new test that reaches 0.8 s in the phase report.
 - `test` — no source file; owns the live fixture, capture and cost lanes. Before any repair it replays the live cases on the phase 35 checkpoint build and writes each item's fixture roles and expected heights for `impl`, item 22's distinct-row provider and its expected row per frame included; then it runs the live capture tools and the per-frame cost comparison on each candidate build.
 
@@ -2585,7 +2590,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - `crates/cargo-port/src/watcher/runtime.rs` — the watcher test in Spec item 6, only when its quiet time is a second or more.
 - `.config/nextest.toml` — one override and its comment. In scope for this unit by the showrunner's word (2026-10-08), though the Units row does not list it.
 
-**Seats:** 1 writer + 1 tester — one configuration owner and two measurement lanes on a byte-identical candidate.
+**Workers:** 1 writer + 1 tester — one configuration owner and two measurement lanes on a byte-identical candidate.
 - `impl` — owns `.config/nextest.toml` and, when Spec item 6 shortens it, `crates/cargo-port/src/watcher/runtime.rs`; publishes the `sha256sum` of every changed candidate file on the board after each edit, and runs every natedev before and after run; checks every exact filter name. It also owns Spec items 5 and 6's quiet evidence: it times each named test on natedev with the 1-minute load below a quarter of the cores, records that load beside each time, and gives each test a disposition.
 - `test` — no source file; copies every changed candidate file to the Mac clone after the checkout (`scp` over `ssh mac`: the config into `/Users/natemccoy/rust/cargo-liner-measure/.config/nextest.toml` and, when it changed, the watcher test file into `/Users/natemccoy/rust/cargo-liner-measure/crates/cargo-port/src/watcher/runtime.rs`), verifies each file's sha256 against the board before both after-run batches, runs every Mac run, and hands `impl` the named JUnit files, the slow set and the start order. The before runs use the clean phase tip.
 
@@ -2717,7 +2722,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 **Files:**
 - `crates/cargo-tile/tests/cli_lifecycle.rs`
 
-**Seats:** 1 writer (`fix`).
+**Workers:** 1 writer (`fix`).
 
 **Acceptance gate:**
 - `verify.sh lint cargo-tile` and `verify.sh test cargo-tile --mac` green; nextest on the Mac reports no leak for this test.

@@ -226,6 +226,7 @@ impl PollWork<App> for Workers {
             }
             // Advance motion even when two polls resolve to equal geometry.
             // Only a change from the last body paint requests another frame.
+            dirty |= app.grid_view.advance(now) == Repaint::Needed;
             if app.tiles.tick() {
                 self.grid_motion.settle_if_immediate(app);
                 dirty = true;

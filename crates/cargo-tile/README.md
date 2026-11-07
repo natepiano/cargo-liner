@@ -35,7 +35,10 @@ bottom-right corner, and ctrl-k opens the full keymap viewer.
 | Tab / shift-Tab | cycle panes |
 | ↑ ↓ | move the selection in the open overlay |
 | ← → | change the selected setting |
-| Enter | rebind the selected row (keymap and `?` overlays); step the selected setting forward, or edit a command list |
+| Enter | expand the focused cell; rebind the selected row (keymap and `?` overlays); step the selected setting forward, or edit a command list |
+| Esc | close the overlay first; collapse the expanded cell |
+| Home / End | show the first or last rows of the expanded cell |
+| PageUp / PageDown | scroll the expanded cell by one page |
 | Space | step the selected setting forward, or edit a command list |
 
 In the settings overlay the four `[appearance]` rows are steppers, drawn as
@@ -360,6 +363,11 @@ each, but the four ends of them are that cell's corners rather than the junction
 they would otherwise read as, so the focused cell reads as one closed box sitting
 inside the grid. Focus follows its cell as the grid closes up around it, and falls
 back to the summary when that cell goes.
+
+Enter expands the focused cell over the grid. The status bar stays visible.
+Esc returns the cell to its current grid rectangle and keeps focus.
+Up, Down, PageUp, PageDown, Home and End scroll the expanded cell.
+The cell readout shows the visible row range.
 
 ### build progress
 
