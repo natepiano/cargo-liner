@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Enter expands the focused cell over the grid. Esc returns it with focus kept. Navigation keys scroll its rows.
+
 - The `attract` feature enables the attract screen and desktop capture by default.
 - The mouse wheel scrolls the global shortcuts, keymap and settings overlays; the tiles behind an open overlay stay still.
 - `commands.default_arguments` selects the flags shown beside each subcommand, with a sorted list in Settings; defaults are `all-targets`, `fix`, and `workspace`.
@@ -120,6 +122,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A narrow summary keeps each value whole or marks its cut with `…`; a shortened directory keeps the end of its path, and its memory foot is whole or absent.
 
 ### Fixed
+
+- Expanded cells keep their column header above scrolled rows. The row range excludes the pinned header.
+
+- Moving command cells keep toast cards clear of the visible summary footer. Global keys work before the first expanded frame.
+
+- Expanded cells retain focus and live commands during resize. The mouse wheel scrolls the expanded cell. Status hints keep their colours and spacing.
 
 - Settings: a key pressed before the first settings draw moves the selection, and a row change ends an open edit.
 - Hidden arguments no longer produce `…`; only a real text cut does.

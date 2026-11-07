@@ -13,12 +13,22 @@ use super::TrackedGroup;
 use super::TrackedRow;
 use super::VisibleCommandText;
 use super::VisibleRoster;
+use crate::app::GridView;
 
 /// Rows read or written by the painter, including continuation-marker searches.
 #[derive(Default)]
 pub(super) struct CellPaintReach {
     pub(super) rows:     u16,
     pub(super) commands: Vec<PlacedCommandText>,
+    pub(super) header:   CellColumnHeader,
+}
+
+/// The table painter identifies its column header in source coordinates.
+#[derive(Clone, Copy, Default)]
+pub(super) enum CellColumnHeader {
+    #[default]
+    Absent,
+    Row(u16),
 }
 
 /// The table owns each command fragment's position and shared prepared text.
@@ -52,6 +62,7 @@ impl PlacedCommandText {
 #[derive(Eq, PartialEq)]
 pub(super) struct CellPaintInputs {
     pub(super) measurement: CellMeasurementKey,
+    pub(super) view:        GridView,
     pub(super) inner:       Rect,
     pub(super) buffer_area: Rect,
     pub(super) ground:      Color,
@@ -59,6 +70,7 @@ pub(super) struct CellPaintInputs {
 
 /// An exact destination snapshot guards replay of only the cells the painter changed.
 pub(super) struct PaintedCellContents {
+    pub(super) header:   CellColumnHeader,
     pub(super) inputs:   CellPaintInputs,
     pub(super) before:   CellPaintSurface,
     pub(super) changes:  CellPaintPatch,

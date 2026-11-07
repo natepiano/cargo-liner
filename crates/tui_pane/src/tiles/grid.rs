@@ -59,8 +59,10 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicUsize;
 #[cfg(test)]
 use std::sync::atomic::Ordering as AtomicOrdering;
+use std::time::Duration;
 use std::time::Instant;
 
+use ratatui::buffer::Buffer;
 use ratatui::layout::Layout;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
@@ -73,6 +75,7 @@ use super::constants::PROGRESS_SCALE;
 use super::constants::SUMMARY_SLOT_SHORTFALL_DIVISOR;
 use super::constants::TABLE_CELL;
 use super::draw;
+use super::draw::TileMeasurements;
 use super::growth::TileGrowth;
 use super::settings::CellRowDemand;
 use super::settings::SummaryRowAllocation;
@@ -183,6 +186,17 @@ pub struct TilePlacement<Id> {
     /// -- the framework's own account of a moving pane, which both
     /// [`crate::draw_clipped`] and [`crate::GridLines`] read.
     pub frame:   PaneFrame,
+}
+
+/// A cell travels between two allocations using the grid's motion settings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CellTravel {
+    /// The last painted allocation when this travel began.
+    pub from:    Rect,
+    /// The allocation this frame requests.
+    pub to:      Rect,
+    /// Time advanced by the application's live poll clock.
+    pub elapsed: Duration,
 }
 
 /// Which copy of a cell draws its name while the cell crosses columns.
@@ -3653,12 +3667,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let GridMotion::Moving(transition) = &self.motion else {
             return PROGRESS_SCALE;
         };
-        let elapsed = transition.started.elapsed().as_millis();
-        let total = u128::from(transition.millis);
-        if total == 0 || elapsed >= total {
-            return PROGRESS_SCALE;
-        }
-        u32::try_from(elapsed * u128::from(PROGRESS_SCALE) / total).unwrap_or(PROGRESS_SCALE)
+        travel_progress(transition.started.elapsed(), transition.millis)
     }
 
     /// Every piece to draw this frame, in cell order.
@@ -3668,6 +3677,82 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .into_iter()
             .map(|piece| piece.placement)
             .collect()
+    }
+
+    /// Advance covered grid geometry without painting its cells.
+    pub fn prepare_covered(&mut self, area: Rect, growth: TileGrowth, cells: &impl draw::TileCells<Id>) {
+        draw::prepare_covered_grid(self, area, growth, cells);
+    }
+
+    /// Duration of one full cell travel.
+    #[must_use]
+    pub const fn cell_travel_duration(&self) -> Duration {
+        Duration::from_millis(self.settings.animation_millis)
+    }
+
+    /// Paint one cell over the grid using its existing travel and cell painter.
+    /// The returned allocation supports continuous reversal. Repaint stops at the endpoint.
+    pub fn draw_cell_view(
+        &self,
+        buffer: &mut Buffer,
+        content: &TileContent<Id>,
+        travel: CellTravel,
+        cells: &impl draw::TileCells<Id>,
+        mode: crate::ColorMode,
+    ) -> (Rect, Repaint) {
+        let progress = travel_progress(travel.elapsed, self.settings.animation_millis);
+        let rect = lerp_rect(travel.from, travel.to, eased(progress)).intersection(buffer.area);
+        let frame = PaneFrame::new(rect).with_focus(true);
+        let identity = match content {
+            TileContent::Summary => CellIdentity::Summary,
+            TileContent::Group(id) => CellIdentity::Slot(Slot::Group(id.clone())),
+            TileContent::Empty(index) => {
+                CellIdentity::Slot(Slot::Empty(u64::try_from(*index).unwrap_or(u64::MAX)))
+            },
+        };
+        let drawing = TileDrawing {
+            pieces:       vec![TilePiece {
+                identity,
+                placement: TilePlacement {
+                    content: content.clone(),
+                    frame,
+                },
+                name: PieceName::Shown,
+                height_snap: PieceHeightSnap::Settled,
+            }],
+            column_bands: Vec::new(),
+        };
+        let widths = vec![(content.clone(), frame.inner().width)];
+        cells.prepare_frame(|| vec![(content.clone(), frame.inner())]);
+        let mut demands = cells.demands(&widths);
+        draw::add_readout_rows(&mut demands, &widths);
+        for y in rect.top()..rect.bottom().min(buffer.area.bottom()) {
+            for x in rect.left()..rect.right().min(buffer.area.right()) {
+                if buffer.area.contains(Position::new(x, y)) {
+                    buffer[(x, y)].reset();
+                }
+            }
+        }
+        draw::draw_placements(
+            buffer,
+            rect,
+            &drawing,
+            &TileMeasurements {
+                demands: &demands,
+                widths:  &widths,
+            },
+            TileGridContents::Shown,
+            cells,
+            mode,
+        );
+        (
+            rect,
+            if progress < PROGRESS_SCALE {
+                Repaint::Needed
+            } else {
+                Repaint::NotNeeded
+            },
+        )
     }
 
     /// Summary clip rectangles painted by the most recent `draw_tile_grid` call.
@@ -6857,6 +6942,16 @@ fn eased(progress: u32) -> u32 {
     let smoothstep =
         (3 * progress * progress * scale - 2 * progress * progress * progress) / (scale * scale);
     u32::try_from(u64::midpoint(smoothstep, progress)).unwrap_or(PROGRESS_SCALE)
+}
+
+/// Grid travel and expanded travel share one progress calculation.
+fn travel_progress(elapsed: Duration, millis: u64) -> u32 {
+    let elapsed = elapsed.as_millis();
+    let total = u128::from(millis);
+    if total == 0 || elapsed >= total {
+        return PROGRESS_SCALE;
+    }
+    u32::try_from(elapsed * u128::from(PROGRESS_SCALE) / total).unwrap_or(PROGRESS_SCALE)
 }
 
 #[cfg(test)]

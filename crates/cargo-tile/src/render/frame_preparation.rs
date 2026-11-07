@@ -55,7 +55,38 @@ use crate::roster::Roster;
 #[derive(Default)]
 pub(crate) struct PreparedTables {
     state:    RetainedFrame,
+    cell:     CellFramePreparation,
     commands: Rc<RefCell<PreparedCommandCells>>,
+}
+
+#[cfg(test)]
+mod expanded_cache_tests {
+    use super::*;
+
+    #[test]
+    fn an_expanded_cell_reuses_the_grid_command_measurements()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut tables = PreparedTables::default();
+        let mut roster = Roster::default();
+        let view = CommandView::long();
+        tables.for_cell_frame(&mut roster, &[], view);
+        let CellFramePreparation::Prepared(cell) = &tables.cell else {
+            return Err("the cell frame must be prepared".into());
+        };
+        assert!(
+            Rc::ptr_eq(&tables.commands, &cell.commands),
+            "grid and cell share one command cache"
+        );
+        Ok(())
+    }
+}
+
+/// Expanded tables retain their own allocation without changing the ordinary grid.
+#[derive(Default)]
+enum CellFramePreparation {
+    #[default]
+    Unprepared,
+    Prepared(Box<PreparedTables>),
 }
 
 #[derive(Default)]
@@ -118,6 +149,26 @@ struct FrameInputs<'frame> {
     theme:    Arc<Theme>,
 }
 impl PreparedTables {
+    pub(super) fn for_cell_frame(
+        &mut self,
+        roster: &mut Roster,
+        hidden: &[String],
+        view: &CommandView,
+    ) -> PreparedFrameTables {
+        let mut preparation = std::mem::take(&mut self.cell);
+        let mut tables = match preparation {
+            CellFramePreparation::Unprepared => Box::new(Self {
+                commands: Rc::clone(&self.commands),
+                ..Self::default()
+            }),
+            CellFramePreparation::Prepared(tables) => tables,
+        };
+        let prepared = tables.for_frame(roster, hidden, view, u16::MAX);
+        preparation = CellFramePreparation::Prepared(tables);
+        self.cell = preparation;
+        prepared
+    }
+
     pub(super) fn for_frame(
         &mut self,
         roster: &mut Roster,
