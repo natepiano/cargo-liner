@@ -2,13 +2,17 @@
 use crossterm::event::KeyCode;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Position;
 use serde_json::Value;
 use tui_pane::TerminalApp;
 
 use super::*;
 use crate::agent_cell::TreeColumn;
+use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
+use crate::census::MachineState;
 use crate::census::scan::ScanStage;
 use crate::census::transcript::SubagentRole;
 use crate::interaction::LegacyWorkKind;
@@ -17,6 +21,7 @@ use crate::interaction::RowOwner;
 use crate::render;
 use crate::sort::SortDirection;
 use crate::sort::TreeSort;
+use crate::tiles::TileKey;
 
 const FIXTURE_MACHINE: &str = "natedev";
 
@@ -70,12 +75,12 @@ fn expand_toggle_and_collapse_change_visible_rows() {
     let RowExpansion::Branch { key, depth } = tree.row_expansion_at(1) else {
         panic!("child must expand");
     };
-    expansion.0.expand(key.clone(), depth);
+    expansion.choices.expand(key.clone(), depth);
     assert_eq!(visible(&tree, &expansion), [10, 20, 30, 40]);
-    expansion.0.toggle(key.clone(), depth);
+    expansion.choices.toggle(key.clone(), depth);
     assert_eq!(visible(&tree, &expansion), [10, 20, 40]);
-    expansion.0.toggle(key.clone(), depth);
-    expansion.0.collapse(key, depth);
+    expansion.choices.toggle(key.clone(), depth);
+    expansion.choices.collapse(key, depth);
     assert_eq!(visible(&tree, &expansion), [10, 20, 40]);
 }
 
@@ -83,11 +88,11 @@ fn expand_toggle_and_collapse_change_visible_rows() {
 fn bulk_operations_and_reset_include_hidden_branches() {
     let tree = forest();
     let mut expansion = HandlerExpansion::default();
-    expansion.0.collapse_all(&tree);
+    expansion.choices.collapse_all(&tree);
     assert_eq!(visible(&tree, &expansion), [10, 40]);
-    expansion.0.expand_all(&tree);
+    expansion.choices.expand_all(&tree);
     assert_eq!(visible(&tree, &expansion), [10, 20, 30, 40]);
-    expansion.0.reset();
+    expansion.choices.reset();
     assert_eq!(visible(&tree, &expansion), [10, 20, 40]);
 }
 
@@ -95,14 +100,14 @@ fn bulk_operations_and_reset_include_hidden_branches() {
 fn collapse_closed_child_selects_and_closes_parent() {
     let tree = forest();
     let mut expansion = HandlerExpansion::default();
-    let result = expansion.0.collapse_row(&tree, 1);
+    let result = expansion.choices.collapse_row(&tree, 1);
     assert_eq!(result.selected, 0);
     assert_eq!(visible(&tree, &expansion), [10, 40]);
-    expansion.0.expand_all(&tree);
-    let result = expansion.0.collapse_row(&tree, 1);
+    expansion.choices.expand_all(&tree);
+    let result = expansion.choices.collapse_row(&tree, 1);
     assert_eq!(result.selected, 1);
     assert_eq!(visible(&tree, &expansion), [10, 20, 40]);
-    let result = expansion.0.collapse_row(&tree, 2);
+    let result = expansion.choices.collapse_row(&tree, 2);
     assert_eq!(result.selected, 1);
 }
 
@@ -110,9 +115,9 @@ fn collapse_closed_child_selects_and_closes_parent() {
 fn removed_process_returns_to_default() {
     let tree = forest();
     let mut expansion = HandlerExpansion::default();
-    expansion.0.collapse_all(&tree);
+    expansion.choices.collapse_all(&tree);
     expansion
-        .0
+        .choices
         .retain(|key| !matches!(key, ExpansionKey::Process(process) if process.pid == 10));
     assert_eq!(visible(&tree, &expansion), [10, 20, 40]);
 }
@@ -121,7 +126,7 @@ fn removed_process_returns_to_default() {
 fn moved_process_keeps_override_at_new_depth() {
     let tree = forest();
     let mut expansion = HandlerExpansion::default();
-    expansion.0.expand_all(&tree);
+    expansion.choices.expand_all(&tree);
     let mut rows = tree.rows;
     rows[1].depth = 0;
     rows[1].parent = RowParent::Root;
@@ -131,7 +136,7 @@ fn moved_process_keeps_override_at_new_depth() {
     let RowExpansion::Branch { key, depth } = moved.row_expansion_at(1) else {
         panic!("moved branch must expand");
     };
-    expansion.0.collapse(key, depth);
+    expansion.choices.collapse(key, depth);
     assert_eq!(visible(&moved, &expansion), [10, 20, 40]);
 }
 
@@ -162,8 +167,8 @@ fn application() -> App {
     app
 }
 
-fn paint(app: &mut App) -> String {
-    let mut terminal = Terminal::new(TestBackend::new(180, 48)).expect("test terminal");
+fn paint_buffer(app: &mut App, width: u16, height: u16) -> Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
     let keymap = app.keymap();
     terminal
         .draw(|frame| render::draw_at_for_test(frame, app, &keymap, 200))
@@ -172,13 +177,50 @@ fn paint(app: &mut App) -> String {
     terminal
         .draw(|frame| render::draw_at_for_test(frame, app, &keymap, 200))
         .expect("settled frame");
-    terminal
-        .backend()
-        .buffer()
+    terminal.backend().buffer().clone()
+}
+
+fn buffer_text(buffer: &Buffer) -> String {
+    buffer
         .content
         .iter()
         .map(ratatui::buffer::Cell::symbol)
         .collect()
+}
+
+fn paint(app: &mut App) -> String { buffer_text(&paint_buffer(app, 180, 48)) }
+
+fn locate(buffer: &Buffer, word: &str) -> Position {
+    for y in buffer.area.y..buffer.area.bottom() {
+        let line: String = (buffer.area.x..buffer.area.right())
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        if let Some(index) = line.find(word) {
+            let Ok(column) = u16::try_from(line[..index].chars().count()) else {
+                panic!("the painted word must fit the buffer width");
+            };
+            return Position::new(column + buffer.area.x, y);
+        }
+    }
+    panic!("missing painted word {word}: {}", buffer_text(buffer));
+}
+
+fn marker(buffer: &Buffer, word: &str) -> Position {
+    let name = locate(buffer, word);
+    let Some(x) = (buffer.area.x..name.x)
+        .rev()
+        .find(|&x| matches!(buffer[(x, name.y)].symbol(), "▶" | "▼"))
+    else {
+        panic!("the branch marker must precede the name");
+    };
+    Position::new(x, name.y)
+}
+
+fn press(app: &mut App, key: char) {
+    tui_pane::dispatch_key(
+        app,
+        crossterm::event::KeyEvent::new(KeyCode::Char(key), crossterm::event::KeyModifiers::NONE),
+    );
 }
 
 #[test]
@@ -200,8 +242,9 @@ fn rendered_rows_follow_shared_actions_and_default_depth() {
         HandlerExpansionAction::Shared(ExpansionAction::CollapseAll),
     );
     let text = paint(&mut app);
-    assert!(!text.contains("child"));
-    dispatch(&mut app, HandlerExpansionAction::Reset);
+    assert!(text.contains("child"));
+    assert!(!text.contains("grandchild"));
+    dispatch(&mut app, HandlerExpansionAction::Level(DepthDigit::One));
     let text = paint(&mut app);
     assert!(text.contains("child"));
     assert!(!text.contains("grandchild"));
@@ -211,10 +254,10 @@ fn rendered_rows_follow_shared_actions_and_default_depth() {
 fn census_pruning_removes_choices_for_departed_processes() {
     let mut app = application();
     paint(&mut app);
-    dispatch(
-        &mut app,
-        HandlerExpansionAction::Shared(ExpansionAction::CollapseAll),
-    );
+    app.expansion
+        .choices
+        .collapse(ExpansionKey::process(FIXTURE_MACHINE, 10), 0);
+    assert!(!paint(&mut app).contains("child"));
     app.census.apply(CensusUpdate::Local {
         rows:      vec![],
         hierarchy: HierarchyEdges::default().into(),
@@ -279,14 +322,14 @@ fn explicit_closed_choice_follows_a_child_to_root_depth() {
     let RowExpansion::Branch { key, depth } = tree.row_expansion_at(1) else {
         panic!("child must expand");
     };
-    expansion.0.collapse(key, depth);
+    expansion.choices.collapse(key, depth);
     let mut rows = tree.rows;
     rows[1].depth = 0;
     rows[1].parent = RowParent::Root;
     rows[2].depth = 1;
     let moved = HandlerTree::new(rows);
     assert_eq!(visible(&moved, &expansion), [10, 20, 40]);
-    expansion.0.reset();
+    expansion.choices.reset();
     assert_eq!(visible(&moved, &expansion), [10, 20, 30, 40]);
 }
 
@@ -301,7 +344,7 @@ fn machine_identity_keeps_equal_pids_independent() {
     };
     let local = ExpansionKey::Process(local);
     let remote = ExpansionKey::Process(remote);
-    expansion.0.collapse(local.clone(), 0);
+    expansion.choices.collapse(local.clone(), 0);
     assert!(!expansion.is_open(&local, 0));
     assert!(expansion.is_open(&remote, 0));
 }
@@ -454,5 +497,266 @@ fn legacy_branch_expansion_and_selection_follow_census_identity_after_sorting() 
     assert_eq!(
         state.selection(),
         TileSelection::Row(branch_a_after_sort.clone())
+    );
+}
+
+#[test]
+fn marker_clicks_open_close_and_select_the_painted_branch() {
+    let mut app = application();
+    let before = paint_buffer(&mut app, 180, 48);
+    let point = marker(&before, "child");
+    assert_eq!(before[(point.x, point.y)].symbol(), "▶");
+    app.click(Position::new(point.x + 1, point.y));
+    let open = paint_buffer(&mut app, 180, 48);
+    assert!(buffer_text(&open).contains("grandchild"));
+    let SelectableSurface::Surface(surface) = focused_surface(&app) else {
+        panic!("the click must focus the tile");
+    };
+    assert!(matches!(
+        app.selections
+            .surface(&surface)
+            .expect("clicked surface")
+            .selection(),
+        TileSelection::Row(SelectedRow::Session { pid: 20, .. })
+    ));
+    let point = marker(&open, "child");
+    assert_eq!(open[(point.x, point.y)].symbol(), "▼");
+    app.click(point);
+    assert!(!paint(&mut app).contains("grandchild"));
+}
+
+#[test]
+fn name_and_leaf_lead_clicks_only_select_the_row() {
+    let mut app = application();
+    let before = paint_buffer(&mut app, 180, 48);
+    app.click(locate(&before, "child"));
+    assert!(!paint(&mut app).contains("grandchild"));
+    let SelectableSurface::Surface(surface) = focused_surface(&app) else {
+        panic!("the name must focus its tile");
+    };
+    assert!(matches!(
+        app.selections
+            .surface(&surface)
+            .expect("selected tile")
+            .selection(),
+        TileSelection::Row(SelectedRow::Session { pid: 20, .. })
+    ));
+    dispatch(
+        &mut app,
+        HandlerExpansionAction::Shared(ExpansionAction::ExpandAll),
+    );
+    let open = paint_buffer(&mut app, 180, 48);
+    let leaf = locate(&open, "grandchild");
+    app.click(Position::new(leaf.x - 1, leaf.y));
+    assert!(paint(&mut app).contains("grandchild"));
+    assert!(matches!(
+        app.selections
+            .surface(&surface)
+            .expect("leaf tile")
+            .selection(),
+        TileSelection::Row(SelectedRow::Session { pid: 30, .. })
+    ));
+}
+
+#[test]
+fn a_scrolled_marker_toggles_the_row_in_the_painted_viewport() {
+    let children: Vec<_> = (0..30)
+        .flat_map(|index| {
+            [
+                serde_json::json!({"depth":0,"kind":"subagent","pid":100+index,
+            "name":format!("branch-{index:02}"),"started":110}),
+                serde_json::json!({"depth":1,"kind":"shell","pid":200+index,
+            "name":format!("nested-{index:02}"),"started":120}),
+            ]
+        })
+        .collect();
+    let mut app = application_with_work(&Value::Array(children));
+    let before = paint_buffer(&mut app, 100, 14);
+    app.click(locate(&before, "branch-00"));
+    tui_pane::dispatch_key(
+        &mut app,
+        crossterm::event::KeyEvent::new(KeyCode::End, crossterm::event::KeyModifiers::NONE),
+    );
+    let scrolled = paint_buffer(&mut app, 100, 14);
+    assert!(!buffer_text(&scrolled).contains("branch-00"));
+    app.click(marker(&scrolled, "branch-29"));
+    let after = paint_buffer(&mut app, 100, 48);
+    assert!(buffer_text(&after).contains("nested-29"));
+    assert!(!buffer_text(&after).contains("nested-28"));
+}
+
+#[test]
+fn a_narrow_tile_keeps_its_marker_click_target() {
+    let mut app = application_with_work(&serde_json::json!([
+        {"depth":0,"kind":"subagent","pid":101,"name":"a-long-branch-name","started":110},
+        {"depth":1,"kind":"shell","pid":201,"name":"opened-work","started":120}
+    ]));
+    let before = paint_buffer(&mut app, 32, 24);
+    let point = marker(&before, "a-long");
+    assert_eq!(before[(point.x, point.y)].symbol(), "▶");
+    app.click(point);
+    assert!(paint(&mut app).contains("opened-work"));
+}
+
+#[test]
+fn a_marker_for_a_departed_row_does_not_toggle_its_replacement() {
+    let mut app = application();
+    let before = paint_buffer(&mut app, 180, 48);
+    let point = marker(&before, "child");
+    let replacement = application_with_work(&serde_json::json!([
+        {"depth":0,"kind":"subagent","pid":101,"name":"replacement","started":110},
+        {"depth":1,"kind":"shell","pid":201,"name":"replacement-work","started":120}
+    ]));
+    app.census = replacement.census;
+    app.click(point);
+    let after = paint(&mut app);
+    assert!(after.contains("replacement"));
+    assert!(!after.contains("replacement-work"));
+    app.census = application().census;
+    assert!(!paint(&mut app).contains("grandchild"));
+}
+
+fn depth_rows(prefix: &str, count: usize) -> Vec<AgentRow> {
+    let children: Vec<_> = (0..count)
+        .map(|depth| {
+            serde_json::json!({
+                "depth":depth,"kind":"shell","pid":100+depth,
+                "name":format!("{prefix}-level-{:02}",depth+1),"started":120,
+            })
+        })
+        .collect();
+    let Ok(row) = serde_json::from_value(serde_json::json!({
+        "agent":"claude","pid":10,"name":format!("{prefix}-root"),"started":100,
+        "session_id":format!("{prefix}-session"),"directory":"/fixture",
+        "status":"idle","children":children,
+    })) else {
+        panic!("the depth fixture must decode as an agent row");
+    };
+    vec![row]
+}
+
+fn two_depth_tiles() -> App {
+    let mut app = application();
+    app.loaded_config.config.machines.remote = vec!["depth-remote".into()];
+    app.census.apply(CensusUpdate::Local {
+        rows:      depth_rows("near", 10),
+        hierarchy: HierarchyEdges::default().into(),
+        stage:     ScanStage::Completed,
+    });
+    app.census.apply(CensusUpdate::Remote {
+        host:  "depth-remote".into(),
+        state: MachineState::Answered(depth_rows("far", 10), HierarchyEdges::default().into()),
+    });
+    app
+}
+
+#[test]
+fn digit_depths_change_only_the_focused_tile() {
+    let mut app = two_depth_tiles();
+    let before = paint_buffer(&mut app, 180, 60);
+    app.click(locate(&before, "near-level-01"));
+    for digit in ['2', '9', '1', '0'] {
+        press(&mut app, digit);
+        let after = buffer_text(&paint_buffer(&mut app, 180, 60));
+        let Some(depth) = digit.to_digit(10) else {
+            panic!("the fixture key must be a depth digit");
+        };
+        let depth = depth as usize;
+        for level in 1..=10 {
+            assert_eq!(
+                after.contains(&format!("near-level-{level:02}")),
+                level <= depth,
+                "digit {digit}, level {level}"
+            );
+            assert_eq!(
+                after.contains(&format!("far-level-{level:02}")),
+                level == 1,
+                "the other tile must retain its default after {digit}"
+            );
+        }
+        assert!(after.contains("near-root"));
+    }
+}
+
+#[test]
+fn minus_restores_the_first_level_in_every_tile() {
+    let mut app = two_depth_tiles();
+    paint(&mut app);
+    press(&mut app, '=');
+    let all = paint(&mut app);
+    assert!(all.contains("near-level-10"));
+    assert!(all.contains("far-level-10"));
+    press(&mut app, '-');
+    let first = paint(&mut app);
+    for prefix in ["near", "far"] {
+        assert!(first.contains(&format!("{prefix}-root")));
+        assert!(first.contains(&format!("{prefix}-level-01")));
+        assert!(!first.contains(&format!("{prefix}-level-02")));
+    }
+}
+
+#[test]
+fn new_rows_follow_the_tile_level_including_expand_all() {
+    let mut app = two_depth_tiles();
+    paint(&mut app);
+    press(&mut app, '=');
+    app.census.apply(CensusUpdate::Local {
+        rows:      depth_rows("near", 12),
+        hierarchy: HierarchyEdges::default().into(),
+        stage:     ScanStage::Completed,
+    });
+    let all = paint_buffer(&mut app, 180, 70);
+    assert!(buffer_text(&all).contains("near-level-12"));
+    app.click(locate(&all, "near-level-01"));
+    press(&mut app, '2');
+    app.census.apply(CensusUpdate::Local {
+        rows:      depth_rows("near", 13),
+        hierarchy: HierarchyEdges::default().into(),
+        stage:     ScanStage::Completed,
+    });
+    let bounded = buffer_text(&paint_buffer(&mut app, 180, 70));
+    assert!(bounded.contains("near-level-02"));
+    assert!(!bounded.contains("near-level-03"));
+    assert!(bounded.contains("far-level-10"));
+}
+
+#[test]
+fn row_choices_override_the_level_until_the_next_digit() {
+    let mut app = two_depth_tiles();
+    let before = paint_buffer(&mut app, 180, 60);
+    app.click(locate(&before, "near-level-01"));
+    press(&mut app, '2');
+    let two = paint_buffer(&mut app, 180, 60);
+    app.click(marker(&two, "near-level-02"));
+    assert!(paint(&mut app).contains("near-level-03"));
+    press(&mut app, '2');
+    assert!(!paint(&mut app).contains("near-level-03"));
+    let two = paint_buffer(&mut app, 180, 60);
+    app.click(marker(&two, "near-level-01"));
+    assert!(!paint(&mut app).contains("near-level-02"));
+    press(&mut app, '2');
+    assert!(paint(&mut app).contains("near-level-02"));
+}
+
+#[test]
+fn depth_digits_do_not_change_a_tile_covered_by_the_attract_screen() {
+    let mut app = two_depth_tiles();
+    let before = paint_buffer(&mut app, 180, 60);
+    app.click(locate(&before, "near-level-01"));
+    app.attract.request_show();
+    press(&mut app, '9');
+    app.attract.toggle();
+    app.tiles.settle_for_test();
+    let key = TileKey::Unassigned {
+        machine: FIXTURE_MACHINE.into(),
+    };
+    assert_eq!(
+        app.expansion.level(&key),
+        DepthLevel::Through(DepthDigit::One)
+    );
+    assert!(
+        !app.expansion
+            .choices
+            .is_open(&ExpansionKey::process(FIXTURE_MACHINE, 101), 1)
     );
 }

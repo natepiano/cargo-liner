@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Click a row marker to toggle its children. Use digits 0 to 9 to set the focused tile depth.
+
 - Codex windows without a proven thread show their herdr pane name or tab label.
 - Handler rows support expansion and collapse, with root children visible by default.
 
@@ -24,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Select rows with Up, Down, PageUp, PageDown, Home and End, click a row, or scroll the tile under the pointer. The mouse wheel scrolls the shortcuts, keymap and settings overlays and leaves the tiles behind them still. Selection follows sessions and worker seats as their work changes. Role and status widths follow the painted rows while age units remain aligned through scrolling.
 
 ### Changed
+- `-` shows roots and the first level in every tile. `0` shows only roots in the focused tile.
 - Match the accounts board: remove the read-age and in-use columns, show each role with busy, shell, idle and total counts, and add a total row.
 - Skip equal tile frames and repaint session ages when their minute labels or shared column width changes.
 - Read managers, members and staff names directly from the staff file (`staff_file` setting, schema 2), and reread it only when it changes. A missing staff file shows no staff names and no error. Remove the `hierarchy_command` setting and the review pool reader.
