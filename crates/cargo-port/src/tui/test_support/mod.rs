@@ -26,11 +26,13 @@ pub(super) use readability::PROJECT;
 pub(super) use readability::PROJECT_PATH;
 pub(super) use readability::WIDTH;
 pub(super) use readability::draw_pane;
+pub(super) use readability::draw_pane_at_size;
 pub(super) use readability::draw_stats;
 pub(super) use readability::draw_ui;
 pub(super) use readability::position;
 pub(super) use readability::project_app;
 pub(super) use readability::rows;
+pub(super) use readability::sampled_cpu_app;
 pub(super) use readability::shipped_dark_theme;
 pub(super) use readability::stats_app;
 pub(super) use readability::target_data;
@@ -39,6 +41,7 @@ use tui_pane::Appearance;
 use tui_pane::ColorMode;
 use tui_pane::SettingsFileSpec;
 use tui_pane::SettingsStore;
+use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
 use super::app::RetrySpawnMode;
@@ -82,9 +85,15 @@ pub(super) fn find_text_cell(buffer: &Buffer, limit: Rect, text: &str) -> Option
     (limit.y..limit.bottom()).find_map(|y| {
         let mut row = String::new();
         let mut starts = Vec::new();
+        let mut next_cell = limit.x;
         for x in limit.x..limit.right() {
+            if x < next_cell {
+                continue;
+            }
+            let symbol = buffer[(x, y)].symbol();
             starts.push((row.len(), x));
-            row.push_str(buffer[(x, y)].symbol());
+            row.push_str(symbol);
+            next_cell = x.saturating_add(u16::try_from(symbol.width().max(1)).unwrap_or(u16::MAX));
         }
         let byte = row.find(text)?;
         starts

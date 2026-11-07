@@ -11,6 +11,7 @@ use ratatui::widgets::Paragraph;
 use tui_pane::ColorMode;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameChrome;
+use tui_pane::PaneFrameLabel;
 use tui_pane::PaneSelectionState;
 use tui_pane::Placed;
 use tui_pane::Region;
@@ -18,6 +19,7 @@ use tui_pane::RuleTitle;
 use tui_pane::Size;
 use tui_pane::Viewport;
 use tui_pane::ViewportOverflow;
+use tui_pane::VisualRowSpan;
 use tui_pane::accent_color;
 use tui_pane::error_color;
 use tui_pane::inactive_border_color;
@@ -66,6 +68,8 @@ use crate::tui::state::CiDisplay;
 use crate::tui::state::LintDisplay;
 use crate::tui::theme_roles;
 
+const MIN_TWO_COLUMN_INNER_WIDTH: u16 = 37;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LintRenderMode {
     Enabled,
@@ -100,8 +104,9 @@ struct PackageRenderCtx<'a> {
 }
 
 struct PackageRenderLayout {
-    scroll_offset: usize,
-    row_rects:     Vec<(Rect, usize)>,
+    content_height: usize,
+    scroll_offset:  usize,
+    row_rects:      Vec<(Rect, usize)>,
 }
 
 struct PackageFieldRender {
@@ -191,7 +196,7 @@ fn package_region(
         tests:     None,
         crates_io: None,
     };
-    if !has_stats_column(data) {
+    if !has_stats_column(data) || stats_width == 0 {
         return (Region::stack(vec![description, metadata]), boxes);
     }
 
@@ -421,7 +426,23 @@ fn render_column_inner(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut focused_output_line: usize = 0;
     let mut row_line_ys: Vec<(usize, usize)> = Vec::new();
-    let label_width = package_row_label_width(rows);
+    let mut field_spans = Vec::new();
+    let mut header_starts = Vec::new();
+    let disk_width = rows
+        .iter()
+        .filter_map(|row| match row {
+            PackageRow::Field(
+                field @ (DetailField::Disk
+                | DetailField::DiskTarget
+                | DetailField::DiskNonTarget
+                | DetailField::DiskOutOfTreeTarget),
+            ) => Some(package_field_value(ctx, *field).width()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let label_width =
+        package_row_label_width(rows).min(usize::from(area.width).saturating_sub(disk_width + 2));
     for (i, row) in rows.iter().enumerate() {
         match row {
             PackageRow::Description => {
@@ -430,7 +451,7 @@ fn render_column_inner(
                 }
             },
             PackageRow::Field(field) => {
-                row_line_ys.push((i, lines.len()));
+                let row_start = lines.len();
                 if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
                     focused_output_line = lines.len();
                 }
@@ -439,6 +460,11 @@ fn render_column_inner(
                     &mut lines,
                     package_field_render(ctx, *field, label_width, area.width, selection),
                 );
+                field_spans.push(VisualRowSpan {
+                    start_y: row_start,
+                    height:  lines.len() - row_start,
+                });
+                row_line_ys.extend((row_start..lines.len()).map(|y| (i, y)));
             },
             PackageRow::Structure(_) | PackageRow::Tests(_) | PackageRow::CratesIo(_) => {
                 // `PackageRow::Structure`, `Tests` and `CratesIo` render in the separate stats
@@ -458,25 +484,47 @@ fn render_column_inner(
                 ) {
                     lines.push(Line::default());
                 }
-                let style = ctx
-                    .styles
-                    .chrome
-                    .title_style(matches!(focus, PaneFocusState::Active));
-                lines.push(Line::from(Span::styled(
-                    format!(" {}", section.label()),
-                    style,
-                )));
+                header_starts.push(lines.len());
+                append_package_heading(&mut lines, section.label(), area.width, ctx);
             },
         }
     }
 
-    let scroll_y =
-        detail_column_scroll_offset(focus, focused_output_line, area.height, lines.len());
+    let headers = support::detail_header_groups(&field_spans, header_starts);
+    let pages = support::paginate_detail_lines(
+        &mut lines,
+        &field_spans,
+        &headers,
+        focused_output_line,
+        area.height,
+        focus,
+    );
+    for (_, line_y) in &mut row_line_ys {
+        *line_y = pages.line_y(*line_y);
+    }
+    let scroll_y = pages.scroll_offset;
+    let content_height = lines.len();
     frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
     let scroll_offset = usize::from(scroll_y);
     PackageRenderLayout {
+        content_height,
         scroll_offset,
         row_rects: visible_row_rects(row_line_ys, scroll_offset, area),
+    }
+}
+
+fn append_package_heading(
+    lines: &mut Vec<Line<'static>>,
+    title: &str,
+    width: u16,
+    ctx: &PackageRenderCtx<'_>,
+) {
+    let style = ctx
+        .styles
+        .chrome
+        .title_style(matches!(ctx.focus, PaneFocusState::Active));
+    for part in support::word_wrap(title, usize::from(width.saturating_sub(1))) {
+        lines.push(Line::from(Span::styled(format!(" {part}"), style)));
     }
 }
 
@@ -554,9 +602,9 @@ fn push_package_field_lines(lines: &mut Vec<Line<'static>>, render: PackageField
     if let Some(wrap) = package_field_wrap(render.field)
         && !render.value.is_empty()
     {
-        push_wrapped_package_field_lines(lines, render, wrap);
+        push_wrapped_package_field_lines(lines, &render, wrap);
     } else {
-        push_single_package_field_line(lines, render);
+        push_single_package_field_line(lines, &render);
     }
     for line in &mut lines[start..] {
         line.style = line.style.patch(style);
@@ -565,10 +613,10 @@ fn push_package_field_lines(lines: &mut Vec<Line<'static>>, render: PackageField
 
 fn push_wrapped_package_field_lines(
     lines: &mut Vec<Line<'static>>,
-    render: PackageFieldRender,
+    render: &PackageFieldRender,
     wrap: FieldWrapFn,
 ) {
-    let prefix = package_field_prefix(&render);
+    let prefix = package_field_prefix(render);
     let prefix_len = prefix.width();
     let avail = render.area_width.saturating_sub(prefix_len + 1);
     if avail == 0 {
@@ -591,18 +639,23 @@ fn push_wrapped_package_field_lines(
     }
 }
 
-fn push_single_package_field_line(lines: &mut Vec<Line<'static>>, render: PackageFieldRender) {
-    let prefix = package_field_prefix(&render);
-    let available = render.area_width.saturating_sub(prefix.width());
-    let value = if render.value.width() <= available {
-        render.value
-    } else {
-        render::truncate_with_ellipsis(&render.value, available, "…")
-    };
-    lines.push(Line::from(vec![
-        Span::styled(prefix, render.label_style),
-        Span::styled(value, render.value_style),
-    ]));
+fn push_single_package_field_line(lines: &mut Vec<Line<'static>>, render: &PackageFieldRender) {
+    let separate_value = render.area_width <= support::NARROW_FIELD_INNER_WIDTH
+        || matches!(
+            render.field,
+            DetailField::Disk
+                | DetailField::DiskTarget
+                | DetailField::DiskNonTarget
+                | DetailField::DiskOutOfTreeTarget
+        );
+    lines.extend(support::field_value_lines(
+        package_field_prefix(render),
+        &render.value,
+        render.area_width,
+        render.label_style,
+        render.value_style,
+        separate_value,
+    ));
 }
 
 fn package_field_prefix(render: &PackageFieldRender) -> String {
@@ -658,6 +711,7 @@ struct ProjectPanelRender<'a> {
     /// [`DescriptionBlock::render_with_selection`] so the rendered content stays in
     /// step with what `sync_floor` saw at the top of the frame.
     synced_description_height: SyncedDescriptionHeight,
+    empty_description:         EmptyDescriptionBehavior,
 }
 
 /// Shared wrapping for the selected diagnostic and the top-pane height fit.
@@ -741,12 +795,10 @@ pub(super) fn render_package_pane_body(
         });
     let project_inner = render_manifest_error_header(frame, area, metadata_state);
 
-    {
-        let viewport = &mut pane.viewport;
-        // The diagnostic is fixed above the normal, selectable Package content.
-        viewport.set_content_area(pane_inner);
-        viewport.set_viewport_rows(usize::from(project_inner.height));
-    }
+    // The diagnostic is fixed above the normal, selectable Package content.
+    pane.viewport.set_content_area(pane_inner);
+    pane.viewport
+        .set_viewport_rows(usize::from(project_inner.height));
     let context = ProjectPanelRender {
         pkg_data: &pkg_data,
         rows: &rows,
@@ -754,6 +806,7 @@ pub(super) fn render_package_pane_body(
         focus: pane_focus_state,
         styles,
         synced_description_height: *synced_description_height,
+        empty_description: ctx.empty_package_description,
     };
 
     // `render_project_description` runs first because its returned `description_height` fixes the
@@ -764,16 +817,24 @@ pub(super) fn render_package_pane_body(
         description_height > 0
             && project_inner.y.saturating_add(description_height) < project_inner.bottom(),
     );
-    let (stats_width, value_width) = stats_column_width(&pkg_data);
-    let (region, boxes) =
-        package_region(&pkg_data, &rows, description_height, separator, stats_width);
-    let mut prior_offsets = vec![0; boxes.leaf_count()];
-    if let Some(tests) = boxes.tests {
-        prior_offsets[tests] = pane.tests_scroll_offset();
-    }
-    let placed = region.place(project_inner, pane.viewport.pos(), &prior_offsets);
+    let columns = place_package_columns(
+        &pkg_data,
+        &rows,
+        project_inner,
+        description_height,
+        separator,
+        pane,
+    );
 
-    push_separator(&context, area, &placed, &boxes, separator, &mut chrome);
+    push_separator(
+        &context,
+        area,
+        &columns.placed,
+        &columns.boxes,
+        separator,
+        &mut chrome,
+    );
+    select_first_visible_package_field(pane, &rows, description_height);
 
     let col_ctx = PackageRenderCtx {
         data: &pkg_data,
@@ -784,46 +845,141 @@ pub(super) fn render_package_pane_body(
         animation_elapsed: *animation_elapsed,
         lint_mode,
     };
-    let layout = render_column_inner(frame, &col_ctx, placed[METADATA_BOX].content);
-    let mut row_rects = layout.row_rects;
-
-    let tests_cursor = region
-        .locate(pane.viewport.pos())
-        .and_then(|(box_index, row)| (Some(box_index) == boxes.tests).then_some(row));
-    row_rects.extend(render_stats_column(
+    let layout = render_package_columns(
         frame,
-        &StatsColumnRender {
-            color_mode: mode,
-            data: &pkg_data,
-            rows: &rows,
-            pane: &pane.viewport,
-            focus: pane_focus_state,
-            value_width,
-            title_style: styles
-                .chrome
-                .title_style(matches!(pane_focus_state, PaneFocusState::Active)),
-            tests_cursor,
-        },
-        &placed,
-        &boxes,
+        &col_ctx,
+        &columns,
         project_inner,
         separator,
         &mut chrome,
-    ));
-
+    );
+    pane.viewport.set_content_height(
+        usize::from(description_height + separator)
+            + layout
+                .content_height
+                .max(stats_column_line_count(&pkg_data)),
+    );
+    chrome
+        .labels
+        .extend(package_page_label(area, &layout, &columns, &pkg_data));
+    let mut row_rects = layout.row_rects;
     pane.viewport.set_scroll_offset(layout.scroll_offset);
-    pane.set_tests_scroll_offset(boxes.tests.map_or(0, |tests| placed[tests].scroll_offset));
+    pane.set_tests_scroll_offset(
+        columns
+            .boxes
+            .tests
+            .map_or(0, |tests| columns.placed[tests].scroll_offset),
+    );
     if description_height > 0 {
-        row_rects.push((placed[DESCRIPTION_BOX].content, 0));
+        row_rects.push((columns.placed[DESCRIPTION_BOX].content, 0));
     }
     paint_package_selection(frame, pane_inner, pane, &row_rects, mode);
     pane.set_row_rects(row_rects);
-    chrome.labels.extend(tui_pane::overflow_affordance_label(
-        area,
-        pane.viewport.overflow(),
-        Style::default().fg(label_color()),
-    ));
     chrome
+}
+
+fn package_page_label(
+    area: Rect,
+    layout: &PackageRenderLayout,
+    columns: &PackageColumnLayout,
+    data: &PackageData,
+) -> Option<PaneFrameLabel> {
+    tui_pane::overflow_affordance_label(
+        area,
+        ViewportOverflow::for_paged_content(
+            layout.content_height.max(stats_column_line_count(data)),
+            layout.scroll_offset,
+            usize::from(columns.placed[METADATA_BOX].content.height),
+        ),
+        Style::default().fg(label_color()),
+    )
+}
+
+fn select_first_visible_package_field(
+    pane: &mut PackagePane,
+    rows: &[PackageRow],
+    description_height: u16,
+) {
+    if description_height == 0
+        && pane.viewport.pos() == 0
+        && let Some(row) = rows
+            .iter()
+            .position(|row| matches!(row, PackageRow::Field(_)))
+    {
+        pane.viewport.set_pos(row);
+    }
+}
+
+struct PackageColumnLayout {
+    region:      Region,
+    boxes:       PackageBoxes,
+    placed:      Vec<Placed>,
+    value_width: u16,
+}
+
+fn render_package_columns(
+    frame: &mut Frame,
+    ctx: &PackageRenderCtx<'_>,
+    columns: &PackageColumnLayout,
+    inner: Rect,
+    separator: u16,
+    chrome: &mut PaneFrameChrome,
+) -> PackageRenderLayout {
+    let mut layout = render_column_inner(frame, ctx, columns.placed[METADATA_BOX].content);
+    let tests_cursor = columns
+        .region
+        .locate(ctx.pane.pos())
+        .and_then(|(box_index, row)| (Some(box_index) == columns.boxes.tests).then_some(row));
+    layout.row_rects.extend(render_stats_column(
+        frame,
+        &StatsColumnRender {
+            color_mode: ctx.styles.chrome.color_mode,
+            data: ctx.data,
+            rows: ctx.rows,
+            pane: ctx.pane,
+            focus: ctx.focus,
+            value_width: columns.value_width,
+            title_style: ctx
+                .styles
+                .chrome
+                .title_style(matches!(ctx.focus, PaneFocusState::Active)),
+            tests_cursor,
+        },
+        &columns.placed,
+        &columns.boxes,
+        inner,
+        separator,
+        chrome,
+    ));
+    layout
+}
+
+fn place_package_columns(
+    data: &PackageData,
+    rows: &[PackageRow],
+    inner: Rect,
+    description_height: u16,
+    separator: u16,
+    pane: &PackagePane,
+) -> PackageColumnLayout {
+    let (stats_width, value_width) = stats_column_width(data);
+    let stats_width = if inner.width >= MIN_TWO_COLUMN_INNER_WIDTH {
+        stats_width
+    } else {
+        0
+    };
+    let (region, boxes) = package_region(data, rows, description_height, separator, stats_width);
+    let mut offsets = vec![0; boxes.leaf_count()];
+    if let Some(tests) = boxes.tests {
+        offsets[tests] = pane.tests_scroll_offset();
+    }
+    let placed = region.place(inner, pane.viewport.pos(), &offsets);
+    PackageColumnLayout {
+        region,
+        boxes,
+        placed,
+        value_width,
+    }
 }
 
 fn paint_package_selection(
@@ -943,7 +1099,7 @@ fn render_project_description(
     let block = DescriptionBlock::for_pane(
         context.pkg_data.description.as_deref(),
         area,
-        EmptyDescriptionBehavior::ShowPlaceholder,
+        context.empty_description,
     );
     block.render_with_selection(
         frame,
@@ -982,8 +1138,13 @@ fn push_separator(
     let Some(connector_x) = boxes.first().map(|index| placed[index].content.x) else {
         return;
     };
+    let stats_rule = Rect {
+        x: connector_x,
+        width: rule_area.right().saturating_sub(connector_x),
+        ..rule_area
+    };
     chrome.labels.extend(tui_pane::rule_title_label(
-        rule_area,
+        stats_rule,
         RuleTitle {
             text:  STATS_TITLE,
             style: context
@@ -991,7 +1152,7 @@ fn push_separator(
                 .chrome
                 .title_style(matches!(context.focus, PaneFocusState::Active)),
         },
-        Some(connector_x),
+        None,
     ));
 }
 
@@ -1027,10 +1188,13 @@ fn render_stats_column(
         return Vec::new();
     };
     let column = placed[first].chrome;
-    // Extend the vertical `chrome.rules` rectangle from `rule_top` below the separator through
-    // `project_inner.bottom()`: reaching the pane's bottom border lets the grid draw the bottom
-    // junction.
-    let rule_top = column.y.saturating_add(separator);
+    // Start on the separator, or on the top border when no separator exists.
+    // Reach the bottom border so the grid draws both junctions.
+    let rule_top = if separator > 0 {
+        column.y
+    } else {
+        column.y.saturating_sub(1)
+    };
     chrome.rules.push(Rect {
         x:      column.x,
         y:      rule_top,
@@ -1040,6 +1204,22 @@ fn render_stats_column(
             .saturating_add(1)
             .saturating_sub(rule_top),
     });
+
+    if separator == 0 && boxes.structure.is_some() {
+        chrome.title = render::truncate_with_ellipsis(
+            &chrome.title,
+            usize::from(column.x.saturating_sub(project_inner.x).saturating_sub(1)),
+            "…",
+        );
+        chrome.labels.extend(tui_pane::rule_title_label(
+            Rect::new(column.x, rule_top, column.width.saturating_add(1), 1),
+            RuleTitle {
+                text:  STATS_TITLE,
+                style: context.title_style,
+            },
+            None,
+        ));
+    }
 
     let stat_section_context = StatSectionCtx {
         color_mode:  context.color_mode,

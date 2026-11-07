@@ -224,23 +224,14 @@ fn confirm_finder(app: &mut App) {
 /// here to land the cursor on a specific row.
 fn repopulate_selected_detail_panes(app: &mut App) {
     app.sync_selected_project();
-    if let Some(detail_pane_data) = app
-        .project_list
-        .selected_project_path()
-        .and_then(|path| app.project_list.entry_containing(path))
-        .map(|entry| panes::build_pane_data(app, &entry.root_item))
-    {
-        app.panes.package.set_content(detail_pane_data.package);
-        app.panes.git.set_content(detail_pane_data.git);
-        app.panes.targets.set_content(detail_pane_data.targets);
-    }
+    app.ensure_detail_cached();
 }
 
 /// After selecting the parent project, focus the targets column and scroll
 /// to the matching target entry.
 fn navigate_to_target(app: &mut App, item: &FinderItem) {
     repopulate_selected_detail_panes(app);
-    let Some(targets_data) = app.panes.targets.content().cloned() else {
+    let Some(targets_data) = app.panes.targets.available_content(&app.project_list) else {
         return;
     };
     if !targets_data.has_targets() {
@@ -341,6 +332,7 @@ pub(in crate::tui) fn render_finder_pane_body(
     };
 
     let popup = PopupFrame {
+        color_mode:   pane_render_ctx.color_mode,
         title:        Some(title),
         border_color: title_color(),
         width:        popup_width,

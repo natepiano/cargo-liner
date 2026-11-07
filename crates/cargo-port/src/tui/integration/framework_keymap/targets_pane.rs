@@ -45,21 +45,16 @@ impl Shortcuts<App> for TargetsPane {
 
 impl CopySelection<App> for TargetsPane {
     fn copy_selection(app: &App) -> CopySelectionResult {
-        let Some(targets_data) = app.panes.targets.content() else {
+        let Some(targets_data) = app.panes.targets.available_content(&app.project_list) else {
             return CopySelectionResult::Nothing;
         };
-        panes::copy_payload_for_targets(targets_data, app.panes.targets.viewport.pos())
+        panes::copy_payload_for_targets(&targets_data, app.panes.targets.viewport.pos())
     }
 }
 
 /// Run actions are visible when the table has a selected target.
 pub(super) fn targets_run_visibility(app: &App) -> Visibility {
-    if app
-        .panes
-        .targets
-        .content()
-        .is_some_and(panes::TargetsData::has_targets)
-    {
+    if app.panes.targets.has_available_targets(&app.project_list) {
         Visibility::Visible
     } else {
         Visibility::Hidden

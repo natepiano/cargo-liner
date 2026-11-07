@@ -68,7 +68,6 @@ use crate::tui::panes::constants::REMOTES_URL_HEADER;
 use crate::tui::panes::constants::SYNC_HEADER;
 use crate::tui::panes::constants::TRACKED_HEADER;
 use crate::tui::panes::constants::WORKTREES_NAME_HEADER;
-use crate::tui::panes::package;
 use crate::tui::panes::pane_data::GitCheckout;
 use crate::tui::panes::pane_data::GitProbe;
 use crate::tui::panes::support;
@@ -163,8 +162,9 @@ struct SectionRule {
 /// Result of building the Git pane paragraph, used to register row
 /// hitboxes at the correct screen rows after rendering.
 struct GitRenderLayout {
-    scroll_offset: usize,
-    row_spans:     Vec<VisualRowSpan>,
+    content_height: usize,
+    scroll_offset:  usize,
+    row_spans:      Vec<VisualRowSpan>,
 }
 
 /// Mutable accumulators threaded through the per-section builders.
@@ -182,7 +182,6 @@ fn render_git_column_inner(
     inner_area: Rect,
     chrome: &mut PaneFrameChrome,
 ) -> GitRenderLayout {
-    let mode = ctx.styles.chrome.color_mode;
     let flat_len = ctx.fields.len();
     let pull_requests_len = ctx.data.pull_requests.rows.len();
     let remotes_len = ctx.data.remotes.listed().len();
@@ -217,6 +216,7 @@ fn render_git_column_inner(
             focus:       ctx.focus,
             styles:      ctx.styles,
             area_width:  inner_area.width,
+            area_height: inner_area.height,
             label_width: git_label_width(ctx.fields),
             row_offset:  ctx.row_offset,
         },
@@ -229,13 +229,26 @@ fn render_git_column_inner(
         &ctx.data.worktrees,
         usize::from(inner_area.width),
     );
+    let remote_layout = if usize::from(inner_area.width) <= support::NARROW_FIELD_INNER_WIDTH {
+        sync_col_layout(
+            ctx.data.remotes.listed(),
+            &[],
+            usize::from(inner_area.width),
+        )
+    } else {
+        sync_col_layout(
+            ctx.data.remotes.listed(),
+            &ctx.data.worktrees,
+            usize::from(inner_area.width),
+        )
+    };
     append_remotes_section(
         &mut accum,
         ctx,
         flat_len,
         pull_requests_len,
         current_section,
-        &sync_layout,
+        &remote_layout,
     );
     append_worktrees_section(
         &mut accum,
@@ -247,13 +260,53 @@ fn render_git_column_inner(
         &sync_layout,
     );
 
-    let scroll_y = package::detail_column_scroll_offset(
-        ctx.focus,
+    let scroll_y = paginate_git_column(
+        &mut lines,
+        &mut row_spans,
+        &mut section_rules,
         focused_output_line,
         inner_area.height,
-        lines.len(),
+        ctx.focus,
     );
+    let content_height = lines.len();
     frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), inner_area);
+    paint_git_row_selections(frame, ctx, inner_area, scroll_y, &row_spans);
+    push_section_overlays(&section_rules, scroll_y, outer_area, inner_area, chrome);
+    GitRenderLayout {
+        content_height,
+        scroll_offset: usize::from(scroll_y),
+        row_spans,
+    }
+}
+
+fn paginate_git_column(
+    lines: &mut Vec<Line<'static>>,
+    row_spans: &mut [VisualRowSpan],
+    section_rules: &mut [SectionRule],
+    focused_line: usize,
+    height: u16,
+    focus: PaneFocusState,
+) -> u16 {
+    let headers =
+        support::detail_header_groups(row_spans, section_rules.iter().map(|rule| rule.inner_y));
+    let pages =
+        support::paginate_detail_lines(lines, row_spans, &headers, focused_line, height, focus);
+    for span in row_spans {
+        pages.place_span(span);
+    }
+    for rule in section_rules {
+        rule.inner_y = pages.line_y(rule.inner_y);
+    }
+    pages.scroll_offset
+}
+
+fn paint_git_row_selections(
+    frame: &mut Frame,
+    ctx: &GitRenderCtx<'_>,
+    inner_area: Rect,
+    scroll_y: u16,
+    row_spans: &[VisualRowSpan],
+) {
     for (index, span) in row_spans.iter().enumerate() {
         let start = span.start_y.max(usize::from(scroll_y));
         let end = (span.start_y + span.height)
@@ -269,14 +322,9 @@ fn render_git_column_inner(
                 frame,
                 area,
                 tui_pane::selection_state(ctx.pane, ctx.row_offset + index, ctx.focus),
-                mode,
+                ctx.styles.chrome.color_mode,
             );
         }
-    }
-    push_section_overlays(&section_rules, scroll_y, outer_area, inner_area, chrome);
-    GitRenderLayout {
-        scroll_offset: usize::from(scroll_y),
-        row_spans,
     }
 }
 
@@ -685,6 +733,7 @@ struct RenderFlatArgs<'a> {
     focus:       PaneFocusState,
     styles:      &'a RenderStyles,
     area_width:  u16,
+    area_height: u16,
     label_width: usize,
     row_offset:  usize,
 }
@@ -843,107 +892,165 @@ fn field_value_style(data: &GitData, field: DetailField) -> Style {
     role.style()
 }
 
-fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
-    let mode = args.styles.chrome.color_mode;
-    let RenderFlatArgs {
-        data,
-        fields,
-        pane,
-        focus,
-        styles,
-        area_width,
-        label_width,
-        row_offset,
-    } = *args;
-    let content_width = usize::from(area_width).saturating_sub(3);
-    let label_only = usize::from(area_width) < *SPLIT_ROW_MIN_INNER_WIDTH;
-    let label_width = if label_only {
+fn flat_field_label_width(area_width: u16, label_width: usize, label_only: bool) -> usize {
+    if label_only {
         usize::from(area_width).saturating_sub(1)
+    } else if wraps_field_value(area_width, label_width) {
+        label_width
     } else {
-        label_width.min(content_width / 2)
-    };
-    let available = content_width.saturating_sub(label_width);
-    for (i, field) in fields.iter().enumerate() {
-        let row_index = row_offset + i;
+        label_width.min(usize::from(area_width).saturating_sub(3) / 2)
+    }
+}
+
+/// Keep compact rows below the width needed for a whole field label.
+fn wraps_field_value(area_width: u16, label_width: usize) -> bool {
+    let width = usize::from(area_width);
+    width <= support::NARROW_FIELD_INNER_WIDTH && width >= label_width + 3
+}
+
+fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
+    for (i, field) in args.fields.iter().enumerate() {
+        let label_width = label_width_for_field(args, *field);
+        let row_index = args.row_offset + i;
+        let lines = flat_field_lines(args, *field, row_index, label_width);
         accum.row_spans.push(VisualRowSpan {
             start_y: accum.lines.len(),
-            height:  1,
+            height:  lines.len(),
         });
-        if matches!(focus, PaneFocusState::Active) && row_index == pane.pos() {
+        if matches!(args.focus, PaneFocusState::Active) && row_index == args.pane.pos() {
             *accum.focused_output_line = accum.lines.len();
         }
-        let label = fit_text(field.label(), label_width);
-        let selection = tui_pane::selection_state(pane, row_index, focus);
-        let overlay = theme_roles::selection_style(selection, mode);
-        let ls = styles.readonly_label.patch(overlay);
-        if label_only {
-            accum
-                .lines
-                .push(Line::from(Span::styled(format!(" {label}"), ls)).style(overlay));
-            continue;
-        }
-        let is_rate_limit_row = matches!(
-            *field,
-            DetailField::RateLimitCore | DetailField::RateLimitGraphQl
-        );
-        let prefix = format!(" {label:<label_width$} ");
-        let wraps = matches!(*field, DetailField::WorktreeError | DetailField::Bisect);
-        let value = build_field_value(data, *field, is_rate_limit_row);
-        let value = if is_rate_limit_row {
-            fit_rate_limit_value(data, *field, value, available)
+        accum.lines.extend(lines);
+    }
+}
+
+fn label_width_for_field(args: &RenderFlatArgs<'_>, field: DetailField) -> usize {
+    let width = usize::from(args.area_width);
+    let desired = if args.area_height < 2 {
+        field.label().width()
+    } else {
+        args.label_width
+    };
+    if width > *SPLIT_ROW_MIN_INNER_WIDTH
+        && width <= support::NARROW_FIELD_INNER_WIDTH
+        && desired < width
+    {
+        desired
+    } else {
+        flat_field_label_width(
+            args.area_width,
+            args.label_width,
+            width < *SPLIT_ROW_MIN_INNER_WIDTH,
+        )
+    }
+}
+
+/// Keep a whole label when its value needs a separate page.
+fn field_uses_value_row(args: &RenderFlatArgs<'_>, label_width: usize) -> bool {
+    let width = usize::from(args.area_width);
+    width > *SPLIT_ROW_MIN_INNER_WIDTH
+        && width <= support::NARROW_FIELD_INNER_WIDTH
+        && label_width < width
+        && (args.area_height > 1 || label_width + 1 >= width)
+}
+
+fn flat_field_lines(
+    args: &RenderFlatArgs<'_>,
+    field: DetailField,
+    row_index: usize,
+    label_width: usize,
+) -> Vec<Line<'static>> {
+    let mode = args.styles.chrome.color_mode;
+    let one_row = args.area_height < 2
+        && usize::from(args.area_width) <= support::NARROW_FIELD_INNER_WIDTH
+        && usize::from(args.area_width) > *SPLIT_ROW_MIN_INNER_WIDTH;
+    let compact_prefix = one_row && label_width + 2 >= usize::from(args.area_width);
+    let padding = if compact_prefix {
+        1
+    } else if one_row {
+        2
+    } else {
+        3
+    };
+    let content_width = usize::from(args.area_width).saturating_sub(padding);
+    let available = content_width.saturating_sub(label_width);
+    let label = fit_text(field.label(), label_width);
+    let selection = tui_pane::selection_state(args.pane, row_index, args.focus);
+    let overlay = theme_roles::selection_style(selection, mode);
+    let label_style = args.styles.readonly_label.patch(overlay);
+    if usize::from(args.area_width) < *SPLIT_ROW_MIN_INNER_WIDTH {
+        return vec![Line::from(Span::styled(format!(" {label}"), label_style)).style(overlay)];
+    }
+    let is_rate_limit_row = matches!(
+        field,
+        DetailField::RateLimitCore | DetailField::RateLimitGraphQl
+    );
+    let prefix = if compact_prefix {
+        format!("{label} ")
+    } else {
+        format!(" {label:<label_width$} ")
+    };
+    let wraps = matches!(field, DetailField::WorktreeError | DetailField::Bisect);
+    let value = build_field_value(args.data, field, is_rate_limit_row);
+    let value = if is_rate_limit_row {
+        let rate_width = if field_uses_value_row(args, label_width) {
+            usize::from(args.area_width).saturating_sub(1)
         } else {
-            value
+            available
         };
+        fit_rate_limit_value(args.data, field, value, rate_width)
+    } else {
+        value
+    };
+    let value_style = field_value_style(args.data, field).patch(overlay);
+    let mut lines = if field_uses_value_row(args, label_width) {
+        support::field_value_lines(
+            prefix,
+            &value,
+            usize::from(args.area_width),
+            label_style,
+            value_style,
+            true,
+        )
+    } else if wraps && !value.is_empty() && available > 0 && value.width() > available {
+        let prefix_len = prefix.width();
+        support::word_wrap(&value, available)
+            .into_iter()
+            .enumerate()
+            .map(|(index, chunk)| {
+                let prefix_span = if index == 0 {
+                    Span::styled(prefix.clone(), label_style)
+                } else {
+                    Span::raw(" ".repeat(prefix_len))
+                };
+                Line::from(vec![prefix_span, Span::styled(chunk, value_style)])
+            })
+            .collect()
+    } else {
         let value = if wraps || value.width() <= available {
             value
         } else {
             fit_text(&value, available).into_owned()
         };
-        let base_value_style = field_value_style(data, *field);
-        let vs = base_value_style.patch(overlay);
-        if wraps && !value.is_empty() {
-            let prefix_len = prefix.width();
-            if available > 0 && value.width() > available {
-                let wrapped = support::word_wrap(&value, available);
-                for (wi, chunk) in wrapped.iter().enumerate() {
-                    if wi == 0 {
-                        accum.lines.push(Line::from(vec![
-                            Span::styled(prefix.clone(), ls),
-                            Span::styled(chunk.clone(), vs),
-                        ]));
-                    } else {
-                        accum.lines.push(Line::from(vec![
-                            Span::raw(" ".repeat(prefix_len)),
-                            Span::styled(chunk.clone(), vs),
-                        ]));
-                    }
-                }
-            } else {
-                accum.lines.push(Line::from(vec![
-                    Span::styled(prefix, ls),
-                    Span::styled(value, vs),
-                ]));
-            }
+        let mut spans = vec![Span::styled(prefix, label_style)];
+        if is_rate_limit_row
+            && args.data.github_status.is_available()
+            && let Some(index) = value.find(" resets ")
+        {
+            let (base, reset) = value.split_at(index);
+            let reset_style =
+                selection.patch(Style::default().fg(tui_pane::secondary_text_color()), mode);
+            spans.push(Span::styled(base.to_string(), value_style));
+            spans.push(Span::styled(reset.to_string(), reset_style));
         } else {
-            let mut spans = vec![Span::styled(prefix, ls)];
-            if is_rate_limit_row
-                && data.github_status.is_available()
-                && let Some(idx) = value.find(" resets ")
-            {
-                let (base, reset) = value.split_at(idx);
-                let reset_style =
-                    selection.patch(Style::default().fg(tui_pane::secondary_text_color()), mode);
-                spans.push(Span::styled(base.to_string(), vs));
-                spans.push(Span::styled(reset.to_string(), reset_style));
-            } else {
-                spans.push(Span::styled(value, vs));
-            }
-            accum.lines.push(Line::from(spans));
+            spans.push(Span::styled(value, value_style));
         }
-        for line in &mut accum.lines[accum.row_spans.last().map_or(0, |row| row.start_y)..] {
-            line.style = line.style.patch(overlay);
-        }
+        vec![Line::from(spans)]
+    };
+    for line in &mut lines {
+        line.style = line.style.patch(overlay);
     }
+    lines
 }
 
 fn fit_rate_limit_value(
@@ -1057,6 +1164,20 @@ fn sync_col_layout(
     let trio_total = branch + 2 + tracked + 2 + sync;
     let budget_lead = available.saturating_sub(trio_total);
     let lead = budget_lead.clamp(min_lead, natural_lead);
+
+    if available <= support::NARROW_FIELD_INNER_WIDTH && !worktrees.is_empty() {
+        let branch = 7.min(available.saturating_sub(3));
+        let lead = available.saturating_sub(branch);
+        return SyncColLayout {
+            remote_name,
+            remote_url: remote_url.min(lead.saturating_sub(remote_fixed)),
+            worktree_name: lead.saturating_sub(worktree_fixed),
+            lead,
+            branch,
+            tracked,
+            sync,
+        };
+    }
 
     SyncColLayout {
         remote_name,
@@ -1204,7 +1325,7 @@ fn worktree_row_line(
     let pad = " ".repeat(layout.lead.saturating_sub(leading.width()));
     let prefix = format!(
         "{leading}{pad}{:<branch$}  {:<tracked$}  ",
-        worktree_branch_text(row),
+        fit_text(worktree_branch_text(row), layout.branch),
         worktree_tracked_text(row),
         branch = layout.branch,
         tracked = layout.tracked
@@ -1302,9 +1423,7 @@ pub(super) fn render_git_pane_body(
     {
         let viewport = &mut pane.viewport;
         viewport.set_content_area(about_layout.content_area);
-        viewport.set_viewport_rows(
-            usize::from(about_layout.content_area.height).saturating_add(description_rows),
-        );
+        viewport.set_viewport_rows(usize::from(about_layout.content_area.height));
     }
     let git_ctx = GitRenderCtx {
         data: &git_data,
@@ -1323,6 +1442,7 @@ pub(super) fn render_git_pane_body(
         &mut chrome,
     );
     pane.viewport.set_scroll_offset(layout.scroll_offset);
+    pane.viewport.set_content_height(layout.content_height);
     pane.set_row_layout(
         about_layout.description_rect,
         about_layout.content_area,
@@ -1331,7 +1451,11 @@ pub(super) fn render_git_pane_body(
     );
     chrome.labels.extend(tui_pane::overflow_affordance_label(
         area,
-        pane.viewport.overflow(),
+        tui_pane::ViewportOverflow::for_paged_content(
+            pane.viewport.content_height(),
+            pane.viewport.scroll_offset(),
+            pane.viewport.visible_rows(),
+        ),
         Style::default().fg(label_color()),
     ));
     let _ = ctx;

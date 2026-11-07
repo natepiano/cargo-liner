@@ -287,3 +287,58 @@ fn project_expand_mark_has_a_left_margin() -> anyhow::Result<()> {
     assert_eq!(mark.0, body.x + 1);
     Ok(())
 }
+
+#[test]
+fn project_disk_units_stay_whole_at_eighty_columns() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.project_list
+        .at_path_mut(Path::new(PROJECT_PATH))
+        .expect_found("the project")
+        .disk_usage_bytes = Some(25_555_055_411);
+    app.scan.bump_generation();
+    app.ensure_visible_rows_cached();
+    let buffer = test_support::draw_ui(&mut app, 80)?;
+    test_support::find_text_cell(&buffer, app.panes.project_list.body_rect, "23.8 GiB")
+        .context("the disk value must include the whole unit")?;
+    Ok(())
+}
+
+#[test]
+fn deleted_disk_values_do_not_change_the_live_size_scale() -> anyhow::Result<()> {
+    let projects = [
+        ("a-selected", 1024),
+        ("live-small", 73),
+        ("live-large", 1_073_741_824),
+        ("removed", 0),
+    ]
+    .map(|(name, bytes)| {
+        let mut project = test_support::make_package(name, Path::new(&format!("/tmp/test/{name}")));
+        if let RootItem::Rust(RustProject::Package(package)) = &mut project {
+            package.disk_usage_bytes = Some(bytes);
+        }
+        project
+    });
+    let mut app = test_support::make_app(&projects);
+    let removed = Path::new("/tmp/test/removed");
+    app.project_list
+        .at_path_mut(removed)
+        .expect_found("the removed project")
+        .visibility = Visibility::Deleted;
+    app.scan.bump_generation();
+    app.ensure_visible_rows_cached();
+    let before = test_support::draw_pane(&mut app, PaneId::ProjectList, 80)?;
+    app.project_list
+        .at_path_mut(removed)
+        .expect_found("the removed project")
+        .disk_usage_bytes = Some(1_099_511_627_776);
+    app.scan.bump_generation();
+    app.ensure_visible_rows_cached();
+    let after = test_support::draw_pane(&mut app, PaneId::ProjectList, 80)?;
+    for value in ["73 B", "1.0 GiB"] {
+        let first = test_support::position(&before, value)?;
+        let second = test_support::position(&after, value)?;
+        assert_eq!(before[first].fg, after[second].fg, "{value}");
+    }
+    test_support::position(&after, "[x]")?;
+    Ok(())
+}

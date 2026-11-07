@@ -1557,6 +1557,7 @@ pub(super) fn render_settings_pane_body(
     };
 
     let popup = PopupFrame {
+        color_mode:   ctx.color_mode,
         title:        Some(" Settings ".to_string()),
         border_color: title_color(),
         width:        SETTINGS_POPUP_WIDTH,

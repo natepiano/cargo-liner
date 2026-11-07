@@ -143,6 +143,7 @@ impl GlobalShortcutsPane {
         let line_count = inputs.lines.len();
         let height = popup_height(line_count, area.height);
         let popup = PopupFrame {
+            color_mode: mode,
             title: Some(" Global Shortcuts ".to_string()),
             border_color: title_color(),
             width,

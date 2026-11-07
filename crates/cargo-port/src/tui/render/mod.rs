@@ -23,6 +23,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
+use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use tui_pane::BLOCK_BORDER_WIDTH;
 use tui_pane::BYTES_PER_GIB;
@@ -112,6 +113,7 @@ pub(super) fn ci_status_style(ci_status: Option<CiStatus>) -> Style {
 fn sync_description_floor(
     app: &App,
     tiled: &ResolvedPaneLayout<PaneId>,
+    empty_package_description: EmptyDescriptionBehavior,
 ) -> SyncedDescriptionHeight {
     let pkg_block = panes::DescriptionBlock::for_pane(
         app.panes
@@ -119,7 +121,7 @@ fn sync_description_floor(
             .content()
             .and_then(|d| d.description.as_deref()),
         tiled.area(PaneId::Package),
-        EmptyDescriptionBehavior::ShowPlaceholder,
+        empty_package_description,
     );
     let git_block = panes::DescriptionBlock::for_pane(
         app.panes
@@ -137,6 +139,7 @@ fn sync_description_floor(
 #[derive(Clone, Copy)]
 struct TiledRenderInputs<'a> {
     selected_path:             Option<&'a Path>,
+    empty_package_description: EmptyDescriptionBehavior,
     animation_elapsed:         Duration,
     ci_status_lookup:          &'a CiStatusLookup,
     synced_description_height: SyncedDescriptionHeight,
@@ -158,6 +161,7 @@ fn render_tiled_panes(
         inputs.ci_status_lookup,
         OverlayRenderInputs::none(),
         inputs.synced_description_height,
+        inputs.empty_package_description,
     );
     tui_pane::render_panes(
         frame,
@@ -179,7 +183,14 @@ fn resolve_tiled_layout(
     bottom_row: panes::BottomRow,
 ) -> ResolvedPaneLayout<PaneId> {
     let core_count = app.panes.cpu.core_count();
-    let (package_width, git_width) = panes::top_pane_widths(top_area, left_width);
+    let minimum_left_width = u16::try_from(
+        app.project_list.cached_fit_widths.minimum_table_width()
+            + BLOCK_BORDER_WIDTH
+            + panes::PROJECT_LIST_RIGHT_PADDING,
+    )
+    .unwrap_or(u16::MAX);
+    let (package_width, git_width) =
+        panes::top_pane_widths(top_area, left_width, minimum_left_width);
     let key = (app.scan.generation(), package_width, git_width);
     let top_required_inner = if let Some(height) = app.panes.cached_top_row_height(key) {
         height
@@ -191,6 +202,7 @@ fn resolve_tiled_layout(
     panes::resolve_layout(
         top_area,
         left_width,
+        minimum_left_width,
         core_count,
         bottom_row,
         top_required_inner,
@@ -217,10 +229,10 @@ fn clear_pane_surfaces(app: &mut App) {
 fn move_focus_from_hidden_pane(app: &mut App, bottom_row: panes::BottomRow) {
     let focused = app.focused_pane_id();
     if panes::tab_order(bottom_row).contains(&focused)
-        && matches!(
+        && (matches!(
             panes::PaneVisibility::in_layout(&app.panes.tiled_layout, focused),
             panes::PaneVisibility::Hidden
-        )
+        ) || (focused == PaneId::Targets && !app.is_pane_tabbable(focused)))
     {
         let order = panes::tab_order(bottom_row);
         let start = order.iter().position(|pane| *pane == focused).unwrap_or(0);
@@ -274,10 +286,8 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     let tiled = resolve_tiled_layout(app, outer_layout[0], left_width, bottom_row);
 
     app.panes.tiled_layout = tiled;
-    move_focus_from_hidden_pane(app, bottom_row);
-    // Call `app.reconcile_bottom_row_focus()` before `sync_pane_focus` so the
-    // status bar reflects a visible bottom-row pane.
     app.reconcile_bottom_row_focus();
+    move_focus_from_hidden_pane(app, bottom_row);
 
     // `sync_pane_focus` records each pane's focus before `App::split_for_render`,
     // allowing the trait-dispatched render loop to read focus from each pane's `&mut self`.
@@ -302,7 +312,9 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     // shared height — the same block is rebuilt by each pane's render
     // path with the same inputs, so the sync floor matches what each
     // pane actually draws (the structural enforcement).
-    let synced_description_height = sync_description_floor(app, &app.panes.tiled_layout);
+    let empty_package_description = app.empty_package_description();
+    let synced_description_height =
+        sync_description_floor(app, &app.panes.tiled_layout, empty_package_description);
     let tiled = std::mem::take(&mut app.panes.tiled_layout);
 
     render_tiled_panes(
@@ -311,6 +323,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         &tiled,
         TiledRenderInputs {
             selected_path: selected_path.as_deref(),
+            empty_package_description,
             animation_elapsed,
             ci_status_lookup: &ci_status_lookup,
             synced_description_height,
@@ -319,6 +332,16 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
 
     app.panes.tiled_layout = tiled;
     render_status_bar(frame, app, outer_layout[1]);
+    if app.framework.overlay().is_some()
+        || app.overlays.is_finder_open()
+        || app.overlays.is_sccache_open()
+        || matches!(
+            app.confirmation_modal_state(),
+            ConfirmationModalState::Open { .. }
+        )
+    {
+        frame.render_widget(Clear, outer_layout[0]);
+    }
     let toasts_pane_focused = app.focus_is(PaneId::Toasts);
     let toasts_ctx = ToastsRenderCtx {
         now:              Instant::now(),
@@ -353,7 +376,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     if let ConfirmationModalState::Open { action, readiness } = app.confirmation_modal_state() {
         let body = confirm_action_body(app, action);
         let verifying = readiness.is_verifying();
-        render_confirm_popup(frame, action, &body, verifying);
+        render_confirm_popup(frame, action, &body, verifying, app.framework.color_mode);
     }
 
     sync_hovered_pane_row(app);
@@ -456,6 +479,7 @@ fn render_confirm_popup(
     action: &ConfirmAction,
     body: &[String],
     verifying: bool,
+    color_mode: ColorMode,
 ) {
     // While the fingerprint re-check is in flight we swap the prompt
     // + keys for a "Verifying target dir…" placeholder and drop the
@@ -482,6 +506,7 @@ fn render_confirm_popup(
     let height = CONFIRM_DIALOG_HEIGHT.saturating_add(body_height);
 
     let inner = PopupFrame {
+        color_mode,
         title: None,
         border_color: title_color(),
         width,
@@ -553,6 +578,7 @@ fn dispatch_settings_overlay(app: &mut App, frame: &mut Frame) {
         &ci_status_lookup,
         OverlayRenderInputs::settings(&inputs),
         panes::SyncedDescriptionHeight::default(),
+        app.empty_package_description(),
     );
     Renderable::render(
         split.registry.settings_pane,
@@ -597,6 +623,7 @@ fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
         ci_status_lookup: &ci_status_lookup,
         settings_render_inputs: None,
         synced_description_height: panes::SyncedDescriptionHeight::default(),
+        empty_package_description: EmptyDescriptionBehavior::ShowPlaceholder,
         output_presentation: split.output_presentation,
     };
     // `split.finder_pane` computes its popup size in `Renderable::render`,
@@ -905,10 +932,22 @@ mod tests {
 
     #[test]
     fn resolved_layout_keeps_cpu_column_fixed() {
-        let narrow =
-            panes::resolve_layout(Rect::new(0, 0, 80, 30), 30, 12, BottomRow::Diagnostics, 20);
-        let wide =
-            panes::resolve_layout(Rect::new(0, 0, 150, 30), 30, 12, BottomRow::Diagnostics, 20);
+        let narrow = panes::resolve_layout(
+            Rect::new(0, 0, 80, 30),
+            30,
+            30,
+            12,
+            BottomRow::Diagnostics,
+            20,
+        );
+        let wide = panes::resolve_layout(
+            Rect::new(0, 0, 150, 30),
+            30,
+            30,
+            12,
+            BottomRow::Diagnostics,
+            20,
+        );
 
         assert_eq!(narrow.area(PaneId::Cpu).width, CPU_PANE_WIDTH);
         assert_eq!(wide.area(PaneId::Cpu).width, CPU_PANE_WIDTH);
@@ -916,8 +955,14 @@ mod tests {
 
     #[test]
     fn top_row_has_no_dead_space_above_targets() {
-        let layout =
-            panes::resolve_layout(Rect::new(0, 0, 120, 30), 30, 12, BottomRow::Diagnostics, 20);
+        let layout = panes::resolve_layout(
+            Rect::new(0, 0, 120, 30),
+            30,
+            30,
+            12,
+            BottomRow::Diagnostics,
+            20,
+        );
         let package = layout.area(PaneId::Package);
         let git = layout.area(PaneId::Git);
         let targets = layout.area(PaneId::Targets);
@@ -940,8 +985,14 @@ mod tests {
         // `panes::resolve_layout` with top-row inner height 4 gives `PaneId::Cpu`
         // more than `panes::cpu_required_pane_height(12)`, fitting every CPU row and
         // leaving more height for Targets.
-        let layout =
-            panes::resolve_layout(Rect::new(0, 0, 120, 40), 30, 12, BottomRow::Diagnostics, 4);
+        let layout = panes::resolve_layout(
+            Rect::new(0, 0, 120, 40),
+            30,
+            30,
+            12,
+            BottomRow::Diagnostics,
+            4,
+        );
 
         assert!(layout.area(PaneId::Cpu).height > super::panes::cpu_required_pane_height(12));
     }

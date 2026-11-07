@@ -5,6 +5,7 @@ use tui_pane::PaneFocusState;
 
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
+use crate::project::Visibility;
 use crate::tui::app::App;
 use crate::tui::panes::PaneId;
 use crate::tui::test_support;
@@ -149,5 +150,43 @@ fn narrow_language_subtotals_keep_the_category_name() -> anyhow::Result<()> {
     let mut app = language_app();
     let buffer = test_support::draw_pane(&mut app, PaneId::Lang, 49)?;
     test_support::position(&buffer, "└ code")?;
+    Ok(())
+}
+
+#[test]
+fn deleted_languages_do_not_present_cached_counts_as_current() -> anyhow::Result<()> {
+    let mut app = language_app();
+    app.project_list
+        .at_path_mut(Path::new(PROJECT_PATH))
+        .expect_found("the project")
+        .visibility = Visibility::Deleted;
+    app.scan.bump_generation();
+    app.ensure_detail_cached();
+    let buffer = test_support::draw_pane(&mut app, PaneId::Lang, 80)?;
+    let text = test_support::rows(&buffer).join("\n");
+    assert!(text.to_lowercase().contains("deleted"), "{text}");
+    assert!(
+        !text.contains("Rust"),
+        "cached language rows remain: {text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn deleted_languages_leave_the_body_empty() -> anyhow::Result<()> {
+    let mut app = language_app();
+    app.project_list
+        .at_path_mut(Path::new(PROJECT_PATH))
+        .expect_found("the project")
+        .visibility = Visibility::Deleted;
+    app.scan.bump_generation();
+    app.ensure_detail_cached();
+    let buffer = test_support::draw_pane(&mut app, PaneId::Lang, 80)?;
+    test_support::position(&buffer, "Languages — deleted")?;
+    for y in 1..buffer.area.bottom() - 1 {
+        for x in 1..buffer.area.right() - 1 {
+            assert_eq!(buffer[(x, y)].symbol(), " ");
+        }
+    }
     Ok(())
 }
