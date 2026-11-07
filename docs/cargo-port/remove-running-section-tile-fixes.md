@@ -2585,9 +2585,9 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - A live shot shows the disk value in GiB after mem.
 - Idle tile CPU does not rise by more than the spread of 
 
-### Phase 54 — The reader SIGKILL scenario passes in a full Mac run  · status: todo
+### Phase 54 — The reader SIGKILL scenario passes in a full Mac run  · status: done
 
-**Depends on:** Phase 43c (both change `reader_scenario.py`)
+**Depends on:** none (showrunner, 2026-11-06: it runs before Phase 43c because it blocked two merges)
 
 #### Work Order
 
