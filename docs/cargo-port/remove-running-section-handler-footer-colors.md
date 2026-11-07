@@ -292,6 +292,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 28 replaces the bare `Option` results of the selection API (`selected_span`, `containing`, `follow_focused`, `surface`, `surface_mut`, `Cells.focused`, `selection_surface`, `Cells::with_selections`) with named results. Use those names; do not add a new bare `Option`.
 - Phase 28 pins the accounts heading and column headers. Pinned header lines and scrolling body rows have different screen-to-content mappings: a pinned line maps to a fixed content line, and a body row maps through the scroll offset below the pinned lines. Keep that whole mapping (pinned lines, body offset and pinned count) with the painted frame, not only the scroll offset.
 - Phase 16's selected-row behavior (keys, clicks and the wheel; `render/selection_tests.rs`) stays as it is.
+- Phase 65 (accounts table): the role lines of one account share one selection span, and the scrolled table ends in a total tail that has no selection (`summary/accounts.rs` ≈997, `interaction.rs` ≈405). So row identities do not cover all painted content: the painted record keeps the total tail as painted content with no row identity. The total-tail regression (`render/accounts_grid_tests.rs` ≈877) stays green.
 - Phase 36: the foot readout reads the selection after the cell paints (`draw_cell_with_rows_readout` calls `TileCells::rows_readout`, `tiles/draw.rs`), and cargo-handler `Cells::rows_readout` (`render/mod.rs` ≈764) answers from `app.selections`. Keep that order when the frame record changes, so `content rows: N of M` follows the selection during motion; `selected_rows_readout_follows_moves_and_keeps_unselected_counts` (`render/mod.rs`) stays green.
 - Tests in tui_pane tiles live in the inline `mod tests` of `tiles/grid.rs` (≈6429, motion tests), `tiles/draw.rs` (≈961, motion content tests) and `tiles/host.rs` (≈205), and in `tiles/host_tests.rs` (registered at `host.rs` ≈446). There is no `tiles/tests/` directory.
 - Phase 17: drawing prepares `TreeMetrics` across all tiles in one screen column and saves them in `App.tree_layouts` (`render/mod.rs` ≈177); since phase 23 each drawn group shares one age layout (`summary/age.rs` `AgeLayout`). A click must map through the metrics that were drawn, not ones rebuilt from current rows and time. Add a regression: another tile in the same screen column changes the shared widths between draw and click, and the click still selects the header drawn under the pointer, with the drawn group's shared age layout kept.
@@ -1498,73 +1499,29 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 65 — Tiles settle at once when the accounts table wraps  · status: done
 
-**Depends on:** none. Runs now, beside Phase 62's checkpoint and Phase 42. Where it shares files with Phase 42, Phase 42 lands first, and this phase merges main and builds on it (showrunner, 2026-11-05).
+**Depends on:** none.
 
-#### Work Order
+#### As-built
 
-**Goal:** the accounts table of Phase 61 lands, and tiles settle in two draws as on main. The second draw keeps the first draw's placements, at no CPU cost against main.
-
-**Source:** phase 61 findings F016 and F017, moved here by showrunner ruling d024d5df; Phase 61's table changes, merged in by the showrunner on 2026-11-05. Base: the Phase 61 tree, saved as unit session `phases/65/base_61_table.patch` (main's `tui_pane` plus the table changes). Round 4 patch and evidence: unit session `phases/61/round4_whole_tree.patch`, `phases/61/evidence/round4-*.txt`. Attempts log: memory `attempts-phase61-layout-settle`.
-
-**The defect:** tile demand depends on tile width, tile width depends on demand, and provider preparation changes demand. At width 200 by height 70, the second draw changes the first draw's placements.
-
-**Tries that failed:**
-1. A draw loop in the test helper hid the defect.
-2. A candidate search before preparation settled in two draws, but made 2+P demand calls per draw and measured unprepared state.
-3. One preparation, then a search only when one named input type changed, made exactly 2 calls on an unchanged draw. The selected layout did not survive the next preparation.
-4. Group demand ignores height compression (`TreePresentation::HeightCompressed`). Width 200 settles. Width 80 flips: demand is 6 rows at width 78 and 4 rows at width 39. Kept as part of the fix.
-5. Full-view demand at every width. All 4 widths settle, but 12 existing assertions fail: a narrow tile must ask only for the rows of its compressed view. Rejected.
-
-**Why a search:** width-dependent demand is intended. When the grid measures only at current widths, width 80 has no fixed point. Each column count must be tested at its own widths (showrunner ruling c6f4c107, 2026-11-05).
-
-**Spec:**
-1. Phase 61's Spec and State model are this phase's table contract. The saved base already holds that work.
-2. Try 4 stays in the handler. The candidate search goes in `tui_pane`, per item 6 of the state model. No public `tui_pane` trait that cargo-tile implements changes.
-3. No assertion changes. The `paint` helper keeps main's two fixed draws.
-4. CHANGELOG: the Phase 61 Changed line stays; add one Fixed line only if users see the settle change.
-5. Stop rule: if the search cannot hold 2 demand calls on an unchanged draw, or an assertion must change, stop and report.
-
-**Approach (Astra review, unit session `phases/61/astra_F016_round4_review.md`):** start from main's `tui_pane`. Do not restore the planner first.
-1. Add a controlled test with the width-200 fixture. Hold source data, time and selections constant, and use a fresh provider for each comparison. Compare both draw-width sets under each draw's preparation allocations. Record raw summary height, `summary_width`, each group's rows, shared presentation, scroll offsets and minimum tile width.
-2. Let that test select the change:
-   - If group demand changes at fixed widths, separate the handler's requested content rows from allocation-dependent compression (`TreeMeasurement::allocated`, `agent_cell.rs`). Keep drawing, selection and readout in agreement.
-   - If summary demand drives the change, derive the preferred width from the source for the required account columns, not from fitted lines (`SummaryLayout::preferred_width`). Keep the exact wrapped height and all required facts.
-3. Restore a planner only if these smaller changes cannot meet the gate. The selected destination must then survive the preparation for that destination. A fixed number of hidden draws gives no general guarantee.
-
-**Acceptance condition:** the first selected destination stays unchanged on the next draw with unchanged inputs. Preparation stays before every `cells.demands` call.
-
-**Layout state model (showrunner rulings d024d5df and c6f4c107, 2026-11-05):**
-Each layout state has one owning record. Item 6 is the one new record.
-1. Provider preparation. Owner: the provider (cargo-tile `row_end`, `cell_gap`, `layouts`, `whole_short_tables`, `row_uses`; cargo-handler `summary_selection`, shared tree metrics, viewports). Built only by `prepare_moving_frame` in `draw_tile_grid`, once per draw, before any `cells.demands` call. It changes demand, so nothing re-prepares after a selection.
-2. Demands. Owner: `TileGrid.demands`. Changed only by `replace_demands`, from `sync_demands`. Each change clears item 5.
-3. Held layout (rows, focus, summary span, summary depth). Owner: `TileGrid.held`. Changed by `replan_layout_endpoints`, `sync_demands`, `resolve_destination_depth`, `advance` and `complete_arrangement`.
-4. Motion and destinations. Owner: `TileGrid.motion` and `TileGrid.pending`. Changed by `replan_layout_endpoints`, `open_waiting_commands_in_current_motion`, `queue_steps`, `advance` and `resize_for_focus`. `settle_for_test` is test-only.
-5. Admission decision. Owner: `TileGrid.layout_admission`, a cache of items 2 and 3 with the layout rules. It holds no fact of its own.
-6. Selected plan (new). Owner: the `TileGrid` field `LayoutSelection`.
-   1. Inputs: `LayoutSelectionInputs`, compared whole. It holds the area, target arrangement, growth, `EndpointLayoutRules`, and the `LayoutDemandMeasurement` at each candidate width list.
-   2. Selected: the widths, demands and depth. The widths determine the column count.
-   3. Built only by the candidate search in `sync_measured_demands`. The search tests each permitted column count at that count's own widths, and measures each distinct width list once.
-   4. A draw replaces the measurement at its current widths, then compares the complete inputs. Equal inputs reuse the selection with no candidate call; an unchanged draw makes two `cells.demands` calls.
-   5. The search reads no held rows, current slots, frame row usage or retargeted destination constraints.
-   6. Item 1 stays before every demand call. Nothing prepares again after selection.
-   7. The handler keeps requested tree rows apart from allocation height (`CellView::requested_at_width`). Width compression stays part of the provider's demand.
-   8. Known reuse limit (accepted, showrunner 70b8dbf4): a change that affects only an unmeasured candidate width is not seen until a current-width input changes. A current width list absent from the record forces a search; motion can produce one.
-
-Draw order: prepare, measure at current widths, search only when the inputs changed, sync, draw. An unchanged draw makes exactly 2 `cells.demands` calls, as main does.
-
-**Constraints from prior phases:**
-- Phase 64: `census::schedule::spawn` takes the configured `herdr_read_timeout` (`terminal.rs` ≈81, `census/schedule.rs` ≈694). This phase's `terminal.rs` change keeps that argument.
+- Phase 61's accounts table (role rows, count columns, total tail) ships here; Phase 61's Spec and State model are its contract.
+- The tile grid chooses its column count by a candidate search in `TileGrid::sync_measured_demands` (`crates/tui_pane/src/tiles/grid.rs`). Each permitted column count is tested at its own widths, and each distinct width list is measured once.
+- The `TileGrid` field `LayoutSelection` keeps the selected widths, demands and depth. Its inputs, `LayoutSelectionInputs`, are compared whole: area, target arrangement, growth, `EndpointLayoutRules`, and the `LayoutDemandMeasurement` at each candidate width list. Equal inputs reuse the selection with no candidate call, so an unchanged draw makes exactly 2 `cells.demands` calls.
+- Draw order: prepare, measure at current widths, search only when the inputs changed, sync, draw. Provider preparation (`prepare_moving_frame`) runs once per draw before every demand call; nothing prepares again after selection.
+- The handler keeps requested tree rows apart from height compression: `CellView::requested_at_width` (`agent_cell.rs`) requests the rows of the view at each width, and `TreePresentation::HeightCompressed` applies only at allocation. Width compression stays part of the demand.
+- Tiles settle in two draws at widths 200, 80, 50 and 40; the first selected destination holds on the next draw with unchanged inputs.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs`, `draw.rs`, `crates/tui_pane/CHANGELOG.md`
-- `crates/cargo-handler/src/agent_cell.rs`, `interaction.rs`, `sort.rs`, `terminal.rs`, `CHANGELOG.md`
-- `crates/cargo-handler/src/summary/mod.rs`, `accounts.rs`, `constants.rs`
-- `crates/cargo-handler/src/census/accounts.rs`
-- Tests: `summary/{accounts_tests,accounts_gradient_tests,accounts_header_sort_tests,role_span_tests,hierarchy_note_tests}.rs`, `census/accounts_wire_tests.rs`, `render/{accounts_grid_tests,pinned_accounts_tests,narrow_width_tests}.rs`
+- `crates/tui_pane/src/tiles/grid.rs` — `LayoutSelection`, `LayoutSelectionInputs`, `LayoutDemandMeasurement`, `sync_measured_demands`
+- `crates/tui_pane/src/tiles/draw.rs` — draw order around the search
+- `crates/cargo-handler/src/agent_cell.rs` — `CellView::requested_at_width`, `TreePresentation::HeightCompressed`
+- `crates/cargo-handler/src/interaction.rs`, `sort.rs`, `terminal.rs`, `summary/{mod,accounts,constants}.rs`, `census/accounts.rs` — accounts table, role counts and sort
+- `crates/cargo-handler/src/render/narrow_width_tests.rs` — first-frame demand calls 200:7, 80:4, 50:2, 40:2, then exactly 2; a refresh drives real motion through `tick()` to arrival with no second motion
 
-**Workers:** 1 writer.
+**Binds later work:** a tile requests rows through `CellView::requested_at_width`, and the grid reuses its selected layout while its measurement inputs stay equal; the narrow-width demand-count tests and `grid_at_height_70_keeps_all_work_rows_and_accounts` stay green. The accounts table ends in a total tail that is painted with no row identity; role lines of one account share one selection span.
 
-**Acceptance gate:** `verify.sh test cargo-handler`, `verify.sh test tui_pane`, `verify.sh test cargo-tile` and `verify.sh lint cargo-handler` clean, with no assertion changed to make a test pass; no test takes a second. `crates/cargo-tile/src/render.rs:10906` stays at exactly 2 calls. `grid_at_height_70_keeps_all_work_rows_and_accounts` passes at 200 by 70 with main's two-draw `paint`. A refresh case starts from a settled application, and checks pending motion and the drawn result across ordinary animation frames. Live shots of the accounts table at widths 200, 80, 50 and 40 on natedev with live counts. A live capture of cargo-tile against main at the same 4 widths; its layout is no worse. 3 CPU pairs against main for an unchanged draw, for cargo-handler and for cargo-tile; the result is not a cost. A Change-Review line.
+**Gotchas:** an input change that affects only an unmeasured candidate width is not seen until a current-width input changes; a current width list absent from the record forces a search, and motion can produce one (accepted limit). `settle_for_test` is test-only.
+
+**Ruled out:** a draw loop in the test helper (hid the defect); a search before preparation (2+P demand calls per draw, measured unprepared state); full-view demand at every width (a narrow tile must ask only for its compressed view's rows); a named overflow type for `RoleSessionCounts::checked_add` (it follows std `checked_add` and maps at once to `Reading::Unavailable`).
 
 ### Phase 62 — A worker that waits on a detached run shows in its unit's tree  · status: done
 
@@ -1965,12 +1922,13 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 **Source:** showrunner order 6d8cdb12, 2026-11-06: a Spec of a dropped phase stays only when it fixes something broken today. These came from Phase 55 (design check 2026-10-30, `phases/43/shots/ages_120x40.png`) and Phase 51 (design check 2026-10-29, `phases/41/live/handler_named.png`). Showrunner ruling 70b8dbf4, 2026-11-06, adds the probe fix: "The probe reports a refused config value the same way the TUI does. It adds no new check."
 
 **Constraints from prior phases:**
-- Phase 27 keeps the core columns on narrow tiles; `TreeColumns::for_lines` (`agent_cell.rs` ≈453) keeps a column only when a drawn row has a value. Phase 49b adds model and effort columns in the same file and runs after this phase.
-- `tree_cell_line` (`agent_cell.rs` ≈2602) drops the whole guide prefix when fewer than two name cells remain after it.
-- Both width paths drop Directory, Branch, Type, Age and Account in that order: local fitting through `ColumnDrop::ORDER` (`agent_cell.rs` ≈504) and shared-column fitting through `GroupFitStep::ORDER` (≈936).
+- Phase 27 keeps the core columns on narrow tiles; `TreeColumns::for_lines` (`agent_cell.rs` ≈493) keeps a column only when a drawn row has a value. Phase 49b adds model and effort columns in the same file and runs after this phase.
+- `tree_cell_line` (`agent_cell.rs` ≈2890) drops the whole guide prefix when fewer than two name cells remain after it.
+- Both width paths drop Directory, Branch, Type, Age and Account in that order: local fitting through `ColumnDrop::ORDER` (`agent_cell.rs` ≈544) and shared-column fitting through `GroupFitStep::ORDER` (≈970).
 - `SurfaceSelection::rows_readout` (`crates/cargo-handler/src/interaction.rs` ≈361) counts selectable identities. An unassigned table also draws its header line, which the count does not include.
 - Phase 41's shot: the unassigned pane says "content rows: 2 of 2" and draws 3 rows; the third, `phase41-check`, has the same status, account, branch and age as `cargo-liner-handler-c6`, with only its session cell lit.
 - `census::probe::print` (`census/probe.rs` ≈402) calls `LoadedConfig::load` and reads only `loaded.config`, so it drops `loaded.error`. The TUI keeps the defaults and shows that error in the settings overlay. Stdout carries one JSON report, which a remote caller parses.
+- Phase 65: a tile's demand now comes from `CellView::requested_at_width` (`agent_cell.rs`), which keeps requested tree rows apart from height compression, and the grid picks columns by a candidate search (`TileGrid::sync_measured_demands`, `crates/tui_pane/src/tiles/grid.rs`). Guide and column-width changes change that demand. The narrow-width tests in `crates/cargo-handler/src/render/narrow_width_tests.rs` (first-frame demand calls 200:7, 80:4, 50:2, 40:2, then exactly 2 on each later frame) and `grid_at_height_70_keeps_all_work_rows_and_accounts` must stay green with no assertion changed.
 
 **Spec:**
 1. Reproduce each defect below on today's tree with a red test first. A defect with no reproduction leaves this phase; report it to the director.
@@ -1978,7 +1936,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 3. Session names are cut (Phase 55 Spec 2). The same tile cut session names to two letters ("re…" for both "report" and "resources") beside a type column empty in 17 of 19 rows. Give an empty column's space to the session column. A column that is empty on most rows never takes room from session names.
 4. The unassigned count is wrong (Phase 51 Spec 2). Find out whether `phase41-check` is a real second session or a row left from an earlier frame. Stale: the pane clears every row it no longer draws. Real: the count includes it. The test reproduces the extra session identity or the stale cells across consecutive frames; equality of the drawn line count and the readout count is not the rule.
 5. The probe drops a refused config value (showrunner, 2026-11-06). As in the TUI, the probe keeps the defaults and reports `LoadedConfig.error`, with the same text. The text goes to stderr, because stdout carries the JSON report. Add no new check.
-6. The hung-host census test races (Phase 65 repair round 1, 2026-11-06). `census::schedule::tests::a_hung_host_delays_neither_this_machine_nor_another_host` (`census/schedule.rs` ≈1767) asserts `Some(1)` blocked-host starts after three local and three quick-host answers, but the blocked probe's thread can start later; one full-suite run on an unchanged file got `None`. Make the test wait for the blocked probe's start signal before it asserts, with no sleep and no new check. The test has been there since 1bcc4135f; Phase 65 did not touch the file.
+6. The hung-host census test races (Phase 65 repair round 1, 2026-11-06). `census::schedule::tests::a_hung_host_delays_neither_this_machine_nor_another_host` (`census/schedule.rs` ≈1721) asserts `Some(1)` blocked-host starts after three local and three quick-host answers, but the blocked probe's thread can start later; one full-suite run on an unchanged file got `None`. Make the test wait for the blocked probe's start signal before it asserts, with no sleep and no new check. The test has been there since 1bcc4135f; Phase 65 did not touch the file.
 7. CHANGELOG: one Fixed line.
 
 **Files:**
@@ -2043,10 +2001,11 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 **Source:** as Phase 49a. Unit session `phases/49/source.md`.
 
 **Constraints from prior phases:**
-- Two width paths: local fitting uses `ColumnDrop::ORDER` (`agent_cell.rs` ≈503); tiles that share a screen column use `GroupFitStep::ORDER` (≈935). Both drop effort before model; test both.
-- A click on the `model` or `effort` header sorts by the drawn value through `TreeLine::compare` (≈1260), `Unrecorded` included.
-- `TreeColumn` (`agent_cell.rs` ≈341) is `Session, Type, Role, Status, Account, Branch, Directory, Age`; `alignment` (≈357) and the header text (≈380) are per column. Phase 66 replaces the rule of `TreeColumns::for_lines` (≈453), which kept a column when some drawn row had a value: a column that is empty on most rows never takes room from session names. Phase 27 keeps the core columns on narrow tiles; Phase 43 changes the age text in the same file.
+- Two width paths: local fitting uses `ColumnDrop::ORDER` (`agent_cell.rs` ≈544); tiles that share a screen column use `GroupFitStep::ORDER` (≈970). Both drop effort before model; test both.
+- A click on the `model` or `effort` header sorts by the drawn value through `TreeLine::compare` (≈1415), `Unrecorded` included.
+- `TreeColumn` (`agent_cell.rs` ≈381) is `Session, Type, Role, Status, Account, Branch, Directory, Age`; `alignment` (≈397) and the header text (≈411) are per column. Phase 66 replaces the rule of `TreeColumns::for_lines` (≈493), which kept a column when some drawn row had a value: a column that is empty on most rows never takes room from session names. Phase 27 keeps the core columns on narrow tiles; Phase 43 changes the age text in the same file.
 - Phase 49a gives each row `ModelName` and `ReasoningEffort`, both with an `Unrecorded` case.
+- Phase 65: a tile requests its rows through `CellView::requested_at_width` (`agent_cell.rs` ≈2301), which keeps requested tree rows apart from height compression. The grid reuses its selected layout while its measurement inputs stay equal (`crates/tui_pane/src/tiles/grid.rs` ≈2385). New columns change demand only through that path. `crates/cargo-handler/src/render/narrow_width_tests.rs` (≈265: first-frame demand calls 200:7, 80:4, 50:2, 40:2, then exactly 2 on each later frame, and arrival with no second motion) stays green with no assertion changed.
 
 **Spec:**
 1. `TreeColumn::Model` (header `model`) and `TreeColumn::Effort` (header `effort`), after `Role`, left-aligned; `Unrecorded` draws nothing. Phase 66's rule applies to both columns: a column that is empty on most rows never takes room from session names.
