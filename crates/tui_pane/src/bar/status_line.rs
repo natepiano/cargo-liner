@@ -255,11 +255,11 @@ pub fn render<Ctx, G>(
     };
 
     let items = StatusLineItems {
-        uptime:     uptime_spans,
+        uptime: uptime_spans,
         navigation: navigation_spans,
-        center:     center_spans,
-        notes:      note_items,
-        globals:    global_spans,
+        center: center_spans,
+        notes: note_items,
+        globals: global_spans,
         with_hints,
     };
     render_sections(frame, area, palette, items);
