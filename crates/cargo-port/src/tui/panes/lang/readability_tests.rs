@@ -346,3 +346,47 @@ fn long_language_names_preserve_cpu_and_targets_widths() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn language_totals_keep_a_blank_cell_before_the_border() -> anyhow::Result<()> {
+    for (window, pane_width) in [(80, 50), (95, 60), (160, 80)] {
+        let mut app = language_app();
+        app.framework.color_mode = ColorMode::Colored;
+        let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Lang, window, pane_width)?;
+        let header = test_support::position(&buffer, "Total")?;
+        let rust = test_support::position(&buffer, "Rust")?;
+        for y in header.1..=rust.1 + 2 {
+            assert_eq!(
+                buffer[(pane_width - 2, y)].symbol(),
+                " ",
+                "{window}: {:?}",
+                test_support::rows(&buffer)
+            );
+            assert_eq!(buffer[(pane_width - 1, y)].symbol(), "│");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn ron_icon_keeps_all_three_letters_beside_the_language() -> anyhow::Result<()> {
+    let mut app = language_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.project_list
+        .at_path_mut(Path::new(PROJECT_PATH))
+        .expect_found("the fixture project")
+        .language_stats = Some(LanguageStats {
+        entries: vec![LangEntry {
+            language: "Rusty Object Notation".to_string(),
+            files:    1,
+            code:     10,
+            comments: 0,
+            blanks:   0,
+            children: Vec::new(),
+        }],
+    });
+    let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Lang, 80, 50)?;
+    let icon = test_support::position(&buffer, " RON")?;
+    assert_eq!(icon.0, 1);
+    Ok(())
+}

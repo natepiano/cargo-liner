@@ -89,6 +89,7 @@ pub(super) fn field_value_lines(
     value_style: Style,
     separate_value: bool,
 ) -> Vec<Line<'static>> {
+    let width = width.saturating_sub(1);
     let available = width.saturating_sub(prefix.width());
     if separate_value && value.width() > available {
         return vec![

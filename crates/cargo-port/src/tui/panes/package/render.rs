@@ -33,6 +33,7 @@ use tui_pane::warning_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::PackagePane;
+use super::constants::PATH_VALUE_RESERVE;
 use crate::constants::GIT_UNREADABLE_LABEL;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::LintStatus;
@@ -465,9 +466,7 @@ fn render_column_inner(
     let mut field_spans = Vec::new();
     let mut header_starts = Vec::new();
     let mut repeated_headers = Vec::new();
-    let disk_width = package_disk_value_width(ctx);
-    let label_width =
-        package_row_label_width(rows).min(usize::from(area.width).saturating_sub(disk_width + 2));
+    let label_width = package_row_label_width(rows).min(usize::from(area.width).saturating_sub(3));
     for (i, row) in rows.iter().enumerate() {
         match row {
             PackageRow::Description => {
@@ -620,9 +619,43 @@ fn append_package_heading(
         .styles
         .chrome
         .title_style(matches!(ctx.focus, PaneFocusState::Active));
-    for part in support::word_wrap(title, usize::from(width.saturating_sub(1))) {
+    for part in support::word_wrap(title, usize::from(width.saturating_sub(2))) {
         lines.push(Line::from(Span::styled(format!(" {part}"), style)));
     }
+}
+
+fn package_field_label(
+    ctx: &PackageRenderCtx<'_>,
+    field: DetailField,
+    label_width: usize,
+) -> &'static str {
+    let label = field.label();
+    if !matches!(
+        field,
+        DetailField::DiskTarget | DetailField::DiskNonTarget | DetailField::DiskOutOfTreeTarget
+    ) {
+        return label;
+    }
+    let original_indent = label.len() - label.trim_start().len();
+    let indent = ctx
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            PackageRow::Field(
+                child @ (DetailField::DiskTarget
+                | DetailField::DiskNonTarget
+                | DetailField::DiskOutOfTreeTarget),
+            ) => {
+                let child_label = child.label();
+                let text = child_label.trim_start();
+                let available_indent = label_width.checked_sub(text.width())?;
+                Some((child_label.len() - text.len()).min(available_indent))
+            },
+            _ => None,
+        })
+        .min()
+        .unwrap_or(original_indent);
+    &label[original_indent.saturating_sub(indent)..]
 }
 
 fn package_field_render(
@@ -633,9 +666,20 @@ fn package_field_render(
     selection: PaneSelectionState,
 ) -> PackageFieldRender {
     let mode = ctx.styles.chrome.color_mode;
+    let label_width = if matches!(
+        field,
+        DetailField::Disk
+            | DetailField::DiskTarget
+            | DetailField::DiskNonTarget
+            | DetailField::DiskOutOfTreeTarget
+    ) {
+        label_width.min(usize::from(area_width).saturating_sub(package_disk_value_width(ctx) + 3))
+    } else {
+        label_width
+    };
     PackageFieldRender {
         field,
-        label: field.label(),
+        label: package_field_label(ctx, field, label_width),
         label_width,
         area_width: usize::from(area_width),
         label_style: ctx
@@ -699,7 +743,7 @@ fn push_package_field_lines(lines: &mut Vec<Line<'static>>, render: PackageField
     let start = lines.len();
     let mut render = render;
     let style = render.label_style;
-    if render.label.width() > package_field_label_width(&render)
+    if render.label.trim_start().width() > package_field_label_width(&render)
         && render.label.width() < render.area_width
     {
         lines.push(Line::from(Span::styled(
@@ -739,8 +783,13 @@ fn push_package_field_lines(lines: &mut Vec<Line<'static>>, render: PackageField
             None
         });
         if let Some(indent) = local_indent
-            && indent + render.continuation.width() <= render.area_width
+            && render.continuation.width() <= render.area_width.saturating_sub(2)
         {
+            let indent = indent.min(
+                render
+                    .area_width
+                    .saturating_sub(render.continuation.width() + 1),
+            );
             lines.push(Line::from(Span::styled(
                 format!("{}{text}", " ".repeat(indent), text = render.continuation),
                 render.value_style,
@@ -801,15 +850,25 @@ fn push_single_package_field_line(lines: &mut Vec<Line<'static>>, render: &Packa
 }
 
 fn package_field_prefix(render: &PackageFieldRender) -> String {
-    let label = render.label;
     let label_width = package_field_label_width(render);
-    let label = render::truncate_with_ellipsis(label, label_width, "…");
+    let text = render.label.trim_start();
+    let indent = render.label.width().saturating_sub(text.width());
+    let indent = indent.min(label_width.saturating_sub(text.width()));
+    let label = format!("{}{text}", " ".repeat(indent));
+    let label = render::truncate_with_ellipsis(&label, label_width, "…");
     let padding = " ".repeat(label_width.saturating_sub(label.width()));
     format!(" {label}{padding} ")
 }
 
 fn package_field_label_width(render: &PackageFieldRender) -> usize {
-    render.label_width.min(render.area_width.saturating_sub(3))
+    let label_width = render.label_width.min(render.area_width.saturating_sub(3));
+    match render.field {
+        DetailField::Path => label_width.min(render.area_width.saturating_sub(PATH_VALUE_RESERVE)),
+        DetailField::Ci if !render.continuation.is_empty() => {
+            label_width.min(render.area_width.saturating_sub(render.value.width() + 3))
+        },
+        _ => label_width,
+    }
 }
 
 fn visible_row_rects(
@@ -929,6 +988,7 @@ pub(super) fn render_package_pane_body(
     let rows = panes::package_rows_from_data(&pkg_data);
     sync_package_viewport(pane, &pkg_data, &rows, *synced_description_height);
     let mut chrome = package_chrome(&pkg_data, pane_focus_state);
+    chrome.title = fit_package_title(&pkg_data, usize::from(area.width.saturating_sub(2)));
     let pane_inner = tui_pane::frame_inner(area);
     let metadata_state = ctx
         .selected_project_path
@@ -1157,6 +1217,27 @@ fn paint_package_selection(
     }
 }
 
+fn fit_package_title(data: &PackageData, width: usize) -> String {
+    let title = package_chrome(data, PaneFocusState::Inactive).title;
+    if title.trim_end().width() <= width {
+        return title;
+    }
+    let label = if data.title.width() < width {
+        format!(" {}", data.title)
+    } else {
+        data.title.clone()
+    };
+    let available = width.saturating_sub(label.width());
+    if available > 3 {
+        format!(
+            "{label} - {}",
+            render::truncate_with_ellipsis(&data.name, available - 3, "…")
+        )
+    } else {
+        label
+    }
+}
+
 fn package_chrome(data: &PackageData, focus: PaneFocusState) -> PaneFrameChrome {
     let deletion = if data.deletion == PackageDeletion::Deleted {
         " (deleted)"
@@ -1360,10 +1441,9 @@ fn render_stats_column(
     });
 
     if separator == 0 && boxes.structure.is_some() {
-        chrome.title = render::truncate_with_ellipsis(
-            &chrome.title,
+        chrome.title = fit_package_title(
+            context.data,
             usize::from(column.x.saturating_sub(project_inner.x).saturating_sub(1)),
-            "…",
         );
         chrome.labels.extend(tui_pane::rule_title_label(
             Rect::new(column.x, rule_top, column.width.saturating_add(1), 1),

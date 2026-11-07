@@ -857,7 +857,7 @@ impl GridLines {
             OverlayStyle::Title(patch) => chrome.title_style(overlay.frame.focused).patch(patch),
             OverlayStyle::Label(style) => style,
         };
-        let text = Line::from(
+        let mut text = Line::from(
             overlay
                 .text
                 .spans
@@ -865,9 +865,16 @@ impl GridLines {
                 .map(|span| Span::styled(span.content.as_ref(), style.patch(span.style)))
                 .collect::<Vec<_>>(),
         );
-        if matches!(overlay.style, OverlayStyle::Title(_))
-            && overlay.text.width() > row.width.into()
-        {
+        if matches!(overlay.style, OverlayStyle::Title(_)) && text.width() > row.width.into() {
+            while let Some(span) = text.spans.last_mut() {
+                span.content = span.content.trim_end_matches(' ').to_owned().into();
+                if !span.content.is_empty() {
+                    break;
+                }
+                text.spans.pop();
+            }
+        }
+        if matches!(overlay.style, OverlayStyle::Title(_)) && text.width() > row.width.into() {
             let text_width = row.width.saturating_sub(1);
             let mut visible_width = 0;
             let mut elision_style = style;
@@ -1121,6 +1128,46 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         grid_lines.render(&mut buffer, chrome(), PaneBorders::Shared);
         rows(&buffer, area)
+    }
+
+    #[test]
+    fn a_title_uses_its_trailing_padding_cell_before_it_cuts_text() {
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            for focused in [false, true] {
+                let area = Rect::new(0, 0, 16, 3);
+                let mut grid = GridLines::new(area);
+                grid.add_titled(
+                    PaneFrame::new(area).with_focus(focused),
+                    Line::from(vec![
+                        Span::styled("Not a git repo", Style::default().fg(Color::Blue)),
+                        Span::raw(" "),
+                    ]),
+                );
+                let mut buffer = Buffer::empty(area);
+                grid.render(
+                    &mut buffer,
+                    PaneChrome {
+                        color_mode: mode,
+                        ..chrome()
+                    },
+                    PaneBorders::Separate,
+                );
+                mode.clear_colors(&mut buffer);
+                let title: String = (1..15).map(|x| buffer[(x, 0)].symbol()).collect();
+                assert_eq!(title, "Not a git repo", "{mode:?}, focused={focused}");
+                assert_eq!(
+                    buffer[(15, 0)].symbol(),
+                    if mode == ColorMode::NoColor && focused {
+                        "┓"
+                    } else {
+                        "┐"
+                    }
+                );
+                if mode == ColorMode::Colored {
+                    assert_eq!(buffer[(14, 0)].fg, Color::Blue);
+                }
+            }
+        }
     }
 
     #[test]

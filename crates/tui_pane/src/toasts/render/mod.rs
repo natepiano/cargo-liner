@@ -9,6 +9,10 @@ mod overflow_tests;
 #[cfg(test)]
 mod placement_tests;
 #[cfg(test)]
+mod repair_tests;
+#[cfg(test)]
+mod sentence_tests;
+#[cfg(test)]
 mod test_support;
 
 pub use drawing::ToastsRenderCtx;

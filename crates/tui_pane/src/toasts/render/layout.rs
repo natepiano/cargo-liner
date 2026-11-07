@@ -36,7 +36,8 @@ pub(super) fn render_top_down(
         let x = area
             .right()
             .saturating_sub(TOAST_SIDE_GAP)
-            .saturating_sub(layout.width);
+            .saturating_sub(layout.width)
+            .max(area.left());
         let card = Rect {
             x,
             y: cursor_y,
@@ -78,7 +79,8 @@ pub(super) fn render_bottom_up(
         let x = area
             .right()
             .saturating_sub(TOAST_SIDE_GAP)
-            .saturating_sub(layout.width);
+            .saturating_sub(layout.width)
+            .max(area.left());
         let card = Rect {
             x,
             y: cursor_y,

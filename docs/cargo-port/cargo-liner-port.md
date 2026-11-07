@@ -574,7 +574,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Ruled out:** a `Not a git repo` title for the empty Git pane; a pane title does not change when data arrives.
 
-### Phase 4l — Labels, titles and columns read whole in narrow panes  · status: todo
+### Phase 4l — Labels, titles and columns read whole in narrow panes  · status: done
 
 **Depends on:** Phase 4j (both edit `crates/cargo-port/src/tui/panes/targets/` and `crates/cargo-port/src/tui/panes/git/`) and Phase 4k (both edit `crates/tui_pane/src/toasts/render/`)
 

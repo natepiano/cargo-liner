@@ -32,6 +32,13 @@ pub enum ToastCountdownState {
     Expired,
 }
 
+/// Whether a toast has started its exit animation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ToastExitState {
+    Visible,
+    Exiting,
+}
+
 /// Render-ready view of a toast.
 #[derive(Clone, Debug)]
 pub struct ToastView {
@@ -47,6 +54,7 @@ pub struct ToastView {
     pub(super) min_height:     u16,
     pub(super) desired_height: u16,
     pub(super) settled_height: u16,
+    pub(super) exit_state:     ToastExitState,
 }
 
 impl ToastView {
