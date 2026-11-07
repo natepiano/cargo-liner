@@ -434,10 +434,7 @@ fn work_type_has_its_own_column_and_subagent_roles_name_the_work() {
                 MINUTE,
             ),
             ChildRow {
-                kind: ChildKind::Subagent(crate::census::transcript::SubagentRole::from_record(
-                    "general-purpose",
-                    "Review source changes",
-                )),
+                kind: ChildKind::Subagent(crate::census::transcript::SubagentRole::Reviewer),
                 ..child(
                     0,
                     ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
@@ -476,7 +473,7 @@ fn work_type_has_its_own_column_and_subagent_roles_name_the_work() {
     assert_eq!(&words[..3], &["session", "type", "role"], "{headers}");
     for (name, expected_type, expected_role) in [
         ("cargo test", "shell", ""),
-        ("Review source changes", "subagent", "review"),
+        ("Review source changes", "subagent", "reviewer"),
         ("Do the requested work", "subagent", ""),
         ("seat task", "", "worker"),
         ("director", "", ""),

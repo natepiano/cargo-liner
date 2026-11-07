@@ -12,12 +12,14 @@ use std::sync::Arc;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Position;
+use serde_json::Value;
 use tui_pane::TerminalApp;
 
 use super::*;
 use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
+use crate::census::transcript::SubagentRole;
 use crate::theme;
 use crate::theme::Role;
 use crate::theme::SessionHue;
@@ -788,12 +790,30 @@ fn palette_rows(family: FullPaletteRows) -> (Vec<AgentRow>, Vec<(String, String)
     };
     let mut targets = Vec::new();
     let mut rows = Vec::new();
+    let mut role_rows = Vec::new();
     for (index, word) in labels.iter().enumerate() {
         let pid = 100 + u32::try_from(index).expect("palette row");
         let label = format!("palette-row-{index:02}");
         match family {
             FullPaletteRows::Roles => {
-                targets.push((label.clone(), word.clone()));
+                let role =
+                    match word.as_str() {
+                        "showrunner" => SubagentRole::Showrunner,
+                        "unit-director" => {
+                            rows.push(serde_json::from_value(serde_json::json!({
+                            "agent":"claude", "pid":pid, "session_id":"palette-unit",
+                            "name":label, "started":pid, "directory":"/fixture", "children":[]
+                        })).expect("unit director session"));
+                            targets.push((label, "unit".to_owned()));
+                            continue;
+                        },
+                        "astra-designer" => SubagentRole::Agent,
+                        "astra-reviewer" => SubagentRole::Reviewer,
+                        other => panic!("unmapped fixture role {other}"),
+                    };
+                let label = format!("{label}-{word}");
+                targets.push((label.clone(), role.text().to_owned()));
+                role_rows.push((label, role));
             },
             FullPaletteRows::Accounts | FullPaletteRows::Sessions => {
                 let mut value = serde_json::json!({
@@ -815,14 +835,13 @@ fn palette_rows(family: FullPaletteRows) -> (Vec<AgentRow>, Vec<(String, String)
         }
     }
     let children: Vec<_> = if matches!(family, FullPaletteRows::Roles) {
-        labels
-            .iter()
-            .zip(&targets)
+        role_rows
+            .into_iter()
             .enumerate()
-            .map(|(index, (role, (label, _)))| {
+            .map(|(index, (label, role))| {
                 serde_json::json!({
                     "kind":"subagent","name":label,"depth":0,"started":100+index,
-                    "subagent_role":crate::census::transcript::SubagentRole::from_record(role,"")
+                    "subagent_role":role
                 })
             })
             .collect()
@@ -831,10 +850,19 @@ fn palette_rows(family: FullPaletteRows) -> (Vec<AgentRow>, Vec<(String, String)
             serde_json::json!({"kind":"shell","depth":0,"pid":11,"name":"palette-focus-away","started":100}),
         ]
     };
+    (palette_owner_rows(rows, children, family), targets)
+}
+
+/// Add the owner and the separate focus target to the palette rows.
+fn palette_owner_rows(
+    mut rows: Vec<AgentRow>,
+    children: Vec<Value>,
+    family: FullPaletteRows,
+) -> Vec<AgentRow> {
     rows.push(
         serde_json::from_value(serde_json::json!({
             "agent":"claude","pid":10,"session_id":"palette-owner","name":"palette-owner",
-            "started":100,"directory":"/fixture","children":children
+            "started":100,"directory":"/fixture","children":Value::Array(children)
         }))
         .expect("palette owner"),
     );
@@ -849,7 +877,7 @@ fn palette_rows(family: FullPaletteRows) -> (Vec<AgentRow>, Vec<(String, String)
             .expect("second focus surface"),
         );
     }
-    (rows, targets)
+    rows
 }
 
 fn check_full_default_dark_palette(family: FullPaletteRows, tint: bool, active: bool) {
@@ -877,9 +905,16 @@ fn check_full_default_dark_palette(family: FullPaletteRows, tint: bool, active: 
     app.footer_colors = crate::footer_colors::FooterColorFile::fixture(path);
     app.footer_colors.refresh();
     let (rows, targets) = palette_rows(family);
+    let hierarchy = match family {
+        FullPaletteRows::Roles => serde_json::from_value::<HierarchyEdges>(serde_json::json!([
+            {"manager":"palette-owner", "member":"palette-unit", "role":"unit"}
+        ]))
+        .expect("unit director hierarchy"),
+        FullPaletteRows::Accounts | FullPaletteRows::Sessions => HierarchyEdges::default(),
+    };
     app.census.apply(CensusUpdate::Local {
         rows,
-        hierarchy: HierarchyEdges::default().into(),
+        hierarchy: hierarchy.into(),
         stage: ScanStage::Completed,
     });
     let mut renderer = SelectedRowRenderer::new(&mut app, 80);

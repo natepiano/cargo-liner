@@ -20,7 +20,7 @@ fn column_rows() -> Vec<AgentRow> {
     let mut owner = agent(10, "owner", HOUR, None);
     owner.children = vec![child(
         0,
-        ChildKind::Subagent(SubagentRole::from_record("review", "")),
+        ChildKind::Subagent(SubagentRole::Reviewer),
         None,
         "inspect-widget",
         MINUTE,
@@ -103,7 +103,7 @@ fn tiles_keep_type_and_role_headers_when_their_rows_have_values() {
     for width in [65, 220] {
         let buffer = drawn_into(owner, &cells, width, 12);
         let y = find(&buffer, "inspect-widget").expect("work row").1;
-        for (header, word) in [("type", "subagent"), ("role", "review")] {
+        for (header, word) in [("type", "subagent"), ("role", "reviewer")] {
             let x = find(&buffer, header).expect("occupied column header").0;
             let actual: String = (x..x + summary::cell_width(word))
                 .map(|x| buffer[(x, y)].symbol())
@@ -434,7 +434,7 @@ fn status_columns_fit_painted_words_without_an_offscreen_thinking_row() {
         activity: AgentActivity::Active(activity),
         ..child(
             0,
-            ChildKind::Subagent(SubagentRole::from_record("review", "")),
+            ChildKind::Subagent(SubagentRole::Reviewer),
             None,
             name,
             age,
@@ -471,36 +471,28 @@ fn status_columns_fit_painted_words_without_an_offscreen_thinking_row() {
 fn role_columns_fit_visible_roles_without_hidden_or_other_screen_column_roles() {
     let mut left = agent(10, "left-owner", HOUR, None);
     left.children = [
-        ("implementation", "impl", 600),
-        ("inspection", "review", 500),
-        ("another-inspection", "review", 400),
-        ("later-inspection", "review", 300),
-        ("last-inspection", "review", 200),
-        ("offscreen-manager", "showrunner", 60),
+        ("implementation", SubagentRole::Impl, 600),
+        ("inspection", SubagentRole::Reviewer, 500),
+        ("another-inspection", SubagentRole::Reviewer, 400),
+        ("later-inspection", SubagentRole::Reviewer, 300),
+        ("last-inspection", SubagentRole::Reviewer, 200),
+        ("offscreen-manager", SubagentRole::Showrunner, 60),
     ]
     .into_iter()
-    .map(|(name, role, age)| {
-        child(
-            0,
-            ChildKind::Subagent(SubagentRole::from_record(role, "")),
-            None,
-            name,
-            age,
-        )
-    })
+    .map(|(name, role, age)| child(0, ChildKind::Subagent(role), None, name, age))
     .collect();
     let mut lower = agent(20, "lower-owner", HOUR, None);
     lower.children = vec![
         child(
             0,
-            ChildKind::Subagent(SubagentRole::from_record("impl", "")),
+            ChildKind::Subagent(SubagentRole::Impl),
             None,
             "lower-implementation",
             600,
         ),
         child(
             0,
-            ChildKind::Subagent(SubagentRole::from_record("review", "")),
+            ChildKind::Subagent(SubagentRole::Reviewer),
             None,
             "lower-inspection",
             500,
@@ -509,7 +501,7 @@ fn role_columns_fit_visible_roles_without_hidden_or_other_screen_column_roles() 
     let mut right = agent(30, "right-owner", HOUR, None);
     right.children.push(child(
         0,
-        ChildKind::Subagent(SubagentRole::from_record("showrunner", "")),
+        ChildKind::Subagent(SubagentRole::Showrunner),
         None,
         "visible-manager",
         600,
@@ -530,26 +522,29 @@ fn role_columns_fit_visible_roles_without_hidden_or_other_screen_column_roles() 
         let role_x = header.find("role").expect("role column");
         let status_x = header.find("status").expect("status column");
         assert!(rows.iter().any(|line| line.contains("impl")), "{rows:?}");
-        assert!(rows.iter().any(|line| line.contains("review")), "{rows:?}");
+        assert!(
+            rows.iter().any(|line| line.contains("reviewer")),
+            "{rows:?}"
+        );
         assert!(
             !rows.iter().any(|line| line.contains("offscreen-manager")),
             "{rows:?}"
         );
         assert_eq!(
             status_x - role_x,
-            6 + 2,
-            "six-cell role plus two-cell gap: {rows:?}"
+            8 + 2,
+            "eight-cell role plus two-cell gap: {rows:?}"
         );
         for (y, _) in rows
             .iter()
             .enumerate()
-            .filter(|(_, line)| line.contains("review"))
+            .filter(|(_, line)| line.contains("reviewer"))
         {
             let y = rect.y + u16::try_from(y).expect("drawn row fits");
             let start = rect.x + u16::try_from(role_x).expect("role column fits");
             let end = rect.x + u16::try_from(status_x).expect("status column fits");
             let role: String = (start..end).map(|x| buffer[(x, y)].symbol()).collect();
-            assert_eq!(role, "review  ");
+            assert_eq!(role, "reviewer  ");
         }
     }
     let right = allocation_text(&buffer, right_area);
@@ -661,7 +656,7 @@ fn narrow_core_owner() -> AgentRow {
         activity: AgentActivity::Active(Activity::Waiting),
         ..child(
             0,
-            ChildKind::Subagent(SubagentRole::from_record("review", "")),
+            ChildKind::Subagent(SubagentRole::Reviewer),
             None,
             "review-name-that-needs-an-ellipsis",
             MINUTE,
@@ -674,7 +669,7 @@ fn narrow_core_owner() -> AgentRow {
 fn narrow_column_visibility_keeps_whole_core_headers_status_and_gaps() {
     let owner = narrow_core_owner();
     let cell = entry(&owner, None);
-    for width in [28, 32, 40, 50] {
+    for width in [30, 32, 40, 50] {
         let buffer = drawn_into(&cell, &[], width, 10);
         let text = lines(&buffer);
         let header = text
@@ -713,8 +708,8 @@ fn narrow_below_core_cuts_names_before_role_and_never_cuts_status() {
         "whole status below core: {text:?}"
     );
     assert!(
-        text.iter().any(|line| line.contains("review")),
-        "six-cell role still fits after cutting session: {text:?}"
+        text.iter().any(|line| line.contains("reviewer")),
+        "eight-cell role still fits after cutting session: {text:?}"
     );
     assert!(
         text.iter().any(|line| line.contains('…')),
