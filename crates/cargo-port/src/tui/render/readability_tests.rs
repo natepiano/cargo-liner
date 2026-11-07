@@ -33,6 +33,7 @@ use crate::tui::panes::PackageData;
 use crate::tui::panes::PackagePresence;
 use crate::tui::panes::PackageVersion;
 use crate::tui::panes::PaneId;
+use crate::tui::panes::QuotaObservation;
 use crate::tui::panes::WorktreeInfo;
 use crate::tui::project_list::ExpandKey;
 use crate::tui::sccache;
@@ -343,7 +344,7 @@ fn a_toast_keeps_a_one_row_content_divider_outside_its_card() -> anyhow::Result<
 }
 
 #[test]
-fn phase4e_startup_toast_leaves_whole_titles_and_connected_borders() -> anyhow::Result<()> {
+fn startup_toast_leaves_whole_titles_and_connected_borders() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.show_timed_toast("Startup", "Scan projects\nRead Git data\nLoad lint results");
@@ -398,7 +399,7 @@ fn phase4e_startup_toast_leaves_whole_titles_and_connected_borders() -> anyhow::
 }
 
 #[test]
-fn phase4e_short_git_description_keeps_five_rows_and_aligned_dividers() -> anyhow::Result<()> {
+fn short_git_description_keeps_five_rows_and_aligned_dividers() -> anyhow::Result<()> {
     let mut app = app_with_narrow_detail_fields();
     app.framework.color_mode = ColorMode::Colored;
     let description = "A collection of tools for Rust projects with builds, tests, worktrees, caches and continuous integration";
@@ -411,6 +412,14 @@ fn phase4e_short_git_description_keeps_five_rows_and_aligned_dividers() -> anyho
     package.description = Some(description.to_string());
     app.panes.package.set_content(package);
     let mut git = app.panes.git.content().context("Git content")?.clone();
+    let quota = QuotaObservation::Observed(RateLimitQuota {
+        limit:     5000,
+        used:      42,
+        remaining: 4958,
+        reset_at:  None,
+    });
+    git.rate_limit_core = quota;
+    git.rate_limit_graphql = quota;
     git.description = Some(description.to_string());
     app.panes.git.set_content(git);
     app.set_focus_to_pane(PaneId::Git);
@@ -859,13 +868,13 @@ fn git_pages_keep_table_headers_with_the_first_worktree() -> anyhow::Result<()> 
         app.panes.git.viewport.set_pos(index);
         let buffer = test_support::draw_ui(&mut app, 80)?;
         let area = app.panes.tiled_layout.area(PaneId::Git);
-        if let Some((_, y)) = test_support::find_text_cell(&buffer, area, "Name") {
+        if let Some((_, y)) = test_support::find_text_cell(&buffer, area, "N…") {
             saw_header = true;
             assert!(y + 1 < area.bottom() - 1);
             test_support::find_text_cell(
                 &buffer,
                 ratatui::layout::Rect::new(area.x, y + 1, area.width, 1),
-                "master",
+                "ma…",
             )
             .context("first worktree below the header")?;
         }
@@ -902,8 +911,8 @@ fn one_line_git_fields_keep_whole_labels_and_shortened_values() -> anyhow::Resul
         remaining: 4851,
         reset_at:  None,
     };
-    data.rate_limit_core = Some(quota);
-    data.rate_limit_graphql = Some(quota);
+    data.rate_limit_core = QuotaObservation::Observed(quota);
+    data.rate_limit_graphql = QuotaObservation::Observed(quota);
     let fields = panes::git_fields_from_data(&data);
     app.panes.git.set_content(data);
     app.set_focus_to_pane(PaneId::Git);
@@ -1022,6 +1031,16 @@ fn assert_pane_page(buffer: &Buffer, area: Rect, expected: &str) {
 fn git_worktree_pages_keep_the_divider_title_and_drawn_page_number() -> anyhow::Result<()> {
     let scratch = tempfile::tempdir()?;
     let mut app = app_with_paged_worktrees(scratch.path())?;
+    let quota = QuotaObservation::Observed(RateLimitQuota {
+        limit:     5000,
+        used:      42,
+        remaining: 4958,
+        reset_at:  None,
+    });
+    let mut git = app.panes.git.content().context("Git content")?.clone();
+    git.rate_limit_core = quota;
+    git.rate_limit_graphql = quota;
+    app.panes.git.set_content(git);
     app.set_focus_to_pane(PaneId::Git);
     app.panes.git.viewport.home();
     let first = draw_short_ui(&mut app)?;

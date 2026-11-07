@@ -59,6 +59,9 @@ pub(crate) enum ServiceSignal {
     RateLimited(ServiceKind),
 }
 pub(crate) type HttpOutcome<T> = (Option<T>, Option<ServiceSignal>);
+/// A quota reply or the service failure that requires a fallback probe.
+type GithubQuotaProbeResult = Result<GitHubRateLimit, ServiceSignal>;
+
 // `HttpClient` owns the shared HTTP connection and quota state.
 
 /// Whether GitHub requests use live quotas or a simulated exhausted quota.
@@ -202,8 +205,14 @@ impl HttpClient {
 
     pub(super) fn set_rate_limit(&self, github_rate_limit: GitHubRateLimit) {
         if let Ok(mut state) = self.rate_limit.lock() {
-            *state = github_rate_limit;
+            state.core = github_rate_limit.core.or(state.core);
+            state.graphql = github_rate_limit.graphql.or(state.graphql);
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn store_rate_limit_for_test(&self, quota: GitHubRateLimit) {
+        self.set_rate_limit(quota);
     }
 
     // `HttpClient::github_get_async` and the following methods perform asynchronous requests.
@@ -325,15 +334,19 @@ impl HttpClient {
     // `HttpClient::fetch_rate_limit_async` and `HttpClient::probe_service_async` expose
     // asynchronous requests.
 
-    /// List recent completed workflow runs for a repo (async).
+    /// `HttpClient::fetch_rate_limit_async` fetches and stores the GitHub `/rate_limit` quotas.
     pub(crate) async fn fetch_rate_limit_async(&self) -> HttpOutcome<GitHubRateLimit> {
+        let url = format!("{GITHUB_API_BASE}/rate_limit");
+        self.fetch_rate_limit_from_url_async(&url).await
+    }
+
+    async fn fetch_rate_limit_from_url_async(&self, url: &str) -> HttpOutcome<GitHubRateLimit> {
         let Some(token) = self.github_auth.token() else {
             return (None, None);
         };
-        let url = format!("{GITHUB_API_BASE}/rate_limit");
         let response = match self
             .client
-            .get(&url)
+            .get(url)
             .header(AUTHORIZATION_HEADER, format!("Bearer {token}"))
             .header(ACCEPT_HEADER, GITHUB_JSON_MEDIA_TYPE)
             .send()
@@ -394,6 +407,16 @@ impl HttpClient {
 
     async fn probe_github_rate_limit_async(&self) -> bool {
         let (github_rate_limit, _signal) = self.fetch_rate_limit_async().await;
+        self.github_recovery_after_quota_async(
+            github_rate_limit.ok_or(ServiceSignal::Unreachable(ServiceKind::GitHub)),
+        )
+        .await
+    }
+
+    async fn github_recovery_after_quota_async(
+        &self,
+        github_rate_limit: GithubQuotaProbeResult,
+    ) -> bool {
         if self.github_rate_limit_forced() {
             // `fetch_rate_limit_async` keeps the quota display current, but
             // `github_rate_limit_forced()` prevents reporting recovery so
@@ -401,11 +424,11 @@ impl HttpClient {
             return false;
         }
         match github_rate_limit {
-            Some(s) => {
+            Ok(s) => {
                 s.core.is_some_and(|q| q.remaining > 0)
                     && s.graphql.is_some_and(|q| q.remaining > 0)
             },
-            None => self
+            Err(_) => self
                 .client
                 .head(ServiceKind::GitHub.probe_url())
                 .timeout(Duration::from_secs(SERVICE_RETRY_SECS))
@@ -417,6 +440,12 @@ impl HttpClient {
 }
 
 impl HttpClient {
+    /// Check recovery without repeating the quota request.
+    pub(crate) fn github_recovery_after_quota(&self, quota: GithubQuotaProbeResult) -> bool {
+        self.handle
+            .block_on(self.github_recovery_after_quota_async(quota))
+    }
+
     pub(crate) fn probe_service(&self, service: ServiceKind) -> bool {
         self.handle.block_on(self.probe_service_async(service))
     }
@@ -825,6 +854,102 @@ mod tests {
         let github_rate_limit = client.rate_limit();
         assert_eq!(github_rate_limit.core, Some(core_quota));
         assert_eq!(github_rate_limit.graphql, Some(gql_quota));
+    }
+
+    #[test]
+    fn quota_refresh_keeps_cached_buckets_when_replies_omit_them() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind quota listener");
+        let addr = listener.local_addr().expect("read quota listener address");
+        let replies = [
+            (
+                "200 OK",
+                json!({"resources": {
+                    "core": {"limit": 5000, "used": 261, "remaining": 4739, "reset": 1234},
+                    "graphql": {"limit": 5000, "used": 179, "remaining": 4821, "reset": 5678}
+                }}),
+            ),
+            (
+                "500 Internal Server Error",
+                json!({"message": "Internal Server Error"}),
+            ),
+            (
+                "200 OK",
+                json!({"resources": {
+                    "core": {"limit": 5000, "used": 262, "remaining": 4738, "reset": 1234}
+                }}),
+            ),
+            (
+                "200 OK",
+                json!({"resources": {
+                    "graphql": {"limit": 5000, "used": 180, "remaining": 4820, "reset": 5678}
+                }}),
+            ),
+        ];
+        let server = thread::spawn(move || {
+            for (status, body) in replies {
+                let (mut stream, _) = listener.accept().expect("accept quota request");
+                let mut buffer = [0_u8; 4096];
+                let size = stream.read(&mut buffer).expect("read quota request");
+                assert!(buffer[..size].starts_with(b"GET /rate_limit HTTP/1.1\r\n"));
+                let body = body.to_string();
+                write!(stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                ).expect("write quota response");
+            }
+        });
+        let runtime = test_support::test_runtime();
+        let mut client = test_client(runtime.handle());
+        client.github_auth = GithubAuth::Authenticated("quota-test".to_string());
+        let url = format!("http://{addr}/rate_limit");
+        let mut snapshots = Vec::new();
+        for _ in 0..4 {
+            runtime.block_on(client.fetch_rate_limit_from_url_async(&url));
+            snapshots.push(client.rate_limit());
+        }
+        server.join().expect("join quota server");
+        let initial = GitHubRateLimit {
+            core:    Some(RateLimitQuota {
+                limit:     5000,
+                used:      261,
+                remaining: 4739,
+                reset_at:  Some(1234),
+            }),
+            graphql: Some(RateLimitQuota {
+                limit:     5000,
+                used:      179,
+                remaining: 4821,
+                reset_at:  Some(5678),
+            }),
+        };
+        assert_eq!(snapshots[0], initial);
+        assert_eq!(
+            snapshots[1], initial,
+            "error reply must retain both buckets"
+        );
+        let refreshed_core = RateLimitQuota {
+            used: 262,
+            remaining: 4738,
+            ..initial.core.expect("observed core quota")
+        };
+        assert_eq!(
+            snapshots[2],
+            GitHubRateLimit {
+                core: Some(refreshed_core),
+                ..initial
+            }
+        );
+        assert_eq!(
+            snapshots[3],
+            GitHubRateLimit {
+                core:    Some(refreshed_core),
+                graphql: Some(RateLimitQuota {
+                    used: 180,
+                    remaining: 4820,
+                    ..initial.graphql.expect("observed GraphQL quota")
+                }),
+            }
+        );
     }
 
     #[test]

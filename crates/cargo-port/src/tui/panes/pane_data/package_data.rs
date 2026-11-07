@@ -290,7 +290,7 @@ pub(super) fn test_rows_from_counts(counts: TestCounts) -> Vec<(&'static str, us
 /// yet. Unauthenticated is excluded: it's not an
 /// outage, and the rate-limit rows already carry the auth hint.
 pub(super) const fn github_stars_is_unreachable_placeholder(data: &GitData) -> bool {
-    data.stars.is_none()
+    matches!(data.stars, super::GithubStars::Unreachable)
         && !data.github_status.is_available()
         && !data.github_status.is_unauthenticated()
 }

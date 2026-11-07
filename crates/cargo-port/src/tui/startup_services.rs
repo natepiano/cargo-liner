@@ -14,6 +14,9 @@ use tui_pane::Theme;
 use tui_pane::ThemeRegistry;
 use tui_pane::ThemeState;
 
+use super::app::GithubQuotaRefresh;
+use super::app::QuotaFetchCompletion;
+use super::app::QuotaFetchPermit;
 use crate::channel;
 use crate::channel::Receiver;
 use crate::channel::SendError;
@@ -326,19 +329,19 @@ impl StartupServices {
         }
     }
 
-    pub(super) fn spawn_github_rate_limit_prime(&self, client: HttpClient) {
+    pub(super) fn spawn_github_rate_limit_prime(
+        &self,
+        client: HttpClient,
+        permit: QuotaFetchPermit,
+    ) {
         if !self.allows(StartupEffectKind::GithubRateLimitPrime) {
             self.record_suppressed(StartupEffectKind::GithubRateLimitPrime);
+            permit.complete(QuotaFetchCompletion::Failed);
             return;
         }
         self.record_real(StartupEffectKind::GithubRateLimitPrime);
         thread::spawn(move || {
-            let (rate_limit, _signal) = client.fetch_rate_limit();
-            if rate_limit.is_some() {
-                tracing::info!("rate_limit_prime_ok");
-            } else {
-                tracing::info!("rate_limit_prime_failed");
-            }
+            permit.fetch(&client);
         });
     }
 
@@ -347,6 +350,7 @@ impl StartupServices {
         sender: Sender<BackgroundMsg>,
         client: HttpClient,
         service: ServiceKind,
+        quota_refresh: GithubQuotaRefresh,
     ) {
         if !self.allows(StartupEffectKind::ServiceRetryProbes) {
             self.record_suppressed(StartupEffectKind::ServiceRetryProbes);
@@ -355,13 +359,13 @@ impl StartupServices {
         self.record_real(StartupEffectKind::ServiceRetryProbes);
         thread::spawn(move || {
             thread::sleep(SERVICE_UNAVAILABLE_GRACE);
-            if client.probe_service(service) {
+            if probe_service_with_quota(&client, service, &quota_refresh) {
                 scan::emit_service_recovered(&sender, service);
                 return;
             }
             let _ = sender.send(BackgroundMsg::ServiceUnreachableConfirmed { service });
             loop {
-                if client.probe_service(service) {
+                if probe_service_with_quota(&client, service, &quota_refresh) {
                     scan::emit_service_recovered(&sender, service);
                     break;
                 }
@@ -778,3 +782,14 @@ enum StartupEffectKind {
 use std::path::PathBuf;
 
 use crate::config::CargoPortConfigurationPathResolution;
+
+fn probe_service_with_quota(
+    client: &HttpClient,
+    service: ServiceKind,
+    quota_refresh: &GithubQuotaRefresh,
+) -> bool {
+    match service {
+        ServiceKind::GitHub => quota_refresh.probe_recovery(client),
+        ServiceKind::CratesIo => client.probe_service(service),
+    }
+}

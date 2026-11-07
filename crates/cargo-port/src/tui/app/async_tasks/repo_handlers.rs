@@ -22,6 +22,7 @@ use crate::project::Comparison;
 use crate::project::CratesIoReleaseState;
 use crate::project::FirstCommit;
 use crate::project::GitStatus;
+use crate::project::GithubRunCount;
 use crate::project::LocalGitState;
 use crate::project::ProjectPrData;
 use crate::project::ProjectPrInfo;
@@ -81,8 +82,10 @@ impl App {
                     );
                     scan::emit_service_signal(&sender, signal);
                     let (runs, github_total) = match ci_fetch_result {
-                        CiFetchResult::Loaded { runs, github_total } => (runs, github_total),
-                        CiFetchResult::CacheOnly(runs) => (runs, 0),
+                        CiFetchResult::Loaded { runs, github_total } => {
+                            (runs, GithubRunCount::Known(github_total))
+                        },
+                        CiFetchResult::CacheOnly(runs) => (runs, GithubRunCount::Unavailable),
                     };
                     let data = CachedRepoData {
                         runs,

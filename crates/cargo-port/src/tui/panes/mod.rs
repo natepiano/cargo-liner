@@ -76,6 +76,7 @@ pub(super) use pane_data::DetailPaneData;
 pub(super) use pane_data::GitCheckout;
 pub(super) use pane_data::GitData;
 pub(super) use pane_data::GitRow;
+pub(super) use pane_data::GithubStars;
 #[cfg(test)]
 pub(super) use pane_data::HEAD_UNREADABLE_LABEL;
 #[cfg(test)]
@@ -96,6 +97,7 @@ pub(super) use pane_data::PullRequestPolling;
 pub(super) use pane_data::PullRequestRow;
 pub(super) use pane_data::PullRequestSection;
 pub(super) use pane_data::PullRequestSectionState;
+pub(super) use pane_data::QuotaObservation;
 pub(super) use pane_data::RemoteRow;
 #[cfg(test)]
 pub(super) use pane_data::RemoteRows;

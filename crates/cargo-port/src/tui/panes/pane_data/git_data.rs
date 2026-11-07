@@ -27,7 +27,6 @@ use super::WorktreeStatus;
 use super::ci;
 use super::formatting;
 use super::formatting::GitReadFailures;
-use super::package_data;
 use super::project;
 use crate::constants::GIT_UNREADABLE_LABEL;
 use crate::project::CommitDate;
@@ -128,6 +127,25 @@ pub enum GitProbe<T> {
     Probed(T),
 }
 
+/// GitHub applicability and the current Stars measurement.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GithubStars {
+    #[default]
+    NotGithub,
+    Pending,
+    Measured(u64),
+    Unreachable,
+}
+
+/// `QuotaObservation` records whether a GitHub bucket has a measured quota.
+/// `QuotaObservation::Observed` keeps the last received `RateLimitQuota`.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum QuotaObservation {
+    #[default]
+    Unobserved,
+    Observed(RateLimitQuota),
+}
+
 /// Per-pane data for the Git detail panel.
 #[derive(Clone, Default)]
 pub struct GitData {
@@ -137,13 +155,13 @@ pub struct GitData {
     pub status:                      Option<GitStatus>,
     pub vs_local:                    GitProbe<Comparison>,
     pub local_main_branch:           GitProbe<ResolvedBranch>,
-    pub stars:                       Option<u64>,
+    pub stars:                       GithubStars,
     pub description:                 Option<String>,
     pub inception:                   FirstCommit,
     pub last_commit:                 GitProbe<CommitDate>,
     pub last_fetched:                Option<String>,
-    pub rate_limit_core:             Option<RateLimitQuota>,
-    pub rate_limit_graphql:          Option<RateLimitQuota>,
+    pub rate_limit_core:             QuotaObservation,
+    pub rate_limit_graphql:          QuotaObservation,
     pub github_status:               AvailabilityStatus,
     pub pull_requests:               PullRequestSection,
     pub remotes:                     RemoteRows,
@@ -374,12 +392,14 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     ) {
         fields.push(DetailField::VsLocal);
     }
-    // Show the Stars row when:
-    //   - the count has landed (real value), OR
-    //   - GitHub is confirmed unreachable / rate-limited (placeholder in warning color, mirrors the
-    //     crates.io unreachable row behavior on the Package pane).
-    if data.stars.is_some() || package_data::github_stars_is_unreachable_placeholder(data) {
+    if matches!(data.stars, GithubStars::Measured(_)) {
         fields.push(DetailField::Stars);
+    }
+    if matches!(
+        data.github_status,
+        AvailabilityStatus::Unreachable | AvailabilityStatus::RateLimited
+    ) {
+        fields.push(DetailField::GithubStatus);
     }
     // Repo description is rendered separately in the About section by
     // `render_git_about_section`, so it is intentionally not a flat field.
@@ -408,11 +428,12 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
             fields.push(field);
         }
     }
-    // Rate-limit rows are always shown so the section structure stays
-    // stable across fetch state; rendering handles the empty-quota
-    // case.
-    fields.push(DetailField::RateLimitCore);
-    fields.push(DetailField::RateLimitGraphQl);
+    if matches!(data.rate_limit_core, QuotaObservation::Observed(_)) {
+        fields.push(DetailField::RateLimitCore);
+    }
+    if matches!(data.rate_limit_graphql, QuotaObservation::Observed(_)) {
+        fields.push(DetailField::RateLimitGraphQl);
+    }
     if !data.worktrees.is_empty() {
         // Worktree count is appended by the render function, not as a field.
     }
@@ -455,13 +476,13 @@ pub(super) struct GitDetailFields {
     pub(super) path:               Option<GitStatus>,
     pub(super) vs_local:           GitProbe<Comparison>,
     pub(super) local_main_branch:  GitProbe<ResolvedBranch>,
-    pub(super) stars:              Option<u64>,
+    pub(super) stars:              GithubStars,
     pub(super) description:        Option<String>,
     pub(super) inception:          FirstCommit,
     pub(super) last_commit:        GitProbe<CommitDate>,
     pub(super) last_fetched:       Option<String>,
-    pub(super) rate_limit_core:    Option<RateLimitQuota>,
-    pub(super) rate_limit_graphql: Option<RateLimitQuota>,
+    pub(super) rate_limit_core:    QuotaObservation,
+    pub(super) rate_limit_graphql: QuotaObservation,
     pub(super) github_status:      AvailabilityStatus,
     pub(super) pull_requests:      PullRequestSection,
     pub(super) remotes:            RemoteRows,
@@ -484,7 +505,24 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
         GitProbe::Probed(info.ahead_behind_local)
     });
     let github = git_repo.and_then(|repo| repo.github_info.as_ref());
-    let stars = github.map(|g| g.stars);
+    let stars = match github {
+        Some(info) => GithubStars::Measured(info.stars),
+        None if app
+            .project_list
+            .fetch_url_for(abs_path)
+            .is_some_and(|url| ci::parse_owner_repo(&url).is_some()) =>
+        {
+            if matches!(
+                app.net.github_status(),
+                AvailabilityStatus::Unreachable | AvailabilityStatus::RateLimited
+            ) {
+                GithubStars::Unreachable
+            } else {
+                GithubStars::Pending
+            }
+        },
+        None => GithubStars::NotGithub,
+    };
     let description = github.and_then(|g| g.description.clone());
     let inception = repo_info.map_or(FirstCommit::AwaitingProbe, |repo| repo.first_commit.clone());
     let last_commit = checkout.map_or(GitProbe::Awaiting, |info| {
@@ -530,8 +568,12 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
         inception,
         last_commit,
         last_fetched,
-        rate_limit_core: rate_limit.core,
-        rate_limit_graphql: rate_limit.graphql,
+        rate_limit_core: rate_limit
+            .core
+            .map_or(QuotaObservation::Unobserved, QuotaObservation::Observed),
+        rate_limit_graphql: rate_limit
+            .graphql
+            .map_or(QuotaObservation::Unobserved, QuotaObservation::Observed),
         github_status: app.net.github_status(),
         pull_requests,
         remotes,
@@ -791,13 +833,13 @@ mod git_field_tests {
             status:             None,
             vs_local:           crate::tui::panes::GitProbe::Probed(Comparison::NotCompared),
             local_main_branch:  crate::tui::panes::GitProbe::Probed(ResolvedBranch::NotFound),
-            stars:              None,
+            stars:              GithubStars::NotGithub,
             description:        None,
             inception:          FirstCommit::AwaitingProbe,
             last_commit:        crate::tui::panes::GitProbe::Probed(CommitDate::NoCommits),
             last_fetched:       None,
-            rate_limit_core:    None,
-            rate_limit_graphql: None,
+            rate_limit_core:    super::QuotaObservation::Unobserved,
+            rate_limit_graphql: super::QuotaObservation::Unobserved,
             github_status:      AvailabilityStatus::Reachable,
             pull_requests:      PullRequestSection::default(),
             remotes:            RemoteRows::default(),
@@ -895,7 +937,7 @@ mod git_field_tests {
         // the row - same UX as the crates.io row pre-data on a healthy
         // service. The placeholder helper must report false.
         let mut data = git_data();
-        data.stars = None;
+        data.stars = GithubStars::Pending;
         data.github_status = AvailabilityStatus::Reachable;
         let fields = git_fields_from_data(&data);
         assert!(
@@ -907,34 +949,36 @@ mod git_field_tests {
 
     #[test]
     fn stars_row_shows_warning_when_github_unreachable_and_no_data() {
-        // Outage state with no stars yet: the row surfaces with the
-        // "github unreachable" placeholder so the user knows why the
-        // value is empty. Mirrors `crates_io_row_shows_warning_...`.
         let mut data = git_data();
-        data.stars = None;
+        data.stars = GithubStars::Unreachable;
         data.github_status = AvailabilityStatus::Unreachable;
         let fields = git_fields_from_data(&data);
-        assert!(
-            fields.contains(&DetailField::Stars),
-            "Stars row must surface during outage so the user sees the placeholder"
+        assert!(!fields.contains(&DetailField::Stars));
+        assert_eq!(
+            fields
+                .iter()
+                .filter(|field| **field == DetailField::GithubStatus)
+                .count(),
+            1
         );
         assert!(pane_data::github_stars_is_unreachable_placeholder(&data));
-        assert!(
-            DetailField::Stars.git_value(&data).is_empty(),
-            "git_value stays empty - the placeholder is added by the renderer overlay"
-        );
+        assert_eq!(DetailField::Stars.git_value(&data), "");
     }
 
     #[test]
     fn stars_row_shows_warning_when_github_rate_limited_and_no_data() {
-        // Rate-limit collapses to the same UX as unreachable on the
-        // render side - the value cell isn't going to land, so warn the
-        // user instead of leaving an invisible gap.
         let mut data = git_data();
-        data.stars = None;
+        data.stars = GithubStars::Unreachable;
         data.github_status = AvailabilityStatus::RateLimited;
         let fields = git_fields_from_data(&data);
-        assert!(fields.contains(&DetailField::Stars));
+        assert!(!fields.contains(&DetailField::Stars));
+        assert_eq!(
+            fields
+                .iter()
+                .filter(|field| **field == DetailField::GithubStatus)
+                .count(),
+            1
+        );
         assert!(pane_data::github_stars_is_unreachable_placeholder(&data));
     }
 
@@ -944,7 +988,7 @@ mod git_field_tests {
         // Even with GitHub currently unreachable, the row renders the
         // real value - not the warning placeholder.
         let mut data = git_data();
-        data.stars = Some(42);
+        data.stars = GithubStars::Measured(42);
         data.github_status = AvailabilityStatus::Unreachable;
         let fields = git_fields_from_data(&data);
         assert!(fields.contains(&DetailField::Stars));
@@ -961,7 +1005,7 @@ mod git_field_tests {
         // "github unreachable" placeholder on the Stars row. The rate-limit
         // rows and the startup toast carry the `gh auth login` hint instead.
         let mut data = git_data();
-        data.stars = None;
+        data.stars = GithubStars::Pending;
         data.github_status = AvailabilityStatus::Unauthenticated;
         let fields = git_fields_from_data(&data);
         assert!(

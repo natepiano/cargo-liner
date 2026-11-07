@@ -104,7 +104,7 @@ fn target_names_take_width_before_the_source_at_eighty_columns() -> anyhow::Resu
 }
 
 #[test]
-fn phase4e_binary_kind_returns_a_cell_to_source_at_eighty_columns() -> anyhow::Result<()> {
+fn binary_kind_returns_a_cell_to_source_at_eighty_columns() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     let mut data = test_support::target_data();

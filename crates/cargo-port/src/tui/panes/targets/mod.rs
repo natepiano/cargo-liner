@@ -11,6 +11,9 @@ mod pane;
 mod readability_tests;
 mod render;
 
+#[cfg(test)]
+mod worktree_source_tests;
+
 pub use data::BuildMode;
 pub use data::RunTargetKind;
 pub use data::TargetEntry;

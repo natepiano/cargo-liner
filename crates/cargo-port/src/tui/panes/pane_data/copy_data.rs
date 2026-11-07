@@ -215,6 +215,7 @@ mod tests {
     use crate::project::ProjectType;
     use crate::project::ResolvedBranch;
     use crate::tui::panes::GitProbe;
+    use crate::tui::panes::GithubStars;
     use crate::tui::panes::PackageVersion;
     use crate::tui::panes::pane_data;
     use crate::tui::panes::pane_data::CiEmptyState;
@@ -225,6 +226,7 @@ mod tests {
     use crate::tui::panes::pane_data::PullRequestRow;
     use crate::tui::panes::pane_data::PullRequestSection;
     use crate::tui::panes::pane_data::PullRequestSectionState;
+    use crate::tui::panes::pane_data::QuotaObservation;
     use crate::tui::panes::pane_data::RemoteRow;
     use crate::tui::panes::pane_data::RunTargetKind;
     use crate::tui::panes::pane_data::TargetEntry;
@@ -275,13 +277,13 @@ mod tests {
             status:             None,
             vs_local:           GitProbe::Probed(Comparison::NotCompared),
             local_main_branch:  GitProbe::Probed(ResolvedBranch::NotFound),
-            stars:              None,
+            stars:              GithubStars::NotGithub,
             description:        None,
             inception:          FirstCommit::AwaitingProbe,
             last_commit:        GitProbe::Probed(CommitDate::NoCommits),
             last_fetched:       None,
-            rate_limit_core:    None,
-            rate_limit_graphql: None,
+            rate_limit_core:    QuotaObservation::Unobserved,
+            rate_limit_graphql: QuotaObservation::Unobserved,
             github_status:      AvailabilityStatus::Reachable,
             pull_requests:      PullRequestSection::default(),
             remotes:            super::super::git_data::RemoteRows::default(),

@@ -13,6 +13,7 @@ use crate::tui::app::App;
 use crate::tui::constants::TARGET_KIND_BENCH_LABEL;
 use crate::tui::constants::TARGET_KIND_BIN_LABEL;
 use crate::tui::constants::TARGET_KIND_EXAMPLE_LABEL;
+use crate::tui::project_list;
 use crate::tui::theme_roles;
 
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
@@ -65,12 +66,12 @@ impl RunTargetKind {
 /// controls ordering.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TargetSource {
-    label: String,
-    kind:  TargetSourceKind,
+    label:           String,
+    pub(super) kind: TargetSourceKind,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TargetSourceKind {
+pub(super) enum TargetSourceKind {
     WorkspaceRoot,
     Member,
     Worktree,
@@ -347,12 +348,19 @@ fn lookup_worktree_group_targets(
     }
 
     let mut merged = TargetsData::default();
-    for entry in group
+    let entries: Vec<_> = group
         .iter_entries()
         .filter(|entry| entry.visibility() == Visibility::Visible)
-    {
+        .collect();
+    let labels = project_list::differing_path_labels(
+        &entries
+            .iter()
+            .map(|entry| entry.path().to_string())
+            .collect::<Vec<_>>(),
+    );
+    for (entry, label) in entries.into_iter().zip(labels) {
         let mut targets = lookup_targets_data_for_path(app, entry.path());
-        targets.relabel_as_worktree(&entry.root_directory_name().into_string());
+        targets.relabel_as_worktree(&label);
         merged.append(targets);
     }
     merged.sort_entries();

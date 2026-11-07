@@ -36,6 +36,7 @@ use super::PackagePane;
 use crate::constants::GIT_UNREADABLE_LABEL;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::LintStatus;
+use crate::project::GithubRunCount;
 use crate::project::PinnedCommit;
 use crate::tui::app::ProjectMetadataState;
 use crate::tui::integration;
@@ -118,13 +119,14 @@ struct PackageRenderLayout {
 }
 
 struct PackageFieldRender {
-    field:       DetailField,
-    label:       &'static str,
-    label_width: usize,
-    area_width:  usize,
-    label_style: Style,
-    value_style: Style,
-    value:       String,
+    field:        DetailField,
+    label:        &'static str,
+    label_width:  usize,
+    area_width:   usize,
+    label_style:  Style,
+    value_style:  Style,
+    value:        String,
+    continuation: String,
 }
 
 struct StatsColumnRender<'a> {
@@ -642,35 +644,19 @@ fn package_field_render(
             .patch(theme_roles::selection_style(selection, mode)),
         value_style: package_field_value_style(ctx, field)
             .patch(theme_roles::selection_style(selection, mode)),
-        value: {
-            let budget = usize::from(area_width).saturating_sub(label_width + 2);
-            if field == DetailField::Ci {
-                ci_value_with_budget(&ctx.data.ci_display, budget)
-            } else {
-                package_field_value(ctx, field)
+        value: package_field_value(ctx, field),
+        continuation: if field == DetailField::Ci {
+            match ctx.data.ci_display {
+                CiDisplay::Runs { github_total, .. } => match github_total {
+                    GithubRunCount::Loading => "gh …".to_string(),
+                    GithubRunCount::Known(count) => format!("gh {count}"),
+                    GithubRunCount::Unavailable => "gh ?".to_string(),
+                },
+                _ => String::new(),
             }
+        } else {
+            String::new()
         },
-    }
-}
-
-fn ci_value_with_budget(display: &CiDisplay, budget: usize) -> String {
-    let long = ci_display_to_string(display);
-    if long.width() <= budget {
-        return long;
-    }
-    match display {
-        CiDisplay::Runs {
-            ci_status,
-            local,
-            github_total,
-        } if *github_total > 0 => {
-            let counts = format!("{local} / {github_total}");
-            ci_status.map_or_else(
-                || counts.clone(),
-                |status| format!("{} {counts}", status.icon()),
-            )
-        },
-        _ => long,
     }
 }
 
@@ -740,6 +726,27 @@ fn push_package_field_lines(lines: &mut Vec<Line<'static>>, render: PackageField
     } else {
         push_single_package_field_line(lines, &render);
     }
+    if !render.continuation.is_empty() {
+        // Align the continuation with the rendered local label after wrapping.
+        let local_indent = lines[start..].iter().rev().find_map(|line| {
+            let mut indent = 0;
+            for span in &line.spans {
+                if let Some((prefix, _)) = span.content.split_once("local") {
+                    return Some(indent + prefix.width());
+                }
+                indent += span.width();
+            }
+            None
+        });
+        if let Some(indent) = local_indent
+            && indent + render.continuation.width() <= render.area_width
+        {
+            lines.push(Line::from(Span::styled(
+                format!("{}{text}", " ".repeat(indent), text = render.continuation),
+                render.value_style,
+            )));
+        }
+    }
     for line in &mut lines[start..] {
         line.style = line.style.patch(style);
     }
@@ -777,7 +784,8 @@ fn push_single_package_field_line(lines: &mut Vec<Line<'static>>, render: &Packa
     let separate_value = render.area_width <= support::NARROW_FIELD_INNER_WIDTH
         || matches!(
             render.field,
-            DetailField::Disk
+            DetailField::Ci
+                | DetailField::Disk
                 | DetailField::DiskTarget
                 | DetailField::DiskNonTarget
                 | DetailField::DiskOutOfTreeTarget
@@ -1670,27 +1678,15 @@ fn ci_display_to_string(display: &CiDisplay) -> String {
     match display {
         CiDisplay::Unreadable => GIT_UNREADABLE_LABEL.to_string(),
         CiDisplay::NoWorkflow => "No CI".to_string(),
-        CiDisplay::UnpublishedBranch => "unpublished branch".to_string(),
         CiDisplay::NoRuns => "No CI runs".to_string(),
+        CiDisplay::UnpublishedBranch => "unpublished branch".to_string(),
         CiDisplay::Runs {
-            ci_status,
-            local,
-            github_total,
+            ci_status, local, ..
         } => {
-            let icon = ci_status.map_or_else(String::new, |c| c.icon().to_string());
-            let count_label = if *github_total > 0 {
-                format!("local {local} / gh {github_total}")
-            } else if *local > 0 {
-                format!("{local}")
-            } else {
-                String::new()
-            };
-            match (icon.is_empty(), count_label.is_empty()) {
-                (true, true) => "No CI runs".to_string(),
-                (true, false) => count_label,
-                (false, true) => icon,
-                (false, false) => format!("{icon} {count_label}"),
-            }
+            let count_label = format!("local {local}");
+            ci_status.map_or(count_label.clone(), |status| {
+                format!("{} {count_label}", status.icon())
+            })
         },
     }
 }

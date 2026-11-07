@@ -50,6 +50,7 @@ use crate::tui::panes::PullRequestPolling;
 use crate::tui::panes::PullRequestRow;
 use crate::tui::panes::PullRequestSection;
 use crate::tui::panes::PullRequestSectionState;
+use crate::tui::panes::QuotaObservation;
 use crate::tui::panes::RemoteRow;
 use crate::tui::panes::RenderStyles;
 use crate::tui::panes::SyncedDescriptionHeight;
@@ -73,7 +74,6 @@ use crate::tui::panes::pane_data::GitProbe;
 use crate::tui::panes::support;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
-use crate::tui::state::AvailabilityStatus;
 use crate::tui::theme_roles;
 
 static MIN_FITTED_TEXT_WIDTH: LazyLock<usize> = LazyLock::new(|| FIT_TEXT_ELLIPSIS.width() + 1);
@@ -743,49 +743,27 @@ struct RenderFlatArgs<'a> {
     row_offset:  usize,
 }
 
-/// Compute the displayed value string for a flat git-pane row,
-/// including row-specific decorations (local-only suffix on `Branch`,
-/// `(github unreachable)` / `(github rate-limited)` /
-/// `(unauthenticated — gh auth login)` suffix on rate-limit rows).
-/// Also returns the "github unreachable" placeholder text for an empty
-/// Stars row when GitHub is down — the parallel of the crates.io
-/// unreachable placeholder on the Package pane.
-fn build_field_value(data: &GitData, field: DetailField, is_rate_limit_row: bool) -> String {
-    if field == DetailField::Head {
-        let raw = field.git_value(data);
-        return if data.is_local()
-            && !raw.is_empty()
-            && !matches!(data.checkout, GitCheckout::UnreadableHead)
+/// Add the local branch marker to the field value.
+fn build_field_value(data: &GitData, field: DetailField) -> String {
+    let raw = field.git_value(data);
+    match field {
+        DetailField::Head
+            if data.is_local()
+                && !raw.is_empty()
+                && !matches!(data.checkout, GitCheckout::UnreadableHead) =>
         {
             format!("{raw} ({GIT_LOCAL} local)")
-        } else {
-            raw
-        };
-    }
-    let raw = field.git_value(data);
-    if is_rate_limit_row && let Some(suffix) = github_status_suffix(data.github_status) {
-        return if raw.is_empty() {
-            format!("({suffix})")
-        } else {
-            format!("{raw} ({suffix})")
-        };
-    }
-    if field == DetailField::Stars
-        && raw.is_empty()
-        && panes::github_stars_is_unreachable_placeholder(data)
-    {
-        return "github unreachable".to_string();
-    }
-    raw
-}
-
-const fn github_status_suffix(status: AvailabilityStatus) -> Option<&'static str> {
-    match status {
-        AvailabilityStatus::Reachable => None,
-        AvailabilityStatus::Unreachable => Some("github unreachable"),
-        AvailabilityStatus::RateLimited => Some("github rate-limited"),
-        AvailabilityStatus::Unauthenticated => Some("unauthenticated — gh auth login"),
-        AvailabilityStatus::NotInstalled => Some("gh not installed"),
+        },
+        DetailField::RateLimitCore | DetailField::RateLimitGraphQl
+            if data.github_status.is_unauthenticated() =>
+        {
+            let hint = DetailField::GithubStatus.git_value(data);
+            match raw.as_str() {
+                "" => format!("({hint})"),
+                _ => format!("{raw} ({hint})"),
+            }
+        },
+        _ => raw,
     }
 }
 
@@ -857,7 +835,7 @@ fn field_value_style(data: &GitData, field: DetailField) -> Style {
             GitValueStyle::Error
         },
         DetailField::RemotesUnreadable => GitValueStyle::Error,
-        DetailField::RateLimitCore | DetailField::RateLimitGraphQl => {
+        DetailField::GithubStatus | DetailField::RateLimitCore | DetailField::RateLimitGraphQl => {
             if data.github_status.is_unauthenticated() {
                 GitValueStyle::Warning
             } else if !data.github_status.is_available() {
@@ -929,9 +907,27 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
     }
 }
 
+fn github_status_line(args: &RenderFlatArgs<'_>, row_index: usize) -> Line<'static> {
+    let selection = tui_pane::selection_state(args.pane, row_index, args.focus);
+    let overlay = theme_roles::selection_style(selection, args.styles.chrome.color_mode);
+    let value = DetailField::GithubStatus.git_value(args.data);
+    let width = usize::from(args.area_width).saturating_sub(2);
+    Line::from(Span::styled(
+        format!(" {}", fit_text(&value, width)),
+        field_value_style(args.data, DetailField::GithubStatus).patch(overlay),
+    ))
+    .style(overlay)
+}
+
 fn label_width_for_field(args: &RenderFlatArgs<'_>, field: DetailField) -> usize {
     let width = usize::from(args.area_width);
-    let desired = if args.area_height < 2 {
+    let desired = if width <= support::NARROW_FIELD_INNER_WIDTH
+        && matches!(
+            field,
+            DetailField::RateLimitCore | DetailField::RateLimitGraphQl
+        ) {
+        git_label_width(&[DetailField::RateLimitCore, DetailField::RateLimitGraphQl])
+    } else if args.area_height < 2 {
         field.label().width()
     } else {
         args.label_width
@@ -966,6 +962,9 @@ fn flat_field_lines(
     label_width: usize,
 ) -> Vec<Line<'static>> {
     let mode = args.styles.chrome.color_mode;
+    if field == DetailField::GithubStatus {
+        return vec![github_status_line(args, row_index)];
+    }
     let one_row = args.area_height < 2
         && usize::from(args.area_width) <= support::NARROW_FIELD_INNER_WIDTH
         && usize::from(args.area_width) > *SPLIT_ROW_MIN_INNER_WIDTH;
@@ -996,19 +995,14 @@ fn flat_field_lines(
         format!(" {label:<label_width$} ")
     };
     let wraps = matches!(field, DetailField::WorktreeError | DetailField::Bisect);
-    let value = build_field_value(args.data, field, is_rate_limit_row);
+    let value = build_field_value(args.data, field);
     let value = if is_rate_limit_row {
-        let rate_width = if field_uses_value_row(args, label_width) {
-            usize::from(args.area_width).saturating_sub(1)
-        } else {
-            available
-        };
-        fit_rate_limit_value(args.data, field, value, rate_width)
+        fit_rate_limit_value(args.data, field, value, available)
     } else {
         value
     };
     let value_style = field_value_style(args.data, field).patch(overlay);
-    let mut lines = if field_uses_value_row(args, label_width) {
+    let mut lines = if !is_rate_limit_row && field_uses_value_row(args, label_width) {
         support::field_value_lines(
             prefix,
             &value,
@@ -1067,12 +1061,20 @@ fn fit_rate_limit_value(
     if value.width() <= available {
         return value;
     }
-    let quota = match field {
-        DetailField::RateLimitCore => data.rate_limit_core.as_ref(),
-        DetailField::RateLimitGraphQl => data.rate_limit_graphql.as_ref(),
-        _ => None,
+    let observation = match field {
+        DetailField::RateLimitCore => data.rate_limit_core,
+        DetailField::RateLimitGraphQl => data.rate_limit_graphql,
+        _ => return value,
     };
-    quota.map_or(value, |quota| quota.remaining.to_string())
+    let QuotaObservation::Observed(quota) = observation else {
+        return value;
+    };
+    let base = format!("{}/{}", quota.remaining, quota.limit);
+    if base.width() <= available {
+        base
+    } else {
+        quota.remaining.to_string()
+    }
 }
 
 // `SyncColLayout` shares trailing column widths between Remotes and Worktrees.
@@ -1080,12 +1082,19 @@ fn fit_rate_limit_value(
 // `SyncColLayout` supplies shared Branch/Tracked/Sync widths to `render_remote_header` and
 // `render_worktree_header`, aligning both sections vertically.
 
-/// Column layout shared between the Remotes and Worktrees tables. The
-/// leading columns differ (Remote/URL vs Name), but the trailing
-/// Branch/Tracked/Sync trio uses identical widths and starts at the same
-/// `lead` display column in both tables, so the two sections line up.
+/// Select the leading columns that fit before Branch, Tracked and Sync.
+#[derive(Clone, Copy)]
+enum SyncTableMode {
+    Compact,
+    Full,
+}
+
+const PREFERRED_REMOTE_NAME_FLOOR: usize = 4;
+
+/// Share column widths between the Remotes and Worktrees tables.
 struct SyncColLayout {
     available:     usize,
+    mode:          SyncTableMode,
     remote_name:   usize,
     remote_url:    usize,
     worktree_name: usize,
@@ -1097,12 +1106,7 @@ struct SyncColLayout {
 }
 
 fn remote_col_layout(data: &GitData, available: usize) -> SyncColLayout {
-    let worktrees = if available <= support::NARROW_FIELD_INNER_WIDTH {
-        &[]
-    } else {
-        data.worktrees.as_slice()
-    };
-    sync_col_layout(data.remotes.listed(), worktrees, available)
+    sync_col_layout(data.remotes.listed(), &data.worktrees, available)
 }
 
 /// The worktree's own checked-out branch — the source side of its delta.
@@ -1119,7 +1123,7 @@ fn sync_col_layout(
     worktrees: &[WorktreeInfo],
     available: usize,
 ) -> SyncColLayout {
-    let remote_name = remotes
+    let mut remote_name = remotes
         .iter()
         .map(|r| r.name.width())
         .max()
@@ -1138,20 +1142,97 @@ fn sync_col_layout(
         .unwrap_or(0)
         .max(WORKTREES_NAME_HEADER.width());
 
+    let values = sync_value_widths(remotes, worktrees);
+    let branch = values.0.max(BRANCH_HEADER.width());
+    let tracked = values.1.max(TRACKED_HEADER.width());
+    let sync = values.2.max(SYNC_HEADER.width());
+    let full_lead = available.saturating_sub(1 + branch + tracked + sync + 4);
+    let remote_name_floor = full_lead
+        .saturating_sub(1 + REMOTE_ICON_COL + 4 + *MIN_FITTED_TEXT_WIDTH)
+        .clamp(*MIN_FITTED_TEXT_WIDTH, PREFERRED_REMOTE_NAME_FLOOR);
+    let remote_fixed_floor = 1 + REMOTE_ICON_COL + *MIN_FITTED_TEXT_WIDTH + 4;
+    let min_url = if available < remote_fixed_floor + *MIN_FITTED_TEXT_WIDTH {
+        MIN_FLEX_COL
+    } else {
+        *MIN_FITTED_TEXT_WIDTH
+    };
+    let min_lead = remote_lead_or(remotes, remote_fixed_floor + min_url)
+        .max(worktree_lead_or(worktrees, 3 + *MIN_FITTED_TEXT_WIDTH));
+    let mode = if available >= 4 * *MIN_FITTED_TEXT_WIDTH + 4
+        && min_lead + branch + tracked + sync + 4 > available.saturating_sub(1)
+    {
+        SyncTableMode::Compact
+    } else {
+        SyncTableMode::Full
+    };
+    let budget = available.saturating_sub(1);
+    let natural_lead = if matches!(mode, SyncTableMode::Compact) {
+        remote_lead_or(remotes, remote_name + 2).max(worktree_lead_or(worktrees, worktree_name + 2))
+    } else {
+        remote_lead_or(remotes, 1 + REMOTE_ICON_COL + remote_name + 4 + remote_url)
+            .max(worktree_lead_or(worktrees, 3 + worktree_name))
+    };
+    let min_lead = if matches!(mode, SyncTableMode::Compact) {
+        *MIN_FITTED_TEXT_WIDTH + 2
+    } else {
+        min_lead
+    };
+    if matches!(mode, SyncTableMode::Full) && natural_lead + branch + tracked + sync + 4 > budget {
+        remote_name = remote_name.min(remote_name_floor);
+    }
+    let mut layout = SyncColLayout {
+        available: budget,
+        mode,
+        remote_name,
+        remote_url,
+        worktree_name,
+        lead: min_lead.min(natural_lead),
+        branch,
+        tracked,
+        sync,
+    };
+    fit_sync_trio(&mut layout, values);
+    let gaps = 2 * layout.column_gap();
+    layout.lead = budget
+        .saturating_sub(layout.branch + layout.tracked + layout.sync + gaps)
+        .clamp(layout.lead, natural_lead.max(layout.lead));
+    if matches!(mode, SyncTableMode::Compact) {
+        layout.remote_name = remote_name.min(layout.lead.saturating_sub(2));
+        layout.remote_url = 0;
+        layout.worktree_name = worktree_name.min(layout.lead.saturating_sub(2));
+    } else {
+        layout.remote_url = remote_url.min(
+            layout
+                .lead
+                .saturating_sub(1 + REMOTE_ICON_COL + remote_name + 4),
+        );
+        layout.worktree_name = worktree_name.min(layout.lead.saturating_sub(3));
+    }
+    layout
+}
+
+impl SyncColLayout {
+    const fn column_gap(&self) -> usize {
+        match self.mode {
+            SyncTableMode::Compact => 1,
+            SyncTableMode::Full => 2,
+        }
+    }
+}
+
+fn sync_value_widths(remotes: &[RemoteRow], worktrees: &[WorktreeInfo]) -> (usize, usize, usize) {
     let branch = remotes
         .iter()
         .map(|r| r.branch.width())
         .chain(worktrees.iter().map(|w| worktree_branch_text(w).width()))
         .max()
-        .unwrap_or(0)
-        .max(BRANCH_HEADER.width());
+        .unwrap_or(0);
     let tracked = remotes
         .iter()
         .map(|r| r.tracked_text().width())
         .chain(worktrees.iter().map(|w| worktree_tracked_text(w).width()))
         .max()
-        .unwrap_or(0)
-        .max(TRACKED_HEADER.width());
+        .unwrap_or(0);
     let sync = remotes
         .iter()
         .map(|r| r.status_text().width())
@@ -1161,51 +1242,28 @@ fn sync_col_layout(
                 .map(|w| panes::format_ahead_behind(w.ahead_behind).width()),
         )
         .max()
-        .unwrap_or(0)
-        .max(SYNC_HEADER.width());
+        .unwrap_or(0);
+    (branch, tracked, sync)
+}
 
-    // `remote_fixed` and `worktree_fixed` include fixed leading widths before their flexible column
-    // and the two-space gap before Branch.
-    let remote_fixed = 1 + REMOTE_ICON_COL + remote_name + 2 + 2;
-    let worktree_fixed = 1 + 2;
-
-    // Branch starts at `lead`. We keep the trio at full width and let the
-    // flexible column (URL / Name) absorb any shortfall, down to MIN_FLEX_COL.
-    let natural_lead = remote_lead_or(remotes, remote_fixed + remote_url)
-        .max(worktree_lead_or(worktrees, worktree_fixed + worktree_name));
-    let min_lead = remote_lead_or(remotes, remote_fixed + MIN_FLEX_COL)
-        .max(worktree_lead_or(worktrees, worktree_fixed + MIN_FLEX_COL))
-        .min(natural_lead);
-    let trio_total = branch + 2 + tracked + 2 + sync;
-    let budget_lead = available.saturating_sub(1).saturating_sub(trio_total);
-    let lead = budget_lead.clamp(min_lead, natural_lead);
-
-    if available <= support::NARROW_FIELD_INNER_WIDTH && !worktrees.is_empty() {
-        let branch = 7.min(available.saturating_sub(3));
-        let lead = available.saturating_sub(branch);
-        return SyncColLayout {
-            available,
-            remote_name,
-            remote_url: remote_url.min(lead.saturating_sub(remote_fixed)),
-            worktree_name: lead.saturating_sub(worktree_fixed),
-            lead,
-            branch,
-            tracked,
-            sync,
-        };
+fn fit_sync_trio(layout: &mut SyncColLayout, values: (usize, usize, usize)) {
+    let mut excess =
+        (layout.lead + layout.branch + layout.tracked + layout.sync + 2 * layout.column_gap())
+            .saturating_sub(layout.available);
+    // Cut header padding before values. Keep one letter and an ellipsis in each column.
+    for (width, value) in [
+        (&mut layout.tracked, values.1),
+        (&mut layout.branch, values.0),
+        (&mut layout.sync, values.2),
+    ] {
+        let cut = excess.min(width.saturating_sub(value.max(*MIN_FITTED_TEXT_WIDTH)));
+        *width -= cut;
+        excess -= cut;
     }
-
-    SyncColLayout {
-        available: available.saturating_sub(1),
-        remote_name,
-        // Clamp `SyncColLayout::remote_url` and `worktree_name` to the space `lead` leaves;
-        // `fit_text` ellipsis-truncates their rendered content to those widths.
-        remote_url: remote_url.min(lead.saturating_sub(remote_fixed)),
-        worktree_name: worktree_name.min(lead.saturating_sub(worktree_fixed)),
-        lead,
-        branch,
-        tracked,
-        sync,
+    for width in [&mut layout.tracked, &mut layout.branch, &mut layout.sync] {
+        let cut = excess.min(width.saturating_sub(*MIN_FITTED_TEXT_WIDTH));
+        *width -= cut;
+        excess -= cut;
     }
 }
 
@@ -1223,14 +1281,22 @@ const fn worktree_lead_or(worktrees: &[WorktreeInfo], lead: usize) -> usize {
 /// left-aligned text; `sync` is right-aligned (numeric ahead/behind).
 fn sync_trio(layout: &SyncColLayout, branch: &str, tracked: &str, sync: &str) -> String {
     format!(
-        "{branch:<bw$}  {tracked:<tw$}  {sync:>sw$}",
-        branch = fit_text(branch, layout.branch),
-        tracked = fit_text(tracked, layout.tracked),
-        sync = fit_text(sync, layout.sync),
-        bw = layout.branch,
-        tw = layout.tracked,
-        sw = layout.sync,
+        "{}{gap}{}{gap}{}",
+        left_column(branch, layout.branch),
+        left_column(tracked, layout.tracked),
+        right_column(sync, layout.sync),
+        gap = " ".repeat(layout.column_gap()),
     )
+}
+
+fn left_column(text: &str, width: usize) -> String {
+    let text = fit_text(text, width);
+    format!("{text}{}", " ".repeat(width.saturating_sub(text.width())))
+}
+
+fn right_column(text: &str, width: usize) -> String {
+    let text = fit_text(text, width);
+    format!("{}{text}", " ".repeat(width.saturating_sub(text.width())))
 }
 
 fn fit_table_line(mut line: Line<'static>, width: usize) -> Line<'static> {
@@ -1254,16 +1320,15 @@ fn fit_table_line(mut line: Line<'static>, width: usize) -> Line<'static> {
 
 fn render_remote_header(lines: &mut Vec<Line<'static>>, layout: &SyncColLayout, focused: bool) {
     let style = column_header_style(focused);
-    // Leading: 1 space pad + REMOTE_ICON_COL blank for icon alignment.
-    let leading = format!(
-        " {:<icon$}{:<name$}  {:<url$}",
-        "",
-        REMOTES_NAME_HEADER,
-        REMOTES_URL_HEADER,
-        icon = REMOTE_ICON_COL,
-        name = layout.remote_name,
-        url = layout.remote_url,
-    );
+    let name = left_column(REMOTES_NAME_HEADER, layout.remote_name);
+    let leading = match layout.mode {
+        SyncTableMode::Compact => format!(" {name}"),
+        SyncTableMode::Full => format!(
+            " {}{name}  {}",
+            " ".repeat(REMOTE_ICON_COL),
+            left_column(REMOTES_URL_HEADER, layout.remote_url)
+        ),
+    };
     let pad = " ".repeat(layout.lead.saturating_sub(leading.width()));
     let trio = sync_trio(layout, BRANCH_HEADER, TRACKED_HEADER, SYNC_HEADER);
     lines.push(fit_table_line(
@@ -1278,28 +1343,33 @@ fn remote_row_line(
     selection: PaneSelectionState,
     mode: ColorMode,
 ) -> Line<'static> {
-    // Icon cell: emoji + trailing spaces to reach REMOTE_ICON_COL width.
-    let icon_width = row.icon.width();
-    let icon_pad = REMOTE_ICON_COL.saturating_sub(icon_width);
-    let icon_cell = format!("{}{}", row.icon, " ".repeat(icon_pad));
+    let icon_cell = match layout.mode {
+        SyncTableMode::Compact => String::new(),
+        SyncTableMode::Full => format!(
+            "{}{}",
+            row.icon,
+            " ".repeat(REMOTE_ICON_COL.saturating_sub(row.icon.width()))
+        ),
+    };
     let push_suffix = row
         .push_annotation
         .as_deref()
         .map(|annotation| format!("  {annotation}"))
         .unwrap_or_default();
-    // `consumed` totals the leading space, icon, Remote and URL widths before Branch; `pad` fills
-    // the remainder up to `layout.lead`.
-    let consumed = 1 + REMOTE_ICON_COL + layout.remote_name + 2 + layout.remote_url;
+    let name = left_column(&row.name, layout.remote_name);
+    let leading = match layout.mode {
+        SyncTableMode::Compact => name,
+        SyncTableMode::Full => format!(
+            "{name}  {}",
+            left_column(&row.display_url, layout.remote_url)
+        ),
+    };
+    let consumed = 1 + icon_cell.width() + leading.width();
     let pad = " ".repeat(layout.lead.saturating_sub(consumed));
-    let url = fit_text(&row.display_url, layout.remote_url);
     let leading = format!(
-        "{:<name$}  {:<url$}{pad}{branch_text:<branch$}  ",
-        fit_text(&row.name, layout.remote_name),
-        url,
-        name = layout.remote_name,
-        url = layout.remote_url,
-        branch_text = fit_text(&row.branch, layout.branch),
-        branch = layout.branch
+        "{leading}{pad}{}{gap}",
+        left_column(&row.branch, layout.branch),
+        gap = " ".repeat(layout.column_gap())
     );
     let data_style = selection.patch(Style::default().fg(inactive_title_color()), mode);
     let tracked_style = selection.patch(
@@ -1324,14 +1394,27 @@ fn remote_row_line(
             Span::styled(icon_cell, selection.patch(Style::default(), mode)),
             Span::styled(leading, data_style),
             Span::styled(
-                format!("{:<width$}", row.tracked_text(), width = layout.tracked),
+                left_column(&row.tracked_text(), layout.tracked),
                 tracked_style,
             ),
             Span::styled(
-                format!("  {:>width$}", row.status_text(), width = layout.sync),
+                format!(
+                    "{gap}{}",
+                    right_column(&row.status_text(), layout.sync),
+                    gap = " ".repeat(layout.column_gap())
+                ),
                 sync_style,
             ),
-            Span::styled(push_suffix, data_style),
+            Span::styled(
+                fit_text(
+                    &push_suffix,
+                    layout.available.saturating_sub(
+                        layout.lead + layout.branch + layout.tracked + layout.sync + 4,
+                    ),
+                )
+                .into_owned(),
+                data_style,
+            ),
         ]),
         layout.available,
     )
@@ -1343,9 +1426,8 @@ fn remote_row_line(
 fn render_worktree_header(lines: &mut Vec<Line<'static>>, layout: &SyncColLayout, focused: bool) {
     let style = column_header_style(focused);
     let leading = format!(
-        " {:<name$}",
-        WORKTREES_NAME_HEADER,
-        name = layout.worktree_name
+        " {}",
+        left_column(WORKTREES_NAME_HEADER, layout.worktree_name)
     );
     let pad = " ".repeat(layout.lead.saturating_sub(leading.width()));
     let trio = sync_trio(layout, BRANCH_HEADER, TRACKED_HEADER, SYNC_HEADER);
@@ -1361,16 +1443,15 @@ fn worktree_row_line(
     selection: PaneSelectionState,
     mode: ColorMode,
 ) -> Line<'static> {
-    let sync = panes::format_ahead_behind(row.ahead_behind);
-    let name = fit_text(&row.name, layout.worktree_name);
-    let leading = format!(" {:<name$}", name, name = layout.worktree_name);
+    let sync_text = panes::format_ahead_behind(row.ahead_behind);
+    let sync = right_column(&sync_text, layout.sync);
+    let leading = format!(" {}", left_column(&row.name, layout.worktree_name));
     let pad = " ".repeat(layout.lead.saturating_sub(leading.width()));
     let prefix = format!(
-        "{leading}{pad}{:<branch$}  {:<tracked$}  ",
-        fit_text(worktree_branch_text(row), layout.branch),
-        worktree_tracked_text(row),
-        branch = layout.branch,
-        tracked = layout.tracked
+        "{leading}{pad}{}{gap}{}{gap}",
+        left_column(worktree_branch_text(row), layout.branch),
+        left_column(worktree_tracked_text(row), layout.tracked),
+        gap = " ".repeat(layout.column_gap()),
     );
     let style = selection.patch(Style::default().fg(inactive_title_color()), mode);
     let sync_style = selection.patch(
@@ -1384,7 +1465,7 @@ fn worktree_row_line(
     fit_table_line(
         Line::from(vec![
             Span::styled(prefix, style),
-            Span::styled(format!("{sync:>width$}", width = layout.sync), sync_style),
+            Span::styled(sync, sync_style),
         ]),
         layout.available,
     )
@@ -1428,7 +1509,7 @@ pub(super) fn render_git_pane_body(
     if total_rows == 0 && git_data.description.as_deref().is_none_or(str::is_empty) {
         pane.viewport.clear_surface();
         pane.clear_row_layout();
-        return empty_git_chrome(" Not a git repo ");
+        return empty_git_chrome(tui_pane::pane_title("Git", &PaneTitleCount::None));
     }
 
     pane.viewport.set_len(total_rows);
@@ -1853,6 +1934,64 @@ mod tests {
                 ahead:  0,
                 behind: 0,
             }),
+        }
+    }
+
+    #[test]
+    fn wide_remotes_keep_the_icon_url_and_column_spacing() {
+        let remote = sample_remote();
+        let worktree = sample_worktree();
+        let layout = sync_col_layout(
+            std::slice::from_ref(&remote),
+            std::slice::from_ref(&worktree),
+            WIDE_PANE,
+        );
+        let line = remote_row_line(
+            &remote,
+            &layout,
+            PaneSelectionState::Unselected,
+            ColorMode::Colored,
+        );
+
+        assert_eq!(
+            line_text(&line),
+            " 📁 origin  natepiano/bevy_window_manager  main                origin/main    ☑️"
+        );
+    }
+
+    #[test]
+    fn remotes_keep_the_icon_and_url_only_after_the_trailing_columns_fit() {
+        let remote = sample_remote();
+        let worktree = sample_worktree();
+        for width in [15, 22, 49, 50, 80, 95] {
+            let layout = sync_col_layout(
+                std::slice::from_ref(&remote),
+                std::slice::from_ref(&worktree),
+                width,
+            );
+            let text = line_text(&remote_row_line(
+                &remote,
+                &layout,
+                PaneSelectionState::Unselected,
+                ColorMode::Colored,
+            ));
+            if width < 50 {
+                assert!(!text.contains("📁"), "{width}: {text}");
+                assert!(!text.contains("n…"), "{width}: {text}");
+                assert_eq!(text.split_whitespace().count(), 4, "{width}: {text}");
+            } else {
+                assert!(text.starts_with(" 📁 "), "{width}: {text}");
+                let tokens = text.split_whitespace().collect::<Vec<_>>();
+                let url = tokens[2];
+                assert!(url.width() >= 2, "{width}: {text}");
+                let prefix = url.strip_suffix('…').unwrap_or(url);
+                assert!(remote.display_url.starts_with(prefix), "{width}: {text}");
+                assert!(
+                    text.contains("main                origin/main"),
+                    "{width}: {text}"
+                );
+                assert!(text.width() <= width, "{width}: {text}");
+            }
         }
     }
 

@@ -78,6 +78,7 @@ pub(crate) use info::CiPagination;
 pub(crate) use info::DiskMeasurement;
 // `info` re-exports shared project enrichment and display state types.
 pub(crate) use info::GitHubInfo;
+pub(crate) use info::GithubRunCount;
 pub(crate) use info::LangEntry;
 pub(crate) use info::LanguageStats;
 pub(crate) use info::ProjectCiData;
