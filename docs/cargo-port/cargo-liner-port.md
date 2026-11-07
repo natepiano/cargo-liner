@@ -672,7 +672,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 - `crates/cargo-port/src/tui/app/async_tasks/startup_phase/toast_bodies.rs` — Startup label rows
 - `crates/cargo-port/src/tui/render/readability_tests.rs` — replace the `Cargo meta…` assertion with whole-label checks
 - `crates/tui_pane/src/progress/render.rs` — `progress_panel_body`
-- `crates/tui_pane/src/pane/title.rs` and `crates/tui_pane/src/pane/frame.rs` (`GridLines::write_overlay`) — the pane title text and its fit
+- `crates/tui_pane/src/pane/title.rs` and `crates/tui_pane/src/pane/frame.rs` — the pane title text and its fit in `GridLines::write_overlay`
 - `crates/tui_pane/src/toasts/render/` — the toast title gap and body pages (Spec 9)
 - `crates/cargo-port/src/tui/panes/lang/` — the Languages right margin
 - `crates/cargo-port/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md`
@@ -718,7 +718,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Files:**
 - `crates/cargo-port/src/tui/panes/description.rs` and `crates/cargo-port/src/tui/panes/package/` — the description row and the Structure width, and their tests
-- `crates/cargo-port/src/tui/app/` (`App::empty_package_description`), `crates/cargo-port/src/tui/panes/pane_data/` (`build_git_detail_fields`, `detail_data.rs`) and `crates/cargo-port/src/tui/render/mod.rs` — the description state and its height
+- `crates/cargo-port/src/tui/app/`, `crates/cargo-port/src/tui/panes/pane_data/` and `crates/cargo-port/src/tui/render/mod.rs` — the description state (`App::empty_package_description`, `build_git_detail_fields`) and its height (`detail_data.rs`)
 - `crates/cargo-port/src/tui/panes/cpu/` — the CPU / GPU pager and its tests
 - `crates/cargo-port/src/tui/panes/git/` — the Pull Requests title count and its tests
 - `crates/cargo-port/CHANGELOG.md`
