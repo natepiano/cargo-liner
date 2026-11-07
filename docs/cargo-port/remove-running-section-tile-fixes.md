@@ -1572,21 +1572,15 @@ Both runs used `--no-cache`, which skips saved test results; it does not make op
 
 ### Phase 43d — Capture text and constants follow the style guide  · status: done
 
-**Depends on:** Phase 43e (Phase 43c is parked; 43d's files are disjoint from 43e's)
+#### As-built
 
-#### Work Order
-
-**Goal:** capture text and constants follow the style guide.
-
-**Spec:** Showrunner, 2026-11-02, from handler Phase 54 checks. Replace `_capture_parent` with `_` in `CargoTransport::from_argv` (`crates/cargo-tile/src/census/command_text.rs:605`). Inspect the `From<CargoArgvAbsence>` implementations at lines 547 and 556. Order the capture protocol constants at `crates/cargo-tile/src/constants.rs:661-667`.
+- `CargoTransport::from_argv` binds the unused capture parent as `_` (pattern `[program, flag, executable, _, arguments @ ..]`).
+- Both `From<CargoArgvAbsence>` implementations call `CargoArgvAbsence::map_reason(self, argv_unavailable, program_rejected)`, which maps `ArgvUnavailable` and `ProgramRejected` to the target's reasons.
+- The capture shim constants in `constants.rs` are in alphabetical order.
 
 **Files:**
-- `crates/cargo-tile/src/census/command_text.rs`
-- `crates/cargo-tile/src/constants.rs`
-
-**Workers:** 1 writer — `impl`, `census/command_text.rs` and `constants.rs`.
-
-**Acceptance gate:** the phase style review passes for both sites; the suite passes.
+- `crates/cargo-tile/src/census/command_text.rs` — `CargoTransport::from_argv`, `CargoArgvAbsence::map_reason`.
+- `crates/cargo-tile/src/constants.rs` — the ordered capture shim constants.
 
 ### Phase 43f — The Mac census reads executable names through libproc  · status: todo
 
