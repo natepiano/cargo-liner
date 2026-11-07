@@ -701,6 +701,94 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: no `No description` row while the description loads or after a failed fetch, the three description states, and no page count change or row move when a placeholder goes away; the `Structure` divider column before and after the crates.io data; the CPU / GPU page count in the bottom border; no Pull Requests count while the pull requests load. 80- and 160-column live captures in colour and under NO_COLOR, before and after the data, judged by the design check. The checkpoint carries a `Change-Review:` line.
 
+### Phase 4n — Targets, cut titles and the footer read clean in narrow windows  · status: todo
+
+**Depends on:** Phase 4l (both edit `crates/cargo-port/src/tui/panes/targets/` and `crates/tui_pane/src/pane/frame.rs`). No file overlaps Phase 4m, so this phase runs beside it.
+
+#### Work Order
+
+**Goal:** at 95 and 160 columns the Targets pane is wide enough for its names, a cut pane title keeps one blank cell before its corner or joint, and the footer keeps an even gap before its note.
+
+**Source:** Phase 4l final design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4l/live/shots_4l_4/`, 2026-11-07, and the follow-ups recorded in Phases 4j-4l. Each look is older than Phase 4l.
+- `ci95-*-2-measured`, `wide160-*-measured`: the Targets pane cuts target names (`cargo-hand… cargo… binary`, `cargo-be… cargo… binary`) while Source stops at its 6-cell header width. At 160 the Targets pane has 25 inner cells and Git has 45.
+- Cut pane titles end against the corner or a column joint (`Workspace - c…┐`, `Worktree Group┐`, `cargo-liner-…─┬`), while the Projects title keeps one blank cell.
+- `ci80-*-2-measured-git-5_of_5`, `quota80-*-1-loading-git-3_of_3`: the footer drops key hints when the disk cache note shows, and leaves one space before the note (`enter activate Disk cache: 64 GiB …`); under NO_COLOR the hint and the note read as one phrase. At 95 the gap moves between 2 and 3 cells as Uptime changes.
+- No live shot shows the CI title `CI runs — on branch rows`.
+
+**Decision:** showrunner, 2026-11-07: the twelve looks of the Phase 4l design check and the recorded follow-ups are current work; Phase 4m keeps its scope. Start beside Phase 4m where the files do not overlap, and after Phase 4m where they do. Phase 4n holds the looks whose files do not overlap Phase 4m; Phase 4o holds the rest.
+
+**Constraints:**
+- Change no other look.
+- Never cut a label. Cut a value, a name or a message first. User rule C205: "columns should always be preserved - the project names should get ellipsis first".
+
+**Spec:**
+1. **Targets width and Source cut.** `panes/layout.rs` gives Targets `targets::minimum_width()` (`targets/render.rs:370`). Give Targets the width for its longest target name plus Source and Kind when the window has room, at 95 and 160 columns. When the names still do not fit, Source shrinks to its floor (one letter and `…`) before any target name is cut. Keep the Phase 4l Source floor for workspace and worktree sources.
+2. **One blank cell after a cut pane title.** `GridLines::write_overlay` (`crates/tui_pane/src/pane/frame.rs:855`) fits the title. A cut title keeps one blank cell before the corner or a column joint (`Workspace - c… ┐`, `cargo-liner-… ─┬`), as an uncut title does.
+3. **The footer gap.** `crates/tui_pane/src/bar/status_line.rs` lays out the key hints and the notes; `cargo_port_status_line_notes` (`crates/cargo-port/src/tui/render/mod.rs:838`) gives the disk cache note and does not change. Keep a fixed 3-cell gap between the last key hint and a note, the same as the gap between hints. When the row is too narrow, drop key hints from the right before the gap gets smaller. The gap does not change when the note text changes width.
+4. **The on-branch-rows shot (unit director).** The live script adds a scene that shows `CI runs — on branch rows`. This is a shot, not a look change.
+
+**Constraints from prior phases:**
+- Keep the Phase 4l rules: section titles cut the count before the label; a pane title keeps its label whole and cuts the project name; a title that fits draws whole.
+- New drawing tests set `ColorMode` explicitly. Name each test for the behavior it pins.
+
+**Files:**
+- `crates/cargo-port/src/tui/panes/targets/` and `crates/cargo-port/src/tui/panes/layout.rs` — Spec 1 and its tests
+- `crates/tui_pane/src/pane/frame.rs` — Spec 2 and its tests
+- `crates/tui_pane/src/bar/` — Spec 3 and its tests
+- `crates/tui_pane/CHANGELOG.md` — the entries of Specs 2 and 3
+
+**Workers:** 1 writer: Specs 1-3, their tests and `crates/tui_pane/CHANGELOG.md`. The writer does not edit `crates/cargo-port/CHANGELOG.md` (Phase 4m holds it); Phase 4o adds the Spec 1 entry.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: Targets width at 95 and 160, and Source cut to its floor before a target name; one blank cell after a cut title before a corner and before a joint; a 3-cell footer gap with notes of two widths, and hints dropped first at 80. 80-, 95- and 160-column live captures in colour and under NO_COLOR, with the on-branch-rows scene, judged by the design check. The checkpoint carries a `Change-Review:` line.
+
+### Phase 4o — Cut values and dim text read clean in narrow panes  · status: todo
+
+**Depends on:** Phase 4m (both edit `crates/cargo-port/src/tui/panes/package/`, `crates/cargo-port/src/tui/panes/git/`, `crates/cargo-port/src/tui/render/mod.rs` and `crates/cargo-port/CHANGELOG.md`)
+
+#### Work Order
+
+**Goal:** at 80 and 95 columns a cut value has no space before its ellipsis, the Tracked header reads whole, the Worktree Group CI row keeps one row, and dim value text meets the contrast floor.
+
+**Source:** Phase 4l final design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4l/live/shots_4l_4/`, 2026-11-07, and the follow-ups recorded in Phases 4j-4l. Each look is older than Phase 4l.
+- `ci80-*-2-measured-git-*`, `quota80-*-1-loading-git-*`, CI runs rows: a cut keeps a space before the ellipsis (`cargo tools …`, `↑5 ahead of …`, `phase …`).
+- `long95-*-1-expanded`: the Git Worktrees `Tracked` header draws `Track…` while Branch is one cell wider than its header.
+- `long80-*`, `pair80-*`: the Worktree Group `CI` label is alone on its row, and `No CI` is on the next row outside the value column.
+- `No CI` and `—` value text: contrast 4.16:1 on #1e1e1e, under the 4.5:1 floor.
+
+**Decision:** showrunner, 2026-11-07: see Phase 4n. These looks share files with Phase 4m, so this phase runs after it.
+
+**Constraints:**
+- Change no other look.
+- Never cut a label. Cut a value, a name or a message first.
+- Colours come from the theme, not from code.
+
+**Spec:**
+1. **No space before the ellipsis.** `render::truncate_with_ellipsis` (`crates/cargo-port/src/tui/render/mod.rs:748`) and its callers in `panes/support.rs`, `git/render.rs` and `ci/render.rs` trim trailing spaces before they add `…` (`cargo tools…`, `↑5 ahead of…`, `phase…`).
+2. **The Tracked header.** In the Git Worktrees table at 95 columns, `Tracked` draws whole when Branch has a spare cell: `fit_sync_trio` (`git/render.rs`) takes a header cell from the wider column first.
+3. **The Worktree Group CI row.** At 80 columns, `CI` and `No CI` share one row in the value column, as other Package rows do.
+4. **Dim value contrast.** `ci_display_style` (`package/render.rs`) draws `No CI`, `No CI runs` and `unpublished branch` with `inactive_border_color()` (Rgb 140,140,140 in `crates/tui_pane/src/theme/fallback.rs:92`). Give dim value text a theme colour with at least 4.5:1 contrast on the pane background; borders keep `inactive_border`.
+5. **Changelog.** Add the cargo-port entry for Phase 4n Spec 1 (Targets width and Source cut) beside this phase's entries.
+
+**Constraints from prior phases:**
+- Keep the Phase 4l rules: every Package and Workspace row keeps one right-margin cell (`support::field_value_lines`, `package/constants.rs::PATH_VALUE_RESERVE`) and one blank cell before the `Structure` divider; section titles cut the count before the label; at 80 columns all four Worktrees and Remotes columns stay; a short Tracked value draws whole.
+- Keep the Phase 4m description states and Structure width.
+- New drawing tests set `ColorMode` explicitly. Name each test for the behavior it pins.
+
+**Files:**
+- `crates/cargo-port/src/tui/render/mod.rs`, `crates/cargo-port/src/tui/panes/support.rs` and `crates/cargo-port/src/tui/panes/ci/` — Spec 1 and its tests
+- `crates/cargo-port/src/tui/panes/git/` — Specs 1 and 2
+- `crates/cargo-port/src/tui/panes/package/` — Specs 3 and 4
+- `crates/tui_pane/src/theme/` — Spec 4's dim value colour
+- `crates/cargo-port/CHANGELOG.md` and `crates/tui_pane/CHANGELOG.md`
+
+**Workers:** 1 writer: Specs 1-5, their tests and both changelogs.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: no space before `…` in Git values and CI commits; `Tracked` whole at 95; `CI` and `No CI` on one row at 80; dim value contrast at least 4.5:1. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check. The checkpoint carries a `Change-Review:` line.
+
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 
 **Depends on:** Phase 3b (both edit `tui/terminal/event_loop.rs`) and Phase 4b (it changes CPU drawing and pane geometry, and this phase measures after it)
