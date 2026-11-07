@@ -9,6 +9,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- `ColorMode::clear_colors` preserves terminal text modifiers when `NO_COLOR` disables colours.
 - Add `ExpansionModel`, `ExpansionTree`, and shared expansion actions and keys for application trees.
 - `wheel_framework_overlay` and `OverlayWheel` route a mouse wheel over the settings, keymap or global shortcuts overlay through the settings host; a host clears its own state first with `SettingsHost::before_settings_navigation`.
 - `CellFadeProgress` carries entry blend rounding through `TileCells::readout_progress`, so cell text and numeric readouts share exact ink.

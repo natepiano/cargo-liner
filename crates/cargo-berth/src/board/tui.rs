@@ -849,6 +849,10 @@ fn draw(frame: &mut Frame, application: &mut BoardApplication) {
         .areas(frame.area());
     draw_focused_pane(frame, application, body);
     draw_footer(frame, application, footer);
+    application
+        .framework
+        .color_mode
+        .clear_colors(frame.buffer_mut());
 }
 
 fn draw_focused_pane(frame: &mut Frame, application: &mut BoardApplication, area: Rect) {
@@ -1283,6 +1287,31 @@ mod tests {
 
     const MARKER_ID: &str = "cargo-berth-pending-bypass-01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a99.json";
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+
+    #[test]
+    fn no_color_board_frame_keeps_the_focused_title_bold() -> FixtureResult<()> {
+        let mut application = BoardApplication::new(&model(&[]))?;
+        application.framework.color_mode = ColorMode::NoColor;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
+        terminal.draw(|frame| draw(frame, &mut application))?;
+        let buffer = terminal.backend().buffer();
+        assert!(
+            buffer
+                .content
+                .iter()
+                .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset),
+            "every frame clears colours"
+        );
+        let title = (0..buffer.area.width)
+            .map(|x| &buffer[(x, 0)])
+            .find(|cell| cell.symbol().chars().any(char::is_alphabetic))
+            .ok_or_else(|| io::Error::other("focused title must render"))?;
+        assert!(
+            title.modifier.contains(Modifier::BOLD),
+            "the focused title stays bold"
+        );
+        Ok(())
+    }
 
     struct ScriptedModelSource {
         position: JournalPosition,
