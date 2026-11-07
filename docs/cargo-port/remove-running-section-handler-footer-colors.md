@@ -1046,7 +1046,9 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 21 — Astra designer and Astra reviewer roles  · status: todo
 
-**Depends on:** Phase 17, Phase 16, Phase 18, Phase 26, Phase 29, Phase 20
+**Depends on:** Phase 17, Phase 16, Phase 18, Phase 26, Phase 29, Phase 20, Phase 67
+
+**Waits on:** the staff producer. sdlc agents phase 15b adds the read contract below; the showrunner sends the `~/.claude` main hash when it lands. The read call is `~/.claude/scripts/lib/py ~/.claude/scripts/production/worker.py list --json`. Each pane worker row keeps `name`, `id`, `current_session`, `state`, `role` and `activity`, and adds three fields computed at read time and never stored: `work` (`"idle"` | `"busy"` | `"unknown"`, from the one herdr busy rule), `account` (the label of the account the worker opens on; for Codex rows, the workers role account) and `home` (the absolute path of that account's home as a string; `CODEX_HOME` for Codex). `role` is the staff worker role, for example `"astra-designer"` or `"astra-reviewer"`. Before dispatch, read one live row to confirm these forms. Reuse Phase 67's Codex session identity and placement path for Astra rows; add no second one.
 
 #### Work Order
 
@@ -1060,7 +1062,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 41 changed the Codex startup query: it accepts user threads with a non-exec source (`constants.rs` ≈387) and keeps an older-schema query (≈392), chosen by `ThreadsLayout::{WithThreadSource, OriginatorOnly}` (`census/codex.rs` ≈249). The separate lookup for Astra exec threads stays required.
 - `census/scan.rs` belongs to Phase 47 until its checkpoint.
 - Phase 16: a selected row draws on the selection ground (`InkGrounds` in `footer_colors/mod.rs`). Rendered tests also draw both Astra roles on a selected row in a focused and an unfocused tile and require 4.5:1.
-- cargo-handler reads hierarchy from `census.staff_file`, through the schema-2 staff reader. It never runs `production_tree.py` or `staff.py`. Astra membership requires the staff producer to supply its role, Codex home and busy/idle state. Keep the `statusline.conf` keys `role.astra-designer=mauve` and `role.astra-reviewer=bright-green`. Do not edit `~/.claude`.
+- cargo-handler reads hierarchy from `census.staff_file`, through the schema-2 staff reader. It never runs `production_tree.py` or `staff.py`. Astra membership comes from the `worker.py list --json` row: `role`, `home` and `work`, joined to the staff edge by `id` and `current_session`. cargo-handler stores no busy/idle state of its own. Run that call outside the scheduler thread and the publication lock, inside the scan's existing deadline, and at most once per scan. Keep the `statusline.conf` keys `role.astra-designer=mauve` and `role.astra-reviewer=bright-green`. Do not edit `~/.claude`.
 - `census/hierarchy.rs` parses schema 2 through `StaffDocumentRow`, `StaffFields`, `StaffKind` and `ValidatedStaffForest`. Unknown kinds bypass field validation. Known rows must pass whole-forest validation before names or edges publish. `HierarchyRole` remains in `census/mod.rs`; `RoleLabel` remains in `census/placement.rs`. Extend the staff parser, rather than restoring `HierarchyWireRole` or a command parser. Astra session colors use `FooterColors::hierarchy_role` (`footer_colors/mod.rs` ≈839) and `SessionRowInk::Management`; subagent colors use `SubagentRole::ink` (`census/transcript.rs` ≈597). `FooterColors::named_role` no longer exists. Keep Astra roles in `HierarchyRole` and `FooterRole`; do not add Astra variants to `SubagentRole`. Worker rows draw plain.
 - Phase 26 session-row ink path: `SessionRowInk::Management(FooterColor)` (`theme/mod.rs` ≈67) already draws a configured management ink through `FooterColor::management_style` (`footer_colors/mod.rs` ≈68). `FooterColors::session_row_inks()` (≈765) lists the fixed fields, then each account ink as `Account`, then each configured role ink as `Management`. `FooterColors::parse` (≈772) reads only `role.showrunner` and `role.unit-director`, so the `role.astra-*` keys in `footer_colors/fixtures/statusline.conf` are ignored today, and that fixture still has `role.astra-designer=pink`. `SessionRowInk` keeps no state; its observable result is the drawn foreground.
 - Phase 17 probe schema 3: `ProbeChildWork` sends the unit kind `subagent` with a defaulted role extension converted to the semantic domain role. Keep its compatibility tests beside the new hierarchy extension tests: a capable receiver keeps recorded subagent roles; an older receiver accepts the report without the extension.
@@ -1078,19 +1080,19 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `OpenThreadRows::read` in `census/codex.rs` accepts explicit thread IDs through `CODEX_THREAD_BY_ID_QUERY`, regardless of originator. `codex::read_threads_by_id` no longer exists. Use the named Astra Codex home. Collect the IDs of both consumers per home and read each home once: `OpenThreadRows::read` replaces a home's requested IDs (`codex.rs` ≈323), and `app_server_threads` retains only app-server homes (`scan.rs` ≈1418). Retain the combined homes. Preserve per-home caching and invalidation by database and WAL revision. Test an unchanged scan (no second read) and a WAL change (one new read). Keep startup queries restricted as before. Reuse `SessionNames`, home matching, resume handling and the no-dispatch regression.
 - The scanner captures one `StaffSnapshot` before classification. Its source and `Arc<StaffRoster>` supply names and links for that scan. Preserve this consistency when adding Astra membership. Keep database and rollout reads outside the scheduler thread and the publication lock. App-server discovery uses Linux file descriptors under the sessions directory.
 - Phase 64: `census::schedule::spawn` takes the configured `herdr_read_timeout`, and `local_scanner` passes it to the scanner (`terminal.rs` ≈81, `census/schedule.rs` ≈694). Keep this argument. `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈414). `scan_staged` stays nonblocking.
-- The staff reader has no reviewer-pool state or lease requirement. Astra busy/idle state needs a semantic type from the announced staff contract. A live Astra session must remain visible between turns without a pool file.
-- `HierarchyEdge` contains `manager`, `member` and `role`. It has no Codex home or busy/idle state. Convert announced staff fields into one checked Astra payload with a required home and state. Reject incomplete Astra membership at that boundary. Preserve the existing staff snapshot and forest validation. Do not add independent domain `Option` fields.
+- The staff reader has no reviewer-pool state or lease requirement. Astra busy/idle state is a semantic type converted from `work` (`idle`, `busy`, `unknown`), with a distinct variant when the call fails or times out. A live Astra session must remain visible between turns without a pool file.
+- `HierarchyEdge` contains `manager`, `member` and `role`. It has no Codex home or busy/idle state. Convert the worker row's `role`, `home` and `work` into one checked Astra membership with a required home. Reject incomplete Astra membership at that boundary. Preserve the existing staff snapshot and forest validation. Do not add independent domain `Option` fields.
 - Probe schema 3 serializes `HierarchyEdges` directly; new role variants in `edges` make older receivers refuse a probe. Carry new roles in a defaulted extension.
 - Phase 15 fallbacks stay: a session with no name shows its pid text, and an unknown footer color name draws plain.
-- The former `production_tree.py` Astra output does not establish support in the staff file. Keep `role.astra-designer=mauve` and `role.astra-reviewer=bright-green` in the live config. `/astra_review` holds the reviewer role during its Codex process. Hold a designer with `~/.claude/scripts/lib/py ~/.claude/scripts/astra/astra_roles.py hold designer --session-dir <delegate dir> --worker <name> [--manager <session id>]`. Release it with `astra_roles.py release <thread id>`. cargo-handler reads only the resulting staff data.
+- The former `production_tree.py` Astra output does not establish support in the staff file. Keep `role.astra-designer=mauve` and `role.astra-reviewer=bright-green` in the live config. `/astra_review` holds the reviewer role during its Codex process. Hold a designer with `~/.claude/scripts/lib/py ~/.claude/scripts/astra/astra_roles.py hold designer --session-dir <delegate dir> --worker <name> [--manager <session id>]`. Release it with `astra_roles.py release <thread id>`. cargo-handler reads only the resulting staff data and the `worker.py list --json` rows.
 
 **Spec:**
 1. Extend the schema-2 staff reader for the announced Astra fields. Add `AstraDesigner` and `AstraReviewer` to `HierarchyRole` and the checked Astra membership type. Read roles from the announced role field, without inventing new staff kinds. Keep the words `astra designer` and `astra reviewer` in the role column and tile title.
 2. `FooterRole` gains `AstraDesigner` and `AstraReviewer`, read from `role.astra-designer` and `role.astra-reviewer`; the role word draws in that color everywhere a role word draws in colour (Phase 15 rules). On a session row both Astra role inks draw through `SessionRowInk::Management(FooterColor)`; add no new `SessionRowInk` variant for each role.
-3. An Astra row draws under its edge's manager, a unit director or a showrunner alike, and keeps the edge's `state` as its idle or busy status between turns.
+3. An Astra row draws under its edge's manager, a unit director or a showrunner alike, and keeps the busy/idle status from the read call between turns.
 4. The thread lookup also reads a `codex_exec` thread when an Astra edge names it, under the edge's `codex_home`, so the row gets its session name, activity and fast mark as other Codex rows do.
 5. Tests, each red before its fix: both roles parse from schema-2 staff rows and keep their words. Each role uses its configured color. Astra rows draw under unit directors and showrunners. Edge-named `codex_exec` threads get their names and activity. Unknown roles do not publish Astra membership. Unknown staff kinds still preserve valid known rows.
-6. Tests also cover: an edge-named `codex_exec` thread with no open app-server rollout; busy and idle Astra rows visible with no reviewer-pool lease; an older receiver parsing a new probe, and a new receiver restoring role, home and state; each Astra role, read through the production role API, draws through `SessionRowInk::Management`, keeps its configured role assignment, meets the Phase 26 floors in the constraints above from every session ink and from every other ink that can share its row, and reaches 4.5:1 covered contrast in all four themes; an Astra edge with no Codex home or no state is refused at the wire boundary.
+6. Tests also cover: an edge-named `codex_exec` thread with no open app-server rollout; busy and idle Astra rows visible with no reviewer-pool lease; an older receiver parsing a new probe, and a new receiver restoring role, home and state; each Astra role, read through the production role API, draws through `SessionRowInk::Management`, keeps its configured role assignment, meets the Phase 26 floors in the constraints above from every session ink and from every other ink that can share its row, and reaches 4.5:1 covered contrast in all four themes; an Astra worker row with no `home` is refused at the read boundary; a failed or timed-out busy/idle read keeps the row visible with its distinct state.
 7. Guild heads: a hierarchy with a `guilds` showrunner and four unit directors named `designers`, `reviewers`, `showrunners` and `units` draws them as ordinary unit director rows under that showrunner, with no new role word. An Astra designer held by a unit director of another production stays under that unit director. Rendered tests cover both.
 8. Palette tests: a new fixture `footer_colors/fixtures/statusline_astra.conf` holds the `statusline.conf` values with `role.astra-designer=mauve` and `role.astra-reviewer=bright-green`. Tests prove that both Astra roles enter `FooterColors::session_row_inks()` as `SessionRowInk::Management` from that fixture, and that the rendered session palette checks in `render/role_title_tests.rs` measure both inks.
 9. Word-match contrast (phase 20 runs first): extend `render/word_contrast_tests.rs` with rendered word-match tests for both Astra role inks, with the final production inks and the two-way 208/255 coverage (the lower of the unrounded and the byte-rounded blend). Each ink reaches 4.5:1 on the drawn match background, on the base, focused and unfocused grounds, and where a match overlaps a selected row.
@@ -1116,7 +1118,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 67 — Pane Codex workers show under their unit  · status: todo
 
-**Depends on:** Phase 21
+**Depends on:** none
 
 #### Work Order
 
@@ -1133,7 +1135,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `classify::codex_row` (`census/classify.rs` ≈493) builds a root interactive Codex row with `session_id: SessionIdentity::Unrecorded`; it uses the matched `CodexThread` only for the row label. `SessionIdentity` (`census/mod.rs` ≈171) has only `Unrecorded` and `Claude`.
 - `Placement::resolve_managers` (`census/placement.rs` ≈485) matches edges only on `SessionIdentity::Claude` for root rows. `resolve_threads` (≈422) matches Codex thread ids only on `ChildKind::Thread` children of an owner row (the app-server model). `HierarchySnapshot::matched` and `HierarchyEdges::with_worker_roles` (`census/hierarchy.rs` ≈123–165) have the same two cases.
 - `codex::resume_request` (`census/codex.rs` ≈72) reads the thread id from `codex resume <uuid>` as `ResumeRequest::NamedId`. A bare `codex` has its thread selected by working directory and start time (`classify::codex_thread_window`).
-- Phase 21 adds Astra Codex rows under their manager. Reuse its Codex identity and placement path where it fits; do not add a second one.
+- Phase 21 (Astra rows) waits on the staff producer and runs after this phase. It reuses this phase's Codex identity and placement path for Astra rows, so keep that path general to any Codex worker edge.
 - Probe rows carry `session_id`; older receivers must still accept a probe (keep the defaulted-extension rule of probe schema 3).
 
 **Spec:**
@@ -1146,6 +1148,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Files:**
 - `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/probe.rs`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/scan.rs` — the open-rollout read under `/proc/<pid>/fd` (`app_server_threads` ≈1367), reused for a bare `codex` process
 - `crates/cargo-handler/src/census/pane_worker_placement_tests.rs` — new test module
 
 **Workers:** 1 writer + 1 tester.
@@ -1153,6 +1156,41 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `test` — `census/pane_worker_placement_tests.rs`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a framed shot of cargo-handler on natedev, started with my own process and the real staff file, shows each live pane Codex worker of a unit under that unit's director, and no pane worker in the unassigned pool. The checkpoint carries `Change-Review: cargo-handler shows each Codex worker running in a herdr pane under its unit director, not as unassigned | open cargo-handler while a unit has Codex workers working and find them under their unit`.
+
+### Phase 68 — Tiles keep their columns when a summary cell changes width  · status: todo
+
+**Depends on:** Phase 67
+
+#### Work Order
+
+**Goal:** the tile grid keeps its column count when the text width of a summary cell changes; the layout changes only when the terminal size or the set and rows of the tiles change.
+
+**Source:** the showrunner, 2026-11-07. Change review C217 ("Tiles keep their places when the accounts table wraps", Phase 65, merge 99b87113) was returned after a live check failed:
+1. Check: installed cargo-handler at 80x45, one capture each 2 s for 150 s.
+2. Result: the tiles switch between two columns and one column 4 times in 150 s. Each switch follows a width change of a summary status cell: cargo-liner `waiting` (two columns) to `clippy (mac)` (one column), and back. The accounts table kept its 9 rows and did not wrap.
+3. Frames: `/home/natepiano/rust/repro/cargo-liner-C217-c217/f05.txt` (two columns), `f06.txt` (one column), `f08.txt` (one column), `f09.txt` (two columns). In `f06.txt` the status column is wider and the directory column narrower; the summary keeps the same row count.
+
+**Constraints from prior phases:**
+- Phase 65: `TileGrid::sync_measured_demands` (`crates/tui_pane/src/tiles/grid.rs` ≈2391) runs the candidate search when `LayoutSelectionInputs` change; equal inputs reuse `LayoutSelection` with exactly 2 `cells.demands` calls per draw. Keep that reuse and the narrow-width demand-count tests (200:7, 80:4, 50:2, 40:2, then exactly 2) and `grid_at_height_70_keeps_all_work_rows_and_accounts`.
+- `CellView::requested_at_width` (`agent_cell.rs`) requests a tile's rows at each width; `TreePresentation::HeightCompressed` applies only at allocation.
+
+**Spec:**
+1. First reproduce the switch in a test that drives the real draw path: the frame-5 state at 80x45, then the same state with the `clippy (mac)` status, then back. The test fails before the fix. Name the input that changes the column choice, and quote it in the summary.
+2. Fix the cause where it lives: a change in a cell's text width that does not change any tile's requested rows at the candidate widths does not change the column count. Do not add a hold timer, a hysteresis count or a special case for the summary tile.
+3. A real change still reselects: a tile that gains or loses rows, a tile added or removed, and a terminal resize.
+4. Tests, each red before its fix: the status-width switch above keeps the column count over the full back-and-forth; each case in item 3 still changes the layout when its rows need it; the Phase 65 demand-count tests stay green.
+5. CHANGELOG: one line.
+
+**Files:**
+- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/render/mod.rs` — test module registration
+- `crates/cargo-handler/src/render/layout_stability_tests.rs` — new test module
+
+**Workers:** 1 writer + 1 tester.
+- `impl` — the cause and its fix, and the CHANGELOG; hub: `crates/cargo-handler/src/render/mod.rs`.
+- `test` — `render/layout_stability_tests.rs`.
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test tui_pane` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: cargo-handler at 80x45, started with my own process, captured each 2 s for 150 s while a summary status changes width, keeps one column count in every frame. The checkpoint carries `Change-Review: cargo-handler tiles keep their columns when a session's status text changes width | open cargo-handler at 80x45 while a session moves between waiting and a longer status, and watch the tiles stay in place`.
 
 ### Phase 41 — Renamed Codex sessions show in cargo-handler  · status: done
 
