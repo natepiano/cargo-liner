@@ -126,6 +126,16 @@ pub enum RowsReadout {
     Count(usize),
     /// A selected row checked against the surface's total by [`Self::selected`].
     Selected(SelectedRow),
+    /// A checked inclusive range of visible rows.
+    Shown(ShownRows),
+}
+
+/// The visible rows lie within the measured content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShownRows {
+    first: NonZeroUsize,
+    last:  NonZeroUsize,
+    total: usize,
 }
 
 /// A one-based selection that is within its surface's row count.
@@ -158,6 +168,22 @@ impl Display for RowExceedsTotal {
 impl Error for RowExceedsTotal {}
 
 impl RowsReadout {
+    /// Check a visible range against the measured content.
+    ///
+    /// # Errors
+    /// Returns [`RowExceedsTotal`] for a reversed range or a row beyond the total.
+    pub const fn shown(
+        first: NonZeroUsize,
+        last: NonZeroUsize,
+        total: usize,
+    ) -> Result<Self, RowExceedsTotal> {
+        if first.get() > last.get() || last.get() > total {
+            Err(RowExceedsTotal)
+        } else {
+            Ok(Self::Shown(ShownRows { first, last, total }))
+        }
+    }
+
     /// Check a one-based selection against its surface's total.
     ///
     /// # Errors
@@ -186,7 +212,7 @@ impl CellRowsReadout {
             // A selected item's count does not measure its wrapped content.
             content_rows: match text {
                 RowsReadout::Count(rows) => rows,
-                RowsReadout::Selected(_) => measured_rows,
+                RowsReadout::Selected(_) | RowsReadout::Shown(_) => measured_rows,
             },
         }
     }
@@ -427,6 +453,60 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     cells: &impl TileCells<Id>,
     mode: crate::ColorMode,
 ) {
+    let prepared = prepare_grid(grid, area, growth, contents, cells);
+    if prepared.drawing.pieces.is_empty() && prepared.drawing.column_bands.is_empty() {
+        grid.record_painted_body(prepared.drawing, contents, Vec::new());
+        return;
+    }
+    let frames = draw_placements(
+        buffer,
+        area,
+        &prepared.drawing,
+        &TileMeasurements {
+            demands: &prepared.demands,
+            widths:  &prepared.widths,
+        },
+        contents,
+        cells,
+        mode,
+    );
+    grid.record_painted_body(prepared.drawing, contents, frames);
+}
+
+/// The grid keeps its next layout ready while an expanded cell covers it.
+pub(super) fn prepare_covered_grid<Id: Clone + Eq + Debug>(
+    grid: &mut TileGrid<Id>,
+    area: Rect,
+    growth: TileGrowth,
+    cells: &impl TileCells<Id>,
+) {
+    let prepared = prepare_grid(grid, area, growth, TileGridContents::Shown, cells);
+    let frames = prepared
+        .drawing
+        .pieces
+        .iter()
+        .filter(|piece| {
+            piece.placement.content == TileContent::Summary
+                && has_visible_body_row(piece.placement.frame)
+        })
+        .map(|piece| piece.placement.frame.clip())
+        .collect();
+    grid.record_painted_body(prepared.drawing, TileGridContents::Shown, frames);
+}
+
+struct PreparedGrid<Id> {
+    drawing: TileDrawing<Id>,
+    widths:  Vec<(TileContent<Id>, u16)>,
+    demands: TileDemands<Id>,
+}
+
+fn prepare_grid<Id: Clone + Eq + Debug>(
+    grid: &mut TileGrid<Id>,
+    area: Rect,
+    growth: TileGrowth,
+    contents: TileGridContents,
+    cells: &impl TileCells<Id>,
+) -> PreparedGrid<Id> {
     grid.set_draw_layout(area, growth);
     cells.prepare_moving_frame(
         || grid.preparation_allocations(area, growth),
@@ -450,26 +530,16 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
         |content, area| cells.rows_drawn(content, area),
         |content, area| cells.rows_kept(content, area),
     );
-    let display = grid.display();
     let drawing = grid.visible_drawing(contents, progress);
-    if drawing.pieces.is_empty() && drawing.column_bands.is_empty() {
-        grid.record_painted_body(drawing, contents, Vec::new());
-        return;
-    }
-    let (widths, demands) = match display {
-        GridDisplay::Cells => (&cells_widths, &cells_demands),
-        GridDisplay::SummaryAlone => (&alone_widths, &alone_demands),
+    let (widths, demands) = match grid.display() {
+        GridDisplay::Cells => (cells_widths, cells_demands),
+        GridDisplay::SummaryAlone => (alone_widths, alone_demands),
     };
-    let frames = draw_placements(
-        buffer,
-        area,
-        &drawing,
-        &TileMeasurements { demands, widths },
-        contents,
-        cells,
-        mode,
-    );
-    grid.record_painted_body(drawing, contents, frames);
+    PreparedGrid {
+        drawing,
+        widths,
+        demands,
+    }
 }
 
 /// Widths used to measure the display that will be drawn this frame.
@@ -754,7 +824,7 @@ fn draw_cell_with_rows_readout(
 /// Each cell gets it at the width its contents were measured at, and
 /// only where that width can display the readout -- the same width
 /// [`draw_tile_grid`] goes on to write in the readout.
-fn add_readout_rows<Id: Clone + Eq>(
+pub(super) fn add_readout_rows<Id: Clone + Eq>(
     demands: &mut TileDemands<Id>,
     widths: &[(TileContent<Id>, u16)],
 ) {
@@ -875,6 +945,9 @@ fn extent_readout_lines(
             match rows.text {
                 RowsReadout::Count(rows) => rows.to_string(),
                 RowsReadout::Selected(selected) => selected.row().to_string(),
+                RowsReadout::Shown(shown) => {
+                    format!("{}–{} of {}", shown.first, shown.last, shown.total)
+                },
             },
             Style::default().fg(reading),
         ),

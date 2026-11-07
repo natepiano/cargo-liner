@@ -44,6 +44,7 @@ macro_rules! app_global_actions {
                 FocusRight => ("focus_right", "Focus the tile to the right");
                 FocusUp    => ("focus_up",    "Focus the tile above");
                 FocusDown  => ("focus_down",  "Focus the tile below");
+                Expand     => ("expand", "Expand the focused cell");
                 Freeze     => ("freeze",      "Freeze the display");
                 $($attract)*
                 ProcessTree => ("process_tree", "Show process hierarchy");
@@ -86,6 +87,7 @@ impl Globals<App> for AppGlobalAction {
             KeyCode::Right => Self::FocusRight,
             KeyCode::Up => Self::FocusUp,
             KeyCode::Down => Self::FocusDown,
+            KeyCode::Enter => Self::Expand,
             'f' => Self::Freeze,
         };
         #[cfg(feature = "attract")]
@@ -118,6 +120,7 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::FocusRight => app.tiles.apply(TileAction::FocusRight, growth),
         AppGlobalAction::FocusUp => app.tiles.apply(TileAction::FocusUp, growth),
         AppGlobalAction::FocusDown => app.tiles.apply(TileAction::FocusDown, growth),
+        AppGlobalAction::Expand => app.grid_view.expand(std::time::Instant::now()),
         AppGlobalAction::Freeze => app.updates = app.updates.toggled(),
         #[cfg(feature = "attract")]
         AppGlobalAction::Attract => app.attract.toggle(),

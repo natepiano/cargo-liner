@@ -225,13 +225,14 @@ mod overlay_tests {
     }
 
     /// The captured overlay rows.
-    const EXPECTED: [&str; 92] = [
+    const EXPECTED: [&str; 93] = [
         "[Global Navigation] global",
         "global.next_pane = tab",
         "global.prev_pane = shift-tab",
         "[Global Shortcuts] global",
         "global.add_tile = +",
         "global.dismiss = x",
+        "global.expand = enter",
         "global.focus_up = up",
         "global.focus_down = down",
         "global.focus_left = left",

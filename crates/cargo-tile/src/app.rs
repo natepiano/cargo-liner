@@ -9,7 +9,6 @@ use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::layout::Position;
-#[cfg(feature = "attract")]
 use ratatui::layout::Rect;
 use tui_pane::AppContext;
 use tui_pane::AppIdentity;
@@ -25,9 +24,7 @@ use tui_pane::FavoritesHost;
 use tui_pane::FavoritesOverlay;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
-#[cfg(feature = "attract")]
 use tui_pane::KeyBind;
-#[cfg(feature = "attract")]
 use tui_pane::KeyOutcome;
 use tui_pane::Keymap;
 use tui_pane::KeymapEditContext;
@@ -67,6 +64,11 @@ use crate::roster::Roster;
 use crate::sccache::SccacheStats;
 use crate::settings;
 use crate::tiles::TileGrid;
+
+#[path = "grid_view.rs"]
+mod grid_view;
+pub(crate) use grid_view::CellViewport;
+pub(crate) use grid_view::GridView;
 
 /// The attract screen, writing its lines and timings to the frame log.
 #[cfg(feature = "attract")]
@@ -213,6 +215,7 @@ pub(crate) struct App {
     /// The tile grid: how many cells the pane holds and the motion
     /// between one arrangement and the next.
     pub(crate) tiles:             TileGrid,
+    pub(crate) grid_view:         GridView,
     /// What sccache last reported, for the summary cell's top border,
     /// and where the poll that refreshes it stands.
     pub(crate) sccache:           SccacheStats,
@@ -275,6 +278,7 @@ impl App {
             roster: Roster::new(),
             prepared_tables: render::PreparedTables::default(),
             tiles,
+            grid_view: GridView::Grid,
             sccache: SccacheStats::new(),
             inline_error: None,
             started: Instant::now(),
@@ -369,10 +373,18 @@ impl TerminalApp for App {
         cpu_observation::publish_frame();
     }
 
-    fn click(&mut self, position: Position) { tui_pane::handle_tile_click(self, position); }
+    fn click(&mut self, position: Position) {
+        if matches!(self.grid_view, GridView::Grid) || self.framework.overlay().is_some() {
+            tui_pane::handle_tile_click(self, position);
+        }
+    }
 
     fn scroll(&mut self, position: Position, direction: ScrollDirection) {
-        tui_pane::handle_tile_scroll(self, position, direction);
+        if self.framework.overlay().is_some() || matches!(self.grid_view, GridView::Grid) {
+            tui_pane::handle_tile_scroll(self, position, direction);
+        } else {
+            self.grid_view.scroll(direction);
+        }
     }
 
     /// `<os config dir>/cargo-tile/panic.log`, beside `config.toml`.
@@ -391,12 +403,18 @@ impl TerminalApp for App {
         self.favorites_overlay.visual_deadline(now, frame_period)
     }
 
-    /// The favorites modal owns every key while it is open: a key its
-    /// scope does not bind is still its own, and disarms a pending
-    /// delete rather than reaching a global.
-    #[cfg(feature = "attract")]
+    /// Open overlays receive their keys before the expanded cell receives navigation keys.
     fn modal_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
-        tui_pane::dispatch_favorites_key(self, keymap, bind)
+        #[cfg(feature = "attract")]
+        if tui_pane::dispatch_favorites_key(self, keymap, bind) == KeyOutcome::Consumed {
+            return KeyOutcome::Consumed;
+        }
+        #[cfg(not(feature = "attract"))]
+        let _ = keymap;
+        if self.framework.overlay().is_some() {
+            return KeyOutcome::Unhandled;
+        }
+        self.grid_view.key(bind)
     }
 
     /// An attract screen that is what the display is showing owns the
