@@ -41,6 +41,7 @@ use super::worker_dispatch::JobText;
 use super::worker_dispatch::WorkerDispatch;
 use super::worker_dispatch::WorkerTask;
 use crate::config::CargoHandler;
+use crate::config::Config;
 use crate::config::LoadedConfig;
 use crate::constants::BINARY_NAME;
 use crate::constants::PROBE_SCHEMA;
@@ -402,26 +403,49 @@ struct SchemaHeader {
 pub(crate) fn print() -> ExitCode {
     startup_log::init();
     let loaded = LoadedConfig::load::<CargoHandler>();
-    let source = HierarchySource::from(loaded.config.census.staff_file.0);
+    print_to(
+        &loaded,
+        scan_configured,
+        &mut io::stdout().lock(),
+        &mut io::stderr().lock(),
+    )
+}
+
+/// Scan with the configuration that remains valid after loading.
+fn scan_configured(config: &Config) -> ProbeReport {
+    let source = HierarchySource::from(config.census.staff_file.0.clone());
     let staff = StaffFileReader::default();
     let (rows, snapshot) = LocalScanner::new(AccountLabels::new(
-        &loaded.config.accounts,
+        &config.accounts,
         dirs::home_dir().as_deref(),
     ))
-    .with_codex_start_window(loaded.config.census.codex_thread_start_window)
-    .with_herdr_probe_wait(loaded.config.census.herdr_probe_wait)
-    .with_herdr_read_timeout(loaded.config.census.herdr_read_timeout)
+    .with_codex_start_window(config.census.codex_thread_start_window)
+    .with_herdr_probe_wait(config.census.herdr_probe_wait)
+    .with_herdr_read_timeout(config.census.herdr_read_timeout)
     .with_staff_file(super::StaffFileSetting::new(source), staff)
     .scan();
     let edges = snapshot.publication().edges.with_worker_roles(&rows);
-    let report = ProbeReport::from_answer(local_machine_name(), rows, edges);
+    ProbeReport::from_answer(local_machine_name(), rows, edges)
+}
+
+/// Keep the JSON report separate from probe diagnostics.
+fn print_to(
+    loaded: &LoadedConfig,
+    scan: impl FnOnce(&Config) -> ProbeReport,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> ExitCode {
+    if let Some(error) = &loaded.error {
+        let _ = writeln!(stderr, "{error}");
+    }
+    let report = scan(&loaded.config);
     let written = serde_json::to_string(&report)
         .map_err(io::Error::from)
-        .and_then(|json| writeln!(io::stdout().lock(), "{json}"));
+        .and_then(|json| writeln!(stdout, "{json}"));
     match written {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("{BINARY_NAME}: probe: {error}");
+            let _ = writeln!(stderr, "{BINARY_NAME}: probe: {error}");
             ExitCode::FAILURE
         },
     }
@@ -480,6 +504,27 @@ mod tests {
     use crate::census::WorkIdentity;
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
+
+    #[test]
+    fn refused_probe_config_reports_the_same_error_without_changing_json() {
+        let error = toml::from_str::<Config>("[census]\nherdr_read_timeout = -1\n")
+            .expect_err("a negative timeout is refused")
+            .to_string();
+        let loaded = LoadedConfig {
+            config: Config::default(),
+            error:  Some(error.clone()),
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let status = print_to(&loaded, |_| report(), &mut stdout, &mut stderr);
+        assert_eq!(status, ExitCode::SUCCESS);
+        assert_eq!(
+            String::from_utf8(stderr).expect("diagnostic text"),
+            format!("{error}\n")
+        );
+        let (rows, _) = parse_report(&stdout).expect("stdout remains a JSON report");
+        assert_eq!(rows.len(), 3);
+    }
 
     /// One row of an agent's cell.
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, started: u64) -> ChildRow {

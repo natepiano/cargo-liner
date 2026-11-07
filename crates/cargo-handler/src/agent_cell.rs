@@ -490,17 +490,6 @@ enum LineKind<'a> {
 struct TreeColumns([bool; TreeColumn::COUNT]);
 
 impl TreeColumns {
-    fn for_lines(lines: &[TreeLine<'_>], now: u64) -> Self {
-        Self(std::array::from_fn(|index| {
-            let column = FULL_ACCOUNTS[index];
-            column == TreeColumn::Session
-                || lines.iter().any(|line| {
-                    let value = line.value(column, now);
-                    !value.trim().is_empty() && value != MISSING_VALUE
-                })
-        }))
-    }
-
     fn retain(self, columns: &[TreeColumn]) -> Vec<TreeColumn> {
         columns
             .iter()
@@ -510,6 +499,53 @@ impl TreeColumns {
     }
 }
 
+/// `TreeColumnPopulation::populated` counts recorded values in each column.
+/// `TreeColumnPopulation::rows` counts the measured tile rows.
+#[derive(Clone, Debug)]
+struct TreeColumnPopulation {
+    populated: [usize; TreeColumn::COUNT],
+    rows:      usize,
+}
+
+impl TreeColumnPopulation {
+    fn measure(lines: &[TreeLine<'_>], now: u64) -> Self {
+        Self {
+            populated: std::array::from_fn(|index| {
+                lines
+                    .iter()
+                    .filter(|line| {
+                        let value = line.value(FULL_ACCOUNTS[index], now);
+                        !value.trim().is_empty() && value != MISSING_VALUE
+                    })
+                    .count()
+            }),
+            rows:      lines.len(),
+        }
+    }
+
+    fn columns(&self) -> TreeColumns {
+        TreeColumns(std::array::from_fn(|index| {
+            FULL_ACCOUNTS[index] == TreeColumn::Session || self.populated[index] > 0
+        }))
+    }
+
+    const fn density(&self, column: TreeColumn) -> ColumnDensity {
+        let populated = self.populated[column as usize];
+        if populated < self.rows.saturating_sub(populated) {
+            ColumnDensity::Sparse
+        } else {
+            ColumnDensity::Dense
+        }
+    }
+}
+
+/// The fraction of tile rows with a recorded column value.
+#[derive(Clone, Copy)]
+enum ColumnDensity {
+    Sparse,
+    Dense,
+}
+
 /// Populated columns allowed by the account decision, with optional columns
 /// removed only in the fixed fitting order.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -517,7 +553,11 @@ struct PermittedTreeColumns(TreeColumns);
 
 impl PermittedTreeColumns {
     fn for_lines(lines: &[TreeLine<'_>], now: u64, account_column: AccountColumn) -> Self {
-        let mut columns = TreeColumns::for_lines(lines, now);
+        Self::from_population(&TreeColumnPopulation::measure(lines, now), account_column)
+    }
+
+    fn from_population(population: &TreeColumnPopulation, account_column: AccountColumn) -> Self {
+        let mut columns = population.columns();
         match account_column {
             AccountColumn::Shown => {},
             AccountColumn::Hidden => columns.0[TreeColumn::Account as usize] = false,
@@ -574,6 +614,8 @@ pub(crate) struct TreeMetrics {
     widths:              [u16; TreeColumn::COUNT],
     heading_width:       u16,
     session_label_width: u16,
+    session_guide_width: u16,
+    population:          TreeColumnPopulation,
     session_header_lead: SessionHeaderLead,
     ages:                AgeLayout,
     columns:             PermittedTreeColumns,
@@ -596,6 +638,7 @@ impl TreeMetrics {
     fn merge(&mut self, other: &Self) {
         self.heading_width = self.heading_width.max(other.heading_width);
         self.session_label_width = self.session_label_width.max(other.session_label_width);
+        self.session_guide_width = self.session_guide_width.max(other.session_guide_width);
         if matches!(other.session_header_lead, SessionHeaderLead::OverBranch) {
             self.session_header_lead = SessionHeaderLead::OverBranch;
         }
@@ -623,17 +666,43 @@ impl TreeMetrics {
         if !full_fits || header_width(self.heading_width) > width {
             self.presentation = TreePresentation::Compressed;
         }
-        let minimum = usize::from(self.session_label_width)
-            + widths
-                .iter()
-                .skip(1)
-                .map(|width| usize::from(*width))
-                .sum::<usize>()
-            + columns.len().saturating_sub(1) * usize::from(TABLE_COLUMN_SPACING);
+        let mut minimum_widths = widths;
+        minimum_widths[0] = self
+            .session_label_width
+            .saturating_add(SessionHeaderLead::Flush.width())
+            .max(self.session_guide_width.saturating_add(1));
+        let session_width = minimum_widths[0];
+        let role_width = columns
+            .iter()
+            .position(|column| *column == TreeColumn::Role)
+            .map(|index| (index, minimum_widths[index]));
+        let spacing = fit_tree_names(
+            &columns,
+            &mut minimum_widths,
+            self.session_guide_width,
+            width,
+        )
+        .max(1);
+        let minimum = minimum_widths
+            .iter()
+            .copied()
+            .map(usize::from)
+            .sum::<usize>()
+            + columns.len().saturating_sub(1) * usize::from(spacing);
+        let session_clipped = minimum_widths[0] < session_width;
+        let role_clipped =
+            role_width.is_some_and(|(index, original)| minimum_widths[index] < original);
         let drop = match step {
             ColumnDrop::Directory | ColumnDrop::Branch => !full_fits,
             ColumnDrop::Type | ColumnDrop::Age | ColumnDrop::Account => {
                 minimum > usize::from(width)
+                    || session_clipped
+                    || role_clipped
+                    || (!full_fits
+                        && matches!(
+                            self.population.density(step.column()),
+                            ColumnDensity::Sparse
+                        ))
             },
         };
         if drop {
@@ -773,15 +842,23 @@ impl TreeMeasurement {
             .iter()
             .map(|line| now.saturating_sub(line.started()))
             .collect();
+        let population = TreeColumnPopulation::measure(lines, now);
+        let columns = PermittedTreeColumns::from_population(&population, account_column);
         Self {
             area,
             metrics: TreeMetrics {
                 widths,
                 heading_width: heading.width,
                 session_label_width: summary::cell_width(&TreeColumn::Session.sorted_header(sort)),
+                session_guide_width: lines
+                    .iter()
+                    .map(|line| summary::cell_width(&line.lead()))
+                    .max()
+                    .unwrap_or(0),
+                population,
                 session_header_lead: lead,
                 ages: AgeLayout::from_ages(ages.iter().copied()),
-                columns: PermittedTreeColumns::for_lines(lines, now, account_column),
+                columns,
                 presentation: TreePresentation::Full,
             },
             ages,
@@ -864,6 +941,7 @@ impl TreeMeasurement {
     pub(crate) fn minimum_tile_width(&self) -> u16 {
         self.metrics
             .session_header_width()
+            .max(self.metrics.session_guide_width.saturating_add(1))
             .saturating_add(self.role_widths.full.max(self.role_widths.compressed))
             .saturating_add(self.status_widths.full.max(self.status_widths.compressed))
             .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(2))
@@ -984,6 +1062,64 @@ struct MeasuredTreeGroup {
     members: Vec<usize>,
 }
 
+impl MeasuredTreeGroup {
+    fn fit_tiles(mut self, measurements: &[TreeMeasurement], step: &GroupFitStep) -> Vec<Self> {
+        let group = &mut self;
+        group.metrics.ages = AgeLayout::from_ages(
+            group
+                .members
+                .iter()
+                .flat_map(|index| measurements[*index].ages.iter().copied()),
+        );
+        group.metrics.widths[TreeColumn::Age as usize] = group.metrics.widths
+            [TreeColumn::Age as usize]
+            .max(u16::try_from(group.metrics.ages.width()).unwrap_or(u16::MAX));
+        let role_width = |presentation| {
+            group
+                .members
+                .iter()
+                .map(|index| {
+                    let measurement = &measurements[*index];
+                    measurement.role_widths.get(presentation)
+                })
+                .max()
+                .unwrap_or(0)
+        };
+        group.metrics.widths[TreeColumn::Role as usize] = role_width(group.metrics.presentation);
+        let status_width = |presentation| {
+            group
+                .members
+                .iter()
+                .map(|index| measurements[*index].status_widths.get(presentation))
+                .max()
+                .unwrap_or(0)
+        };
+        group.metrics.widths[TreeColumn::Status as usize] =
+            status_width(group.metrics.presentation);
+        match step {
+            GroupFitStep::Drop(step) => group
+                .members
+                .iter()
+                .map(|&index| {
+                    let mut metrics = group.metrics.clone();
+                    metrics.population = measurements[index].metrics.population.clone();
+                    metrics.drop_step(*step, group.width);
+                    metrics.widths[TreeColumn::Status as usize] =
+                        status_width(metrics.presentation);
+                    metrics.widths[TreeColumn::Role as usize] = role_width(metrics.presentation);
+                    Self {
+                        x: group.x,
+                        width: group.width,
+                        metrics,
+                        members: vec![index],
+                    }
+                })
+                .collect(),
+            GroupFitStep::FinalMerge => vec![self],
+        }
+    }
+}
+
 /// Merge equal fitted sets before each of the three possible column drops.
 /// The array, rather than a convergence condition, bounds the entire pass.
 pub(crate) fn shared_tree_metrics(
@@ -1017,51 +1153,7 @@ pub(crate) fn shared_tree_metrics(
         }
         groups = merged
             .into_values()
-            .map(|mut group| {
-                group.metrics.ages = AgeLayout::from_ages(
-                    group
-                        .members
-                        .iter()
-                        .flat_map(|index| measurements[*index].ages.iter().copied()),
-                );
-                group.metrics.widths[TreeColumn::Age as usize] = group.metrics.widths
-                    [TreeColumn::Age as usize]
-                    .max(u16::try_from(group.metrics.ages.width()).unwrap_or(u16::MAX));
-                let role_width = |presentation| {
-                    group
-                        .members
-                        .iter()
-                        .map(|index| {
-                            let measurement = &measurements[*index];
-                            measurement.role_widths.get(presentation)
-                        })
-                        .max()
-                        .unwrap_or(0)
-                };
-                group.metrics.widths[TreeColumn::Role as usize] =
-                    role_width(group.metrics.presentation);
-                let status_width = |presentation| {
-                    group
-                        .members
-                        .iter()
-                        .map(|index| measurements[*index].status_widths.get(presentation))
-                        .max()
-                        .unwrap_or(0)
-                };
-                group.metrics.widths[TreeColumn::Status as usize] =
-                    status_width(group.metrics.presentation);
-                match step {
-                    GroupFitStep::Drop(step) => {
-                        group.metrics.drop_step(step, group.width);
-                        group.metrics.widths[TreeColumn::Status as usize] =
-                            status_width(group.metrics.presentation);
-                        group.metrics.widths[TreeColumn::Role as usize] =
-                            role_width(group.metrics.presentation);
-                    },
-                    GroupFitStep::FinalMerge => {},
-                }
-                group
-            })
+            .flat_map(|group| group.fit_tiles(&measurements, &step))
             .collect();
     }
     let mut result: Vec<_> = measurements
@@ -2743,6 +2835,34 @@ fn local_tree_metrics(
     measurement.metrics
 }
 
+/// `fit_tree_names` reserves `guide_width` before names in `widths[0]`.
+/// It reduces column spacing and Role width before it clips Status.
+fn fit_tree_names(columns: &[TreeColumn], widths: &mut [u16], guide_width: u16, width: u16) -> u16 {
+    let gaps = u16::try_from(columns.len().saturating_sub(1)).unwrap_or(u16::MAX);
+    let minimum_session = guide_width.saturating_add(1).min(width);
+    let fixed = widths
+        .iter()
+        .skip(1)
+        .copied()
+        .map(usize::from)
+        .sum::<usize>();
+    let fixed = u16::try_from(fixed).unwrap_or(u16::MAX);
+    let spacing = TABLE_COLUMN_SPACING
+        .min(width.saturating_sub(minimum_session.saturating_add(fixed)) / gaps.max(1));
+    let session_budget = width.saturating_sub(fixed.saturating_add(spacing.saturating_mul(gaps)));
+    widths[0] = widths[0].min(session_budget).max(minimum_session);
+    if let Some(role) = columns
+        .iter()
+        .position(|column| *column == TreeColumn::Role)
+    {
+        let occupied = widths.iter().copied().map(usize::from).sum::<usize>()
+            + usize::from(spacing) * usize::from(gaps);
+        let deficit = occupied.saturating_sub(usize::from(width));
+        widths[role] = widths[role].saturating_sub(u16::try_from(deficit).unwrap_or(u16::MAX));
+    }
+    spacing
+}
+
 /// Resolve columns from the view already fitted by drawing or click mapping.
 fn tree_header(
     lines: &[TreeLine<'_>],
@@ -2766,40 +2886,18 @@ fn tree_header(
         .iter()
         .map(|column| metrics.widths[*column as usize])
         .collect();
-    let gaps = u16::try_from(columns.len().saturating_sub(1)).unwrap_or(u16::MAX);
-    let spacing = TABLE_COLUMN_SPACING;
-    let fixed = widths
-        .iter()
-        .skip(1)
-        .map(|width| usize::from(*width))
-        .sum::<usize>()
-        + usize::from(spacing) * usize::from(gaps);
-    let session_budget = tree
-        .width
-        .saturating_sub(u16::try_from(fixed).unwrap_or(u16::MAX));
-    widths[0] = widths[0].min(session_budget);
-    // Below the aligned core, the header can use the branch's cells before
-    // either word is cut. The row name gives up its rail in that same budget.
-    let lead = if session_budget < metrics.session_header_width() {
+    let spacing = fit_tree_names(
+        &columns,
+        &mut widths,
+        metrics.session_guide_width,
+        tree.width,
+    );
+    // The header can use the guide cells when its indented label does not fit.
+    let lead = if widths[0] < metrics.session_header_width() {
         SessionHeaderLead::Flush
     } else {
         lead
     };
-    if let Some(role) = columns
-        .iter()
-        .position(|column| *column == TreeColumn::Role)
-    {
-        // Session text gives way first. Then the role pays the remaining
-        // deficit, including the cells needed for the session's ellipsis.
-        widths[0] = widths[0].max(2);
-        let occupied = widths
-            .iter()
-            .map(|&width| usize::from(width))
-            .sum::<usize>()
-            + usize::from(spacing) * usize::from(gaps);
-        let deficit = occupied.saturating_sub(usize::from(tree.width));
-        widths[role] = widths[role].saturating_sub(u16::try_from(deficit).unwrap_or(u16::MAX));
-    }
     // Resolve the group's age slots before giving any remaining width to its
     // directory, or to its session column when the directory is absent.
     let ages = match sizing {
@@ -2899,11 +2997,6 @@ fn tree_cell_line(
     let text = SessionRowInk::Text.style();
     if column == TreeColumn::Session {
         let lead = line.lead();
-        let lead = if width >= summary::cell_width(&lead).saturating_add(2) {
-            lead
-        } else {
-            String::new()
-        };
         let remaining = width.saturating_sub(summary::cell_width(&lead));
         Line::from(vec![
             Span::styled(lead, text),
@@ -4299,14 +4392,15 @@ mod tests {
         let buffer = drawn_into(
             boss,
             &cells,
-            34,
+            33,
             height(boss, 160, NOW, AccountColumn::Hidden),
         );
         let rendered = lines(&buffer);
         assert!(find(&buffer, "directory").is_none());
         assert!(!rendered[0].contains("pid"));
-        // The table needs 33 cells for session (7), role (7),
-        // thinking (8), age (5) and three two-cell gaps.
+        // Age needs 34 cells: session 9 (eight guide cells and one name
+        // cell), role 7, status 8, age 5, three one-cell gaps and two
+        // indent cells.
         assert!(!rendered[0].contains("age"), "{rendered:?}");
         assert!(rendered[0].contains("session"), "{rendered:?}");
         assert!(rendered[0].contains("role"), "{rendered:?}");
