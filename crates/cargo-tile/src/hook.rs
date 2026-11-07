@@ -1563,13 +1563,22 @@ mod tests {
             hook.perform(HookOperation::Status),
             ToolchainHookOutcome::Status(HookState::Orphaned)
         );
-        for operation in [HookOperation::Install, HookOperation::Uninstall] {
-            let outcome = hook.perform(operation);
-            assert!(
-                matches!(&outcome, ToolchainHookOutcome::Failed(reason) if reason.contains(&lock_path.display().to_string())),
-                "{outcome:?}"
-            );
-        }
+        thread::scope(|scope| {
+            let operations = [HookOperation::Install, HookOperation::Uninstall].map(|operation| {
+                let hook = &hook;
+                let lock_path = &lock_path;
+                scope.spawn(move || {
+                    let outcome = hook.perform(operation);
+                    assert!(
+                        matches!(&outcome, ToolchainHookOutcome::Failed(reason) if reason.contains(&lock_path.display().to_string())),
+                        "{outcome:?}"
+                    );
+                })
+            });
+            for operation in operations {
+                operation.join().unwrap();
+            }
+        });
         assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
         assert!(!hook.real.exists());
         assert!(lock_path.exists());
@@ -1587,13 +1596,22 @@ mod tests {
             hook.perform(HookOperation::Status),
             ToolchainHookOutcome::Unreadable(_)
         ));
-        for operation in [HookOperation::Install, HookOperation::Uninstall] {
-            let outcome = hook.perform(operation);
-            assert!(
-                matches!(&outcome, ToolchainHookOutcome::Failed(reason) if reason.contains(&lock_path.display().to_string())),
-                "{outcome:?}"
-            );
-        }
+        thread::scope(|scope| {
+            let operations = [HookOperation::Install, HookOperation::Uninstall].map(|operation| {
+                let hook = &hook;
+                let lock_path = &lock_path;
+                scope.spawn(move || {
+                    let outcome = hook.perform(operation);
+                    assert!(
+                        matches!(&outcome, ToolchainHookOutcome::Failed(reason) if reason.contains(&lock_path.display().to_string())),
+                        "{outcome:?}"
+                    );
+                })
+            });
+            for operation in operations {
+                operation.join().unwrap();
+            }
+        });
         assert!(hook.cargo.is_dir());
         assert!(!hook.real.exists());
         assert!(lock_path.exists());
@@ -2258,37 +2276,45 @@ mod tests {
     /// untouched while another operation owns their installation lock.
     #[test]
     fn removing_with_a_held_lock_leaves_the_toolchain_untouched() {
-        for state in [HookState::Installed, HookState::Repairable] {
-            let (_home, hook) = interrupted_toolchain();
-            if state == HookState::Installed {
-                hook.install().unwrap();
-            }
-            let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
-            let installation_lock = HookInstallationLock::acquire(lock_path.clone()).unwrap();
+        thread::scope(|scope| {
+            let cases = [HookState::Installed, HookState::Repairable].map(|state| {
+                scope.spawn(move || {
+                    let (_home, hook) = interrupted_toolchain();
+                    if state == HookState::Installed {
+                        hook.install().unwrap();
+                    }
+                    let lock_path = hook.cargo.with_file_name(SHIM_LOCK_NAME);
+                    let installation_lock =
+                        HookInstallationLock::acquire(lock_path.clone()).unwrap();
 
-            assert_eq!(hook.remove().unwrap_err().kind(), ErrorKind::AlreadyExists);
-            assert_eq!(hook.state().unwrap(), state);
-            assert_eq!(
-                fs::read_to_string(&hook.real).unwrap(),
-                HOOK_TEST_REAL_CARGO
-            );
-            if state == HookState::Installed {
-                assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
-            } else {
-                assert!(!hook.cargo.exists());
-            }
-            assert!(!hook.staging.exists());
-            assert!(lock_path.exists());
+                    assert_eq!(hook.remove().unwrap_err().kind(), ErrorKind::AlreadyExists);
+                    assert_eq!(hook.state().unwrap(), state);
+                    assert_eq!(
+                        fs::read_to_string(&hook.real).unwrap(),
+                        HOOK_TEST_REAL_CARGO
+                    );
+                    if state == HookState::Installed {
+                        assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), SHIM_SOURCE);
+                    } else {
+                        assert!(!hook.cargo.exists());
+                    }
+                    assert!(!hook.staging.exists());
+                    assert!(lock_path.exists());
 
-            drop(installation_lock);
-            assert_eq!(hook.remove().unwrap(), HookOperationOutcome::Removed);
-            assert_eq!(
-                fs::read_to_string(&hook.cargo).unwrap(),
-                HOOK_TEST_REAL_CARGO
-            );
-            assert!(!hook.real.exists());
-            assert!(!lock_path.exists());
-        }
+                    drop(installation_lock);
+                    assert_eq!(hook.remove().unwrap(), HookOperationOutcome::Removed);
+                    assert_eq!(
+                        fs::read_to_string(&hook.cargo).unwrap(),
+                        HOOK_TEST_REAL_CARGO
+                    );
+                    assert!(!hook.real.exists());
+                    assert!(!lock_path.exists());
+                })
+            });
+            for case in cases {
+                case.join().unwrap();
+            }
+        });
     }
 
     /// Starting from the interrupted-install state must preserve an

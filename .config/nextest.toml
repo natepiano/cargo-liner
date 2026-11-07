@@ -16,6 +16,18 @@ command = { command-line = "crates/cargo-berth/tests/setup-recorded-templates.sh
 filter = 'package(cargo-berth)'
 setup  = 'cargo-berth-templates'
 
+[scripts.wrapper.cargo-tile-reader-path]
+command = { command-line = "crates/cargo-tile/src/shim_registration/setup_reader.py list", relative-to = "workspace-root" }
+
+[scripts.setup.cargo-tile-reader-load]
+command = { command-line = "crates/cargo-tile/src/shim_registration/setup_reader.py setup", relative-to = "workspace-root" }
+
+[[profile.default.scripts]]
+filter       = 'binary_id(cargo-tile::unit_tests)'
+list-wrapper = 'cargo-tile-reader-path'
+platform     = 'cfg(target_os = "macos")'
+setup        = 'cargo-tile-reader-load'
+
 # The source-switch test needs a command pane that other reader tests cannot crowd.
 # The SIGKILL test needs an exclusive slot for its short writer-start deadline.
 [[profile.default.overrides]]

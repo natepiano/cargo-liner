@@ -9917,7 +9917,7 @@ mod tests {
             assert_shot_frame_columns(&cells, view, arguments, pid, shot_width);
         }
         if shot_width == 48 {
-            let texts = state_frame_text_when_settled(&mut app, shot_width, height);
+            let texts = state_frame_text(&mut app, shot_width, height);
             assert_eq!(texts.len(), 8);
             for text in texts {
                 let header = text
@@ -10035,7 +10035,7 @@ mod tests {
             &["clippy", "--locked", "--offline", "-j", "1"],
             860_000,
         );
-        let texts = state_frame_text_when_settled(&mut app, 64, 50);
+        let texts = state_frame_text(&mut app, 64, 50);
         let blocked = texts
             .iter()
             .find(|text| text.contains("860100"))
@@ -10055,7 +10055,7 @@ mod tests {
             &["clippy", "--locked", "--offline", "-j", "1"],
             870_000,
         );
-        let texts = state_frame_text_when_settled(&mut app, 64, 50);
+        let texts = state_frame_text(&mut app, 64, 50);
         let blocked = texts
             .iter()
             .find(|text| text.contains("870100"))
@@ -10075,7 +10075,7 @@ mod tests {
             &["install", "cargo-nextest", "--locked"],
             3_910_000,
         );
-        let texts = state_frame_text_when_settled(&mut app, 54, 50);
+        let texts = state_frame_text(&mut app, 54, 50);
         let blocked = texts
             .iter()
             .find(|text| text.contains("3910100"))
@@ -10093,7 +10093,7 @@ mod tests {
         for width in [40, 48] {
             let mut app =
                 subcommand_frame(CommandView::short(), &["clippy", "--locked"], 4_180_000);
-            let texts = state_frame_text_when_settled(&mut app, width, 50);
+            let texts = state_frame_text(&mut app, width, 50);
             let release = texts
                 .iter()
                 .find(|text| text.contains("4180200"))
@@ -10108,7 +10108,7 @@ mod tests {
     #[test]
     fn a_narrow_blocked_frame_keeps_parent_before_the_state_slot() {
         let mut app = subcommand_frame(CommandView::short(), &["clippy", "--locked"], 3_910_000);
-        let texts = state_frame_text_when_settled(&mut app, 48, 120);
+        let texts = state_frame_text(&mut app, 48, 120);
         assert_eq!(texts.len(), 8);
         for text in &texts {
             let header = text
@@ -10177,7 +10177,7 @@ mod tests {
                 .collect();
             app.roster.observe(groups, Instant::now());
         }
-        let texts = state_frame_text_when_settled(&mut app, 64, 58);
+        let texts = state_frame_text(&mut app, 64, 58);
         assert_eq!(texts.len(), 8);
         for text in &texts {
             let header = text
@@ -10216,7 +10216,7 @@ mod tests {
             &["clippy", "--locked", "--offline", "-j", "1"],
             970_000,
         );
-        let texts = state_frame_text_when_settled(&mut app, 200, 58);
+        let texts = state_frame_text(&mut app, 200, 58);
         assert_eq!(texts.len(), 8);
         let offsets: Vec<_> = texts
             .iter()
@@ -10367,20 +10367,6 @@ mod tests {
     }
 
     fn state_frame_text(app: &mut App, width: u16, height: u16) -> Vec<String> {
-        let area = Rect::new(0, 0, width, height);
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
-        for _ in 0..12 {
-            app.tiles.settle_for_test();
-            terminal
-                .draw(|frame| {
-                    draw_panes(frame, app, area, TileGridContents::Shown);
-                })
-                .expect("frame");
-        }
-        state_frame_cells(app, area, terminal.backend().buffer())
-    }
-
-    fn state_frame_text_when_settled(app: &mut App, width: u16, height: u16) -> Vec<String> {
         let area = Rect::new(0, 0, width, height);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         let mut previous = Buffer::empty(area);
@@ -10588,7 +10574,7 @@ mod tests {
             .collect();
         app.roster.observe(groups, Instant::now());
         for width in 54..=56 {
-            let texts = state_frame_text_when_settled(&mut app, width, 50);
+            let texts = state_frame_text(&mut app, width, 50);
             let blocked = texts
                 .iter()
                 .find(|text| text.contains("3160100"))
@@ -10637,7 +10623,7 @@ mod tests {
             &["install", "cargo-nextest", "--locked"],
         );
         for width in [53, 57, 65, 67] {
-            let texts = state_frame_text_when_settled(&mut app, width, 58);
+            let texts = state_frame_text(&mut app, width, 58);
             assert_eq!(texts.len(), 8);
             let mut memory_offsets = Vec::new();
             let mut cpu_offsets = Vec::new();
@@ -18318,20 +18304,25 @@ mod tests {
         inner_width: u16,
         view: &CommandView,
     ) -> Buffer {
+        let sccache = SccacheStats::new();
+        let hidden_commands = hidden_commands();
+        let cells = Cells::new(roster, &hidden_commands, view, &sccache);
+        summary_alone_buffer_with_cells(&cells, inner_width)
+    }
+
+    /// Keep the same frame inputs while the width test changes only its viewport.
+    fn summary_alone_buffer_with_cells(cells: &Cells<'_>, inner_width: u16) -> Buffer {
         let area = Rect::new(0, 0, inner_width.saturating_add(2), 8);
         let mut buffer = Buffer::empty(area);
         let mut grid = tui_pane::TileGrid::new();
         grid.set_min_tile_width(MIN_CELL_WIDTH);
-        let sccache = SccacheStats::new();
-        let hidden_commands = hidden_commands();
-        let cells = Cells::new(roster, &hidden_commands, view, &sccache);
         tui_pane::draw_tile_grid(
             &mut buffer,
             &mut grid,
             area,
             tui_pane::TileGrowth::default(),
             TileGridContents::Shown,
-            &cells,
+            cells,
             ColorMode::Colored,
         );
         grid.settle_for_test();
@@ -18342,7 +18333,7 @@ mod tests {
             area,
             tui_pane::TileGrowth::default(),
             TileGridContents::Shown,
-            &cells,
+            cells,
             ColorMode::Colored,
         );
         buffer
@@ -19383,6 +19374,11 @@ mod tests {
         lead.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE);
         lead.subtree_resource_use.memory = lead.resource_use.memory;
         let roster = roster_of(lead, Vec::new());
+        let empty_roster = Roster::new();
+        let sccache = SccacheStats::new();
+        let hidden = hidden_commands();
+        let occupied_cells = Cells::new(&roster, &hidden, CommandView::long(), &sccache);
+        let empty_cells = Cells::new(&empty_roster, &hidden, CommandView::long(), &sccache);
         let occupied_values = [
             "~/rust/cargo-liner",
             "4100",
@@ -19404,7 +19400,7 @@ mod tests {
 
         let last_summary_only_inner_width = MIN_CELL_WIDTH.saturating_sub(3);
         for inner_width in 6..=last_summary_only_inner_width {
-            let occupied = summary_alone_buffer(&roster, inner_width);
+            let occupied = summary_alone_buffer_with_cells(&occupied_cells, inner_width);
             assert_summary_alone(&occupied, inner_width);
             let directory_heading = match inner_width {
                 6 => "…ner",
@@ -19430,7 +19426,7 @@ mod tests {
                 "bare summary foot at inner width {inner_width}: {foot:?}",
             );
 
-            let empty = summary_alone_buffer(&Roster::new(), inner_width);
+            let empty = summary_alone_buffer_with_cells(&empty_cells, inner_width);
             assert_summary_alone(&empty, inner_width);
             assert_summary_words(&empty, &empty_values, inner_width, "");
             let empty_note: String = (1..=inner_width)
@@ -19447,7 +19443,7 @@ mod tests {
         }
 
         let floor_inner_width = MIN_CELL_WIDTH.saturating_sub(2);
-        let floor = summary_alone_buffer(&roster, floor_inner_width);
+        let floor = summary_alone_buffer_with_cells(&occupied_cells, floor_inner_width);
         let right = floor.area.right().saturating_sub(1);
         assert!(
             (floor.area.top() + 1..floor.area.bottom() - 1).any(|y| {

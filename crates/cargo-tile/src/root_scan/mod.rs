@@ -294,7 +294,7 @@ impl RootScan {
     clippy::expect_used,
     reason = "tests should panic on unexpected values"
 )]
-mod tests {
+pub(crate) mod tests {
     use std::fs;
     use std::io;
     use std::os::unix::fs::PermissionsExt;
@@ -312,6 +312,16 @@ mod tests {
     use super::sweep_authority;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::CAPTURE_STATE_DIR;
+
+    /// Retain the real entries while `Capture` tests an incomplete registration sample.
+    pub(crate) fn incomplete_registration_scan(
+        path: &Path,
+        history: &mut RootHistory,
+    ) -> io::Result<RootScan> {
+        let mut scan = RootScan::open(path, history)?;
+        scan.registrations.outcome = Enumeration::Incomplete;
+        Ok(scan)
+    }
 
     #[test]
     fn directory_write_bits_do_not_change_owner_or_sweep_admission() {
