@@ -212,9 +212,151 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
 mod tests {
     use std::time::Instant;
 
+    use crossterm::event::KeyEvent;
+    use crossterm::event::KeyModifiers;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Position;
+    use tui_pane::FocusLocation;
     use tui_pane::KeyBind;
+    use tui_pane::TerminalApp;
 
     use super::*;
+    use crate::census::AgentRow;
+    use crate::census::CensusUpdate;
+    use crate::census::HierarchyEdges;
+    use crate::census::scan::ScanStage;
+    use crate::tiles::TileContent;
+    use crate::tiles::TileKey;
+
+    fn paint_focus(app: &mut App) {
+        let mut terminal = Terminal::new(TestBackend::new(180, 48)).expect("test terminal");
+        let keymap = app.keymap();
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("focus frame");
+    }
+
+    fn focus_application(initial_rows: usize) -> App {
+        let mut app = App::new_for_test().expect("test app");
+        app.loaded_config.config.tiles.initial_rows =
+            serde_json::from_value(serde_json::json!(initial_rows)).expect("tile rows");
+        app.loaded_config.config.tiles.widen_summary = false;
+        let rows = [10, 20, 30]
+            .into_iter()
+            .map(|pid| {
+                serde_json::from_value::<AgentRow>(serde_json::json!({
+                    "agent":"claude", "pid":pid, "name":format!("owner-{pid}"),
+                    "started":100, "session_id":format!("session-{pid}"),
+                    "directory":"/fixture", "status":"idle",
+                    "children":[{
+                        "kind":"shell", "depth":0, "pid":9000+pid,
+                        "name":format!("build-for-{pid}"), "started":100
+                    }]
+                }))
+                .expect("session fixture")
+            })
+            .collect();
+        app.census.apply(CensusUpdate::Local {
+            rows,
+            hierarchy: HierarchyEdges::default().into(),
+            stage: ScanStage::Completed,
+        });
+        paint_focus(&mut app);
+        app.tiles.settle_for_test();
+        paint_focus(&mut app);
+        app
+    }
+
+    fn owner_position(app: &App, pid: u32) -> Position {
+        let area = app.tiles
+            .placements(app.selection_area, app.loaded_config.config.tiles.growth())
+            .into_iter()
+            .find(|placement| {
+                matches!(&placement.content, TileContent::Group(TileKey::Agent(cell)) if cell.pid == pid)
+            })
+            .expect("owner tile")
+            .frame
+            .rect();
+        Position::new(area.x + area.width / 2, area.y + area.height / 2)
+    }
+
+    fn click_owner(app: &mut App, pid: u32) {
+        app.click(owner_position(app, pid));
+        paint_focus(app);
+    }
+
+    fn assert_shift_arrow_edge(app: &mut App, key: KeyCode, target: Position) {
+        let expected = FocusLocation::Cell(app.tiles.cell_at(target).expect("drawn target tile"));
+        assert_ne!(
+            app.tiles.focused_cell(),
+            expected,
+            "focus starts on another tile"
+        );
+        tui_pane::dispatch_key(app, KeyEvent::new(key, KeyModifiers::SHIFT));
+        assert_eq!(
+            app.tiles.focused_cell(),
+            expected,
+            "shift arrow moves one tile"
+        );
+        tui_pane::dispatch_key(app, KeyEvent::new(key, KeyModifiers::SHIFT));
+        assert_eq!(
+            app.tiles.focused_cell(),
+            expected,
+            "focus stays at the edge"
+        );
+    }
+
+    fn horizontal_focus_application() -> App {
+        let mut app = focus_application(1);
+        for pid in [20, 30, 10] {
+            click_owner(&mut app, pid);
+        }
+        app
+    }
+
+    #[test]
+    fn shift_arrow_right_moves_one_tile_and_stays_at_the_edge() {
+        let mut app = horizontal_focus_application();
+        let target = owner_position(&app, 30);
+        assert!(owner_position(&app, 10).x < target.x);
+        assert_shift_arrow_edge(&mut app, KeyCode::Right, target);
+    }
+
+    #[test]
+    fn shift_arrow_left_moves_one_tile_and_stays_at_the_edge() {
+        let mut app = horizontal_focus_application();
+        click_owner(&mut app, 30);
+        let target = owner_position(&app, 10);
+        assert!(target.x < owner_position(&app, 30).x);
+        assert_shift_arrow_edge(&mut app, KeyCode::Left, target);
+    }
+
+    #[test]
+    fn shift_arrow_up_moves_one_tile_and_stays_at_the_edge() {
+        let mut app = focus_application(8);
+        click_owner(&mut app, 10);
+        let area = app
+            .tiles
+            .placements(app.selection_area, app.loaded_config.config.tiles.growth())
+            .into_iter()
+            .find(|placement| placement.content == TileContent::Summary)
+            .expect("summary tile")
+            .frame
+            .rect();
+        let target = Position::new(area.x + area.width / 2, area.y + area.height / 2);
+        assert!(target.y < owner_position(&app, 10).y);
+        assert_shift_arrow_edge(&mut app, KeyCode::Up, target);
+    }
+
+    #[test]
+    fn shift_arrow_down_moves_one_tile_and_stays_at_the_edge() {
+        let mut app = focus_application(8);
+        click_owner(&mut app, 20);
+        let target = owner_position(&app, 30);
+        assert!(owner_position(&app, 20).y < target.y);
+        assert_shift_arrow_edge(&mut app, KeyCode::Down, target);
+    }
 
     /// Every default key reaches its action, read out of the table the
     /// keymap is built from. The arrows and `+` `-` share the scope with
