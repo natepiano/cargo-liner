@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- One-shot probes share a scan deadline while waiting for herdr names and use configurable socket time limits.
 - Show workers as waiting during every live detached run, including Python commands and shell strings.
 
 - Dispatch shells fold into their Codex or Claude worker rows by seat identity, including detached servers and current assign launchers.

@@ -1644,7 +1644,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: shots on natedev before and after a marker click, and after `0`, `2` and `-`; a design check line; and Change-Review lines for the marker click and the depth keys.
 
-### Phase 64 — A one-shot probe waits for herdr pane names  · status: todo
+### Phase 64 — A one-shot probe waits for herdr pane names  · status: done
 
 **Depends on:** Phase 62, because both phases change `census/scan.rs`. Runs beside Phase 61 or Phase 63; they share no file with it (showrunner, 2026-11-03).
 

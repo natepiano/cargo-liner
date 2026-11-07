@@ -78,6 +78,7 @@ pub(crate) fn run() -> ExitCode {
                     dirs::home_dir().as_deref(),
                 ),
                 app.loaded_config.config.census.codex_thread_start_window,
+                app.loaded_config.config.census.herdr_read_timeout,
             ),
             appearance_updates,
         )
