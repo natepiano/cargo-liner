@@ -73,7 +73,6 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -108,6 +107,7 @@ pub(super) use toast_action::CargoPortToastAction;
 pub(super) use tree_mutation::TreeMutation;
 use tui_pane::AppContext;
 use tui_pane::ClipboardBackend;
+use tui_pane::ColorMode;
 use tui_pane::CopyOutcome;
 use tui_pane::CopySelectionResult;
 use tui_pane::FocusedPane;
@@ -195,7 +195,6 @@ use crate::channel::Sender;
 use crate::ci::OwnerRepo;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::constants::TARGET_DIR;
-use crate::http::HttpClient;
 use crate::lint;
 use crate::lint::LintRuns;
 #[cfg(test)]
@@ -205,7 +204,6 @@ use crate::project::AbsolutePath;
 #[cfg(test)]
 use crate::project::GitStatus;
 use crate::project::RootItem;
-use crate::project::WorkspaceMetadataStore;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::MetadataDispatchContext;
@@ -343,6 +341,7 @@ impl App {
     fn project_row_presentation(&self) -> ProjectListPresentation {
         let lookup = self.ci.status_lookup();
         let ctx = PaneRenderCtx {
+            color_mode:                self.framework.color_mode,
             animation_elapsed:         Duration::ZERO,
             config:                    &self.config,
             project_list:              &self.project_list,
@@ -370,29 +369,8 @@ impl App {
         background_tx: Sender<BackgroundMsg>,
         background_rx: Receiver<BackgroundMsg>,
         startup_settings: StartupSettings,
-        http_client: HttpClient,
-        scan_started_at: Instant,
-        metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
-    ) -> Result<Self, Error> {
-        construct::AppBuilder::new(
-            projects,
-            background_tx,
-            background_rx,
-            startup_settings,
-            StartupEnvironment::production(http_client, scan_started_at, metadata_store),
-        )
-        .open_channels()
-        .run_startup()
-        .build()
-    }
-
-    #[cfg(test)]
-    pub(super) fn new_with_startup_environment(
-        projects: &[RootItem],
-        background_tx: Sender<BackgroundMsg>,
-        background_rx: Receiver<BackgroundMsg>,
-        startup_settings: StartupSettings,
         startup_environment: StartupEnvironment,
+        color_mode: ColorMode,
     ) -> Result<Self, Error> {
         construct::AppBuilder::new(
             projects,
@@ -400,6 +378,7 @@ impl App {
             background_rx,
             startup_settings,
             startup_environment,
+            color_mode,
         )
         .open_channels()
         .run_startup()
@@ -720,6 +699,7 @@ impl App {
             settings_pane: &mut framework.settings_pane,
         };
         let pane_render_context = PaneRenderCtx {
+            color_mode: framework.color_mode,
             animation_elapsed,
             config,
             project_list,
@@ -1472,6 +1452,7 @@ mod tests {
     use ratatui::style::Style;
     use ratatui::widgets::List;
     use ratatui::widgets::Widget;
+    use tui_pane::ColorMode;
     use tui_pane::PaneFocusState;
     use tui_pane::RenderFocus;
 
@@ -4681,6 +4662,7 @@ mod tests {
         use tui_pane::Appearance;
         use tui_pane::ClipboardBackend;
         use tui_pane::ClipboardError;
+        use tui_pane::ColorMode;
         use tui_pane::FocusedPane;
         use tui_pane::FrameworkFocusId;
         use tui_pane::GlobalAction as FrameworkGlobalAction;
@@ -6738,7 +6720,7 @@ mod tests {
                     grid.add_titled(pane_frame, chrome.title);
                     grid.render(
                         frame.buffer_mut(),
-                        tui_pane::default_pane_chrome(),
+                        tui_pane::default_pane_chrome(ColorMode::Colored),
                         PaneBorders::Separate,
                     );
                 })
@@ -7127,6 +7109,7 @@ mod tests {
 
         #[test]
         fn manifest_error_marker_and_name_style_survive_real_layout() {
+            let mode = ColorMode::Colored;
             let tmp = tempfile::tempdir().expect("project root");
             let root = AbsolutePath::from(tmp.path().join("a"));
             std::fs::create_dir(&root).expect("project directory");
@@ -7141,9 +7124,12 @@ mod tests {
                     .expect("visible name and error marker in fitted pane");
                 assert_eq!(
                     buffer[(x, y)].fg,
-                    crate::tui::theme_roles::selection_style(tui_pane::PaneSelectionState::Active,)
-                        .fg
-                        .expect("selected text colour")
+                    crate::tui::theme_roles::selection_style(
+                        tui_pane::PaneSelectionState::Active,
+                        mode
+                    )
+                    .fg
+                    .expect("selected text colour")
                 );
                 assert_eq!(buffer[(x + 2, y)].fg, buffer[(x, y)].fg);
                 let table_start = app.panes.project_list.body_rect.x;
@@ -17758,6 +17744,7 @@ mod tests {
         holder: &'a TestRenderCtxHolder,
     ) -> PaneRenderCtx<'a> {
         PaneRenderCtx {
+            color_mode:                ColorMode::Colored,
             animation_elapsed:         app.animation_started.elapsed(),
             config:                    &app.config,
             project_list:              &app.project_list,

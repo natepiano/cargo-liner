@@ -33,7 +33,6 @@
 
 use std::cell::RefCell;
 
-use crossterm::style::Colored;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Margin;
 use ratatui::layout::Rect;
@@ -49,6 +48,7 @@ use unicode_width::UnicodeWidthStr;
 use super::chrome;
 use super::chrome::PaneChrome;
 use super::constants::BORDER_LINE_WIDTH;
+use crate::ColorMode;
 use crate::constants::ELISION;
 
 /// Where one pane's box sits for a single frame.
@@ -752,7 +752,7 @@ impl GridLines {
                 let Some(cell) = self.cells.get(self.index(x, y)).copied() else {
                     continue;
                 };
-                let symbols = if cell.focused && Colored::ansi_color_disabled_memoized() {
+                let symbols = if cell.focused && chrome.color_mode == ColorMode::NoColor {
                     line::THICK
                 } else {
                     line::NORMAL
@@ -998,6 +998,7 @@ mod tests {
     use ratatui::style::Modifier;
 
     use super::*;
+    use crate::ColorMode;
 
     #[test]
     fn a_moving_pane_clipped_below_the_buffer_stops_at_its_last_row() {
@@ -1007,9 +1008,28 @@ mod tests {
         assert_eq!(buffer.area, Rect::new(0, 0, 214, 93));
     }
 
+    #[test]
+    fn grid_line_glyphs_use_the_selected_color_mode() {
+        for (mode, corner, edge) in [
+            (ColorMode::Colored, "┌", "─"),
+            (ColorMode::NoColor, "┏", "━"),
+        ] {
+            let area = Rect::new(0, 0, 5, 3);
+            let mut grid = GridLines::new(area);
+            grid.add(PaneFrame::new(area).with_focus(true));
+            let mut buffer = Buffer::empty(area);
+            let mut styles = chrome();
+            styles.color_mode = mode;
+            grid.render(&mut buffer, styles, PaneBorders::Separate);
+            assert_eq!(buffer[(0, 0)].symbol(), corner);
+            assert_eq!(buffer[(1, 0)].symbol(), edge);
+        }
+    }
+
     /// Border and title shades a test can tell apart.
     fn chrome() -> PaneChrome {
         PaneChrome {
+            color_mode:      ColorMode::Colored,
             active_border:   Style::default().fg(Color::Green),
             inactive_border: Style::default().fg(Color::Red),
             active_title:    Style::default().fg(Color::Green),

@@ -10,6 +10,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::ACTIVITY_SPINNER;
+use tui_pane::ColorMode;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameChrome;
 use tui_pane::PaneSelectionState;
@@ -181,6 +182,7 @@ fn render_git_column_inner(
     inner_area: Rect,
     chrome: &mut PaneFrameChrome,
 ) -> GitRenderLayout {
+    let mode = ctx.styles.chrome.color_mode;
     let flat_len = ctx.fields.len();
     let pull_requests_len = ctx.data.pull_requests.rows.len();
     let remotes_len = ctx.data.remotes.listed().len();
@@ -267,6 +269,7 @@ fn render_git_column_inner(
                 frame,
                 area,
                 tui_pane::selection_state(ctx.pane, ctx.row_offset + index, ctx.focus),
+                mode,
             );
         }
     }
@@ -285,6 +288,7 @@ fn append_remotes_section(
     current_section: Option<Section>,
     layout: &SyncColLayout,
 ) {
+    let mode = ctx.styles.chrome.color_mode;
     if ctx.data.remotes.listed().is_empty() {
         return;
     }
@@ -316,8 +320,8 @@ fn append_remotes_section(
         }
         let selection = tui_pane::selection_state(ctx.pane, row_index, ctx.focus);
         accum.lines.push(
-            remote_row_line(remote, layout, selection)
-                .style(theme_roles::selection_style(selection)),
+            remote_row_line(remote, layout, selection, mode)
+                .style(theme_roles::selection_style(selection, mode)),
         );
     }
 }
@@ -329,6 +333,7 @@ fn append_pull_requests_section(
     current_section: Option<Section>,
     area_width: u16,
 ) {
+    let mode = ctx.styles.chrome.color_mode;
     let section = &ctx.data.pull_requests;
     if section.rows.is_empty()
         && matches!(section.state, PullRequestSectionState::HiddenConfirmedEmpty)
@@ -374,8 +379,8 @@ fn append_pull_requests_section(
         }
         let selection = tui_pane::selection_state(ctx.pane, row_index, ctx.focus);
         accum.lines.push(
-            pull_request_row_line(row, &col_widths, selection, ctx.animation_elapsed)
-                .style(theme_roles::selection_style(selection)),
+            pull_request_row_line(row, &col_widths, selection, ctx.animation_elapsed, mode)
+                .style(theme_roles::selection_style(selection, mode)),
         );
         accum.row_spans.push(VisualRowSpan { start_y, height: 1 });
     }
@@ -505,8 +510,9 @@ fn pull_request_row_line(
     widths: &PullRequestColWidths,
     selection: PaneSelectionState,
     animation_elapsed: Duration,
+    mode: ColorMode,
 ) -> Line<'static> {
-    let style = selection.patch(Style::default().fg(inactive_title_color()));
+    let style = selection.patch(Style::default().fg(inactive_title_color()), mode);
     if !row.polling.is_polling() {
         let state = pull_request_state_text(row, animation_elapsed);
         let text = format!(
@@ -539,7 +545,7 @@ fn pull_request_row_line(
         ),
         Span::styled(
             spinner.to_string(),
-            selection.patch(Style::default().fg(accent_color())),
+            selection.patch(Style::default().fg(accent_color()), mode),
         ),
         Span::styled(
             format!(
@@ -586,6 +592,7 @@ fn append_worktrees_section(
     current_section: Option<Section>,
     layout: &SyncColLayout,
 ) {
+    let mode = ctx.styles.chrome.color_mode;
     if ctx.data.worktrees.is_empty() {
         return;
     }
@@ -615,7 +622,8 @@ fn append_worktrees_section(
         }
         let selection = tui_pane::selection_state(ctx.pane, row_index, ctx.focus);
         accum.lines.push(
-            worktree_row_line(wt, layout, selection).style(theme_roles::selection_style(selection)),
+            worktree_row_line(wt, layout, selection, mode)
+                .style(theme_roles::selection_style(selection, mode)),
         );
     }
 }
@@ -836,6 +844,7 @@ fn field_value_style(data: &GitData, field: DetailField) -> Style {
 }
 
 fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
+    let mode = args.styles.chrome.color_mode;
     let RenderFlatArgs {
         data,
         fields,
@@ -865,7 +874,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         }
         let label = fit_text(field.label(), label_width);
         let selection = tui_pane::selection_state(pane, row_index, focus);
-        let overlay = theme_roles::selection_style(selection);
+        let overlay = theme_roles::selection_style(selection, mode);
         let ls = styles.readonly_label.patch(overlay);
         if label_only {
             accum
@@ -923,7 +932,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
             {
                 let (base, reset) = value.split_at(idx);
                 let reset_style =
-                    selection.patch(Style::default().fg(tui_pane::secondary_text_color()));
+                    selection.patch(Style::default().fg(tui_pane::secondary_text_color()), mode);
                 spans.push(Span::styled(base.to_string(), vs));
                 spans.push(Span::styled(reset.to_string(), reset_style));
             } else {
@@ -1107,6 +1116,7 @@ fn remote_row_line(
     row: &RemoteRow,
     layout: &SyncColLayout,
     selection: PaneSelectionState,
+    mode: ColorMode,
 ) -> Line<'static> {
     // Icon cell: emoji + trailing spaces to reach REMOTE_ICON_COL width.
     let icon_width = row.icon.width();
@@ -1131,20 +1141,26 @@ fn remote_row_line(
         branch_text = row.branch,
         branch = layout.branch
     );
-    let data_style = selection.patch(Style::default().fg(inactive_title_color()));
-    let tracked_style = selection.patch(if matches!(row.tracked_ref, TrackedRef::Unreadable) {
-        GitValueStyle::Error.style()
-    } else {
-        Style::default().fg(inactive_title_color())
-    });
-    let sync_style = selection.patch(if matches!(row.status, Comparison::Unreadable) {
-        GitValueStyle::Error.style()
-    } else {
-        Style::default().fg(inactive_title_color())
-    });
+    let data_style = selection.patch(Style::default().fg(inactive_title_color()), mode);
+    let tracked_style = selection.patch(
+        if matches!(row.tracked_ref, TrackedRef::Unreadable) {
+            GitValueStyle::Error.style()
+        } else {
+            Style::default().fg(inactive_title_color())
+        },
+        mode,
+    );
+    let sync_style = selection.patch(
+        if matches!(row.status, Comparison::Unreadable) {
+            GitValueStyle::Error.style()
+        } else {
+            Style::default().fg(inactive_title_color())
+        },
+        mode,
+    );
     Line::from(vec![
         Span::raw(" "),
-        Span::styled(icon_cell, selection.patch(Style::default())),
+        Span::styled(icon_cell, selection.patch(Style::default(), mode)),
         Span::styled(leading, data_style),
         Span::styled(
             format!("{:<width$}", row.tracked_text(), width = layout.tracked),
@@ -1180,6 +1196,7 @@ fn worktree_row_line(
     row: &WorktreeInfo,
     layout: &SyncColLayout,
     selection: PaneSelectionState,
+    mode: ColorMode,
 ) -> Line<'static> {
     let sync = panes::format_ahead_behind(row.ahead_behind);
     let name = fit_text(&row.name, layout.worktree_name);
@@ -1192,12 +1209,15 @@ fn worktree_row_line(
         branch = layout.branch,
         tracked = layout.tracked
     );
-    let style = selection.patch(Style::default().fg(inactive_title_color()));
-    let sync_style = selection.patch(if matches!(row.ahead_behind, Comparison::Unreadable) {
-        GitValueStyle::Error.style()
-    } else {
-        Style::default().fg(inactive_title_color())
-    });
+    let style = selection.patch(Style::default().fg(inactive_title_color()), mode);
+    let sync_style = selection.patch(
+        if matches!(row.ahead_behind, Comparison::Unreadable) {
+            GitValueStyle::Error.style()
+        } else {
+            Style::default().fg(inactive_title_color())
+        },
+        mode,
+    );
     Line::from(vec![
         Span::styled(prefix, style),
         Span::styled(format!("{sync:>width$}", width = layout.sync), sync_style),
@@ -1225,6 +1245,7 @@ pub(super) fn render_git_pane_body(
     styles: &RenderStyles,
     ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
+    let mode = ctx.color_mode;
     let Some(git_data) = pane.content().cloned() else {
         pane.viewport.clear_surface();
         pane.clear_row_layout();
@@ -1273,6 +1294,7 @@ pub(super) fn render_git_pane_body(
             pane: &pane.viewport,
             focus: pane_focus_state,
         },
+        mode,
     );
 
     chrome.rules.extend(about_layout.separator);
@@ -1352,7 +1374,11 @@ struct GitAboutLayout {
 /// Render the About section (repo description) at the top of the Git panel,
 /// separated from the rest of the pane by a horizontal rule the grid pass
 /// draws. Returns the area below the separator for the scrolling content.
-fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAboutLayout {
+fn render_git_about_section(
+    frame: &mut Frame,
+    ctx: &GitAboutCtx<'_>,
+    mode: ColorMode,
+) -> GitAboutLayout {
     let inner_area = ctx.inner_area;
 
     let lower_content_height = git_lower_content_height(ctx.data, ctx.flat_fields.len());
@@ -1377,6 +1403,7 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAbou
         ctx.synced_description_height,
         baseline_max,
         tui_pane::selection_state(ctx.pane, 0, ctx.focus),
+        mode,
     );
     if description_height == 0 {
         return GitAboutLayout {
@@ -1492,6 +1519,8 @@ fn pull_request_block_height(section: &PullRequestSection) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use tui_pane::ColorMode;
+
     use super::*;
     use crate::project::AheadBehind;
     use crate::project::Comparison;
@@ -1571,6 +1600,7 @@ mod tests {
 
     #[test]
     fn pull_request_row_is_single_truncated_line() {
+        let mode = ColorMode::Colored;
         let row = PullRequestRow {
             number:      1,
             title:       "feat: show open pull requests".to_string(),
@@ -1587,6 +1617,7 @@ mod tests {
             &widths,
             PaneSelectionState::Unselected,
             Duration::ZERO,
+            mode,
         );
         let text = line_text(&line);
 
@@ -1596,6 +1627,7 @@ mod tests {
 
     #[test]
     fn pull_request_row_marks_polling_checks() {
+        let mode = ColorMode::Colored;
         let row = PullRequestRow {
             number:      1,
             title:       "feat: show open pull requests".to_string(),
@@ -1612,6 +1644,7 @@ mod tests {
             &widths,
             PaneSelectionState::Unselected,
             Duration::ZERO,
+            mode,
         );
 
         assert!(line_text(&line).contains(ACTIVITY_SPINNER.frame_at(Duration::ZERO)));
@@ -1656,10 +1689,11 @@ mod tests {
 
     #[test]
     fn remotes_sync_values_align_right() {
+        let mode = ColorMode::Colored;
         let row = sample_remote();
         let layout = sync_col_layout(std::slice::from_ref(&row), &[], WIDE_PANE);
 
-        let line = remote_row_line(&row, &layout, PaneSelectionState::Unselected);
+        let line = remote_row_line(&row, &layout, PaneSelectionState::Unselected, mode);
 
         // `remote_row_line` right-aligns the Sync column at the end of `line`, so no trailing
         // padding follows.
@@ -1668,10 +1702,11 @@ mod tests {
 
     #[test]
     fn worktree_sync_values_align_right() {
+        let mode = ColorMode::Colored;
         let row = sample_worktree();
         let layout = sync_col_layout(&[], std::slice::from_ref(&row), WIDE_PANE);
 
-        let line = worktree_row_line(&row, &layout, PaneSelectionState::Unselected);
+        let line = worktree_row_line(&row, &layout, PaneSelectionState::Unselected, mode);
 
         assert!(line_text(&line).ends_with("☑️"));
     }
@@ -1703,6 +1738,7 @@ mod tests {
 
     #[test]
     fn flex_columns_truncate_before_trio() {
+        let mode = ColorMode::Colored;
         let remote = sample_remote();
         let wt = sample_worktree();
         // `sync_col_layout(..., 67)` shrinks the URL and Name columns while preserving full Branch,
@@ -1713,11 +1749,13 @@ mod tests {
             &remote,
             &layout,
             PaneSelectionState::Unselected,
+            mode,
         ));
         let worktree_line = line_text(&worktree_row_line(
             &wt,
             &layout,
             PaneSelectionState::Unselected,
+            mode,
         ));
 
         // `remote_line` and `worktree_line` ellipsis-truncate their flexible columns...

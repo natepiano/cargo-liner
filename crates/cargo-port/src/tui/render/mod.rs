@@ -11,7 +11,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crossterm::cursor::MoveToColumn;
-use crossterm::style::Colored;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::buffer::CellDiffOption;
@@ -19,7 +18,6 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -31,6 +29,7 @@ use tui_pane::BYTES_PER_GIB;
 use tui_pane::BYTES_PER_KIB;
 use tui_pane::BYTES_PER_MIB;
 use tui_pane::BarPalette;
+use tui_pane::ColorMode;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::PaneBorders;
 use tui_pane::PaneFocusState;
@@ -165,7 +164,7 @@ fn render_tiled_panes(
         &mut split.registry,
         layout,
         &split.pane_render_ctx,
-        tui_pane::default_pane_chrome(),
+        tui_pane::default_pane_chrome(split.pane_render_ctx.color_mode),
         // Cargo Port's panes are separate visual units, so `PaneBorders::Separate`
         // closes each box and highlights its focused border independently.
         // cargo-tile uses `PaneBorders::Shared` for shared border cells.
@@ -358,7 +357,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     }
 
     sync_hovered_pane_row(app);
-    prepare_terminal_buffer(frame.buffer_mut());
+    prepare_terminal_buffer(frame.buffer_mut(), app.framework.color_mode);
 }
 
 /// Body lines shown below the `Run cargo clean?` prompt — everything
@@ -568,9 +567,12 @@ fn dispatch_global_shortcuts_overlay(app: &mut App, frame: &mut Frame) {
     app.framework.global_shortcuts_pane.focus = RenderFocus {
         pane_focus_state: PaneFocusState::Active,
     };
-    app.framework
-        .global_shortcuts_pane
-        .render(frame, frame.area(), &app.framework_keymap);
+    app.framework.global_shortcuts_pane.render(
+        frame,
+        frame.area(),
+        &app.framework_keymap,
+        app.framework.color_mode,
+    );
 }
 
 fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
@@ -583,8 +585,10 @@ fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
     let ci_status_lookup = app.ci.status_lookup();
+    let mode = app.framework.color_mode;
     let split = app.split_finder_for_render();
     let pane_render_context = PaneRenderCtx {
+        color_mode: mode,
         animation_elapsed,
         config: split.config,
         project_list: split.project_list,
@@ -659,13 +663,9 @@ fn sync_hovered_pane_row(app: &mut App) {
 }
 
 /// Preserve attributes and cursor positions in terminal output.
-fn prepare_terminal_buffer(buffer: &mut Buffer) {
-    let no_color = Colored::ansi_color_disabled_memoized();
+fn prepare_terminal_buffer(buffer: &mut Buffer, mode: ColorMode) {
+    mode.clear_colors(buffer);
     for (cell, position) in buffer.content.iter_mut().zip(buffer.area.positions()) {
-        if no_color {
-            cell.fg = Color::Reset;
-            cell.bg = Color::Reset;
-        }
         if cell.symbol().ends_with('\u{fe0f}') {
             let width = u16::try_from(cell.symbol().width()).unwrap_or(u16::MAX);
             if let Some(width) = NonZeroU16::new(width) {
@@ -825,12 +825,38 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+    use ratatui::style::Color;
+    use ratatui::style::Modifier;
+    use ratatui::style::Style;
+    use tui_pane::ColorMode;
 
     use crate::tui::panes;
     use crate::tui::panes::BottomRow;
     use crate::tui::panes::CPU_PANE_WIDTH;
     use crate::tui::panes::PaneId;
+
+    #[test]
+    fn terminal_buffer_uses_the_selected_color_mode() {
+        for (mode, foreground, background) in [
+            (ColorMode::Colored, Color::Red, Color::Blue),
+            (ColorMode::NoColor, Color::Reset, Color::Reset),
+        ] {
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
+            buffer[(0, 0)].set_symbol("x").set_style(
+                Style::default()
+                    .fg(Color::Red)
+                    .bg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
+            );
+            super::prepare_terminal_buffer(&mut buffer, mode);
+            assert_eq!(buffer[(0, 0)].fg, foreground);
+            assert_eq!(buffer[(0, 0)].bg, background);
+            assert_eq!(buffer[(0, 0)].modifier, Modifier::BOLD);
+            assert_eq!(buffer[(0, 0)].symbol(), "x");
+        }
+    }
 
     #[test]
     fn clip_rows_without_overflow_leaves_rows_untouched() {

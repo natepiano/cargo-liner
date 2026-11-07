@@ -221,9 +221,7 @@ fn a_shell_execing_cargo_enters_the_retained_discoverys_census()
     let mut output = std::io::BufReader::new(child.stdout.take().ok_or("child output pipe")?);
     let mut line = String::new();
     output.read_line(&mut line)?;
-    let mut source = super::SystemRefresh {
-        system: sysinfo::System::new(),
-    };
+    let mut source = super::SystemRefresh::default();
     let shell = source.refresh();
     writeln!(input, "exec\nafter-exec")?;
     line.clear();
@@ -267,9 +265,7 @@ fn the_retained_system_removes_a_reaped_child_without_mutating_its_old_snapshot(
         .stdin(std::process::Stdio::piped())
         .spawn()?;
     let pid = sysinfo::Pid::from_u32(child.id());
-    let mut source = super::SystemRefresh {
-        system: sysinfo::System::new(),
-    };
+    let mut source = super::SystemRefresh::default();
     let first = source.refresh();
     drop(child.stdin.take());
     child.wait()?;

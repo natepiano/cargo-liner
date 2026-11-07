@@ -48,7 +48,8 @@ pub fn draw_framework_overlay<A: KeymapUiContext + 'static, S: Copy>(
     match app.framework().overlay() {
         Some(FrameworkOverlayId::Settings) => {
             let rows = settings_rows(app);
-            draw_settings(frame, &mut app.framework_mut().settings_pane, &rows);
+            let mode = app.framework().color_mode;
+            draw_settings(frame, &mut app.framework_mut().settings_pane, &rows, mode);
         },
         Some(FrameworkOverlayId::Keymap) => keymap_ui::draw_keymap_overlay(frame, app, keymap),
         Some(FrameworkOverlayId::GlobalShortcuts) => {

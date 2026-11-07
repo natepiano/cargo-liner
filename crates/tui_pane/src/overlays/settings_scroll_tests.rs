@@ -9,6 +9,7 @@ use ratatui::layout::Position;
 
 use super::SettingsPane;
 use super::SettingsRowHit;
+use crate::ColorMode;
 use crate::FocusedPane;
 use crate::FrameworkOverlayId;
 use crate::NavAction;
@@ -18,7 +19,7 @@ use crate::draw_settings;
 
 fn draw(pane: &mut SettingsPane, terminal: &mut Terminal<TestBackend>, rows: &SettingsRows<usize>) {
     terminal
-        .draw(|frame| draw_settings(frame, pane, rows))
+        .draw(|frame| draw_settings(frame, pane, rows, ColorMode::Colored))
         .expect("draw settings");
 }
 

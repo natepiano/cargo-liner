@@ -425,6 +425,7 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     growth: TileGrowth,
     contents: TileGridContents,
     cells: &impl TileCells<Id>,
+    mode: crate::ColorMode,
 ) {
     grid.set_draw_layout(area, growth);
     cells.prepare_moving_frame(
@@ -456,7 +457,15 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
         GridDisplay::Cells => (&cells_widths, &cells_demands),
         GridDisplay::SummaryAlone => (&alone_widths, &alone_demands),
     };
-    let frames = draw_placements(buffer, area, &drawing, demands, widths, contents, cells);
+    let frames = draw_placements(
+        buffer,
+        area,
+        &drawing,
+        &TileMeasurements { demands, widths },
+        contents,
+        cells,
+        mode,
+    );
     grid.record_painted_body(drawing, contents, frames);
 }
 
@@ -475,6 +484,24 @@ fn measurement_widths<Id: Clone + Eq + Debug>(
     }
 }
 
+/// Row demands and the widths used to measure them for one tile frame.
+pub(super) struct TileMeasurements<'a, Id> {
+    pub(super) demands: &'a TileDemands<Id>,
+    pub(super) widths:  &'a [(TileContent<Id>, u16)],
+}
+
+impl<Id: Clone + Eq + Debug> TileMeasurements<'_, Id> {
+    fn rows(&self, content: &TileContent<Id>) -> usize {
+        match content {
+            TileContent::Summary => self.demands.summary,
+            TileContent::Group(id) => self.demands.rows_for(id),
+            TileContent::Empty(_) => 0,
+        }
+    }
+
+    fn width(&self, content: &TileContent<Id>) -> u16 { measured_width(self.widths, content) }
+}
+
 /// Draw one grid snapshot: fixed column frames, then the cell pieces
 /// moving inside them.
 ///
@@ -486,10 +513,10 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
     buffer: &mut Buffer,
     area: Rect,
     drawing: &TileDrawing<Id>,
-    demands: &TileDemands<Id>,
-    widths: &[(TileContent<Id>, u16)],
+    measurements: &TileMeasurements<'_, Id>,
     contents: TileGridContents,
     cells: &impl TileCells<Id>,
+    mode: crate::ColorMode,
 ) -> Vec<Rect> {
     // Painted solid only while the work is shown: the attract screen
     // draws over bare panes, and keeps the terminal's own background.
@@ -517,16 +544,12 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
         // topology the border lattice follows.
         let line_frame =
             PaneFrame::new(placement.frame.clip()).with_focus(placement.frame.is_focused());
-        let cell_rows = match &placement.content {
-            TileContent::Summary => demands.summary,
-            TileContent::Group(id) => demands.rows_for(id),
-            TileContent::Empty(_) => 0,
-        };
+        let cell_rows = measurements.rows(&placement.content);
         // The width the demand above was measured at, which is read
         // off the layout as it stood before `sync` -- the readout
         // carries it beside the cell's own so a cell measured at one
         // width and drawn at another says so.
-        let demand_width = measured_width(widths, &placement.content);
+        let demand_width = measurements.width(&placement.content);
         let content_rows = cell_rows.saturating_sub(usize::from(rows_readout_height(demand_width)));
         if contents == TileGridContents::Shown {
             let summary_foot = match &placement.content {
@@ -598,7 +621,7 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
     // single tile. Focus is the background tint under a tile's contents,
     // and lights the tile's border only where the screen is transparent
     // and no tint is painted.
-    let chrome = default_pane_chrome();
+    let chrome = default_pane_chrome(mode);
     let chrome = painted_ground.map_or(chrome, |ground| PaneChrome {
         inactive_border: chrome.inactive_border.bg(ground),
         ..chrome
@@ -997,6 +1020,7 @@ mod tests {
     use ratatui::symbols::line;
 
     use super::*;
+    use crate::ColorMode;
     use crate::FRAME_POLL_MILLIS;
     use crate::PaneFocusState;
     use crate::TileAction;
@@ -1075,6 +1099,7 @@ mod tests {
             STAYING_GROWTH,
             TileGridContents::Hidden,
             &cells,
+            ColorMode::Colored,
         );
         assert_eq!(buffer, previous, "hidden summary leaves the body unchanged");
         assert_eq!(grid.painted_summary_frames(), [] as [Rect; 0]);
@@ -1179,10 +1204,13 @@ mod tests {
                 &mut buffer,
                 area,
                 &drawing,
-                &demands,
-                &widths,
+                &TileMeasurements {
+                    demands: &demands,
+                    widths:  &widths,
+                },
                 TileGridContents::Shown,
                 &cells,
+                ColorMode::Colored,
             );
             let inner = frame_inner(area);
             let foot_y = inner.bottom() - 1;
@@ -1257,10 +1285,13 @@ mod tests {
                     &mut buffer,
                     area,
                     &drawing,
-                    &demands,
-                    &widths,
+                    &TileMeasurements {
+                        demands: &demands,
+                        widths:  &widths,
+                    },
                     TileGridContents::Shown,
                     &cells,
+                    ColorMode::Colored,
                 );
                 let expected = if transparent {
                     Color::Reset
@@ -1323,10 +1354,13 @@ mod tests {
             &mut buffer,
             area,
             &drawing,
-            &cells.demands(&widths),
-            &widths,
+            &TileMeasurements {
+                demands: &cells.demands(&widths),
+                widths:  &widths,
+            },
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         assert_eq!(buffer[(0, 15)].symbol(), "┌");
         assert_ne!(buffer[(0, 1)].symbol(), "┌");
@@ -1371,10 +1405,13 @@ mod tests {
             &mut hidden,
             area,
             &drawing,
-            &cells.demands(&widths),
-            &widths,
+            &TileMeasurements {
+                demands: &cells.demands(&widths),
+                widths:  &widths,
+            },
             TileGridContents::Hidden,
             &cells,
+            ColorMode::Colored,
         );
         assert_eq!(frames, []);
         Ok(())
@@ -1425,6 +1462,7 @@ mod tests {
             TileGrowth::default(),
             TileGridContents::Shown,
             &WrappedSelectedRows,
+            ColorMode::Colored,
         );
         let y = area.bottom() - 2;
         let line: String = (0..area.width).map(|x| buffer[(x, y)].symbol()).collect();
@@ -1475,6 +1513,7 @@ mod tests {
                 TileGrowth::default(),
                 TileGridContents::Shown,
                 &cells,
+                ColorMode::Colored,
             );
             let y = area.bottom() - 2;
             let line: String = (0..area.width).map(|x| buffer[(x, y)].symbol()).collect();
@@ -1588,6 +1627,7 @@ mod tests {
                     growth,
                     TileGridContents::Shown,
                     &cells,
+                    ColorMode::Colored,
                 );
                 let display = std::thread::scope(|readers| readers.spawn(|| grid.display()).join());
                 assert!(matches!(display, Ok(GridDisplay::Cells)));
@@ -1899,10 +1939,13 @@ mod tests {
             &mut buffer,
             area,
             drawing,
-            &demands,
-            &widths,
+            &TileMeasurements {
+                demands: &demands,
+                widths:  &widths,
+            },
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         buffer
     }
@@ -2241,6 +2284,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         buffer = Buffer::empty(area);
@@ -2251,6 +2295,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             cells,
+            ColorMode::Colored,
         );
         (grid, buffer)
     }
@@ -2274,6 +2319,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         buffer = Buffer::empty(area);
@@ -2284,6 +2330,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             cells,
+            ColorMode::Colored,
         );
         (grid, buffer)
     }
@@ -2532,6 +2579,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &before,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         grid.collapse_queued_changes_for_test();
@@ -2589,6 +2637,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &before,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
 
@@ -2665,6 +2714,7 @@ mod tests {
                 growth,
                 TileGridContents::Shown,
                 &cells,
+                ColorMode::Colored,
             );
             grid.settle_for_test();
 
@@ -2676,6 +2726,7 @@ mod tests {
                 growth,
                 TileGridContents::Shown,
                 &cells,
+                ColorMode::Colored,
             );
 
             assert_eq!(grid.display(), GridDisplay::SummaryAlone, "{view:?}");
@@ -2703,6 +2754,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &busy,
+            ColorMode::Colored,
         );
         grid.set_view(TileView::Summary);
         assert_eq!(grid.display(), GridDisplay::Cells);
@@ -2716,6 +2768,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &busy,
+            ColorMode::Colored,
         );
         assert_eq!(grid.display(), GridDisplay::SummaryAlone);
     }
@@ -2831,10 +2884,13 @@ mod tests {
             &mut buffer,
             area,
             &drawing,
-            &demands,
-            &widths,
+            &TileMeasurements {
+                demands: &demands,
+                widths:  &widths,
+            },
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
 
         for y in area.top()..area.bottom() {
@@ -2880,10 +2936,13 @@ mod tests {
                 &mut buffer,
                 area,
                 &drawing,
-                &demands,
-                &widths,
+                &TileMeasurements {
+                    demands: &demands,
+                    widths:  &widths,
+                },
                 contents,
                 &cells,
+                ColorMode::Colored,
             );
             buffer
         };
@@ -3075,10 +3134,13 @@ mod tests {
                 &mut buffer,
                 COLUMN_FOOT_TEST_AREA,
                 &drawing,
-                &demands,
-                &widths,
+                &TileMeasurements {
+                    demands: &demands,
+                    widths:  &widths,
+                },
                 TileGridContents::Shown,
                 cells,
+                ColorMode::Colored,
             );
             assert_eq!(
                 doubled_line_failure(&buffer, COLUMN_FOOT_TEST_AREA, "column foot", raw),
@@ -3357,10 +3419,13 @@ mod tests {
             &mut buffer,
             area,
             &drawing,
-            &cells.demands(&widths),
-            &widths,
+            &TileMeasurements {
+                demands: &cells.demands(&widths),
+                widths:  &widths,
+            },
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         assert_no_unusable_row(&cells, &drawing, 0, raw);
         for placement in drawing.placements() {
@@ -3953,10 +4018,13 @@ mod tests {
                 &mut buffer,
                 area,
                 &drawing,
-                &cells.demands(&widths),
-                &widths,
+                &TileMeasurements {
+                    demands: &cells.demands(&widths),
+                    widths:  &widths,
+                },
                 TileGridContents::Shown,
                 &cells,
+                ColorMode::Colored,
             );
             assert!(
                 (area.top()..area.bottom())
@@ -4748,10 +4816,13 @@ mod tests {
             &mut buffer,
             area,
             &drawing,
-            &title_demands(&[7]),
-            &[(TileContent::Group(7), 16)],
+            &TileMeasurements {
+                demands: &title_demands(&[7]),
+                widths:  &[(TileContent::Group(7), 16)],
+            },
             TileGridContents::Shown,
             &SegmentedTitleCells,
+            ColorMode::Colored,
         );
 
         assert!(buffer_line(&buffer, 4).contains("worker · impl"));
@@ -4783,10 +4854,13 @@ mod tests {
                     &mut buffer,
                     area,
                     &drawing,
-                    &title_demands(&[7]),
-                    &[(TileContent::Group(7), width - 2)],
+                    &TileMeasurements {
+                        demands: &title_demands(&[7]),
+                        widths:  &[(TileContent::Group(7), width - 2)],
+                    },
                     TileGridContents::Shown,
                     &SegmentedTitleCells,
+                    ColorMode::Colored,
                 );
 
                 assert!(buffer_line(&buffer, y).contains(title));
@@ -5712,6 +5786,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
 
@@ -5725,6 +5800,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
 
         let text = buffer_text(&buffer);
@@ -5760,6 +5836,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         buffer = Buffer::empty(TITLE_AREA);
@@ -5770,6 +5847,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
 
         let drawing = grid.drawing_at(TITLE_AREA, growth, PROGRESS_SCALE);
@@ -5811,6 +5889,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         let narrow = Rect::new(0, 0, 100, TITLE_AREA.height);
@@ -5822,6 +5901,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
 
         buffer = Buffer::empty(TITLE_AREA);
@@ -5832,6 +5912,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         let start = grid.drawing_at(TITLE_AREA, growth, 0);
         let finish = grid.drawing_at(TITLE_AREA, growth, PROGRESS_SCALE);
@@ -5867,6 +5948,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         assert_eq!(grid.placements(small, growth).len(), 1);
@@ -5880,6 +5962,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         assert_eq!(grid.placements(large, growth).len(), 3);
@@ -5902,6 +5985,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         assert_eq!(grid.placements(short, growth).len(), 1);
@@ -5921,6 +6005,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         assert_eq!(grid.placements(tall, growth).len(), 3);
@@ -5940,6 +6025,7 @@ mod tests {
             TileGrowth::default(),
             TileGridContents::Hidden,
             &cells,
+            ColorMode::Colored,
         );
 
         assert_eq!(buffer_text(&buffer).trim(), "");
@@ -5964,6 +6050,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &before,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         grid.collapse_queued_changes_for_test();
@@ -5977,6 +6064,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &after,
+            ColorMode::Colored,
         );
 
         for raw in motion_snapshots() {
@@ -6029,6 +6117,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
 
         for raw in motion_snapshots() {
@@ -6054,6 +6143,7 @@ mod tests {
             TileGrowth::default(),
             TileGridContents::Hidden,
             &cells,
+            ColorMode::Colored,
         );
 
         assert!(

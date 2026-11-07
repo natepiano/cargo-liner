@@ -5,6 +5,13 @@
 #[path = "render/linux_processors.rs"]
 mod linux_processors;
 
+#[path = "render/cell_paint.rs"]
+mod cell_paint;
+#[path = "render/command_cache.rs"]
+mod command_cache;
+#[path = "render/frame_preparation.rs"]
+mod frame_preparation;
+
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -13,6 +20,28 @@ use std::rc::Rc;
 use std::sync::LazyLock;
 use std::sync::OnceLock;
 
+use cell_paint::CellPaintInputs;
+use cell_paint::CellPaintPatch;
+use cell_paint::CellPaintReach;
+use cell_paint::CellPaintSurface;
+use cell_paint::PaintedCellContents;
+use cell_paint::PlacedCommandText;
+use command_cache::CachedProcessRow;
+use command_cache::CachedTableLayout;
+use command_cache::CachedTablePlan;
+use command_cache::MeasuredCommandWidths;
+use command_cache::ParentVisibility;
+use command_cache::PreparedCommandCells;
+use command_cache::PreparedProcessRows;
+use command_cache::PreparedRowCells;
+use frame_preparation::CellMeasurementKey;
+use frame_preparation::CellMeasurementPolicy;
+use frame_preparation::CellRowIdentity;
+use frame_preparation::FrameAllocationPreparation;
+use frame_preparation::PreparedCellRows;
+use frame_preparation::PreparedFrameAllocation;
+use frame_preparation::PreparedFrameTables;
+pub(crate) use frame_preparation::PreparedTables;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
@@ -25,8 +54,6 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
 use ratatui::widgets::Paragraph;
-use ratatui::widgets::Row;
-use ratatui::widgets::Table;
 use ratatui::widgets::Widget;
 #[cfg(feature = "attract")]
 use tui_pane::AttractWork;
@@ -116,6 +143,14 @@ impl CommandView {
     }
 }
 
+use std::cell::OnceCell;
+use std::collections::HashSet;
+use std::ops::Index;
+use std::ops::IndexMut;
+use std::sync::Arc;
+
+use tui_pane::Theme;
+
 use crate::app_global_action::AppGlobalAction;
 use crate::census;
 use crate::census::Ancestor;
@@ -195,9 +230,11 @@ use crate::progress::capture_roots::AccountName;
 use crate::registration::WorkingDirectoryIdentity;
 use crate::root_scan::RootIncarnation;
 use crate::roster::FamilyHead;
+use crate::roster::InvocationSnapshot;
 use crate::roster::ParentFamily;
 #[cfg(test)]
 use crate::roster::Roster;
+use crate::roster::RosterRevision;
 use crate::roster::RowInk;
 use crate::roster::TrackedGroup;
 use crate::roster::TrackedRow;
@@ -304,11 +341,9 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_LINE_HEIGHT)])
             .areas(frame.area());
 
-    let roster = app
-        .roster
-        .visible(&app.loaded_config.config.commands.hidden);
+    let prepared = prepare_panes(app, body.height);
     #[cfg(feature = "attract")]
-    let work = if roster.groups().is_empty() {
+    let work = if prepared.roster.groups().is_empty() {
         AttractWork::Idle
     } else {
         AttractWork::Running
@@ -319,12 +354,12 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     let summary_frames = {
         let mut summary_frames = DrawnSummaryFrames(Vec::new());
         draw_attract_layers(frame, app, body, work, updates, |frame, app, contents| {
-            summary_frames = draw_visible_panes(frame, app, body, contents, roster);
+            summary_frames = draw_visible_panes(frame, app, body, contents, prepared);
         });
         summary_frames
     };
     #[cfg(not(feature = "attract"))]
-    let summary_frames = draw_visible_panes(frame, app, body, TileGridContents::Shown, roster);
+    let summary_frames = draw_visible_panes(frame, app, body, TileGridContents::Shown, prepared);
     draw_status_line(frame, app, keymap, status);
     let toast_area = app
         .framework
@@ -332,7 +367,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         .area_avoiding_frames(tui_pane::frame_inner(body), &summary_frames.0);
     tui_pane::render_toasts(frame, &mut app.framework, toast_area);
     #[cfg(feature = "attract")]
-    app.favorites_overlay.render(frame);
+    app.favorites_overlay
+        .render(frame, app.framework.color_mode);
     tui_pane::draw_framework_overlay(frame, app, keymap, settings::rows);
 }
 
@@ -356,10 +392,22 @@ fn draw_panes(
     area: Rect,
     contents: TileGridContents,
 ) -> DrawnSummaryFrames {
-    let roster = app
-        .roster
-        .visible(&app.loaded_config.config.commands.hidden);
-    draw_visible_panes(frame, app, area, contents, roster)
+    let prepared = prepare_panes(app, area.height);
+    draw_visible_panes(frame, app, area, contents, prepared)
+}
+
+fn prepare_panes(app: &mut App, height: u16) -> PreparedFrameTables {
+    let view = CommandView::new(
+        app.tree,
+        app.arguments,
+        &app.loaded_config.config.commands.default_arguments,
+    );
+    app.prepared_tables.for_frame(
+        &mut app.roster,
+        &app.loaded_config.config.commands.hidden,
+        &view,
+        height.saturating_sub(3),
+    )
 }
 
 fn draw_visible_panes(
@@ -367,15 +415,10 @@ fn draw_visible_panes(
     app: &mut App,
     area: Rect,
     contents: TileGridContents,
-    roster: VisibleRoster,
+    prepared: PreparedFrameTables,
 ) -> DrawnSummaryFrames {
     let growth = app.loaded_config.config.tiles.growth();
-    let view = CommandView::new(
-        app.tree,
-        app.arguments,
-        &app.loaded_config.config.commands.default_arguments,
-    );
-    let cells = Cells::for_frame(roster, &view, &app.sccache, area.height.saturating_sub(3));
+    let cells = Cells::from_prepared(prepared, &app.sccache);
     app.tiles.set_view(app.loaded_config.config.tiles.view);
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
@@ -384,6 +427,7 @@ fn draw_visible_panes(
         growth,
         contents,
         &cells,
+        app.framework.color_mode,
     );
     DrawnSummaryFrames(app.tiles.painted_summary_frames().to_vec())
 }
@@ -396,13 +440,15 @@ struct DrawnSummaryFrames(Vec<Rect>);
 struct Cells<'a> {
     /// Every command group, which the summary gathers and each group's
     /// own cell draws.
-    roster:   VisibleRoster,
+    roster:     Rc<VisibleRoster>,
     /// What sccache reports, written along the summary cell's top border.
-    sccache:  &'a SccacheStats,
+    sccache:    &'a SccacheStats,
     /// Content-row answers already computed during this draw.
-    row_uses: RefCell<HashMap<(CellRowIdentity, u16), PreparedCellRows>>,
+    row_uses:   Rc<RefCell<HashMap<CellMeasurementKey, PreparedCellRows>>>,
+    allocation: Rc<RefCell<FrameAllocationPreparation>>,
+    paintings:  Rc<RefCell<HashMap<CellRowIdentity, PaintedCellContents>>>,
     /// Intrinsic column inputs shared by every allocation in this frame.
-    grids:    FrameColumnGrids,
+    grids:      FrameColumnGrids,
 }
 
 impl<'a> Cells<'a> {
@@ -421,18 +467,40 @@ impl<'a> Cells<'a> {
         )
     }
 
-    /// Cell provider with an empty cache for this draw.
+    /// Fresh inputs for tests that bypass the application frame cache.
+    #[cfg(test)]
     fn for_frame(
         roster: VisibleRoster,
         view: &CommandView,
         sccache: &'a SccacheStats,
         height: u16,
     ) -> Self {
+        Self::from_prepared(
+            PreparedFrameTables::new(roster, view, height, Rc::default()),
+            sccache,
+        )
+    }
+
+    /// Keep geometry decisions local to this draw while retaining intrinsic work.
+    fn from_prepared(prepared: PreparedFrameTables, sccache: &'a SccacheStats) -> Self {
+        let grids = (*prepared.grids).clone();
+        for grid in [&grids.commands.0, &grids.summary.0] {
+            grid.row_end.set(TableRowEnd::Unresolved);
+            grid.frame_row_end.set(TableRowEnd::Unresolved);
+            grid.cell_gap.set(match grid.kind {
+                TableKind::Command => CellTableGap::Unprepared,
+                TableKind::Summary => CellTableGap::Independent,
+            });
+            grid.whole_short_tables.borrow_mut().clear();
+            grid.prepared_plans.borrow_mut().clear();
+        }
         Self {
             sccache,
-            row_uses: RefCell::new(HashMap::new()),
-            grids: FrameColumnGrids::for_frame(&roster, view, height),
-            roster,
+            row_uses: prepared.row_uses,
+            allocation: prepared.allocation,
+            paintings: prepared.paintings,
+            grids,
+            roster: prepared.roster,
         }
     }
 
@@ -445,9 +513,21 @@ impl<'a> Cells<'a> {
     ) -> T {
         let mut layouts = self.row_uses.borrow_mut();
         let prepared = layouts
-            .entry((CellRowIdentity::from(content), width))
+            .entry(CellMeasurementKey::new(content, width, &self.grids))
             .or_insert_with(|| PreparedCellRows::new(&self.roster, content, width, &self.grids));
         read(prepared)
+    }
+
+    /// Use the smallest column spacing required by the command allocations.
+    fn settle_command_column_spacing(&self, allocations: &[(TileContent, Rect)]) {
+        let grid = &self.grids.commands.0;
+        let spacing = allocations
+            .iter()
+            .filter(|(content, _)| matches!(content, TileContent::Group(_)))
+            .map(|(_, area)| grid.cell_column_spacing(indented(*area).width))
+            .min()
+            .unwrap_or(TABLE_COLUMN_SPACING);
+        grid.cell_gap.set(CellTableGap::Settled(spacing));
     }
 
     /// Painted and retained rows at one height, from the prepared width layout.
@@ -460,6 +540,16 @@ impl TileCells<InvocationId> for Cells<'_> {
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
 
     fn prepare_frame(&self, allocations: impl FnOnce() -> Vec<(TileContent, Rect)>) {
+        let allocations = allocations();
+        if let FrameAllocationPreparation::Prepared(prepared) = &*self.allocation.borrow()
+            && prepared.allocations == allocations
+        {
+            prepared.summary.apply(&self.grids.summary.0);
+            prepared.commands.apply(&self.grids.commands.0);
+            #[cfg(test)]
+            tests::ROW_USE_LAYOUTS.with(|layouts| layouts.borrow_mut().clear());
+            return;
+        }
         self.grids.summary.0.row_end.set(TableRowEnd::Unreserved);
         self.grids.commands.0.row_end.set(TableRowEnd::Unreserved);
         self.grids.commands.0.cell_gap.set(CellTableGap::Unprepared);
@@ -471,9 +561,6 @@ impl TileCells<InvocationId> for Cells<'_> {
             .clear();
         let mut summary_cut = false;
         let mut commands_cut = false;
-        let allocations = allocations();
-        self.grids.commands.0.layouts.borrow_mut().clear();
-        self.grids.summary.0.layouts.borrow_mut().clear();
         for (content, area) in &allocations {
             let area = *area;
             match content {
@@ -541,16 +628,13 @@ impl TileCells<InvocationId> for Cells<'_> {
             .0
             .frame_row_end
             .set(self.grids.commands.0.row_end.get());
-        let grid = &self.grids.commands.0;
-        let spacing = allocations
-            .iter()
-            .filter(|(content, _)| matches!(content, TileContent::Group(_)))
-            .map(|(_, area)| grid.cell_column_spacing(indented(*area).width))
-            .min()
-            .unwrap_or(TABLE_COLUMN_SPACING);
-        grid.cell_gap.set(CellTableGap::Settled(spacing));
-        self.grids.commands.0.layouts.borrow_mut().clear();
-        self.row_uses.borrow_mut().clear();
+        self.settle_command_column_spacing(&allocations);
+        *self.allocation.borrow_mut() =
+            FrameAllocationPreparation::Prepared(Box::new(PreparedFrameAllocation {
+                allocations,
+                summary: CellMeasurementPolicy::of(&self.grids.summary.0),
+                commands: CellMeasurementPolicy::of(&self.grids.commands.0),
+            }));
         #[cfg(test)]
         tests::ROW_USE_LAYOUTS.with(|layouts| layouts.borrow_mut().clear());
     }
@@ -661,564 +745,40 @@ impl TileCells<InvocationId> for Cells<'_> {
     }
 
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, ground: Color) {
-        frame_draw_contents(buffer, &self.roster, content, inner, ground, &self.grids);
+        let inputs = CellPaintInputs {
+            measurement: CellMeasurementKey::new(content, inner.width, &self.grids),
+            inner,
+            buffer_area: buffer.area,
+            ground,
+        };
+        let mut paintings = self.paintings.borrow_mut();
+        if let Some(painted) = paintings.get(&CellRowIdentity::from(content))
+            && painted.inputs == inputs
+            && painted.before.matches(buffer)
+        {
+            for command in &painted.commands {
+                command.show_in_roster(buffer, &self.roster);
+            }
+            painted.changes.apply(buffer);
+            return;
+        }
+        let before = CellPaintSurface::read(buffer, inner);
+        let reach = frame_draw_contents(buffer, &self.roster, content, inner, ground, &self.grids);
+        let before = before.with_reach(inner, &reach);
+        paintings.insert(
+            CellRowIdentity::from(content),
+            PaintedCellContents {
+                inputs,
+                commands: reach.commands,
+                changes: CellPaintPatch::between(&before, buffer),
+                before,
+            },
+        );
     }
 
     fn summary_labels(&self, rect: Rect) -> Vec<PaneFrameLabel> {
         sccache_label(self.sccache, rect)
     }
-}
-
-/// Stable cell identity for the frame's indexed width layouts.
-#[derive(Eq, Hash, PartialEq)]
-enum CellRowIdentity {
-    Summary,
-    Command(InvocationId),
-    Empty,
-}
-
-impl From<&TileContent> for CellRowIdentity {
-    fn from(content: &TileContent) -> Self {
-        match content {
-            TileContent::Summary => Self::Summary,
-            TileContent::Group(id) => Self::Command(id.clone()),
-            TileContent::Empty(_) => Self::Empty,
-        }
-    }
-}
-
-/// Prepared ancestry and table measurements for one frame cell.
-enum PreparedCellRows {
-    Empty,
-    Summary(PreparedSummaryRows),
-    Command {
-        ancestry:     PreparedAncestryRows,
-        tables:       AncestryTableRows,
-        table_demand: usize,
-        reading_rows: u16,
-    },
-}
-
-/// The parent column can change when no ancestry line fits above the table.
-enum AncestryTableRows {
-    StableParentColumn(PreparedTableRows),
-    ParentColumnFollowsAncestry {
-        above: PreparedTableRows,
-        alone: PreparedTableRows,
-    },
-}
-
-impl AncestryTableRows {
-    fn at(&self, ancestry_rows: u16, height: u16) -> GroupRowUse {
-        match self {
-            Self::StableParentColumn(table) => table.at(height),
-            Self::ParentColumnFollowsAncestry { above, alone } => {
-                if ancestry_rows == 0 {
-                    alone.at(height)
-                } else {
-                    above.at(height)
-                }
-            },
-        }
-    }
-}
-
-impl PreparedCellRows {
-    fn new(
-        roster: &VisibleRoster,
-        content: &TileContent,
-        width: u16,
-        grids: &FrameColumnGrids,
-    ) -> Self {
-        match content {
-            TileContent::Summary => {
-                let rows = summary_rows(roster);
-                Self::Summary(PreparedSummaryRows::new(&rows, width, &grids.summary.0))
-            },
-            TileContent::Group(id) => {
-                let Some(group) = roster.groups().iter().find(|group| &group.id == id) else {
-                    return Self::Empty;
-                };
-                let grid = &grids.commands.0;
-
-                let rows: Vec<_> = group.rows().collect();
-                let walk = drawn_ancestry(group, &grid.view);
-                let ancestry = PreparedAncestryRows::new(
-                    AncestrySource::for_group(&walk, group, &grid.view),
-                    width,
-                );
-                let pinned = PinnedGroup::Lead(&group.lead.process);
-                let tables = if walk.as_slice().is_empty() {
-                    AncestryTableRows::StableParentColumn(PreparedTableRows::new(
-                        &rows,
-                        width,
-                        pinned,
-                        &table_grid_after_ancestry(grid, 0),
-                    ))
-                } else if grid.view.hierarchy == ProcessHierarchy::Shown {
-                    AncestryTableRows::ParentColumnFollowsAncestry {
-                        above: PreparedTableRows::new(&rows, width, pinned, grid),
-                        alone: PreparedTableRows::new(
-                            &rows,
-                            width,
-                            pinned,
-                            &table_grid_after_ancestry(grid, 0),
-                        ),
-                    }
-                } else {
-                    AncestryTableRows::StableParentColumn(PreparedTableRows::new(
-                        &rows, width, pinned, grid,
-                    ))
-                };
-                let table_demand = match &tables {
-                    AncestryTableRows::StableParentColumn(table) => table.demand(),
-                    AncestryTableRows::ParentColumnFollowsAncestry { above, .. } => above.demand(),
-                };
-                Self::Command {
-                    ancestry,
-                    tables,
-                    table_demand,
-                    reading_rows: CommandReading::for_group(group, width, grid, Color::Reset)
-                        .rows(),
-                }
-            },
-            TileContent::Empty(_) => Self::Empty,
-        }
-    }
-
-    fn demand(&self) -> usize {
-        match self {
-            Self::Empty => 0,
-            Self::Summary(table) => table.demand(),
-            Self::Command {
-                ancestry,
-                table_demand,
-                reading_rows,
-                ..
-            } => {
-                let ancestry = if ancestry.heights.len() > 1 {
-                    ancestry
-                        .heights
-                        .last()
-                        .copied()
-                        .unwrap_or_default()
-                        .saturating_add(usize::from(ANCESTRY_GAP_HEIGHT))
-                } else {
-                    0
-                };
-                ancestry
-                    .saturating_add(*table_demand)
-                    .saturating_add(usize::from(*reading_rows))
-                    .saturating_add(usize::from(GROUP_HEADER_HEIGHT))
-            },
-        }
-    }
-
-    fn at(&self, height: u16) -> GroupRowUse {
-        match self {
-            Self::Empty => GroupRowUse {
-                drawn:                  0,
-                kept:                   0,
-                separator_rows_yielded: 0,
-            },
-            Self::Summary(table) => table.at(height),
-            Self::Command {
-                ancestry,
-                tables,
-                table_demand,
-                reading_rows,
-            } => {
-                let heading = GROUP_HEADER_HEIGHT.min(height);
-                let height = height.saturating_sub(heading);
-                let reading = (*reading_rows).min(height);
-                let height = height.saturating_sub(reading);
-                let ancestry = ancestry.at(height, *table_demand);
-                let table = tables.at(ancestry.drawn, height.saturating_sub(ancestry.drawn));
-                let mut rows = GroupRowUse::with_ancestry(&ancestry, table.drawn);
-                rows.drawn = rows.drawn.saturating_add(heading).saturating_add(reading);
-                rows.kept = rows.kept.saturating_add(heading).saturating_add(reading);
-                rows
-            },
-        }
-    }
-}
-
-/// Heights of every retained ancestry form at this width.
-struct PreparedAncestryRows {
-    heights: Vec<usize>,
-}
-
-impl PreparedAncestryRows {
-    fn new(source: AncestrySource<'_>, width: u16) -> Self {
-        let width = cleared(Rect::new(0, 0, width, 0)).width;
-        let heights = (0..=source.levels.len())
-            .map(|count| {
-                let mut levels = ancestry_levels(source.levels, count);
-                source.mark(&mut levels);
-                source.height(&levels, width)
-            })
-            .collect();
-        Self { heights }
-    }
-
-    fn at(&self, height: u16, table: usize) -> AncestryRowUse {
-        let levels = self.heights.len().saturating_sub(1);
-        let allocation = ancestry_allocation(height, table);
-        let gap = if levels <= 1 || self.heights[levels] <= allocation.content_rows {
-            allocation.gap_rows
-        } else {
-            0
-        };
-        let budget = usize::from(height)
-            .saturating_sub(table)
-            .saturating_sub(usize::from(gap));
-        let mut count = budget.min(levels);
-        loop {
-            if count <= 1 && budget >= 2 && levels > 1 {
-                count = 2;
-                break;
-            }
-            if count <= 1 || self.heights[count] <= budget {
-                break;
-            }
-            count = count.saturating_sub(1);
-        }
-        if count == 0 {
-            return AncestryRowUse {
-                drawn:    0,
-                required: 0,
-            };
-        }
-        let drawn = u16::try_from(self.heights[count].min(budget.max(1)))
-            .unwrap_or(u16::MAX)
-            .saturating_add(gap);
-        let required = if table > 0 && budget == 1 && gap == 0 {
-            0
-        } else {
-            drawn
-        };
-        AncestryRowUse { drawn, required }
-    }
-}
-
-/// Painted and retained rows at any height of one solved table width.
-enum TableHeightUse {
-    EmptyTable,
-    NoReadableColumns,
-    ProcessRows {
-        groups:     Vec<DirectoryRowHeights>,
-        body_rows:  u16,
-        gap_rows:   u16,
-        exact_rows: usize,
-    },
-}
-
-/// Height prefixes share the group's heading placement with painting.
-struct DirectoryRowHeights {
-    heading: DirectoryHeading,
-    rows:    Vec<u16>,
-}
-
-impl TableHeightUse {
-    fn new(groups: &[PathGroup<'_>], layout: &CellTableLayout) -> Self {
-        if groups.is_empty() {
-            return Self::EmptyTable;
-        }
-        if layout.columns.is_empty() {
-            return Self::NoReadableColumns;
-        }
-        #[cfg(test)]
-        tests::LIMIT_ROW_USE_LAYOUTS.with(|limit| {
-            if limit.get() {
-                let rows: Vec<_> = groups
-                    .iter()
-                    .flat_map(|group| group.rows.iter().copied())
-                    .collect();
-                tests::record_row_use_layout(&rows, layout.table_width);
-            }
-        });
-        let mut process_rows = 0_usize;
-        let groups: Vec<DirectoryRowHeights> = groups
-            .iter()
-            .map(|group| {
-                let mut prefix = vec![0_u16];
-                let mut used = 0_u16;
-                for row in &group.rows {
-                    let lines = process_row_lines(row, layout);
-                    process_rows = process_rows.saturating_add(usize::from(lines));
-                    used = used.saturating_add(lines);
-                    prefix.push(used);
-                }
-                DirectoryRowHeights {
-                    heading: group.heading,
-                    rows:    prefix,
-                }
-            })
-            .collect();
-        let body_rows = groups
-            .iter()
-            .map(|group| {
-                group
-                    .heading
-                    .rows()
-                    .saturating_add(*group.rows.last().unwrap_or(&0))
-            })
-            .fold(0, u16::saturating_add);
-        let gap_rows = u16::try_from(groups.len().saturating_sub(1))
-            .unwrap_or(u16::MAX)
-            .saturating_mul(GROUP_GAP_HEIGHT);
-        let exact_rows = usize::from(TABLE_HEADER_HEIGHT)
-            .saturating_add(process_rows)
-            .saturating_add(
-                groups
-                    .iter()
-                    .map(|group| usize::from(group.heading.rows()))
-                    .sum::<usize>(),
-            )
-            .saturating_add(
-                groups
-                    .len()
-                    .saturating_sub(1)
-                    .saturating_mul(usize::from(GROUP_GAP_HEIGHT)),
-            );
-        Self::ProcessRows {
-            groups,
-            body_rows,
-            gap_rows,
-            exact_rows,
-        }
-    }
-
-    fn exact_rows(&self) -> usize {
-        match self {
-            Self::EmptyTable => 0,
-            Self::NoReadableColumns => usize::from(TABLE_HEADER_HEIGHT),
-            Self::ProcessRows { exact_rows, .. } => *exact_rows,
-        }
-    }
-
-    fn at(&self, height: u16, separation: DirectorySeparation) -> GroupRowUse {
-        match self {
-            Self::EmptyTable => {
-                let drawn = height.min(TABLE_HEADER_HEIGHT.saturating_add(GROUP_HEADER_HEIGHT));
-                GroupRowUse {
-                    drawn,
-                    kept: drawn,
-                    separator_rows_yielded: 0,
-                }
-            },
-            Self::NoReadableColumns => {
-                let drawn = height.min(TABLE_HEADER_HEIGHT);
-                GroupRowUse {
-                    drawn,
-                    kept: drawn,
-                    separator_rows_yielded: 0,
-                }
-            },
-            Self::ProcessRows {
-                groups,
-                body_rows,
-                gap_rows,
-                ..
-            } => {
-                let header = height.min(TABLE_HEADER_HEIGHT);
-                let available = height.saturating_sub(header);
-                let total = *body_rows;
-                let gaps = *gap_rows;
-                let retained =
-                    if separation == DirectorySeparation::YieldEarliest && total <= available {
-                        usize::from(available.saturating_sub(total) / GROUP_GAP_HEIGHT)
-                            .min(groups.len().saturating_sub(1))
-                    } else if total.saturating_add(gaps) <= available {
-                        groups.len().saturating_sub(1)
-                    } else {
-                        0
-                    };
-                let mut separators = TableSeparators {
-                    first:  groups.len().saturating_sub(retained),
-                    groups: groups.len(),
-                };
-                let mut remaining = available;
-                let mut visible = 0_usize;
-                for (index, group) in groups.iter().enumerate() {
-                    let gap = if separators.before(index) {
-                        GROUP_GAP_HEIGHT
-                    } else {
-                        0
-                    };
-                    if remaining < gap.saturating_add(group.heading.rows()).saturating_add(1) {
-                        break;
-                    }
-                    visible += 1;
-                    remaining = remaining
-                        .saturating_sub(gap)
-                        .saturating_sub(group.heading.rows())
-                        .saturating_sub(*group.rows.last().unwrap_or(&0));
-                }
-                if visible < groups.len() && visible > 1 {
-                    let spare =
-                        usize::from(remaining / GROUP_GAP_HEIGHT).min(visible.saturating_sub(1));
-                    separators = TableSeparators {
-                        first:  visible.saturating_sub(spare),
-                        groups: visible,
-                    };
-                    remaining = remaining.saturating_sub(
-                        u16::try_from(spare)
-                            .unwrap_or(u16::MAX)
-                            .saturating_mul(GROUP_GAP_HEIGHT),
-                    );
-                }
-                let drawn = if visible == 0 {
-                    header
-                } else {
-                    header.saturating_add(available.saturating_sub(remaining))
-                };
-                let separator_rows = if separation == DirectorySeparation::YieldEarliest {
-                    u16::try_from(
-                        (0..visible)
-                            .filter(|&index| separators.before(index))
-                            .count(),
-                    )
-                    .unwrap_or(u16::MAX)
-                    .saturating_mul(GROUP_GAP_HEIGHT)
-                } else {
-                    0
-                };
-                GroupRowUse {
-                    drawn,
-                    kept: drawn.saturating_sub(separator_rows),
-                    separator_rows_yielded: if separation == DirectorySeparation::YieldEarliest {
-                        u16::try_from(separators.first.saturating_sub(1))
-                            .unwrap_or(u16::MAX)
-                            .saturating_mul(GROUP_GAP_HEIGHT)
-                    } else {
-                        0
-                    },
-                }
-            },
-        }
-    }
-}
-
-/// Summary row heights change only when a newly visible row owns a state slot.
-struct PreparedSummaryRows {
-    layouts:    Vec<SummaryRowsAtHeight>,
-    separation: DirectorySeparation,
-}
-
-/// The first allocation height that uses these summary command widths.
-struct SummaryRowsAtHeight {
-    height: u16,
-    rows:   TableHeightUse,
-}
-
-impl PreparedSummaryRows {
-    fn new(rows: &[&TrackedRow], width: u16, grid: &FrameTableColumnGrid) -> Self {
-        let groups = group_by_path(rows, PinnedGroup::Unpinned);
-        let prepare = |height| {
-            let area = Rect::new(0, 0, width, height);
-            let layout = CellTableLayout::for_table_slots(grid, area, Color::Reset, rows);
-            SummaryRowsAtHeight {
-                height,
-                rows: if rows.is_empty() {
-                    TableHeightUse::EmptyTable
-                } else if width == 0 {
-                    TableHeightUse::NoReadableColumns
-                } else {
-                    TableHeightUse::new(&groups, &layout)
-                },
-            }
-        };
-        let mut layouts = vec![prepare(0)];
-        let mut state = TableStateColumn::Absent;
-        let mut height = TABLE_HEADER_HEIGHT;
-        for group in &groups {
-            height = height.saturating_add(GROUP_HEADER_HEIGHT);
-            for row in &group.rows {
-                height = height.saturating_add(1);
-                let next = if grid.row_progress.contains(&row.process.invocation_id)
-                    || state == TableStateColumn::ProgressReading
-                {
-                    TableStateColumn::ProgressReading
-                } else if state_width(&row.process.state) > 0
-                    || state == TableStateColumn::FilledValue
-                {
-                    TableStateColumn::FilledValue
-                } else {
-                    TableStateColumn::Absent
-                };
-                if next != state {
-                    layouts.push(prepare(height));
-                    state = next;
-                }
-            }
-        }
-        Self {
-            layouts,
-            separation: grid.separation,
-        }
-    }
-
-    fn demand(&self) -> usize {
-        self.layouts
-            .last()
-            .map_or(0, |layout| layout.rows.exact_rows())
-    }
-
-    fn at(&self, height: u16) -> GroupRowUse {
-        self.layouts
-            .iter()
-            .rev()
-            .find(|layout| layout.height <= height)
-            .map_or(
-                GroupRowUse {
-                    drawn:                  0,
-                    kept:                   0,
-                    separator_rows_yielded: 0,
-                },
-                |layout| layout.rows.at(height, self.separation),
-            )
-    }
-}
-
-/// Width layout shared by every height considered for this frame table.
-struct PreparedTableRows {
-    demand:     usize,
-    rows:       TableHeightUse,
-    separation: DirectorySeparation,
-}
-
-impl PreparedTableRows {
-    fn new(
-        rows: &[&TrackedRow],
-        width: u16,
-        pinned: PinnedGroup<'_>,
-        grid: &FrameTableColumnGrid,
-    ) -> Self {
-        let lines = if rows.is_empty() {
-            TableHeightUse::EmptyTable
-        } else if width == 0 {
-            TableHeightUse::NoReadableColumns
-        } else {
-            let grid = table_grid_for_whole_commands(grid, width, rows);
-            let area = Rect::new(0, 0, width, u16::MAX);
-            let layout = CellTableLayout::from_grid(&grid, area, pane_background(false));
-            if layout.columns.is_empty() {
-                TableHeightUse::NoReadableColumns
-            } else {
-                TableHeightUse::new(&group_by_path(rows, pinned), &layout)
-            }
-        };
-        Self {
-            demand:     lines.exact_rows(),
-            rows:       lines,
-            separation: grid.separation,
-        }
-    }
-
-    const fn demand(&self) -> usize { self.demand }
-
-    fn at(&self, height: u16) -> GroupRowUse { self.rows.at(height, self.separation) }
 }
 
 /// Rows one cell paints inside the area above its readout.
@@ -1486,6 +1046,8 @@ fn frame_table_height(
     pinned: PinnedGroup<'_>,
     grid: &FrameTableColumnGrid,
 ) -> usize {
+    #[cfg(test)]
+    tests::CELL_HEIGHT_PREPARATIONS.with(|count| count.set(count.get() + 1));
     if rows.is_empty() {
         return 0;
     }
@@ -1604,7 +1166,7 @@ fn draw_contents(
         content,
         inner,
         ground,
-        &FrameColumnGrids::for_frame(roster, view, u16::MAX),
+        &FrameColumnGrids::for_frame(roster, view, u16::MAX, Rc::default()),
     );
 }
 
@@ -1615,15 +1177,15 @@ fn frame_draw_contents(
     inner: Rect,
     ground: Color,
     grids: &FrameColumnGrids,
-) {
+) -> CellPaintReach {
+    #[cfg(test)]
+    tests::CELL_CONTENT_PAINTS.with(|count| count.set(count.get() + 1));
     match content {
-        TileContent::Summary => {
-            frame_draw_summary(buffer, roster, inner, ground, &grids.summary.0);
-        },
+        TileContent::Summary => frame_draw_summary(buffer, roster, inner, ground, &grids.summary.0),
         TileContent::Group(id) => {
-            frame_draw_group(buffer, roster, id, inner, ground, &grids.commands.0);
+            frame_draw_group(buffer, roster, id, inner, ground, &grids.commands.0)
         },
-        TileContent::Empty(_) => {},
+        TileContent::Empty(_) => CellPaintReach::default(),
     }
 }
 
@@ -1652,7 +1214,7 @@ fn draw_summary(
         roster,
         inner,
         ground,
-        &FrameColumnGrids::for_frame(roster, view, inner.height)
+        &FrameColumnGrids::for_frame(roster, view, inner.height, Rc::default())
             .summary
             .0,
     );
@@ -1664,9 +1226,9 @@ fn frame_draw_summary(
     inner: Rect,
     ground: Color,
     grid: &FrameTableColumnGrid,
-) {
+) -> CellPaintReach {
     let rows = summary_rows(roster);
-    frame_draw_process_table(buffer, inner, &rows, ground, PinnedGroup::Unpinned, grid);
+    frame_draw_process_table(buffer, inner, &rows, ground, PinnedGroup::Unpinned, grid)
 }
 
 /// One lead per visible command group, shared by measurement and drawing.
@@ -1778,7 +1340,7 @@ fn draw_group(
         id,
         inner,
         ground,
-        &FrameColumnGrids::for_frame(roster, view, u16::MAX)
+        &FrameColumnGrids::for_frame(roster, view, u16::MAX, Rc::default())
             .commands
             .0,
     );
@@ -1791,13 +1353,14 @@ fn frame_draw_group(
     inner: Rect,
     ground: Color,
     grid: &FrameTableColumnGrid,
-) {
+) -> CellPaintReach {
     let Some(group) = roster.groups().iter().find(|group| &group.id == id) else {
-        return;
+        return CellPaintReach::default();
     };
 
     let group = group.for_painting();
     let group = group.as_ref();
+    let content_origin = inner.y;
     let inner = CommandHeading::for_group(group, inner.width, ground).draw(buffer, inner);
     let reading_origin = (inner.x, inner.y);
     let inner = CommandReading::for_group(group, inner.width, grid, ground).draw(buffer, inner);
@@ -1829,7 +1392,7 @@ fn frame_draw_group(
     };
     // The lead directory precedes the reading; other directories remain beside their rows.
     let table_grid = table_grid_after_ancestry(grid, used);
-    frame_draw_process_table(
+    let mut table_reach = frame_draw_process_table(
         buffer,
         table,
         &rows,
@@ -1846,6 +1409,12 @@ fn frame_draw_group(
             .set_symbol(ELISION)
             .set_style(cut_mark_style(ground, faded));
     }
+    table_reach.rows = inner
+        .y
+        .saturating_sub(content_origin)
+        .saturating_add(used)
+        .saturating_add(table_reach.rows);
+    table_reach
 }
 
 /// A table without its Short ancestry block retains the first row's parent link.
@@ -2523,7 +2092,7 @@ fn ancestry_rows(
     wrapped_command(
         ancestor_command_words(ancestor, Style::default()),
         room,
-        cut_mark_style(Color::Reset, 0_u8),
+        cut_mark_style(Color::Reset, 0),
     )
     .lines
     .len()
@@ -2938,23 +2507,22 @@ enum ProcessValueUse {
     SelectRows,
 }
 
-/// Text and command-name demand before any cell width is assigned.
-struct ProcessRowValues<'a> {
+/// Metadata text before any cell width is assigned; command widths are measured separately.
+struct ProcessMetadataValues<'a> {
     /// Invocation supplying styles, grouping and cut-command provenance.
     source: &'a TrackedRow,
     /// Column metadata; numeric display text is deferred during row selection.
     cells:  [String; TABLE_HEADERS.len()],
 }
 
-impl<'a> ProcessRowValues<'a> {
-    /// Read every value independently of the eventual viewport.
-    fn of(source: &'a TrackedRow, view: &CommandView) -> Self {
-        Self::for_use(source, view, ProcessValueUse::FitColumns)
-    }
+impl<'a> ProcessMetadataValues<'a> {
+    /// Read metadata independently of the eventual viewport.
+    fn of(source: &'a TrackedRow) -> Self { Self::for_use(source, ProcessValueUse::FitColumns) }
 
-    fn for_use(source: &'a TrackedRow, view: &CommandView, usage: ProcessValueUse) -> Self {
+    fn for_use(source: &'a TrackedRow, usage: ProcessValueUse) -> Self {
+        #[cfg(test)]
+        tests::PROCESS_VALUE_PREPARATIONS.with(|count| count.set(count.get() + 1));
         let process = &source.process;
-        let command = displayed_command(&process.command, view);
         let (cpu, memory, compiler) = match usage {
             ProcessValueUse::SelectRows => (String::new(), String::new(), String::new()),
             ProcessValueUse::FitColumns => {
@@ -2965,8 +2533,8 @@ impl<'a> ProcessRowValues<'a> {
                     },
                 };
                 (
-                    cpu_text(process.resource_use.cpu),
-                    memory_text(process.resource_use.memory),
+                    measurement_text(process.resource_use.cpu, census::scan::cpu_label),
+                    measurement_text(process.resource_use.memory, memory_label),
                     compiler,
                 )
             },
@@ -2986,7 +2554,7 @@ impl<'a> ProcessRowValues<'a> {
                 cpu,
                 memory,
                 state,
-                command,
+                String::new(),
                 compiler,
                 managed_text(process),
             ],
@@ -3030,13 +2598,17 @@ impl SessionColumnWidths {
     /// An unusually large aggregate widens once; later readings keep that room.
     pub(crate) fn observe(&mut self, process: &CargoProcess) {
         for cpu in [&process.resource_use.cpu, &process.subtree_resource_use.cpu] {
-            self.cpu = self.cpu.max(cell_width(&cpu_text(*cpu)));
+            self.cpu = self
+                .cpu
+                .max(cell_width(&measurement_text(*cpu, census::scan::cpu_label)));
         }
         for memory in [
             process.resource_use.memory,
             process.subtree_resource_use.memory,
         ] {
-            self.memory = self.memory.max(cell_width(&memory_text(memory)));
+            self.memory = self
+                .memory
+                .max(cell_width(&measurement_text(memory, memory_label)));
         }
         for contribution in [&process.resource_use, &process.subtree_resource_use] {
             let compiler = match &contribution.compiler {
@@ -3068,12 +2640,15 @@ fn machine_processor_count() -> usize {
 }
 
 /// Intrinsic inputs for the command tables of one immutable frame.
+#[derive(Clone)]
 struct FrameCommandColumnGrid(FrameTableColumnGrid);
 
 /// Intrinsic inputs for the summary's distinct column set in one frame.
+#[derive(Clone)]
 struct FrameSummaryColumnGrid(FrameTableColumnGrid);
 
 /// The two independent grids read by demands, drawing and row probes.
+#[derive(Clone)]
 struct FrameColumnGrids {
     /// Every row belonging to a command cell participates in this grid.
     commands: FrameCommandColumnGrid,
@@ -3084,11 +2659,21 @@ struct FrameColumnGrids {
 impl FrameColumnGrids {
     #[cfg(test)]
     fn new(roster: &Roster, hidden_commands: &[String], view: &CommandView) -> Self {
-        Self::for_frame(&roster.clone().visible(hidden_commands), view, u16::MAX)
+        Self::for_frame(
+            &roster.clone().visible(hidden_commands),
+            view,
+            u16::MAX,
+            Rc::default(),
+        )
     }
 
     /// Fit intrinsic widths once over the rows this frame can possibly draw.
-    fn for_frame(roster: &VisibleRoster, view: &CommandView, height: u16) -> Self {
+    fn for_frame(
+        roster: &VisibleRoster,
+        view: &CommandView,
+        height: u16,
+        command_cells: Rc<RefCell<PreparedCommandCells>>,
+    ) -> Self {
         let mut command_rows = Vec::new();
         let mut command_tables = Vec::new();
         let mut command_progress = Vec::new();
@@ -3124,6 +2709,7 @@ impl FrameColumnGrids {
             view,
             parent_links,
             command_progress,
+            Rc::clone(&command_cells),
         );
         let mut summary = FrameTableColumnGrid::with_parent_links(
             &summary,
@@ -3131,14 +2717,16 @@ impl FrameColumnGrids {
             view,
             AncestryParentLinks::default(),
             summary_progress,
+            command_cells,
         );
+        let contributions: Rc<[_]> = roster
+            .groups()
+            .iter()
+            .flat_map(TrackedGroup::rows)
+            .map(InvocationContribution::from)
+            .collect();
         for grid in [&mut commands, &mut summary] {
-            grid.contributions = roster
-                .groups()
-                .iter()
-                .flat_map(TrackedGroup::rows)
-                .map(InvocationContribution::from)
-                .collect();
+            grid.contributions = Rc::clone(&contributions);
             grid.intrinsic_widths[CPU_COLUMN] =
                 grid.intrinsic_widths[CPU_COLUMN].max(roster.column_widths().cpu);
             grid.intrinsic_widths[MEMORY_COLUMN] =
@@ -3155,7 +2743,7 @@ impl FrameColumnGrids {
             .iter()
             .map(|rows| {
                 let local = commands.for_visible_rows(rows);
-                TableWidthBudget::of(rows, local.state_column, view)
+                TableWidthBudget::of(rows, local.state_column, view, &commands.commands)
             })
             .collect();
         Self {
@@ -3397,9 +2985,11 @@ struct FrameTableColumnGrid {
     whole_short_tables:       Rc<RefCell<Vec<WholeShortCommandTable>>>,
     layouts:                  Rc<RefCell<Vec<CachedTableLayout>>>,
     prepared_rows:            Rc<RefCell<PreparedProcessRows>>,
+    commands:                 Rc<RefCell<PreparedCommandCells>>,
+    theme:                    Arc<Theme>,
     prepared_plans:           Rc<RefCell<Vec<CachedTablePlan>>>,
     /// Disjoint resources stay available even when a height cut hides their row.
-    contributions:            Vec<InvocationContribution>,
+    contributions:            Rc<[InvocationContribution]>,
     /// The frame-wide presence of optional slots, independent of visible rows.
     slots:                    Vec<usize>,
     /// Whether this table can lend directory separators independently.
@@ -3473,6 +3063,7 @@ impl FrameTableColumnGrid {
             view,
             AncestryParentLinks::default(),
             invocation_progress_rows(rows, kind),
+            Rc::default(),
         )
     }
 
@@ -3482,11 +3073,16 @@ impl FrameTableColumnGrid {
         view: &CommandView,
         parent_links: AncestryParentLinks,
         row_progress: Vec<InvocationId>,
+        commands: Rc<RefCell<PreparedCommandCells>>,
     ) -> Self {
+        let command_widths: Vec<_> = {
+            let mut commands = commands.borrow_mut();
+            rows.iter().map(|row| commands.widths(row, view)).collect()
+        };
         let values: Vec<_> = rows
             .iter()
             .map(|row| {
-                let mut values = ProcessRowValues::of(row, view);
+                let mut values = ProcessMetadataValues::of(row);
                 values.cells[PARENT_COLUMN] = parent_text(&row.process);
                 if row_progress.contains(&row.process.invocation_id)
                     && let CounterState::Working { progress, .. } = own_counter(row)
@@ -3498,9 +3094,13 @@ impl FrameTableColumnGrid {
             .collect();
         let mut intrinsic_widths = TABLE_HEADERS.map(cell_width);
         let mut value_widths = [0; TABLE_HEADERS.len()];
-        for row in &values {
+        for (row, command) in values.iter().zip(&command_widths) {
             for (column, value) in row.cells.iter().enumerate() {
-                let width = cell_width(value);
+                let width = if column == COMMAND_COLUMN {
+                    command.selected
+                } else {
+                    cell_width(value)
+                };
                 intrinsic_widths[column] = intrinsic_widths[column].max(width);
                 value_widths[column] = value_widths[column].max(width);
             }
@@ -3521,6 +3121,8 @@ impl FrameTableColumnGrid {
         } else {
             TableStateColumn::ProgressReading
         };
+        let table_budget =
+            TableWidthBudget::from_widths(command_widths.iter().copied(), state_column);
         Self {
             cell_gap: Rc::new(std::cell::Cell::new(CellTableGap::Independent)),
             row_end: std::cell::Cell::new(TableRowEnd::Unresolved),
@@ -3528,6 +3130,8 @@ impl FrameTableColumnGrid {
             whole_short_tables: std::rc::Rc::new(RefCell::new(Vec::new())),
             layouts: std::rc::Rc::new(RefCell::new(Vec::new())),
             prepared_rows: std::rc::Rc::new(RefCell::new(PreparedProcessRows::default())),
+            commands,
+            theme: tui_pane::theme(),
             prepared_plans: std::rc::Rc::new(RefCell::new(Vec::new())),
             contributions: rows
                 .iter()
@@ -3549,9 +3153,9 @@ impl FrameTableColumnGrid {
             intrinsic_widths,
             value_widths,
             command_title_width: cell_width(TABLE_HEADERS[COMMAND_COLUMN]),
-            longest_command_width: longest_command_width(&values),
+            longest_command_width: table_budget.short,
             continuation_clearance: TABLE_CONTINUATION_CLEARANCE,
-            table_budgets: vec![TableWidthBudget::of(rows, state_column, view)],
+            table_budgets: vec![table_budget],
             empty_tail_columns: if values.iter().all(|value| {
                 value.cells[COMPILER_COLUMN].is_empty() && value.cells[MANAGED_COLUMN].is_empty()
             }) {
@@ -3560,12 +3164,9 @@ impl FrameTableColumnGrid {
                 Vec::new()
             },
             state_column,
-            longest_subcommand_width: rows
+            longest_subcommand_width: command_widths
                 .iter()
-                .map(|row| {
-                    cell_width(&displayed_subcommand_name(&row.process.command).words)
-                        .saturating_add(TABLE_CONTINUATION_CLEARANCE)
-                })
+                .map(|command| command.subcommand)
                 .max()
                 .unwrap_or_default(),
             kind,
@@ -3577,8 +3178,10 @@ impl FrameTableColumnGrid {
     fn for_visible_rows(&self, rows: &[&TrackedRow]) -> Self {
         let mut local = self.clone();
         local.empty_tail_columns = if rows.iter().all(|row| {
-            let values = ProcessRowValues::of(row, &self.view);
-            values.cells[COMPILER_COLUMN].is_empty() && values.cells[MANAGED_COLUMN].is_empty()
+            !matches!(
+                row.process.resource_use.compiler,
+                CompilerObservation::Running(_)
+            ) && !matches!(row.process.managed, Measurement::Reading(count) if count > 0)
         }) {
             vec![COMPILER_COLUMN, MANAGED_COLUMN]
         } else {
@@ -3632,6 +3235,11 @@ impl FrameTableColumnGrid {
 
     /// Apply the same reductions for every view and every table in the frame.
     fn columns_for_command_name(&self, width: u16) -> FittedTableColumns {
+        self.columns_for_state(width, self.state_column)
+    }
+
+    /// A local state slot changes no immutable input of the frame's width policy.
+    fn columns_for_state(&self, width: u16, own_state: TableStateColumn) -> FittedTableColumns {
         let mut budgets: Vec<TableWidthBudget> = Vec::new();
         for table in &self.table_budgets {
             let state_column = table.state_column;
@@ -3649,7 +3257,6 @@ impl FrameTableColumnGrid {
                 });
             }
         }
-        let own_state = self.state_column;
         let mut removed = Vec::new();
         let mut command = CommandWidthBudget::Arguments;
         for reduction in TABLE_COLUMN_DROP_ORDER {
@@ -3724,9 +3331,7 @@ impl FrameTableColumnGrid {
     /// Tighten the cells when a whole command or its protected subcommand gains a line.
     fn cell_column_spacing(&self, width: u16) -> u16 {
         for table in &self.table_budgets {
-            let mut local = self.clone();
-            local.state_column = table.state_column;
-            let fitted = local.columns_for_command_name(width);
+            let fitted = self.columns_for_state(width, table.state_column);
             let Some(position) = fitted
                 .columns
                 .iter()
@@ -3889,32 +3494,37 @@ struct TableWidthBudget {
 }
 
 impl TableWidthBudget {
-    fn of(rows: &[&TrackedRow], state_column: TableStateColumn, view: &CommandView) -> Self {
-        Self {
-            short: rows
-                .iter()
-                .map(|row| cell_width(&displayed_command(&row.process.command, view)))
-                .max()
-                .unwrap_or_default(),
-            full: rows
-                .iter()
-                .map(|row| {
-                    let values = ProcessRowValues::of(row, CommandView::long());
-                    cell_width(&values.cells[COMMAND_COLUMN])
-                        .saturating_add(TABLE_CONTINUATION_CLEARANCE)
-                })
-                .max()
-                .unwrap_or_default(),
-            subcommand: rows
-                .iter()
-                .map(|row| {
-                    cell_width(&displayed_subcommand_name(&row.process.command).words)
-                        .saturating_add(TABLE_CONTINUATION_CLEARANCE)
-                })
-                .max()
-                .unwrap_or_default(),
+    fn of(
+        rows: &[&TrackedRow],
+        state_column: TableStateColumn,
+        view: &CommandView,
+        commands: &RefCell<PreparedCommandCells>,
+    ) -> Self {
+        let mut commands = commands.borrow_mut();
+        Self::from_widths(
+            rows.iter().map(|row| commands.widths(row, view)),
             state_column,
-        }
+        )
+    }
+
+    fn from_widths(
+        widths: impl Iterator<Item = MeasuredCommandWidths>,
+        state_column: TableStateColumn,
+    ) -> Self {
+        widths.fold(
+            Self {
+                short: 0,
+                full: 0,
+                subcommand: 0,
+                state_column,
+            },
+            |table, command| Self {
+                short: table.short.max(command.selected),
+                full: table.full.max(command.full),
+                subcommand: table.subcommand.max(command.subcommand),
+                state_column,
+            },
+        )
     }
 
     const fn command_width(&self, budget: CommandWidthBudget) -> u16 {
@@ -3927,7 +3537,7 @@ impl TableWidthBudget {
 }
 
 /// Optional slots present anywhere in the frame's complete row set.
-fn frame_slot_columns(values: &[ProcessRowValues<'_>], kind: TableKind) -> Vec<usize> {
+fn frame_slot_columns(values: &[ProcessMetadataValues<'_>], kind: TableKind) -> Vec<usize> {
     (0..TABLE_HEADERS.len())
         .filter(|&column| {
             if !SUMMARY_HIDDEN_COLUMNS.contains(&column) && column != STATE_COLUMN {
@@ -3949,7 +3559,7 @@ fn frame_slot_columns(values: &[ProcessRowValues<'_>], kind: TableKind) -> Vec<u
 fn preserve_whole_short_table(grid: &FrameTableColumnGrid, table: Rect, rows: &[&TrackedRow]) {
     let whole_width = rows
         .iter()
-        .map(|row| cell_width(&displayed_command(&row.process.command, &grid.view)))
+        .map(|row| grid.commands.borrow_mut().widths(row, &grid.view).selected)
         .max()
         .unwrap_or_default();
     let unreserved = CellTableLayout::for_table_slots(grid, table, Color::Reset, rows);
@@ -3978,6 +3588,8 @@ fn table_needs_continuation(
     rows: &[&TrackedRow],
     pinned: PinnedGroup<'_>,
 ) -> bool {
+    #[cfg(test)]
+    tests::CONTINUATION_PROBES.with(|count| count.set(count.get() + 1));
     let layout = CellTableLayout::for_table_slots(grid, area, Color::Reset, rows);
     let mut remaining = area.height.saturating_sub(TABLE_HEADER_HEIGHT);
     let groups = group_by_path(rows, pinned);
@@ -3990,58 +3602,14 @@ fn table_needs_continuation(
             if remaining == 0 {
                 return true;
             }
-            remaining = remaining.saturating_sub(process_row(row, &layout).lines);
+            remaining = remaining.saturating_sub(process_row_lines(row, &layout));
         }
     }
     false
 }
 
-/// Solved table layouts retained across demands, allocation probes and drawing.
-#[derive(Clone)]
-struct CachedTableLayout {
-    width:          u16,
-    height:         u16,
-    slots:          Vec<usize>,
-    row_end:        TableRowEnd,
-    frame_row_end:  TableRowEnd,
-    rows:           Vec<(InvocationId, u32)>,
-    layout:         CellTableLayout,
-    parents:        Vec<InvocationId>,
-    parent_content: ParentColumnContent,
-}
-
-/// Wrapped rows indexed by pid before checking full invocation identity and layout.
-#[derive(Default)]
-struct PreparedProcessRows {
-    by_pid: HashMap<u32, Vec<CachedProcessRow>>,
-}
-
-/// Styled row cells prepared once for one solved layout.
-#[derive(Clone)]
-struct CachedProcessRow {
-    process:      CargoProcess,
-    faded:        RowInk,
-    cells:        [Text<'static>; TABLE_HEADERS.len()],
-    lines:        u16,
-    widths:       Vec<u16>,
-    columns:      Vec<usize>,
-    ground:       Color,
-    hides_parent: bool,
-}
-
-impl CachedProcessRow {
-    fn matches(&self, row: &TrackedRow, layout: &CellTableLayout, hides_parent: bool) -> bool {
-        self.process == row.process
-            && self.faded == row.ink()
-            && self.widths == layout.column_widths
-            && self.columns == layout.columns
-            && self.ground == layout.ground
-            && self.hides_parent == hides_parent
-    }
-}
-
 /// The command cells' gap is settled before any cell in their frame is painted.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 enum CellTableGap {
     Independent,
     Unprepared,
@@ -4049,7 +3617,7 @@ enum CellTableGap {
 }
 
 /// Whether any table in the frame grid needs a later-row mark.
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 enum TableRowEnd {
     Unresolved,
     Unreserved,
@@ -4057,7 +3625,7 @@ enum TableRowEnd {
 }
 
 /// A table whose whole Short command would be shortened by the shared reservation.
-#[derive(Clone)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 struct WholeShortCommandTable {
     width: u16,
     rows:  Vec<(InvocationId, u32)>,
@@ -4098,10 +3666,13 @@ struct CellTableLayout {
     #[cfg(test)]
     table_width:    u16,
     prepared_rows:  Rc<RefCell<PreparedProcessRows>>,
+    commands:       Rc<RefCell<PreparedCommandCells>>,
+    theme:          Arc<Theme>,
     prepared_plans: Rc<RefCell<Vec<CachedTablePlan>>>,
     /// The summary keeps readings beside rows; command headings keep their gauge.
     kind:           TableKind,
     /// Column widths, in table order.
+    #[cfg(test)]
     constraints:    Vec<Constraint>,
     /// The columns this cell draws, in table order.
     columns:        Vec<usize>,
@@ -4183,6 +3754,7 @@ impl CellTableLayout {
                 && cached.rows == identities
                 && cached.parents == grid.parent_links.hidden
                 && cached.parent_content == grid.parent_content
+                && cached.gap == grid.cell_gap.get()
         }) {
             let mut layout = cached.layout.clone();
             layout.ground = ground;
@@ -4199,12 +3771,15 @@ impl CellTableLayout {
             layout:         layout.clone(),
             parents:        grid.parent_links.hidden.clone(),
             parent_content: grid.parent_content,
+            gap:            grid.cell_gap.get(),
         });
         layout
     }
 
     /// Lay out one frame grid at this cell's actual inner width.
     fn from_grid(grid: &FrameTableColumnGrid, area: Rect, ground: Color) -> Self {
+        #[cfg(test)]
+        tests::TABLE_LAYOUT_PREPARATIONS.with(|count| count.set(count.get() + 1));
         let FittedTableColumns {
             columns,
             mut constraints,
@@ -4242,10 +3817,13 @@ impl CellTableLayout {
             #[cfg(test)]
             table_width: area.width,
             prepared_rows: std::rc::Rc::clone(&grid.prepared_rows),
+            commands: Rc::clone(&grid.commands),
+            theme: std::sync::Arc::clone(&grid.theme),
             prepared_plans: std::rc::Rc::clone(&grid.prepared_plans),
             kind: grid.kind,
             row_progress: grid.row_progress.clone(),
             parent_links: grid.parent_links.clone(),
+            #[cfg(test)]
             constraints,
             columns,
             column_widths,
@@ -4253,6 +3831,21 @@ impl CellTableLayout {
 
             view: grid.view.clone(),
             ground,
+        }
+    }
+
+    /// Paint text with the same solved widths that wrapped its command lines.
+    fn draw_columns<Cell: std::borrow::Borrow<Text<'static>>>(
+        &self,
+        buffer: &mut Buffer,
+        area: Rect,
+        cells: impl IntoIterator<Item = Cell>,
+    ) {
+        let mut x = area.x;
+        for (cell, &width) in cells.into_iter().zip(&self.column_widths) {
+            let width = width.min(area.right().saturating_sub(x));
+            cell.borrow().render(Rect { x, width, ..area }, buffer);
+            x = x.saturating_add(width).saturating_add(self.column_spacing);
         }
     }
 
@@ -4299,6 +3892,9 @@ impl CellTableLayout {
     fn ink(&self, color: Color, faded: u8) -> Color { blend_color(color, self.ground, faded) }
 }
 
+/// How far the least-faded of `rows` has travelled, which is what
+/// anything standing over them fades with: a heading or a column label
+/// holds its colour while a single row under it is still running.
 impl RowInk {
     /// Text and readouts carry one blend rule with their fade amount.
     const fn progress(self) -> CellFadeProgress {
@@ -4311,13 +3907,9 @@ impl RowInk {
     fn color(self, color: Color, ground: Color) -> Color { self.progress().color(color, ground) }
 }
 
-/// How far the least-faded of `rows` has travelled, which is what
-/// anything standing over them fades with: a heading or a column label
-/// holds its colour while a single row under it is still running.
-fn heading_fade(rows: &[&TrackedRow]) -> u8 { minimum_fade(rows.iter().map(|row| row.faded())) }
-
-/// Shared ink follows the least-faded row supplied by its view.
 fn minimum_fade(fades: impl Iterator<Item = u8>) -> u8 { fades.min().unwrap_or_default() }
+
+fn heading_fade(rows: &[&TrackedRow]) -> u8 { minimum_fade(rows.iter().map(|row| row.faded())) }
 
 /// The cell's shared ink follows its rows and the command owning it.
 fn group_fade(group: &TrackedGroup, rows: &[&TrackedRow]) -> u8 {
@@ -4352,10 +3944,14 @@ fn apply_planned_row_readings(
                 && reading.pid == row.source.process.pid
         }) {
             let muted = Style::default().fg(row.source.ink().color(label_color(), layout.ground));
-            row.cells[CPU_COLUMN] =
-                Text::from(Span::styled(cpu_text(reading.resources.cpu), muted));
-            row.cells[MEMORY_COLUMN] =
-                Text::from(Span::styled(memory_text(reading.resources.memory), muted));
+            row.cells[CPU_COLUMN] = Text::from(Span::styled(
+                measurement_text(reading.resources.cpu, census::scan::cpu_label),
+                muted,
+            ));
+            row.cells[MEMORY_COLUMN] = Text::from(Span::styled(
+                measurement_text(reading.resources.memory, memory_label),
+                muted,
+            ));
             row.cells[COMPILER_COLUMN] = Text::from(compiler_reading(
                 &reading.resources.compiler,
                 row.source,
@@ -4419,10 +4015,13 @@ fn frame_draw_process_table(
     ground: Color,
     pinned: PinnedGroup<'_>,
     grid: &FrameTableColumnGrid,
-) {
+) -> CellPaintReach {
     if rows.is_empty() {
         draw_empty_process_table(buffer, area, grid.kind);
-        return;
+        return CellPaintReach {
+            rows:     area.height,
+            commands: Vec::new(),
+        };
     }
 
     // One column-label row for the whole cell. Every group's table is
@@ -4453,29 +4052,75 @@ fn frame_draw_process_table(
         grid.separation,
         &layout,
     );
-    let heading_groups = match pinned {
-        PinnedGroup::Lead(_) => &groups[..],
-        PinnedGroup::Unpinned => &groups[..plan.visible_group_count],
-    };
-    let headings = TableAccountHeadings::of(
-        heading_groups,
-        cleared(area)
-            .width
-            .saturating_sub(cell_width(SECTION_HEADER_INDENT)),
-    );
+    let headings = TableAccountHeadings::for_table(&groups, pinned, plan.visible_group_count, area);
     if layout.columns.is_empty() {
         Paragraph::new(Line::from(Span::styled(
             ELISION,
             column_header_style(&layout, faded),
         )))
         .render(header_area, buffer);
-        return;
+        return CellPaintReach {
+            rows:     header_area.height,
+            commands: Vec::new(),
+        };
     }
     apply_planned_row_readings(&mut drawn_groups, &mut plan, &layout, grid);
-    Table::new(Vec::<Row>::new(), layout.constraints.iter().copied())
-        .header(column_header(&layout, faded, &plan))
-        .column_spacing(layout.column_spacing)
-        .render(header_area, buffer);
+    layout.draw_columns(
+        buffer,
+        header_area,
+        column_header_cells(&layout, faded, &plan),
+    );
+    let drawn = draw_table_groups(
+        buffer,
+        area,
+        &groups,
+        drawn_groups,
+        &layout,
+        &headings,
+        &plan,
+    );
+    let mut continuation = drawn.continuation;
+    if plan.visible_group_count < groups.len()
+        && matches!(continuation, TableContinuation::FullyDrawn)
+    {
+        continuation = TableContinuation::RowsWereOmitted;
+    }
+    if matches!(continuation, TableContinuation::FullyDrawn)
+        && let PlannedVisibleRows::ProcessRows(visible) = &plan.visible_rows
+        && visible.len() < rows.len()
+    {
+        continuation = TableContinuation::RowsWereOmitted;
+    }
+    if matches!(continuation, TableContinuation::FullyDrawn) {
+        CellPaintReach {
+            rows:     drawn.height,
+            commands: drawn.commands,
+        }
+    } else {
+        let faded = match &plan.visible_rows {
+            PlannedVisibleRows::NoProcessRows => 0,
+            PlannedVisibleRows::ProcessRows(rows) => rows.last().map_or(0, |row| row.faded()),
+        };
+        mark_table_continuation(buffer, area, &layout, continuation, faded);
+        // The marker searches the entire allocation for the final command symbol.
+        CellPaintReach {
+            rows:     area.height,
+            commands: drawn.commands,
+        }
+    }
+}
+
+/// Paint the table's selected groups with their shared layout and heading policy.
+fn draw_table_groups<'row>(
+    buffer: &mut Buffer,
+    area: Rect,
+    groups: &[PathGroup<'row>],
+    drawn_groups: Vec<Vec<LaidOutProcessRow<'row>>>,
+    layout: &CellTableLayout,
+    headings: &TableAccountHeadings,
+    plan: &ProcessTablePlan<'_>,
+) -> PathGroupDraw {
+    let mut commands = Vec::new();
     let mut continuation = TableContinuation::FullyDrawn;
     let mut remaining = area;
     remaining.y = remaining.y.saturating_add(TABLE_HEADER_HEIGHT);
@@ -4493,7 +4138,8 @@ fn frame_draw_process_table(
         };
         remaining.y = remaining.y.saturating_add(gap_before);
         remaining.height = remaining.height.saturating_sub(gap_before);
-        let drawn = draw_path_group(buffer, remaining, group, &layout, rows, &headings);
+        let drawn = draw_path_group(buffer, remaining, group, layout, rows, headings);
+        commands.extend(drawn.commands);
         continuation = drawn.continuation;
         remaining.y = remaining.y.saturating_add(drawn.height);
         remaining.height = remaining.height.saturating_sub(drawn.height);
@@ -4501,23 +4147,10 @@ fn frame_draw_process_table(
             break;
         }
     }
-    if plan.visible_group_count < groups.len()
-        && matches!(continuation, TableContinuation::FullyDrawn)
-    {
-        continuation = TableContinuation::RowsWereOmitted;
-    }
-    if matches!(continuation, TableContinuation::FullyDrawn)
-        && let PlannedVisibleRows::ProcessRows(visible) = &plan.visible_rows
-        && visible.len() < rows.len()
-    {
-        continuation = TableContinuation::RowsWereOmitted;
-    }
-    if !matches!(continuation, TableContinuation::FullyDrawn) {
-        let faded = match &plan.visible_rows {
-            PlannedVisibleRows::NoProcessRows => 0,
-            PlannedVisibleRows::ProcessRows(rows) => rows.last().map_or(0, |row| row.faded()),
-        };
-        mark_table_continuation(buffer, area, &layout, continuation, faded);
+    PathGroupDraw {
+        height: area.height.saturating_sub(remaining.height),
+        continuation,
+        commands,
     }
 }
 
@@ -4625,23 +4258,6 @@ impl ProcessTablePlan<'_> {
             true
         }
     }
-}
-
-/// Viewport plan shared by row-use probes and paint at one solved width.
-#[derive(Clone)]
-struct CachedTablePlan {
-    rows:                Vec<Vec<(InvocationId, u32)>>,
-    headings:            Vec<DirectoryHeading>,
-    widths:              Vec<u16>,
-    columns:             Vec<usize>,
-    height:              u16,
-    separation:          DirectorySeparation,
-    visible:             Vec<usize>,
-    separators:          TableSeparators,
-    visible_group_count: usize,
-    drawn:               u16,
-    required:            u16,
-    labels:              [bool; TABLE_HEADERS.len()],
 }
 
 fn planned_table_rows<'a>(
@@ -4939,6 +4555,25 @@ struct TableAccountHeadings {
 }
 
 impl TableAccountHeadings {
+    /// Select the groups that determine account headings for this table.
+    fn for_table(
+        groups: &[PathGroup<'_>],
+        pinned: PinnedGroup<'_>,
+        visible_groups: usize,
+        area: Rect,
+    ) -> Self {
+        let heading_groups = match pinned {
+            PinnedGroup::Lead(_) => groups,
+            PinnedGroup::Unpinned => &groups[..visible_groups],
+        };
+        Self::of(
+            heading_groups,
+            cleared(area)
+                .width
+                .saturating_sub(cell_width(SECTION_HEADER_INDENT)),
+        )
+    }
+
     fn of(groups: &[PathGroup<'_>], width: u16) -> Self {
         let mut path_only = Vec::new();
         for group in groups {
@@ -4997,6 +4632,7 @@ struct PathGroupDraw {
     height:       u16,
     /// What, if anything, was left below the group's visible table lines.
     continuation: TableContinuation,
+    commands:     Vec<PlacedCommandText>,
 }
 
 /// How a table continues below the lines that reached the buffer.
@@ -5054,8 +4690,8 @@ fn table_continuation<'a, 'row: 'a>(
     TableContinuation::FullyDrawn
 }
 
-/// A command fragment whose layout survives the current pane's copy mapping.
-/// The private constructor is used only inside `PaneFrame::with_visible_text`.
+/// A command fragment that survives the current pane copy.
+/// Only `PaneFrame::with_visible_text` permits construction.
 pub(crate) struct VisibleCommandText(());
 
 /// Draw one working directory's header and table into the top of `area`.
@@ -5092,45 +4728,77 @@ fn draw_path_group(
         .map(|drawn| drawn.lines)
         .fold(0, u16::saturating_add);
     let table_height = area.height.saturating_sub(heading_rows).min(lines);
+    let mut commands = Vec::new();
     let continuation = table_continuation(table_row_placements(&rows, table_height).inspect(
         |placement| {
             if layout.kind != TableKind::Command {
                 return;
             }
             let row = placement.row;
-            let command_area = layout.command_area(Rect {
-                y: area
-                    .y
-                    .saturating_add(heading_rows)
-                    .saturating_add(placement.first_line),
-                height: placement.visible_lines,
-                ..area
-            });
-            tui_pane::PaneFrame::with_visible_text(
-                buffer,
-                command_area,
-                &row.cells[COMMAND_COLUMN],
-                || row.source.show_command_text(VisibleCommandText(())),
-            );
+            let command = PlacedCommandText {
+                invocation: row.source.process.invocation_id.clone(),
+                pid:        row.source.process.pid,
+                area:       layout.command_area(Rect {
+                    y: area
+                        .y
+                        .saturating_add(heading_rows)
+                        .saturating_add(placement.first_line),
+                    height: placement.visible_lines,
+                    ..area
+                }),
+                text:       Rc::clone(&row.cells.0[COMMAND_COLUMN]),
+            };
+            command.show(buffer, row.source);
+            commands.push(command);
         },
     ));
-    Table::new(
-        rows.into_iter().map(|drawn| drawn.into_table_row(layout)),
-        layout.constraints.iter().copied(),
-    )
-    .column_spacing(layout.column_spacing)
-    .render(
+    draw_solved_process_rows(
+        buffer,
         Rect {
             y: area.y.saturating_add(heading_rows),
             height: table_height,
             ..indented(area)
         },
-        buffer,
+        rows,
+        layout,
     );
 
     PathGroupDraw {
         height: heading_rows.saturating_add(table_height),
         continuation,
+        commands,
+    }
+}
+
+/// The table planner has already chosen row heights and column widths.
+fn draw_solved_process_rows(
+    buffer: &mut Buffer,
+    mut area: Rect,
+    rows: Vec<LaidOutProcessRow<'_>>,
+    layout: &CellTableLayout,
+) {
+    for row in rows {
+        if area.height == 0 {
+            break;
+        }
+        let height = row.lines.min(area.height);
+        layout.draw_columns(
+            buffer,
+            Rect { height, ..area },
+            row.cells
+                .iter()
+                .enumerate()
+                .filter(|(column, _)| layout.columns.contains(column))
+                .map(|(column, cell)| {
+                    if numeric_column(column) {
+                        Cow::Owned(cell.clone().right_aligned())
+                    } else {
+                        Cow::Borrowed(cell)
+                    }
+                }),
+        );
+        area.y = area.y.saturating_add(height);
+        area.height = area.height.saturating_sub(height);
     }
 }
 
@@ -5186,14 +4854,6 @@ fn table_column_spacing(
     }
 }
 
-/// Width of the widest command line as this table spells it.
-fn longest_command_width(rows: &[ProcessRowValues<'_>]) -> u16 {
-    rows.iter()
-        .map(|row| cell_width(&row.cells[COMMAND_COLUMN]))
-        .max()
-        .unwrap_or_default()
-}
-
 /// The executable spelling selected by the current view view.
 fn displayed_program<'a>(command: &'a CommandText, view: &CommandView) -> &'a str {
     match view.arguments {
@@ -5215,6 +4875,8 @@ fn profile_label(command: &CommandText) -> String {
 
 /// All words painted by the command column, including its profile.
 fn displayed_command(command: &CommandText, view: &CommandView) -> String {
+    #[cfg(test)]
+    tests::PROCESS_COMMAND_FORMATS.with(|count| count.set(count.get() + 1));
     let arguments = match view.arguments {
         ArgumentDetail::Default => command.selected_arguments(&view.defaults),
         ArgumentDetail::All => command.line(),
@@ -5266,14 +4928,12 @@ fn displayed_subcommand_name(command: &CommandText) -> CommandName {
     }
 }
 
-/// The display boundary distinguishes measured resources from live absence states.
-fn cpu_text(reading: Measurement<f32>) -> String {
-    census::invocation_cpu_accounting::LiveResources::from(reading).text(census::scan::cpu_label)
-}
-
-/// Resident memory retains its unavailable reason through the display boundary.
-fn memory_text(reading: Measurement<u64>) -> String {
-    census::invocation_cpu_accounting::LiveResources::from(reading).text(memory_label)
+/// Missing readings leave the cell blank, independent of the value format.
+fn measurement_text<T>(reading: Measurement<T>, format: impl FnOnce(T) -> String) -> String {
+    match reading {
+        Measurement::Reading(value) => format(value),
+        Measurement::Unavailable(_) => String::new(),
+    }
 }
 
 /// The parsed word fixes both its wrap boundary and its permitted cut.
@@ -5567,7 +5227,6 @@ fn cut_command_unit(word: StyledCommandWord, room: u16) -> CutCommandUnit {
 /// The common neutral ink of cut marks, faded on the row's own ground.
 fn cut_mark_ink(ground: Color, faded: u8) -> Color { cut_ink(ground, RowInk::Ordinary(faded)) }
 
-/// Parsed command marks and their ordinary fade share one ink calculation.
 fn cut_ink(ground: Color, ink: RowInk) -> Color { ink.color(secondary_text_color(), ground) }
 
 fn cut_mark_style(ground: Color, faded: impl Into<RowInk>) -> Style {
@@ -5600,29 +5259,32 @@ const fn numeric_column(column: usize) -> bool {
     matches!(column, CPU_COLUMN | MEMORY_COLUMN | STATE_COLUMN)
 }
 
-fn column_header(layout: &CellTableLayout, faded: u8, plan: &ProcessTablePlan<'_>) -> Row<'static> {
+fn column_header_cells(
+    layout: &CellTableLayout,
+    faded: u8,
+    plan: &ProcessTablePlan<'_>,
+) -> Vec<Text<'static>> {
     let style = column_header_style(layout, faded);
-    Row::new(
-        TABLE_HEADERS
-            .iter()
-            .enumerate()
-            .filter(|(column, _)| layout.columns.contains(column))
-            .map(|(column, label)| {
-                let line = Line::from(Span::styled(
-                    if plan.labels_column(column) {
-                        (*label).to_string()
-                    } else {
-                        String::new()
-                    },
-                    style,
-                ));
-                if numeric_column(column) {
-                    line.right_aligned()
+    TABLE_HEADERS
+        .iter()
+        .enumerate()
+        .filter(|(column, _)| layout.columns.contains(column))
+        .map(|(column, label)| {
+            let line = Line::from(Span::styled(
+                if plan.labels_column(column) {
+                    (*label).to_string()
                 } else {
-                    line
-                }
-            }),
-    )
+                    String::new()
+                },
+                style,
+            ));
+            Text::from(if numeric_column(column) {
+                line.right_aligned()
+            } else {
+                line
+            })
+        })
+        .collect()
 }
 
 /// Style shared by the column labels and their no-room stand-in.
@@ -5633,7 +5295,7 @@ fn column_header_style(layout: &CellTableLayout, faded: u8) -> Style {
 /// One process row prepared for measurement and table rendering.
 struct LaidOutProcessRow<'a> {
     /// Cells in canonical column order, filtered only when the table takes them.
-    cells:         [Text<'static>; TABLE_HEADERS.len()],
+    cells:         PreparedRowCells,
     /// Stable invocation identity for viewport planning.
     source:        &'a TrackedRow,
     /// Lines the row occupies. The command is the one cell that ever
@@ -5650,24 +5312,6 @@ struct LaidOutProcessRow<'a> {
 }
 
 impl LaidOutProcessRow<'_> {
-    /// Turn the prepared cells into the columns selected for this table.
-    fn into_table_row(self, layout: &CellTableLayout) -> Row<'static> {
-        Row::new(
-            self.cells
-                .into_iter()
-                .enumerate()
-                .filter(|(column, _)| layout.columns.contains(column))
-                .map(|(column, cell)| {
-                    if numeric_column(column) {
-                        cell.right_aligned()
-                    } else {
-                        cell
-                    }
-                }),
-        )
-        .height(self.lines)
-    }
-
     /// The wrapper produces the cut row directly from the selected units.
     fn cut_command_continuation(&self, visible_lines: usize) -> Line<'static> {
         let words = styled_process_command_words(self.source, &self.view, self.ground);
@@ -5715,8 +5359,22 @@ fn process_command_words(
     spans
 }
 
+fn prepared_command_cell(row: &TrackedRow, layout: &CellTableLayout) -> Rc<Text<'static>> {
+    layout.commands.borrow_mut().for_row(row, layout)
+}
+
+#[cfg(test)]
 fn command_cell(row: &TrackedRow, layout: &CellTableLayout) -> Text<'static> {
-    let command_width = layout.column_width(COMMAND_COLUMN);
+    prepared_command_cell(row, layout).as_ref().clone()
+}
+
+fn wrap_command_cell(
+    row: &TrackedRow,
+    layout: &CellTableLayout,
+    command_width: u16,
+) -> Text<'static> {
+    #[cfg(test)]
+    tests::COMMAND_CELL_WRAPS.with(|count| count.set(count.get() + 1));
     if command_width == 0 {
         Text::default()
     } else {
@@ -5754,21 +5412,9 @@ fn styled_process_command_words(
 
 /// Read a prepared height without cloning the row's styled cells.
 fn process_row_lines(row: &TrackedRow, layout: &CellTableLayout) -> u16 {
-    let hides_parent = layout
-        .parent_links
-        .hidden
-        .contains(&row.process.invocation_id);
-    let cached_lines = layout
-        .prepared_rows
-        .borrow()
-        .by_pid
-        .get(&row.process.pid)
-        .and_then(|rows| {
-            rows.iter()
-                .find(|cached| cached.matches(row, layout, hides_parent))
-        })
-        .map(|cached| cached.lines);
-    cached_lines.unwrap_or_else(|| process_row(row, layout).lines)
+    u16::try_from(prepared_command_cell(row, layout).height())
+        .unwrap_or(u16::MAX)
+        .max(1)
 }
 
 /// One table row, styled so the invocation reads before its metadata.
@@ -5781,10 +5427,17 @@ fn process_row_lines(row: &TrackedRow, layout: &CellTableLayout) -> u16 {
 /// truncated at it: an argument list that outruns the column carries on
 /// down the rows of that column, and the row grows to hold it.
 fn process_row<'a>(row: &'a TrackedRow, layout: &CellTableLayout) -> LaidOutProcessRow<'a> {
-    let hides_parent = layout
+    #[cfg(test)]
+    tests::FULL_ROW_PREPARATIONS.with(|count| count.set(count.get() + 1));
+    let parent_visibility = if layout
         .parent_links
         .hidden
-        .contains(&row.process.invocation_id);
+        .contains(&row.process.invocation_id)
+    {
+        ParentVisibility::Hidden
+    } else {
+        ParentVisibility::Shown
+    };
     if let Some(cached) = layout
         .prepared_rows
         .borrow()
@@ -5792,7 +5445,7 @@ fn process_row<'a>(row: &'a TrackedRow, layout: &CellTableLayout) -> LaidOutProc
         .get(&row.process.pid)
         .and_then(|rows| {
             rows.iter()
-                .find(|cached| cached.matches(row, layout, hides_parent))
+                .find(|cached| cached.matches(row, layout, parent_visibility))
         })
     {
         return LaidOutProcessRow {
@@ -5805,38 +5458,9 @@ fn process_row<'a>(row: &'a TrackedRow, layout: &CellTableLayout) -> LaidOutProc
         };
     }
 
-    let values = ProcessRowValues::for_use(row, &layout.view, ProcessValueUse::SelectRows);
-    let process = &values.source.process;
-    let faded = row.ink();
-    let muted = Style::default().fg(faded.color(label_color(), layout.ground));
-    let command = command_cell(row, layout);
+    let command = prepared_command_cell(row, layout);
     let lines = u16::try_from(command.height()).unwrap_or(u16::MAX).max(1);
-    let pid = number_text_if_fits(
-        values.cells[PID_COLUMN].clone(),
-        layout.column_width(PID_COLUMN),
-    );
-    let parent = number_text_if_fits(
-        layout.parent_links.text(process),
-        layout.column_width(PARENT_COLUMN),
-    );
-    let cells = [
-        Text::from(Span::styled(
-            pid,
-            pid_style(row, layout, &AllocationFamilyLinks::NoDrawnLinks),
-        )),
-        Text::from(Span::styled(
-            parent,
-            parent_style(row, layout, &AllocationFamilyLinks::NoDrawnLinks),
-        )),
-        Text::from(Span::styled(values.cells[START_COLUMN].clone(), muted)),
-        Text::from(Span::styled(values.cells[DURATION_COLUMN].clone(), muted)),
-        Text::from(Span::styled(values.cells[CPU_COLUMN].clone(), muted)),
-        Text::from(Span::styled(values.cells[MEMORY_COLUMN].clone(), muted)),
-        Text::from(state_cell(row, layout)),
-        command,
-        Text::default(),
-        Text::from(Span::styled(values.cells[MANAGED_COLUMN].clone(), muted)),
-    ];
+    let cells = styled_process_cells(row, layout, command);
     layout
         .prepared_rows
         .borrow_mut()
@@ -5844,14 +5468,14 @@ fn process_row<'a>(row: &'a TrackedRow, layout: &CellTableLayout) -> LaidOutProc
         .entry(row.process.pid)
         .or_default()
         .push(CachedProcessRow {
-            process: process.clone(),
-            faded,
+            process: row.snapshot(),
+            faded: row.ink(),
             cells: cells.clone(),
             lines,
-            widths: layout.column_widths.clone(),
+            column_widths: layout.column_widths.clone(),
             columns: layout.columns.clone(),
             ground: layout.ground,
-            hides_parent,
+            parent_visibility,
         });
     LaidOutProcessRow {
         cells,
@@ -5861,6 +5485,59 @@ fn process_row<'a>(row: &'a TrackedRow, layout: &CellTableLayout) -> LaidOutProc
         ground: layout.ground,
         view: layout.view.clone(),
     }
+}
+
+/// Style the process values for the table's solved columns.
+fn styled_process_cells(
+    row: &TrackedRow,
+    layout: &CellTableLayout,
+    command: Rc<Text<'static>>,
+) -> PreparedRowCells {
+    let values = ProcessMetadataValues::for_use(row, ProcessValueUse::SelectRows);
+    let process = &values.source.process;
+    let faded = row.ink();
+    let muted = Style::default().fg(faded.color(label_color(), layout.ground));
+    let pid = number_text_if_fits(
+        values.cells[PID_COLUMN].clone(),
+        layout.column_width(PID_COLUMN),
+    );
+    let parent = number_text_if_fits(
+        layout.parent_links.text(process),
+        layout.column_width(PARENT_COLUMN),
+    );
+    PreparedRowCells::new([
+        Rc::new(Text::from(Span::styled(
+            pid,
+            pid_style(row, layout, &AllocationFamilyLinks::NoDrawnLinks),
+        ))),
+        Rc::new(Text::from(Span::styled(
+            parent,
+            parent_style(row, layout, &AllocationFamilyLinks::NoDrawnLinks),
+        ))),
+        Rc::new(Text::from(Span::styled(
+            values.cells[START_COLUMN].clone(),
+            muted,
+        ))),
+        Rc::new(Text::from(Span::styled(
+            values.cells[DURATION_COLUMN].clone(),
+            muted,
+        ))),
+        Rc::new(Text::from(Span::styled(
+            values.cells[CPU_COLUMN].clone(),
+            muted,
+        ))),
+        Rc::new(Text::from(Span::styled(
+            values.cells[MEMORY_COLUMN].clone(),
+            muted,
+        ))),
+        Rc::new(Text::from(state_cell(row, layout))),
+        command,
+        Rc::new(Text::default()),
+        Rc::new(Text::from(Span::styled(
+            values.cells[MANAGED_COLUMN].clone(),
+            muted,
+        ))),
+    ])
 }
 
 /// The `parent` cell: the cargo an invocation is running under, and an
@@ -5928,11 +5605,29 @@ fn parent_style(
     Style::default().fg(row.ink().color(color, layout.ground))
 }
 
-/// Solved widths for every constraint, matching [`Table`]'s layout.
+/// Solved widths for every constraint, matching [`ratatui::widgets::Table`]'s layout.
 fn solved_column_widths(width: u16, constraints: &[Constraint], column_spacing: u16) -> Vec<u16> {
-    if constraints.is_empty() {
-        return Vec::new();
+    let fixed: Result<Vec<_>, _> = constraints
+        .iter()
+        .map(|constraint| match constraint {
+            Constraint::Length(width) => Ok(*width),
+            _ => Err(()),
+        })
+        .collect();
+    if let Ok(widths) = fixed {
+        let gaps = widths
+            .len()
+            .saturating_sub(1)
+            .saturating_mul(usize::from(column_spacing));
+        let used = widths
+            .iter()
+            .fold(gaps, |used, &width| used.saturating_add(usize::from(width)));
+        if used <= usize::from(width) {
+            return widths;
+        }
     }
+    #[cfg(test)]
+    tests::TABLE_COLUMN_SOLVES.with(|count| count.set(count.get() + 1));
     Layout::horizontal(constraints.iter().copied())
         .flex(Flex::Start)
         .spacing(column_spacing)
@@ -6405,6 +6100,12 @@ pub(crate) fn summary_cpu_for_test(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    thread_local! {
+        pub(super) static FULL_ROW_PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static PROCESS_ROW_CELL_CLONES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static PROCESS_VALUE_PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
     use tempfile::tempdir;
 
     use crate::census::scan::CensusSequence;
@@ -6560,6 +6261,54 @@ mod tests {
             }
             roster.advance(now + Duration::from_millis(3100), Duration::from_secs(3));
             assert_eq!(roster.groups().len(), 0, "main's deadline stays unchanged");
+            Ok(())
+        }
+
+        #[test]
+        fn cached_text_revealed_by_a_pane_shift_decides_entry() -> Result<(), &'static str> {
+            let _theme = EntryTestTheme::install(EntryTestInk::Command(Color::Rgb(220, 200, 180)));
+            let now = Instant::now();
+            let mut roster = entry_roster(now);
+            roster.observe(Vec::new(), now + Duration::from_millis(100));
+            roster.advance(now + Duration::from_millis(1650), Duration::from_secs(3));
+            let stats = SccacheStats::default();
+            let cells = Cells::new(&roster, &[], CommandView::long(), &stats);
+            let content = TileContent::Group(cells.roster.groups()[0].id.clone());
+            let rect = Rect::new(0, 0, 202, 8);
+            let clip = Rect::new(0, 0, 202, 10);
+            let ground = Color::Rgb(20, 40, 60);
+            let mut clipped = Buffer::empty(clip);
+            tui_pane::draw_clipped(
+                &mut clipped,
+                PaneFrame::shifted(rect, 6, clip),
+                |target, inner| cells.draw(target, &content, inner, ground),
+            );
+            assert_eq!(
+                command_ink(&clipped, "cargo check"),
+                Err("command text is clipped")
+            );
+            CELL_CONTENT_PAINTS.with(|count| count.set(0));
+            let mut visible = Buffer::empty(clip);
+            tui_pane::draw_clipped(
+                &mut visible,
+                PaneFrame::shifted(rect, 5, clip),
+                |target, inner| cells.draw(target, &content, inner, ground),
+            );
+            assert_eq!(
+                command_ink(&visible, "cargo check")?,
+                Color::Rgb(170, 160, 150)
+            );
+            CELL_CONTENT_PAINTS
+                .with(|count| assert_eq!(count.get(), 0, "the second draw replays the cache"));
+            roster.advance(now + Duration::from_millis(1775), Duration::from_secs(3));
+            assert_eq!(
+                command_ink(
+                    &entry_frame(&roster, PaneFrame::shifted(rect, 5, clip)),
+                    "cargo check"
+                )?,
+                Color::Rgb(195, 180, 165),
+                "the first visible cached frame starts the entry transition"
+            );
             Ok(())
         }
 
@@ -6930,6 +6679,7 @@ mod tests {
     use tui_pane::Appearance;
     #[cfg(feature = "attract")]
     use tui_pane::BackdropNotice;
+    use tui_pane::ColorMode;
     #[cfg(feature = "attract")]
     use tui_pane::FavoritesFileState;
     use tui_pane::GlobalAction;
@@ -7360,7 +7110,30 @@ mod tests {
         assert_eq!(buffer[(15, 0)].symbol(), ELISION);
     }
 
-    fn argument_toggle_app() -> App {
+    thread_local! {
+        pub(super) static CELL_HEIGHT_PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static CONTINUATION_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static TABLE_LAYOUT_PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static TABLE_COLUMN_SOLVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static PROCESS_COMMAND_FORMATS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static COMMAND_CELL_WRAPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static CELL_CONTENT_PAINTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    pub(super) fn settled_frame(app: &mut App) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(180, 40)).unwrap();
+        for _ in 0..4 {
+            app.tiles.settle_for_test();
+            terminal
+                .draw(|frame| {
+                    draw_panes(frame, app, frame.area(), TileGridContents::Shown);
+                })
+                .unwrap();
+        }
+        terminal.backend().buffer().clone()
+    }
+
+    pub(super) fn argument_toggle_app() -> App {
         let mut app = App::new_for_test().expect("argument toggle app");
         app.roster = roster_with_ancestry(
             invocation(
@@ -9634,6 +9407,7 @@ mod tests {
             tui_pane::TileGrowth::default(),
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         let content = TileContent::Group(roster.groups()[0].id.clone());
         for height in 0..=area.height {
@@ -11677,6 +11451,7 @@ mod tests {
             TileGrowth::default(),
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         let lines = buffer_rows(&buffer);
         assert!(lines[47].contains("content rows:"), "{lines:#?}");
@@ -12527,6 +12302,7 @@ mod tests {
                 growth,
                 TileGridContents::Shown,
                 &cells,
+                ColorMode::Colored,
             );
             grid.settle_for_test();
             buffer = Buffer::empty(area);
@@ -12537,6 +12313,7 @@ mod tests {
                 growth,
                 TileGridContents::Shown,
                 &cells,
+                ColorMode::Colored,
             );
             let y = height - 2;
             let foot = buffer_line(&buffer, y);
@@ -12684,6 +12461,7 @@ mod tests {
                     growth,
                     TileGridContents::Shown,
                     &cells,
+                    ColorMode::Colored,
                 );
                 for placement in grid.placements(area, growth) {
                     if !placement.frame.is_focused() {
@@ -14365,7 +14143,7 @@ mod tests {
         assert!(text.ends_with("cargo build"), "{text:?}");
         assert_eq!(
             usize::from(cell_width(
-                &ProcessRowValues::of(&row, CommandView::long()).cells[COMPILER_COLUMN]
+                &ProcessMetadataValues::of(&row).cells[COMPILER_COLUMN]
             )),
             0
         );
@@ -14425,7 +14203,7 @@ mod tests {
         assert!(text.ends_with("cargo build"), "{text:?}");
         assert_eq!(
             usize::from(cell_width(
-                &ProcessRowValues::of(&row, CommandView::long()).cells[COMPILER_COLUMN]
+                &ProcessMetadataValues::of(&row).cells[COMPILER_COLUMN]
             )),
             0
         );
@@ -14911,7 +14689,7 @@ mod tests {
     }
 
     /// A cargo process for a group the roster is to carry.
-    fn invocation(pid: u32, arguments: &[&str]) -> CargoProcess {
+    pub(super) fn invocation(pid: u32, arguments: &[&str]) -> CargoProcess {
         CargoProcess {
             path: "~/rust/cargo-liner".to_string(),
             directory_identity: WorkingDirectoryIdentity::Absolute(
@@ -14950,7 +14728,7 @@ mod tests {
     }
 
     /// One group with `lead` and no child invocations.
-    fn cargo_group(lead: CargoProcess) -> CargoGroup {
+    pub(super) fn cargo_group(lead: CargoProcess) -> CargoGroup {
         CargoGroup {
             lead,
             rest: Vec::new(),
@@ -17443,6 +17221,7 @@ mod tests {
             tui_pane::TileGrowth::default(),
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         buffer = Buffer::empty(area);
@@ -17453,6 +17232,7 @@ mod tests {
             tui_pane::TileGrowth::default(),
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         buffer
     }
@@ -17479,6 +17259,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         buffer = Buffer::empty(area);
@@ -17489,6 +17270,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             cells,
+            ColorMode::Colored,
         );
         (grid, buffer)
     }
@@ -18250,6 +18032,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         buffer = Buffer::empty(short);
@@ -18260,6 +18043,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
 
         let placements = grid.placements(short, growth);
@@ -18293,6 +18077,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         buffer = Buffer::empty(tall);
@@ -18303,6 +18088,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
 
         let command = grid
@@ -19933,7 +19719,7 @@ mod tests {
     }
 
     /// Every row of `buffer`, top to bottom, as the text it shows.
-    fn buffer_rows(buffer: &Buffer) -> Vec<String> {
+    pub(super) fn buffer_rows(buffer: &Buffer) -> Vec<String> {
         let area = buffer.area;
         (area.top()..area.bottom())
             .map(|row| {

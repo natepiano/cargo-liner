@@ -21,6 +21,7 @@ use tui_pane::Appearance;
 use tui_pane::AttractHost;
 use tui_pane::AttractMode;
 use tui_pane::CellClick;
+use tui_pane::ColorMode;
 use tui_pane::FavoritesHost;
 use tui_pane::FavoritesOverlay;
 use tui_pane::FocusedPane;
@@ -224,6 +225,7 @@ impl App {
             startup_note,
             CargoHandler::keymap_path(),
             census,
+            ColorMode::from_environment(),
         )?;
         app.footer_colors = FooterColorFile::load();
         Ok(app)
@@ -243,6 +245,7 @@ impl App {
         startup_note: StartupThemeNotes,
         keymap_path: Option<PathBuf>,
         census: Census,
+        color_mode: ColorMode,
     ) -> Result<Self, KeymapError> {
         let remote_machines = RemoteMachines::new(loaded_config.config.machines.remote.clone());
         let staff_file = StaffFileSetting::new(HierarchySource::from(
@@ -252,6 +255,7 @@ impl App {
             loaded_config.config.census.accounts_command.clone(),
         );
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
+        framework.color_mode = color_mode;
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         Ok(Self {
             #[cfg(test)]
@@ -303,15 +307,21 @@ impl App {
         loaded_config: LoadedConfig,
         startup_note: StartupThemeNotes,
     ) -> Result<Self, KeymapError> {
-        Self::new_with_keymap_path(loaded_config, startup_note, None, {
-            let mut census = Census::new("natedev".to_string());
-            census.apply(CensusUpdate::Local {
-                rows:      Vec::new(),
-                hierarchy: HierarchyEdges::default().into(),
-                stage:     ScanStage::Classified,
-            });
-            census
-        })
+        Self::new_with_keymap_path(
+            loaded_config,
+            startup_note,
+            None,
+            {
+                let mut census = Census::new("natedev".to_string());
+                census.apply(CensusUpdate::Local {
+                    rows:      Vec::new(),
+                    hierarchy: HierarchyEdges::default().into(),
+                    stage:     ScanStage::Classified,
+                });
+                census
+            },
+            ColorMode::Colored,
+        )
     }
 }
 
@@ -393,6 +403,7 @@ impl TerminalApp for App {
             ])
             .areas(frame.area());
             render::draw_status_line(frame, self, keymap, status);
+            self.framework.color_mode.clear_colors(frame.buffer_mut());
             self.frame_request = FrameRequest::Full;
             return;
         }
@@ -401,6 +412,7 @@ impl TerminalApp for App {
             self.full_frames += 1;
         }
         render::draw(frame, self, keymap);
+        self.framework.color_mode.clear_colors(frame.buffer_mut());
         self.painted_frame = if stable_layers {
             PaintedFrame::Current {
                 buffer: Box::new(frame.buffer_mut().clone()),
@@ -517,6 +529,42 @@ impl FavoritesHost for App {
 )]
 mod tests {
     use crate::config::StaffFilePath;
+
+    #[test]
+    fn no_color_full_and_status_frames_keep_the_focused_title_bold() {
+        let mut app = App::new_for_test().expect("test app");
+        app.framework.color_mode = ColorMode::NoColor;
+        app.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        for expected_full_frames in [1, 1] {
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("app frame");
+            let buffer = terminal.backend().buffer();
+            assert!(
+                buffer
+                    .content
+                    .iter()
+                    .all(|cell| cell.fg == ratatui::style::Color::Reset
+                        && cell.bg == ratatui::style::Color::Reset),
+                "every frame clears colours"
+            );
+            let title = (0..buffer.area.width)
+                .map(|x| &buffer[(x, 0)])
+                .find(|cell| cell.symbol().chars().any(char::is_alphabetic))
+                .expect("focused title");
+            assert!(
+                title.modifier.contains(ratatui::style::Modifier::BOLD),
+                "the focused title stays bold"
+            );
+            assert_eq!(
+                app.full_frames, expected_full_frames,
+                "the status frame uses the cached body"
+            );
+            app.request_clock_frame();
+        }
+    }
 
     fn wheel_test_app_with_agents() -> App {
         let mut app = App::new_for_test().expect("test app");
@@ -764,6 +812,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
+    use tui_pane::ColorMode;
     use tui_pane::GlobalAction;
     use tui_pane::Hittable;
     use tui_pane::ScrollDirection;
@@ -881,6 +930,7 @@ mod tests {
             StartupThemeNotes::default(),
             None,
             Census::new("natedev".to_string()),
+            ColorMode::Colored,
         )
         .expect("test app should build");
 

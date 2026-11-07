@@ -18,6 +18,7 @@ use tui_pane::Appearance;
 use tui_pane::AttractHost;
 #[cfg(feature = "attract")]
 use tui_pane::AttractMode;
+use tui_pane::ColorMode;
 #[cfg(feature = "attract")]
 use tui_pane::FavoritesHost;
 #[cfg(feature = "attract")]
@@ -60,6 +61,7 @@ use crate::keymap;
 use crate::probe::FrameLog;
 use crate::progress::capture_roots::AccountCaptureDirectory;
 use crate::render;
+use crate::render::PreparedTables;
 use crate::root_scan::SharedCaptureDirectory;
 use crate::roster::Roster;
 use crate::sccache::SccacheStats;
@@ -207,6 +209,7 @@ pub(crate) struct App {
     /// The commands the display is holding: what the last scan found,
     /// plus whatever has finished and is still fading out of it.
     pub(crate) roster:            Roster,
+    pub(crate) prepared_tables:   PreparedTables,
     /// The tile grid: how many cells the pane holds and the motion
     /// between one arrangement and the next.
     pub(crate) tiles:             TileGrid,
@@ -238,15 +241,22 @@ impl App {
         loaded_config: LoadedConfig,
         startup_note: Option<String>,
     ) -> Result<Self, KeymapError> {
-        Self::new_with_keymap_path(loaded_config, startup_note, CargoTile::keymap_path())
+        Self::new_with_keymap_path(
+            loaded_config,
+            startup_note,
+            CargoTile::keymap_path(),
+            ColorMode::from_environment(),
+        )
     }
 
     fn new_with_keymap_path(
         loaded_config: LoadedConfig,
         startup_note: Option<String>,
         keymap_path: Option<PathBuf>,
+        color_mode: ColorMode,
     ) -> Result<Self, KeymapError> {
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
+        framework.color_mode = color_mode;
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         let excluded_commands =
             ExcludedCommands::new(loaded_config.config.commands.excluded.clone());
@@ -263,6 +273,7 @@ impl App {
             root_status: Vec::new(),
             shared_directory: SharedCaptureDirectory::default(),
             roster: Roster::new(),
+            prepared_tables: render::PreparedTables::default(),
             tiles,
             sccache: SccacheStats::new(),
             inline_error: None,
@@ -286,6 +297,7 @@ impl App {
             },
             None,
             None,
+            ColorMode::Colored,
         )
     }
 
@@ -352,6 +364,7 @@ impl TerminalApp for App {
 
     fn draw(&mut self, frame: &mut Frame, keymap: &Keymap<Self>) {
         render::draw(frame, self, keymap);
+        self.framework.color_mode.clear_colors(frame.buffer_mut());
         #[cfg(test)]
         cpu_observation::publish_frame();
     }
@@ -458,6 +471,46 @@ impl FavoritesHost for App {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use ratatui::layout::Position;
+    use tui_pane::Appearance;
+    use tui_pane::ColorMode;
+    use tui_pane::GlobalAction;
+    use tui_pane::Hittable;
+    use tui_pane::ScrollDirection;
+    use tui_pane::TerminalApp;
+
+    use super::App;
+    use crate::progress::capture_roots::AccountCaptureDirectory;
+
+    #[test]
+    fn no_color_frame_keeps_the_focused_title_bold() {
+        let mut app = App::new_for_test().expect("test app");
+        app.framework.color_mode = ColorMode::NoColor;
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("app frame");
+        let buffer = terminal.backend().buffer();
+        assert!(
+            buffer
+                .content
+                .iter()
+                .all(|cell| cell.fg == ratatui::style::Color::Reset
+                    && cell.bg == ratatui::style::Color::Reset),
+            "every frame clears colours"
+        );
+        let title = (0..buffer.area.width)
+            .map(|x| &buffer[(x, 0)])
+            .find(|cell| cell.symbol().chars().any(char::is_alphabetic))
+            .expect("focused title");
+        assert!(
+            title.modifier.contains(ratatui::style::Modifier::BOLD),
+            "the focused title stays bold"
+        );
+    }
+
     #[test]
     fn shortcuts_overlay_wheel_scrolls_and_keeps_tiles_still() {
         let mut app = App::new_for_test().expect("test app");
@@ -535,16 +588,6 @@ mod tests {
         assert_eq!(app.framework.global_shortcuts_pane.viewport().pos(), start);
         assert_eq!(app.tiles.hit_test_at(outside), tile_before);
     }
-
-    use ratatui::layout::Position;
-    use tui_pane::Appearance;
-    use tui_pane::GlobalAction;
-    use tui_pane::Hittable;
-    use tui_pane::ScrollDirection;
-    use tui_pane::TerminalApp;
-
-    use super::App;
-    use crate::progress::capture_roots::AccountCaptureDirectory;
 
     #[test]
     fn roots_wait_for_worker_observations() {

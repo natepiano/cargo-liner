@@ -16,6 +16,7 @@ use crossterm::event::KeyModifiers;
 use ratatui::layout::Position;
 use tui_pane::AttractWork;
 use tui_pane::CellPoint;
+use tui_pane::ColorMode;
 use tui_pane::PaneFocusState;
 use tui_pane::TerminalApp;
 use tui_pane::Updates;
@@ -87,6 +88,7 @@ fn draw_grid(app: &mut App) -> Buffer {
         app.loaded_config.config.tiles.growth(),
         TileGridContents::Shown,
         &cells,
+        ColorMode::Colored,
     );
     // Demand synchronization can queue layout motion. This test checks final sorting,
     // so complete that transition explicitly instead of sampling its wall clock.
@@ -99,6 +101,7 @@ fn draw_grid(app: &mut App) -> Buffer {
         app.loaded_config.config.tiles.growth(),
         TileGridContents::Shown,
         &cells,
+        ColorMode::Colored,
     );
     // Session labels also occur in tile titles. Read the actual summary surface,
     // rather than selecting whichever copy appears first in the complete grid.
@@ -515,7 +518,7 @@ fn stacked_account_taller_than_viewport_exposes_every_fact_with_arrows_and_end()
 }
 
 fn assert_account_band(buffer: &Buffer, lines: Range<u16>) {
-    let ground = tui_pane::selection_style(PaneFocusState::Active)
+    let ground = tui_pane::selection_style(PaneFocusState::Active, ColorMode::Colored)
         .bg
         .expect("active selection ground");
     for y in buffer.area.y..buffer.area.bottom() {

@@ -9,6 +9,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- `ColorMode::clear_colors` preserves terminal text modifiers when `NO_COLOR` disables colours.
 - Add `ExpansionModel`, `ExpansionTree`, and shared expansion actions and keys for application trees.
 - `wheel_framework_overlay` and `OverlayWheel` route a mouse wheel over the settings, keymap or global shortcuts overlay through the settings host; a host clears its own state first with `SettingsHost::before_settings_navigation`.
 - `CellFadeProgress` carries entry blend rounding through `TileCells::readout_progress`, so cell text and numeric readouts share exact ink.
@@ -19,6 +20,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Shared `Viewport::navigate`, `Viewport::scroll_if_contains` and `table_row_at` support list navigation and table clicks. `TerminalApp::scroll` and `TileGridHost::cell_scrolled` forward wheel input to the tile under the pointer without moving focus.
 
 ### Changed
+
+- Pass `ColorMode` to pane chrome, selection styles, overlays, and tile drawing.
 - Tile grids request a frame only when the drawn geometry or appearance changes; input uses the same last-painted record.
 - `handle_tile_scroll` gives each wheel step to an open settings, keymap or global shortcuts overlay through `wheel_framework_overlay` first; the tile behind the overlay does not scroll.
 - On an opaque screen, the focus tint fills the whole interior of a focused tile, empty rows and the foot included. On a transparent screen, a tile paints no ground and focus shows only as the lit border.
