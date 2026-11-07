@@ -1608,6 +1608,31 @@ Showrunner, 2026-11-07, on Phase 43b: keep sysinfo now and measure again after P
 
 **Acceptance gate:** 3 valid Mac release pairs before and after on the same workload, with the median cut beyond the spread; the exec tests (`metadata_exec_child`, `exec_into_cargo_establishes_cpu_without_losing_ancestry`) pass; the suite passes on the Mac and on natedev.
 
+### Phase 43g — The install lifecycle test leaves no process behind on the Mac  · status: todo
+
+**Depends on:** Phase 43f
+
+#### Work Order
+
+Showrunner, 2026-11-07, from the Phase 43e gate fed9d76a: nextest marks `cli_lifecycle::tests::install_prints_a_completed_toolchain_before_a_later_lock_finishes` leaky on the Mac (0.638 s). A leaky test leaves a child process or an open handle after it returns. The test (`crates/cargo-tile/tests/cli_lifecycle.rs:304`) runs `assert_local_report_before_completion("install", …)`, which kills `cargo-tile install` with SIGKILL after its first row (`terminate_after_first_row`) while a later toolchain lock is held.
+
+**Goal:** the test is not leaky on the Mac or on natedev, and keeps its assertions.
+
+**Spec:**
+1. On the Mac, find the child process or handle that outlives the test. Record its pid, its command and the parent that started it.
+2. Close it inside the test path that started it: wait for or kill the child the test owns, or close the handle. If the product leaves the process (a child of `cargo-tile install` that outlives a SIGKILL of its parent), fix it in the product and add a test that fails without the fix.
+3. Check the sibling tests that share `assert_local_report_before_completion` (`uninstall_…`, `status_…`) for the same leak, and fix them by the same cause.
+
+**Files:**
+- `crates/cargo-tile/tests/cli_lifecycle.rs`
+- `crates/cargo-tile/src/cli.rs` and `crates/cargo-tile/src/shim_registration/` — only if step 1 shows the product leaves the child.
+
+**Workers:** 1 writer — `test`, the lifecycle test and its helpers.
+
+**Constraints from prior phases:** No assertion is weakened. No test takes 1 s or more. Phase 43e's copy staging of the reader executable stays.
+
+**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with no leaky test in `cli_lifecycle` and no test at 1 s or more; the named cause is in the summary.
+
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
 **Depends on:** Phase 32m
