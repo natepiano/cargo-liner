@@ -1347,7 +1347,7 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 
 **Workers:** 2 writers — `impl`: census modules, imports, visibility and their tests; `grid`: `tui_pane` tile modules, settings, exports and their tests. Follow active edits to the files this phase moves.
 
-**Constraints from prior phases:** Phase 28's Constraints hold, on its landed checkpoint. A move changes no code: only module paths, `use` lines and visibility that the new module paths need. No `tui_pane` public signature changes. No new `#[allow]` or `#[expect]`; no test takes a second. Keep `linux_process_stat.rs` as the Linux stat parser when splitting census code.
+**Constraints from prior phases:** Phase 28's Constraints hold, on its landed checkpoint. A move changes no code: only module paths, `use` lines and visibility that the new module paths need. No `tui_pane` public signature changes. No new `#[allow]` or `#[expect]`; no test takes a second. Keep `linux_process_stat.rs` as the Linux stat parser when splitting census code. Phase 43b added `InvocationLifetimeReads` (`census/scan.rs` ~1034), whose `apply` adds Mac lifetime evidence to the one `Census` of a scan, and the test counters `CENSUS_PREPARATIONS` and `TOPOLOGY_PREPARATIONS`; a split keeps one `Census` and one CPU topology per scan, and keeps `one_scan_prepares_one_census_and_one_topology` green.
 
 **Acceptance gate:**
 - `verify.sh lint` and `verify.sh test` for `tui_pane`, `cargo-tile`, `cargo-handler` and `cargo-port`, green, with no test changed by items 1 and 2.
@@ -1497,27 +1497,20 @@ User, 2026-10-30: this work goes in Phase 42, and Phase 42 does not hold full in
 
 ### Phase 43b — Census CPU falls toward its goal  · status: done
 
-**Depends on:** Phase 43a
+#### As-built
 
-#### Work Order
-
-Showrunner, 2026-11-02, from handler Phase 54 checks. cargo-tile census CPU on release pairs, in CPU-s/min, has a goal of 0.60. Those figures came before Phase 43a: Mac 8.38 before, 8.64 then; Linux at load about 100, 19.44 before, 18.68 then. After Phase 43a, the Linux reader uses 20.902 CPU-s/min with no job from the measurement and other host jobs running (load 73-92). That total includes drawing and preparation cost. First priority after 43a.
-
-**Goal:** census CPU moves toward 0.60 CPU-s/min on both machines.
-
-**Spec:** use the 43a reader CPU model (`/tmp/claude/delegate/03f9b80e-dbe5-47c6-b29e-a7e6587ab721/phases/43a/cpu_model.md`); one record holds each fact. Start from the finished reader. Separate census cost from total reader CPU. Find the census cost (per scan, per process), then remove the waste.
+- Each scan prepares one `Census` and one CPU topology. On the Mac, the scan picks the processes that need a native birth read from that census, and `InvocationLifetimeReads::apply(self, census, observations, discovery, history)` patches their CPU and lifetimes on it; lifetimes return to `discovery.baselines` after the groups form. `RefreshHistory::measure` reads one process's CPU.
+- `Census::take` reserves its maps from the process count (`HashMap::with_capacity`). Linux discovery reuses its read buffer.
+- Mac census CPU: 7.248 → 4.517 CPU-s/min (median paired cut 42.2 %, spread 7.8 points, 3 pairs). Linux: 5.608 → 5.155 CPU-s/min, a cut under the spread, so no Linux gain is claimed. Both machines stay above the 0.60 CPU-s/min goal.
 
 **Files:**
-- `crates/cargo-tile/src/census/scan.rs`
-- `crates/cargo-tile/src/census/scan_linux_details.rs`
-- `crates/cargo-tile/src/census/invocation_cpu_accounting.rs`
-- `crates/cargo-tile/src/linux_process_stat.rs`
+- `crates/cargo-tile/src/census/scan.rs` — census preparation, `InvocationLifetimeReads`, and the test counters `CENSUS_PREPARATIONS` and `TOPOLOGY_PREPARATIONS` read by `one_scan_prepares_one_census_and_one_topology`.
 
-**Workers:** 1 writer — `impl`, the census files, shared parser and accounting files.
+**Binds later work:** each scan prepares one `Census` and one CPU topology; Mac lifetime evidence reaches that census only through `InvocationLifetimeReads::apply`.
 
-**Constraints from prior phases:** Use `linux_process_stat.rs` for Linux stat parsing. Read mutable process details again for each fresh scan. Preserve `InvocationOwners` and `InvocationContinuity` as the identity owners.
+**Gotchas:** on the Mac the sysinfo refresh is 75.5 % of census CPU, and its executable fallback (`proc_pidpath`) is 4.98 %. Removing the executable refresh alone breaks fresh exec detection.
 
-**Acceptance gate:** release-pair CPU-s/min on the Mac and on Linux, before and after, on the same workload; each test under 1 s.
+**Ruled out:** a direct unsafe FFI `proc_name` reader — no new `unsafe` or `#[allow]`; a safe crate read is the route.
 
 ### Phase 43c — No cargo-tile test takes a second or more  · status: parked (director, 2026-11-07: not landed at the 3-round repair cap; the head wins on natedev, 4 and 1 slow tests against 6, and loses on the Mac, 44 and 47 against 15 and 8; the work continues in Phase 43e)
 
@@ -1573,7 +1566,7 @@ Both runs used `--no-cache`, which skips saved test results; it does not make op
 
 **Workers:** 1 writer — `test`, the listed test modules and their helpers.
 
-**Constraints from prior phases:** Phase 43c's constraints hold. Its approved `installed.rs` assertion change (`assert_eq!(…, b"")`) stays. Its `census/scan.rs` test edits serialize with Phases 43b and 49.
+**Constraints from prior phases:** Phase 43c's constraints hold. Its approved `installed.rs` assertion change (`assert_eq!(…, b"")`) stays. Its `census/scan.rs` test edits serialize with Phase 49. Phase 43b landed in f743e78fa: each scan prepares one `Census` and one CPU topology, and the test `one_scan_prepares_one_census_and_one_topology` counts both; a test edit keeps that test and its counters.
 
 **Acceptance gate:** first, a repeatable start-cluster cause with its variant measurements; then two alternating Mac full suites and one natedev full suite, all `--no-cache` and uninstrumented, with no test at 1 s or more; no assertion is weakened.
 
@@ -1594,6 +1587,32 @@ Both runs used `--no-cache`, which skips saved test results; it does not make op
 **Workers:** 1 writer — `impl`, `census/command_text.rs` and `constants.rs`.
 
 **Acceptance gate:** the phase style review passes for both sites; the suite passes.
+
+### Phase 43f — The Mac census reads executable names through libproc  · status: todo
+
+**Depends on:** Phase 43e
+
+#### Work Order
+
+Showrunner, 2026-11-07, on Phase 43b: keep sysinfo now and measure again after Phase 43e. Add no unsafe FFI module. Check `libproc::proc_pid::name(pid)`, a safe wrapper over `proc_name` on macOS. Phase 43b's Mac profile: the sysinfo refresh takes 75.5 % of census CPU, and its executable fallback (`get_exe_and_name_backup`, then `proc_pidpath`) takes 4.98 %. The executable refresh also causes argument reads. Removing the executable refresh alone breaks fresh exec detection. `cargo-handler` already reads current names through `libproc` 0.14.11 (`crates/cargo-handler/Cargo.toml:46-47`).
+
+**Goal:** the Mac census reads executable names with less CPU, by more than the spread of 3 Mac pairs.
+
+**Spec:**
+1. Measure Mac census CPU on the Phase 43e tree: 3 release pairs, by the Phase 43b method (census CPU-s/min, same workload).
+2. Find whether `libproc::proc_pid::name(pid)` gives what exec detection needs in place of the sysinfo executable refresh (`process_discovery_refresh_kind` ~1457, `with_exe(UpdateKind::Always)`).
+3. If it does: on the Mac, read the name through `libproc` and remove the sysinfo executable refresh from discovery. Keep Linux as it is.
+4. If no safe crate gives the cut: change no code. Report the measured cost of the executable refresh to the director, who brings it to the showrunner.
+
+**Files:**
+- `crates/cargo-tile/src/census/scan.rs`
+- `crates/cargo-tile/Cargo.toml`
+
+**Workers:** 1 writer — `impl`, the census scan and the crate manifest.
+
+**Constraints from prior phases:** No `unsafe` block, no new `#[allow]` or `#[expect]`. Keep sysinfo for every other process read. Phase 43b holds: each scan prepares one `Census` and one CPU topology, and `InvocationLifetimeReads::apply` adds Mac lifetime evidence to that census. A CPU claim needs 3 or more Mac pairs; a cut inside the spread does not land. No test takes a second.
+
+**Acceptance gate:** 3 valid Mac release pairs before and after on the same workload, with the median cut beyond the spread; the exec tests (`metadata_exec_child`, `exec_into_cargo_establishes_cpu_without_losing_ancestry`) pass; the suite passes on the Mac and on natedev.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
@@ -1629,7 +1648,7 @@ User report (2026-10-29, via the showrunner): a new cell's text fades in from bl
 
 ### Phase 39 — The mem value counts every compile's memory  · status: todo
 
-User (2026-10-29, via builds and the showrunner): "yes cargo-tile should strive to be more accurate for us". Showrunner Work Order: cargo-tile's mem value counts a compile's memory in every case. Today `detached_compilers` (census/scan.rs:1899-1935) drops a rustc under sccache in four cases, and never counts the sccache server.
+User (2026-10-29, via builds and the showrunner): "yes cargo-tile should strive to be more accurate for us". Showrunner Work Order: cargo-tile's mem value counts a compile's memory in every case. Today `detached_compilers` (census/scan.rs ~2668-2707) drops a rustc under sccache in four cases, and never counts the sccache server.
 
 **Spec:**
 1. Two live cargos share one target directory: the rustc goes to the cargo whose invocation owns it (its parent chain or its sccache client), never dropped as `Ambiguous`.
@@ -2010,7 +2029,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - `impl` — items 1 to 3, 5, 6 and 7, and item 4's `reader_scenarios` tests (item 6 begins with the live Mac measurement): `progress/capture_read.rs`, `census/invocation_cpu_accounting.rs` and the census files it leads to, `shim_registration/reader_scenario.py` and `shim_registration/reader_scenarios.rs` (item 2's oracle retention branch lands in the same change as the product rule), `README.md`, `cargo-port/src/process_observation/identity.rs`, `CHANGELOG.md`, the `tui_pane` files of item 7, and their tests. Item 6 is diagnosed before any edit: when its repair lands in a file `test` owns (`shim_registration/wire.rs`, `shim_registration/shared_capture.rs`, `hook.rs`, `progress/capture.rs`), `impl` posts that file on the board first, and `test` leaves it until `impl` publishes the change.
 - `test` — item 4's other tests: `shim_registration/wire.rs`, `shim_registration/shared_capture.rs`, the tests in `hook.rs` and `progress/capture.rs`, and the one named render test in `render.rs`.
 
-**Constraints from prior phases:** Phase 20's rules hold: each reading is drawn once, beside its own row, and a row's reading is derived from `InvocationResourceUse` values (Phase 20 item 15). Phase 17 shortened reader tests by overlapping the test scaffolding with the real reader's startup; the measured floor then was the reader's own startup (release to first complete frame 0.51 s, to the CPU rows 0.44 s more). Phase 26 later stopped the Mac reader's startup scan of the build artifact folder, so that floor is old evidence: measure it again. Phase 27's CPU check holds as item 5 defines it; items 4 and 5 change no CPU assertion, and item 2 changes only the oracle's retention branch. Phase 27's test-only recorder (`census/cpu_observation.rs` and its `#[cfg(test)]` hooks in `census/scan.rs`, `census/invocation_cpu_accounting.rs`, `terminal.rs` and `app.rs`) stays; item 2's accounting change keeps `cpu_observation::work` before accounting consumes the counters. Phase 21: `TrackedGroup::without_hidden_descendants` (`crates/cargo-tile/src/roster.rs` ~256) re-sums a lead's subtree after a hidden nested subtree leaves, through `scan::subtree_resource_totals` (`pub(crate)`, `census/scan.rs` ~2754), which sums each row's own `resource_use`; item 2's accounting change lands in each row's own `resource_use`, so the census and the roster re-sum agree. `CommandText::subcommand` (`census/command_text.rs` ~338) reads the retained subcommand from parsed `CommandWord` values, whose option arity comes from Phase 23's one table `COMMAND_VALUED_OPTIONS` (`constants.rs` ~509, each entry tagged `ValuedOptionScope::{Global, Cargo, RustcLint}`), and `CommandText::is_hidden` reads it; Phase 24 (carrying Phase 22 item 11, landed by Phase 28) makes the free argv `subcommand` that `commands.excluded` uses and the shim's rendered skip list read the `Global` scope of that same table. Item 6's repair keeps `is_hidden` answering `nextest` for the bare `cargo-nextest nextest run` spelling as for `cargo nextest run`. Phases 21 to 32 run before this phase (Phase 28 lands the Phase 22, 24 and 25 work); Phase 34 runs beside it under its own reservation. The two share `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` and `crates/tui_pane/CHANGELOG.md`: this phase owns all three while it runs, and Phase 34 writes its lines there only after this phase's checkpoint has landed them. They share no other file. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. No new `#[allow]` or `#[expect]`; no test takes a second. Keep capture-progress changes in `RosterRevision`. Keep status CPU and uptime deadlines outside table-preparation inputs. Preserve the accepted-scan stamp on each drawn frame. "No cargo-tile test takes a second or more" owns general test shortening, so this phase handles only timing changes that its own edits cause; the final suite measurement belongs to "Slow tests start first".
+**Constraints from prior phases:** Phase 20's rules hold: each reading is drawn once, beside its own row, and a row's reading is derived from `InvocationResourceUse` values (Phase 20 item 15). Phase 43b: each scan prepares one `Census` and one CPU topology, and on the Mac `InvocationLifetimeReads::apply` patches CPU and lifetimes on that one census; item 2's accounting reads that census and adds no second one. Phase 17 shortened reader tests by overlapping the test scaffolding with the real reader's startup; the measured floor then was the reader's own startup (release to first complete frame 0.51 s, to the CPU rows 0.44 s more). Phase 26 later stopped the Mac reader's startup scan of the build artifact folder, so that floor is old evidence: measure it again. Phase 27's CPU check holds as item 5 defines it; items 4 and 5 change no CPU assertion, and item 2 changes only the oracle's retention branch. Phase 27's test-only recorder (`census/cpu_observation.rs` and its `#[cfg(test)]` hooks in `census/scan.rs`, `census/invocation_cpu_accounting.rs`, `terminal.rs` and `app.rs`) stays; item 2's accounting change keeps `cpu_observation::work` before accounting consumes the counters. Phase 21: `TrackedGroup::without_hidden_descendants` (`crates/cargo-tile/src/roster.rs` ~256) re-sums a lead's subtree after a hidden nested subtree leaves, through `scan::subtree_resource_totals` (`pub(crate)`, `census/scan.rs` ~2754), which sums each row's own `resource_use`; item 2's accounting change lands in each row's own `resource_use`, so the census and the roster re-sum agree. `CommandText::subcommand` (`census/command_text.rs` ~338) reads the retained subcommand from parsed `CommandWord` values, whose option arity comes from Phase 23's one table `COMMAND_VALUED_OPTIONS` (`constants.rs` ~509, each entry tagged `ValuedOptionScope::{Global, Cargo, RustcLint}`), and `CommandText::is_hidden` reads it; Phase 24 (carrying Phase 22 item 11, landed by Phase 28) makes the free argv `subcommand` that `commands.excluded` uses and the shim's rendered skip list read the `Global` scope of that same table. Item 6's repair keeps `is_hidden` answering `nextest` for the bare `cargo-nextest nextest run` spelling as for `cargo nextest run`. Phases 21 to 32 run before this phase (Phase 28 lands the Phase 22, 24 and 25 work); Phase 34 runs beside it under its own reservation. The two share `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` and `crates/tui_pane/CHANGELOG.md`: this phase owns all three while it runs, and Phase 34 writes its lines there only after this phase's checkpoint has landed them. They share no other file. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. No new `#[allow]` or `#[expect]`; no test takes a second. Keep capture-progress changes in `RosterRevision`. Keep status CPU and uptime deadlines outside table-preparation inputs. Preserve the accepted-scan stamp on each drawn frame. "No cargo-tile test takes a second or more" owns general test shortening, so this phase handles only timing changes that its own edits cause; the final suite measurement belongs to "Slow tests start first".
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, `... lint cargo-port` and `... lint tui_pane` once, then `... test cargo-tile` and `... test cargo-port` green; items 1 and 2's tests red before their fix and green after; item 7's cadence tests green; no test takes a second or more.
@@ -2107,7 +2126,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 23. **Long view wraps at the column's full width** (design check p20f, cnlong22x120). A 10-cell command column wraps at 8 cells, so 9-cell words split (`--profil`/`e ci`) and over-wide words break 2 cells short. Rule: wrap at the column's width less only the reserved mark cell, and only on the row that holds the mark. Test: `a_narrow_long_column_wraps_at_its_full_width`.
 24. **Shot coverage** (design check p20f): the shot set adds a Short ancestry with a cut basename and a Long ancestry level cut by its budget, so phase 20's items 3 and 4 are judged on screen.
 25. **Every external subcommand keeps its action word** (main read round 10, `render.rs` ~4687-4694, `constants.rs` ~277). A state frame's command budget keeps the action word only for `nextest`, so `cargo hack check …`, `cargo insta test …` and `cargo llvm-cov nextest …` budget as `cargo hack …`. Keep one following word for every external subcommand and none for a cargo built-in, then drop `NEXTEST_SUBCOMMAND_NAME`. The executable's layout does not decide it: `cargo_split` (`command_text.rs` ~453–465) answers `ArgumentLayout::Cargo` whenever argv holds the cargo binary, `cargo hack check` included, and `ArgumentLayout::External` only for a `cargo-<name>` binary run directly. Rule: `CommandText` carries a semantic classification of its subcommand (for example `SubcommandKind::{BuiltIn, External}`), decided from the subcommand name against one table of cargo's built-in commands in `constants.rs`, the same for `cargo hack check` and `cargo-hack hack check`. The subcommand is read through the one option-skipping function over the `Global` scope of `COMMAND_VALUED_OPTIONS` (Phase 23's table; Phase 24 carries Phase 22 item 11), so `commands.hidden` still matches `cargo --config k=v port`. Tests: `an_external_subcommand_keeps_its_action_word_in_both_spellings` (`cargo hack check …` and `cargo-hack hack check …` budget as `cargo hack check …`), `a_built_in_subcommand_keeps_no_action_word` (`cargo check`, `cargo test` controls), and `cargo --offline hack check …` classifies as external.
-26. **An excluded driver's reading falls back to its drawn child** (main read round 10, `census/scan.rs` `annotate_capture` ~2248 and `capture_boundaries.extend` ~2165, with `prepare` ~963-975). `capture_boundaries` holds cargo pids that `select_rows` later drops (`commands.excluded`, rejected programs), so a drawn `cargo check` under an excluded driver with an unconfirmed capture borrows a reading that no drawn row owns. Test the endpoint against the drawn cargo set, or give the excluded driver's reading to its child.
+26. **An excluded driver's reading falls back to its drawn child** (main read round 10, `census/scan.rs` `annotate_capture` ~3317 and `capture_boundaries.extend` ~3245, with `Census::prepare` ~1874). `capture_boundaries` holds cargo pids that `select_rows` later drops (`commands.excluded`, rejected programs), so a drawn `cargo check` under an excluded driver with an unconfirmed capture borrows a reading that no drawn row owns. Test the endpoint against the drawn cargo set, or give the excluded driver's reading to its child.
 27. **Round 10 tidy** (main read round 10). `NEXTEST_SUBCOMMAND_NAME` out of the alphabetical constants block (goes with item 25); the `FrameCommandColumns` doc moves its payload sentence to the `StateFrame` variant (`render.rs` ~3260); `annotate_capture`'s two disjuncts become one inclusive ancestor walk (`scan.rs` ~2289-2297); `longest_subcommand_width` is computed only for state-frame command grids (`render.rs` ~3192); `CHANGELOG.md` ~62 and ~64 merge into one line.
 28. **A summary that hides rows keeps `mem` when it fits** (p20j and p20k w40_cut, 40x50, 26 projects). The summary draws `pid cpu state command` and drops `mem`, though `pid cpu mem state command` with `cargo tw …` and the hidden-rows mark needs 34 of its 36 cells. The row-end reservation takes width ahead of `mem`, the route F050 closed for command tables. Also seen in p20l c48 and cinst53-57.
 29. **One Long cut form** (round 12 read). A Long command cut is word-cut (`--locked …`) in a frame that draws `state` and grapheme-cut (`--offlin…`) in other frames, so one row changes its cut form when another command blocks. Use the whole-word cut for every Long cut, and remove `CommandCutBoundary` with its redundant clear of the command cells; give `command_cut_boundary` its doc comment if it stays. Also (p20l): the summary and every frame without a state slot still cut Long arguments mid-word (clong64k summary `--no-…` for `--no-fail-fast`; clong64 `--off…`, `bu…`; clong40, cutfoot, cdrvlong64x20, cdeeplong126x120), and the clong64k cells put the argument mark at a fixed column with blanks after the last word. One whole-word form everywhere, mark directly after the last kept word.
