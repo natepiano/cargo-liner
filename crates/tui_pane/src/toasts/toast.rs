@@ -337,6 +337,7 @@ impl<Ctx: AppContext> Toast<Ctx> {
                 .collect(),
             min_height,
             desired_height,
+            settled_height: self.target_height(card_width),
         }
     }
 
