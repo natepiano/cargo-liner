@@ -1,3 +1,6 @@
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+
 use anyhow::Context;
 use ratatui::layout::Position;
 use tui_pane::ColorMode;
@@ -128,7 +131,7 @@ fn git_reset_countdown_has_readable_contrast() -> anyhow::Result<()> {
             used:      4770,
             limit:     5000,
             remaining: 230,
-            reset_at:  Some(0),
+            reset_at:  Some(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 3600),
         }),
         ..crate::tui::panes::GitData::default()
     });
@@ -155,7 +158,7 @@ fn selected_git_countdown_keeps_selection_ink_on_both_fills() -> anyhow::Result<
                     used:      30,
                     remaining: 4970,
                     limit:     5000,
-                    reset_at:  Some(0),
+                    reset_at:  Some(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 3600),
                 }),
                 ..GitData::default()
             });

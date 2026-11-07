@@ -215,6 +215,7 @@ mod tests {
     use crate::project::ProjectType;
     use crate::project::ResolvedBranch;
     use crate::tui::panes::GitProbe;
+    use crate::tui::panes::GithubStars;
     use crate::tui::panes::PackageVersion;
     use crate::tui::panes::pane_data;
     use crate::tui::panes::pane_data::CiEmptyState;
@@ -275,7 +276,7 @@ mod tests {
             status:             None,
             vs_local:           GitProbe::Probed(Comparison::NotCompared),
             local_main_branch:  GitProbe::Probed(ResolvedBranch::NotFound),
-            stars:              None,
+            stars:              GithubStars::NotGithub,
             description:        None,
             inception:          FirstCommit::AwaitingProbe,
             last_commit:        GitProbe::Probed(CommitDate::NoCommits),

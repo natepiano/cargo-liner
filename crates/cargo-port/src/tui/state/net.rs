@@ -23,6 +23,7 @@
 //! runtime orchestration live on App.
 
 use std::collections::HashSet;
+use std::time::SystemTime;
 
 use tui_pane::RunningTracker;
 use tui_pane::ToastId;
@@ -40,6 +41,9 @@ use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::scan;
 use crate::scan::RepoCache;
+use crate::tui::app::GithubQuotaRefresh;
+use crate::tui::app::QuotaFetchAdmission;
+use crate::tui::app::QuotaFetchReason;
 use crate::tui::startup_services::StartupServices;
 
 /// Availability for a single service. `Unreachable` means the network
@@ -335,19 +339,21 @@ enum NetworkToastStage {
 }
 
 pub(in crate::tui) struct Net {
-    pub http_client: HttpClient,
-    pub github:      Github,
-    pub crates_io:   CratesIo,
+    pub http_client:   HttpClient,
+    pub quota_refresh: GithubQuotaRefresh,
+    pub github:        Github,
+    pub crates_io:     CratesIo,
     /// Lifecycle gate for the standalone GitHub / crates.io running toasts.
     /// Begins `StartupOwned` so a network fetch processed before the startup
     /// panel even exists cannot leak a standalone toast.
-    toast_stage:     NetworkToastStage,
+    toast_stage:       NetworkToastStage,
 }
 
 impl Net {
     pub(in crate::tui) fn new(http_client: HttpClient) -> Self {
         Self {
             http_client,
+            quota_refresh: GithubQuotaRefresh::new(),
             github: Github::new(),
             crates_io: CratesIo::new(),
             toast_stage: NetworkToastStage::StartupOwned(NetworkRunningTrackers::default()),
@@ -526,13 +532,16 @@ impl Net {
         }
     }
 
-    /// One-shot: hit GitHub's `/rate_limit` endpoint so the shared
-    /// rate-limit cache is populated before any real request. The endpoint
-    /// is quota-exempt, so this is safe to run even when GitHub is
-    /// refusing other calls. Logged via `rate_limit_prime_ok` /
-    /// `rate_limit_prime_failed`.
+    /// Populate the quota cache through GitHub's quota-exempt `/rate_limit` endpoint.
+    /// Share the request with any active reset or recovery fetch.
     pub(in crate::tui) fn spawn_rate_limit_prime(&self, startup_services: &StartupServices) {
-        startup_services.spawn_github_rate_limit_prime(self.http_client());
+        if let QuotaFetchAdmission::Start(permit) = self.quota_refresh.request(
+            QuotaFetchReason::Startup,
+            self.rate_limit(),
+            SystemTime::now(),
+        ) {
+            startup_services.spawn_github_rate_limit_prime(self.http_client(), permit);
+        }
     }
 }
 

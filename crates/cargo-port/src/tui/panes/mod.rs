@@ -76,6 +76,7 @@ pub(super) use pane_data::DetailPaneData;
 pub(super) use pane_data::GitCheckout;
 pub(super) use pane_data::GitData;
 pub(super) use pane_data::GitRow;
+pub(super) use pane_data::GithubStars;
 #[cfg(test)]
 pub(super) use pane_data::HEAD_UNREADABLE_LABEL;
 #[cfg(test)]

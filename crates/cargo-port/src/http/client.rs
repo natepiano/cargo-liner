@@ -59,6 +59,9 @@ pub(crate) enum ServiceSignal {
     RateLimited(ServiceKind),
 }
 pub(crate) type HttpOutcome<T> = (Option<T>, Option<ServiceSignal>);
+/// A quota reply or the service failure that requires a fallback probe.
+type GithubQuotaProbeResult = Result<GitHubRateLimit, ServiceSignal>;
+
 // `HttpClient` owns the shared HTTP connection and quota state.
 
 /// Whether GitHub requests use live quotas or a simulated exhausted quota.
@@ -204,6 +207,11 @@ impl HttpClient {
         if let Ok(mut state) = self.rate_limit.lock() {
             *state = github_rate_limit;
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn store_rate_limit_for_test(&self, quota: GitHubRateLimit) {
+        self.set_rate_limit(quota);
     }
 
     // `HttpClient::github_get_async` and the following methods perform asynchronous requests.
@@ -394,6 +402,16 @@ impl HttpClient {
 
     async fn probe_github_rate_limit_async(&self) -> bool {
         let (github_rate_limit, _signal) = self.fetch_rate_limit_async().await;
+        self.github_recovery_after_quota_async(
+            github_rate_limit.ok_or(ServiceSignal::Unreachable(ServiceKind::GitHub)),
+        )
+        .await
+    }
+
+    async fn github_recovery_after_quota_async(
+        &self,
+        github_rate_limit: GithubQuotaProbeResult,
+    ) -> bool {
         if self.github_rate_limit_forced() {
             // `fetch_rate_limit_async` keeps the quota display current, but
             // `github_rate_limit_forced()` prevents reporting recovery so
@@ -401,11 +419,11 @@ impl HttpClient {
             return false;
         }
         match github_rate_limit {
-            Some(s) => {
+            Ok(s) => {
                 s.core.is_some_and(|q| q.remaining > 0)
                     && s.graphql.is_some_and(|q| q.remaining > 0)
             },
-            None => self
+            Err(_) => self
                 .client
                 .head(ServiceKind::GitHub.probe_url())
                 .timeout(Duration::from_secs(SERVICE_RETRY_SECS))
@@ -417,6 +435,12 @@ impl HttpClient {
 }
 
 impl HttpClient {
+    /// Check recovery without repeating the quota request.
+    pub(crate) fn github_recovery_after_quota(&self, quota: GithubQuotaProbeResult) -> bool {
+        self.handle
+            .block_on(self.github_recovery_after_quota_async(quota))
+    }
+
     pub(crate) fn probe_service(&self, service: ServiceKind) -> bool {
         self.handle.block_on(self.probe_service_async(service))
     }

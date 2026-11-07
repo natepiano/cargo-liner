@@ -485,7 +485,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Ruled out:** text glyphs in place of the status emoji on selected rows; an emoji is a picture, not ink on a ground.
 
-### Phase 4g — The rate-limit countdown never stops at 0s  · status: todo
+### Phase 4g — The rate-limit countdown never stops at 0s  · status: done
 
 **Depends on:** Phase 4e (both edit the Git pane render path in `crates/cargo-port/src/tui/panes/`)
 
@@ -611,11 +611,12 @@ Phase 4e design check of `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/
 
 #### Work Order
 
-**Goal:** the Git pane shows a GitHub quota row only when that bucket has data, and the empty description takes one row when it fits.
+**Goal:** the Git pane shows a GitHub quota row only when that bucket has data, the empty description takes one row when it fits, and the startup toast keeps its bottom gap row while it opens.
 
 **Source:** Phase 4g and 4h design check of `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4gh_4/`, 2026-11-07. Both defects are older than Phase 4e (`shots_4e_4`):
 - `toast80-color-a` r2-r3: the Core and GraphQL rows draw with blank values before the first quota poll. Finding F015 in the 4g ledger.
 - `toast80-color-a` r2-r3: the empty description wraps to `No` / `description` in a 15-cell interior. ` No description` fits one row, as `Disk      73 B` fills the same width. Finding F016 in the 4h ledger.
+- `shots_4gh_6/toast160-color-c.png` (Phase 4g design check, 2026-11-07): at 160x45 the Startup card fills the gap row above the CI runs pane's bottom border while it opens. The `.txt` 0.28 s earlier shows the gap row. Both show `1 of 2`. Phase 4h's toast code, merged in c2d6bf139.
 
 **Decision:** showrunner, 2026-11-07, the empty-description ruling: ` No description` on one row when the interior is 15 cells or more. Below 15, keep the wrap. Show it only when it is true (Spec 8 of Phase 4e). Astra review, 2026-11-07 (`/tmp/claude/astra/20261107T141905Z-504472/review.md`): omit a quota row until its bucket has data, because no data does not prove that a fetch is running.
 
@@ -627,6 +628,10 @@ Phase 4e design check of `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/
 1. **Quota rows wait for data.** `git_fields_from_data` (`pane_data/git_data.rs:423`) adds each quota row only when its bucket has data. `format_rate_limit_bucket` (`pane_data/formatting.rs:402`) then never returns empty text for a drawn row. A bucket with no data is a named state, not a bare `None`. Convert at `build_git_detail_fields`; `GitData` and `GitDetailFields` carry the state, and `fit_rate_limit_value` (`git/render.rs:1054`) reads it. Keep its compact-quota tests green.
 2. **One-row description.** `DescriptionBlock::for_pane` (`panes/description.rs:116`) takes two margin cells, so a 15-cell interior leaves 13 cells for the 14-cell text. The placeholder alone uses the right margin when that keeps it whole. Keep the left inset, real descriptions and the wrap below 15 cells.
 3. **Tests.** Quota-state tests read the drawn Git buffer: no data, data, and a failure after data. Description tests read interiors of 14, 15 and 16 cells. Update `empty_description_wraps_inside_the_inset_at_each_window_width` (`package/readability_tests.rs:875`) to the decision.
+4. **The gap row stays while the toast opens.** Likely cause (Astra review, `/tmp/claude/astra/20261107T162018Z-369399/review.md`): with nine interior rows and eight body rows, the whole card asks for ten rows, so `drawing.rs:98` reserves no gap. As the opening animation grows the card from eight to nine rows, `edge_gap` drops from one to zero. Page capacity comes from the allocated height (`layout.rs:88`), not the animated height.
+   - Rule: nine interior rows give eight card rows plus one bottom gap. The five-row short pane keeps three body rows on the gap rows (`placement_tests.rs:123`). Name the threshold between the two cases in code.
+   - Page capacity stays fixed while pane geometry and toast allocation stay unchanged. A resize may change it. Page count may change when content arrives.
+   - Tests: render the framed CI pane with nine interior rows in a 160x45 frame, with plain coloured lines as Startup uses (`startup_phase/tracker.rs:269`). Hold eight body rows and step explicit render times through the whole opening animation. At each step, assert the blank bottom gap, whole pane borders and the expected body rows. Test arriving lines on their own through `update_colored`. Add a thirteen-row case that tells six rows per page from seven.
 
 **Constraints from prior phases:**
 - Phase 4g's reset retry and its quota presentation stay as they are: fetch at the reset time, then at most 3 retries 10 s apart. The screen hides a reset at or before now.
@@ -638,14 +643,15 @@ Phase 4e design check of `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/
 - `crates/cargo-port/src/tui/panes/git/render.rs` — `fit_rate_limit_value` and its compact-quota tests
 - `crates/cargo-port/src/tui/panes/description.rs` — the placeholder width
 - `crates/cargo-port/src/tui/panes/package/readability_tests.rs` — the description tests
-- `crates/cargo-port/CHANGELOG.md`
+- `crates/tui_pane/src/toasts/render/` — the toast gap row and its drawn tests
+- `crates/cargo-port/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md`
 
 **Workers:** 1 writer
-- Writer: production files and their tests. The two specs are small and share the changelog.
+- Writer: production files and their tests. The specs are small and share the changelogs.
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. An 80x30 live capture in colour and under NO_COLOR, judged by the design check, shows no blank quota row before the first poll and ` No description` on one row. Close the routes of F015 and F016 at this checkpoint. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. An 80x30 live capture in colour and under NO_COLOR, judged by the design check, shows no blank quota row before the first poll and ` No description` on one row. A 160x45 startup capture shows the gap row in every toast frame; its first frame is not blank (a blank PNG in `shots_4gh_6/toast160-color-a` beside a full `.txt` was read as xterm lag). Close the routes of F015, F016 and the toast gap row at this checkpoint. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 
