@@ -170,8 +170,7 @@ fn build_ci_header_row(cols: &[CiDisplayColumn], widths: &[Constraint]) -> Row<'
             .style(header_style),
         );
     }
-    header_cells
-        .push(Cell::from(Line::from("Total").alignment(Alignment::Right)).style(header_style));
+    header_cells.push(ci_total_header_cell().style(header_style));
     Row::new(header_cells).bottom_margin(0)
 }
 
@@ -638,6 +637,44 @@ fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
 
 fn empty_ci_title(data: &CiData) -> String { data.empty_state.title() }
 
+fn ci_total_header_cell() -> Cell<'static> {
+    Cell::from(Line::from("Total").alignment(Alignment::Right))
+}
+
+fn compact_ci_header_row() -> Row<'static> {
+    let style = Style::default()
+        .fg(theme_roles::column_header_color())
+        .add_modifier(Modifier::BOLD);
+    Row::new(vec![
+        Cell::from(" Commit").style(style),
+        ci_total_header_cell().style(style),
+    ])
+}
+
+fn paint_ci_row_selections(
+    frame: &mut Frame,
+    inner: Rect,
+    pane: &Ci,
+    run_count: usize,
+    mode: ColorMode,
+) {
+    let offset = pane.viewport.scroll_offset();
+    for slot in 0..usize::from(inner.height.saturating_sub(1)).min(run_count.saturating_sub(offset))
+    {
+        theme_roles::paint_selection(
+            frame,
+            Rect::new(
+                inner.x,
+                inner.y + 1 + u16::try_from(slot).unwrap_or(u16::MAX),
+                inner.width,
+                1,
+            ),
+            tui_pane::selection_state(&pane.viewport, offset + slot, pane.focus.pane_focus_state),
+            mode,
+        );
+    }
+}
+
 pub fn render_ci_pane_body(
     frame: &mut Frame,
     area: Rect,
@@ -677,7 +714,8 @@ pub fn render_ci_pane_body(
 
     let cols = ci_display_columns_for_width(&ci_data.runs, inner.width);
     let show_durations = ci_display_table_shows_durations(&ci_data.runs, &cols, inner.width);
-    let widths = build_ci_widths(&ci_data.runs, &cols, show_durations, inner.width);
+    let layout = ci_widths_for_mode(&ci_data, &cols, show_durations, inner.width);
+    let widths = layout.widths();
     let commit_width = constraint_width(widths.first()).unwrap_or(CI_COMMIT_MIN_WIDTH);
     let branch_width = constraint_width(widths.get(1)).unwrap_or(CI_BRANCH_MIN_WIDTH);
 
@@ -687,21 +725,25 @@ pub fn render_ci_pane_body(
         .iter()
         .enumerate()
         .map(|(row_index, ci_run)| {
-            build_ci_data_row(
-                ci_run,
-                &cols,
-                show_durations,
-                commit_width,
-                branch_width,
-                tui_pane::selection_state(viewport_ref, row_index, ci_pane_focus_state),
-                mode,
-            )
+            if matches!(layout, CiTableLayout::Standard(_)) {
+                build_ci_data_row(
+                    ci_run,
+                    &cols,
+                    show_durations,
+                    commit_width,
+                    branch_width,
+                    tui_pane::selection_state(viewport_ref, row_index, ci_pane_focus_state),
+                    mode,
+                )
+            } else {
+                layout.summary_row(ci_run)
+            }
         })
         .collect();
 
-    let header = build_ci_header_row(&cols, &widths);
+    let header = layout.header(&cols);
 
-    let table = Table::new(rows, widths)
+    let table = Table::new(rows, widths.iter().copied())
         .header(header)
         .column_spacing(1)
         .row_highlight_style(Style::default());
@@ -710,6 +752,7 @@ pub fn render_ci_pane_body(
     *table_state.offset_mut() = pane.viewport.scroll_offset();
     frame.render_stateful_widget(table, inner, &mut table_state);
     pane.viewport.set_scroll_offset(table_state.offset());
+    paint_ci_row_selections(frame, inner, pane, ci_data.runs.len(), mode);
     pane_frame_chrome
         .labels
         .extend(tui_pane::overflow_affordance_label(
@@ -733,6 +776,146 @@ fn empty_ci_chrome(title: &str) -> PaneFrameChrome {
         focused: false,
         ..PaneFrameChrome::default()
     }
+}
+
+enum CiTableLayout {
+    Standard(Vec<Constraint>),
+    BranchSummary(Vec<Constraint>),
+    AllSummary(Vec<Constraint>),
+    StatusSummary(Vec<Constraint>),
+}
+
+impl CiTableLayout {
+    fn summary_row(&self, run: &CiRun) -> Row<'static> {
+        let widths = self.widths();
+        let commit = constraint_width(widths.first()).unwrap_or(0);
+        let mut cells = vec![Cell::from(ci_header_label_for_width(
+            &format!(" {}", run.commit_title.as_deref().unwrap_or("")),
+            commit,
+        ))];
+        if matches!(self, Self::StatusSummary(_)) {
+            cells.clear();
+            if widths.is_empty() {
+                return Row::new(cells);
+            }
+        }
+        if matches!(self, Self::AllSummary(_)) {
+            let branch = constraint_width(widths.get(1)).unwrap_or(0);
+            cells.push(Cell::from(ci_header_label_for_width(&run.branch, branch)));
+        }
+        cells.push(ci_metric_cell(
+            &run.wall_clock_secs
+                .map_or_else(|| "—".to_string(), ci::format_secs),
+            run.ci_status,
+            true,
+            render::ci_status_style(Some(run.ci_status)),
+        ));
+        Row::new(cells)
+    }
+
+    fn header(&self, cols: &[CiDisplayColumn]) -> Row<'static> {
+        match self {
+            Self::Standard(widths) => build_ci_header_row(cols, widths),
+            Self::BranchSummary(widths) => {
+                if constraint_width(widths.first()).unwrap_or(0) < " Commit".width() {
+                    Row::new(vec![Cell::from("Commit"), ci_total_header_cell()]).style(
+                        Style::default()
+                            .fg(theme_roles::column_header_color())
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    compact_ci_header_row()
+                }
+            },
+            Self::AllSummary(widths) => Row::new(vec![
+                Cell::from(if constraint_width(widths.first()).unwrap_or(0) == 0 {
+                    ""
+                } else {
+                    " Commit"
+                }),
+                Cell::from("Branch"),
+                ci_total_header_cell(),
+            ])
+            .style(
+                Style::default()
+                    .fg(theme_roles::column_header_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Self::StatusSummary(widths) => Row::new(if widths.is_empty() {
+                Vec::new()
+            } else {
+                vec![ci_total_header_cell()]
+            })
+            .style(
+                Style::default()
+                    .fg(theme_roles::column_header_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        }
+    }
+
+    fn widths(&self) -> &[Constraint] {
+        match self {
+            Self::Standard(widths)
+            | Self::BranchSummary(widths)
+            | Self::AllSummary(widths)
+            | Self::StatusSummary(widths) => widths,
+        }
+    }
+}
+
+fn ci_widths_for_mode(
+    data: &CiData,
+    cols: &[CiDisplayColumn],
+    durations: bool,
+    width: u16,
+) -> CiTableLayout {
+    let widths = build_ci_widths(&data.runs, cols, durations, width);
+    let fits = ci_table_fixed_width(&data.runs, cols, durations) <= usize::from(width);
+    let all = data.mode_label.as_deref() == Some("all");
+    let branch_visible = constraint_width(widths.get(1)).unwrap_or(0) >= "Branch".width();
+    if fits && (!all || branch_visible) {
+        return CiTableLayout::Standard(widths);
+    }
+    let status = u16::try_from(ci_total_width(&data.runs, true)).unwrap_or(u16::MAX);
+    if width < status {
+        return CiTableLayout::StatusSummary(Vec::new());
+    }
+    if all
+        && width
+            >= label_width("Branch")
+                .saturating_add(status)
+                .saturating_add(2)
+    {
+        let branch = label_width("Branch").max(width.saturating_sub(status + 2) / 3);
+        let remaining = width.saturating_sub(branch + status + 2);
+        let commit = if remaining >= label_width(" Commit") {
+            remaining
+        } else {
+            0
+        };
+        let branch = branch + remaining.saturating_sub(commit);
+        return CiTableLayout::AllSummary(vec![
+            Constraint::Length(commit),
+            Constraint::Length(branch),
+            Constraint::Length(status),
+        ]);
+    }
+    if all || data.mode_label.as_deref() == Some("branch") {
+        if width
+            < label_width("Commit")
+                .saturating_add(status)
+                .saturating_add(1)
+        {
+            return CiTableLayout::StatusSummary(vec![Constraint::Length(status)]);
+        }
+        let commit = width.saturating_sub(status + 1);
+        return CiTableLayout::BranchSummary(vec![
+            Constraint::Length(commit),
+            Constraint::Length(status),
+        ]);
+    }
+    CiTableLayout::Standard(widths)
 }
 
 #[cfg(test)]

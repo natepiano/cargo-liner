@@ -43,10 +43,12 @@ pub(super) fn render_project_list_pane_body(
         let fitted = projects.cached_fit_widths.fitted(
             usize::from(area.width)
                 .saturating_sub(PROJECT_LIST_RIGHT_PADDING + tui_pane::BLOCK_BORDER_WIDTH),
+            // An isolated pane has no neighboring detail panes to reserve.
+            frame.area().width.max(area.width.saturating_add(30)),
         );
         let widths = &fitted;
         let items: Vec<ListItem> = super::render_tree_items(ctx, pane, &pane.viewport, widths);
-        let header = columns::header_line(widths, "   Projects");
+        let header = columns::header_line(widths, columns::PROJECTS_HEADER);
         let summaries = project_summary_lines(projects, widths);
         let row_width = u16::try_from(widths.total_width()).unwrap_or(u16::MAX);
         (items, header, summaries, row_width)

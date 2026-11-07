@@ -52,7 +52,7 @@ fn sccache_reasons_explain_the_uncached_call() -> anyhow::Result<()> {
     ]);
     let buffer = test_support::draw_stats(&mut app, HEIGHT)?;
     for reason in [
-        "No reason reported",
+        "Source read from standard input",
         "Output file named directly",
         "No output directory",
         "Multiple input files",
@@ -95,5 +95,21 @@ fn sccache_all_reasons_use_plain_sentence_case() -> anyhow::Result<()> {
     ] {
         test_support::position(&buffer, text)?;
     }
+    Ok(())
+}
+
+#[test]
+fn narrow_sccache_footer_keeps_only_whole_hints() -> anyhow::Result<()> {
+    let mut app = test_support::stats_app(vec!["Cache hits  7".to_string()]);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, HEIGHT))?;
+    terminal.draw(|frame| super::render_sccache_popup(frame, &mut app))?;
+    let buffer = terminal.backend().buffer();
+    let (_, y) = test_support::position(buffer, "Esc close")?;
+    let row = &test_support::rows(buffer)[usize::from(y)];
+    assert!(row.contains("home/end first/last"), "{row}");
+    assert_eq!(
+        row.trim_matches(|cell: char| cell.is_whitespace() || cell == '│'),
+        "Esc close · y copy · ↑/↓ nav · home/end first/last · pageup/pagedown page"
+    );
     Ok(())
 }

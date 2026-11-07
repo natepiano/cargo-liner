@@ -397,6 +397,7 @@ impl ProjectList {
             .filter_map(|row| match row {
                 VisibleRow::Root { node_index } => self
                     .get(*node_index)
+                    .filter(|entry| !self.is_deleted(entry.root_item.path()))
                     .and_then(|entry| entry.root_item.disk_usage_bytes()),
                 _ => None,
             })
@@ -1823,6 +1824,11 @@ impl ProjectList {
             visible_bytes: self
                 .visible_rows()
                 .iter()
+                .filter(|row| {
+                    !self
+                        .path_for_row(**row)
+                        .is_some_and(|path| self.is_deleted(path))
+                })
                 .filter_map(|row| self.visible_row_disk_usage(*row))
                 .collect(),
         }

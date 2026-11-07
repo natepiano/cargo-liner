@@ -459,20 +459,36 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
         return;
     }
     let frames = draw_placements(
-        buffer, area, &prepared.drawing,
-        &TileMeasurements { demands: &prepared.demands, widths: &prepared.widths },
-        contents, cells, mode,
+        buffer,
+        area,
+        &prepared.drawing,
+        &TileMeasurements {
+            demands: &prepared.demands,
+            widths:  &prepared.widths,
+        },
+        contents,
+        cells,
+        mode,
     );
     grid.record_painted_body(prepared.drawing, contents, frames);
 }
 
 /// The grid keeps its next layout ready while an expanded cell covers it.
 pub(super) fn prepare_covered_grid<Id: Clone + Eq + Debug>(
-    grid: &mut TileGrid<Id>, area: Rect, growth: TileGrowth, cells: &impl TileCells<Id>,
+    grid: &mut TileGrid<Id>,
+    area: Rect,
+    growth: TileGrowth,
+    cells: &impl TileCells<Id>,
 ) {
     let prepared = prepare_grid(grid, area, growth, TileGridContents::Shown, cells);
-    let frames = prepared.drawing.pieces.iter()
-        .filter(|piece| piece.placement.content == TileContent::Summary && has_visible_body_row(piece.placement.frame))
+    let frames = prepared
+        .drawing
+        .pieces
+        .iter()
+        .filter(|piece| {
+            piece.placement.content == TileContent::Summary
+                && has_visible_body_row(piece.placement.frame)
+        })
         .map(|piece| piece.placement.frame.clip())
         .collect();
     grid.record_painted_body(prepared.drawing, TileGridContents::Shown, frames);
@@ -480,13 +496,16 @@ pub(super) fn prepare_covered_grid<Id: Clone + Eq + Debug>(
 
 struct PreparedGrid<Id> {
     drawing: TileDrawing<Id>,
-    widths: Vec<(TileContent<Id>, u16)>,
+    widths:  Vec<(TileContent<Id>, u16)>,
     demands: TileDemands<Id>,
 }
 
 fn prepare_grid<Id: Clone + Eq + Debug>(
-    grid: &mut TileGrid<Id>, area: Rect, growth: TileGrowth,
-    contents: TileGridContents, cells: &impl TileCells<Id>,
+    grid: &mut TileGrid<Id>,
+    area: Rect,
+    growth: TileGrowth,
+    contents: TileGridContents,
+    cells: &impl TileCells<Id>,
 ) -> PreparedGrid<Id> {
     grid.set_draw_layout(area, growth);
     cells.prepare_moving_frame(
@@ -505,7 +524,9 @@ fn prepare_grid<Id: Clone + Eq + Debug>(
     add_readout_rows(&mut alone_demands, &alone_widths);
     let progress = grid.progress();
     grid.measure_row_steps(
-        area, growth, progress,
+        area,
+        growth,
+        progress,
         |content, area| cells.rows_drawn(content, area),
         |content, area| cells.rows_kept(content, area),
     );
@@ -514,7 +535,11 @@ fn prepare_grid<Id: Clone + Eq + Debug>(
         GridDisplay::Cells => (cells_widths, cells_demands),
         GridDisplay::SummaryAlone => (alone_widths, alone_demands),
     };
-    PreparedGrid { drawing, widths, demands }
+    PreparedGrid {
+        drawing,
+        widths,
+        demands,
+    }
 }
 
 /// Widths used to measure the display that will be drawn this frame.

@@ -281,9 +281,8 @@ fn cpu_region(core_count: usize, gpu_rows: GpuRows, inner_height: u16) -> Region
     let pinned_rows = CPU_PINNED_HEAD_ROWS + CPU_BREAKDOWN_ROWS + gpu_rows.count() + 2;
     let band_height = usize::from(inner_height).saturating_sub(pinned_rows);
     let cores = Region::rows(core_count, Size::Fill);
-    // Leave at least one bar visible in very short panes. Otherwise reserve
-    // a footer only when the cores overflow; it never owns a selectable row.
-    let cores = if core_count > band_height && band_height > 1 {
+    // Reserve the page mark before the bars when the cores do not fit.
+    let cores = if core_count > band_height && band_height > 0 {
         cores.footer()
     } else {
         cores
@@ -776,11 +775,17 @@ fn render_cpu_status(
     );
 }
 
-/// Draw the `▲ n of m ▼` overflow label in the cores footer when more cores
-/// exist than fit. Skipped when the band has no visible rows.
+/// Draw the page mark in the body when the cores do not fit.
+/// Draw only an arrow when the mark leaves no room for a bar.
 fn render_cores_affordance(frame: &mut Frame, layout: &CpuPanelLayout, cursor_pos: usize) {
     let band_visible = layout.band_visible();
     if band_visible == 0 {
+        if layout.cores_footer.height > 0 && layout.core_count > 0 {
+            frame.render_widget(
+                Paragraph::new(" ▼").style(Style::default().fg(label_color())),
+                layout.cores_footer,
+            );
+        }
         return;
     }
     // `band_cursor` maps `cursor_pos` in [CPU_PINNED_HEAD_ROWS, CPU_PINNED_HEAD_ROWS +

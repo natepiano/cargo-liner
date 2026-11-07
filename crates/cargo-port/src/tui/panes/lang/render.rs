@@ -25,6 +25,7 @@ use super::constants::LANG_ICON_WIDTH;
 use super::pane::LangPane;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
+use crate::tui::panes::ProjectPresentation;
 use crate::tui::project_list::ProjectPathLookup::Found;
 use crate::tui::project_list::ProjectPathLookup::StaleRoute;
 use crate::tui::project_list::ProjectPathLookup::UnknownPath;
@@ -306,8 +307,15 @@ fn render_lang_table(
     }
 }
 
-/// Body of `LangPane::render`. Same pattern as
-/// `cpu::render_cpu_pane_body`: typed parameters via `ctx`.
+fn lang_pane_title(stats: Option<&LanguageStats>, pane: &LangPane) -> String {
+    let len = stats.map_or(0, |stats| stats.entries.len());
+    let cursor = matches!(pane.focus.pane_focus_state, PaneFocusState::Active)
+        .then(|| stats.and_then(|stats| parent_position(stats, pane.viewport.pos())))
+        .flatten();
+    tui_pane::pane_title("Languages", &PaneTitleCount::Single { len, cursor })
+}
+
+/// Draw the Languages pane from its data and presentation state.
 pub fn render_lang_pane_body(
     frame: &mut Frame,
     area: Rect,
@@ -323,23 +331,21 @@ pub fn render_lang_pane_body(
         ..
     } = ctx;
 
+    if ctx.project_presentation() == ProjectPresentation::Deleted {
+        pane.viewport.clear_surface();
+        return PaneFrameChrome {
+            title: " Languages — deleted ".into(),
+            focused: is_focused,
+            ..PaneFrameChrome::default()
+        };
+    }
     let lang_stats =
         match projects.at_path(selected_project_path.unwrap_or_else(|| std::path::Path::new(""))) {
             Found(p) => p.language_stats.as_ref(),
             UnknownPath | StaleRoute => None,
         };
 
-    let lang_count = lang_stats.map_or(0, |stats| stats.entries.len());
-    let cursor = matches!(pane_focus_state, PaneFocusState::Active)
-        .then(|| lang_stats.and_then(|stats| parent_position(stats, pane.viewport.pos())))
-        .flatten();
-    let title = tui_pane::pane_title(
-        "Languages",
-        &PaneTitleCount::Single {
-            len: lang_count,
-            cursor,
-        },
-    );
+    let title = lang_pane_title(lang_stats, pane);
     let inner = tui_pane::frame_inner(area);
     let mut chrome = PaneFrameChrome {
         title,

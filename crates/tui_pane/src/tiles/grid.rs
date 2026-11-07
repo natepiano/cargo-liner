@@ -3680,7 +3680,12 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     }
 
     /// Advance covered grid geometry without painting its cells.
-    pub fn prepare_covered(&mut self, area: Rect, growth: TileGrowth, cells: &impl draw::TileCells<Id>) {
+    pub fn prepare_covered(
+        &mut self,
+        area: Rect,
+        growth: TileGrowth,
+        cells: &impl draw::TileCells<Id>,
+    ) {
         draw::prepare_covered_grid(self, area, growth, cells);
     }
 

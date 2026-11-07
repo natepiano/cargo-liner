@@ -1,14 +1,21 @@
 use std::path::Path;
 
+use anyhow::Context;
+use ratatui::layout::Position;
+use tui_pane::ColorMode;
+use tui_pane::Hittable;
 use tui_pane::PaneFocusState;
 
 use crate::config::NonRustInclusion;
 use crate::project::CratesIoRelease;
 use crate::project::RootItem;
 use crate::project::Visibility;
+use crate::tui::panes;
 use crate::tui::panes::GitData;
 use crate::tui::panes::PackageData;
+use crate::tui::panes::PackagePresence;
 use crate::tui::panes::PackageSection;
+use crate::tui::panes::PackageVersion;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::pane_data::WorktreeGroupSummary;
 use crate::tui::test_support;
@@ -249,4 +256,238 @@ fn selected_descriptions_use_one_text_color_and_fill_each_row() -> anyhow::Resul
     })();
     tui_pane::set_active_theme(previous);
     result
+}
+
+#[test]
+fn narrow_package_structure_follows_path_and_disk() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.panes.package.set_content(PackageData {
+        path: "/tmp/workspace".to_string(),
+        disk: Some(73),
+        types: Some(vec![crate::project::ProjectType::Binary]),
+        stats_rows: vec![(crate::tui::constants::TARGET_KIND_BIN_LABEL, 2)],
+        test_rows: vec![("Total", 1)],
+        crates_io_rows: vec![("Version", "1.2.3".to_string())],
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 80)?;
+    let area = buffer.area;
+    let drawn: Vec<String> = (area.y..area.bottom())
+        .map(|y| {
+            (area.x..area.right())
+                .map(|x| buffer[(x, y)].symbol())
+                .collect()
+        })
+        .collect();
+    let path = test_support::find_text_cell(&buffer, area, "Path")
+        .ok_or_else(|| anyhow::anyhow!("the Path row"))?;
+    let disk = test_support::find_text_cell(&buffer, area, "Disk")
+        .ok_or_else(|| anyhow::anyhow!("the Disk row"))?;
+    let structure = test_support::find_text_cell(&buffer, area, "Structure")
+        .ok_or_else(|| anyhow::anyhow!("the Structure section: {drawn:?}"))?;
+    assert!(
+        structure.0 > path.0 && structure.0 > disk.0,
+        "Structure must label only its own column"
+    );
+    let divider = (path.0 + 1..structure.0)
+        .find(|x| buffer[(*x, disk.1)].symbol() == "│")
+        .ok_or_else(|| anyhow::anyhow!("the divider beside the metadata: {drawn:?}"))?;
+    assert_eq!(buffer[(divider, structure.1)].symbol(), "┬");
+    for title in ["Tests", "crates.io"] {
+        let section = test_support::find_text_cell(&buffer, area, title)
+            .ok_or_else(|| anyhow::anyhow!("the {title} section"))?;
+        assert_eq!(
+            section.0, structure.0,
+            "section titles must share one column"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn package_keeps_statistics_and_release_values_at_forty_columns() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(PackageData {
+        title: "Package".to_string(),
+        name: "alpha".to_string(),
+        path: "/tmp/alpha".to_string(),
+        disk: Some(73),
+        stats_rows: vec![(crate::tui::constants::TARGET_KIND_BIN_LABEL, 1)],
+        crates_io_rows: vec![
+            ("Version", "0.0.0".to_string()),
+            ("Downloads", "53".to_string()),
+        ],
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 40)?;
+    let path = test_support::position(&buffer, "Path")?;
+    let structure = test_support::position(&buffer, "Structure")?;
+    let (divider, y) = test_support::position(&buffer, "┬")?;
+    assert_eq!(y, structure.1);
+    assert!(path.0 < divider && divider < structure.0);
+    assert_eq!(buffer[(divider, path.1)].symbol(), "│");
+    let release = test_support::position(&buffer, "crates.io")?;
+    assert_eq!(release.0, structure.0);
+    for (label, value) in [("binary", "1"), ("Version", "0.0.0"), ("Downloads", "53")] {
+        let label = test_support::position(&buffer, label)?;
+        let row = &test_support::rows(&buffer)[usize::from(label.1)];
+        assert!(label.0 > divider);
+        assert!(row.trim_end_matches(['│', ' ']).ends_with(value), "{row}");
+    }
+    Ok(())
+}
+
+#[test]
+fn narrow_package_has_one_column_and_keeps_whole_disk_values() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.panes.package.set_content(PackageData {
+        title: "Workspace".to_string(),
+        disk: Some(25_662_849_843),
+        in_project_target: Some(0),
+        types: Some(vec![crate::project::ProjectType::Binary]),
+        stats_rows: vec![(crate::tui::constants::TARGET_KIND_BIN_LABEL, 1)],
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 21)?;
+    let disk = test_support::position(&buffer, "Disk")?;
+    let value = test_support::position(&buffer, "23.9 GiB")?;
+    assert_eq!(disk.1, value.1);
+    let project_type = test_support::position(&buffer, "Type")?;
+    assert!(test_support::rows(&buffer)[usize::from(project_type.1)].contains("binary"));
+    for y in 1..buffer.area.bottom() - 1 {
+        for x in 1..buffer.area.right() - 1 {
+            assert_ne!(buffer[(x, y)].symbol(), "│");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn package_without_description_titles_the_structure_column() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.panes.git.set_content(GitData {
+        description: Some("The repository description".to_string()),
+        ..GitData::default()
+    });
+    app.panes.package.set_content(PackageData {
+        stats_rows: vec![(crate::tui::constants::TARGET_KIND_BIN_LABEL, 1)],
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 80)?;
+    let (divider, y) = test_support::position(&buffer, "┬")?;
+    let (title, title_y) = test_support::position(&buffer, "Structure")?;
+    assert_eq!(y, 0);
+    assert_eq!(title_y, y);
+    assert!(title > divider);
+    assert_eq!(buffer[(divider, 1)].symbol(), "│");
+    app.panes.package.set_content(PackageData {
+        title: "Workspace".to_string(),
+        name: "cargo-liner-port".to_string(),
+        stats_rows: vec![(crate::tui::constants::TARGET_KIND_BIN_LABEL, 1)],
+        test_rows: vec![("unit", 5782)],
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 49)?;
+    let (divider, y) = test_support::position(&buffer, "┬")?;
+    let structure = test_support::position(&buffer, "Structure")?;
+    let tests = test_support::position(&buffer, "Tests")?;
+    assert_eq!(structure.0, tests.0);
+    assert_eq!(y, 0);
+    assert_eq!(buffer[(divider, 1)].symbol(), "│");
+    let title: String = (1..divider - 1).map(|x| buffer[(x, 0)].symbol()).collect();
+    assert!(title.trim_end().ends_with('…'), "{title}");
+    assert!(matches!(buffer[(divider - 1, 0)].symbol(), "─" | " "));
+    Ok(())
+}
+
+#[test]
+fn package_section_rules_join_the_right_border() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.panes.package.set_content(PackageData {
+        crates_io_rows: vec![("Version", "1.2.3".to_string())],
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 80)?;
+    let (_, y) = test_support::position(&buffer, "crates.io")?;
+    assert_eq!(buffer[(79, y)].symbol(), "┤");
+    Ok(())
+}
+
+#[test]
+fn narrow_package_fields_keep_values_and_wrap_section_words() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(PackageData {
+        types: Some(vec![crate::project::ProjectType::Binary]),
+        version: PackageVersion::Manifest("0.1.0".to_string()),
+        package_presence: PackagePresence::Present,
+        disk: Some(73),
+        in_project_target: Some(0),
+        in_project_non_target: Some(73),
+        primary_section: Some(PackageSection::PrimaryPackage),
+        worktree_group_summary: Some(WorktreeGroupSummary {
+            worktrees: 3,
+            deleted:   0,
+        }),
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 17)?;
+    for text in [
+        "Type",
+        "binary",
+        "Version",
+        "0.1.0",
+        "Primary",
+        "package",
+        "Worktree group",
+        "summary",
+        "Disk",
+        "target/",
+        "Other",
+        "73 B",
+        "0 B",
+    ] {
+        test_support::position(&buffer, text)?;
+    }
+    let primary = test_support::position(&buffer, "Primary")?;
+    assert!(test_support::rows(&buffer)[usize::from(primary.1 + 1)].contains("package"));
+    let group = test_support::position(&buffer, "Worktree group")?;
+    assert!(test_support::rows(&buffer)[usize::from(group.1 + 1)].contains("summary"));
+    Ok(())
+}
+
+#[test]
+fn wrapped_package_values_share_selection_and_row_hits() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(PackageData {
+        types: Some(vec![crate::project::ProjectType::Binary]),
+        ..PackageData::default()
+    });
+    app.panes.package.focus.pane_focus_state = PaneFocusState::Active;
+    test_support::draw_pane(&mut app, PaneId::Package, 17)?;
+    let rows =
+        panes::package_rows_from_data(app.panes.package.content().context("Package content")?);
+    let index = rows
+        .iter()
+        .position(|row| {
+            matches!(
+                row,
+                crate::tui::panes::PackageRow::Field(crate::tui::panes::DetailField::Targets)
+            )
+        })
+        .context("Type row")?;
+    app.panes.package.viewport.set_pos(index);
+    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 17)?;
+    let label = test_support::position(&buffer, "Type")?;
+    let value = test_support::position(&buffer, "binary")?;
+    assert_eq!(value.1, label.1 + 1);
+    assert_eq!(buffer[label].bg, buffer[value].bg);
+    assert_eq!(buffer[label].fg, buffer[value].fg);
+    for (x, y) in [label, value] {
+        assert!(matches!(app.panes.package.hit_test_at(Position::new(x, y)),
+            Some(crate::tui::hit_test::HoverTarget::PaneRow { pane: PaneId::Package, row }) if row == index));
+    }
+    Ok(())
 }

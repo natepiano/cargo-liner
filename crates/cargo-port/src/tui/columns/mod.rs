@@ -3,6 +3,7 @@ mod project;
 
 pub(super) use project::LintCell;
 pub(super) use project::LintColumnStatus;
+pub(super) use project::PROJECTS_HEADER;
 pub(super) use project::ProjectListWidths;
 pub(super) use project::ProjectRow;
 pub(super) use project::RowCells;

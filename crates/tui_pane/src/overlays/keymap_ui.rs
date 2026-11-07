@@ -113,6 +113,7 @@ struct KeymapLines {
 /// borrow-split inputs separately — sidestepping the lifetime
 /// conflict that arises from passing the same `App` for both.
 pub struct KeymapOverlayInputs {
+    color_mode:     crate::ColorMode,
     rows:           Vec<OverlayRow>,
     selectable_len: usize,
     column_width:   u16,
@@ -145,6 +146,7 @@ impl KeymapPane {
             .and_then(|width| u16::try_from(width.saturating_add(OVERLAY_RIGHT_PADDING_WIDTH)).ok())
             .unwrap_or(BASE_POPUP_WIDTH);
         KeymapOverlayInputs {
+            color_mode: ctx.framework().color_mode,
             rows,
             selectable_len,
             column_width,
@@ -202,6 +204,7 @@ impl KeymapPane {
         let height = keymap_popup_height(row_count, area.height);
 
         let popup = PopupFrame {
+            color_mode: inputs.color_mode,
             title: Some(" Keymap ".to_string()),
             border_color: title_color(),
             width,

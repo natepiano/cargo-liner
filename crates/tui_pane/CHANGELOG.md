@@ -26,6 +26,9 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Changed
 
+- Choose tile columns from the demand at each candidate width, and reuse the selected layout while its inputs stay equal.
+- Titled rules keep their title when the rule has four more cells than the title.
+- `PopupFrame` requires `color_mode`. It draws a thick, bold border for `NoColor` and a plain border for `Colored`.
 - Pass `ColorMode` to pane chrome, selection styles, overlays, and tile drawing.
 - Tile grids request a frame only when the drawn geometry or appearance changes; input uses the same last-painted record.
 - `handle_tile_scroll` gives each wheel step to an open settings, keymap or global shortcuts overlay through `wheel_framework_overlay` first; the tile behind the overlay does not scroll.

@@ -694,6 +694,7 @@ impl FavoritesOverlay {
             FavoritesOverlayState::Open(open_state) => open_state.content.saved_count(),
         };
         let popup = PopupFrame {
+            color_mode: mode,
             title: Some(favorites_heading(saved_count)),
             border_color: title_color(),
             width,

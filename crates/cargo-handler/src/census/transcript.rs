@@ -41,7 +41,6 @@ use notify::RecommendedWatcher;
 use notify::RecursiveMode;
 use notify::Watcher;
 use serde::Deserialize;
-use serde::Serialize;
 
 use super::AgentActivity;
 use crate::constants::ASSISTANT_LINE;
@@ -63,6 +62,9 @@ use crate::constants::TRANSCRIPT_SPAN_READ_LIMIT;
 use crate::constants::TRANSCRIPT_TAIL_GROWTH;
 use crate::constants::TRANSCRIPT_TAIL_START;
 use crate::constants::USER_LINE;
+use crate::footer_colors::FooterColors;
+use crate::footer_colors::FooterRole;
+use crate::footer_colors::FooterTint;
 
 /// A cursor owns the bytes fetched in one path generation.
 /// In `Following`, `offset` is the next unread file position and `pending`
@@ -508,76 +510,103 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-/// The responsibility read once from a subagent's metadata and description.
-#[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+/// The responsibility selected at the subagent metadata boundary.
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub(crate) enum SubagentRole {
-    Capture,
-    Review,
-    Lint,
+    Writer,
+    Reviewer,
+    Impl,
     Test,
+    Fix,
+    Capture,
+    Lint,
     Survey,
-    Specialist(SpecialistRole),
+    Plan,
+    Explore,
+    Showrunner,
+    Agent,
     #[default]
     Unrecorded,
 }
 
-/// A nonempty specialist type recorded by Claude.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(try_from = "String", into = "String")]
-pub(crate) struct SpecialistRole(String);
-
-impl TryFrom<String> for SpecialistRole {
-    type Error = &'static str;
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        let value = value.trim();
-        if value.is_empty() {
-            Err("empty subagent type")
-        } else {
-            Ok(Self(value.to_owned()))
-        }
-    }
-}
-
-impl From<SpecialistRole> for String {
-    fn from(role: SpecialistRole) -> Self { role.0 }
-}
-
 impl SubagentRole {
-    /// An explicit specialist type wins over the description's role words.
-    pub(crate) fn from_record(agent_type: &str, description: &str) -> Self {
-        let kind = agent_type.trim();
-        if !kind.is_empty() && kind != GENERAL_SUBAGENT_TYPE {
-            return Self::word(kind)
-                .unwrap_or_else(|| Self::Specialist(SpecialistRole(kind.to_owned())));
+    /// A name or specific type decides the role before the description.
+    pub(super) fn from_sources(
+        name: &str,
+        agent_type: &str,
+        spawned_agent_type: &str,
+        description: &str,
+    ) -> Self {
+        let name = name.trim();
+        if !name.is_empty() {
+            return Self::source_word(name).unwrap_or(Self::Agent);
         }
-        description
-            .split(|character: char| !character.is_alphanumeric())
+        for source in [agent_type, spawned_agent_type] {
+            let source = source.trim();
+            if !source.is_empty() && !source.eq_ignore_ascii_case(GENERAL_SUBAGENT_TYPE) {
+                return Self::source_word(source).unwrap_or(Self::Agent);
+            }
+        }
+        Self::source_word(description).unwrap_or_default()
+    }
+
+    /// Metadata tokens contain letters only, so numbered names keep whole role words.
+    fn source_word(source: &str) -> Option<Self> {
+        source
+            .split(|character: char| !character.is_alphabetic())
             .find_map(Self::word)
-            .unwrap_or_default()
     }
 
     fn word(word: &str) -> Option<Self> {
         match word.to_ascii_lowercase().as_str() {
-            "capture" | "capturing" => Some(Self::Capture),
-            "review" | "reviewing" | "reviewer" => Some(Self::Review),
-            "lint" | "linting" => Some(Self::Lint),
+            "writer" => Some(Self::Writer),
+            "reviewer" | "review" | "reviewing" => Some(Self::Reviewer),
+            "impl" => Some(Self::Impl),
             "test" | "testing" | "tester" => Some(Self::Test),
+            "fix" => Some(Self::Fix),
+            "capture" | "capturing" => Some(Self::Capture),
+            "lint" | "linting" => Some(Self::Lint),
             "survey" | "surveying" => Some(Self::Survey),
+            "plan" => Some(Self::Plan),
+            "explore" => Some(Self::Explore),
+            "showrunner" => Some(Self::Showrunner),
             _ => None,
         }
     }
 
-    pub(crate) fn text(&self) -> &str {
+    pub(crate) const fn text(&self) -> &'static str {
         match self {
-            Self::Capture => "capture",
-            Self::Review => "review",
-            Self::Lint => "lint",
+            Self::Writer => "writer",
+            Self::Reviewer => "reviewer",
+            Self::Impl => "impl",
             Self::Test => "test",
+            Self::Fix => "fix",
+            Self::Capture => "capture",
+            Self::Lint => "lint",
             Self::Survey => "survey",
-            Self::Specialist(role) => &role.0,
+            Self::Plan => "plan",
+            Self::Explore => "explore",
+            Self::Showrunner => "showrunner",
+            Self::Agent => "agent",
             Self::Unrecorded => "",
         }
     }
+
+    /// `SubagentRole::Showrunner` draws `FooterRole::Showrunner` ink.
+    /// Every other role draws `FooterTint::Plain`.
+    pub(crate) fn ink(&self, colors: &FooterColors) -> FooterTint {
+        match self {
+            Self::Showrunner => colors.role(FooterRole::Showrunner),
+            _ => FooterTint::Plain,
+        }
+    }
+}
+
+/// The metadata parent before placement resolves absent or finished subagents.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum SubagentParent {
+    OwningSession,
+    RecordedSubagent(String),
 }
 
 /// A subagent running inside a session.
@@ -586,8 +615,8 @@ pub(super) struct Subagent {
     /// The subagent's id, which a subagent it started names as its
     /// parent.
     pub(super) id:          String,
-    /// The id of the subagent that started this one, where one did.
-    pub(super) parent:      Option<String>,
+    /// The recorded subagent parent, or the owning session.
+    pub(super) parent:      SubagentParent,
     /// What the subagent was asked to do, else its kind.
     pub(super) description: String,
     pub(super) agent_type:  String,
@@ -606,13 +635,19 @@ pub(super) struct Subagent {
 struct SubagentMeta {
     /// What the subagent was asked to do.
     #[serde(default)]
-    description:     Option<String>,
+    description:        Option<String>,
     /// The subagent's kind, such as `general-purpose`.
     #[serde(default)]
-    agent_type:      Option<String>,
+    agent_type:         Option<String>,
+    /// The teammate name, when Claude records one.
+    #[serde(default)]
+    name:               Option<String>,
+    /// The type requested when Claude spawned the subagent.
+    #[serde(default)]
+    spawned_agent_type: Option<String>,
     /// The subagent that started this one.
     #[serde(default)]
-    parent_agent_id: Option<String>,
+    parent_agent_id:    Option<String>,
 }
 
 /// The directory generation attached to an OS subscription.
@@ -884,17 +919,26 @@ fn read_subagents(directory: &Path, reads: &mut SubagentReads) -> Vec<RecentSuba
                 .ok()
                 .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
                 .map_or(0, |since| since.as_secs());
+            let role = SubagentRole::from_sources(
+                meta.name.as_deref().unwrap_or_default(),
+                meta.agent_type.as_deref().unwrap_or_default(),
+                meta.spawned_agent_type.as_deref().unwrap_or_default(),
+                meta.description.as_deref().unwrap_or_default(),
+            );
+            let parent = meta.parent_agent_id.map_or(
+                SubagentParent::OwningSession,
+                SubagentParent::RecordedSubagent,
+            );
             let agent_type = meta.agent_type.unwrap_or_default();
             let description = meta
                 .description
                 .filter(|text| !text.is_empty())
                 .unwrap_or_else(|| id.clone());
-            let role = SubagentRole::from_record(&agent_type, &description);
             Some(RecentSubagent {
                 modified: metadata.modified().ok()?,
                 agent:    Subagent {
                     id,
-                    parent: meta.parent_agent_id,
+                    parent,
                     description,
                     agent_type,
                     role,
@@ -1468,7 +1512,7 @@ mod tests {
                 (
                     agent.id.as_str(),
                     agent.description.as_str(),
-                    agent.parent.as_deref(),
+                    agent.parent.clone(),
                 )
             })
             .collect();
@@ -1477,8 +1521,8 @@ mod tests {
             2,
             "the finished subagent is left out: {described:?}"
         );
-        assert!(described.contains(&("a1", "Review phase 1", None)));
-        assert!(described.contains(&("a2", "a2", Some("a1"))));
+        assert!(described.contains(&("a1", "Review phase 1", SubagentParent::OwningSession)));
+        assert!(described.contains(&("a2", "a2", SubagentParent::RecordedSubagent("a1".into()))));
         assert_eq!(
             running
                 .iter()

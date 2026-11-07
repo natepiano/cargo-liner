@@ -323,3 +323,36 @@ fn selected_description_reverses_every_inner_cell_without_color() -> anyhow::Res
     }
     Ok(())
 }
+
+#[test]
+fn sccache_popup_has_a_focused_border_without_color() -> anyhow::Result<()> {
+    const TEST: &str = "sccache_popup_has_a_focused_border_without_color";
+    if std::env::var_os(CHILD_ENV).is_none() {
+        let module = module_path!()
+            .split_once("::")
+            .context("the test module path")?
+            .1;
+        let output = Command::new(std::env::current_exe()?)
+            .args(["--exact", &format!("{module}::{TEST}")])
+            .env(CHILD_ENV, "1")
+            .env("NO_COLOR", "1")
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        return Ok(());
+    }
+    let mut app = test_support::stats_app(vec!["Cache hits  7".to_string()]);
+    app.framework.color_mode = ColorMode::NoColor;
+    let buffer = test_support::draw_stats(&mut app, TERMINAL_HEIGHT)?;
+    let inner = app.overlays.sccache_pane.viewport.content_area();
+    assert_eq!(buffer[(inner.x - 1, inner.y)].symbol(), "┃");
+    assert!(
+        buffer[(inner.x - 1, inner.y)]
+            .modifier
+            .contains(ratatui::style::Modifier::BOLD)
+    );
+    Ok(())
+}

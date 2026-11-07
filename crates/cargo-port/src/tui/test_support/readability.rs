@@ -5,6 +5,9 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use tui_pane::Appearance;
+use tui_pane::CpuBreakdown;
+use tui_pane::CpuCoreUsage;
+use tui_pane::CpuUsage;
 use tui_pane::PaneBorders;
 use tui_pane::ResolvedPane;
 use tui_pane::ResolvedPaneLayout;
@@ -42,6 +45,7 @@ pub(in crate::tui) fn target_data() -> TargetsData {
                     PROJECT.to_string(),
                 ),
                 project_path:      crate::project::AbsolutePath::from(PROJECT_PATH),
+                package_path:      crate::project::AbsolutePath::from(PROJECT_PATH),
                 package_name:      PROJECT.to_string(),
                 src_path:          crate::project::AbsolutePath::from(format!(
                     "{PROJECT_PATH}/src/main.rs"
@@ -79,6 +83,15 @@ pub(in crate::tui) fn draw_ui(app: &mut App, width: u16) -> anyhow::Result<Buffe
 }
 
 pub(in crate::tui) fn draw_pane(app: &mut App, pane: PaneId, width: u16) -> anyhow::Result<Buffer> {
+    draw_pane_at_size(app, pane, width, HEIGHT)
+}
+
+pub(in crate::tui) fn draw_pane_at_size(
+    app: &mut App,
+    pane: PaneId,
+    width: u16,
+    height: u16,
+) -> anyhow::Result<Buffer> {
     app.ensure_fit_widths_cached();
     app.ensure_disk_cache();
     let lookup = app.ci.status_lookup();
@@ -86,7 +99,7 @@ pub(in crate::tui) fn draw_pane(app: &mut App, pane: PaneId, width: u16) -> anyh
         .project_list
         .selected_project_path()
         .map(Path::to_path_buf);
-    let mut terminal = Terminal::new(TestBackend::new(width, HEIGHT))?;
+    let mut terminal = Terminal::new(TestBackend::new(width, height))?;
     terminal.draw(|frame| {
         frame.render_widget(
             ratatui::widgets::Block::default()
@@ -99,6 +112,7 @@ pub(in crate::tui) fn draw_pane(app: &mut App, pane: PaneId, width: u16) -> anyh
             &lookup,
             OverlayRenderInputs::none(),
             SyncedDescriptionHeight::default(),
+            app.empty_package_description(),
         );
         let layout = ResolvedPaneLayout::new(vec![ResolvedPane {
             pane,
@@ -160,4 +174,26 @@ pub(in crate::tui) fn shipped_dark_theme() -> anyhow::Result<Theme> {
         Appearance::Dark,
     );
     Ok(theme)
+}
+
+pub(in crate::tui) fn sampled_cpu_app(core_count: usize) -> App {
+    let mut app = project_app();
+    app.panes.cpu.install_sample_for_test(CpuUsage {
+        total_percent: 50,
+        cores:         (0..core_count)
+            .map(|index| CpuCoreUsage {
+                label:                               format!("CPU {}", index + 1),
+                percent:                             50,
+                #[cfg(target_os = "macos")]
+                cluster:                             None,
+            })
+            .collect(),
+        breakdown:     CpuBreakdown {
+            system: 10,
+            user:   40,
+            idle:   50,
+        },
+        gpu:           tui_pane::GpuUsage::default(),
+    });
+    app
 }
