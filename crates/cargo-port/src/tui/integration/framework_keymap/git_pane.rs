@@ -1,3 +1,5 @@
+use tui_pane::Visibility;
+
 use super::App;
 use super::AppPaneId;
 use super::Bindings;
@@ -37,6 +39,14 @@ impl Shortcuts<App> for GitPane {
     fn state(&self, git_action: GitAction, ctx: &App) -> ShortcutState {
         match git_action {
             GitAction::Activate => git_activate_state(ctx),
+        }
+    }
+
+    fn visibility(&self, _: Self::Actions, ctx: &App) -> Visibility {
+        if matches!(git_activate_state(ctx), ShortcutState::Enabled) {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
         }
     }
 

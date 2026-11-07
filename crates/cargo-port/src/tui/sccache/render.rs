@@ -57,6 +57,7 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
         .min(frame.area().width.saturating_sub(POPUP_HORIZONTAL_MARGIN));
     let height = popup_height(lines.len() + 1, frame.area().height);
     let popup = PopupFrame {
+        color_mode: mode,
         title: Some(" Sccache stats ".to_string()),
         border_color: title_color(),
         width,
@@ -67,6 +68,7 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
         height: popup.inner.height.saturating_sub(1),
         ..popup.inner
     };
+    let hints = whole_hints(&hints, popup.inner.width.saturating_sub(1));
     if popup.inner.height > 0 {
         frame.render_widget(
             Paragraph::new(hints),
@@ -108,6 +110,20 @@ pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App)
         ViewportOverflow::new(line_count, scroll_offset, visible_height, selected_line),
         Style::default().fg(label_color()),
     );
+}
+
+fn whole_hints(hints: &Line<'static>, width: u16) -> Line<'static> {
+    let text = hints.to_string();
+    let mut visible = String::new();
+    for hint in text.split(" · ") {
+        let separator = if visible.is_empty() { "" } else { " · " };
+        if visible.width() + separator.width() + hint.width() > usize::from(width) {
+            break;
+        }
+        visible.push_str(separator);
+        visible.push_str(hint);
+    }
+    Line::from(visible)
 }
 
 fn shortcut_hints(app: &App) -> Line<'static> {

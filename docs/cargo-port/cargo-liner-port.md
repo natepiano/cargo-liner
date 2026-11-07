@@ -435,7 +435,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Ruled out:** `force_color_output`.
 
-### Phase 4c — cargo-port's remaining screen defects read clearly  · status: todo
+### Phase 4c — cargo-port's remaining screen defects read clearly  · status: done
 
 **Depends on:** Phase 4b, Phase 4d (the Spec 20 popup border takes the colour mode value), Phase 4f
 
@@ -453,6 +453,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 - These existing assertions change. Record each one in an Assertion-Change line, and weaken no other assertion:
   - Spec 15: `narrow_ci_draws_only_complete_columns`, which requires `Branch` at width 24.
   - Spec 19: `sccache_reasons_explain_the_uncached_call`, `parse_stat_line_explains_raw_reason_keys`.
+  - Spec 24: the 60-column block in `tui/panes/project_list/column_fit_tests.rs`, which requires every column and a full-width Projects pane with Package, Git, CPU and CI runs gone. Showrunner ruling, 2026-11-06: the detail panes keep their Phase 4b minimum.
 - **Constraints from prior phases:**
   - Phase 4d: drawing code takes `tui_pane::ColorMode` as a value. `ColorMode::from_environment()` is the only read of `NO_COLOR`, and each app holds the value in `Framework::color_mode`. Spec 20's border in `crates/tui_pane/src/pane/popup.rs` takes the value from its caller. Tests state their mode.
   - Phase 4f: `ColorMode::clear_colors` in `tui_pane` clears cell colours and keeps text and modifiers. `prepare_terminal_buffer` calls it, and each app calls it after it draws.
@@ -467,6 +468,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
    - Availability belongs to each target's owning package. A workspace selection combines every member's cached targets (`tui/panes/targets/data.rs:242`), so a check of the selected workspace's `Visibility` cannot tell a Deleted member from a live member.
    - The Targets pane draws no row for a target of a Deleted package, and the run hint hides when no row remains. A whole Deleted project draws an empty pane. A live workspace keeps the rows of its live members.
    - Tests cover deletion, recreation, dismissal and rescan, a live workspace with both Deleted and live target owners, and the data path through normal selection and finder selection.
+   - When Targets has focus and loses its last row, focus moves to the next pane that takes focus, so one pane always shows focus. A live workspace that keeps a live member keeps its focus.
 2. **Right margin in every pane.** Dropped: today's look is not broken.
 3. **One column word.** Dropped: today's look is not broken.
 4. **One name for the disk cache.** Dropped: today's look is not broken.
@@ -474,7 +476,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 6. **Sections at 80 columns.** `├─ Structure ─┤` does not sit above `Path` and `Disk`. Section titles start in one column, and the divider draws its `┬` over the vertical line.
 7. **Page marks.** A CPU pane that shows part of its bars shows a page mark, or hides the bar row. The mark stays in the pane body, where it is today.
 8. **Status row gaps.** Dropped: today's look is not broken.
-9. **One description.** `No description …` does not show beside a pane that shows the description.
+9. **One description.** `No description …` does not show beside a pane that shows the description. With no description row, the divider and `Structure` move to the top border. A long Package title stops before that join, so the border draws its `┬`, and `Structure` starts in the same column as `Tests`.
 10. **sccache popup words.** Dropped: today's look is not broken.
 11. **Behind a popup.** A popup leaves no cut words or one-cell scraps behind it (`hQL`, `al`, `tem`, and `h`, `…`, `▶` at 80 columns): clear or dim all cells behind it.
 12. **Hints.** `enter activate` shows only on a row that acts on enter. Every other hint word and key case stays.
@@ -492,11 +494,20 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 24. **Project list columns stay.** User, 2026-11-06, on the change reviews of Phase 4b's selected row and narrow windows: "you're getting rid of columns before you make project names have an ellipipsis - columns should always be preserved - the project names should get ellipsis first". The user's window is about 95 columns wide, with long worktree names such as `proof_crate [claude-build-followups-sdlc-merge-gate/scripts/aws_target/pr…`, and shows only `Projects` and `Disk`.
    - Cause: Phase 4b's `ProjectListWidths::fitted` (`tui/columns/project.rs:366`) sets whole columns to width 0 while the name keeps its full measured width. It cuts the name only after that.
    - The name gives up its width first and takes the `…`. Its floor keeps the whole `Projects` heading and the cells that the `Lint` heading borrows.
-   - The Projects pane keeps half the window, as it does now. It takes more only when every column needs more with the name at its floor. `resolve_layout` and `top_pane_widths` (`tui/panes/layout.rs`) each hold `left_width.min(area.width / 2)`, and one function replaces both.
+   - The Projects pane keeps half the window, as it does now. It takes more only when every column needs more with the name at its floor. It never takes more than the width that leaves the detail panes their Phase 4b minimum; past that, columns drop in the order below. The minimum is 15 outer cells each for Package and Git, as Phase 4b drew them at 60 columns, so Projects takes at most the window width less 30 cells. At 60 columns the top row shows Projects (30 cells), Package and Git; the middle row follows the priority below; the bottom row shows Lints and CI runs. The narrow value rule applies at 15 inner cells and fewer. Showrunner, 2026-11-06: "4c must not remove what 4b showed. Detail panes at 60 are a 4b look, so they stay." `resolve_layout` and `top_pane_widths` (`tui/panes/layout.rs`) each hold `left_width.min(area.width / 2)`, and one function replaces both.
    - A column goes only when the window cannot draw it with the name at its floor. The order stays: `Main`, `Sync`, `Git`, `Type`, `CI`, `Lint`.
    - A row prefix wider than the name's floor does not push the row's other columns out of line.
    - Tests read the drawn buffer at widths 95 and 80, with short names and with the user's long worktree names: every heading is whole, each row's `Disk` value ends on one right edge, and each long name ends in `…`.
    - Showrunner, 2026-11-06: "at 80 columns, Targets takes CPU's place; CPU hides until there is room. Why: Targets is where the user acts (Enter runs a target); CPU is only a readout. Tab skips the hidden CPU pane as 4b's rule says." The middle row's priority is Targets, CPU, Languages. Targets needs fewer cells than CPU, so CPU never shows alone.
+   - Keeping the columns narrows Package and Git at 80 columns by three cells each. What Phase 4b drew whole stays whole on the same data, and the design check of 2026-11-06 lists the losses:
+     - A value that does not fit beside its label moves to the next row, as the Disk rows do: `Type binary`, `Version 0.1.0`, `Status ✨ clean`, `Incept` and `Latest` dates. A value too long for that row, such as a path, keeps its `…`.
+     - A label stays whole: `GraphQL`, not `Graph…`. A Package heading wraps at a word: `Primary package`, `Worktree group summary`.
+     - The Git worktrees table keeps `Branch` and its branch names whole before `Name`. `Bran` and `mast` are gone.
+     - The divider title and count stay at this width, as `├ Worktrees (3) ┤`. `rule_title_label` drops the title now. When the pane is narrower, the title gives up its padding first (`├ Worktrees (3)┤`) and then takes the `…`. A section divider never draws without its title.
+     - A page mark names the page that the pane draws. With two-row fields, Git page 2 reads `▲ 2 of 2`, not `▲ 1 of 2`.
+     - In Targets, Target takes its width before Source. `cargo-b… cargo-berth` and `proof_cra… proof_crate` show the name the user acts on, and Source takes the `…` or hides. Showrunner, 2026-11-06: "Targets is where the user acts".
+     - A cut name keeps its tree marks after the `…`: the group row keeps `🌲:3`, and the primary worktree keeps `(p)`. The tree prefix `├── ` does not count against the name's floor. Phase 4b showed `proof_crate 🌲:3` at 80 columns.
+     - A label and its moved value stay on one page. When the value does not fit on the page, the label moves to the next page with it. A table header keeps at least one row under it on its page.
 
 **Files:**
 - `crates/cargo-port/src/tui/` — the panes, the status text, the sccache popup and their tests
@@ -519,7 +530,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Goal:** the screen defects that the Phase 4c design check found outside the Phase 4c Work Order and that are wrong, clipped or unreadable are gone. Every other look stays as it is today.
 
-**Source:** Phase 4c design check, 2026-11-06, moved here by the production's rule that a phase fixes only its own change. Shots: `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4c/`.
+**Source:** Phase 4c design check, 2026-11-06, moved here by the production's rule that a phase fixes only its own change. Shots: `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4c_2/` and `shots_4c_3/` beside it.
 
 **Constraints:**
 - Phase 4b and 4c results stay as they are, except where a Spec below changes them.
@@ -543,6 +554,20 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 12. **Common words and one form.** Dropped: today's look is not broken.
 13. **Popup structure.** Dropped: today's look is not broken.
 14. **Selected-row inks.** Routed by the showrunner from cargo-handler's old Phase 25 Spec 10. At phase 18, cargo-port's selected-row inks on Default Dark measured under the floor of 4.5:1 by `covered_contrast`: CI circle 2.55:1, `Og` glyph 2.42:1, `Main` `☑` 2.10:1, disk text 4.25:1. Measure each on the tree. Fix only an ink that is still under the floor, and keep the look otherwise. If all pass, record `passes` and close this Spec.
+15. **Cut values show the cut.** Text that stops at a pane border ends with `…`, or the row fits the pane. Seen on the Phase 4b and Phase 4c shots: `verify-run-`, `sdlc-merge-`, and `origi` in the Remotes row.
+16. **Page mark and join.** A page mark on the Package bottom border stays clear of the `┴`, as in `1 of 2 ▼──┴`.
+17. **Disk parts.** After a run changes the Disk total, the Package pane updates `target/` and `Other` with it. The Phase 4c shot reads `Disk 4.4 MiB`, `target/ 0 B`, `Other 74 B`.
+18. **Same names.** Two roots with the same name (`proof_crate` in two folders) read `proof_cr…` twice at 95 and 80 columns, so the rows look the same. Show the part of the bracket text that differs. Showrunner, 2026-11-06: "Two rows that read the same are wrong." The Phase 4b shots `bracket95-1-selected` and `bracket80-1-selected` in `shots_4b_long/` already show the same cut labels, so this is older than Phase 4c.
+19. **Workspace sections at 80 columns.** The one-column Workspace pane shows no Structure rows (`members 8`, `lib 3`, `binary 5`) and no Tests rows on either page. Draw them below `CI`.
+20. **Selection on a new page.** When a page change shows new rows in a focused pane, a row on that page shows the selection.
+21. **Selection in two columns.** In the two-column Package pane, the selection bar covers both columns (`Path` with `members 8`). Mark only the selected item's column.
+22. **Last page mark.** The last Git page shows no `▼`: Git reads `▲ 2 of 2 ▼`. Package already reads `▲ 2 of 2` and stays.
+23. **Targets title.** Dropped: both title forms are correct (showrunner, 2026-11-06).
+24. **Empty Deleted panes.** Tab stops on an empty `Languages — deleted` pane, but an empty Targets pane gives focus away. Both empty panes follow the Targets rule.
+25. **Disk while loading.** At startup a project reads `0 B` and `Σ` reads `219 B` while sizes still load. Show a loading mark until the size is known.
+26. **Lints cache size.** The Settings Lints `Cache size` row reads `512 MiB 1 B / 512 MiB`, so the cap shows twice (Phase 4c shots, `color-8-settings` r35). Show the cap once: `1 B / 512 MiB`. Showrunner, 2026-11-07: "The cap shows twice, so the text is wrong."
+27. **Short Git description.** At 80x30 the Git description takes 6 of the 8 body rows, so one data row shows and Git reads `1 of 13 ▼` (Phase 4c shot `w80-2-row`; Phase 4b `shots_4b/w80-2-row.txt` also takes 6 rows). On a short pane, the description takes at most 2 rows and ends with `…`, so 5 data rows show after the divider. A tall pane keeps today's layout. Cap both the description budget and the synchronized height (`description.rs` takes their maximum). Send the short-pane threshold to the showrunner before the build. Drawn tests check the `…`, whole label and value pairs, the page labels, navigation, and aligned descriptions when both panes have text.
+28. **Targets Kind width.** At 80 columns every Source value reads `cargo-…` (Phase 4c shot `w80-2-row` r13-r17), and `binary` has two blank cells before it. Both column gaps are already one cell (`targets/constants.rs`). The cause: Kind keeps 8 cells for `example` (`targets/data.rs`), and the right-aligned `binary ` leaves its first cell blank. In a narrow layout, measure Kind from the table's real entries and header, with its trailing cell. Give the freed cell to Source, so the values differ (`cargo-b…`, `cargo-h…`). Keep Target priority and the wide layout. Drawn tests: Source text at 80 columns, the 60-column layout, mixed kinds (`example` stays whole), a hidden Source, and the unchanged 160-column table.
 
 **Files:**
 - `crates/cargo-port/src/tui/` — the panes, the popups, the status text and their tests

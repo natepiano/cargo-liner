@@ -127,7 +127,10 @@ pub struct TargetEntry {
     pub display_name:      String,
     pub run_target_kind:   RunTargetKind,
     pub source:            TargetSource,
+    /// The working directory for Cargo.
     pub project_path:      AbsolutePath,
+    /// The owning package directory from its Cargo manifest.
+    pub package_path:      AbsolutePath,
     pub package_name:      String,
     pub src_path:          AbsolutePath,
     /// Cargo `required-features` for this target, passed as `--features`
@@ -243,7 +246,11 @@ impl TargetsData {
             if !include_all_members && manifest_dir != Some(selected_path) {
                 continue;
             }
-            let source = if is_real_workspace && manifest_dir == Some(checkout_root) {
+            let Some(manifest_dir) = manifest_dir else {
+                continue;
+            };
+            let package_path = AbsolutePath::from(manifest_dir);
+            let source = if is_real_workspace && manifest_dir == checkout_root {
                 TargetSource::workspace_root(record.name.clone())
             } else {
                 TargetSource::member(record.name.clone())
@@ -257,14 +264,18 @@ impl TargetsData {
                         run_target_kind:   RunTargetKind::Binary,
                         source:            source.clone(),
                         project_path:      project_path.clone(),
+                        package_path:      package_path.clone(),
                         package_name:      record.name.clone(),
                         src_path:          target.src_path.clone(),
                         required_features: target.required_features.clone(),
                     });
                 }
                 if target.kinds.contains(&TargetKind::Example) {
-                    let category =
-                        example_category(manifest_dir, target.src_path.as_path(), &target.name);
+                    let category = example_category(
+                        Some(manifest_dir),
+                        target.src_path.as_path(),
+                        &target.name,
+                    );
                     let display_name = if category.is_empty() {
                         target.name.clone()
                     } else {
@@ -276,6 +287,7 @@ impl TargetsData {
                         run_target_kind: RunTargetKind::Example,
                         source: source.clone(),
                         project_path: project_path.clone(),
+                        package_path: package_path.clone(),
                         package_name: record.name.clone(),
                         src_path: target.src_path.clone(),
                         required_features: target.required_features.clone(),
@@ -288,6 +300,7 @@ impl TargetsData {
                         run_target_kind:   RunTargetKind::Bench,
                         source:            source.clone(),
                         project_path:      project_path.clone(),
+                        package_path:      package_path.clone(),
                         package_name:      record.name.clone(),
                         src_path:          target.src_path.clone(),
                         required_features: target.required_features.clone(),
@@ -433,6 +446,7 @@ mod target_list_tests {
             run_target_kind,
             source: TargetSource::workspace_root("demo".into()),
             project_path: AbsolutePath::from("/tmp"),
+            package_path: AbsolutePath::from("/tmp"),
             package_name: "demo".into(),
             src_path: AbsolutePath::from(format!("/tmp/{name}.rs")),
             required_features: Vec::new(),

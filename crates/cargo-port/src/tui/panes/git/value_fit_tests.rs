@@ -14,6 +14,7 @@ use super::GitPane;
 use super::render::SPLIT_ROW_MIN_INNER_WIDTH;
 use crate::constants::IN_SYNC;
 use crate::http::RateLimitQuota;
+use crate::tui::panes::EmptyDescriptionBehavior;
 use crate::tui::panes::GitCheckout;
 use crate::tui::panes::GitData;
 use crate::tui::panes::HeadRelation;
@@ -184,6 +185,7 @@ fn render_git_value(data: GitData, pane_width: u16) -> anyhow::Result<Vec<String
         ci_status_lookup:          &lookup,
         settings_render_inputs:    None,
         synced_description_height: SyncedDescriptionHeight::default(),
+        empty_package_description: EmptyDescriptionBehavior::ShowPlaceholder,
         output_presentation:       OutputPresentation::Hidden,
     };
     let mut pane = GitPane::new();

@@ -63,6 +63,7 @@ pub fn draw_settings<S: Copy>(
         .saturating_add(POPUP_BORDER_HEIGHT)
         .min(area.height);
     let popup = PopupFrame {
+        color_mode: mode,
         title: Some(SETTINGS_TITLE.to_string()),
         border_color: title_color(),
         width,

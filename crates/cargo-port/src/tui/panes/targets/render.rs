@@ -38,11 +38,11 @@ pub(super) fn render_targets_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut TargetsPane,
+    data: &TargetsData,
     mode: ColorMode,
 ) -> PaneFrameChrome {
-    if pane.content().is_some_and(TargetsData::has_targets) {
-        let data = pane.content().cloned().unwrap_or_default();
-        render_targets_with_data(frame, area, pane, &data, mode)
+    if data.has_targets() {
+        render_targets_with_data(frame, area, pane, data, mode)
     } else {
         render_empty_targets(frame, area, pane)
     }
@@ -87,7 +87,10 @@ fn render_targets_with_data(
     pane.viewport.set_len(table_len);
     let cursor = pane.viewport.pos();
 
-    let targets_title = build_targets_title(pane_focus_state, cursor, data);
+    let mut targets_title = build_targets_title(pane_focus_state, cursor, data);
+    if columns::display_width(&targets_title) > usize::from(area.width.saturating_sub(2)) {
+        targets_title = format!(" Targets ({table_len}) ");
+    }
     let mut pane_frame_chrome = PaneFrameChrome {
         title: targets_title,
         focused: matches!(pane_focus_state, PaneFocusState::Active),
@@ -224,8 +227,10 @@ fn compute_layout(target_entries: &[TargetEntry], content_width: u16) -> Layout 
     let source = source_col_width_from(target_entries);
     let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
     let text_budget = usize::from(content_width).saturating_sub(kind + gaps);
-    let minimum_target = TARGET_LEADING_PAD + columns::display_width(TARGET_HEADER);
-    let source = if source + minimum_target <= text_budget {
+    let target_wanted = target_col_width_from(target_entries);
+    let target = target_wanted.min(text_budget + usize::from(TARGET_TABLE_COLUMN_SPACING));
+    let source = source.min(text_budget.saturating_sub(target));
+    let source = if source >= columns::display_width(SOURCE_HEADER) {
         source
     } else {
         0
@@ -328,7 +333,6 @@ pub(in crate::tui::panes) fn minimum_width() -> u16 {
 
 /// Width of the Target column: the longest visible target label plus the
 /// leading pad, or the header if it is wider.
-#[cfg(test)]
 fn target_col_width_from(target_entries: &[TargetEntry]) -> usize {
     let max_entry_width = target_entries
         .iter()
@@ -373,6 +377,7 @@ mod tests {
             run_target_kind:   RunTargetKind::Example,
             source:            TargetSource::worktree(source_label.to_string()),
             project_path:      AbsolutePath::from("/tmp/demo"),
+            package_path:      AbsolutePath::from("/tmp/demo"),
             package_name:      "demo".to_string(),
             src_path:          AbsolutePath::from(format!("/tmp/demo/examples/{display_name}.rs")),
             required_features: Vec::new(),
@@ -426,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn target_table_shrinks_target_before_source_when_narrow() {
+    fn target_table_keeps_target_before_source_when_narrow() {
         let target_entries = vec![
             entry(
                 "long_target_name_that_will_not_fit",
@@ -442,11 +447,9 @@ mod tests {
 
         let layout = compute_layout(&target_entries, content_width);
 
-        assert_eq!(layout.source, source);
-        assert_eq!(layout.target, target_budget);
-        assert_eq!(
-            layout.name_max,
-            target_budget.saturating_sub(TARGET_LEADING_PAD)
-        );
+        let target = target_col_width_from(&target_entries);
+        assert_eq!(layout.target, target);
+        assert_eq!(layout.source, source + target_budget - target);
+        assert_eq!(layout.name_max, target.saturating_sub(TARGET_LEADING_PAD));
     }
 }

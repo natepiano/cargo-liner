@@ -70,7 +70,7 @@ fn normalize_stat_field(label: &str, value: &str, context: StatContext) -> (Stri
 
 fn normalize_reason_label(label: &str) -> String {
     match label {
-        "-" => "No reason reported".to_string(),
+        "-" => "Source read from standard input".to_string(),
         "-o" => "Output file named directly".to_string(),
         "missing output_dir" => "No output directory".to_string(),
         "multiple input files" => "Multiple input files".to_string(),
@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(
             parse_reason("-                                   297"),
             ParsedStatLine::Field {
-                label: "No reason reported".to_string(),
+                label: "Source read from standard input".to_string(),
                 value: "297".to_string(),
             },
         );

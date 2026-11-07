@@ -152,6 +152,7 @@ use super::keymap;
 use super::overlays::Overlays;
 use super::panes;
 use super::panes::BottomRow;
+use super::panes::EmptyDescriptionBehavior;
 use super::panes::OutputCopyAvailability;
 use super::panes::OutputPane;
 use super::panes::OutputPaneVisibility;
@@ -350,6 +351,7 @@ impl App {
             ci_status_lookup:          &lookup,
             settings_render_inputs:    None,
             synced_description_height: SyncedDescriptionHeight::default(),
+            empty_package_description: EmptyDescriptionBehavior::ShowPlaceholder,
             output_presentation:       OutputPresentation::derive(
                 self.inflight.owned_run().output_state(),
                 self.inflight.owned_run().running_label(),
@@ -648,21 +650,23 @@ impl App {
         }
     }
 
-    /// Split-borrow accessor for per-pane render dispatch.
-    /// Returns the `&mut Panes` plus the read-only refs the
-    /// dispatcher passes through to construct `PaneRenderCtx`. All
-    /// Split-borrow accessor for the tiled render loop. Returns the
-    /// `&mut` registry plus a fully-built `PaneRenderCtx` whose
-    /// borrows are disjoint from the registry's. The single split
-    /// pattern lets [`tui_pane::render_panes`] dispatch every tile
-    /// pane through one `PaneRegistry` impl, including Lint and Ci
-    /// which were on their own split paths before this phase.
-    ///
-    /// `selected_project_path`, `animation_elapsed`, and
-    /// `ci_status_lookup` are passed in because their construction
-    /// requires `&self` (multi-subsystem queries / a clone of CI
-    /// display-mode state), which has to be released before the
-    /// `&mut` split here.
+    /// Hide the empty Package description when Git shows a description.
+    pub(super) fn empty_package_description(&self) -> EmptyDescriptionBehavior {
+        if self
+            .panes
+            .git
+            .content()
+            .and_then(|data| data.description.as_deref())
+            .is_some_and(|text| !text.is_empty())
+        {
+            EmptyDescriptionBehavior::RenderNothing
+        } else {
+            EmptyDescriptionBehavior::ShowPlaceholder
+        }
+    }
+
+    /// Borrow the pane registry and its render context separately.
+    /// Compute shared queries before this mutable borrow.
     pub(super) fn split_for_render<'a>(
         &'a mut self,
         selected_project_path: Option<&'a Path>,
@@ -670,6 +674,7 @@ impl App {
         ci_status_lookup: &'a CiStatusLookup,
         overlay_inputs: OverlayRenderInputs<'a>,
         synced_description_height: SyncedDescriptionHeight,
+        empty_package_description: EmptyDescriptionBehavior,
     ) -> RenderBorrows<'a> {
         let Self {
             panes,
@@ -709,6 +714,7 @@ impl App {
             settings_render_inputs: overlay_inputs.settings,
             synced_description_height,
             output_presentation,
+            empty_package_description,
         };
         RenderBorrows {
             registry,
@@ -1317,11 +1323,9 @@ impl App {
                 }),
                 _ => false,
             },
-            PaneBehavior::DetailTargets => self
-                .panes
-                .targets
-                .content()
-                .is_some_and(panes::TargetsData::has_targets),
+            PaneBehavior::DetailTargets => {
+                self.panes.targets.has_available_targets(&self.project_list)
+            },
             PaneBehavior::Lints => {
                 matches!(self.output_pane_visibility(), OutputPaneVisibility::Hidden)
                     && self.lint.content().is_some_and(panes::LintsData::has_runs)
@@ -1511,6 +1515,7 @@ mod tests {
     use crate::tui::columns::ProjectListWidths;
     use crate::tui::dismiss_target::DismissTarget;
     use crate::tui::panes::CiFetchKind;
+    use crate::tui::panes::EmptyDescriptionBehavior;
     use crate::tui::panes::PREFIX_ROOT_COLLAPSED;
     use crate::tui::panes::PREFIX_ROOT_LEAF;
     use crate::tui::panes::PREFIX_WORKTREE_FLAT;
@@ -3004,10 +3009,23 @@ mod tests {
             type Setup = fn(&mut App);
             let cases: &[(AppPaneId, &[&str], Setup)] = &[
                 (AppPaneId::Package, &["activate"], |app| {
-                    app.panes.package.set_content(package_data_no_version());
+                    let mut data = package_data_no_version();
+                    data.crates_io_rows = vec![("Version", "0.1.0".to_string())];
+                    let position = panes::package_rows_from_data(&data)
+                        .iter()
+                        .position(|row| matches!(row, panes::PackageRow::CratesIo(_)))
+                        .expect("the fixture has a crates.io row");
+                    app.panes.package.set_content(data);
+                    app.panes.package.viewport.set_pos(position);
                 }),
                 (AppPaneId::Git, &["activate"], |app| {
-                    app.panes.git.set_content(GitData::default());
+                    app.panes.git.set_content(GitData {
+                        remotes: RemoteRows::Listed(vec![git_remote_with_url(
+                            "https://github.com/natepiano/demo",
+                        )]),
+                        ..GitData::default()
+                    });
+                    app.panes.git.viewport.set_pos(2);
                 }),
                 (AppPaneId::Targets, &["run", "release"], |app| {
                     app.panes.targets.set_content(targets_data_with_binary());
@@ -3205,7 +3223,8 @@ mod tests {
                     source:            crate::tui::panes::TargetSource::workspace_root(
                         "demo".into(),
                     ),
-                    project_path:      crate::project::AbsolutePath::from("/tmp/demo"),
+                    project_path:      super::test_path("~/demo"),
+                    package_path:      super::test_path("~/demo"),
                     package_name:      "demo".to_string(),
                     src_path:          crate::project::AbsolutePath::from("/tmp/demo/src/main.rs"),
                     required_features: Vec::new(),
@@ -4983,6 +5002,7 @@ mod tests {
                         &ci_status_lookup,
                         OverlayRenderInputs::none(),
                         SyncedDescriptionHeight::default(),
+                        app.empty_package_description(),
                     );
                     tui_pane::Renderable::render(
                         split.registry.lint,
@@ -5017,6 +5037,7 @@ mod tests {
                         &ci_status_lookup,
                         OverlayRenderInputs::none(),
                         SyncedDescriptionHeight::default(),
+                        app.empty_package_description(),
                     );
                     tui_pane::Renderable::render(
                         split.registry.ci,
@@ -6319,6 +6340,7 @@ mod tests {
                         &ci_status_lookup,
                         OverlayRenderInputs::none(),
                         SyncedDescriptionHeight::default(),
+                        app.empty_package_description(),
                     );
                     tui_pane::Renderable::render(
                         split.registry.git,
@@ -6479,6 +6501,7 @@ mod tests {
                             &lookup,
                             OverlayRenderInputs::none(),
                             SyncedDescriptionHeight::default(),
+                            app.empty_package_description(),
                         );
                         tui_pane::Renderable::render(
                             split.registry.package,
@@ -6706,6 +6729,7 @@ mod tests {
                         &ci_status_lookup,
                         OverlayRenderInputs::none(),
                         SyncedDescriptionHeight::default(),
+                        app.empty_package_description(),
                     );
                     let area = frame.area();
                     let chrome = tui_pane::Renderable::render(
@@ -8774,6 +8798,11 @@ mod tests {
         fn closing_output_releases_focus_to_a_visible_pane() {
             let project = test_support::make_package("demo", Path::new("/tmp/demo"));
             let mut app = make_app(&[project]);
+            super::panes::seed_single_example_metadata(
+                &app,
+                &AbsolutePath::from("/tmp/demo"),
+                "example",
+            );
             open_output(&mut app, &["alpha", "beta"]);
             assert_eq!(app.focused_pane_id(), PaneId::Output);
 
@@ -9073,11 +9102,9 @@ mod tests {
             assert_eq!(package.stats_rows, vec![("vendored", 2), ("binary", 1)]);
         }
 
-        /// Upsert minimal `WorkspaceMetadata` into `app`'s metadata store
-        /// for `project_path`, naming a single Example target so the Targets
-        /// pane becomes tabbable. Keeps the per-test setup out of line when
-        /// the test's focus is pane behavior, not metadata plumbing.
-        fn seed_single_example_metadata(
+        /// Add metadata with one Example target for `project_path`.
+        /// The target makes the Targets pane available to focus tests.
+        pub(super) fn seed_single_example_metadata(
             app: &App,
             project_path: &AbsolutePath,
             example_name: &str,
@@ -16718,6 +16745,8 @@ mod tests {
                     .all(|entry| entry.package_name == "hana")
             );
 
+            tui_test_support::draw_pane(&mut app, PaneId::Targets, 80)
+                .expect("draw the target rows before launch");
             app.panes.targets.viewport.set_pos(1);
             panes::dispatch_targets_action(TargetsAction::ReleaseBuild, &mut app);
             let pending = app
@@ -16773,6 +16802,8 @@ mod tests {
                 .iter()
                 .position(|entry| entry.package_name == "wasm_node_demo")
                 .expect("member example should be listed");
+            tui_test_support::draw_pane(&mut app, PaneId::Targets, 80)
+                .expect("draw the target rows before launch");
             app.panes.targets.viewport.set_pos(target_index);
             panes::dispatch_targets_action(TargetsAction::ReleaseBuild, &mut app);
 
@@ -17753,6 +17784,7 @@ mod tests {
             ci_status_lookup:          &holder.ci_status_lookup,
             settings_render_inputs:    None,
             synced_description_height: crate::tui::panes::SyncedDescriptionHeight::default(),
+            empty_package_description: EmptyDescriptionBehavior::ShowPlaceholder,
             output_presentation:       crate::tui::panes::OutputPresentation::derive(
                 app.inflight.owned_run().output_state(),
                 app.inflight.owned_run().running_label(),

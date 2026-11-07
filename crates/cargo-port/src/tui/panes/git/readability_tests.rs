@@ -1,11 +1,25 @@
+use anyhow::Context;
+use ratatui::layout::Position;
+use tui_pane::ColorMode;
+use tui_pane::Hittable;
 use tui_pane::PaneFocusState;
 
 use crate::http::RateLimitQuota;
+use crate::project::CommitDate;
+use crate::project::Comparison;
+use crate::project::FirstCommit;
+use crate::project::GitStatus;
+use crate::project::TrackedRef;
 use crate::tui::panes;
+use crate::tui::panes::DetailField;
 use crate::tui::panes::GitCheckout;
 use crate::tui::panes::GitData;
 use crate::tui::panes::HeadRelation;
 use crate::tui::panes::PaneId;
+use crate::tui::panes::pane_data::GitProbe;
+use crate::tui::panes::pane_data::RemoteRow;
+use crate::tui::panes::pane_data::RemoteRows;
+use crate::tui::panes::pane_data::WorktreeInfo;
 use crate::tui::state::AvailabilityStatus;
 use crate::tui::test_support;
 
@@ -117,4 +131,172 @@ fn selected_git_countdown_keeps_selection_ink_on_both_fills() -> anyhow::Result<
     })();
     tui_pane::set_active_theme(previous);
     result
+}
+
+#[test]
+fn narrow_git_fields_keep_labels_values_and_dates() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.git.set_content(GitData {
+        checkout: GitCheckout::Branch {
+            name:     "master".to_string(),
+            relation: HeadRelation::Default,
+        },
+        status: Some(GitStatus::Clean),
+        inception: FirstCommit::Probed(CommitDate::At("2026-11-06 08:21".to_string())),
+        last_commit: GitProbe::Probed(CommitDate::At("2026-11-06 15:13".to_string())),
+        rate_limit_graphql: Some(RateLimitQuota {
+            used:      374,
+            remaining: 4626,
+            limit:     5000,
+            reset_at:  None,
+        }),
+        ..GitData::default()
+    });
+    let buffer = test_support::draw_pane(&mut app, PaneId::Git, 17)?;
+    for text in [
+        "Status",
+        "✨ clean",
+        "Branch",
+        "master",
+        "GraphQL",
+        "4626",
+        "Incept",
+        "Latest",
+        "2026-11-06",
+    ] {
+        test_support::position(&buffer, text)?;
+    }
+    let status = test_support::position(&buffer, "Status")?;
+    let clean = test_support::position(&buffer, "✨ clean")?;
+    assert_eq!(clean.1, status.1 + 1);
+    Ok(())
+}
+
+#[test]
+fn wrapped_git_values_share_selection_and_row_hits() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.git.set_content(GitData {
+        status: Some(GitStatus::Clean),
+        ..GitData::default()
+    });
+    app.panes.git.focus.pane_focus_state = PaneFocusState::Active;
+    let fields = panes::git_fields_from_data(app.panes.git.content().context("Git content")?);
+    let index = fields
+        .iter()
+        .position(|field| field.label() == "Status")
+        .context("Status field")?;
+    app.panes.git.viewport.set_pos(index);
+    let buffer = test_support::draw_pane(&mut app, PaneId::Git, 17)?;
+    let label = test_support::position(&buffer, "Status")?;
+    let value = test_support::position(&buffer, "✨ clean")?;
+    assert_eq!(value.1, label.1 + 1);
+    assert_eq!(buffer[label].bg, buffer[value].bg);
+    assert_eq!(buffer[label].fg, buffer[value].fg);
+    for (x, y) in [label, value] {
+        assert!(matches!(app.panes.git.hit_test_at(Position::new(x, y)),
+            Some(crate::tui::hit_test::HoverTarget::PaneRow { pane: PaneId::Git, row }) if row == index));
+    }
+    Ok(())
+}
+
+#[test]
+fn narrow_worktree_table_keeps_its_title_and_branch_with_a_remote() -> anyhow::Result<()> {
+    for with_remote in [false, true] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        let remote = RemoteRow {
+            name:            "origin".to_string(),
+            icon:            "",
+            display_url:     "github.com/nate/proof".to_string(),
+            branch:          "master".to_string(),
+            tracked_ref:     TrackedRef::Untracked,
+            status:          Comparison::NotCompared,
+            full_url:        None,
+            push_annotation: None,
+        };
+        let data = GitData {
+            worktrees: ["master", "verify-long", "sdlc-merge"]
+                .into_iter()
+                .map(|branch| WorktreeInfo {
+                    name:         "proof_crate".to_string(),
+                    path:         "/tmp/proof".to_string(),
+                    branch:       Some(branch.to_string()),
+                    tracked:      None,
+                    ahead_behind: Comparison::NotCompared,
+                })
+                .collect(),
+            remotes: RemoteRows::Listed(if with_remote {
+                vec![remote.clone()]
+            } else {
+                vec![]
+            }),
+            ..GitData::default()
+        };
+        app.panes.git.set_content(data);
+        let buffer = test_support::draw_pane(&mut app, PaneId::Git, 17)?;
+        test_support::position(&buffer, "├ Worktrees (3) ┤")?;
+        for text in ["Branch", "master", "verify…", "sdlc-m…", "proo…"] {
+            test_support::position(&buffer, text)?;
+        }
+        for y in 1..buffer.area.bottom() - 1 {
+            assert!(matches!(buffer[(16, y)].symbol(), "│" | "┤"));
+        }
+        if with_remote {
+            let (_, remote_y) = test_support::position(&buffer, "origin")?;
+            app.panes.git.set_content(GitData {
+                remotes: RemoteRows::Listed(vec![remote]),
+                ..GitData::default()
+            });
+            let remote_only = test_support::draw_pane(&mut app, PaneId::Git, 17)?;
+            let (_, baseline_y) = test_support::position(&remote_only, "origin")?;
+            let rows = test_support::rows(&buffer);
+            let baseline = test_support::rows(&remote_only);
+            assert_eq!(
+                rows[usize::from(remote_y)],
+                baseline[usize::from(baseline_y)]
+            );
+            assert_eq!(
+                rows[usize::from(remote_y - 1)],
+                baseline[usize::from(baseline_y - 1)]
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn wrapped_worktree_error_continuation_selects_its_field() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.git.set_content(GitData {
+        checkout: GitCheckout::Broken,
+        status: Some(GitStatus::Clean),
+        ..GitData::default()
+    });
+    app.panes.git.focus.pane_focus_state = PaneFocusState::Active;
+    let fields = panes::git_fields_from_data(app.panes.git.content().context("Git content")?);
+    let index = fields
+        .iter()
+        .position(|field| *field == DetailField::WorktreeError)
+        .context("Worktree error field")?;
+    let buffer = test_support::draw_pane(&mut app, PaneId::Git, 40)?;
+    let label = test_support::position(&buffer, "Error")?;
+    let continuation = test_support::position(&buffer, "missing")?;
+    assert_eq!(continuation.1, label.1 + 1);
+    let position = Position::new(continuation.0, continuation.1);
+    assert!(matches!(app.panes.git.hit_test_at(position),
+        Some(crate::tui::hit_test::HoverTarget::PaneRow { pane: PaneId::Git, row }) if row == index));
+    app.panes.git.viewport.set_pos(index + 1);
+    assert!(crate::tui::interaction::handle_click(
+        &mut app,
+        position,
+        crate::tui::interaction::ClickMode::Dispatch,
+    ));
+    assert_eq!(app.panes.git.viewport.pos(), index);
+    let selected = test_support::draw_pane(&mut app, PaneId::Git, 40)?;
+    assert_eq!(selected[label].bg, selected[continuation].bg);
+    assert_eq!(selected[label].fg, selected[continuation].fg);
+    Ok(())
 }
