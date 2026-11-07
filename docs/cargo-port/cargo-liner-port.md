@@ -487,51 +487,26 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 ### Phase 4g — The rate-limit countdown never stops at 0s  · status: done
 
-**Depends on:** Phase 4e (both edit the Git pane render path in `crates/cargo-port/src/tui/panes/`)
+#### As-built
 
-#### Work Order
-
-**Goal:** after a GitHub rate-limit window resets, the Git pane shows the new quota and never shows `resets 0s`. Each rate-limit row keeps its `/<limit>` when it fits.
-
-**Source:** Phase 4e design check, 2026-11-07: the shots `gate-1`, `gate-2` and `gate-3` in `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4e_1/` read `Core 4629/5000 resets 0s` (r2 c110), and the value stays there. Older than Phase 4e. Showrunner, 2026-11-07: "It is a wrong value, so it is a fix under the look rule."
-
-Phase 4e design check of `shots_4e_3`, 2026-11-07: `long95-1-expanded` r6-r7 c74 reads `Core     4739` and `GraphQL  4878` with 8 blank cells. `Core     4739/5000` needs 18 of the 21 inner cells. `shots_4c_7` shows the same, so it is older than Phase 4e. Without the limit, the count has no meaning.
-
-Phase 4e design check of `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4e_4/`, 2026-11-07: `color-3-deleted-selected` r2 c116 reads `Stars    github unreachable` in yellow and r3 c125 `(github unreachable)` in red. A non-git package gets a `Stars` row with no data. The toast and the CI runs title write `GitHub`. Older than Phase 4e.
-
-**Cause:** `crates/cargo-port/src/tui/panes/pane_data/formatting.rs` `format_rate_limit_bucket` computes `reset_at.saturating_sub(now)`, so a passed reset reads `0s`. Nothing fetches the quota again when the reset time passes.
-
-**Constraints:**
-- Change no other look.
-- One extra fetch per passed reset, no more. Name its cost in the checkpoint notice.
-
-**Spec:**
-1. **Refetch once.** When a bucket's reset time passes, fetch the quota once.
-2. **No 0s.** From the reset time until the new data arrives, the row shows `<remaining>/<limit>` with no `resets` text. It never shows `resets 0s`.
-3. **Test.** A drawn test with a clock past the reset time shows no `resets` text, and a test shows that one fetch is requested.
-4. **Limit when it fits.** A row shows `<remaining>/<limit>` when it fits the pane, and adds the reset time when that fits too. Only a pane too narrow for `/<limit>` shows the bare count. A drawn test at 95 columns reads `4739/5000`.
-5. **Unreachable once.** When GitHub cannot be reached, the Git pane says so once, on one shared row, as `GitHub unreachable`, in one colour. `git/render.rs` `build_field_value` adds the second text today (Astra review, 2026-11-07). A project with no GitHub repo draws no `Stars` row. A drawn test reads one `GitHub unreachable` and no `Stars` row for a non-git project.
-6. **The new quota reaches the screen.** A quota fetch updates shared storage, but `app/navigation/cache.rs:77` rebuilds Git data only after a generation change. Schedule a wake at the reset time and invalidate the Git data when the fetch completes. Keep Phase 3's idle draw suppression: no draw while nothing changed. Test expiry and completion with no input, a failed fetch, a repeated expired reply, and a service-recovery request at the same time.
-7. **GitHub applicability is a type.** `GitData.stars: Option<u64>` cannot tell a non-GitHub repository from pending data. Replace it with a semantic type (for example: not GitHub, pending, measured count, unreachable) that `build_git_detail_fields` carries to the render. Test a non-GitHub repository, pending stars, a measured zero, cached stars, an outage and the recovery, through the application boundary.
-
-**Constraints from prior phases:**
-- Phase 4j edits `git/render.rs` after this phase. Keep the Worktrees table code unchanged here.
-- New drawing tests set `ColorMode` explicitly.
-- Name each test for the behavior it pins; never put a phase or finding id in a test name.
+- At a GitHub quota reset the app wakes with no input, fetches `/rate_limit`, and invalidates the Git data so the pane redraws. When the reply still carries the old window, `quota_refresh.rs` fetches again every 10 s (`RESET_RETRY_INTERVAL`), at most 3 times (`ResetRetries::{One, Two, Three}`, `ResetRetrySchedule::{Due, Exhausted}`), then waits for the regular poll. A reset costs up to 4 quota-exempt requests, typically 2.
+- A rate-limit row shows `<remaining>/<limit>` when it fits and adds `resets <time>` when that fits too. A reset at or before now shows no `resets` text.
+- `GitData` carries a GitHub applicability type (not GitHub, pending, measured, unreachable) to the render. An outage shows one `GitHub unreachable` row in one colour; a package outside GitHub has no `Stars` row.
+- Idle draw suppression holds: nothing draws while nothing changed.
 
 **Files:**
-- `crates/cargo-port/src/tui/panes/pane_data/` — the rate-limit text and its tests
-- `crates/cargo-port/src/tui/state/net.rs`, `crates/cargo-port/src/tui/startup_services.rs`, `crates/cargo-port/src/tui/app/` — the quota fetch, its wake and the Git data invalidation (`app/navigation/cache.rs`)
-- `crates/cargo-port/src/tui/panes/git/` — the outage row, the Stars row, the GitHub applicability type and their tests
+- `crates/cargo-port/src/tui/app/async_tasks/quota_refresh.rs` — the reset wake and the retry schedule
+- `crates/cargo-port/src/tui/app/async_tasks/quota_completion_tests.rs`, `crates/cargo-port/src/tui/app/quota_transition_tests.rs`, `crates/cargo-port/src/tui/terminal/quota_wake_tests.rs` — fake-clock reset, completion and wake tests
+- `crates/cargo-port/src/tui/panes/pane_data/` — the rate-limit text, the applicability type and `rate_limit_tests.rs`
+- `crates/cargo-port/src/tui/panes/git/render.rs` — the outage row and the rate-limit fit
+- `crates/cargo-port/src/tui/terminal/event_loop.rs`, `crates/cargo-port/src/tui/state/net.rs`, `crates/cargo-port/src/tui/startup_services.rs` — the wake and fetch wiring
 - `crates/cargo-port/CHANGELOG.md`
 
-**Workers:** 1 writer + 1 tester
-- Writer: production files and tests inside production files.
-- Tester: a new `*_tests.rs` file beside the rate-limit text, the event-loop tests for the reset wake and fetch completion, and the quota-transition tests.
+**Binds later work:** the reset retry (fetch at the reset time, then at most 3 retries 10 s apart) and its quota presentation stay as they are. Git pane work builds on the GitHub applicability type.
 
-**State:** none.
+**Gotchas:** GitHub's `/rate_limit` can return the old window for seconds after its reset time; the retry exists for this.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. A live shot after a reset time passes shows no `resets 0s`.
+**Ruled out:** one fetch at the reset time only; a stale countdown until the next regular poll.
 
 ### Phase 4h — The startup toast marks hidden rows with a page mark  · status: done
 
