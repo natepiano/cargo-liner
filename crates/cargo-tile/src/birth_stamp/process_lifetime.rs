@@ -20,6 +20,24 @@ pub(crate) struct ProcessLifetime {
 }
 
 impl ProcessLifetime {
+    /// Discovery already read this kernel birth counter with the process fields.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn linux(ticks: u64) -> LifetimeEvidence {
+        Self::linux_with_boot(ticks, linux::boot())
+    }
+
+    /// Convert the shared boot read without turning missing identity into process absence.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn linux_with_boot(ticks: u64, boot: &std::io::Result<String>) -> LifetimeEvidence {
+        match boot {
+            Ok(boot) if !boot.trim().is_empty() => LifetimeEvidence::Available(Self {
+                boot:  boot.trim().to_owned(),
+                birth: ticks,
+            }),
+            Ok(_) | Err(_) => LifetimeEvidence::Unavailable,
+        }
+    }
+
     /// Preserve the entire timeval where registration comparison keeps seconds only.
     #[cfg(any(target_os = "macos", test))]
     pub(super) fn macos(boot: String, birth: Duration) -> LifetimeEvidence {

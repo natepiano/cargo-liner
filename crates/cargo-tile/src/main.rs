@@ -17,6 +17,8 @@ mod constants;
 mod hook;
 mod interaction;
 mod keymap;
+#[cfg(target_os = "linux")]
+mod linux_process_stat;
 mod probe;
 mod progress;
 mod registration;
