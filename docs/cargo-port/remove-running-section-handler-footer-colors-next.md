@@ -10,7 +10,8 @@ Approved next items from `remove-running-section-handler-footer-colors.md`. Each
 From C82 (worker rows show their job), confirmed live and landed. A small polish phase after Phase 36.
 1. Codex row names repeat the role word ("impl · Phase 1 – Footer colors…", "fix · …", "test · …"). The role column already shows impl/fix/test, so the name drops the "<role> · " prefix.
 2. Slot text shows as a job ("impl · names-unit-1 — slot impl", "impl · Style ticket types-unit-2 — slot `i…"). The name drops a trailing "— slot <x>". When nothing is left, the row shows the ticket ("ticket types-unit-2").
-Tests: one red-first test for each. The checkpoint adds a Change-Review line.
+3. Since Phase 67, a staff name replaces the fallback name and takes precedence over job text (`census/classify.rs` ≈216, `agent_cell.rs` ≈1361). Change only task-derived fallback names; keep staff names exactly.
+Tests: one red-first test for each removal, and one that a staff name stays unchanged. The checkpoint adds a Change-Review line.
 
 ### Each app shows its own CPU % before Uptime  · status: next (showrunner 2026-10-28, after Phase 36 and the CPU cost fixes; lower priority than other work)
 
