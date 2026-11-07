@@ -207,12 +207,13 @@ mod tests {
     }
 
     /// The captured overlay rows.
-    const EXPECTED_OVERLAY_ROWS: [&str; 110] = [
+    const EXPECTED_OVERLAY_ROWS: [&str; 111] = [
         "[Global Navigation] global",
         "global.next_pane = tab",
         "global.prev_pane = shift-tab",
         "[Global Shortcuts] global",
         "global.add_tile = +",
+        "global.clear_word = escape",
         "global.collapse_all = -",
         "global.collapse_row = left",
         "global.dismiss = x",

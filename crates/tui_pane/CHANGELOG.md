@@ -9,6 +9,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- `CellPress` forwards tile title presses through `TileGridHost::cell_pressed` and preserves the content hook for existing hosts.
 - `SummaryFoot::WithOptionalSuffix` preserves the prefix when the suffix does not fit.
 - `StatusLineGlobal::fixed` uses the shared hint renderer for fixed modal keys.
 - `TileGrid::prepare_covered` updates covered grid geometry without painting. `cell_travel_duration` exposes the shared travel duration.

@@ -77,6 +77,7 @@ use super::constants::TABLE_CELL;
 use super::draw;
 use super::draw::TileMeasurements;
 use super::growth::TileGrowth;
+use super::host;
 use super::settings::CellRowDemand;
 use super::settings::SummaryRowAllocation;
 use super::settings::TileSettings;
@@ -3790,28 +3791,15 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
 
     /// Resolve the topmost painted piece before letting input change focus.
     pub(super) fn cell_hit(&self, pos: Position) -> CellHit<Id> {
-        let LastPainted::Painted { visual, .. } = &self.last_painted else {
-            return self
-                .cell_at(pos)
-                .and_then(|index| {
-                    let grid = self.resolved_grid(self.area, &self.drawn_held(), self.growth);
-                    let frame = PaneFrame::new(if self.display() == GridDisplay::SummaryAlone {
-                        self.area
-                    } else {
-                        grid.cell(index)?
-                    });
-                    let content = cells(&self.slots)
-                        .into_iter()
-                        .find_map(|(content, cell)| (cell == index).then_some(content))?;
-                    Some(CellHit::Current {
-                        index,
-                        content,
-                        frame,
-                    })
-                })
-                .unwrap_or(CellHit::Missed);
+        let initial_drawing;
+        let drawing = match &self.last_painted {
+            LastPainted::Painted { visual, .. } => &visual.drawing,
+            LastPainted::NeverPainted => {
+                initial_drawing = self.drawing(self.area, self.growth);
+                &initial_drawing
+            },
         };
-        let Some(piece) = visual.drawing.pieces.iter().rev().find(|piece| {
+        let Some(piece) = drawing.pieces.iter().rev().find(|piece| {
             draw::has_visible_body_row(piece.placement.frame)
                 && piece.placement.frame.clip().contains(pos)
         }) else {
@@ -3835,6 +3823,26 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             content,
             frame: piece.placement.frame,
         }
+    }
+
+    /// Visible content and title rectangles from the last painted current tiles.
+    /// Borders and reserved readout rows do not belong to these rectangles.
+    #[must_use]
+    pub fn pointer_regions(&self) -> Vec<Rect> {
+        let LastPainted::Painted { visual, .. } = &self.last_painted else {
+            return Vec::new();
+        };
+        visual
+            .drawing
+            .pieces
+            .iter()
+            .filter(|piece| draw::has_visible_body_row(piece.placement.frame))
+            .filter(|piece| match &piece.identity {
+                CellIdentity::Summary => true,
+                CellIdentity::Slot(slot) => cell_of(&self.slots, slot).is_some(),
+            })
+            .flat_map(|piece| host::painted_regions(piece.placement.frame))
+            .collect()
     }
 
     /// Every piece and column frame to draw at one reading of the

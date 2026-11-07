@@ -572,6 +572,7 @@ pub use tiles::CellClick;
 pub use tiles::CellContentExtent;
 pub use tiles::CellFadeProgress;
 pub use tiles::CellPoint;
+pub use tiles::CellPress;
 pub use tiles::CellReadoutFade;
 pub use tiles::CellTravel;
 pub use tiles::FocusLocation;

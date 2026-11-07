@@ -296,6 +296,11 @@ pub(super) fn interactive_accounts() -> App {
 }
 
 pub(super) fn paint_accounts_viewport(app: &mut App, width: u16, height: u16) -> Buffer {
+    // Read the selection frame after Esc clears the word match.
+    tui_pane::dispatch_key(
+        app,
+        crossterm::event::KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE),
+    );
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
         .expect("test terminal");
     let keymap = app.keymap();

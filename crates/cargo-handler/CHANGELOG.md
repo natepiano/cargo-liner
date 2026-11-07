@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Click a word to highlight matching words across tile content and titles. Esc or a repeated word click clears the highlight.
+
 - Click a row marker to toggle its children. Use digits 0 to 9 to set the focused tile depth.
 
 - Codex windows without a proven thread show their herdr pane name or tab label.

@@ -19,6 +19,7 @@ mod summary;
 mod terminal;
 mod theme;
 mod tiles;
+mod word_highlight;
 
 use std::process::ExitCode;
 
