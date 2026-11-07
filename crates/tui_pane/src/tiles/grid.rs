@@ -6533,7 +6533,9 @@ mod tests {
     use ratatui::layout::Margin;
     use ratatui::style::Color;
 
+    use super::draw::TileMeasurements;
     use super::*;
+    use crate::ColorMode;
     use crate::TileGridContents;
     use crate::tiles::constants::LARGE_CONTENT_TEST_CELLS;
     use crate::tiles::constants::LARGE_CONTENT_TEST_HEIGHT;
@@ -6592,10 +6594,13 @@ mod tests {
                 &mut buffer,
                 area,
                 &drawing,
-                &cells.0,
-                &widths,
+                &TileMeasurements {
+                    demands: &cells.0,
+                    widths:  &widths,
+                },
                 TileGridContents::Shown,
                 &cells,
+                ColorMode::Colored,
             );
             if buffer != last_buffer {
                 assert_eq!(due, crate::Repaint::Needed, "visible motion at {raw}");
@@ -6629,6 +6634,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &MotionPaintCells(demands),
+            ColorMode::Colored,
         );
         let mut frames = 0;
         for _ in 0..32 {
@@ -6645,7 +6651,9 @@ mod tests {
     }
 
     mod motion_rules {
+        use super::draw::TileMeasurements;
         use super::*;
+        use crate::ColorMode;
         use crate::TileCells;
         use crate::tiles::constants::COLUMN_FOOT_TEST_AREA;
         use crate::tiles::constants::COLUMN_FOOT_TEST_MIN_HEIGHT;
@@ -6761,10 +6769,13 @@ mod tests {
                 &mut buffer,
                 area,
                 &drawing,
-                &demands,
-                &widths,
+                &TileMeasurements {
+                    demands: &demands,
+                    widths:  &widths,
+                },
                 TileGridContents::Shown,
                 cells,
+                ColorMode::Colored,
             );
             (drawing, buffer)
         }
@@ -8017,6 +8028,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             cells,
+            ColorMode::Colored,
         );
     }
 

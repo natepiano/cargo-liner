@@ -13,6 +13,7 @@ use crate::Action;
 use crate::AppContext;
 use crate::Appearance;
 use crate::Bindings;
+use crate::ColorMode;
 use crate::Framework;
 use crate::GlobalShortcutsPane;
 use crate::Globals;
@@ -76,7 +77,7 @@ fn keymap() -> Keymap<ShortcutApp> {
 fn draw(pane: &mut GlobalShortcutsPane, keymap: &Keymap<ShortcutApp>, height: u16) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(110, height)).expect("overlay terminal");
     terminal
-        .draw(|frame| pane.render(frame, frame.area(), keymap))
+        .draw(|frame| pane.render(frame, frame.area(), keymap, ColorMode::Colored))
         .expect("overlay frame");
     terminal.backend().buffer().clone()
 }

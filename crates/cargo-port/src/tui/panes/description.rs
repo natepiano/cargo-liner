@@ -12,7 +12,7 @@
 //! - [`DescriptionBlock::for_pane`] is the only producer of `rows`.
 //! - [`DescriptionBlock::natural_sync_height`] reads `rows` to report the block's contribution to
 //!   the inter-pane sync.
-//! - [`DescriptionBlock::render`] reads the *same* `rows` to draw.
+//! - [`DescriptionBlock::render_with_selection`] reads the *same* `rows` to draw.
 //!
 //! Adding content therefore has to flow through the constructor, which is
 //! the single place that updates the rendered rows and the sync height at
@@ -24,6 +24,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::ColorMode;
 use tui_pane::PaneSelectionState;
 use tui_pane::label_color;
 
@@ -65,8 +66,8 @@ impl SyncedDescriptionHeight {
 
 /// Pre-wrapped description block for one detail pane. Owns the wrapped
 /// row strings and the layout dimensions needed to render them; both
-/// [`DescriptionBlock::natural_sync_height`] and [`DescriptionBlock::render`] read from the same
-/// private `rows` field.
+/// [`DescriptionBlock::natural_sync_height`] and [`DescriptionBlock::render_with_selection`] read
+/// from the same private `rows` field.
 #[derive(Clone)]
 enum DescriptionContentState {
     Real,
@@ -166,26 +167,6 @@ impl DescriptionBlock {
     /// `synced_floor` as the inter-pane sync floor. Returns the
     /// rendered height, which the pane uses to position the separator
     /// rule and the rest of its content.
-    #[allow(
-        dead_code,
-        reason = "selectable panes call render_with_selection; keep the unselected wrapper for callers that do not track row focus"
-    )]
-    pub(in crate::tui) fn render(
-        &self,
-        frame: &mut Frame,
-        project_inner: Rect,
-        synced_floor: SyncedDescriptionHeight,
-        max_height: u16,
-    ) -> u16 {
-        self.render_with_selection(
-            frame,
-            project_inner,
-            synced_floor,
-            max_height,
-            PaneSelectionState::Unselected,
-        )
-    }
-
     pub(in crate::tui) fn render_with_selection(
         &self,
         frame: &mut Frame,
@@ -193,6 +174,7 @@ impl DescriptionBlock {
         synced_floor: SyncedDescriptionHeight,
         max_height: u16,
         selection: PaneSelectionState,
+        mode: ColorMode,
     ) -> u16 {
         if self.rows.is_empty() || self.column_width == 0 {
             return 0;
@@ -210,7 +192,7 @@ impl DescriptionBlock {
             usize::from(self.column_width),
         );
 
-        let style = selection.patch(self.style);
+        let style = selection.patch(self.style, mode);
         let lines: Vec<Line<'static>> = visible
             .into_iter()
             .map(|row| Line::from(Span::styled(row, style)))
@@ -235,6 +217,7 @@ impl DescriptionBlock {
                 ..project_inner
             },
             selection,
+            mode,
         );
         description_height
     }

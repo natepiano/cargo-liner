@@ -3,6 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Style;
 use tui_pane::Appearance;
+use tui_pane::ColorMode;
 use tui_pane::PaneSelectionState;
 use tui_pane::StyleSpec;
 use tui_pane::Theme;
@@ -66,8 +67,8 @@ pub(super) fn language_subtotal_color() -> Color { role_color(LANGUAGE_SUBTOTAL)
 
 pub(super) fn target_bench_color() -> Color { role_color(TARGET_BENCH) }
 
-pub(super) fn selection_style(selection: PaneSelectionState) -> Style {
-    let style = selection.overlay_style();
+pub(super) fn selection_style(selection: PaneSelectionState, mode: ColorMode) -> Style {
+    let style = selection.overlay_style(mode);
     match selection {
         PaneSelectionState::Active | PaneSelectionState::Remembered => {
             style.fg(role_color(SELECTION_TEXT))
@@ -77,11 +78,16 @@ pub(super) fn selection_style(selection: PaneSelectionState) -> Style {
 }
 
 /// Apply selection after the row's text and cell styles.
-pub(super) fn paint_selection(frame: &mut Frame, area: Rect, selection: PaneSelectionState) {
+pub(super) fn paint_selection(
+    frame: &mut Frame,
+    area: Rect,
+    selection: PaneSelectionState,
+    mode: ColorMode,
+) {
     if !matches!(selection, PaneSelectionState::Unselected) {
         frame
             .buffer_mut()
-            .set_style(area, selection_style(selection));
+            .set_style(area, selection_style(selection, mode));
     }
 }
 

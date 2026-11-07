@@ -7,6 +7,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::Action;
 use tui_pane::BLOCK_BORDER_WIDTH;
+use tui_pane::ColorMode;
 use tui_pane::NavAction;
 use tui_pane::PaneFocusState;
 use tui_pane::SECTION_HEADER_INDENT;
@@ -45,10 +46,11 @@ struct SccacheLines {
 }
 
 pub(in crate::tui) fn render_sccache_popup(frame: &mut Frame<'_>, app: &mut App) {
+    let mode = app.framework.color_mode;
     let SccacheLines {
         mut lines,
         selectable_lines,
-    } = build_lines(&app.overlays.sccache_pane);
+    } = build_lines(&app.overlays.sccache_pane, mode);
     let hints = shortcut_hints(app);
     let width = content_width(&lines)
         .max(content_width(std::slice::from_ref(&hints)).saturating_add(1))
@@ -155,7 +157,7 @@ fn shortcut_hints(app: &App) -> Line<'static> {
     Line::from(hints.join(" · "))
 }
 
-fn build_lines(pane: &SccachePane) -> SccacheLines {
+fn build_lines(pane: &SccachePane, mode: ColorMode) -> SccacheLines {
     let mut lines = Vec::new();
     let mut selectable_lines = Vec::new();
     match pane.status() {
@@ -165,11 +167,11 @@ fn build_lines(pane: &SccachePane) -> SccacheLines {
         },
         SccacheStatus::Ready { lines: stat_rows } => {
             push_header(&mut lines, "Stats");
-            push_stat_lines(&mut lines, &mut selectable_lines, pane, stat_rows);
+            push_stat_lines(&mut lines, &mut selectable_lines, pane, stat_rows, mode);
         },
         SccacheStatus::Failed { lines: errors } => {
             push_header(&mut lines, "Error");
-            push_stat_lines(&mut lines, &mut selectable_lines, pane, errors);
+            push_stat_lines(&mut lines, &mut selectable_lines, pane, errors, mode);
         },
     }
     SccacheLines {
@@ -214,11 +216,12 @@ fn push_stat_lines(
     selectable_lines: &mut Vec<SccacheSelectableLine>,
     pane: &SccachePane,
     raw_lines: &[String],
+    mode: ColorMode,
 ) {
     let parsed = stats::parse_stat_lines(raw_lines);
     let alignment = stats::value_alignment_for_lines(&parsed);
     for line in parsed {
-        push_parsed_stat_line(lines, selectable_lines, pane, line, alignment);
+        push_parsed_stat_line(lines, selectable_lines, pane, line, alignment, mode);
     }
 }
 
@@ -228,6 +231,7 @@ fn push_parsed_stat_line(
     pane: &SccachePane,
     parsed: ParsedStatLine,
     alignment: ValueAlignment,
+    mode: ColorMode,
 ) {
     match parsed {
         ParsedStatLine::Field { label, value } => {
@@ -246,22 +250,22 @@ fn push_parsed_stat_line(
                 Line::from(vec![
                     Span::styled(
                         SECTION_ITEM_INDENT,
-                        crate::tui::theme_roles::selection_style(selection),
+                        crate::tui::theme_roles::selection_style(selection, mode),
                     ),
                     Span::styled(
                         format!("{label:<label_width$} "),
                         Style::default()
                             .fg(label_color())
-                            .patch(crate::tui::theme_roles::selection_style(selection)),
+                            .patch(crate::tui::theme_roles::selection_style(selection, mode)),
                     ),
                     Span::styled(
                         alignment.format(&value),
                         Style::default()
                             .fg(text_default())
-                            .patch(crate::tui::theme_roles::selection_style(selection)),
+                            .patch(crate::tui::theme_roles::selection_style(selection, mode)),
                     ),
                 ])
-                .style(theme_roles::selection_style(selection)),
+                .style(theme_roles::selection_style(selection, mode)),
             );
         },
         ParsedStatLine::Subheader { text, context: _ } => push_subheader(lines, text),
@@ -303,6 +307,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
     use ratatui::layout::Rect;
+    use tui_pane::ColorMode;
     use tui_pane::Keymap;
     use tui_pane::NavAction;
     use tui_pane::VimMode;
@@ -314,6 +319,7 @@ mod tests {
 
     #[test]
     fn clicking_a_scrolled_stat_line_copies_its_own_value_across_headings() {
+        let mode = ColorMode::Colored;
         let mut pane = SccachePane::new();
         let request = pane.start_loading();
         pane.apply_result(
@@ -329,7 +335,7 @@ mod tests {
         let SccacheLines {
             lines,
             selectable_lines,
-        } = build_lines(&pane);
+        } = build_lines(&pane, mode);
         assert!(lines[1].to_string().contains("Cache hits"));
         assert!(lines[4].to_string().contains("Cache misses"));
         pane.set_selectable_lines(selectable_lines);
@@ -366,11 +372,12 @@ mod tests {
 
     #[test]
     fn status_only_lines_have_no_selection_or_copy_value() {
+        let mode = ColorMode::Colored;
         let mut pane = SccachePane::new();
         let SccacheLines {
             lines,
             selectable_lines,
-        } = build_lines(&pane);
+        } = build_lines(&pane, mode);
         assert_eq!(lines.len(), 2);
         pane.set_selectable_lines(selectable_lines);
         pane.viewport.set_content_area(Rect::new(0, 0, 60, 4));
@@ -385,6 +392,7 @@ mod tests {
         reason = "tests should panic on unexpected values"
     )]
     fn sccache_render_evidence_has_registered_hints_and_no_copy_targets_in_the_footer() {
+        let mode = ColorMode::Colored;
         let mut app = test_support::make_app(&[]);
         app.framework_keymap = std::rc::Rc::new(
             integration::build_framework_keymap(
@@ -393,7 +401,7 @@ mod tests {
             )
             .expect("default keymap"),
         );
-        let before = build_lines(&app.overlays.sccache_pane)
+        let before = build_lines(&app.overlays.sccache_pane, mode)
             .lines
             .iter()
             .map(|line| line.to_string().trim().to_string())

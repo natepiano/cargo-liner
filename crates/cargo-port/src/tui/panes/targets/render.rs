@@ -9,6 +9,7 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use tui_pane::ColorMode;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameChrome;
 use tui_pane::PaneTitleCount;
@@ -37,10 +38,11 @@ pub(super) fn render_targets_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut TargetsPane,
+    mode: ColorMode,
 ) -> PaneFrameChrome {
     if pane.content().is_some_and(TargetsData::has_targets) {
         let data = pane.content().cloned().unwrap_or_default();
-        render_targets_with_data(frame, area, pane, &data)
+        render_targets_with_data(frame, area, pane, &data, mode)
     } else {
         render_empty_targets(frame, area, pane)
     }
@@ -77,6 +79,7 @@ fn render_targets_with_data(
     area: Rect,
     pane: &mut TargetsPane,
     data: &TargetsData,
+    mode: ColorMode,
 ) -> PaneFrameChrome {
     let pane_focus_state = pane.focus.pane_focus_state;
     let target_entries = panes::build_target_list_from_data(data);
@@ -106,12 +109,14 @@ fn render_targets_with_data(
         table_box,
         area,
         &mut pane_frame_chrome,
+        mode,
     );
     for (rect, row) in &row_rects {
         theme_roles::paint_selection(
             frame,
             *rect,
             tui_pane::selection_state(&pane.viewport, *row, pane_focus_state),
+            mode,
         );
     }
     pane.set_row_rects(row_rects);
@@ -129,6 +134,7 @@ fn render_targets_table(
     table_box: Placed,
     pane_area: Rect,
     pane_frame_chrome: &mut PaneFrameChrome,
+    mode: ColorMode,
 ) -> Vec<(Rect, usize)> {
     let pane_focus_state = pane.focus.pane_focus_state;
     let cursor = pane.viewport.pos();
@@ -136,7 +142,7 @@ fn render_targets_table(
     let table_area = table_box.chrome.union(table_box.content);
 
     let layout = compute_layout(target_entries, table_area.width);
-    let rows = build_rows(target_entries, pane, pane_focus_state, &layout);
+    let rows = build_rows(target_entries, pane, pane_focus_state, &layout, mode);
     let widths = build_widths(&layout);
     let table = Table::new(rows, widths)
         .column_spacing(TARGET_TABLE_COLUMN_SPACING)
@@ -262,6 +268,7 @@ fn build_rows(
     pane: &TargetsPane,
     focus: PaneFocusState,
     layout: &Layout,
+    mode: ColorMode,
 ) -> Vec<Row<'static>> {
     target_entries
         .iter()
@@ -273,7 +280,7 @@ fn build_rows(
                 name_cell(&entry.display_name, layout.name_max),
                 layout,
             )
-            .style(pane_selection_state.overlay_style())
+            .style(pane_selection_state.overlay_style(mode))
         })
         .collect()
 }

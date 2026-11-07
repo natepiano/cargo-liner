@@ -109,7 +109,7 @@ pub(in crate::tui) fn draw_pane(app: &mut App, pane: PaneId, width: u16) -> anyh
             &mut split.registry,
             &layout,
             &split.pane_render_ctx,
-            tui_pane::default_pane_chrome(),
+            tui_pane::default_pane_chrome(split.pane_render_ctx.color_mode),
             PaneBorders::Separate,
         );
     })?;

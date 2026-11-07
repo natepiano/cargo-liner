@@ -37,6 +37,7 @@ pub(super) fn render_project_list_pane_body(
     pane: &mut ProjectListPane,
     ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
+    let mode = ctx.color_mode;
     let projects = ctx.project_list;
     let (mut items, header, summary_lines, row_width) = {
         let fitted = projects.cached_fit_widths.fitted(
@@ -111,7 +112,8 @@ pub(super) fn render_project_list_pane_body(
         projects.cursor(),
         pane.focus.pane_focus_state,
     );
-    let project_list = List::new(items).highlight_style(theme_roles::selection_style(selection));
+    let project_list =
+        List::new(items).highlight_style(theme_roles::selection_style(selection, mode));
     let selected = (projects.cursor() < total_project_rows).then_some(projects.cursor());
     let mut list_state = ListState::default().with_selected(selected);
     *list_state.offset_mut() = pane.viewport.scroll_offset();

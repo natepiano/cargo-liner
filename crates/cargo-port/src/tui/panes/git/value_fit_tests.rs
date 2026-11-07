@@ -6,6 +6,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use tui_pane::BLOCK_BORDER_WIDTH;
+use tui_pane::ColorMode;
 use tui_pane::Renderable;
 use unicode_width::UnicodeWidthStr;
 
@@ -174,6 +175,7 @@ fn render_git_value(data: GitData, pane_width: u16) -> anyhow::Result<Vec<String
     let app = test_support::make_app(&[]);
     let lookup = app.ci.status_lookup();
     let ctx = PaneRenderCtx {
+        color_mode:                ColorMode::Colored,
         animation_elapsed:         std::time::Duration::ZERO,
         config:                    &app.config,
         project_list:              &app.project_list,

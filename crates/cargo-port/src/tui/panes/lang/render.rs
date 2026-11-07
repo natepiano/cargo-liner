@@ -9,6 +9,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use tui_pane::ColorMode;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameChrome;
 use tui_pane::PaneTitleCount;
@@ -255,13 +256,14 @@ fn build_lang_rows(
     entries: &[LangRenderEntry<'_>],
     name_width: usize,
     focus: PaneFocusState,
+    mode: ColorMode,
 ) -> Vec<Row<'static>> {
     entries
         .iter()
         .enumerate()
         .map(|(row_index, render_entry)| {
             lang_entry_row(render_entry, name_width)
-                .style(tui_pane::selection_state(viewport, row_index, focus).overlay_style())
+                .style(tui_pane::selection_state(viewport, row_index, focus).overlay_style(mode))
         })
         .collect()
 }
@@ -272,6 +274,7 @@ fn render_lang_table(
     rows: Vec<Row<'static>>,
     widths: [Constraint; 7],
     body_area: Rect,
+    mode: ColorMode,
 ) {
     let cursor = pane.viewport.pos();
     let table = Table::new(rows, widths)
@@ -298,6 +301,7 @@ fn render_lang_table(
                 table_state.offset() + slot,
                 pane.focus.pane_focus_state,
             ),
+            mode,
         );
     }
 }
@@ -310,6 +314,7 @@ pub fn render_lang_pane_body(
     pane: &mut LangPane,
     ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
+    let mode = ctx.color_mode;
     let pane_focus_state = pane.focus.pane_focus_state;
     let is_focused = pane.focus.is_focused();
     let PaneRenderCtx {
@@ -383,7 +388,7 @@ pub fn render_lang_pane_body(
     let rows_needed = u16::try_from(entry_count + 1).unwrap_or(u16::MAX);
     let pin_footer = rows_needed > content_below_header;
 
-    let mut rows = build_lang_rows(&pane.viewport, &entries, name_width, pane_focus_state);
+    let mut rows = build_lang_rows(&pane.viewport, &entries, name_width, pane_focus_state, mode);
 
     if pin_footer {
         let footer_y = inner.y + inner.height.saturating_sub(1);
@@ -399,7 +404,7 @@ pub fn render_lang_pane_body(
         viewport.set_len(rows.len());
         viewport.set_content_area(body_area);
         viewport.set_viewport_rows(usize::from(body_area.height));
-        render_lang_table(frame, pane, rows, widths, body_area);
+        render_lang_table(frame, pane, rows, widths, body_area, mode);
     } else {
         rows.push(lang_footer_row(stats));
         let body_height = inner.height.saturating_sub(1);
@@ -409,7 +414,7 @@ pub fn render_lang_pane_body(
         viewport.set_len(entry_count);
         viewport.set_content_area(body_area);
         viewport.set_viewport_rows(usize::from(body_area.height));
-        render_lang_table(frame, pane, rows, widths, body_area);
+        render_lang_table(frame, pane, rows, widths, body_area, mode);
     }
 
     chrome.labels.extend(tui_pane::overflow_affordance_label(
