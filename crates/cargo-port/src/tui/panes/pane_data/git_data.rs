@@ -137,6 +137,15 @@ pub enum GithubStars {
     Unreachable,
 }
 
+/// `QuotaObservation` records whether a GitHub bucket has a measured quota.
+/// `QuotaObservation::Observed` keeps the last received `RateLimitQuota`.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum QuotaObservation {
+    #[default]
+    Unobserved,
+    Observed(RateLimitQuota),
+}
+
 /// Per-pane data for the Git detail panel.
 #[derive(Clone, Default)]
 pub struct GitData {
@@ -151,8 +160,8 @@ pub struct GitData {
     pub inception:                   FirstCommit,
     pub last_commit:                 GitProbe<CommitDate>,
     pub last_fetched:                Option<String>,
-    pub rate_limit_core:             Option<RateLimitQuota>,
-    pub rate_limit_graphql:          Option<RateLimitQuota>,
+    pub rate_limit_core:             QuotaObservation,
+    pub rate_limit_graphql:          QuotaObservation,
     pub github_status:               AvailabilityStatus,
     pub pull_requests:               PullRequestSection,
     pub remotes:                     RemoteRows,
@@ -419,10 +428,10 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
             fields.push(field);
         }
     }
-    if data.github_status != AvailabilityStatus::Unreachable || data.rate_limit_core.is_some() {
+    if matches!(data.rate_limit_core, QuotaObservation::Observed(_)) {
         fields.push(DetailField::RateLimitCore);
     }
-    if data.github_status != AvailabilityStatus::Unreachable || data.rate_limit_graphql.is_some() {
+    if matches!(data.rate_limit_graphql, QuotaObservation::Observed(_)) {
         fields.push(DetailField::RateLimitGraphQl);
     }
     if !data.worktrees.is_empty() {
@@ -472,8 +481,8 @@ pub(super) struct GitDetailFields {
     pub(super) inception:          FirstCommit,
     pub(super) last_commit:        GitProbe<CommitDate>,
     pub(super) last_fetched:       Option<String>,
-    pub(super) rate_limit_core:    Option<RateLimitQuota>,
-    pub(super) rate_limit_graphql: Option<RateLimitQuota>,
+    pub(super) rate_limit_core:    QuotaObservation,
+    pub(super) rate_limit_graphql: QuotaObservation,
     pub(super) github_status:      AvailabilityStatus,
     pub(super) pull_requests:      PullRequestSection,
     pub(super) remotes:            RemoteRows,
@@ -559,8 +568,12 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
         inception,
         last_commit,
         last_fetched,
-        rate_limit_core: rate_limit.core,
-        rate_limit_graphql: rate_limit.graphql,
+        rate_limit_core: rate_limit
+            .core
+            .map_or(QuotaObservation::Unobserved, QuotaObservation::Observed),
+        rate_limit_graphql: rate_limit
+            .graphql
+            .map_or(QuotaObservation::Unobserved, QuotaObservation::Observed),
         github_status: app.net.github_status(),
         pull_requests,
         remotes,
@@ -825,8 +838,8 @@ mod git_field_tests {
             inception:          FirstCommit::AwaitingProbe,
             last_commit:        crate::tui::panes::GitProbe::Probed(CommitDate::NoCommits),
             last_fetched:       None,
-            rate_limit_core:    None,
-            rate_limit_graphql: None,
+            rate_limit_core:    super::QuotaObservation::Unobserved,
+            rate_limit_graphql: super::QuotaObservation::Unobserved,
             github_status:      AvailabilityStatus::Reachable,
             pull_requests:      PullRequestSection::default(),
             remotes:            RemoteRows::default(),

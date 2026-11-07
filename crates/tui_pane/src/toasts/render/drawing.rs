@@ -12,6 +12,7 @@ use crate::BLOCK_BORDER_WIDTH;
 use crate::PaneFocusState;
 use crate::ToastPlacement;
 use crate::ToastSettings;
+use crate::constants::MIN_PANE_ROWS_WITH_EDGE_GAP;
 use crate::constants::TOAST_ROW_GAP;
 use crate::constants::TOAST_SIDE_GAP;
 use crate::toasts::ToastFocus;
@@ -101,9 +102,15 @@ fn render_toasts(
             .saturating_mul(2)
     } else {
         let stack_height = required_height.saturating_sub(TOAST_ROW_GAP.saturating_mul(2));
-        area.height
+        let spare_rows = area
+            .height
             .saturating_sub(stack_height)
-            .min(TOAST_ROW_GAP.saturating_mul(2))
+            .min(TOAST_ROW_GAP.saturating_mul(2));
+        if area.height >= MIN_PANE_ROWS_WITH_EDGE_GAP {
+            spare_rows.max(TOAST_ROW_GAP)
+        } else {
+            spare_rows
+        }
     };
     let available = area.height.saturating_sub(gap_rows);
     let allocated = layout::allocate_toast_heights(&complete_toasts, available, gap);

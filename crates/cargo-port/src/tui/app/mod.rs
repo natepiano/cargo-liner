@@ -2772,6 +2772,7 @@ mod tests {
         use crate::config::CargoPortConfig;
         use crate::config::LintIndicator;
         use crate::config::NavigationKeys;
+        use crate::http::RateLimitQuota;
         use crate::lint::LintRun;
         use crate::lint::LintRunStatus;
         use crate::project::Comparison;
@@ -2810,6 +2811,7 @@ mod tests {
         use crate::tui::panes::PackagePresence;
         use crate::tui::panes::PackageVersion;
         use crate::tui::panes::PaneId;
+        use crate::tui::panes::QuotaObservation;
         use crate::tui::panes::RemoteRow;
         use crate::tui::panes::RemoteRows;
         use crate::tui::panes::TargetsData;
@@ -3032,7 +3034,15 @@ mod tests {
                     app.panes.package.viewport.set_pos(position);
                 }),
                 (AppPaneId::Git, &["activate"], |app| {
+                    let quota = QuotaObservation::Observed(RateLimitQuota {
+                        limit:     5000,
+                        used:      42,
+                        remaining: 4958,
+                        reset_at:  None,
+                    });
                     app.panes.git.set_content(GitData {
+                        rate_limit_core: quota,
+                        rate_limit_graphql: quota,
                         remotes: RemoteRows::Listed(vec![git_remote_with_url(
                             "https://github.com/natepiano/demo",
                         )]),
@@ -3162,14 +3172,21 @@ mod tests {
             let project = super::make_project(Some("demo"), "~/demo");
             let mut app = make_app(&[project]);
 
+            let quota = QuotaObservation::Observed(RateLimitQuota {
+                limit:     5000,
+                used:      42,
+                remaining: 4958,
+                reset_at:  None,
+            });
             let data = GitData {
+                rate_limit_core: quota,
+                rate_limit_graphql: quota,
                 remotes: RemoteRows::Listed(vec![git_remote_with_url(
                     "https://github.com/natepiano/demo",
                 )]),
                 ..GitData::default()
             };
-            // Default GitData carries two flat rate-limit rows, so the first
-            // remote row sits at index 2.
+            // The observed quota adds two rows before the first remote row.
             let remote_pos = 2;
             app.panes.git.set_content(data);
             app.panes.git.viewport.set_pos(remote_pos);

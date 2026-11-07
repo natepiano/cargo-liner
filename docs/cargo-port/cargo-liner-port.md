@@ -552,7 +552,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Ruled out:** a placeholder exception to the right-margin cell at a 15-cell interior; one margin rule covers every Package row.
 
-### Phase 4k — Loading and empty values read whole in narrow panes  · status: todo
+### Phase 4k — Loading and empty values read whole in narrow panes  · status: done
 
 **Depends on:** Phase 4g (both edit `crates/cargo-port/src/tui/panes/pane_data/`) and Phase 4j (both edit `crates/cargo-port/src/tui/panes/package/readability_tests.rs`)
 

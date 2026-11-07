@@ -6,6 +6,7 @@ use ratatui::layout::Rect;
 use tui_pane::ColorMode;
 
 use crate::config::LintIndicator;
+use crate::http::RateLimitQuota;
 use crate::project::AbsolutePath;
 use crate::project::DiskMeasurement;
 use crate::project::MemberGroup;
@@ -23,6 +24,7 @@ use crate::tui::panes::CiEmptyState;
 use crate::tui::panes::GitCheckout;
 use crate::tui::panes::GitData;
 use crate::tui::panes::PaneId;
+use crate::tui::panes::QuotaObservation;
 use crate::tui::panes::targets;
 use crate::tui::project_list::ExpandKey;
 use crate::tui::project_list_state::ProjectList;
@@ -281,6 +283,16 @@ fn project_column_priority_keeps_the_remaining_panes_readable() -> anyhow::Resul
     let scratch = tempfile::tempdir()?;
     let mut app = app_with_names(scratch.path(), LONG_NAME)?;
     install_targets(&mut app)?;
+    let quota = QuotaObservation::Observed(RateLimitQuota {
+        limit:     5000,
+        used:      42,
+        remaining: 4958,
+        reset_at:  None,
+    });
+    let mut git = app.panes.git.content().context("Git content")?.clone();
+    git.rate_limit_core = quota;
+    git.rate_limit_graphql = quota;
+    app.panes.git.set_content(git);
     for width in [95, 80, 67, 60] {
         if width == 67 {
             let run = serde_json::from_value(serde_json::json!({

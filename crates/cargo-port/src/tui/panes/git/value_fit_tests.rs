@@ -22,6 +22,7 @@ use crate::tui::panes::OutputPresentation;
 use crate::tui::panes::SyncedDescriptionHeight;
 use crate::tui::panes::constants::FIT_TEXT_ELLIPSIS;
 use crate::tui::panes::lang;
+use crate::tui::panes::pane_data::QuotaObservation;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::test_support;
@@ -102,7 +103,10 @@ fn assert_rate_labels_only(outer_width: u16, expected: [&str; 2]) -> anyhow::Res
         remaining: 4958,
         reset_at:  None,
     };
-    for quota in [None, Some(quota)] {
+    for quota in [
+        QuotaObservation::Unobserved,
+        QuotaObservation::Observed(quota),
+    ] {
         let data = GitData {
             rate_limit_core: quota,
             rate_limit_graphql: quota,
@@ -113,6 +117,10 @@ fn assert_rate_labels_only(outer_width: u16, expected: [&str; 2]) -> anyhow::Res
             .iter()
             .filter(|row| row.contains("Core") || row.contains("Gra"))
             .collect();
+        if matches!(quota, QuotaObservation::Unobserved) {
+            assert_eq!(rate_rows.len(), 0, "{rows:?}");
+            continue;
+        }
         assert_eq!(
             rate_rows.len(),
             2,
@@ -267,7 +275,20 @@ fn partial_redraw_anchors_the_cursor_after_variation_selector_glyphs() -> anyhow
 
 #[test]
 fn compact_git_rows_distinguish_rate_labels_and_keep_values() -> anyhow::Result<()> {
-    let rows = render_git_value(GitData::default(), 20)?;
+    let quota = QuotaObservation::Observed(RateLimitQuota {
+        limit:     5000,
+        used:      42,
+        remaining: 4958,
+        reset_at:  None,
+    });
+    let rows = render_git_value(
+        GitData {
+            rate_limit_core: quota,
+            rate_limit_graphql: quota,
+            ..GitData::default()
+        },
+        20,
+    )?;
     for label in ["Core", "GraphQL"] {
         assert!(rows.iter().any(|row| row.contains(label)), "{rows:?}");
     }

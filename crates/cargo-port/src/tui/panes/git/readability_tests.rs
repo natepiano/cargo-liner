@@ -21,6 +21,7 @@ use crate::tui::panes::GitData;
 use crate::tui::panes::HeadRelation;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::pane_data::GitProbe;
+use crate::tui::panes::pane_data::QuotaObservation;
 use crate::tui::panes::pane_data::RemoteRow;
 use crate::tui::panes::pane_data::RemoteRows;
 use crate::tui::panes::pane_data::WorktreeInfo;
@@ -110,7 +111,7 @@ fn git_selected_field_fills_the_whole_row() -> anyhow::Result<()> {
 fn git_rate_rows_keep_the_remaining_count_when_the_quota_does_not_fit() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.git.set_content(GitData {
-        rate_limit_core: Some(RateLimitQuota {
+        rate_limit_core: QuotaObservation::Observed(RateLimitQuota {
             used:      4770,
             limit:     5000,
             remaining: 230,
@@ -131,7 +132,7 @@ fn git_reset_countdown_has_readable_contrast() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.git.set_content(GitData {
         github_status: AvailabilityStatus::Reachable,
-        rate_limit_core: Some(RateLimitQuota {
+        rate_limit_core: QuotaObservation::Observed(RateLimitQuota {
             used:      4770,
             limit:     5000,
             remaining: 230,
@@ -158,7 +159,7 @@ fn selected_git_countdown_keeps_selection_ink_on_both_fills() -> anyhow::Result<
             let mut app = test_support::project_app();
             app.panes.git.set_content(GitData {
                 github_status: AvailabilityStatus::Reachable,
-                rate_limit_core: Some(RateLimitQuota {
+                rate_limit_core: QuotaObservation::Observed(RateLimitQuota {
                     used:      30,
                     remaining: 4970,
                     limit:     5000,
@@ -206,7 +207,7 @@ fn narrow_git_fields_keep_labels_values_and_dates() -> anyhow::Result<()> {
         status: Some(GitStatus::Clean),
         inception: FirstCommit::Probed(CommitDate::At("2026-11-06 08:21".to_string())),
         last_commit: GitProbe::Probed(CommitDate::At("2026-11-06 15:13".to_string())),
-        rate_limit_graphql: Some(RateLimitQuota {
+        rate_limit_graphql: QuotaObservation::Observed(RateLimitQuota {
             used:      374,
             remaining: 4626,
             limit:     5000,
