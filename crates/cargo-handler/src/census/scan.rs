@@ -2781,7 +2781,7 @@ mod tests {
                 role:        super::transcript::SubagentRole::Test,
                 activity:    AgentActivity::Idle,
                 id:          "a1".to_string(),
-                parent:      None,
+                parent:      super::transcript::SubagentParent::OwningSession,
                 description: "Test it".to_string(),
                 started:     LAUNCH - 10,
                 transcript:  theirs,

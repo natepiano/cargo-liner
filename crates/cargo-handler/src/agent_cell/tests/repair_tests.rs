@@ -71,9 +71,9 @@ fn mixed_heading_lengths_keep_one_column_set_and_positions() {
 fn specialist_management_roles_use_footer_ink_and_other_roles_stay_plain() {
     let colors = FooterColors::parse("role.showrunner=purple\nrole.unit-director=yellow");
     for (kind, role) in [
-        ("showrunner", Some(FooterRole::Showrunner)),
-        ("unit-director", Some(FooterRole::UnitDirector)),
-        ("capture", None),
+        (SubagentRole::Showrunner, Some(FooterRole::Showrunner)),
+        (SubagentRole::Agent, None),
+        (SubagentRole::Capture, None),
     ] {
         let mut root = agent(10, "owner", HOUR, None);
         let mut work = child(
@@ -83,7 +83,7 @@ fn specialist_management_roles_use_footer_ink_and_other_roles_stay_plain() {
             "specialist job",
             MINUTE,
         );
-        work.kind = ChildKind::Subagent(SubagentRole::from_record(kind, ""));
+        work.kind = ChildKind::Subagent(kind.clone());
         root.children.push(work);
         let cell = entry(&root, None);
         for width in [80, 220] {
@@ -105,8 +105,8 @@ fn specialist_management_roles_use_footer_ink_and_other_roles_stay_plain() {
                 .style(Style::default().fg(text_default()))
                 .fg
                 .expect("role foreground");
-            for offset in 0..summary::cell_width(kind) {
-                assert_eq!(buffer[(x + offset, y)].fg, expected, "{kind} at {width}");
+            for offset in 0..summary::cell_width(kind.text()) {
+                assert_eq!(buffer[(x + offset, y)].fg, expected, "{kind:?} at {width}");
             }
         }
     }

@@ -30,6 +30,9 @@ use crate::interaction::TileSelection;
 
 const NOW: u64 = 1_792_166_400;
 const CORE_WIDTH: u16 = 28;
+const ROLE_GROWTH_WIDTH: u16 = 80;
+const ROLE_SOURCE_HEIGHT: u16 = 70;
+const ROLE_GROWN_HEIGHT: u16 = 140;
 const ERROR: &str = "claude1: scratch reading failed";
 const LABELS: [&str; 6] = [
     "claude1", "claude2", "claude3", "claude4", "codex1", "codex2",
@@ -55,7 +58,7 @@ fn fixture(count: u32) -> App {
                     {"depth":0,"kind":"shell","pid":3_107_200+id,"name":"sleep 120","started":NOW-60}
                 ]
             })).expect("busy session");
-            row.children[0].kind = ChildKind::Subagent(SubagentRole::from_record("review", ""));
+            row.children[0].kind = ChildKind::Subagent(SubagentRole::Reviewer);
             row.children[1].kind = ChildKind::Shell(ShellTimerObservation::ObservedCountdown(Timer {
                 started: NOW-60, deadline: NOW+60,
             }));
@@ -375,7 +378,7 @@ fn assert_core_columns(text: &[String], width: u16) {
         "core columns need a gap: {header}"
     );
     assert!(
-        text.iter().any(|line| line.contains("review")),
+        text.iter().any(|line| line.contains("reviewer")),
         "whole role at {width}: {text:?}"
     );
     if width == 200 {
@@ -471,7 +474,7 @@ fn assert_constrained_width(width: u16) {
         assert!(header.contains("role"), "core role header: {text:?}");
         if width <= 50 {
             assert!(
-                text.iter().any(|line| line.contains("▼ long-ses…")),
+                text.iter().any(|line| line.contains("▼ long-se…")),
                 "the truncated root remains visible: {text:?}"
             );
             assert!(
@@ -479,7 +482,7 @@ fn assert_constrained_width(width: u16) {
                 "the constrained tile has three or four rows: {text:?}"
             );
             assert_eq!(
-                text.iter().any(|line| line.contains("review")),
+                text.iter().any(|line| line.contains("reviewer")),
                 area.height == 4,
                 "four rows show the review; three rows show only the root: {text:?}"
             );
@@ -669,14 +672,11 @@ fn narrow_review_end_measures_the_restored_viewport() {
     owner.children = vec![child; 70];
     for (index, child) in owner.children.iter_mut().enumerate() {
         child.name = format!("work-{index}");
-        child.kind = ChildKind::Subagent(SubagentRole::from_record(
-            if index == 69 {
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
-            } else {
-                "review"
-            },
-            "",
-        ));
+        child.kind = ChildKind::Subagent(if index == 69 {
+            SubagentRole::Showrunner
+        } else {
+            SubagentRole::Impl
+        });
         child.activity = AgentActivity::Active(Activity::Waiting);
     }
     let neighbors = [1_107_207, 1_107_208].map(|pid| AgentRow {
@@ -690,7 +690,7 @@ fn narrow_review_end_measures_the_restored_viewport() {
         hierarchy: HierarchyEdges::default().into(),
         stage:     ScanStage::Completed,
     });
-    paint(&mut app, 80, 50);
+    paint(&mut app, ROLE_GROWTH_WIDTH, ROLE_SOURCE_HEIGHT);
     let tile = app
         .tiles
         .placements(app.selection_area, app.loaded_config.config.tiles.growth())
@@ -704,7 +704,7 @@ fn narrow_review_end_measures_the_restored_viewport() {
         .surface_mut(&SelectionSurface::Tile(tile.clone()))
         .expect("tile state")
         .navigate(NavAction::End);
-    let buffer = paint(&mut app, 80, 50);
+    let buffer = paint(&mut app, ROLE_GROWTH_WIDTH, ROLE_SOURCE_HEIGHT);
     let placement = app
         .tiles
         .placements(app.selection_area, app.loaded_config.config.tiles.growth())
@@ -713,12 +713,12 @@ fn narrow_review_end_measures_the_restored_viewport() {
         .expect("scrolled tile");
     let text = lines(&buffer, placement.frame.inner()).join("\n");
     assert!(
-        text.contains("rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"),
+        text.contains("showrunner"),
         "visible role must set the core width: {text}"
     );
     assert!(
         text.lines()
-            .any(|line| line.contains("rrrrr") && line.contains("waiting")),
+            .any(|line| line.contains("showrunner") && line.contains("waiting")),
         "status must fit beside the revealed role: {text}"
     );
 }
@@ -738,14 +738,11 @@ fn growth_app() -> (App, crate::interaction::SelectionSurface) {
     owner.children = vec![child; 71];
     for (index, child) in owner.children.iter_mut().enumerate() {
         child.name = format!("work-{index}");
-        child.kind = ChildKind::Subagent(SubagentRole::from_record(
-            if index == 60 {
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
-            } else {
-                "review"
-            },
-            "",
-        ));
+        child.kind = ChildKind::Subagent(if index == 60 {
+            SubagentRole::Showrunner
+        } else {
+            SubagentRole::Impl
+        });
         child.activity = AgentActivity::Active(Activity::Waiting);
     }
     let neighbors = [1_107_207, 1_107_208].map(|pid| AgentRow {
@@ -759,7 +756,7 @@ fn growth_app() -> (App, crate::interaction::SelectionSurface) {
         hierarchy: HierarchyEdges::default().into(),
         stage:     ScanStage::Completed,
     });
-    paint(&mut app, 80, 50);
+    paint(&mut app, ROLE_GROWTH_WIDTH, ROLE_SOURCE_HEIGHT);
     let key = app
         .tiles
         .placements(app.selection_area, app.loaded_config.config.tiles.growth())
@@ -774,7 +771,7 @@ fn growth_app() -> (App, crate::interaction::SelectionSurface) {
         .selections
         .surface_mut(&surface)
         .expect("growth selection");
-    state.set_area(Rect::new(0, 0, 80, 5));
+    state.set_area(Rect::new(0, 0, ROLE_GROWTH_WIDTH, 5));
     state.navigate(NavAction::End);
     assert_eq!(state.viewport().scroll_offset(), 67);
     (app, surface)
@@ -783,15 +780,18 @@ fn growth_app() -> (App, crate::interaction::SelectionSurface) {
 #[test]
 fn narrow_growth_at_end_includes_a_wide_role_above_the_saved_window() {
     let (mut app, surface) = growth_app();
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 80))
-        .expect("growth terminal");
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(
+        ROLE_GROWTH_WIDTH,
+        ROLE_GROWN_HEIGHT,
+    ))
+    .expect("growth terminal");
     app.tiles.settle_for_test();
     terminal
         .draw(|frame| {
             draw_panes_at(
                 frame,
                 &mut app,
-                Rect::new(0, 0, 80, 80),
+                Rect::new(0, 0, ROLE_GROWTH_WIDTH, ROLE_GROWN_HEIGHT),
                 TileGridContents::Shown,
                 NOW,
             );
@@ -813,9 +813,8 @@ fn narrow_growth_at_end_includes_a_wide_role_above_the_saved_window() {
         .expect("grown tile");
     let text = lines(buffer, placement.frame.inner()).join("\n");
     assert!(
-        text.lines().any(|line| line
-            .contains("rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr")
-            && line.contains("waiting")),
+        text.lines()
+            .any(|line| line.contains("showrunner") && line.contains("waiting")),
         "growth must show the whole role and status on one line: {text}"
     );
 }
@@ -834,7 +833,7 @@ fn narrow_growth_envelope_contains_end_top_and_cursor_windows() {
         app.summary_sort,
     )
     .with_selections(app.selections.clone(), SelectableSurface::EmptyCell);
-    let area = Rect::new(0, 0, 80, 50);
+    let area = Rect::new(0, 0, ROLE_GROWTH_WIDTH, ROLE_SOURCE_HEIGHT);
     let tile = cells
         .tiles
         .iter()
@@ -848,6 +847,13 @@ fn narrow_growth_envelope_contains_end_top_and_cursor_windows() {
         let source = tile.measure(area, NOW, cells.account_column);
         let tallest_area = tui_pane::frame_inner(area);
         let tallest = source.allocated(tallest_area, &state);
+        if matches!(anchor, NavAction::End) {
+            let saved_window = source.allocated(Rect::new(0, 0, ROLE_GROWTH_WIDTH, 5), &state);
+            assert!(
+                tallest.minimum_tile_width() > saved_window.minimum_tile_width(),
+                "the restored window must include a wider supported role"
+            );
+        }
         cells.measurements.borrow_mut().clear();
         let minimum = {
             let mut selections = cells.selections.borrow_mut();
@@ -857,18 +863,18 @@ fn narrow_growth_envelope_contains_end_top_and_cursor_windows() {
         };
         for height in 1..=tallest_area.height {
             let mut shorter = state.clone();
-            shorter.set_area(Rect::new(0, 0, 80, height));
+            shorter.set_area(Rect::new(0, 0, ROLE_GROWTH_WIDTH, height));
             let mut taller = state.clone();
-            taller.set_area(Rect::new(0, 0, 80, 50));
+            taller.set_area(Rect::new(0, 0, ROLE_GROWTH_WIDTH, ROLE_SOURCE_HEIGHT));
             let short_start = shorter.viewport().scroll_offset();
             let short_end = (short_start + usize::from(height)).min(71);
             let tall_start = taller.viewport().scroll_offset();
-            let tall_end = (tall_start + 50).min(71);
+            let tall_end = (tall_start + usize::from(ROLE_SOURCE_HEIGHT)).min(71);
             assert!(
                 tall_start <= short_start && short_end <= tall_end,
                 "{anchor:?}, height {height}: {short_start}..{short_end} outside {tall_start}..{tall_end}"
             );
-            let allocated = source.allocated(Rect::new(0, 0, 80, height), &state);
+            let allocated = source.allocated(Rect::new(0, 0, ROLE_GROWTH_WIDTH, height), &state);
             assert!(tallest.minimum_tile_width() >= allocated.minimum_tile_width());
             assert!(
                 minimum >= allocated.minimum_tile_width(),

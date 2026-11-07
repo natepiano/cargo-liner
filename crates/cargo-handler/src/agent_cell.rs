@@ -1648,7 +1648,7 @@ impl TreeLine<'_> {
             | LineKind::Session(RoleLabel::Unlabeled | RoleLabel::ReviewFallback)
             | LineKind::Worker(_)
             | LineKind::Shell(_) => FooterTint::Plain,
-            LineKind::Subagent(role) => colors.named_role(role.text()),
+            LineKind::Subagent(role) => role.ink(colors),
         }
     }
 }

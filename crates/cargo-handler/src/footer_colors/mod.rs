@@ -835,15 +835,6 @@ impl FooterColors {
             .map_or(FooterTint::Plain, FooterTint::Management)
     }
 
-    /// A specialist can name the same management responsibilities as a session.
-    pub(crate) fn named_role(&self, word: &str) -> FooterTint {
-        match word {
-            "showrunner" => self.role(FooterRole::Showrunner),
-            "unit-director" | "unit" => self.role(FooterRole::UnitDirector),
-            _ => FooterTint::Plain,
-        }
-    }
-
     /// Management responsibilities use configured ink; worker roles remain plain.
     pub(crate) fn hierarchy_role(&self, role: HierarchyRole) -> FooterTint {
         match role {

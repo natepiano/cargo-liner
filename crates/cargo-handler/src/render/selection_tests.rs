@@ -398,8 +398,7 @@ fn scrolling_measures_painted_roles_but_keeps_complete_group_age_slots() {
                 (70 - index) * 60
             };
             serde_json::from_value(serde_json::json!({
-            "kind":"subagent", "subagent_role":crate::census::transcript::SubagentRole::from_record(
-                if index==0 {"showrunner"} else {"review"}, ""),
+            "kind":"subagent", "subagent_role":if index==0 {SubagentRole::Showrunner} else {SubagentRole::Reviewer},
             "depth":0, "name":format!("task-{index:02}"), "started":now-age,
         })).expect("scroll work")
         })
@@ -420,7 +419,7 @@ fn scrolling_measures_painted_roles_but_keeps_complete_group_age_slots() {
     let after_header = tree_header(&after);
     let role_x = after_header.find("role").expect("retained role header");
     let status_x = after_header.find("status").expect("status header");
-    assert_eq!(status_x - role_x, 8, "review plus two-cell gap");
+    assert_eq!(status_x - role_x, 10, "reviewer plus two-cell gap");
     for word in ["status", "age"] {
         assert_eq!(before_header.find(word), after_header.find(word), "{word}");
     }
@@ -440,7 +439,7 @@ fn grouped_scrolled_tiles_keep_role_columns_and_complete_age_slots() {
         owner.children = (0..40)
             .map(|index| {
                 let role = if index == 0 {
-                    crate::census::transcript::SubagentRole::from_record("review", "")
+                    SubagentRole::Reviewer
                 } else {
                     SubagentRole::Unrecorded
                 };

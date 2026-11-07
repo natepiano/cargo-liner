@@ -939,7 +939,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** the hidden-readout design (no readout, a reclaimed last content row); public fields on `Selected` (safe code could break `row <= rows`); `From<usize> for RowsReadout` (no consumer).
 
-### Phase 35 — Subagent role words  · status: todo
+### Phase 35 — Subagent role words  · status: done
 
 **Depends on:** Phase 27, Phase 36
 
