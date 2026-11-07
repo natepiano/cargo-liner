@@ -207,7 +207,7 @@ mod tests {
     }
 
     /// The captured overlay rows.
-    const EXPECTED_OVERLAY_ROWS: [&str; 101] = [
+    const EXPECTED_OVERLAY_ROWS: [&str; 110] = [
         "[Global Navigation] global",
         "global.next_pane = tab",
         "global.prev_pane = shift-tab",
@@ -229,7 +229,6 @@ mod tests {
         "global.randomize_attract = r",
         "global.remove_tile = shift-delete",
         "global.restart = R",
-        "global.reset_expansion = 0",
         "global.save_favorite = ctrl-s",
         "global.row_page_up = pageup",
         "global.row_page_down = pagedown",
@@ -238,6 +237,16 @@ mod tests {
         "global.row_down = down",
         "global.row_up = up",
         "global.random_favorite = m",
+        "global.depth_0 = 0",
+        "global.depth_1 = 1",
+        "global.depth_2 = 2",
+        "global.depth_3 = 3",
+        "global.depth_4 = 4",
+        "global.depth_5 = 5",
+        "global.depth_6 = 6",
+        "global.depth_7 = 7",
+        "global.depth_8 = 8",
+        "global.depth_9 = 9",
         "global.open_global_shortcuts = ?",
         "global.attract = a",
         "global.toggle_row = enter",
