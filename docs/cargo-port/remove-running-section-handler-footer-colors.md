@@ -278,7 +278,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 24 motion: tui_pane `TileCells::prepare_moving_frame(destination, motion_bounds)` (`tiles/draw.rs`; the default calls `prepare_frame`) and `TileGrid::motion_preparation_allocations` (`tiles/grid.rs`) give destination positions and widths with the taller of the source and destination heights; cargo-handler `Cells::prepare_moving_frame` (`crates/cargo-handler/src/render/mod.rs` ≈697) passes those motion bounds to `prepare_frame` to measure role widths, and cargo-tile keeps the default. Keep these preparation bounds for measurement; record hit regions and header spans from the pieces actually painted, not from preparation allocations. Test: a shrinking tile clicked during motion selects the header drawn under the pointer, and the existing moving-role tests (`render/moving_role_tests.rs`) stay green.
 - Phase 4's narrow headings fit through `HeadingLocation::{Shown,Cut,Omitted}` (`agent_cell.rs`); test clicks against the fitted heading actually drawn, not the full one.
 - After phase 5 the summary's demand changes with each accounts reading.
-- Phase 28 (a35577ad) supplies the painted record: `PaintedCells::{Undrawn, Drawn}`, a stable `CellIdentity` per painted piece, `CellHit::{Missed, Retired, Current}` (`tiles/grid.rs` ≈3292 `record_painted_cells`, ≈3306 `cell_hit`, reverse paint order) and `content_click` (`tiles/host.rs` ≈176), which maps a painted frame back to source coordinates for presses and wheel steps. `handle_tile_click` absorbs `TilePick::RetiredCell` before focus or row selection. `cell_content_at` is gone. Extend this record; do not create another painted-geometry record. The content geometry in the record comes from Phase 56's one visibility-aware content allocation (`content_area`, `tiles/draw.rs` ≈928), the same one that drawing and `content_click` read; do not compute a second content rect.
+- The painted record is `LastPainted::{NeverPainted, Painted}` (`tiles/grid.rs` ≈1064), with a stable `CellIdentity` per painted piece, `CellHit::{Missed, Retired, Current}` (`record_painted_body` ≈3388, `cell_hit` ≈3407, reverse paint order) and `content_click` (`tiles/host.rs` ≈176), which maps a painted frame back to source coordinates for presses and wheel steps. Visual comparison and pointer lookup share this record. Only a body paint replaces it, so it lasts across polls and status-only draws. `handle_tile_click` absorbs `TilePick::RetiredCell` before focus or row selection. `cell_content_at` is gone. Extend this record; do not create another painted-geometry record. The content geometry in the record comes from the one visibility-aware content allocation (`content_area`, `tiles/draw.rs` ≈948), the same one that drawing and `content_click` read; do not compute a second content rect.
 - Phase 2's header click in cargo-handler (`render::cell_clicked`) rebuilds header spans from the current census and clock, so a changed name, activity, age width or Full/Compressed choice can move columns after the frame was drawn. The drawn header mapping must be kept with the frame.
 - Phase 2's attract-screen exclusion (clicks ignored while the attract screen replaces the grid) and its regression stay as they are.
 - Phase 3's tile identity is `tiles::TileKey::{Agent(AgentCell), Unassigned { machine }}` (sorts in `App::tree_sorts: HashMap<TileKey, TreeSort>`, pruned by `agent_cell::tile_keys`), and header layout carries `agent_cell::SessionHeaderLead::{OverBranch, Flush}` (the pool's session header sits over flush names). Drawn header spans are kept per `TileKey`, with the lead they were drawn with (`render/mod.rs` ≈443 `Cells::tile`, ≈448 `Cells::header_spans`; `agent_cell.rs` ≈2401 `header_spans`, ≈2164 `unassigned_header_spans`).
@@ -1153,6 +1153,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `render/narrow_width_tests.rs` (≈360) and its `growth_app` (≈430) use a long role so that restored or newly visible rows change the width requirement (checked at ≈488 and ≈534). Use supported role words and fixture widths that still test off-window width growth, End/Home/cursor restoration and the first enlarged frame. Keep the whole-core and below-core compression checks, the longer Astra labels included.
 - `OpenThreadRows::read` in `census/codex.rs` accepts explicit thread IDs through `CODEX_THREAD_BY_ID_QUERY`, regardless of originator. `codex::read_threads_by_id` no longer exists. Use the named Astra Codex home. Collect the IDs of both consumers per home and read each home once: `OpenThreadRows::read` replaces a home's requested IDs (`codex.rs` ≈323), and `app_server_threads` retains only app-server homes (`scan.rs` ≈1418). Retain the combined homes. Preserve per-home caching and invalidation by database and WAL revision. Test an unchanged scan (no second read) and a WAL change (one new read). Keep startup queries restricted as before. Reuse `SessionNames`, home matching, resume handling and the no-dispatch regression.
 - The scanner captures one `StaffSnapshot` before classification. Its source and `Arc<StaffRoster>` supply names and links for that scan. Preserve this consistency when adding Astra membership. Keep database and rollout reads outside the scheduler thread and the publication lock. App-server discovery uses Linux file descriptors under the sessions directory.
+- Phase 64: `census::schedule::spawn` takes the configured `herdr_read_timeout`, and `local_scanner` passes it to the scanner (`terminal.rs` ≈81, `census/schedule.rs` ≈694). Keep this argument. `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈414). `scan_staged` stays nonblocking.
 - The staff reader has no reviewer-pool state or lease requirement. Astra busy/idle state needs a semantic type from the announced staff contract. A live Astra session must remain visible between turns without a pool file.
 - `HierarchyEdge` contains `manager`, `member` and `role`. It has no Codex home or busy/idle state. Convert announced staff fields into one checked Astra payload with a required home and state. Reject incomplete Astra membership at that boundary. Preserve the existing staff snapshot and forest validation. Do not add independent domain `Option` fields.
 - Probe schema 3 serializes `HierarchyEdges` directly; new role variants in `edges` make older receivers refuse a probe. Carry new roles in a defaulted extension.
@@ -1161,15 +1162,15 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Spec:**
 1. Extend the schema-2 staff reader for the announced Astra fields. Add `AstraDesigner` and `AstraReviewer` to `HierarchyRole` and the checked Astra membership type. Read roles from the announced role field, without inventing new staff kinds. Keep the words `astra designer` and `astra reviewer` in the role column and tile title.
-2. `FooterRole` gains `AstraDesigner` and `AstraReviewer`, read from `role.astra-designer` and `role.astra-reviewer`; the role word draws in that color everywhere a role word draws in colour (Phase 15 rules), unless phase 31 chose plain role text or another channel; then it follows phase 31's choice. On a session row both Astra role inks draw through `SessionRowInk::Management(FooterColor)`; add no new `SessionRowInk` variant for each role.
+2. `FooterRole` gains `AstraDesigner` and `AstraReviewer`, read from `role.astra-designer` and `role.astra-reviewer`; the role word draws in that color everywhere a role word draws in colour (Phase 15 rules). On a session row both Astra role inks draw through `SessionRowInk::Management(FooterColor)`; add no new `SessionRowInk` variant for each role.
 3. An Astra row draws under its edge's manager, a unit director or a showrunner alike, and keeps the edge's `state` as its idle or busy status between turns.
 4. The thread lookup also reads a `codex_exec` thread when an Astra edge names it, under the edge's `codex_home`, so the row gets its session name, activity and fast mark as other Codex rows do.
 5. Tests, each red before its fix: both roles parse from schema-2 staff rows and keep their words. Each role uses its configured color. Astra rows draw under unit directors and showrunners. Edge-named `codex_exec` threads get their names and activity. Unknown roles do not publish Astra membership. Unknown staff kinds still preserve valid known rows.
-6. Tests also cover: an edge-named `codex_exec` thread with no open app-server rollout; busy and idle Astra rows visible with no reviewer-pool lease; an older receiver parsing a new probe, and a new receiver restoring role, home and state; each Astra role, read through the production role API, draws through the rendering path phase 31 chose (colour or another channel), keeps its configured role assignment, meets phase 31's final floors from every session ink and from every other ink that can share its row, and reaches 4.5:1 covered contrast in all four themes; an Astra edge with no Codex home or no state is refused at the wire boundary.
+6. Tests also cover: an edge-named `codex_exec` thread with no open app-server rollout; busy and idle Astra rows visible with no reviewer-pool lease; an older receiver parsing a new probe, and a new receiver restoring role, home and state; each Astra role, read through the production role API, draws through `SessionRowInk::Management`, keeps its configured role assignment, meets the Phase 26 floors in the constraints above from every session ink and from every other ink that can share its row, and reaches 4.5:1 covered contrast in all four themes; an Astra edge with no Codex home or no state is refused at the wire boundary.
 7. Guild heads: a hierarchy with a `guilds` showrunner and four unit directors named `designers`, `reviewers`, `showrunners` and `units` draws them as ordinary unit director rows under that showrunner, with no new role word. An Astra designer held by a unit director of another production stays under that unit director. Rendered tests cover both.
 8. Palette tests: a new fixture `footer_colors/fixtures/statusline_astra.conf` holds the `statusline.conf` values with `role.astra-designer=mauve` and `role.astra-reviewer=bright-green`. Tests prove that both Astra roles enter `FooterColors::session_row_inks()` as `SessionRowInk::Management` from that fixture, and that the rendered session palette checks in `render/role_title_tests.rs` measure both inks.
 9. Word-match contrast (phase 20 runs first): extend `render/word_contrast_tests.rs` with rendered word-match tests for both Astra role inks, with the final production inks and the two-way 208/255 coverage (the lower of the unrounded and the byte-rounded blend). Each ink reaches 4.5:1 on the drawn match background, on the base, focused and unfocused grounds, and where a match overlaps a selected row.
-10. Reset shades: phase 31's chosen design sets this floor. Unless phase 31 replaced the role-vs-reset colour floor with another channel, each Astra role ink is CIEDE2000 >= 15 from every drawn reset shade on each light theme; if it did, the test measures the drawn treatment and proves the replacement channel for both Astra inks (a new test in `summary/accounts_gradient_tests.rs`, through `FooterColor::management_style` and `ResetRank`; phase 30 landed no reset-vs-role-ink test, and phase 31 owns that floor for the other role inks). Measure first; if an Astra ink is under 15, report it to the unit director before any palette change.
+10. Reset shades: each Astra role ink is CIEDE2000 >= 15 from every drawn reset shade on each light theme (a new test in `summary/accounts_gradient_tests.rs`, through `FooterColor::management_style` and `ResetRank`; no reset-vs-role-ink test exists yet). Measure first; if an Astra ink is under 15, report it to the unit director before any palette change.
 
 **Files:**
 - `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/codex.rs`, `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/footer_colors/mod.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/CHANGELOG.md`
@@ -1186,7 +1187,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `impl` — the production files (hierarchy, scanner, probe, placement, color and rendering), `theme/mod.rs`, the registrations and the CHANGELOG; owns all shared module files; hub: `crates/cargo-handler/src/census/mod.rs` and `crates/cargo-handler/src/theme/mod.rs` (shared modules).
 - `test` — the Astra tests (`astra_role_tests.rs`), the probe compatibility tests (`probe_role_tests.rs`), the footer-color tests (`footer_colors/tests.rs`), the fixture (`statusline_astra.conf`), `render/role_title_tests.rs`, the rendered selection tests, the Astra word-match tests in `render/word_contrast_tests.rs`, the Astra-vs-reset test in `summary/accounts_gradient_tests.rs`, and the width checks in `render/narrow_width_tests.rs`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Astra rows keep their stable thread identity and the selected band through busy/idle updates and manager placement. The session palette checks in `render/role_title_tests.rs` measure both Astra inks, the Astra word-match tests in `render/word_contrast_tests.rs` pass, and the Astra-vs-reset test in `summary/accounts_gradient_tests.rs` passes (with the floor or channel phase 31 chose). Live: framed shots, in a dark and a light theme, of an Astra designer under a unit director and an Astra reviewer under a showrunner, with the real config. The checkpoint carries `Change-Review: cargo-handler shows Astra designer and Astra reviewer sessions under the unit director or showrunner that runs them, with their own role words and colors | open cargo-handler while an Astra review runs and find its row under its parent`.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Astra rows keep their stable thread identity and the selected band through busy/idle updates and manager placement. The session palette checks in `render/role_title_tests.rs` measure both Astra inks, the Astra word-match tests in `render/word_contrast_tests.rs` pass, and the Astra-vs-reset test in `summary/accounts_gradient_tests.rs` passes. Live: framed shots, in a dark and a light theme, of an Astra designer under a unit director and an Astra reviewer under a showrunner, with the real config. The checkpoint carries `Change-Review: cargo-handler shows Astra designer and Astra reviewer sessions under the unit director or showrunner that runs them, with their own role words and colors | open cargo-handler while an Astra review runs and find its row under its parent`.
 
 ### Phase 41 — Renamed Codex sessions show in cargo-handler  · status: done
 
@@ -1543,6 +1544,9 @@ Each layout state has one owning record. Item 6 is the one new record.
 
 Draw order: prepare, measure at current widths, search only when the inputs changed, sync, draw. An unchanged draw makes exactly 2 `cells.demands` calls, as main does.
 
+**Constraints from prior phases:**
+- Phase 64: `census::schedule::spawn` takes the configured `herdr_read_timeout` (`terminal.rs` ≈81, `census/schedule.rs` ≈694). This phase's `terminal.rs` change keeps that argument.
+
 **Files:**
 - `crates/tui_pane/src/tiles/grid.rs`
 - `crates/tui_pane/src/tiles/draw.rs`
@@ -1646,47 +1650,32 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 ### Phase 64 — A one-shot probe waits for herdr pane names  · status: done
 
-**Depends on:** Phase 62, because both phases change `census/scan.rs`. Runs beside Phase 61 or Phase 63; they share no file with it (showrunner, 2026-11-03).
+#### As-built
 
-#### Work Order
-
-**Goal:** `cargo-handler probe` on a loaded host shows a herdr-named Codex window by its name on each run, so a remote cell no longer changes between the name and `pid N`.
-
-**Source:** the showrunner, 2026-11-03, 15:47 EST. On natedev at load average 47 with the installed build 9bb05b8be, three `cargo-handler probe` runs took 6.5 s, 11.0 s and 2.4 s. Runs 1 and 2 showed morty (pid 2719866) as `pid 2719866`. Run 3 showed `morty`. A remote cell runs `ssh <host> cargo-handler probe` on each poll, and each run is a new process.
-
-**Cause (main ff9c2b2fc):**
-1. `Scanner::scan` (`scan.rs` ≈334) calls `HerdrNames::finish_initial` (`herdr.rs` ≈246) once.
-2. `finish_initial` waits only `HERDR_INITIAL_TIMEOUT` (100 ms, `constants.rs` ≈605) for the herdr worker's first answer. When the answer is late, the row keeps `pid N`.
-3. The TUI reads the late answer on a later scan. A one-shot probe has no later scan, so the late name is lost.
-4. The worker sends one `NameAnswer` after each refresh, also when it finds no names. Its socket operations use `HERDR_READ_TIMEOUT` (100 ms, `constants.rs` ≈609).
-
-**State model:**
-1. The herdr worker owns the pane names. `InitialAnswer::{Pending, Ready}` records whether the scan has the answer for its generation.
-2. The TUI path calls `scan_staged` (`schedule.rs` ≈705) and never calls `finish_initial`, so it does not wait. A late answer arrives on a later scan, as today.
-3. The probe path waits until the answer for its own generation arrives, or until a probe bound ends. After the bound, the row shows `pid N`.
-4. A herdr that is not running gives an answer or ends the wait at once. It never makes the probe wait the full bound.
-5. `SshRunner::probe` (`remote.rs` ≈155) holds the whole remote probe to `PROBE_TIMEOUT`. The herdr wait is part of that budget, so a configured wait must fit inside it.
-
-**Spec:**
-1. Give `finish_initial` a typed wait, for example `HerdrProbeWait`, read from config. Do not use a bare duration argument. Only `Scanner::scan`, the probe path, calls it. The TUI path stays on `scan_staged`, with no wait.
-2. Put the probe bound in config, not in a constant (showrunner, 2026-11-03: load sets the right value, and a change must not need a release). Add `[census] herdr_probe_wait` to `CensusConfig` (`config.rs` ≈115) as a typed value with a default, the same as `codex_thread_start_window` (`CodexStartWindow`). The probe reads it the same way, through `Scanner::with_codex_start_window`'s pattern (`probe.rs` ≈417). Choose the default from the measured probe times, and write the reason in the doc comment.
-3. Check whether `HERDR_READ_TIMEOUT` also drops names under load. If it does, move it to config by the same rule (`[census] herdr_read_timeout`), and the probe path uses that value through the same typed wait. Record the measurement in the as-built.
-4. Tests under 1 s, with a controlled answer channel and no real sleeps: an answer after 100 ms reaches the probe; `scan_staged` never waits for the herdr answer; a configured wait that does not fit inside `PROBE_TIMEOUT` is refused and a wait at the limit fits; a herdr that is not running ends the probe wait at once; an answer of an older generation does not count; a missing config key gives the default, and a set key changes the bound.
-5. CHANGELOG: one Fixed line in cargo-handler.
+- `cargo-handler probe` waits for the herdr answer of its own generation, up to one `HerdrProbeDeadline` that `LocalScanner::scan` creates before `scan_staged`. The scan and the wait share that bound. A herdr that is not running ends the wait at once. After the bound, the row shows `pid N`.
+- The TUI path stays on `scan_staged` and never waits. A late answer arrives on a later scan.
+- `[census] herdr_probe_wait` is a typed `HerdrProbeWait` (default 12000 ms, zero allowed, limit `HERDR_PROBE_WAIT_LIMIT` = `PROBE_TIMEOUT` minus `PROBE_SSH_OUTPUT_RESERVE`, 18 s). `[census] herdr_read_timeout` is a typed `HerdrReadTimeout` (default 1000 ms, above zero, limit `PROBE_TIMEOUT`). The probe and the TUI scanner both apply the socket value. `HERDR_INITIAL_TIMEOUT` and `HERDR_READ_TIMEOUT` are gone.
+- Measured before the change at load about 82: the installed probe took 5.882, 2.087, 1.814, 1.605 and 1.648 s and named the window in 3 of 5 runs. At load 79, 3 of 20 socket snapshot requests took over 100 ms (maximum 155.332 ms) and all 20 were valid, so a 100 ms socket limit lost valid names.
+- Live after the change at load 52 to 56: five probes named the window at pid 3421089, in 16.417 s (cold first run), then 5.860, 5.914, 5.860 and 5.996 s. On one debug binary at load 47 to 51, the wait adds about 0.2 to 0.4 s.
 
 **Files:**
-- `crates/cargo-handler/src/census/herdr.rs`
-- `crates/cargo-handler/src/census/scan.rs`
-- `crates/cargo-handler/src/census/probe.rs`
-- `crates/cargo-handler/src/census/remote.rs`
-- `crates/cargo-handler/src/config.rs` — and its tests
-- `crates/cargo-handler/src/constants.rs`
-- `crates/cargo-handler/src/census/herdr_tests.rs`
+- `crates/cargo-handler/src/census/herdr.rs` — `HerdrProbeDeadline`, `finish_initial`
+- `crates/cargo-handler/src/census/scan.rs` — creates the deadline before `scan_staged`
+- `crates/cargo-handler/src/census/probe.rs` — reads both config values
+- `crates/cargo-handler/src/census/schedule.rs`, `crates/cargo-handler/src/terminal.rs` — pass the socket value to the TUI scanner
+- `crates/cargo-handler/src/config.rs` — `HerdrProbeWait`, `HerdrReadTimeout` and their tests
+- `crates/cargo-handler/src/constants.rs` — `PROBE_SSH_OUTPUT_RESERVE`, `HERDR_PROBE_WAIT_LIMIT`
+- `crates/cargo-handler/src/census/herdr_tests.rs` — controlled-clock tests and the `ReturningHerdrService` fixture
 - `crates/cargo-handler/CHANGELOG.md`
 
-**Workers:** 1 writer.
+**Binds later work:** `census::schedule::spawn` takes `herdr_read_timeout`, and `local_scanner` passes it on. A scan keeps one shared `HerdrProbeDeadline`, and `scan_staged` stays nonblocking.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live check on natedev under load: five `cargo-handler probe` runs each show a herdr-named Codex window by its name. Take the window's pid from the probe's own output, and never type into or signal that window. Add a Change-Review line.
+**Gotchas:**
+- The deadline bounds the added wait, not the scan work itself. A scan past the deadline takes only an answer already queued.
+- `cargo-handler probe` ignores `LoadedConfig.error` and runs with defaults, as for every config error. Only the TUI shows a refused value.
+- No SSH live check ran; the five probes ran locally. Panic cleanup of the fixture was read, not fault-tested.
+
+**Ruled out:** a wait limit equal to `PROBE_TIMEOUT`, because it leaves no ssh or output time.
 
 ### Phase 45 — Handler rows expand and collapse like the cargo-port project list  · status: done
 
@@ -1871,6 +1860,10 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Source:** the showrunner, 2026-11-04, from the user's words "anything handler needs to do to support the staff file should be done so we can retire any mechanism scripts that are legacy".
 
+**Constraints from prior phases:**
+- Phase 42: `DispatchPairing` (`census/placement.rs` ≈159) joins a shell to its exact worker in one final tile through `DispatchPairing::join` (≈171), and `resolve_dispatches` (≈300) builds it. Its fixture is `census/fixtures/dispatch_pairing.json`. Its tests are in `census/worker_dispatch/tests.rs`, `agent_cell/tests/tree_tests.rs`, `census/scan/activity_scan_tests.rs` and `census/hierarchy_file_tests.rs`. Spec 2 changes the identities and keeps this behavior.
+- Phase 64: `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈414). `scan_staged` stays nonblocking.
+
 **Spec:**
 1. Read the announced 3n worker role through the existing schema-2 `StaffFileReader`. Extend `StaffFields`, `StaffRoster` and the shared `StaffSnapshot`; add no second reader. Reuse the checked staff ID, current session and parent session that the staff reader retains. Derive the unit from that validated parent identity. Replace `HierarchyEdges::with_worker_roles` with the staff role result. Use named results for unavailable membership, a root member and a managed member when extending the identity lookups. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
 2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing in `census/worker_dispatch/options.rs` and `DispatchDirectory::{Recorded, FromChild}`. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
@@ -1884,6 +1877,9 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - `crates/cargo-handler/src/census/command_inputs.rs`
 - `crates/cargo-handler/src/census/hierarchy.rs`
 - `crates/cargo-handler/src/census/hierarchy_file_tests.rs` — and its fixtures
+- `crates/cargo-handler/src/census/placement.rs` — `DispatchPairing`
+- `crates/cargo-handler/src/census/fixtures/dispatch_pairing.json`
+- `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` — the pairing consumer tests
 - `crates/cargo-handler/src/census/activity.rs`
 - `crates/cargo-handler/src/census/scan.rs`
 - `crates/cargo-handler/src/census/scan/activity_scan_tests.rs` — and its fixtures
@@ -2018,6 +2014,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - `Rollouts::thread` returns `Option<&RolloutRead>` (`census/tier.rs` ≈425). Give it a named result such as `ThreadRollout::{NotRetained, Retained(..)}`, and keep a retained record with unrecorded model or effort distinct from a missing rollout; add no domain-owned `Option` fields.
 - Rows are built in `census/tree.rs` (subagents ≈657, flattened children ≈740) and `census/classify.rs`.
 - Phase 47 owns `census/{activity.rs,scan.rs,hierarchy.rs,command_inputs.rs,activity_regression_tests.rs}` and `app.rs`; claim a shared file through berth, or keep the read in `transcript.rs`, `codex.rs` and a new `census/model.rs`.
+- Phase 64: `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈414). `scan_staged` stays nonblocking.
 
 **Spec:**
 1. One typed model name: `ModelName` with a short form from one table (`opus`, `sonnet`, `haiku`, `fable`, and the Codex names such as `astra`, `sol`), and `ModelName::Unrecorded` where no record names one. An unknown full id keeps a short form cut by one rule (the last word of the id with no version digits), never a placeholder string.
@@ -2054,7 +2051,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 **Constraints from prior phases:**
 - Two width paths: local fitting uses `ColumnDrop::ORDER` (`agent_cell.rs` ≈503); tiles that share a screen column use `GroupFitStep::ORDER` (≈935). Both drop effort before model; test both.
 - A click on the `model` or `effort` header sorts by the drawn value through `TreeLine::compare` (≈1260), `Unrecorded` included.
-- `TreeColumn` (`agent_cell.rs` ≈341) is `Session, Type, Role, Status, Account, Branch, Directory, Age`; `alignment` (≈357) and the header text (≈380) are per column. Phase 55 replaces the rule of `TreeColumns::for_lines` (≈453), which kept a column when some drawn row had a value: a column that is empty on most rows never takes room from session names. Phase 27 keeps the core columns on narrow tiles; Phase 43 changes the age text in the same file.
+- `TreeColumn` (`agent_cell.rs` ≈341) is `Session, Type, Role, Status, Account, Branch, Directory, Age`; `alignment` (≈357) and the header text (≈380) are per column. Phase 66 replaces the rule of `TreeColumns::for_lines` (≈453), which kept a column when some drawn row had a value: a column that is empty on most rows never takes room from session names. Phase 27 keeps the core columns on narrow tiles; Phase 43 changes the age text in the same file.
 - Phase 49a gives each row `ModelName` and `ReasoningEffort`, both with an `Unrecorded` case.
 
 **Spec:**
@@ -2095,6 +2092,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
   - `codex_resume_last_uses_the_newest_older_thread_in_its_home_and_directory` (`census/codex_session_tests.rs` ≈447, module `census::scan::codex_session_tests`)
   - `pinned_accounts_require_headers_and_one_body_line` (`render/pinned_accounts_tests.rs`)
   - `selected_row_inks_keep_glyph_contrast_in_high_contrast_light` (`render/selected_ink_tests.rs`)
+- One Mac run under load on 2026-11-06 also took a second or more on three others: `shortcuts_overlay_wheel_scrolls_and_keeps_tiles_still` (`app.rs` ≈570, 1.837 s), `incremental_codex_last_tier_after_the_old_head_limit_replaces_priority` (`census/incremental_read_tests.rs` ≈265, 1.391 s) and `each_tree_sort_uses_its_own_column_instead_of_reusing_name_or_age_order` (`agent_cell/tests/sort_tests.rs` ≈621, 1.003 s). The next Mac run had every test below 1 s. Treat them as the list above: measure them, and change code only when a test takes a second or more.
 - Find each by name in a `verify.sh test cargo-handler` run's timing output. Fix each at its cause (the work it repeats, a real sleep, a fixture built per case), never by weakening an assert.
 - A test that runs under a second alone but over a second in the full suite is still a defect. There is no exemption for a test that is fast alone.
 
@@ -2109,10 +2107,13 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - `crates/cargo-handler/src/render/selected_ink_tests.rs` — the five selected-row ink tests
 - `crates/cargo-handler/src/render/pinned_accounts_tests.rs` — the pinned accounts test
 - `crates/cargo-handler/src/census/codex_session_tests.rs` — the Codex tier test
+- `crates/cargo-handler/src/app.rs` — the overlay wheel test
+- `crates/cargo-handler/src/agent_cell/tests/sort_tests.rs` — the tree sort test
+- `crates/cargo-handler/src/census/incremental_read_tests.rs` — the incremental Codex tier test
 
 **Workers:** 2 writers.
-- `palette` — the gradient, design-ink, selected-ink and pinned accounts test files.
-- `census` — `census/codex_session_tests.rs`, both Codex tests.
+- `palette` — the gradient, design-ink, selected-ink, pinned accounts and tree sort test files, and `app.rs`.
+- `census` — `census/codex_session_tests.rs` with both Codex tests, and `census/incremental_read_tests.rs`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean with no test over one second; lint clean. Change-Review: none (test time only).
 
@@ -2162,6 +2163,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Constraints from prior phases:**
 - `read_accounts` (`census/accounts.rs` ≈259) calls `hierarchy::run_output` (`census/hierarchy.rs` ≈512), which already sets null stdin, null stderr and piped stdout. `census/command_inputs.rs` caches commands and spawns none.
+- Phase 64: `census::schedule::spawn` takes the configured `herdr_read_timeout`, and `local_scanner` passes it to the scanner (`terminal.rs` ≈81, `census/schedule.rs` ≈694). A scheduler change keeps this argument.
 
 **Spec:**
 1. Reproduce the stray text first. Identify the process that wrote it and the output path that took it to the terminal, and write both in the summary.
