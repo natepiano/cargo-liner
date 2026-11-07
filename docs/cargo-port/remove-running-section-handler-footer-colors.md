@@ -259,7 +259,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** Guarding the `pool.json` lease reread race — stale for at most one scan.
 
-### Phase 9 — Accurate clicks during motion  · status: todo
+### Phase 9 — Accurate clicks during motion  · status: done
 
 **Depends on:** Phase 5, Phase 12, Phase 15, Phase 16, Phase 17, Phase 18, Phase 19, Phase 20, Phase 23, Phase 24, Phase 26, Phase 27, Phase 28
 

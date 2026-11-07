@@ -35,16 +35,16 @@ pub struct CellPoint {
     pub row:    u16,
 }
 
-/// A content press resolved before focus changes the grid's layout.
+/// A content pointer position resolved before focus changes the grid layout.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CellClick<Id> {
-    /// The clicked cell's grid index.
+pub struct CellPointer<Id> {
+    /// The current grid index of the painted cell.
     pub index:   usize,
     /// The content assigned to that cell.
     pub content: TileContent<Id>,
     /// The content rectangle in terminal coordinates.
     pub area:    Rect,
-    /// The press relative to the content origin.
+    /// The pointer position relative to the content origin.
     pub point:   CellPoint,
 }
 
@@ -54,7 +54,7 @@ pub enum CellPress<Id> {
     /// A press in a tile with content.
     Content {
         /// The source content coordinates.
-        click:    CellClick<Id>,
+        click:    CellPointer<Id>,
         /// The position in the painted frame.
         position: Position,
     },
@@ -70,7 +70,7 @@ pub enum CellPress<Id> {
     /// A press in an empty tile's content allocation.
     EmptyContent {
         /// The source content coordinates.
-        click:    CellClick<Id>,
+        click:    CellPointer<Id>,
         /// The position in the painted frame.
         position: Position,
     },
@@ -97,7 +97,7 @@ pub trait TileGridHost: AppContext + 'static {
     fn tile_grid_mut(&mut self) -> &mut TileGrid<Self::TileId>;
 
     /// Handle a wheel step inside a cell without moving tile focus.
-    fn cell_scrolled(&mut self, _cell: CellClick<Self::TileId>, _direction: ScrollDirection) {}
+    fn cell_scrolled(&mut self, _cell: CellPointer<Self::TileId>, _direction: ScrollDirection) {}
 
     /// Handle a painted press after focus moves to a current tile.
     fn cell_pressed(&mut self, press: CellPress<Self::TileId>) {
@@ -110,7 +110,7 @@ pub trait TileGridHost: AppContext + 'static {
     }
 
     /// Handle a left press inside a focused cell's content, after focus moves.
-    fn cell_clicked(&mut self, _click: CellClick<Self::TileId>) {}
+    fn cell_clicked(&mut self, _click: CellPointer<Self::TileId>) {}
 }
 
 /// Keymap host for the grid. It has no keys of its own, so `A`, the app
@@ -221,7 +221,7 @@ where
 }
 
 /// Translate a wheel position through the same allocation as a press.
-fn content_click<Id>(hit: CellHit<Id>, position: Position) -> Option<CellClick<Id>> {
+fn content_click<Id>(hit: CellHit<Id>, position: Position) -> Option<CellPointer<Id>> {
     match painted_press(hit, position) {
         CellPress::Content { click, .. } | CellPress::EmptyContent { click, .. } => Some(click),
         CellPress::Title { .. } | CellPress::Chrome | CellPress::Retired => None,
@@ -259,7 +259,7 @@ fn painted_press<Id>(hit: CellHit<Id>, position: Position) -> CellPress<Id> {
     if !clip.contains(position) || !area.contains(source) {
         return CellPress::Chrome;
     }
-    let click = CellClick {
+    let click = CellPointer {
         index,
         content,
         area,

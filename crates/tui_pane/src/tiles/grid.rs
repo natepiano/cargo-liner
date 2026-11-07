@@ -173,6 +173,15 @@ pub enum TileContent<Id> {
     Empty(usize),
 }
 
+/// The current slot that holds a requested content identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CellIndex {
+    /// The content holds this one-based grid index.
+    Current(usize),
+    /// No current slot holds the content.
+    Missing,
+}
+
 /// One cell as a single frame should draw it.
 ///
 /// A cell crossing between columns is drawn as two of these -- the piece
@@ -1210,6 +1219,14 @@ enum GridMotion<Id> {
     Moving(Transition<Id>),
 }
 
+/// The clock policy used by grid motion.
+#[derive(Clone, Copy, Default)]
+enum MotionClock {
+    #[default]
+    Elapsed,
+    HeldAtHalf,
+}
+
 /// Whether a step's depth has seen the widths its destination draws at.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DestinationDepthStatus {
@@ -1397,6 +1414,7 @@ pub struct TileGrid<Id> {
     settings:               TileSettings,
     /// The body paint used for both visual comparison and input.
     last_painted:           LastPainted<Id>,
+    motion_clock:           MotionClock,
     /// Content-row usage at every size inspected during the current frame.
     frame_row_usage:        Vec<FrameCellRowUsage<Id>>,
     /// Cell geometry drawn by the last settled frame.
@@ -1440,6 +1458,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             focus:                         Focus::Summary,
             settings:                      TileSettings::default(),
             last_painted:                  LastPainted::NeverPainted,
+            motion_clock:                  MotionClock::Elapsed,
             frame_row_usage:               Vec::new(),
             last_settled_geometry:         LastSettledCellGeometry::default(),
             motion_heights:                MotionHeightPath::default(),
@@ -3290,9 +3309,17 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         !matches!(self.motion, GridMotion::Settled) || !self.pending.is_empty()
     }
 
+    /// Hold active and later motion at half progress for render tests.
+    /// Keep the area and layout rules unchanged while motion is held.
+    #[doc(hidden)]
+    pub const fn hold_motion_at_half_for_test(&mut self) {
+        self.motion_clock = MotionClock::HeldAtHalf;
+    }
+
     /// Set zero-duration motion steps for tests that advance the grid through `tick()`.
     #[doc(hidden)]
     pub const fn set_instant_motion_for_test(&mut self) {
+        self.motion_clock = MotionClock::Elapsed;
         self.settings.animation_millis = 0;
         self.settings.min_step_millis = 0;
         self.settings.focus_animation_millis = 0;
@@ -3525,22 +3552,29 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         self.resize_for_focus();
     }
 
-    /// The cell `pos` lands in, or `None` when the point is outside the
-    /// grid.
-    ///
-    /// Answered against the settled grid rather than against a
-    /// transition in flight: a cell mid-travel is a transient, and
-    /// clicking one is asking for where it is going.
-    pub fn cell_at(&self, pos: Position) -> Option<usize> {
-        if self.display() == GridDisplay::SummaryAlone {
-            return self.area.contains(pos).then_some(TABLE_CELL);
+    /// Resolve content in the current slots without using painted geometry.
+    #[must_use]
+    pub fn cell_index(&self, content: &TileContent<Id>) -> CellIndex {
+        match content {
+            TileContent::Summary => CellIndex::Current(TABLE_CELL),
+            TileContent::Group(id) => cell_of(&self.slots, &Slot::Group(id.clone()))
+                .map_or(CellIndex::Missing, CellIndex::Current),
+            TileContent::Empty(index) => index
+                .checked_sub(TABLE_CELL + 1)
+                .and_then(|position| self.slots.get(position))
+                .filter(|slot| matches!(slot, Slot::Empty(_)))
+                .map_or(CellIndex::Missing, |_| CellIndex::Current(*index)),
         }
-        let grid = self.resolved_grid(self.area, &self.drawn_held(), self.growth);
-        grid.resolved
-            .panes
-            .iter()
-            .find(|resolved| resolved.area.contains(pos))
-            .map(|resolved| resolved.pane)
+    }
+
+    /// The current cell under `pos` in the last painted body.
+    /// Before the first paint, use the current drawing allocation.
+    /// Retired pieces and points outside painted pieces return `None`.
+    pub fn cell_at(&self, pos: Position) -> Option<usize> {
+        match self.cell_hit(pos) {
+            CellHit::Current { index, .. } => Some(index),
+            CellHit::Missed | CellHit::Retired => None,
+        }
     }
 
     /// Whether every cell of a `count`-cell grid would be big enough to
@@ -3668,7 +3702,12 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let GridMotion::Moving(transition) = &self.motion else {
             return PROGRESS_SCALE;
         };
-        travel_progress(transition.started.elapsed(), transition.millis)
+        match self.motion_clock {
+            MotionClock::Elapsed => {
+                travel_progress(transition.started.elapsed(), transition.millis)
+            },
+            MotionClock::HeldAtHalf => PROGRESS_SCALE / 2,
+        }
     }
 
     /// Every piece to draw this frame, in cell order.
@@ -13663,3 +13702,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "drawn_hits_tests.rs"]
+mod drawn_hits_tests;

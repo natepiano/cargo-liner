@@ -7,9 +7,9 @@
 
 use crossterm::event::KeyCode;
 use ratatui::layout::Position;
-use tui_pane::FocusLocation;
 use tui_pane::NavAction;
 use tui_pane::TerminalApp;
+use tui_pane::TileAction;
 use tui_pane::TileView;
 
 use super::accounts_grid_tests;
@@ -26,6 +26,7 @@ use crate::interaction::SelectedSpan;
 use crate::interaction::Selections;
 use crate::interaction::SurfaceLookup;
 use crate::interaction::TileSelection;
+use crate::sort::AccountsColumn;
 
 const NOW: u64 = 1_792_166_400;
 const WIDTHS: [u16; 3] = [200, 60, 18];
@@ -70,11 +71,7 @@ fn pinned_accounts_departing_tile_click_does_not_focus_or_select_its_replacement
     let focused = app.tiles.focused_cell();
     let point = body
         .positions()
-        .find(|point| {
-            app.tiles
-                .cell_at(*point)
-                .is_some_and(|index| FocusLocation::Cell(index) != focused)
-        })
+        .find(|point| app.tiles.cell_at(*point).is_none())
         .expect("the drawn departure overlaps a destination replacement");
     let selections: Vec<_> = placements
         .iter()
@@ -524,5 +521,82 @@ fn pinned_accounts_named_states_distinguish_empty_cells_rows_and_retired_content
             .expect("replacement surface")
             .selection(),
         TileSelection::Row(replacement)
+    );
+}
+
+#[test]
+fn pinned_accounts_keep_header_and_continuation_targets_after_a_reading_changes() {
+    let mut app = fixture();
+    let complete = paint(&mut app, 60, 64);
+    select_first(&mut app, &complete);
+    paint(&mut app, 60, 16);
+    accounts_grid_tests::account_key(&mut app, KeyCode::End);
+    let end = paint(&mut app, 60, 16);
+    let header = accounts_grid_tests::locate(&end, "left");
+    let account = accounts_grid_tests::locate(&end, "account-4");
+    app.accounts.table = AccountsTable::NotConfigured;
+    app.click(Position::new(header.column, header.row));
+    assert_eq!(
+        app.accounts_sort,
+        AccountsSort::Sorted(crate::sort::ColumnSort {
+            column:    AccountsColumn::WeeklyLeft,
+            direction: crate::sort::SortDirection::Ascending,
+        })
+    );
+    app.click(Position::new(account.column, account.row + 1));
+    assert_eq!(
+        selected(&app),
+        TileSelection::Row(RowIdentity::SummaryAccount {
+            account: "account-4".into(),
+        })
+    );
+}
+
+#[test]
+fn moving_pinned_accounts_keep_their_header_and_continuation_targets() {
+    let mut app = fixture();
+    app.loaded_config.config.tiles.view = TileView::Cells;
+    app.loaded_config.config.tiles.widen_summary = false;
+    app.loaded_config.config.tiles.initial_rows =
+        serde_json::from_value(serde_json::json!(4)).expect("four rows");
+    let before = paint(&mut app, 60, 48);
+    select_first(&mut app, &before);
+    accounts_grid_tests::account_key(&mut app, KeyCode::End);
+    paint(&mut app, 60, 48);
+    app.tiles
+        .apply(TileAction::Add, app.loaded_config.config.tiles.growth());
+    app.tiles.hold_motion_at_half_for_test();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 48))
+        .expect("moving terminal");
+    terminal
+        .draw(|frame| {
+            draw_panes_at(
+                frame,
+                &mut app,
+                Rect::new(0, 0, 60, 48),
+                TileGridContents::Shown,
+                NOW,
+            );
+        })
+        .expect("moving accounts frame");
+    assert!(app.tiles.has_pending_motion_for_test());
+    let buffer = terminal.backend().buffer();
+    let header = accounts_grid_tests::locate(buffer, "left");
+    let account = accounts_grid_tests::locate(buffer, "account-4");
+    app.accounts.table = AccountsTable::NotConfigured;
+    app.click(Position::new(header.column, header.row));
+    assert_eq!(
+        app.accounts_sort,
+        AccountsSort::Sorted(crate::sort::ColumnSort {
+            column:    AccountsColumn::WeeklyLeft,
+            direction: crate::sort::SortDirection::Ascending,
+        })
+    );
+    app.click(Position::new(account.column, account.row + 1));
+    assert_eq!(
+        selected(&app),
+        TileSelection::Row(RowIdentity::SummaryAccount {
+            account: "account-4".into(),
+        })
     );
 }

@@ -555,6 +555,18 @@ fn light_title_accent_stays_distinct_from_session_role_and_account_inks() {
     assert!(failures.is_empty(), "light chrome: {failures:#?}");
 }
 
+fn position(buffer: &Buffer, word: &str) -> (u16, u16) {
+    (0..buffer.area.height)
+        .find_map(|y| {
+            let line: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            line.find(word)
+                .map(|index| (summary::cell_width(&line[..index]), y))
+        })
+        .expect("drawn sort target")
+}
+
 #[test]
 fn new_showrunner_and_unassigned_tiles_sort_names_and_first_click_reverses_them() {
     let mut app = App::new_for_test().expect("app");
@@ -607,30 +619,23 @@ fn new_showrunner_and_unassigned_tiles_sort_names_and_first_click_reverses_them(
             area,
             Color::Reset,
         );
-        let (alpha, zeta) = if matches!(cells.tile(&key), Some(AgentTile::Unassigned(_))) {
+        let (alpha, zeta) = if matches!(
+            cells.tile(&key),
+            TileLookup::Current(AgentTile::Unassigned(_))
+        ) {
             ("alpha-alone", "zeta-alone")
         } else {
             ("alpha-unit", "zeta-unit")
-        };
-        let position = |buffer: &Buffer, word: &str| {
-            (0..buffer.area.height)
-                .find_map(|y| {
-                    let line: String = (0..buffer.area.width)
-                        .map(|x| buffer[(x, y)].symbol())
-                        .collect();
-                    line.find(word)
-                        .map(|index| (summary::cell_width(&line[..index]), y))
-                })
-                .expect("drawn sort target")
         };
         assert!(
             position(&before, alpha).1 < position(&before, zeta).1,
             "default {key:?}: {before:?}"
         );
         let (x, y) = position(&before, "session");
+        app.painted_surfaces = cells.painted_surfaces.into_inner();
         cell_clicked(
             &mut app,
-            CellClick {
+            CellPointer {
                 index: 0,
                 content: TileContent::Group(key.clone()),
                 area,

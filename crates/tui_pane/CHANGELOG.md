@@ -9,6 +9,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- `TileGrid::cell_index` resolves current content identity without painted coordinates.
+
 - `CellPress` forwards tile title presses through `TileGridHost::cell_pressed` and preserves the content hook for existing hosts.
 - `SummaryFoot::WithOptionalSuffix` preserves the prefix when the suffix does not fit.
 - `StatusLineGlobal::fixed` uses the shared hint renderer for fixed modal keys.
@@ -28,6 +30,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Changed
 
+- **Breaking:** Rename `CellClick` to `CellPointer` for press and wheel input.
+
 - Choose tile columns from the demand at each candidate width, and reuse the selected layout while its inputs stay equal.
 - Titled rules keep their title when the rule has four more cells than the title.
 - `PopupFrame` requires `color_mode`. It draws a thick, bold border for `NoColor` and a plain border for `Colored`.
@@ -38,6 +42,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `PaneChrome::paint_tile_ground` paints the tile ground only on opaque screens and returns the fade colour, so transparent tiles keep fading toward the theme ground.
 
 ### Fixed
+
+- `TileGrid::cell_at` resolves the last painted piece during motion and between body paints.
 
 - Toast stacks stay in their placement corner and show fewer rows when space is short. Cards preserve pane borders, titles, and unrelated content.
 - Wrap long Settings paths at slashes when a path part fits the content width.

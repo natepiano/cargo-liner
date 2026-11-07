@@ -33,7 +33,7 @@ enum PaneId {
 struct ClickHost {
     framework:           Framework<Self>,
     grid:                TileGrid<u8>,
-    clicks:              Vec<CellClick<u8>>,
+    clicks:              Vec<CellPointer<u8>>,
     presses:             Vec<CellPress<u8>>,
     focused_during_hook: Vec<TileContent<u8>>,
 }
@@ -58,7 +58,7 @@ impl TileGridHost for ClickHost {
             CellPress::Title { .. } | CellPress::Chrome | CellPress::Retired => {},
         }
     }
-    fn cell_clicked(&mut self, click: CellClick<u8>) {
+    fn cell_clicked(&mut self, click: CellPointer<u8>) {
         self.clicks.push(click);
         let focused = self
             .grid
@@ -129,7 +129,7 @@ fn content_click_passes_cell_local_coordinates_after_focusing_the_cell() {
     );
     assert_eq!(
         app.clicks,
-        [CellClick {
+        [CellPointer {
             index: 2,
             content: placement.content.clone(),
             area: content,
@@ -182,7 +182,7 @@ fn title_presses_reach_the_host_without_calling_the_content_hook() {
             position
         }]
     );
-    assert_eq!(app.clicks, Vec::<CellClick<u8>>::new());
+    assert_eq!(app.clicks, Vec::<CellPointer<u8>>::new());
 }
 
 #[test]
@@ -230,7 +230,7 @@ fn retired_content_and_titles_do_not_change_focus_or_reach_the_host() {
         handle_tile_click(&mut app, position);
         assert_eq!(app.grid.focused_cell(), focus);
         assert_eq!(app.presses, Vec::<CellPress<u8>>::new());
-        assert_eq!(app.clicks, Vec::<CellClick<u8>>::new());
+        assert_eq!(app.clicks, Vec::<CellPointer<u8>>::new());
     }
 }
 
