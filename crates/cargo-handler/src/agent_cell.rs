@@ -12,6 +12,7 @@ use std::iter;
 use std::num::NonZeroU64;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::ops::Range;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Alignment;
@@ -86,8 +87,10 @@ use crate::constants::TREE_TYPE_HEADER;
 use crate::constants::TRUNCATION_MARK;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterTint;
+use crate::interaction::MarkerCells;
 use crate::interaction::RowIdentity as SelectedRow;
 use crate::interaction::RowOwner;
+use crate::interaction::RowSpan;
 use crate::interaction::SurfaceSelection;
 use crate::sort;
 use crate::sort::HeaderSpan;
@@ -998,6 +1001,28 @@ impl AgentTile<'_> {
         lines.iter().map(|line| line.identity.clone()).collect()
     }
 
+    /// Store marker columns from the same lead that the session column paints.
+    pub(crate) fn row_spans(&self) -> Vec<RowSpan> {
+        let lines = match self {
+            Self::Agent(entry) => &entry.lines,
+            Self::Unassigned(entry) => &entry.lines,
+        };
+        lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| {
+                let marker = match line.expansion {
+                    TreeMarker::Leaf => MarkerCells::Absent,
+                    TreeMarker::Open | TreeMarker::Closed => MarkerCells::Branch {
+                        column: summary::cell_width(SECTION_HEADER_INDENT)
+                            .saturating_add(summary::cell_width(&line.lead()).saturating_sub(2)),
+                    },
+                };
+                crate::interaction::RowSpan::single(index).with_marker(marker)
+            })
+            .collect()
+    }
+
     pub(crate) fn set_viewport(&self, viewport: &Viewport) {
         let state = match self {
             Self::Agent(entry) => &entry.viewport,
@@ -1648,7 +1673,7 @@ impl TreeLine<'_> {
             | LineKind::Session(RoleLabel::Unlabeled | RoleLabel::ReviewFallback)
             | LineKind::Worker(_)
             | LineKind::Shell(_) => FooterTint::Plain,
-            LineKind::Subagent(role) => colors.named_role(role.text()),
+            LineKind::Subagent(role) => role.ink(colors),
         }
     }
 }
@@ -3301,6 +3326,12 @@ fn header_width(width: u16) -> u16 {
     width.saturating_sub(summary::cell_width(SECTION_HEADER_INDENT).saturating_mul(2))
 }
 
+/// Painted table columns relative to the tile content, with both heading insets removed.
+pub(crate) fn tree_marker_columns(area: Rect) -> Range<u16> {
+    let tree = header_indented(area);
+    tree.x.saturating_sub(area.x)..tree.right().saturating_sub(area.x)
+}
+
 /// The tree area with the heading indent reserved on both sides.
 fn header_indented(area: Rect) -> Rect {
     let indent = summary::cell_width(SECTION_HEADER_INDENT);
@@ -3337,6 +3368,7 @@ const fn thread_status_role(state: AgentActivity) -> Role { state.color_role() }
 impl AgentTile<'_> {
     /// Apply expansion after sorting and color assignment.
     pub(crate) fn apply_expansion(&mut self, expansion: &HandlerExpansion) {
+        let level = expansion.level(&self.key());
         let lines = match self {
             Self::Agent(entry) => {
                 entry.lines.insert(0, tile_root_line(entry));
@@ -3344,7 +3376,7 @@ impl AgentTile<'_> {
             },
             Self::Unassigned(entry) => &mut entry.lines,
         };
-        let tree = expansion_tree(lines);
+        let tree = expansion_tree(lines).with_level(level);
         let mut visibility = tree.visibility(expansion);
         lines.retain_mut(|line| match visibility.next() {
             Some(RowVisibility::Visible(marker)) => {

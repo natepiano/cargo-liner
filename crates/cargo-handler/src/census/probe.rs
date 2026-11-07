@@ -11,7 +11,9 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
 
 use super::Account;
 use super::Agent;
@@ -91,6 +93,61 @@ enum ProbeChildKind {
     Thread,
 }
 
+/// The checkpoint role vocabulary used only at the probe wire boundary.
+#[derive(Debug, Deserialize, Serialize)]
+pub(super) enum SubagentRoleWire {
+    Capture,
+    Review,
+    Lint,
+    Test,
+    Survey,
+    Specialist(String),
+    Unrecorded,
+}
+
+impl From<SubagentRoleWire> for SubagentRole {
+    fn from(role: SubagentRoleWire) -> Self {
+        match role {
+            SubagentRoleWire::Capture => Self::Capture,
+            SubagentRoleWire::Review => Self::Reviewer,
+            SubagentRoleWire::Lint => Self::Lint,
+            SubagentRoleWire::Test => Self::Test,
+            SubagentRoleWire::Survey => Self::Survey,
+            SubagentRoleWire::Unrecorded => Self::Unrecorded,
+            SubagentRoleWire::Specialist(word) => match Self::from_sources(&word, "", "", "") {
+                Self::Unrecorded => Self::Agent,
+                role => role,
+            },
+        }
+    }
+}
+
+impl From<SubagentRole> for SubagentRoleWire {
+    fn from(role: SubagentRole) -> Self {
+        match role {
+            SubagentRole::Capture => Self::Capture,
+            SubagentRole::Reviewer => Self::Review,
+            SubagentRole::Lint => Self::Lint,
+            SubagentRole::Test => Self::Test,
+            SubagentRole::Survey => Self::Survey,
+            SubagentRole::Unrecorded => Self::Unrecorded,
+            role => Self::Specialist(role.text().to_owned()),
+        }
+    }
+}
+
+impl Serialize for SubagentRole {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        SubagentRoleWire::from(self.clone()).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SubagentRole {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        SubagentRoleWire::deserialize(deserializer).map(Self::from)
+    }
+}
+
 /// A role extension alongside the unchanged schema-3 kind vocabulary.
 #[derive(Debug, Deserialize, Serialize)]
 struct ProbeChildWork {
@@ -104,7 +161,7 @@ impl ProbeChildWork {
         matches!(role, SubagentRole::Unrecorded)
     }
 
-    fn into_kind(self) -> ChildKind {
+    const fn into_kind(self) -> ChildKind {
         match self.kind {
             ProbeChildKind::Shell => ChildKind::Shell(ShellTimerObservation::Untimed),
             ProbeChildKind::Subagent => ChildKind::Subagent(self.subagent_role),

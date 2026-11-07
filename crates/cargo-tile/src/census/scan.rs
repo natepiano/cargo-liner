@@ -13,6 +13,8 @@ use std::collections::hash_map::Entry;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs;
+#[cfg(target_os = "linux")]
+use std::io::Read;
 use std::ops::Add;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -81,7 +83,7 @@ use super::process_identity::ProcessIdentities;
 use super::process_identity::ProcessIdentity;
 use super::process_identity::RunId;
 use super::process_identity::VisibleParent;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 use crate::birth_stamp;
 use crate::birth_stamp::LifetimeEvidence;
 #[cfg(any(target_os = "linux", test))]
@@ -848,6 +850,25 @@ impl<Source: ProcessRefreshSource> RefreshWorker<Source> {
     }
 }
 
+/// Available bytes on the file system that holds the working directory.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum FreeDiskSpace {
+    Available(u64),
+    #[default]
+    Unavailable,
+}
+
+impl FreeDiskSpace {
+    /// Read available blocks once for each census publication.
+    pub(crate) fn read(directory: &Path) -> Self {
+        rustix::fs::statvfs(directory).map_or(Self::Unavailable, |stat| {
+            stat.f_bavail
+                .checked_mul(stat.f_frsize)
+                .map_or(Self::Unavailable, Self::Available)
+        })
+    }
+}
+
 /// This table belongs only to the refresh worker, never to a published snapshot.
 #[derive(Default)]
 struct SystemRefresh {
@@ -880,9 +901,16 @@ impl ProcessRefreshSource for SystemRefresh {
                 .processes()
                 .iter()
                 .map(|(&pid, process)| {
+                    #[cfg(target_os = "macos")]
+                    let baseline = CpuBaseline {
+                        lifetime:    LifetimeEvidence::Unavailable,
+                        accumulated: process.accumulated_cpu_time(),
+                    };
+                    #[cfg(not(target_os = "macos"))]
+                    let baseline = CpuBaseline::from(process);
                     #[cfg(test)]
                     tests::SYSINFO_BASELINE_READS.with(|count| count.set(count.get() + 1));
-                    (pid, CpuBaseline::from(process))
+                    (pid, baseline)
                 })
                 .collect(),
         }
@@ -911,7 +939,8 @@ mod system_refresh_tests {
     }
 }
 
-/// Discovery evidence is copied on the refresh worker, including native lifetime reads.
+/// `ProcessDiscovery` owns current fields; baselines.lifetime holds the selected native lifetime
+/// evidence.
 struct ProcessDiscovery {
     processes: HashMap<Pid, DiscoveryProcess>,
     baselines: HashMap<Pid, CpuBaseline>,
@@ -932,13 +961,18 @@ impl ProcessDiscovery {
         let Ok(entries) = fs::read_dir("/proc") else {
             return discovery;
         };
+        let mut bytes = Vec::new();
         for entry in entries.filter_map(Result::ok) {
             let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
                 continue;
             };
-            let Ok(bytes) = fs::read(entry.path().join("stat")) else {
+            bytes.clear();
+            let Ok(mut stat_file) = fs::File::open(entry.path().join("stat")) else {
                 continue;
             };
+            if stat_file.read_to_end(&mut bytes).is_err() {
+                continue;
+            }
             let Ok(stat) = LinuxDiscoveryStat::parse(&bytes) else {
                 continue;
             };
@@ -1009,6 +1043,69 @@ impl ProcessDiscovery {
                         .map(|baseline| (pid, process.observation(baseline, previous)))
                 })
                 .collect(),
+        }
+    }
+}
+
+/// InvocationLifetimeReads selects processes that supply invocation rows, ancestry, or direct and
+/// detached work.
+#[cfg(target_os = "macos")]
+struct InvocationLifetimeReads {
+    pids: HashSet<Pid>,
+}
+
+#[cfg(target_os = "macos")]
+impl InvocationLifetimeReads {
+    fn for_census(census: &Census, capture: &Capture) -> Self {
+        let mut roots: HashSet<_> = census
+            .live_cargo()
+            .chain(capture.registered_pids().into_iter().map(Pid::from_u32))
+            .collect();
+        if roots.is_empty() {
+            return Self { pids: roots };
+        }
+        // Detached compiler descendants can supply work even without a cargo ancestor.
+        roots.extend(census.compilers.iter().map(|&(pid, _)| pid));
+        let mut pids: HashSet<_> = census.detailed().into_iter().collect();
+        for &root in &roots {
+            pids.extend(census.cpu_ancestry(root));
+        }
+        for &pid in census.accumulated.keys() {
+            if census
+                .cpu_ancestry(pid)
+                .iter()
+                .any(|pid| roots.contains(pid))
+            {
+                pids.insert(pid);
+            }
+        }
+        Self { pids }
+    }
+
+    /// InvocationLifetimeReads adds fresh lifetimes without changing the prepared parent topology.
+    fn apply(
+        self,
+        census: &mut Census,
+        observations: &mut ProcessObservations<'_>,
+        discovery: &ProcessDiscovery,
+        history: &RefreshHistory,
+    ) {
+        for pid in self.pids {
+            let (Some(record), Some(process)) = (
+                observations.records.get_mut(&pid),
+                discovery.processes.get(&pid),
+            ) else {
+                continue;
+            };
+            let baseline = CpuBaseline {
+                lifetime:    birth_stamp::lifetime(pid.as_u32()),
+                accumulated: process.accumulated,
+            };
+            let DiscoveryCpuEvidence::SampledRate(rate) = process.cpu;
+            record.cpu = history.measure(pid, rate, &baseline);
+            census.cpu.insert(pid, record.cpu);
+            census.lifetimes.insert(pid, baseline.lifetime.clone());
+            record.lifetime = Cow::Owned(baseline.lifetime);
         }
     }
 }
@@ -1158,6 +1255,14 @@ enum RefreshHistory {
 }
 
 impl RefreshHistory {
+    #[cfg(target_os = "macos")]
+    fn measure(&self, pid: Pid, rate: f32, baseline: &CpuBaseline) -> Measurement<f32> {
+        match self {
+            Self::FirstObservation => Census::measure_cpu(pid, rate, baseline, &HashMap::new()),
+            Self::Previous(previous) => Census::measure_cpu(pid, rate, baseline, previous),
+        }
+    }
+
     fn observations<'scan>(
         &self,
         discovery: &'scan ProcessDiscovery,
@@ -1303,9 +1408,21 @@ impl ScanWorker {
         now: Instant,
     ) -> Scan {
         let FreshProcessScan { discovery } = fresh;
+        #[cfg(target_os = "macos")]
+        let mut discovery = discovery;
         let mut observations = self.history.observations(&discovery);
         let mut census = Census::take(observations.records.values());
         census.restrict_to(self.scope);
+        #[cfg(target_os = "macos")]
+        {
+            let invocation_lifetime_reads = InvocationLifetimeReads::for_census(&census, &capture);
+            invocation_lifetime_reads.apply(
+                &mut census,
+                &mut observations,
+                &discovery,
+                &self.history,
+            );
+        }
         // Excluded cargo still counts as live work for choosing the refresh pace.
         self.pace = RefreshPace::for_census(&census, &capture);
         census.identities = self.smoothing.identities.observe(&census.lifetimes);
@@ -1333,11 +1450,18 @@ impl ScanWorker {
         let attributed = census.attribute(&observations, &mut self.smoothing, now);
         let groups = census.groups(&observations, &attributed, self.home.borrowed(), &capture);
         census.associate_status(&mut capture, &groups);
+        #[cfg(target_os = "macos")]
+        for (pid, baseline) in &mut discovery.baselines {
+            if let Some(lifetime) = census.lifetimes.remove(pid) {
+                baseline.lifetime = lifetime;
+            }
+        }
         self.history = RefreshHistory::Previous(discovery.baselines);
         Scan {
             #[cfg(test)]
             cpu_scan_publication: attributed.cpu_scan_publication,
             sccache: census.sccache(),
+            free_disk_space: FreeDiskSpace::read(Path::new(".")),
             groups,
             root_status: capture.root_status,
             shared_directory: capture.shared_directory,
@@ -1631,6 +1755,8 @@ struct PreparedCpuTopology {
 }
 impl PreparedCpuTopology {
     fn new(parents: &HashMap<Pid, Pid>, pids: impl Iterator<Item = Pid>) -> Self {
+        #[cfg(test)]
+        tests::TOPOLOGY_PREPARATIONS.with(|count| count.set(count.get() + 1));
         let ancestry: HashMap<_, _> = pids.map(|pid| (pid, Self::walk(parents, pid))).collect();
         let mut ordered: Vec<_> = ancestry.keys().copied().collect();
         ordered.sort_by_key(|pid| ancestry[pid].len());
@@ -1967,24 +2093,28 @@ impl Census {
 
     /// Classify every process the last refresh saw.
     fn take<'scan>(records: impl IntoIterator<Item = &'scan ProcessObservation<'scan>>) -> Self {
+        #[cfg(test)]
+        tests::CENSUS_PREPARATIONS.with(|count| count.set(count.get() + 1));
+        let records = records.into_iter();
+        let process_count = records.size_hint().0;
         let mut census = Self {
             identities:                     HashMap::new(),
             executing:                      HashMap::new(),
             capture_boundaries:             HashSet::new(),
             capture_wrappers:               HashSet::new(),
             capture_mismatches:             HashSet::new(),
-            lifetimes:                      HashMap::new(),
+            lifetimes:                      HashMap::with_capacity(process_count),
             eligibility:                    HashMap::new(),
             registration_eligibility:       HashMap::new(),
-            parents:                        HashMap::new(),
+            parents:                        HashMap::with_capacity(process_count),
             topology:                       std::cell::OnceCell::new(),
             cargo:                          Vec::new(),
             rowless_cargo:                  Vec::new(),
             dispatched_runs:                HashMap::new(),
             compilers:                      Vec::new(),
-            cpu:                            HashMap::new(),
-            memory:                         HashMap::new(),
-            accumulated:                    HashMap::new(),
+            cpu:                            HashMap::with_capacity(process_count),
+            memory:                         HashMap::with_capacity(process_count),
+            accumulated:                    HashMap::with_capacity(process_count),
             owners:                         HashMap::new(),
             #[cfg(test)]
             registration_rows:              Vec::new(),
@@ -4170,6 +4300,8 @@ impl CensusSequence {
 #[path = "."]
 pub(crate) mod tests {
     thread_local! {
+        pub(super) static CENSUS_PREPARATIONS: Cell<usize> = const { Cell::new(0) };
+        pub(super) static TOPOLOGY_PREPARATIONS: Cell<usize> = const { Cell::new(0) };
         pub(super) static CPU_ANCESTRY_WALKS: Cell<usize> = const { Cell::new(0) };
         pub(super) static NATIVE_DISCOVERY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
             pub(super) static SYSINFO_BASELINE_READS: Cell<usize> = const { Cell::new(0) };
@@ -6371,6 +6503,150 @@ pub(crate) mod tests {
             .current_dir(directory)
             .exec();
         panic!("exec sleep: {error}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn one_scan_prepares_one_census_and_one_topology() {
+        let pid = Pid::from_u32(4_100_001);
+        let discovery = ProcessDiscovery {
+            processes: HashMap::from([(
+                pid,
+                DiscoveryProcess {
+                    name: OsString::from("cargo"),
+                    pid,
+                    parent: ProcessField::Observed(Pid::from_u32(1)),
+                    uid: ProcessField::Unavailable,
+                    cpu: DiscoveryCpuEvidence::SampledRate(0.0),
+                    memory: 0,
+                    accumulated: 0,
+                    started: 0,
+                    elapsed: 0,
+                },
+            )]),
+            baselines: HashMap::from([(
+                pid,
+                CpuBaseline {
+                    lifetime:    LifetimeEvidence::Unavailable,
+                    accumulated: 0,
+                },
+            )]),
+        };
+        let cadence = CensusCadence::for_test();
+        let now = Instant::now();
+        let mut worker = ScanWorker {
+            refresh: RefreshWorker::new(SystemRefresh::default, cadence, now),
+            history: RefreshHistory::FirstObservation,
+            pace: RefreshPace::Active,
+            smoothing: InvocationCpuAccounting::new(cadence),
+            home: ScannerHomeLocation::Unavailable,
+            excluded: ExcludedCommands::new(Vec::new()),
+            scope: CensusScope::default(),
+            cadence,
+        };
+        CENSUS_PREPARATIONS.with(|count| count.set(0));
+        TOPOLOGY_PREPARATIONS.with(|count| count.set(0));
+        worker.scan_discovery(FreshProcessScan { discovery }, Capture::default(), now);
+        CENSUS_PREPARATIONS.with(|count| assert_eq!(count.get(), 1));
+        TOPOLOGY_PREPARATIONS.with(|count| assert_eq!(count.get(), 1));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn exec_into_cargo_establishes_cpu_without_losing_ancestry() {
+        const FIXTURE_WORK_COUNT: u32 = 5_000;
+        let root = tempdir().expect("cargo executable directory");
+        let directory = root.path().canonicalize().expect("physical directory");
+        let executable = directory.join("cargo-p43b-fixture");
+        fs::copy("/bin/bash", &executable).expect("native external cargo fixture");
+        // Darwin rejects a relocated platform shell without a new signature.
+        let signature = std::process::Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&executable)
+            .output()
+            .expect("sign the owned cargo fixture");
+        assert!(
+            signature.status.success(),
+            "{}",
+            String::from_utf8_lossy(&signature.stderr)
+        );
+        let mut fixture = MetadataProcess {
+            child: std::process::Command::new("/bin/sh")
+                .args(["-c", "printf 'before\\n'; read release; exec \"$1\" -c \"$2\"", "launcher"])
+                .arg(&executable)
+                .arg(format!("i=0; while [ $i -lt {FIXTURE_WORK_COUNT} ]; do i=$((i+1)); done; printf 'after\\n'; read release"))
+                .current_dir(&directory)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("exec fixture"),
+        };
+        let mut output = BufReader::new(fixture.child.stdout.take().expect("readiness pipe"));
+        let mut line = String::new();
+        output.read_line(&mut line).expect("shell readiness");
+        assert_eq!(line, "before\n");
+        let cadence = CensusCadence::for_test();
+        let now = Instant::now();
+        let parent = Pid::from_u32(std::process::id());
+        let pid = fixture.child.id();
+        let mut source = SystemRefresh::default();
+        let mut worker = ScanWorker {
+            refresh: RefreshWorker::new(SystemRefresh::default, cadence, now),
+            history: RefreshHistory::FirstObservation,
+            pace: RefreshPace::Active,
+            smoothing: InvocationCpuAccounting::new(cadence),
+            home: ScannerHomeLocation::Known(directory),
+            excluded: ExcludedCommands::new(Vec::new()),
+            scope: CensusScope::descendants_of(parent),
+            cadence,
+        };
+        let before = worker.scan_discovery(
+            FreshProcessScan {
+                discovery: source.refresh(),
+            },
+            Capture::default(),
+            now,
+        );
+        assert_eq!(before.groups, [] as [CargoGroup; 0]);
+        fixture
+            .child
+            .stdin
+            .as_mut()
+            .expect("release pipe")
+            .write_all(b"\n")
+            .expect("release exec");
+        line.clear();
+        output.read_line(&mut line).expect("cargo readiness");
+        assert_eq!(line, "after\n");
+        let first = worker.scan_discovery(
+            FreshProcessScan {
+                discovery: source.refresh(),
+            },
+            Capture::default(),
+            now + cadence.report,
+        );
+        let second = worker.scan_discovery(
+            FreshProcessScan {
+                discovery: source.refresh(),
+            },
+            Capture::default(),
+            now + cadence.report * 2,
+        );
+        assert_eq!(first.groups.len(), 1);
+        assert_eq!(second.groups.len(), 1);
+        let first = &first.groups[0];
+        let second = &second.groups[0];
+        assert_eq!(first.lead.pid, pid);
+        assert_eq!(second.lead.pid, pid);
+        assert_eq!(second.lead.invocation_id, first.lead.invocation_id);
+        assert_eq!(second.lead.path, "~");
+        assert_eq!(
+            second.ancestry.as_slice().last().expect("test parent").pid,
+            parent.as_u32()
+        );
+        assert!(
+            matches!(second.lead.resource_use.cpu, Measurement::Reading(cpu) if cpu.is_finite())
+        );
     }
 
     #[test]

@@ -36,6 +36,7 @@ use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 use super::transcript::BashCall;
 use super::transcript::Subagent;
+use super::transcript::SubagentParent;
 use super::worker_dispatch::ResolvedWorkerDispatch;
 use super::worker_dispatch::WorkerDispatch;
 use super::worker_dispatch::WorkerIdentity;
@@ -492,11 +493,11 @@ impl Walker<'_> {
                 .map_or(&[][..], Vec::as_slice);
             let running: HashSet<&str> = subagents.iter().map(|agent| agent.id.as_str()).collect();
             for agent in subagents {
-                if agent
-                    .parent
-                    .as_deref()
-                    .is_none_or(|parent| !running.contains(parent))
-                {
+                let under_session = match &agent.parent {
+                    SubagentParent::OwningSession => true,
+                    SubagentParent::RecordedSubagent(parent) => !running.contains(parent.as_str()),
+                };
+                if under_session {
                     nodes.push(subagent_node(agent, subagents, &mut shells_by_subagent, 0));
                 }
             }
@@ -697,7 +698,7 @@ fn subagent_node(
         children.extend(
             subagents
                 .iter()
-                .filter(|other| other.parent.as_deref() == Some(agent.id.as_str()))
+                .filter(|other| matches!(&other.parent, SubagentParent::RecordedSubagent(parent) if parent == &agent.id))
                 .map(|other| subagent_node(other, subagents, shells, level.saturating_add(1))),
         );
     }
@@ -806,6 +807,7 @@ mod tests {
     use crate::census::StaffRowNames;
     use crate::census::account::AccountLabels;
     use crate::census::account::ConfigHome;
+    use crate::census::transcript::SubagentRole;
 
     /// The home directory every fixture's paths sit under.
     const HOME: &str = "/home/natepiano";
@@ -907,13 +909,21 @@ mod tests {
     }
 
     /// A running subagent.
-    fn subagent(id: &str, parent: Option<&str>, description: &str, started: u64) -> Subagent {
+    fn subagent(
+        id: &str,
+        parent: Option<&str>,
+        description: &str,
+        started: u64,
+        role: SubagentRole,
+    ) -> Subagent {
         Subagent {
             agent_type: String::new(),
-            role: crate::census::transcript::SubagentRole::from_record("", description),
+            role,
             activity: AgentActivity::Idle,
             id: id.to_string(),
-            parent: parent.map(str::to_string),
+            parent: parent.map_or(SubagentParent::OwningSession, |parent| {
+                SubagentParent::RecordedSubagent(parent.to_owned())
+            }),
             description: description.to_string(),
             started,
             transcript: PathBuf::from(format!("/fixture/agent-{id}.jsonl")),
@@ -1035,8 +1045,14 @@ mod tests {
             subagents: HashMap::from([(
                 GEOMETRY,
                 vec![
-                    subagent("a1", None, "Review phase 1", 900),
-                    subagent("a2", Some("a1"), "Explore the tests", 950),
+                    subagent("a1", None, "Review phase 1", 900, SubagentRole::Reviewer),
+                    subagent(
+                        "a2",
+                        Some("a1"),
+                        "Explore the tests",
+                        950,
+                        SubagentRole::Explore,
+                    ),
                 ],
             )]),
             shell_calls: HashMap::from([
@@ -1295,14 +1311,14 @@ mod tests {
                 (1, claude, Some(3_900_050), "--print review", 805),
                 (
                     0,
-                    ChildKind::Subagent(crate::census::transcript::SubagentRole::Review),
+                    ChildKind::Subagent(crate::census::transcript::SubagentRole::Reviewer),
                     None,
                     "Review phase 1",
                     900
                 ),
                 (
                     1,
-                    ChildKind::Subagent(crate::census::transcript::SubagentRole::Unrecorded),
+                    ChildKind::Subagent(crate::census::transcript::SubagentRole::Explore),
                     None,
                     "Explore the tests",
                     950
