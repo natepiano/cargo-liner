@@ -501,6 +501,7 @@ fn render_finder_results(
     area: Rect,
     popup_area: Rect,
 ) {
+    let mode = pane_render_ctx.color_mode;
     if pane_render_ctx.project_list.finder.results.is_empty() {
         let msg = if pane_render_ctx.project_list.finder.query.is_empty() {
             "Type to search projects, PRs, examples, benches..."
@@ -550,7 +551,7 @@ fn render_finder_results(
             ])
             .style(
                 tui_pane::selection_state(&pane.viewport, row_index, pane.focus.pane_focus_state)
-                    .overlay_style(),
+                    .overlay_style(mode),
             )
         })
         .collect();

@@ -12,6 +12,7 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use tui_pane::ColorMode;
 use tui_pane::PaneFrameChrome;
 use tui_pane::PaneSelectionState;
 use tui_pane::PaneTitleCount;
@@ -181,6 +182,7 @@ fn build_ci_data_row(
     commit_width: usize,
     branch_width: usize,
     pane_selection_state: PaneSelectionState,
+    mode: ColorMode,
 ) -> Row<'static> {
     let timestamp = pane_data::format_timestamp(&ci_run.created_at);
     let total_dur = ci_run
@@ -222,7 +224,7 @@ fn build_ci_data_row(
         total_style,
     ));
 
-    Row::new(cells).style(pane_selection_state.overlay_style())
+    Row::new(cells).style(pane_selection_state.overlay_style(mode))
 }
 
 fn ci_metric_cell(
@@ -642,6 +644,7 @@ pub fn render_ci_pane_body(
     pane: &mut Ci,
     pane_render_ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
+    let mode = pane_render_ctx.color_mode;
     let Some(ci_data) = pane.content().cloned() else {
         return empty_ci_chrome(" No CI runs ");
     };
@@ -691,6 +694,7 @@ pub fn render_ci_pane_body(
                 commit_width,
                 branch_width,
                 tui_pane::selection_state(viewport_ref, row_index, ci_pane_focus_state),
+                mode,
             )
         })
         .collect();

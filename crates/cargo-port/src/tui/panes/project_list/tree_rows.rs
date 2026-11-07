@@ -1290,17 +1290,21 @@ pub(super) fn render_tree_items(
     viewport: &Viewport,
     widths: &ProjectListWidths,
 ) -> Vec<ListItem<'static>> {
+    let mode = ctx.color_mode;
     let cursor = ctx.project_list.cursor();
     project_row_presentations(ctx)
         .into_iter()
         .enumerate()
         .map(|(row_index, row)| {
-            let selection = theme_roles::selection_style(tui_pane::selection_state_for(
-                viewport,
-                cursor,
-                row_index,
-                pane.focus.pane_focus_state,
-            ));
+            let selection = theme_roles::selection_style(
+                tui_pane::selection_state_for(
+                    viewport,
+                    cursor,
+                    row_index,
+                    pane.focus.pane_focus_state,
+                ),
+                mode,
+            );
             row.into_item(widths, selection)
         })
         .collect()

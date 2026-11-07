@@ -19,6 +19,7 @@ use tui_pane::AttractWork;
 use tui_pane::BarPalette;
 use tui_pane::CellClick;
 use tui_pane::CellPoint;
+use tui_pane::ColorMode;
 use tui_pane::FocusLocation;
 use tui_pane::Keymap;
 use tui_pane::NavAction;
@@ -126,7 +127,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     );
     draw_status_line(frame, app, keymap, status);
     tui_pane::render_toasts(frame, &mut app.framework, tui_pane::frame_inner(body));
-    app.favorites_overlay.render(frame);
+    app.favorites_overlay
+        .render(frame, app.framework.color_mode);
     tui_pane::draw_framework_overlay(frame, app, keymap, settings::rows);
 }
 
@@ -169,6 +171,7 @@ fn draw_panes_at(
         &app.tree_sorts,
         app.summary_sort,
     )
+    .with_color_mode(app.framework.color_mode)
     .with_expansion(&app.expansion)
     .with_accounts(&app.accounts.table)
     .with_accounts_sort(app.accounts_sort)
@@ -201,6 +204,7 @@ fn draw_panes_at(
         growth,
         contents,
         &cells,
+        app.framework.color_mode,
     );
     *app.painted_summary.get_mut() = cells.painted_summary.into_inner();
     app.tree_layouts = cells.layouts.into_inner();
@@ -248,6 +252,7 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
         &app.tree_sorts,
         app.summary_sort,
     )
+    .with_color_mode(app.framework.color_mode)
     .with_expansion(&app.expansion)
     .with_accounts(&app.accounts.table)
     .with_accounts_sort(app.accounts_sort);
@@ -396,6 +401,7 @@ enum SummarySelectionLayout {
 
 /// The per-session summary source and the production-role or pooled tiles.
 struct Cells<'a> {
+    color_mode:        ColorMode,
     summary_layout:    RefCell<FrameSummaryLayout>,
     summary_selection: RefCell<SummarySelectionLayout>,
     painted_summary:   RefCell<PaintedSummary>,
@@ -507,7 +513,7 @@ impl<'a> Cells<'a> {
                         } else {
                             PaneFocusState::Remembered
                         };
-                    let style = tui_pane::selection_style(focus);
+                    let style = tui_pane::selection_style(focus, self.color_mode);
                     let row = Rect::new(
                         area.x,
                         area.y + u16::try_from(visible).unwrap_or(u16::MAX),
@@ -543,6 +549,7 @@ impl<'a> Cells<'a> {
         let tiles = agent_cell::group_tiles(&placement, &agents, sorts, now);
         let account_column = agent_cell::account_column(&agents);
         Self {
+            color_mode: ColorMode::Colored,
             summary_layout: RefCell::new(FrameSummaryLayout::Unallocated),
             summary_selection: RefCell::new(SummarySelectionLayout::DirectDraw),
             painted_summary: RefCell::new(PaintedSummary::NotDrawn),
@@ -561,6 +568,11 @@ impl<'a> Cells<'a> {
             accounts: &AccountsTable::NotConfigured,
             accounts_sort: AccountsSort::SourceOrder,
         }
+    }
+
+    const fn with_color_mode(mut self, mode: ColorMode) -> Self {
+        self.color_mode = mode;
+        self
     }
 
     fn with_expansion(mut self, expansion: &HandlerExpansion) -> Self {
@@ -1005,6 +1017,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Cell;
     use tui_pane::CellPoint;
+    use tui_pane::ColorMode;
     use tui_pane::ExpansionAction;
     use tui_pane::FavoritesFileState;
     use tui_pane::TileView;
@@ -1708,6 +1721,7 @@ fraying = "leading"
                 &app.tree_sorts,
                 app.summary_sort,
             )
+            .with_color_mode(app.framework.color_mode)
             .with_expansion(&app.expansion);
             let tile = &cells.tiles[0];
             let span = cells
@@ -1875,6 +1889,7 @@ fraying = "leading"
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         buffer
     }

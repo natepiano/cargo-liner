@@ -18,6 +18,7 @@ use tui_pane::Appearance;
 use tui_pane::AttractHost;
 #[cfg(feature = "attract")]
 use tui_pane::AttractMode;
+use tui_pane::ColorMode;
 #[cfg(feature = "attract")]
 use tui_pane::FavoritesHost;
 #[cfg(feature = "attract")]
@@ -60,6 +61,7 @@ use crate::keymap;
 use crate::probe::FrameLog;
 use crate::progress::capture_roots::AccountCaptureDirectory;
 use crate::render;
+use crate::render::PreparedTables;
 use crate::root_scan::SharedCaptureDirectory;
 use crate::roster::Roster;
 use crate::sccache::SccacheStats;
@@ -207,6 +209,7 @@ pub(crate) struct App {
     /// The commands the display is holding: what the last scan found,
     /// plus whatever has finished and is still fading out of it.
     pub(crate) roster:            Roster,
+    pub(crate) prepared_tables:   PreparedTables,
     /// The tile grid: how many cells the pane holds and the motion
     /// between one arrangement and the next.
     pub(crate) tiles:             TileGrid,
@@ -238,15 +241,22 @@ impl App {
         loaded_config: LoadedConfig,
         startup_note: Option<String>,
     ) -> Result<Self, KeymapError> {
-        Self::new_with_keymap_path(loaded_config, startup_note, CargoTile::keymap_path())
+        Self::new_with_keymap_path(
+            loaded_config,
+            startup_note,
+            CargoTile::keymap_path(),
+            ColorMode::from_environment(),
+        )
     }
 
     fn new_with_keymap_path(
         loaded_config: LoadedConfig,
         startup_note: Option<String>,
         keymap_path: Option<PathBuf>,
+        color_mode: ColorMode,
     ) -> Result<Self, KeymapError> {
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
+        framework.color_mode = color_mode;
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         let excluded_commands =
             ExcludedCommands::new(loaded_config.config.commands.excluded.clone());
@@ -263,6 +273,7 @@ impl App {
             root_status: Vec::new(),
             shared_directory: SharedCaptureDirectory::default(),
             roster: Roster::new(),
+            prepared_tables: render::PreparedTables::default(),
             tiles,
             sccache: SccacheStats::new(),
             inline_error: None,
@@ -286,6 +297,7 @@ impl App {
             },
             None,
             None,
+            ColorMode::Colored,
         )
     }
 

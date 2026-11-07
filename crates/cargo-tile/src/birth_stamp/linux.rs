@@ -12,9 +12,7 @@ use super::Observation;
 use super::kernel_observation;
 use crate::constants::BIRTH_BOOT_ID_PATH;
 use crate::constants::BIRTH_PROC_DIRECTORY;
-use crate::constants::BIRTH_STAT_COMM_END;
 use crate::constants::BIRTH_STAT_FILENAME;
-use crate::constants::BIRTH_STAT_START_INDEX;
 
 /// Read the boot once, retaining a denied read as uncertainty for this process.
 static BOOT: OnceLock<Result<String, Error>> = OnceLock::new();
@@ -45,17 +43,7 @@ pub(super) fn observe(pid: u32) -> Observation {
 /// `comm` may contain parentheses, whitespace, newlines, and non-UTF-8 bytes.
 /// Only fields after its final closing parenthesis have whitespace boundaries.
 fn start_ticks(stat: &[u8]) -> Result<u64, ()> {
-    let end = stat
-        .iter()
-        .rposition(|byte| *byte == BIRTH_STAT_COMM_END)
-        .ok_or(())?;
-    let field = stat[end + 1..]
-        .split(u8::is_ascii_whitespace)
-        .filter(|field| !field.is_empty())
-        .nth(BIRTH_STAT_START_INDEX)
-        .ok_or(())?;
-    let field = std::str::from_utf8(field).map_err(|_| ())?;
-    BirthStamp::decimal(field)
+    crate::linux_process_stat::LinuxProcessStat::parse(stat)?.start_ticks()
 }
 
 #[cfg(test)]

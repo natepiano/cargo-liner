@@ -30,7 +30,12 @@ use crate::title_color;
 /// come from the active theme. The pane's viewport is fitted to the
 /// popup's inside and scrolled to keep the selection visible before the
 /// lines are painted.
-pub fn draw_settings<S: Copy>(frame: &mut Frame, pane: &mut SettingsPane, rows: &SettingsRows<S>) {
+pub fn draw_settings<S: Copy>(
+    frame: &mut Frame,
+    pane: &mut SettingsPane,
+    rows: &SettingsRows<S>,
+    mode: crate::ColorMode,
+) {
     let area = frame.area();
     // `PopupFrame::render_with_areas` centers and clamps to the frame, so `rows` have
     // to be laid out for the width that survives that clamp.
@@ -48,8 +53,8 @@ pub fn draw_settings<S: Copy>(frame: &mut Frame, pane: &mut SettingsPane, rows: 
         success_style: Style::default().fg(success_color()),
         error_style: Style::default().fg(error_color()),
         inline_error_style: Style::default().fg(inline_error_color()),
-        active_style: selection_style(PaneFocusState::Active),
-        remembered_style: selection_style(PaneFocusState::Remembered),
+        active_style: selection_style(PaneFocusState::Active, mode),
+        remembered_style: selection_style(PaneFocusState::Remembered, mode),
         hovered_style: Style::default().bg(hover_focus_color()),
     };
     let rendered = pane.render_rows(rows.rows(), options);

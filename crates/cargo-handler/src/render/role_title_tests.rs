@@ -16,6 +16,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 use tui_pane::Appearance;
 use tui_pane::CellPoint;
+use tui_pane::ColorMode;
 
 use super::*;
 use crate::census::AgentRow;
@@ -166,6 +167,7 @@ fn account_grid(colors: &FooterColors, boss_visible: bool, labels: &[&str]) -> B
         app.loaded_config.config.tiles.growth(),
         TileGridContents::Shown,
         &cells,
+        ColorMode::Colored,
     );
     app.tiles.settle_for_test();
     tui_pane::draw_tile_grid(
@@ -175,6 +177,7 @@ fn account_grid(colors: &FooterColors, boss_visible: bool, labels: &[&str]) -> B
         app.loaded_config.config.tiles.growth(),
         TileGridContents::Shown,
         &cells,
+        ColorMode::Colored,
     );
     buffer
 }

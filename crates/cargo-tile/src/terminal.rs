@@ -326,6 +326,8 @@ mod tests {
     use ratatui::layout::Rect;
     use tempfile::TempDir;
     #[cfg(feature = "attract")]
+    use tui_pane::ColorMode;
+    #[cfg(feature = "attract")]
     use tui_pane::FavoritesFileState;
     use tui_pane::FrameworkOverlayId;
     #[cfg(feature = "attract")]
@@ -835,14 +837,14 @@ fraying = "leading"
         let mut terminal =
             Terminal::new(TestBackend::new(100, 30)).expect("test terminal should be created");
         terminal
-            .draw(|frame| app.favorites_overlay.render(frame))
+            .draw(|frame| app.favorites_overlay.render(frame, ColorMode::Colored))
             .expect("favorites overlay should render");
         let initial_rows = rendered_buffer_lines(terminal.backend().buffer());
         assert!(initial_rows.iter().any(|line| line.contains("▸● ")));
 
         app.resized(Rect::new(0, 0, 5, 4));
         terminal
-            .draw(|frame| app.favorites_overlay.render(frame))
+            .draw(|frame| app.favorites_overlay.render(frame, ColorMode::Colored))
             .expect("favorites overlay should render before resize refresh");
         let before_refresh = rendered_buffer_lines(terminal.backend().buffer());
         assert!(before_refresh.iter().any(|line| line.contains("▸● ")));
@@ -850,7 +852,7 @@ fraying = "leading"
         app.resize_settled();
         assert_ne!(app.attract.current_settings(), favorite_settings);
         terminal
-            .draw(|frame| app.favorites_overlay.render(frame))
+            .draw(|frame| app.favorites_overlay.render(frame, ColorMode::Colored))
             .expect("favorites overlay should render after resize refresh");
         let refreshed_rows = rendered_buffer_lines(terminal.backend().buffer());
         assert!(refreshed_rows.iter().any(|line| line.contains("▸  ")));

@@ -171,6 +171,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
+    use crate::ColorMode;
     use crate::FavoritesFileState;
     use crate::KeyBind;
     use crate::favorites_overlay::test_app::TestApp;
@@ -205,7 +206,7 @@ mod tests {
         let mut terminal =
             Terminal::new(TestBackend::new(46, 20)).expect("test terminal should build");
         terminal
-            .draw(|frame| app.favorites_overlay.render(frame))
+            .draw(|frame| app.favorites_overlay.render(frame, ColorMode::Colored))
             .expect("favorites overlay should render");
 
         for pressed in prelude.iter().copied().chain([code]) {

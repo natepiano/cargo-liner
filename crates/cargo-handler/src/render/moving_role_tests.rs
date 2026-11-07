@@ -2,6 +2,7 @@
 
 #![expect(clippy::expect_used, reason = "rendered fixture rows must exist")]
 
+use tui_pane::ColorMode;
 use tui_pane::TileGrid;
 use tui_pane::TileGrowth;
 
@@ -100,6 +101,7 @@ fn shrinking_tiles_keep_the_entire_role_and_its_width_during_motion() {
             growth,
             TileGridContents::Shown,
             cells,
+            ColorMode::Colored,
         );
         buffer
     };

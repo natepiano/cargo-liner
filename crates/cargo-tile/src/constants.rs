@@ -767,6 +767,9 @@ pub(crate) const BIRTH_STAT_FILENAME: &str = "stat";
 /// Field 22 is index 19 after removing fields 1 and 2 (pid and comm).
 #[cfg(target_os = "linux")]
 pub(crate) const BIRTH_STAT_START_INDEX: usize = 19;
+/// Field 24 is index 21 after removing pid and comm.
+#[cfg(target_os = "linux")]
+pub(crate) const RESIDENT_PAGES_INDEX: usize = 21;
 /// A failed or incomplete kernel response cannot prove process identity.
 #[cfg(target_os = "macos")]
 pub(crate) const BIRTH_SYSCTL_INCOMPLETE: &str = "incomplete process birth sysctl response";

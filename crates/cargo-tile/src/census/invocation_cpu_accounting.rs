@@ -21,6 +21,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use sysinfo::Pid;
+#[cfg(any(not(target_os = "linux"), test))]
 use sysinfo::Process;
 
 use super::command_text;
@@ -53,10 +54,8 @@ use crate::constants::BIRTH_BOOT_ID_PATH;
 #[cfg(target_os = "linux")]
 use crate::constants::BIRTH_PROC_DIRECTORY;
 #[cfg(target_os = "linux")]
-use crate::constants::BIRTH_STAT_COMM_END;
-#[cfg(target_os = "linux")]
 use crate::constants::BIRTH_STAT_FILENAME;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 use crate::constants::BIRTH_STAT_START_INDEX;
 use crate::constants::CARGO_TARGET_DIR_ENV;
 use crate::constants::CARGO_TARGET_DIR_FLAG;
@@ -74,9 +73,9 @@ use crate::constants::CPU_AUXV_ENTRY_WORDS;
 use crate::constants::CPU_AUXV_PATH;
 use crate::constants::CPU_REPORT_MILLIS;
 use crate::constants::CPU_SMOOTHING_SECONDS;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 use crate::constants::CPU_STAT_TIME_FIELDS;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 use crate::constants::CPU_STAT_TIME_INDEX;
 use crate::constants::PROCESS_POLL_MILLIS;
 use crate::constants::UNAVAILABLE_MEASUREMENT;
@@ -101,6 +100,7 @@ pub(crate) enum MeasurementAbsence {
     Unproven,
     /// The counter read is sound and unchanged, but the rate is the platform's
     /// last one: macOS keeps a process's previous rate until its counter moves.
+    #[cfg(any(not(target_os = "linux"), test))]
     RetainedRate,
 }
 
@@ -121,16 +121,6 @@ impl<T> From<Measurement<T>> for LiveResources<T> {
             Measurement::Reading(reading) => Self::Reading(reading),
             Measurement::Unavailable(MeasurementAbsence::FirstObservation) => Self::Sampling,
             Measurement::Unavailable(reason) => Self::Unavailable(reason),
-        }
-    }
-}
-
-impl<T> LiveResources<T> {
-    /// Display policy keeps unavailable cells empty without discarding their typed reason.
-    pub(crate) fn text(self, reading: impl FnOnce(T) -> String) -> String {
-        match self {
-            Self::Reading(value) => reading(value),
-            Self::Sampling | Self::Unavailable(_) => String::new(),
         }
     }
 }
@@ -188,9 +178,11 @@ pub(super) struct CpuBaseline {
     /// A reused pid must begin a fresh rate observation.
     pub(super) lifetime:    LifetimeEvidence,
     /// A decrease for the same process proves the samples cannot form a valid rate.
+    #[cfg(any(not(target_os = "linux"), test))]
     pub(super) accumulated: u64,
 }
 
+#[cfg(any(not(target_os = "linux"), test))]
 impl From<&Process> for CpuBaseline {
     fn from(process: &Process) -> Self {
         Self {
@@ -638,35 +630,15 @@ impl LinuxCpuSample {
 /// Parse the four CPU counters and start ticks after the final comm delimiter.
 #[cfg(target_os = "linux")]
 fn linux_cpu_ticks(stat: &[u8]) -> Result<LinuxCpuSample, MeasurementAbsence> {
-    let end = stat
-        .iter()
-        .rposition(|byte| *byte == BIRTH_STAT_COMM_END)
-        .ok_or(MeasurementAbsence::ReadFailed)?;
-    let mut fields = stat[end + 1..]
-        .split(u8::is_ascii_whitespace)
-        .filter(|field| !field.is_empty())
-        .skip(CPU_STAT_TIME_INDEX);
-    let mut ticks = 0_u64;
-    for _ in 0..CPU_STAT_TIME_FIELDS {
-        let field = fields.next().ok_or(MeasurementAbsence::ReadFailed)?;
-        let value = std::str::from_utf8(field)
-            .map_err(|_| MeasurementAbsence::ReadFailed)?
-            .parse::<u64>()
-            .map_err(|_| MeasurementAbsence::ReadFailed)?;
-        ticks = ticks
-            .checked_add(value)
-            .ok_or(MeasurementAbsence::ReadFailed)?;
-    }
-    let field = fields
-        .nth(BIRTH_STAT_START_INDEX - CPU_STAT_TIME_INDEX - CPU_STAT_TIME_FIELDS)
-        .ok_or(MeasurementAbsence::ReadFailed)?;
-    let start_ticks = std::str::from_utf8(field)
-        .map_err(|_| MeasurementAbsence::ReadFailed)?
-        .parse::<u64>()
-        .map_err(|_| MeasurementAbsence::ReadFailed)?;
+    let stat = crate::linux_process_stat::LinuxProcessStat::parse(stat)
+        .map_err(|()| MeasurementAbsence::ReadFailed)?;
     Ok(LinuxCpuSample {
-        start_ticks,
-        accumulated_ticks: ticks,
+        start_ticks:       stat
+            .start_ticks()
+            .map_err(|()| MeasurementAbsence::ReadFailed)?,
+        accumulated_ticks: stat
+            .cpu_ticks()
+            .map_err(|()| MeasurementAbsence::ReadFailed)?,
     })
 }
 
