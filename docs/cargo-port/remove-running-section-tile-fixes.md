@@ -1549,15 +1549,21 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 
 #### Work Order
 
-Director, 2026-11-07, from Phase 43c's landing call. Phase 43c cut natedev slow tests from 6 to 1-4, but its head made the Mac suite slower: 44 and 47 tests at 1 s or more against 15 and 8 on its base, and 22.3 s against 13.0 s for the suite. The slow Mac tests include `app::tests` that Phase 43c never touched, so one change adds a stall that every Mac test process can meet before its first statement. Evidence: the session's phases/43c/gate_r3_pair2.txt, stage_table.md, stall_cause.md; the attempts log in project memory (attempts-43c-mac-test-startup-stall).
+Director, 2026-11-07, from Phase 43c's landing call. Phase 43c cut natedev slow tests from 6 to 1-4, but its head is slower on the Mac than its comparison base ebfdbbf:
+
+| Pair | Order | Base Mac suite / slow | Head Mac suite / slow |
+| --- | --- | --- | --- |
+| 1 | head first | 14.479 s / 15 | 26.963 s / 44 |
+| 2 | base first | 12.998 s / 8 | 22.266 s / 47 |
+
+Both runs used `--no-cache`, which skips saved test results; it does not make operating-system caches equal. The base and the head differ by two main merges (196 files), so the pairs show a regression between the trees but do not isolate its source. The finding is clustered delays before test-body entry; the mechanism is unknown. Evidence: the session's phases/43c/gate_r3_pair2.txt, gate_9021a723.txt, stage_table.md, stall_cause.md, and the Astra review at /tmp/claude/astra/20261107T055422Z-1012958/review.md; the attempts log in project memory (attempts-43c-mac-test-startup-stall).
 
 **Goal:** every cargo-tile test runs under 1 s on the Mac and on natedev.
 
 **Spec:**
-1. Find the 43c commit that adds the Mac stall. Bisect the Phase 43c commits on the Mac: run each candidate's full cargo-tile suite with `--no-cache`, the base first, on the same machine at similar load. Record the slow count and suite time for each candidate.
-2. Name the cause from that commit. The leading suspect is fixtures that write new executables, which macOS assesses before they run (Phase 43c attempt 2's security log).
-3. Remove the cause, or keep the commit out. Keep every Phase 43c cut that adds no Mac stall.
-4. Then cut the remaining slow tests on both machines, as Phase 43c's Spec says.
+1. Test the staging change first. Commit ffe670c0 replaced `fs::copy` with `fs::hard_link` (copy as fallback) in `reader_scenarios.rs:186`, so a staged reader shares the test executable's inode. On the final 43c head, compare the head with a variant that always copies the reader executable. Keep the suite, concurrency, test groups, fixture isolation and assertions the same. Record the source and staged paths, hashes, device and inode numbers. Measure parent launch, spawn return, test entry, reader readiness and exit times. Run both variants twice in reversed order, and record first use and unchanged-binary reuse apart.
+2. If copy staging removes the start clusters, keep copy staging (prefer it to new shared staging unless measurements show otherwise). If it does not, probe the real test executable and an independent copy, then bisect the 43c commits with a good/bad timing rule checked first, and name the merge boundaries.
+3. Then measure the remaining slow test bodies on both machines (natedev `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` takes 1.415 s) and cut the cost each test does not need, as Phase 43c's Spec says.
 
 **Files:**
 - `crates/cargo-tile/src/shim_registration/`
@@ -1569,7 +1575,7 @@ Director, 2026-11-07, from Phase 43c's landing call. Phase 43c cut natedev slow 
 
 **Constraints from prior phases:** Phase 43c's constraints hold. Its approved `installed.rs` assertion change (`assert_eq!(…, b"")`) stays. Its `census/scan.rs` test edits serialize with Phases 43b and 49.
 
-**Acceptance gate:** two alternating Mac pairs (base first) and one natedev run, all `--no-cache`, show no test at 1 s or more and no slow count above the base; no assertion is weakened.
+**Acceptance gate:** first, a repeatable start-cluster cause with its variant measurements; then two alternating Mac full suites and one natedev full suite, all `--no-cache` and uninstrumented, with no test at 1 s or more; no assertion is weakened.
 
 ### Phase 43d — Capture text and constants follow the style guide  · status: todo
 
