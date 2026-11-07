@@ -28,7 +28,6 @@ use super::HierarchySnapshot;
 use super::HierarchySource;
 use super::RemoteHierarchyAnswers;
 use super::RemoteMachines;
-use super::SessionIdentity;
 use super::StaffFileSetting;
 use super::account::AccountLabels;
 use super::hierarchy;
@@ -208,20 +207,14 @@ impl HierarchyRequestSessions {
     fn new(rows: &[AgentRow]) -> Self {
         Self(
             rows.iter()
-                .filter_map(|row| match &row.session_id {
-                    SessionIdentity::Claude(id) => Some(id.clone()),
-                    SessionIdentity::Unrecorded => None,
-                })
+                .flat_map(|row| row.session_id.ids().map(str::to_owned))
                 .collect(),
         )
     }
 
     fn newcomers(&self, rows: &[AgentRow]) -> Vec<AgentRow> {
         rows.iter()
-            .filter(|row| match &row.session_id {
-                SessionIdentity::Claude(id) => !self.0.contains(id),
-                SessionIdentity::Unrecorded => false,
-            })
+            .filter(|row| row.session_id.ids().any(|id| !self.0.contains(id)))
             .cloned()
             .collect()
     }

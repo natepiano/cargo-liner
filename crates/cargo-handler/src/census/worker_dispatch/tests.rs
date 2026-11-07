@@ -1944,7 +1944,7 @@ fn paired_dispatch_fixture(
     );
     sources.dispatches = scan::find_staff_dispatches(&processes, std::sync::Arc::clone(&staff));
     tree::attach_children(&mut rows, &processes, &sources);
-    classify::attach_staff_names(&mut rows, &staff, &std::collections::HashMap::new());
+    classify::attach_staff_names(&mut rows, &staff);
     let text = drawn_tiles_with_edges(rows, staff.edges.clone()).join("\n");
     assert!(
         !text.contains("assign.py")

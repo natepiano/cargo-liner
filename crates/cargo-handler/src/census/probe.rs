@@ -25,6 +25,7 @@ use super::CodexThreadId;
 use super::HierarchyEdges;
 use super::HierarchyNotice;
 use super::HierarchySource;
+use super::ProvenCodexThread;
 use super::ServiceTier;
 use super::SessionIdentity;
 use super::ShellTimerObservation;
@@ -332,6 +333,8 @@ pub(super) struct ProbeAgentRow {
     #[serde(default)]
     session_id:      Option<String>,
     #[serde(default)]
+    codex_session:   Option<ProvenCodexThread>,
+    #[serde(default)]
     service_tier:    super::ServiceTier,
     #[serde(default)]
     account:         Account,
@@ -358,9 +361,13 @@ impl From<ProbeAgentRow> for AgentRow {
         Self {
             agent:           row.agent,
             role_fallback:   row.role_fallback,
-            session_id:      row
-                .session_id
-                .map_or(SessionIdentity::Unrecorded, SessionIdentity::from),
+            session_id:      row.codex_session.map_or_else(
+                || {
+                    row.session_id
+                        .map_or(SessionIdentity::Unrecorded, SessionIdentity::from)
+                },
+                SessionIdentity::Codex,
+            ),
             service_tier:    row.service_tier,
             account:         row.account,
             name:            row.name,
