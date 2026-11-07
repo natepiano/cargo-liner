@@ -10,9 +10,11 @@ use std::time::Instant;
 
 use chrono::Local;
 use chrono::TimeZone;
+use tui_pane::AppIdentity;
 use tui_pane::Appearance;
 use tui_pane::PollWork;
 use tui_pane::Repaint;
+use tui_pane::ThemeSource;
 use tui_pane::run_terminal;
 use tui_pane::spawn_appearance_watcher;
 
@@ -52,7 +54,15 @@ pub(crate) fn run() -> ExitCode {
     startup_log::init();
     let loaded_config = LoadedConfig::load::<CargoHandler>();
     startup_log::startup_event("config_loaded");
-    let installation = theme::install_theme(&loaded_config.config.appearance, theme::builtins());
+    let theme_directory = CargoHandler::themes_dir();
+    let theme_source = theme_directory
+        .as_deref()
+        .map_or(ThemeSource::BuiltinsOnly, ThemeSource::Directory);
+    let installation = theme::install_theme(
+        &loaded_config.config.appearance,
+        theme::builtins(),
+        theme_source,
+    );
     let (appearance_sender, appearance_updates) = mpsc::channel();
     let startup_appearance = spawn_appearance_watcher(move |appearance| {
         let _ = appearance_sender.send(appearance);

@@ -475,6 +475,9 @@ class LaunchedWriter:
         self.writer_home = writer_home
         self.nested_observations = nested_observations
 
+# Keep the nested readiness checks while the reader starts its first scan.
+writers_awaiting_nested_readiness: list[LaunchedWriter] = []
+
 def launch_writer(name: str, writer_home: Path, command: str = 'build',
                   directory: Path = work, arguments: tuple[str, ...] = (),
                   additional_environment: tuple[tuple[str, str], ...] = (),
@@ -514,12 +517,8 @@ def finish_writer_start(launch: LaunchedWriter) -> StartedWriter:
     inherited = (observations / 'environment').read_bytes().split(b'\0')
     assert inherited == [writer_locale.encode(), environment['TZ'].encode(),
                          writer_locale.encode(), os.fsencode(writer_home), b'']
-    for nested in launch.nested_observations:
-        wait_for_files(lambda: (nested / 'enclosing-pid').exists()
-                 and (nested / 'enclosing-pid').read_text() == str(child.pid),
-                 'nested command does not inherit the enclosing capture')
-        nested_pid = (nested / 'cargo-pid').read_text()
-        assert not list(pids.glob(nested_pid + '.*')), 'nested command publishes a capture'
+    if launch.nested_observations:
+        writers_awaiting_nested_readiness.append(launch)
     record_timestamp('writer ' + name)
     return child, observations, registration, fields, log
 
@@ -901,23 +900,6 @@ def stopped_compiler_cpu(compiler: int, scan_path: Path, deadline: float) -> Non
                 return state == b'T'
             return MacProcessInfo.read(compiler).status == MacProcessInfo.STOPPED
         wait_for(compiler_is_stopped, 'compiler does not stop for its kernel counter', pause=0, deadline=deadline)
-        if sys.platform == 'linux':
-            fields = Path(f'/proc/{compiler}/stat').read_bytes().rsplit(b') ', 1)[1].split()
-            independent = (int(fields[11]) + int(fields[12])) / os.sysconf('SC_CLK_TCK')
-        else:
-            usage = MacProcessUsage()
-            libproc = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
-            read_usage = libproc.proc_pid_rusage
-            read_usage.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.POINTER(MacProcessUsage))
-            read_usage.restype = ctypes.c_int
-            assert read_usage(compiler, 0, ctypes.byref(usage)) == 0, ('read compiler kernel CPU', ctypes.get_errno())
-            timebase = MacTimebase()
-            read_timebase = ctypes.CDLL('/usr/lib/libSystem.B.dylib').mach_timebase_info
-            read_timebase.argtypes = (ctypes.POINTER(MacTimebase),)
-            read_timebase.restype = ctypes.c_int
-            assert read_timebase(ctypes.byref(timebase)) == 0, 'read Mach CPU timebase'
-            ticks = usage.user_time + usage.system_time
-            independent = ticks * timebase.numerator / timebase.denominator / NANOSECONDS_PER_SECOND
         last = read_cpu_scans(scan_path)[-1].number
         # One scan can have read its counters before SIGSTOP. The following scan
         # must read the stopped compiler. Completion follows scan sequence events.
@@ -929,10 +911,29 @@ def stopped_compiler_cpu(compiler: int, scan_path: Path, deadline: float) -> Non
                         for group in groups.values() for identity, counter in group.items()
                         if process_identity_pid(identity) == compiler]
             assert len(counters) == 1, ('stopped compiler contribution count', counters)
+            # MacProcessInfo can report SSTOP before the final CPU charge.
+            # Read the kernel anchor after the completed stopped scan.
+            if sys.platform == 'linux':
+                fields = Path(f'/proc/{compiler}/stat').read_bytes().rsplit(b') ', 1)[1].split()
+                independent = (int(fields[11]) + int(fields[12])) / os.sysconf('SC_CLK_TCK')
+            else:
+                usage = MacProcessUsage()
+                libproc = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+                read_usage = libproc.proc_pid_rusage
+                read_usage.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.POINTER(MacProcessUsage))
+                read_usage.restype = ctypes.c_int
+                assert read_usage(compiler, 0, ctypes.byref(usage)) == 0, ('read compiler kernel CPU', ctypes.get_errno())
+                timebase = MacTimebase()
+                read_timebase = ctypes.CDLL('/usr/lib/libSystem.B.dylib').mach_timebase_info
+                read_timebase.argtypes = (ctypes.POINTER(MacTimebase),)
+                read_timebase.restype = ctypes.c_int
+                assert read_timebase(ctypes.byref(timebase)) == 0, 'read Mach CPU timebase'
+                ticks = usage.user_time + usage.system_time
+                independent = ticks * timebase.numerator / timebase.denominator / NANOSECONDS_PER_SECOND
             assert_compiler_counter(counters[0], independent)
+            record_timestamp(f'compiler kernel counter pid={compiler} seconds={independent}')
             return True
         wait_for_files(next_stopped_scan, 'reader does not scan the stopped compiler', deadline=deadline)
-        record_timestamp(f'compiler kernel counter pid={compiler} seconds={independent}')
     finally:
         os.kill(compiler, signal.SIGCONT)
 
@@ -2129,6 +2130,15 @@ IFS= read -r notification < "$OBSERVED/notification"
 
     if scenario != 'cpu-cache-server':
         release_reader()
+
+    for launch in writers_awaiting_nested_readiness:
+        child = launch.child
+        for nested in launch.nested_observations:
+            wait_for_files(lambda: (nested / 'enclosing-pid').exists()
+                     and (nested / 'enclosing-pid').read_text() == str(child.pid),
+                     'nested command does not inherit the enclosing capture')
+            nested_pid = (nested / 'cargo-pid').read_text()
+            assert not list(pids.glob(nested_pid + '.*')), 'nested command publishes a capture'
 
     def reader_has_scanned():
         read_terminal(0.1)
