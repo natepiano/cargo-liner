@@ -2111,7 +2111,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: captures in a dark and a light theme. The checkpoint adds ONE Change-Review line covering C113 and C115: the ramp reads at a glance, no red, no reset color matches a session color, dark and light themes.
 
-### Phase 59 — Shift-left and shift-right move the tile focus  · status: todo
+### Phase 59 — Shift-left and shift-right move the tile focus  · status: done
 
 **Depends on:** none.
 
