@@ -971,31 +971,20 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 34 — Tests leave no folders  · status: done
 
-**Depends on:** Phase 18
+#### As-built
 
-#### Work Order
-
-**Goal:** the cargo-handler startup-note tests leave no temporary folder behind, also when a test fails.
-
-**Source:** showrunner add-ons, 2026-10-26: the theme-note tests leave /tmp/.tmpXXXXXX folders that hold broken-default-dark.toml. The timeout test named in the same add-on and its `ShortDeadlineRunner` no longer exist, so that repair left this phase.
-
-**Constraints from prior phases:**
-- Phase 18: `crates/cargo-handler/src/terminal/theme_note_tests.rs` builds the app through `terminal::startup_theme_notes` (`terminal.rs` ≈79) and `App::new_for_test_with_startup` (`app.rs` ≈246). Its `theme_directory()` keeps the theme folder in a `static DIRECTORY: OnceLock<TempDir>`, which is never dropped, so the folder stays after the run. The fixture function that gives the folder path takes no `self`.
-
-**Spec:**
-1. Each theme-note test owns its own `TempDir`, which is removed when the test ends, also when it fails (the owner drops on unwind). No `keep()`, no `into_path()`, and no folder outside a `TempDir`. Pass the folder path through the fixture or the config the test builds, not through a static. `AppIdentity::themes_dir()` takes no `self`, so `theme::install_theme` (`theme/files.rs` ≈164) takes the theme folder as a `tui_pane::ThemeSource<'_>` parameter instead of reading `I::themes_dir()`. The startup caller (`terminal.rs` ≈55) converts `themes_dir()` to `ThemeSource::{Directory, BuiltinsOnly}` at that boundary; a test passes `ThemeSource::Directory(dir.path())`. Production startup loads the same files as before.
-2. A test fails when a theme-note run leaves a folder behind: it runs a fixture to the end, also through a forced failure, and checks that the folder path no longer exists.
-3. Each test runs under a second, alone and in the full suite.
+- Each theme-note test owns its own `TempDir`. The folder is removed when the test ends and when it unwinds. No static holds a theme folder.
+- `theme::install_theme` takes the theme folder as a `tui_pane::ThemeSource<'_>` parameter. Startup (`terminal.rs`) converts `CargoHandler::themes_dir()` to `ThemeSource::Directory` or `ThemeSource::BuiltinsOnly` at that boundary, so it loads the same files as before. A test passes `ThemeSource::Directory(dir.path())`.
+- Two tests prove that the folder is gone: one after a normal end, one after a forced panic, which checks the panic payload to confirm the fixture finished.
 
 **Files:**
-- `crates/cargo-handler/src/terminal/theme_note_tests.rs`
+- `crates/cargo-handler/src/terminal/theme_note_tests.rs` — per-test `TempDir` fixture and the no-leftover-folder tests
 - `crates/cargo-handler/src/theme/files.rs` — `install_theme` takes a `ThemeSource`
-- `crates/cargo-handler/src/terminal.rs` — the startup caller converts `themes_dir()`
+- `crates/cargo-handler/src/terminal.rs` — startup converts `themes_dir()` to a `ThemeSource`
 
-**Workers:** 1 tester.
-- `test` — the `install_theme` parameter, the theme-note repair and the no-leftover-folder test; keep the production startup-theme handoff when the static `TempDir` fixture is replaced.
+**Gotchas:** `ThemeRegistry::from_dir_with_parser` already maps `ThemeSource::BuiltinsOnly` to the builtins alone; pass the source through without a match.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. After a full cargo-handler run, no new /tmp/.tmp* folder that holds a theme file is left (count before and after).
+**Ruled out:** a static `OnceLock<TempDir>` fixture (it is never dropped); an identity override for `themes_dir()` (it takes no `self`).
 
 ### Phase 16 — Row selection in tiles  · status: done
 
@@ -2101,11 +2090,10 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 **Spec:**
 1. The bindings and overlay rows are in place. Do not change them.
 2. Add only the missing evidence. A red-first test under 1 s for each direction that no test proves: the shift arrow moves focus one tile and stays at the edge.
-3. CHANGELOG: one line only if the code changes.
+3. No CHANGELOG line: the change adds only tests. Phase 21 owns `CHANGELOG.md` while both phases run. If a binding must change, post blocked and the unit director adds the line at the checkpoint.
 
 **Files:**
 - `crates/cargo-handler/src/globals.rs` — the direction and edge tests
-- `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer.
 
