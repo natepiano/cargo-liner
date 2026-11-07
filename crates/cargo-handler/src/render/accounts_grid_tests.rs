@@ -38,7 +38,7 @@ const NOW: u64 = 1_792_166_400;
 const ACCOUNT_RESET: &str = "2026-10-18T14:00:00Z";
 // Optional columns leave before layout selection. These widths force the kept
 // columns onto two lines or into stacked facts, including the pane frame.
-const TWO_LINE_ACCOUNTS_WIDTH: u16 = 36;
+const TWO_LINE_ACCOUNTS_WIDTH: u16 = 60;
 const STACKED_ACCOUNTS_WIDTH: u16 = 18;
 // The final account and its heading must fit the five-row viewport together.
 const COMPLETE_STACKED_ACCOUNT_WIDTH: u16 = 26;
@@ -275,7 +275,11 @@ pub(super) fn interactive_accounts() -> App {
             serde_json::json!({
                 "label":format!("account-{index}"), "tool":"codex",
                 "roles":["showrunners", "units"], "weekly_left_percent":60,
-                "credits":13_446, "use_credits":true, "credits_in_use":true,
+                "role_counts":[
+                    {"busy":1,"shell":2,"idle":3,"total":6},
+                    {"busy":4,"shell":5,"idle":6,"total":15}
+                ],
+                "credits":13_446, "use_credits":true,
                 "read_ok":true, "read_at":"2026-10-16T15:57:53Z",
                 "resets_at":ACCOUNT_RESET
             })
@@ -350,14 +354,41 @@ fn assert_account_selected(app: &App, buffer: &Buffer, label: &str) {
     );
 }
 
+/// The total row is outside the final account's selection span.
+fn final_account_y(buffer: &Buffer) -> u16 {
+    let previous = locate(buffer, "account-4").row;
+    let last = locate(buffer, "account-5").row;
+    last + (last - previous) - 1
+}
+
+/// The complete measured table supplies its unselectable tail.
+fn table_tail(app: &App, buffer: &Buffer) -> Vec<String> {
+    let painted = app.painted_summary.borrow();
+    let crate::summary::PaintedSummary::Drawn(layout) = &*painted else {
+        panic!("drawn summary");
+    };
+    let end = buffer.area.y + u16::try_from(layout.height()).expect("table height");
+    (final_account_y(buffer) + 1..end)
+        .map(|y| account_line(buffer, y))
+        .collect()
+}
+
+fn assert_tail_at_end(buffer: &Buffer, tail: &[String]) {
+    for (offset, line) in tail.iter().rev().enumerate() {
+        let y = buffer.area.bottom() - 1 - u16::try_from(offset).expect("tail offset");
+        assert_eq!(
+            account_line(buffer, y),
+            *line,
+            "the complete table tail is visible"
+        );
+    }
+}
+
 fn assert_account_tail_reachable(width: u16, continuation: &str) {
     let mut app = interactive_accounts();
-    let complete = paint_accounts_viewport(&mut app, width, 64);
+    let complete = paint_accounts_viewport(&mut app, width, 128);
     let final_heading = locate(&complete, "account-5");
-    let last_y = (complete.area.y..complete.area.bottom())
-        .rev()
-        .find(|&y| !account_line(&complete, y).trim().is_empty())
-        .expect("final painted line");
+    let last_y = final_account_y(&complete);
     assert!(last_y > final_heading.row, "fixture has a continuation");
     let final_line = account_line(&complete, last_y);
     assert!(
@@ -366,24 +397,28 @@ fn assert_account_tail_reachable(width: u16, continuation: &str) {
     );
     let first = locate(&complete, "account-0");
     app.click(Position::new(first.column, first.row));
-    let short = paint_accounts_viewport(&mut app, width, 9);
+    let tail = table_tail(&app, &complete);
+    let tail_height = u16::try_from(tail.len()).expect("tail height");
+    let height = last_y - final_heading.row + tail_height + 8;
+    let short = paint_accounts_viewport(&mut app, width, height);
     assert!(
         last_y - complete.area.y >= short.area.height,
         "viewport really clips the tail"
     );
     account_key(&mut app, KeyCode::End);
-    let end = paint_accounts_viewport(&mut app, width, 9);
+    let end = paint_accounts_viewport(&mut app, width, height);
     assert_eq!(
-        account_line(&end, end.area.bottom() - 1),
+        account_line(&end, end.area.bottom() - tail_height - 1),
         final_line,
         "End must reveal the final account's complete last line"
     );
+    assert_tail_at_end(&end, &tail);
     assert_account_selected(&app, &end, "account-5");
 }
 
 fn assert_account_continuations_select(width: u16) {
     let mut app = interactive_accounts();
-    let complete = paint_accounts_viewport(&mut app, width, 64);
+    let complete = paint_accounts_viewport(&mut app, width, 128);
     let heading = locate(&complete, "account-1");
     let next = locate(&complete, "account-2");
     assert!(
@@ -394,33 +429,30 @@ fn assert_account_continuations_select(width: u16) {
         let line = account_line(&complete, y);
         assert!(!line.trim().is_empty(), "each continuation carries a fact");
         account_key(&mut app, KeyCode::Home);
-        let home = paint_accounts_viewport(&mut app, width, 64);
+        let home = paint_accounts_viewport(&mut app, width, 128);
         let first = locate(&home, "account-0");
         app.click(Position::new(first.column, first.row));
-        let before = paint_accounts_viewport(&mut app, width, 64);
+        let before = paint_accounts_viewport(&mut app, width, 128);
         assert_account_selected(&app, &before, "account-0");
         let x = (before.area.x..before.area.right())
             .find(|&x| !before[(x, y)].symbol().trim().is_empty())
             .expect("painted continuation cell");
         app.click(Position::new(x, y));
-        let after = paint_accounts_viewport(&mut app, width, 64);
+        let after = paint_accounts_viewport(&mut app, width, 128);
         assert_account_selected(&app, &after, "account-1");
     }
 }
 
 #[test]
 fn two_line_accounts_end_reveals_the_final_continuation() {
-    // Spec 1 drops read age before TwoLine; reset is the final kept fact.
+    // One account detail line follows the role counts.
     assert_account_tail_reachable(TWO_LINE_ACCOUNTS_WIDTH, &local_account_reset("%a %H:%M"));
 }
 
 #[test]
 fn stacked_accounts_end_reveals_the_final_fact() {
-    // Spec 1 drops read age before Stacked; reset is the final kept fact.
-    assert_account_tail_reachable(
-        COMPLETE_STACKED_ACCOUNT_WIDTH,
-        &local_account_reset("%H:%M"),
-    );
+    // The final role keeps its total as the last fact.
+    assert_account_tail_reachable(COMPLETE_STACKED_ACCOUNT_WIDTH, "total 15");
 }
 
 #[test]
@@ -434,7 +466,7 @@ fn stacked_account_fact_clicks_select_the_account() {
 }
 
 #[test]
-fn full_accounts_keep_one_selectable_line_per_account() {
+fn full_accounts_keep_all_role_rows_in_one_selectable_account() {
     let mut app = interactive_accounts();
     let machines = [];
     let placement = AgentPlacement::from_machines(&machines);
@@ -448,12 +480,17 @@ fn full_accounts_keep_one_selectable_line_per_account() {
         AccountsSort::SourceOrder,
     ) + 2;
     let before = paint_accounts_viewport(&mut app, width, 20);
-    let first = locate(&before, "account-0");
+    let mut expected_row = locate(&before, "account-0").row;
     for index in 0..6 {
         let point = locate(&before, &format!("account-{index}"));
-        assert_eq!(point.row, first.row + index, "one line per full account");
+        assert_eq!(
+            point.row, expected_row,
+            "each account starts after the previous account's two role rows"
+        );
+        expected_row = point.row + 2;
+        assert!(account_line(&before, point.row + 1).contains("units"));
         let line = account_line(&before, point.row);
-        for value in ["60%", "13,446", "2m"] {
+        for value in ["60%", "13,446", "6"] {
             assert!(line.contains(value), "complete full row: {line}");
         }
     }
@@ -470,7 +507,7 @@ fn full_accounts_keep_one_selectable_line_per_account() {
 fn stacked_account_taller_than_viewport_exposes_every_fact_with_arrows_and_end() {
     let mut app = interactive_accounts();
     let width = STACKED_ACCOUNTS_WIDTH;
-    let complete = paint_accounts_viewport(&mut app, width, 64);
+    let complete = paint_accounts_viewport(&mut app, width, 128);
     let first = locate(&complete, "account-0");
     let second = locate(&complete, "account-1");
     let facts: Vec<_> = (first.row + 1..second.row)
@@ -494,17 +531,21 @@ fn stacked_account_taller_than_viewport_exposes_every_fact_with_arrows_and_end()
             "arrow navigation skipped fact {fact:?}: {observed:?}"
         );
     }
-    let final_y = (complete.area.y..complete.area.bottom())
-        .rev()
-        .find(|&y| !account_line(&complete, y).trim().is_empty())
-        .expect("final account fact");
+    let final_y = final_account_y(&complete);
     let final_line = account_line(&complete, final_y);
     account_key(&mut app, KeyCode::End);
-    let end = paint_accounts_viewport(&mut app, width, 6);
+    let tail = table_tail(&app, &complete);
+    let end_height = u16::try_from(tail.len()).expect("tail height") + 6;
+    let end = paint_accounts_viewport(&mut app, width, end_height);
+    assert_tail_at_end(&end, &tail);
+    for _ in 0..tail.len() {
+        account_key(&mut app, KeyCode::Up);
+    }
+    let account_end = paint_accounts_viewport(&mut app, width, end_height);
     assert_eq!(
-        account_line(&end, end.area.bottom() - 1),
+        account_line(&account_end, account_end.area.bottom() - 1),
         final_line,
-        "End reveals the final fact even when its heading is above the viewport"
+        "Up from the tail reveals the final account fact"
     );
     assert_eq!(
         app.selections
@@ -534,13 +575,13 @@ fn assert_account_band(buffer: &Buffer, lines: Range<u16>) {
 
 fn assert_middle_account_band(width: u16) -> u16 {
     let mut app = interactive_accounts();
-    let before = paint_accounts_viewport(&mut app, width, 64);
+    let before = paint_accounts_viewport(&mut app, width, 128);
     let selected = locate(&before, "account-2");
     let next = locate(&before, "account-3");
     assert!(selected.row > before.area.y, "preceding row is visible");
     assert!(next.row < before.area.bottom(), "following row is visible");
     app.click(Position::new(selected.column, selected.row));
-    let after = paint_accounts_viewport(&mut app, width, 64);
+    let after = paint_accounts_viewport(&mut app, width, 128);
     assert_account_selected(&app, &after, "account-2");
     assert_account_band(&after, selected.row..next.row);
     next.row - selected.row
@@ -548,7 +589,7 @@ fn assert_middle_account_band(width: u16) -> u16 {
 
 #[test]
 fn two_line_account_selection_bands_cover_both_lines_and_stop_at_neighbors() {
-    assert_eq!(assert_middle_account_band(TWO_LINE_ACCOUNTS_WIDTH), 2);
+    assert_eq!(assert_middle_account_band(TWO_LINE_ACCOUNTS_WIDTH), 3);
 }
 
 #[test]
@@ -557,7 +598,7 @@ fn stacked_account_selection_bands_cover_every_fact_and_stop_at_neighbors() {
 }
 
 #[test]
-fn full_account_selection_bands_cover_exactly_one_line() {
+fn full_account_selection_bands_cover_all_role_rows() {
     let app = interactive_accounts();
     let machines = [];
     let placement = AgentPlacement::from_machines(&machines);
@@ -570,34 +611,35 @@ fn full_account_selection_bands_cover_exactly_one_line() {
         &app.accounts.table,
         AccountsSort::SourceOrder,
     ) + 2;
-    assert_eq!(assert_middle_account_band(width), 1);
+    assert_eq!(assert_middle_account_band(width), 2);
 }
 
 #[test]
 fn clipped_stacked_account_selection_bands_cover_facts_without_the_heading() {
     let mut app = interactive_accounts();
-    let complete = paint_accounts_viewport(&mut app, STACKED_ACCOUNTS_WIDTH, 64);
+    let complete = paint_accounts_viewport(&mut app, STACKED_ACCOUNTS_WIDTH, 128);
     let heading = locate(&complete, "account-5");
-    let last = (heading.row..complete.area.bottom())
-        .rev()
-        .find(|&y| !account_line(&complete, y).trim().is_empty())
-        .expect("last account fact");
+    let last = final_account_y(&complete);
     let facts: Vec<_> = (heading.row + 1..=last)
         .map(|y| account_line(&complete, y))
         .collect();
+    let tail = table_tail(&app, &complete);
+    let tail_height = u16::try_from(tail.len()).expect("tail height");
+    let height = tail_height + 6;
     let first = locate(&complete, "account-0");
     app.click(Position::new(first.column, first.row));
-    let short = paint_accounts_viewport(&mut app, STACKED_ACCOUNTS_WIDTH, 6);
+    let short = paint_accounts_viewport(&mut app, STACKED_ACCOUNTS_WIDTH, height);
     assert!(facts.len() >= usize::from(short.area.height));
     account_key(&mut app, KeyCode::End);
-    let end = paint_accounts_viewport(&mut app, STACKED_ACCOUNTS_WIDTH, 6);
+    let end = paint_accounts_viewport(&mut app, STACKED_ACCOUNTS_WIDTH, height);
     assert_eq!(account_line(&end, end.area.y).trim(), "accounts");
-    for y in end.area.y + 1..end.area.bottom() {
+    for y in end.area.y + 1..end.area.bottom() - tail_height {
         let line = account_line(&end, y);
         assert!(facts.contains(&line), "visible account fact: {line:?}");
         assert!(!line.contains("account-5"), "heading is scrolled off");
     }
-    assert_account_band(&end, end.area.y + 1..end.area.bottom());
+    assert_tail_at_end(&end, &tail);
+    assert_account_band(&end, end.area.y + 1..end.area.bottom() - tail_height);
 }
 
 fn first_account_glyph(buffer: &Buffer, y: u16) -> u16 {
@@ -610,7 +652,7 @@ fn first_account_glyph(buffer: &Buffer, y: u16) -> u16 {
 fn two_line_account_continuations_and_headers_align_with_account_names() {
     let mut app = interactive_accounts();
     let buffer = paint_accounts_viewport(&mut app, TWO_LINE_ACCOUNTS_WIDTH, 64);
-    // Spec 1 drops credits and read age before choosing TwoLine.
+    // Optional columns leave before the mandatory counts wrap.
     for y in buffer.area.y..buffer.area.bottom() {
         let line = account_line(&buffer, y);
         for dropped in ["13,446", "2m"] {
@@ -620,19 +662,25 @@ fn two_line_account_continuations_and_headers_align_with_account_names() {
     let header = locate(&buffer, "account  ");
     let resets = locate(&buffer, "resets");
     assert_eq!(resets.row, header.row + 1, "two header lines");
-    assert_eq!(resets.column, header.column, "resets starts under account");
-    assert_eq!(first_account_glyph(&buffer, resets.row), header.column);
+    let busy = locate(&buffer, "busy");
+    assert_eq!(busy.row, header.row, "counts stay on the role header line");
+    assert_eq!(
+        first_account_glyph(&buffer, resets.row)
+            + u16::try_from("resets".len()).expect("header width"),
+        header.column + u16::try_from(local_account_reset("%a %H:%M").len()).expect("reset width"),
+        "the reset header ends at the reset column edge"
+    );
     for index in 0..6 {
         let name = locate(&buffer, &format!("account-{index}"));
-        let continuation = name.row + 1;
+        let continuation = name.row + 2;
         assert!(
             account_line(&buffer, continuation).contains(&local_account_reset("%a %H:%M")),
             "the second line contains the kept reset fact"
         );
         assert_eq!(
             first_account_glyph(&buffer, continuation),
-            name.column,
-            "account-{index} continuation starts under its name"
+            header.column,
+            "account-{index} reset ends at its header edge"
         );
     }
 }
@@ -822,5 +870,65 @@ fn accounts_summary_first_in_stacked_layout() {
     assert!(
         rows.windows(2).all(|pair| pair[1] > pair[0] + 2),
         "stacked facts stay with every account"
+    );
+}
+
+#[test]
+fn end_reveals_total_after_six_two_role_accounts_without_selecting_it() {
+    let mut app = interactive_accounts();
+    let width = TWO_LINE_ACCOUNTS_WIDTH;
+    let complete = paint_accounts_viewport(&mut app, width, 128);
+    let final_account = final_account_y(&complete);
+    let total_start = final_account + 1;
+    let total_end = {
+        let painted = app.painted_summary.borrow();
+        let crate::summary::PaintedSummary::Drawn(layout) = &*painted else {
+            panic!("drawn summary");
+        };
+        complete.area.y + u16::try_from(layout.height()).expect("table height")
+    };
+    let total_lines: Vec<_> = (total_start..total_end)
+        .map(|y| account_line(&complete, y))
+        .collect();
+    assert!(
+        total_lines[0].contains("total"),
+        "the total follows the last account"
+    );
+    let first = locate(&complete, "account-0");
+    app.click(Position::new(first.column, first.row));
+    let short = paint_accounts_viewport(&mut app, width, 8);
+    assert!(
+        total_end > short.area.bottom(),
+        "the viewport clips the total"
+    );
+    account_key(&mut app, KeyCode::End);
+    let end = paint_accounts_viewport(&mut app, width, 8);
+    for (offset, expected) in total_lines.iter().rev().enumerate() {
+        let y = end.area.bottom() - 1 - u16::try_from(offset).expect("total line");
+        assert_eq!(
+            account_line(&end, y),
+            *expected,
+            "End reveals the complete total"
+        );
+    }
+    let selection = app
+        .selections
+        .surface(&SelectionSurface::Summary)
+        .expect("summary selection")
+        .selection();
+    assert_eq!(
+        selection,
+        crate::interaction::TileSelection::Row(crate::interaction::RowIdentity::SummaryAccount {
+            account: "account-5".to_owned(),
+        })
+    );
+    app.click(Position::new(end.area.x + 2, end.area.bottom() - 1));
+    assert_eq!(
+        app.selections
+            .surface(&SelectionSurface::Summary)
+            .expect("summary selection")
+            .selection(),
+        selection,
+        "the total is not selectable"
     );
 }
