@@ -2697,7 +2697,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green; no new test takes 1 s or more.
 - A live shot shows the status bar without the two entries, and the `?` list with both.
 
-### Phase 49 — The summary tile shows free disk space in GiB after mem  · status: todo
+### Phase 49 — The summary tile shows free disk space in GiB after mem  · status: done
 
 **Depends on:** Phase 48
 

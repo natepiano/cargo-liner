@@ -850,6 +850,25 @@ impl<Source: ProcessRefreshSource> RefreshWorker<Source> {
     }
 }
 
+/// Available bytes on the file system that holds the working directory.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum FreeDiskSpace {
+    Available(u64),
+    #[default]
+    Unavailable,
+}
+
+impl FreeDiskSpace {
+    /// Read available blocks once for each census publication.
+    pub(crate) fn read(directory: &Path) -> Self {
+        rustix::fs::statvfs(directory).map_or(Self::Unavailable, |stat| {
+            stat.f_bavail
+                .checked_mul(stat.f_frsize)
+                .map_or(Self::Unavailable, Self::Available)
+        })
+    }
+}
+
 /// This table belongs only to the refresh worker, never to a published snapshot.
 #[derive(Default)]
 struct SystemRefresh {
@@ -1442,6 +1461,7 @@ impl ScanWorker {
             #[cfg(test)]
             cpu_scan_publication: attributed.cpu_scan_publication,
             sccache: census.sccache(),
+            free_disk_space: FreeDiskSpace::read(Path::new(".")),
             groups,
             root_status: capture.root_status,
             shared_directory: capture.shared_directory,

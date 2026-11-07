@@ -294,6 +294,13 @@ pub enum SummaryFoot {
     Empty,
     /// The app's text, drawn whole from the left inset or not at all.
     Text(Line<'static>),
+    /// Draw the prefix whole. Add the suffix only when both fit.
+    WithOptionalSuffix {
+        /// Text that remains when the suffix does not fit.
+        prefix: Line<'static>,
+        /// Text drawn only when it fits after the prefix.
+        suffix: Line<'static>,
+    },
 }
 
 /// Whether the summary foot was drawn without clipping.
@@ -808,6 +815,15 @@ fn draw_cell_with_rows_readout(
     let foot_draw_outcome = match summary_foot {
         SummaryFoot::Empty => SummaryFootDrawOutcome::NotDrawn,
         SummaryFoot::Text(line) => draw_summary_foot(buffer, inner, line, ink),
+        SummaryFoot::WithOptionalSuffix { prefix, suffix } => {
+            let mut line = prefix.clone();
+            if prefix.width().saturating_add(suffix.width())
+                <= usize::from(inner.width.saturating_sub(TILE_FOOT_LEFT_INSET))
+            {
+                line.spans.extend(suffix.spans.iter().cloned());
+            }
+            draw_summary_foot(buffer, inner, &line, ink)
+        },
     };
     match foot_draw_outcome {
         SummaryFootDrawOutcome::NotDrawn => {

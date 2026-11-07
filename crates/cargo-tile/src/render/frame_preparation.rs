@@ -13,11 +13,14 @@ use super::DirectoryHeading;
 use super::DirectorySeparation;
 use super::FrameColumnGrids;
 use super::FrameTableColumnGrid;
+use super::FreeDiskSpace;
 use super::GROUP_GAP_HEIGHT;
 use super::GROUP_HEADER_HEIGHT;
+use super::GibibytePrecision;
 use super::GroupRowUse;
 use super::HashMap;
 use super::InvocationId;
+use super::Line;
 use super::PaintedCellContents;
 use super::PathGroup;
 use super::PinnedGroup;
@@ -27,6 +30,12 @@ use super::Rc;
 use super::Rect;
 use super::RefCell;
 use super::RosterRevision;
+use super::SUMMARY_DISK_LABEL;
+use super::SUMMARY_DISK_SEPARATOR;
+use super::Span;
+use super::Style;
+use super::SummaryFoot;
+use super::SummaryMemoryTotal;
 use super::TABLE_HEADER_HEIGHT;
 use super::TableRowEnd;
 use super::TableSeparators;
@@ -40,7 +49,10 @@ use super::ancestry_allocation;
 use super::ancestry_levels;
 use super::cleared;
 use super::drawn_ancestry;
+use super::gibibytes_label;
 use super::group_by_path;
+use super::label_color;
+use super::memory_total;
 use super::pane_background;
 use super::process_row_lines;
 use super::state_width;
@@ -49,14 +61,16 @@ use super::table_grid_after_ancestry;
 use super::table_grid_for_whole_commands;
 #[cfg(test)]
 use super::tests;
+use super::text_default;
 use crate::roster::Roster;
 
 /// Retained table preparation, with its complete source identity.
 #[derive(Default)]
 pub(crate) struct PreparedTables {
-    state:    RetainedFrame,
-    cell:     CellFramePreparation,
-    commands: Rc<RefCell<PreparedCommandCells>>,
+    state:        RetainedFrame,
+    cell:         CellFramePreparation,
+    commands:     Rc<RefCell<PreparedCommandCells>>,
+    summary_foot: SummaryFootPreparation,
 }
 
 #[cfg(test)]
@@ -69,7 +83,7 @@ mod expanded_cache_tests {
         let mut tables = PreparedTables::default();
         let mut roster = Roster::default();
         let view = CommandView::long();
-        tables.for_cell_frame(&mut roster, &[], view);
+        tables.for_cell_frame(&mut roster, &[], view, FreeDiskSpace::Unavailable);
         let CellFramePreparation::Prepared(cell) = &tables.cell else {
             return Err("the cell frame must be prepared".into());
         };
@@ -135,6 +149,112 @@ impl PreparedFrameTables {
     }
 }
 
+/// Table preparation and the independently prepared summary foot for one draw.
+#[derive(Clone)]
+pub(super) struct PreparedPaneFrame {
+    pub(super) tables:       PreparedFrameTables,
+    pub(super) summary_foot: Rc<SummaryFoot>,
+}
+
+impl PreparedPaneFrame {
+    pub(super) fn new(
+        tables: PreparedFrameTables,
+        free_disk_space: FreeDiskSpace,
+        summary_foot: &mut SummaryFootPreparation,
+    ) -> Self {
+        Self {
+            summary_foot: summary_foot.for_frame(&tables.roster, free_disk_space),
+            tables,
+        }
+    }
+}
+
+/// The disk text that can change the summary foot.
+#[derive(Eq, PartialEq)]
+pub(crate) enum SummaryDiskSpace {
+    Available(String),
+    Unavailable,
+}
+
+impl From<FreeDiskSpace> for SummaryDiskSpace {
+    fn from(free_disk_space: FreeDiskSpace) -> Self {
+        match free_disk_space {
+            FreeDiskSpace::Available(bytes) => {
+                Self::Available(gibibytes_label(bytes, GibibytePrecision::WholeFromTen))
+            },
+            FreeDiskSpace::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
+/// Reuse the foot while its displayed values and theme stay equal.
+#[derive(Default)]
+pub(super) enum SummaryFootPreparation {
+    #[default]
+    Unprepared,
+    Prepared {
+        memory:          SummaryMemoryTotal,
+        free_disk_space: SummaryDiskSpace,
+        theme:           Arc<Theme>,
+        foot:            Rc<SummaryFoot>,
+    },
+}
+
+impl SummaryFootPreparation {
+    pub(super) fn for_frame(
+        &mut self,
+        roster: &VisibleRoster,
+        free_disk_space: FreeDiskSpace,
+    ) -> Rc<SummaryFoot> {
+        let memory = memory_total(roster);
+        let free_disk_space = SummaryDiskSpace::from(free_disk_space);
+        let theme = tui_pane::theme();
+        if let Self::Prepared {
+            memory: previous_memory,
+            free_disk_space: previous_disk,
+            theme: previous_theme,
+            foot,
+        } = self
+            && *previous_memory == memory
+            && *previous_disk == free_disk_space
+            && Arc::ptr_eq(previous_theme, &theme)
+        {
+            return Rc::clone(foot);
+        }
+        let foot = match &free_disk_space {
+            SummaryDiskSpace::Unavailable => memory.foot(),
+            SummaryDiskSpace::Available(value) => {
+                let prefix = memory.line();
+                let mut suffix = Line::default();
+                if prefix.width() > 0 {
+                    suffix.spans.push(Span::raw(SUMMARY_DISK_SEPARATOR));
+                }
+                suffix.spans.push(Span::styled(
+                    SUMMARY_DISK_LABEL,
+                    Style::default().fg(label_color()),
+                ));
+                suffix.spans.push(Span::styled(
+                    value.clone(),
+                    Style::default().fg(text_default()),
+                ));
+                if prefix.spans.is_empty() {
+                    SummaryFoot::Text(suffix)
+                } else {
+                    SummaryFoot::WithOptionalSuffix { prefix, suffix }
+                }
+            },
+        };
+        let foot = Rc::new(foot);
+        *self = Self::Prepared {
+            memory,
+            free_disk_space,
+            theme,
+            foot: Rc::clone(&foot),
+        };
+        foot
+    }
+}
+
 /// New input grants access to preparation; prepared input grants drawing only.
 enum FramePreparation<'frame> {
     NeedsPreparation(FrameInputs<'frame>),
@@ -154,7 +274,8 @@ impl PreparedTables {
         roster: &mut Roster,
         hidden: &[String],
         view: &CommandView,
-    ) -> PreparedFrameTables {
+        free_disk_space: FreeDiskSpace,
+    ) -> PreparedPaneFrame {
         let mut preparation = std::mem::take(&mut self.cell);
         let mut tables = match preparation {
             CellFramePreparation::Unprepared => Box::new(Self {
@@ -163,13 +284,25 @@ impl PreparedTables {
             }),
             CellFramePreparation::Prepared(tables) => tables,
         };
-        let prepared = tables.for_frame(roster, hidden, view, u16::MAX);
+        let prepared = tables.for_table_frame(roster, hidden, view, u16::MAX);
         preparation = CellFramePreparation::Prepared(tables);
         self.cell = preparation;
-        prepared
+        PreparedPaneFrame::new(prepared, free_disk_space, &mut self.summary_foot)
     }
 
     pub(super) fn for_frame(
+        &mut self,
+        roster: &mut Roster,
+        hidden: &[String],
+        view: &CommandView,
+        height: u16,
+        free_disk_space: FreeDiskSpace,
+    ) -> PreparedPaneFrame {
+        let tables = self.for_table_frame(roster, hidden, view, height);
+        PreparedPaneFrame::new(tables, free_disk_space, &mut self.summary_foot)
+    }
+
+    fn for_table_frame(
         &mut self,
         roster: &mut Roster,
         hidden: &[String],
@@ -227,7 +360,11 @@ impl PreparedTables {
 mod prepared_tables_tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use tui_pane::TileCells;
 
+    use super::*;
+    use crate::census::Measurement;
+    use crate::constants::BYTES_PER_GIBIBYTE;
     use crate::render;
     use crate::render::TileGridContents;
     use crate::render::tests;
@@ -235,6 +372,74 @@ mod prepared_tables_tests {
     use crate::render::tests::CONTINUATION_PROBES;
     use crate::render::tests::TABLE_COLUMN_SOLVES;
     use crate::render::tests::TABLE_LAYOUT_PREPARATIONS;
+    use crate::sccache::SccacheStats;
+
+    #[test]
+    fn disk_labels_use_whole_gibibytes_from_ten_and_tenths_below() -> Result<(), &'static str> {
+        for (bytes, expected) in [
+            (BYTES_PER_GIBIBYTE * 3022 / 10, "302G"),
+            (BYTES_PER_GIBIBYTE * 95 / 10, "9.5G"),
+            (BYTES_PER_GIBIBYTE * 4 / 10, "0.4G"),
+            (BYTES_PER_GIBIBYTE * 996 / 100, "10G"),
+        ] {
+            let SummaryDiskSpace::Available(text) =
+                SummaryDiskSpace::from(FreeDiskSpace::Available(bytes))
+            else {
+                return Err("available bytes must have a disk label");
+            };
+            assert_eq!(text, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn disk_text_changes_reuse_table_preparation_and_update_only_the_foot() {
+        let mut roster = tests::memory_roster(&[(4100, Measurement::Reading(BYTES_PER_GIBIBYTE))]);
+        let stats = SccacheStats::new();
+        let mut preparation = PreparedTables::default();
+        let mut previous: Option<PreparedPaneFrame> = None;
+        for (bytes, expected) in [
+            (BYTES_PER_GIBIBYTE, "mem 1.0G  disk 1.0G"),
+            (BYTES_PER_GIBIBYTE + 1, "mem 1.0G  disk 1.0G"),
+            (BYTES_PER_GIBIBYTE * 5 / 2, "mem 1.0G  disk 2.5G"),
+        ] {
+            let prepared = preparation.for_frame(
+                &mut roster,
+                &[],
+                CommandView::long(),
+                37,
+                FreeDiskSpace::Available(bytes),
+            );
+            if let Some(before) = previous.as_ref() {
+                assert!(Rc::ptr_eq(&before.tables.grids, &prepared.tables.grids));
+                assert!(Rc::ptr_eq(
+                    &before.tables.row_uses,
+                    &prepared.tables.row_uses
+                ));
+                assert!(Rc::ptr_eq(
+                    &before.tables.allocation,
+                    &prepared.tables.allocation
+                ));
+                assert!(Rc::ptr_eq(
+                    &before.tables.paintings,
+                    &prepared.tables.paintings
+                ));
+                assert_eq!(
+                    Rc::ptr_eq(&before.summary_foot, &prepared.summary_foot),
+                    bytes == BYTES_PER_GIBIBYTE + 1
+                );
+            }
+            let cells = render::Cells::from_prepared(prepared.clone(), &stats);
+            assert_eq!(tests::summary_foot_text(cells.summary_foot()), expected);
+            let (_, buffer) = tests::settled_buffer_with_cells(&cells, Rect::new(0, 0, 160, 40));
+            assert!(
+                tests::buffer_rows(&buffer)
+                    .iter()
+                    .any(|row| row.contains(expected))
+            );
+            previous = Some(prepared);
+        }
+    }
 
     #[test]
     fn unchanged_frames_reuse_their_cell_height_probes_and_allocation_plan() {

@@ -378,7 +378,7 @@ pub(crate) const MANAGED_COLUMN: usize = 9;
 /// resident memory used by the invocation and everything under it. A
 /// `12.4G` reading and its spacing take seven cells from `command`.
 pub(crate) const MEMORY_COLUMN: usize = 5;
-/// Unit suffix for resident-memory readings.
+/// Unit suffix for memory and disk readings in gibibytes.
 pub(crate) const MEMORY_UNIT: &str = "G";
 /// Shown in place of the table when no cargo is running.
 pub(crate) const NO_PROCESSES_NOTE: &str = "no cargo processes running";
@@ -456,6 +456,10 @@ pub(crate) const SUMMARY_HIDDEN_COLUMNS: [usize; 3] =
     [PARENT_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN];
 /// Label before the summary's total resident memory.
 pub(crate) const SUMMARY_MEMORY_LABEL: &str = "mem ";
+/// Separator before the optional summary disk reading.
+pub(crate) const SUMMARY_DISK_SEPARATOR: &str = "  ";
+/// Label before the summary disk reading.
+pub(crate) const SUMMARY_DISK_LABEL: &str = "disk ";
 /// Shared reductions for every view: arguments, blank state alignment, counts,
 /// start, duration, memory, CPU, filled state and parent. Progress state has no
 /// removable handle. Command words yield only after optional metadata has left.
