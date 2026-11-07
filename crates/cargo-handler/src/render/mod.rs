@@ -48,7 +48,9 @@ use crate::agent_cell::TreeColumn;
 use crate::agent_cell::TreeMeasurement;
 use crate::agent_cell::TreeMetrics;
 use crate::app::App;
+use crate::app::expansion;
 use crate::app::expansion::HandlerExpansion;
+use crate::app::expansion::HandlerExpansionAction;
 use crate::census;
 use crate::census::AccountColumn;
 use crate::census::AgentPlacement;
@@ -68,6 +70,7 @@ use crate::constants::UNASSIGNED_CELL_TITLE;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterTint;
 use crate::globals::AppGlobalAction;
+use crate::interaction::RowClick;
 use crate::interaction::RowLocation;
 use crate::interaction::SelectableSurface;
 use crate::interaction::SelectedSpan;
@@ -291,10 +294,13 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
     if let SelectableSurface::Surface(surface) = selection_surface(&content)
         && let SurfaceLookup::Current(state) = app.selections.surface_mut(&surface)
     {
-        state.click(ratatui::layout::Position::new(
+        let hit = state.click(ratatui::layout::Position::new(
             area.x.saturating_add(point.column),
             area.y.saturating_add(point.row),
         ));
+        if let RowClick::Toggled(identity) = hit {
+            expansion::dispatch(app, HandlerExpansionAction::Marker(identity));
+        }
     }
 }
 
@@ -656,8 +662,7 @@ impl<'a> Cells<'a> {
                 let rows = tile
                     .row_identities()
                     .into_iter()
-                    .enumerate()
-                    .map(|(line, identity)| (identity, crate::interaction::RowSpan::single(line)))
+                    .zip(tile.row_spans())
                     .collect();
                 (SelectionSurface::Tile(tile.key()), rows)
             })
@@ -774,6 +779,7 @@ impl TileCells<TileKey> for Cells<'_> {
                     TileContent::Group(key) => {
                         if let Some(tile) = self.tile(key) {
                             state.set_area(tile.row_area(*area, self.now, self.account_column));
+                            state.clip_markers(agent_cell::tree_marker_columns(*area));
                             tile.set_viewport(state.viewport());
                         }
                     },
@@ -1200,7 +1206,7 @@ fraying = "leading"
         "│       │   Previous pane                                 shift-tab    │       │",
         "│       │ Global Shortcuts:                                            │       │",
         "│       │   Add a tile                                    +            │       │",
-        "│       │   Collapse all rows                             -            │       │",
+        "│       │   Collapse all to first level                   -            │       │",
         "│       │   Collapse the selected row                     left         │       │",
         "│       │   Dismiss overlay / output                      x            │       │",
         "│       │   Expand all rows                               =            │       │",
@@ -1226,7 +1232,7 @@ fraying = "leading"
         "│             │   Previous pane                     shift-tab    │             │",
         "│             │ Global Shortcuts:                                │             │",
         "│             │   Add a tile                        +            │             │",
-        "│             │   Collapse all rows                 -            │             │",
+        "│             │   Collapse all to first level       -            │             │",
         "│             │   Collapse the selected row         left         │             │",
         "│             │   Expand all rows                   =            │             │",
         "│             │   Expand the selected row           right        │             │",
@@ -1240,7 +1246,7 @@ fraying = "leading"
         "│             │   Quit                              q            │             │",
         "│             │   Randomize the attract screen      r            │             │",
         "│             │   Remove an empty tile              shift-delete │  r/c: 21/78 │",
-        "└─────────────└─────────────────────1 of 2 ▼─────────────────────┘─────────────┘",
+        "└─────────────└─────────────────────1 of 3 ▼─────────────────────┘─────────────┘",
     ];
 
     /// The favorites overlay on one saved moving-band favorite.

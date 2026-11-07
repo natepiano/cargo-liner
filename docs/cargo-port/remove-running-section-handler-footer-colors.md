@@ -1530,7 +1530,7 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 **Gotchas:** Eligible runs require a live supervisor naming the exact record, a recognized command, finite start time and a discovered run directory.
 A script name inside `bash -c` remains unrecognized. Roster cache keys are files; retention keys are their parent directories.
 
-### Phase 63 — Expand and collapse by mouse and by depth keys  · status: todo
+### Phase 63 — Expand and collapse by mouse and by depth keys  · status: done
 
 **Depends on:** Phase 45 (done). Runs after Phase 62, or beside Phase 57c (showrunner, 2026-11-03). Showrunner rulings: the marker-only toggle stands; the C185 depth keys fold into this phase, because both change the same open-row state.
 

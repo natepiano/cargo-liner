@@ -27,6 +27,7 @@ use tui_pane::NavAction;
 use tui_pane::TileAction;
 
 use crate::app::App;
+use crate::app::expansion::DepthDigit;
 use crate::app::expansion::HandlerExpansionAction;
 use crate::app::expansion::{self};
 use crate::constants::APP_GLOBALS_SECTION;
@@ -36,11 +37,20 @@ tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub(crate) enum AppGlobalAction {
         ExpandAll => ("expand_all", "Expand all rows");
-        CollapseAll => ("collapse_all", "Collapse all rows");
+        CollapseAll => ("collapse_all", "Collapse all to first level");
         ExpandRow => ("expand_row", "Expand the selected row");
         CollapseRow => ("collapse_row", "Collapse the selected row");
         ToggleRow => ("toggle_row", "Toggle the selected row");
-        ResetExpansion => ("reset_expansion", "Restore default expansion");
+        Depth0 => ("depth_0", "Show focused tile depth 0");
+        Depth1 => ("depth_1", "Show focused tile depth 1");
+        Depth2 => ("depth_2", "Show focused tile depth 2");
+        Depth3 => ("depth_3", "Show focused tile depth 3");
+        Depth4 => ("depth_4", "Show focused tile depth 4");
+        Depth5 => ("depth_5", "Show focused tile depth 5");
+        Depth6 => ("depth_6", "Show focused tile depth 6");
+        Depth7 => ("depth_7", "Show focused tile depth 7");
+        Depth8 => ("depth_8", "Show focused tile depth 8");
+        Depth9 => ("depth_9", "Show focused tile depth 9");
         AddTile    => ("add_tile",    "Add a tile");
         RemoveTile => ("remove_tile", "Remove an empty tile");
         FocusLeft  => ("focus_left",  "Focus the tile to the left");
@@ -90,7 +100,16 @@ impl Globals<App> for AppGlobalAction {
             KeyBind::ctrl('o') => Self::OpenFavorites,
             'm' => Self::RandomFavorite,
             KeyCode::Enter => Self::ToggleRow,
-            '0' => Self::ResetExpansion,
+            '0' => Self::Depth0,
+            '1' => Self::Depth1,
+            '2' => Self::Depth2,
+            '3' => Self::Depth3,
+            '4' => Self::Depth4,
+            '5' => Self::Depth5,
+            '6' => Self::Depth6,
+            '7' => Self::Depth7,
+            '8' => Self::Depth8,
+            '9' => Self::Depth9,
         };
         for (key, action) in ExpansionAction::key_bindings(crossterm::event::KeyModifiers::NONE) {
             let action = match action {
@@ -128,7 +147,36 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
             HandlerExpansionAction::Shared(ExpansionAction::CollapseRow),
         ),
         AppGlobalAction::ToggleRow => expansion::dispatch(app, HandlerExpansionAction::Toggle),
-        AppGlobalAction::ResetExpansion => expansion::dispatch(app, HandlerExpansionAction::Reset),
+        AppGlobalAction::Depth0 => {
+            expansion::dispatch(app, HandlerExpansionAction::Level(DepthDigit::Zero));
+        },
+        AppGlobalAction::Depth1 => {
+            expansion::dispatch(app, HandlerExpansionAction::Level(DepthDigit::One));
+        },
+        AppGlobalAction::Depth2 => {
+            expansion::dispatch(app, HandlerExpansionAction::Level(DepthDigit::Two));
+        },
+        AppGlobalAction::Depth3 => {
+            expansion::dispatch(app, HandlerExpansionAction::Level(DepthDigit::Three));
+        },
+        AppGlobalAction::Depth4 => {
+            expansion::dispatch(app, HandlerExpansionAction::Level(DepthDigit::Four));
+        },
+        AppGlobalAction::Depth5 => {
+            expansion::dispatch(app, HandlerExpansionAction::Level(DepthDigit::Five));
+        },
+        AppGlobalAction::Depth6 => {
+            expansion::dispatch(app, HandlerExpansionAction::Level(DepthDigit::Six));
+        },
+        AppGlobalAction::Depth7 => {
+            expansion::dispatch(app, HandlerExpansionAction::Level(DepthDigit::Seven));
+        },
+        AppGlobalAction::Depth8 => {
+            expansion::dispatch(app, HandlerExpansionAction::Level(DepthDigit::Eight));
+        },
+        AppGlobalAction::Depth9 => {
+            expansion::dispatch(app, HandlerExpansionAction::Level(DepthDigit::Nine));
+        },
         AppGlobalAction::AddTile => app.tiles.apply(TileAction::Add, growth),
         AppGlobalAction::RemoveTile => app.tiles.apply(TileAction::Remove, growth),
         AppGlobalAction::FocusLeft => app.tiles.apply(TileAction::FocusLeft, growth),
@@ -176,7 +224,16 @@ mod tests {
             (KeyBind::from(KeyCode::Left), AppGlobalAction::CollapseRow),
             (KeyBind::from(KeyCode::Right), AppGlobalAction::ExpandRow),
             (KeyBind::from(KeyCode::Enter), AppGlobalAction::ToggleRow),
-            (KeyBind::from('0'), AppGlobalAction::ResetExpansion),
+            (KeyBind::from('0'), AppGlobalAction::Depth0),
+            (KeyBind::from('1'), AppGlobalAction::Depth1),
+            (KeyBind::from('2'), AppGlobalAction::Depth2),
+            (KeyBind::from('3'), AppGlobalAction::Depth3),
+            (KeyBind::from('4'), AppGlobalAction::Depth4),
+            (KeyBind::from('5'), AppGlobalAction::Depth5),
+            (KeyBind::from('6'), AppGlobalAction::Depth6),
+            (KeyBind::from('7'), AppGlobalAction::Depth7),
+            (KeyBind::from('8'), AppGlobalAction::Depth8),
+            (KeyBind::from('9'), AppGlobalAction::Depth9),
             (KeyBind::shift(KeyCode::Delete), AppGlobalAction::RemoveTile),
             (KeyBind::shift(KeyCode::Left), AppGlobalAction::FocusLeft),
             (KeyBind::shift(KeyCode::Right), AppGlobalAction::FocusRight),
