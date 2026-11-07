@@ -415,38 +415,25 @@ Tests state their mode. `make_app` selects `ColorMode::Colored`. `make_app_with_
 
 **Gotchas:** `verify.sh test tui_pane` can reuse a `--local` `NO_COLOR=1` record, because the cache key has no `NO_COLOR`. Use `--no-cache` for a true run without it.
 
-### Phase 4f — Bold and reverse survive NO_COLOR in every tui_pane app  · status: todo
+### Phase 4f — Bold and reverse survive NO_COLOR in every tui_pane app  · status: done
 
-**Depends on:** Phase 4d
+#### As-built
 
-#### Work Order
+Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selected row is reversed in `cargo-port`, `cargo-handler`, `cargo-tile` and the `cargo-berth` board. `tui_pane::ColorMode::clear_colors(self, &mut Buffer)` sets each cell's `fg` and `bg` to `Reset` under `NoColor`, and keeps text and modifiers. Under `Colored` it changes nothing.
 
-**Goal:** under `NO_COLOR=1` in a real terminal, the focused title is bold and the selected row is reversed in `cargo-handler`, `cargo-tile` and the `cargo-berth` board, as they are in `cargo-port` today.
-
-**Why:** handler found this live. Under `NO_COLOR`, crossterm writes `ESC[;m`, a full style reset, for each `SetColors` (`crossterm-0.29.0` `style/types/colored.rs:100`). `ratatui-crossterm` sets modifiers first and colours second (`ratatui-crossterm-0.1.2` `lib.rs:259`), so each reset clears bold and reverse. `cargo-port` does not show the defect: `prepare_terminal_buffer` sets each cell's `fg` and `bg` to `Reset`, so the backend writes no `SetColors`. The other apps have no such step.
-
-**Constraints:** `cargo-port`'s drawn output does not change. In colour mode no app's output changes. Showrunner: this phase runs after 4d and before 4c, and the proof is the terminal bytes.
-
-**Spec:**
-
-1. **One step.** `tui_pane` owns the colour-clearing step that `prepare_terminal_buffer` holds today: under `ColorMode::NoColor`, each cell of the finished frame gets `fg` and `bg` `Reset`. Under `ColorMode::Colored` it changes nothing. `cargo-port`'s `prepare_terminal_buffer` calls it and keeps its VS16 work.
-2. **Every app.** `cargo-handler`, `cargo-tile` and the `cargo-berth` board call the step at the end of each frame, with the mode that Phase 4d gives them.
-3. **No global change.** Do not call `force_color_output`. Crossterm keeps its own suppression for any write outside the buffer.
-4. **The byte test.** A `tui_pane` test draws a frame with colour, bold and reverse through the real `CrosstermBackend` into a byte buffer, in a child process with `NO_COLOR=1`. It requires `ESC[1m` and `ESC[7m` with no reset before the text they style, and no colour code. The test fails when the step is removed, and it takes under a second.
+`cargo-port`'s `prepare_terminal_buffer` calls the step and keeps its VS16 work. `cargo-handler` calls it on its full frame and on its status clock frame, before `painted_frame` caches the buffer. `cargo-tile` and the `cargo-berth` board call it at the end of `draw`. Crossterm keeps its own suppression for any write outside the buffer.
 
 **Files:**
-- `crates/tui_pane/src/` — the step and the byte test
-- `crates/tui_pane/CHANGELOG.md` — the new public function
-- `crates/cargo-port/src/tui/render/mod.rs` — calls the step
-- `crates/cargo-handler/src/` — calls the step
-- `crates/cargo-tile/src/` — calls the step
-- `crates/cargo-berth/src/board/tui.rs` — calls the step
+- `crates/tui_pane/src/color_mode.rs` — the step and the backend byte test `no_color_backend_keeps_bold_and_reverse_before_text`
+- `crates/cargo-port/src/tui/render/mod.rs` — `prepare_terminal_buffer` calls the step
+- `crates/cargo-handler/src/app.rs` — both draw exits call the step
+- `crates/cargo-tile/src/app.rs`, `crates/cargo-berth/src/board/tui.rs` — `draw` calls the step
 
-**Workers:** 1 writer. The step and its calls are one change.
+**Binds later work:** a new `tui_pane` app or draw exit calls `ColorMode::clear_colors` after it draws.
 
-**State:** none.
+**Gotchas:** under `NO_COLOR`, crossterm writes `ESC[;m` for each colour change, and the backend sets modifiers first, so a cell with a colour loses bold and reverse. A tmux capture rewrites cell state: only a raw pty capture proves the bytes.
 
-**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-port`, `verify.sh test cargo-handler`, `verify.sh test cargo-tile`, `verify.sh test cargo-berth` and `verify.sh lint tui_pane` pass. The director captures raw pty bytes of `cargo-port` and `cargo-handler` under `NO_COLOR=1`: each capture holds `ESC[1m` and `ESC[7m` with no reset before the text they style, no `ESC[;m` and no colour code.
+**Ruled out:** `force_color_output`.
 
 ### Phase 4c — cargo-port's remaining screen defects read clearly  · status: todo
 
@@ -468,6 +455,7 @@ Tests state their mode. `make_app` selects `ColorMode::Colored`. `make_app_with_
   - Spec 19: `sccache_reasons_explain_the_uncached_call`, `parse_stat_line_explains_raw_reason_keys`.
 - **Constraints from prior phases:**
   - Phase 4d: drawing code takes `tui_pane::ColorMode` as a value. `ColorMode::from_environment()` is the only read of `NO_COLOR`, and each app holds the value in `Framework::color_mode`. Spec 20's border in `crates/tui_pane/src/pane/popup.rs` takes the value from its caller. Tests state their mode.
+  - Phase 4f: `ColorMode::clear_colors` in `tui_pane` clears cell colours and keeps text and modifiers. `prepare_terminal_buffer` calls it, and each app calls it after it draws.
   - `theme_roles::paint_selection` applies the selection style last across the inner row width. A selected row keeps one fill and one text colour, floor 4.5:1 by `covered_contrast`.
   - Keep `narrow_layout_keeps_git_values_and_hides_unreadable_panes` and `narrow_layout_moves_focus_once_and_restores_panes_without_moving_focus` in `tui/render/readability_tests.rs`.
   - `tui_pane::selection_style` (`crates/tui_pane/src/pane/state.rs:112`) also serves cargo-tile and cargo-handler. Their behaviour stays, and so do the Active reverse video and the Remembered bold under `NO_COLOR`.
