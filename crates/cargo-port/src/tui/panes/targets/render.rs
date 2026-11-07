@@ -27,10 +27,12 @@ use super::constants::TARGET_LEADING_PAD;
 use super::constants::TARGET_TABLE_COLUMN_SPACING;
 use super::constants::TARGET_TABLE_GAP_COUNT;
 use super::data::TargetEntry;
+use super::data::TargetSourceKind;
 use super::data::TargetsData;
 use super::pane::TargetsPane;
 use crate::tui::columns;
 use crate::tui::panes;
+use crate::tui::project_list;
 use crate::tui::render;
 use crate::tui::theme_roles;
 
@@ -243,7 +245,18 @@ fn compute_layout(target_entries: &[TargetEntry], content_width: u16) -> Layout 
     let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
     let text_budget = usize::from(content_width).saturating_sub(kind + gaps);
     let target_wanted = target_col_width_from(target_entries);
-    let target = target_wanted.min(text_budget + usize::from(TARGET_TABLE_COLUMN_SPACING));
+    let target_min = TARGET_LEADING_PAD + columns::display_width(TARGET_HEADER);
+    let source_min = columns::display_width(SOURCE_HEADER);
+    let target_budget = if target_entries
+        .iter()
+        .any(|entry| matches!(entry.source.kind, TargetSourceKind::Worktree))
+        && text_budget >= source_min + target_min
+    {
+        text_budget.saturating_sub(source_min)
+    } else {
+        text_budget + usize::from(TARGET_TABLE_COLUMN_SPACING)
+    };
+    let target = target_wanted.min(target_budget);
     let source = source.min(text_budget.saturating_sub(target));
     let source = if source >= columns::display_width(SOURCE_HEADER) {
         source
@@ -267,9 +280,12 @@ fn name_cell(display_name: &str, name_max: usize) -> Cell<'static> {
 }
 
 /// Three-column target row: name cell + Source + Kind.
-fn target_row(entry: &TargetEntry, name_cell: Cell<'static>, layout: &Layout) -> Row<'static> {
-    let source_label =
-        render::truncate_with_ellipsis(entry.source.label(), layout.source, "\u{2026}");
+fn target_row(
+    entry: &TargetEntry,
+    name_cell: Cell<'static>,
+    source_label: String,
+    layout: &Layout,
+) -> Row<'static> {
     let mut cells = vec![name_cell];
     if layout.source > 0 {
         cells.push(Cell::from(source_label).style(Style::default().fg(label_color())));
@@ -290,6 +306,17 @@ fn build_rows(
     layout: &Layout,
     mode: ColorMode,
 ) -> Vec<Row<'static>> {
+    let mut worktree_sources: Vec<String> = target_entries
+        .iter()
+        .filter_map(|entry| match entry.source.kind {
+            TargetSourceKind::Worktree => Some(entry.source.label().to_string()),
+            TargetSourceKind::WorkspaceRoot | TargetSourceKind::Member => None,
+        })
+        .collect();
+    worktree_sources.sort();
+    worktree_sources.dedup();
+    let labels = project_list::differing_path_labels(&worktree_sources);
+    let fitted = project_list::fit_distinct_path_labels(&labels, layout.source);
     target_entries
         .iter()
         .enumerate()
@@ -298,6 +325,15 @@ fn build_rows(
             target_row(
                 entry,
                 name_cell(&entry.display_name, layout.name_max),
+                match entry.source.kind {
+                    TargetSourceKind::Worktree => worktree_sources
+                        .binary_search_by(|source| source.as_str().cmp(entry.source.label()))
+                        .map(|index| fitted[index].clone())
+                        .unwrap_or_default(),
+                    TargetSourceKind::WorkspaceRoot | TargetSourceKind::Member => {
+                        render::truncate_with_ellipsis(entry.source.label(), layout.source, "…")
+                    },
+                },
                 layout,
             )
             .style(pane_selection_state.overlay_style(mode))

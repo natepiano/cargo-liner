@@ -24,6 +24,7 @@ use crate::lint;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::CiPagination;
+use crate::project::GithubRunCount;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::project::RootItem;
@@ -780,7 +781,7 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
     let prev_total = app
         .project_list
         .ci_data_for(abs)
-        .map_or(0, ProjectCiData::github_total);
+        .map_or(GithubRunCount::Loading, ProjectCiData::github_total);
     app.project_list.replace_ci_data_for_path(
         abs,
         ProjectCiData::Loaded(ProjectCiInfo {

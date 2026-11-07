@@ -7,6 +7,7 @@ use tui_pane::ColorMode;
 use tui_pane::Hittable;
 use tui_pane::PaneFocusState;
 
+use super::sync_column_tests;
 use crate::http::RateLimitQuota;
 use crate::project::CommitDate;
 use crate::project::Comparison;
@@ -27,7 +28,7 @@ use crate::tui::state::AvailabilityStatus;
 use crate::tui::test_support;
 
 #[test]
-fn phase4e_cut_worktree_and_remote_values_end_with_an_ellipsis() -> anyhow::Result<()> {
+fn cut_worktree_and_remote_values_end_with_an_ellipsis() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.git.set_content(GitData {
@@ -55,27 +56,30 @@ fn phase4e_cut_worktree_and_remote_values_end_with_an_ellipsis() -> anyhow::Resu
     });
     for width in [14, 17] {
         let buffer = test_support::draw_pane(&mut app, PaneId::Git, width)?;
-        let rows = test_support::rows(&buffer);
-        for (prefix, whole) in [
-            ("ver", "verify-run-long"),
-            ("sdl", "sdlc-merge-long"),
-            ("ori", "origin"),
-        ] {
-            let row = rows
-                .iter()
-                .find(|row| row.contains(prefix))
-                .context(whole)?;
-            let value = row.split_once(prefix).context("value prefix")?.1;
-            let first = value
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim_end_matches('│');
-            assert!(
-                row.contains(whole) || first.ends_with('…'),
-                "a cut value needs an ellipsis at width {width}: {row}"
-            );
+        let worktrees = test_support::position(&buffer, "Worktr")?;
+        if width == 17 {
+            test_support::position(&buffer, "Worktrees")?;
         }
+        for (offset, branch) in ["verify-run-long", "sdlc-merge-long"]
+            .into_iter()
+            .enumerate()
+        {
+            sync_column_tests::assert_fitted_column(
+                &buffer,
+                worktrees.1 + 1,
+                worktrees.1 + 2 + u16::try_from(offset)?,
+                1,
+                branch,
+            )?;
+        }
+        let remotes = test_support::position(&buffer, "Remotes")?;
+        sync_column_tests::assert_fitted_column(
+            &buffer,
+            remotes.1 + 1,
+            remotes.1 + 2,
+            0,
+            "origin",
+        )?;
     }
     Ok(())
 }
@@ -294,30 +298,30 @@ fn narrow_worktree_table_keeps_its_title_and_branch_with_a_remote() -> anyhow::R
         app.panes.git.set_content(data);
         let buffer = test_support::draw_pane(&mut app, PaneId::Git, 17)?;
         test_support::position(&buffer, "├ Worktrees (3) ┤")?;
-        for text in ["Branch", "master", "verify…", "sdlc-m…", "proo…"] {
-            test_support::position(&buffer, text)?;
+        let title = test_support::position(&buffer, "Worktrees")?;
+        for (offset, branch) in ["master", "verify-long", "sdlc-merge"]
+            .into_iter()
+            .enumerate()
+        {
+            sync_column_tests::assert_worktree_columns(
+                &buffer,
+                buffer.area,
+                title.1 + 1,
+                title.1 + 2 + u16::try_from(offset)?,
+                ["proof_crate", branch, "──", "──"],
+            )?;
         }
         for y in 1..buffer.area.bottom() - 1 {
             assert!(matches!(buffer[(16, y)].symbol(), "│" | "┤"));
         }
         if with_remote {
-            let (_, remote_y) = test_support::position(&buffer, "origin")?;
-            app.panes.git.set_content(GitData {
-                remotes: RemoteRows::Listed(vec![remote]),
-                ..GitData::default()
-            });
-            let remote_only = test_support::draw_pane(&mut app, PaneId::Git, 17)?;
-            let (_, baseline_y) = test_support::position(&remote_only, "origin")?;
-            let rows = test_support::rows(&buffer);
-            let baseline = test_support::rows(&remote_only);
-            assert_eq!(
-                rows[usize::from(remote_y)],
-                baseline[usize::from(baseline_y)]
-            );
-            assert_eq!(
-                rows[usize::from(remote_y - 1)],
-                baseline[usize::from(baseline_y - 1)]
-            );
+            let remotes = test_support::position(&buffer, "Remotes")?;
+            sync_column_tests::assert_shared_remote_columns(
+                &buffer,
+                buffer.area,
+                remotes.1 + 1,
+                title.1 + 1,
+            )?;
         }
     }
     Ok(())
@@ -378,24 +382,24 @@ fn worktree_branches_keep_an_ellipsis_at_medium_widths() -> anyhow::Result<()> {
     for width in [22, 24] {
         let buffer = test_support::draw_pane(&mut app, PaneId::Git, width)?;
         let rows = test_support::rows(&buffer);
-        for branch in ["verify", "sdlc"] {
-            let row = rows
-                .iter()
-                .find(|row| row.contains(branch))
-                .context("branch row")?;
-            assert!(row.trim_end_matches('│').trim_end().ends_with('…'), "{row}");
-            assert_eq!(
-                buffer[(
-                    width - 2,
-                    u16::try_from(
-                        rows.iter()
-                            .position(|candidate| candidate == row)
-                            .context("row")?
-                    )?
-                )]
-                    .symbol(),
-                " "
-            );
+        let title = test_support::position(&buffer, "Worktrees")?;
+        for (offset, branch) in ["verify-run-place", "sdlc-merge-gate"]
+            .into_iter()
+            .enumerate()
+        {
+            let y = title.1 + 2 + u16::try_from(offset)?;
+            sync_column_tests::assert_worktree_columns(
+                &buffer,
+                buffer.area,
+                title.1 + 1,
+                y,
+                ["proof_crate", branch, "──", "──"],
+            )?;
+            let row = &rows[usize::from(y)];
+            let values: Vec<_> = row.trim_matches('│').split_whitespace().collect();
+            assert!(values[1].ends_with('…'), "{row}");
+            assert_eq!(&values[2..], &["──", "──"], "{row}");
+            assert_eq!(buffer[(width - 2, y)].symbol(), " ");
         }
     }
     Ok(())
@@ -424,7 +428,7 @@ fn remote_track_cuts_before_the_right_margin() -> anyhow::Result<()> {
         .iter()
         .find(|row| row.contains("cargo-liner-port"))
         .context("remote row")?;
-    assert!(row.contains("ori…"), "{rows:?}");
+    assert!(row.contains("origin/main"), "{rows:?}");
     for (y, row) in rows
         .iter()
         .enumerate()

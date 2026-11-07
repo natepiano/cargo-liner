@@ -530,7 +530,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 ### Phase 4i — Selected-row status glyphs read at 4.5:1  · status: dropped (showrunner, 2026-11-07: "an emoji is a coloured picture, not ink on a ground, so the 4.5:1 text bound does not apply to it"; the emoji stay as they are on selected rows)
 
-### Phase 4j — Package, Git and Targets rows read clearly at narrow widths  · status: todo
+### Phase 4j — Package, Git and Targets rows read clearly at narrow widths  · status: done
 
 **Depends on:** Phase 4e (both edit `crates/cargo-port/src/tui/panes/`) and Phase 4g (both edit `crates/cargo-port/src/tui/panes/git/render.rs`)
 
@@ -543,8 +543,9 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 - `long95-1-expanded` r10-r11 c84-c93: the Git Worktrees third column draws as one `…` cell while the name column could be cut more. User rule C205: "columns should always be preserved - the project names should get ellipsis first".
 - `long80-1-expanded` r18-r20 c61-c71: the three same-name worktrees all read `proof_crate proof_crat… binary` in Targets. `shots_4c_7` shows the same.
 
-**Decision:** showrunner, 2026-11-07, the CI wording ruling:
+**Decision:** showrunner, 2026-11-07, the CI wording ruling and the Worktrees header ruling:
 1. Workspace CI: `🔴 local 9` on the CI row, `gh 2104` on the next row of the same column, `gh …` while the gh count loads. If the column has no next row at a size, show only `🔴 local 9`; never cut a label.
+2. Worktrees headers: the Git pane is 15 cells inside at window 80 and 22 at 95, and four whole headers need 24. Keep the four columns and the one-row table. Cut the headers by the same rule as the values: Name first, and each column keeps at least one letter plus an ellipsis. Cut each header only as much as the width needs. Values that fit draw whole. The 4j shots show the 80 and 95 headers.
 
 **Constraints:**
 - Change no other look.
@@ -627,6 +628,37 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 **State:** none.
 
 **Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. An 80x30 live capture in colour and under NO_COLOR, judged by the design check, shows no blank quota row before the first poll and ` No description` on one row. A 160x45 startup capture shows the gap row in every toast frame; its first frame is not blank (a blank PNG in `shots_4gh_6/toast160-color-a` beside a full `.txt` was read as xterm lag). Close the routes of F015, F016 and the toast gap row at this checkpoint. The checkpoint carries a `Change-Review:` line.
+
+### Phase 4l — Labels, titles and columns read whole in narrow panes  · status: todo
+
+**Depends on:** Phase 4j (both edit `crates/cargo-port/src/tui/panes/targets/` and `crates/cargo-port/src/tui/panes/git/`) and Phase 4k (both edit `crates/tui_pane/src/toasts/render/`)
+
+#### Work Order
+
+**Goal:** at 80 and 95 columns, every pane title, section title, field label and toast label reads whole, and the Targets pane keeps its Source column.
+
+**Source:** Phase 4j design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4j/live/shots_4j_2/`, 2026-11-07. Each look is older than Phase 4j: the Phase 4e and 4g shots show it too.
+- `ci95-2-measured` r17 c69-c94: the Targets pane of the cargo-liner-port workspace drops the Source column (`Target … Kind`), and does not cut the target names first. `ci80-2-measured` r12 keeps `Target Source Kind`. User rule C205: "columns should always be preserved - the project names should get ellipsis first".
+- `long80-2-git-page2` r2 c66-c79: the Git section title reads `Work… (3 of 3)`. `Worktrees (3)` is 13 cells and fits the 15-cell pane.
+- `ci95-2-measured` r13 and `ci95-4-gh-unreachable-later` r4, c74-c82: the Git field label reads `Ahead/Be…`.
+- `long80-1-expanded`, `long80-2-git-page2` and `pair80-1-expanded` r1 c49-c62: the pane title reads `Worktree Grou…`, with no project name. `ci80-2-measured` keeps `Workspace - c…` whole in its label.
+- `ci80-0-early-a` r26 c51-c61: the Startup toast label reads `Cargo meta…`.
+- `long80-1-expanded`, `long80-2-git-page2` and `pair80-1-expanded` r34 c49-c79: the CI pane title message reads `CI runs — requires a GitHub or…`.
+- `pair80-1-expanded` r7-r8: the Package `Worktrees` value `2` draws alone on the next row, while `long80-1-expanded` r7 draws `Worktrees 3` on one row in the same 15-cell pane.
+
+**Source (moved from Phase 4j under the hard landing):** Phase 4j final design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4j/live/shots_4j_4/`, 2026-11-07.
+- `long95-1-expanded` r11-r13: the Worktrees Branch column keeps 11 cells (c77-c87, `verify-run…`) and Tracked gets 2 (c89-c90, `m…`). `pair95-1-expanded` r12 reads `ma…`. `ci95-5-gh-loading` r13, Remotes: `o… cargo-line… o…`. Cause: `fit_sync_trio` (`git/render.rs`) cuts Tracked to its floor before it cuts Branch. A fix cuts the wider of Branch and Tracked one cell at a time, after Name reaches its floor, so a short Tracked value draws whole. Ledger F014 of Phase 4j.
+- `ci95-2-measured` r2 and `ci80-0-early-a`, `ci80-2-measured`, `ci80-6-measured-45` r3-r9: Package and Workspace values end in the cell beside the right border, with no blank margin cell. The Git pane keeps one. This look is older than Phase 4j. Ledger F015 of Phase 4j.
+
+**Decision (F014, F015):** showrunner, 2026-11-07: keep one blank right-margin cell in each Package and Workspace row, as the Git pane does, because side-by-side panes use one margin rule. The Tracked fix (cut the wider of Branch and Tracked first) is accepted.
+
+**Decision:** showrunner, 2026-11-07: these seven looks go to this phase. A fix that lives in `tui_pane` (pane titles, toast labels) goes in `tui_pane`. The dim grey of `No CI` and `—` (4.16:1) stays: it is a deliberate dim and readable.
+
+**Constraints:**
+- Change no other look.
+- Never cut a label. Cut a value, a name or a message first.
+
+**Spec:** the unit director writes the Spec, Files, Workers, State and Acceptance gate before dispatch, from the live cause of each row.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 

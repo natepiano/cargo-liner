@@ -1496,6 +1496,7 @@ mod tests {
     use crate::project::Comparison;
     use crate::project::FirstCommit;
     use crate::project::GitStatus;
+    use crate::project::GithubRunCount;
     use crate::project::HeadState;
     use crate::project::MemberGroup;
     use crate::project::NonRustProject;
@@ -1550,6 +1551,7 @@ mod tests {
         use super::*;
         use crate::channel;
         use crate::project::AbsolutePath;
+        use crate::project::GithubRunCount;
         use crate::project::ProjectPrData;
         use crate::tui::project_list::ExpandTarget;
         use crate::tui::startup_services::WatcherHandle;
@@ -2170,7 +2172,7 @@ mod tests {
                         stars:       7,
                         description: Some("ok".to_string()),
                     }),
-                    github_total: 0,
+                    github_total: GithubRunCount::Known(0),
                     pr_data:      ProjectPrData::Unfetched,
                 },
             );
@@ -2180,7 +2182,7 @@ mod tests {
                 CachedRepoData {
                     runs:         Vec::new(),
                     meta:         None,
-                    github_total: 0,
+                    github_total: GithubRunCount::Known(0),
                     pr_data:      ProjectPrData::Unfetched,
                 },
             );
@@ -11343,6 +11345,7 @@ mod tests {
         use crate::project::CratesIoRelease;
         use crate::project::FileStamp;
         use crate::project::FirstCommit;
+        use crate::project::GithubRunCount;
         use crate::project::HeadState;
         use crate::project::ManifestFingerprint;
         use crate::project::Package;
@@ -11449,7 +11452,7 @@ mod tests {
             app.insert_ci_runs(
                 test_path("~/ws").as_path(),
                 vec![make_ci_run(1, CiStatus::Passed)],
-                0,
+                GithubRunCount::Known(0),
             );
 
             assert_eq!(
@@ -11510,7 +11513,7 @@ mod tests {
                         ..make_ci_run(2, CiStatus::Failed)
                     },
                 ],
-                0,
+                GithubRunCount::Known(0),
             );
 
             let ws = test_path("~/ws");
@@ -11582,7 +11585,7 @@ mod tests {
                         ..make_ci_run(2, CiStatus::Failed)
                     },
                 ],
-                0,
+                GithubRunCount::Known(0),
             );
 
             let helper = test_path(vendored_path);
@@ -14131,7 +14134,8 @@ mod tests {
 
             let state = loaded_ci(&app, project.path());
             assert_eq!(
-                state.github_total, 57,
+                state.github_total,
+                crate::project::GithubRunCount::Known(57),
                 "CacheOnly should preserve previous github_total"
             );
         }
@@ -17756,7 +17760,7 @@ mod tests {
         let repo = entry.git_repo.get_or_insert_with(Default::default);
         repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
             runs,
-            github_total,
+            github_total: GithubRunCount::Known(github_total),
             ci_pagination: CiPagination::from(exhausted),
         });
     }

@@ -343,7 +343,7 @@ fn a_toast_keeps_a_one_row_content_divider_outside_its_card() -> anyhow::Result<
 }
 
 #[test]
-fn phase4e_startup_toast_leaves_whole_titles_and_connected_borders() -> anyhow::Result<()> {
+fn startup_toast_leaves_whole_titles_and_connected_borders() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.show_timed_toast("Startup", "Scan projects\nRead Git data\nLoad lint results");
@@ -398,7 +398,7 @@ fn phase4e_startup_toast_leaves_whole_titles_and_connected_borders() -> anyhow::
 }
 
 #[test]
-fn phase4e_short_git_description_keeps_five_rows_and_aligned_dividers() -> anyhow::Result<()> {
+fn short_git_description_keeps_five_rows_and_aligned_dividers() -> anyhow::Result<()> {
     let mut app = app_with_narrow_detail_fields();
     app.framework.color_mode = ColorMode::Colored;
     let description = "A collection of tools for Rust projects with builds, tests, worktrees, caches and continuous integration";
@@ -859,13 +859,13 @@ fn git_pages_keep_table_headers_with_the_first_worktree() -> anyhow::Result<()> 
         app.panes.git.viewport.set_pos(index);
         let buffer = test_support::draw_ui(&mut app, 80)?;
         let area = app.panes.tiled_layout.area(PaneId::Git);
-        if let Some((_, y)) = test_support::find_text_cell(&buffer, area, "Name") {
+        if let Some((_, y)) = test_support::find_text_cell(&buffer, area, "N…") {
             saw_header = true;
             assert!(y + 1 < area.bottom() - 1);
             test_support::find_text_cell(
                 &buffer,
                 ratatui::layout::Rect::new(area.x, y + 1, area.width, 1),
-                "master",
+                "ma…",
             )
             .context("first worktree below the header")?;
         }
