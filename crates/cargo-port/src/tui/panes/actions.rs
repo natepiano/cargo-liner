@@ -20,7 +20,6 @@ use super::PaneId;
 use super::PendingCiFetch;
 use super::PendingExampleRun;
 use super::TargetEntry;
-use super::build_target_list_from_data;
 use crate::lint;
 use crate::project;
 use crate::project::AbsolutePath;
@@ -49,15 +48,16 @@ use crate::tui::render;
 use crate::tui::state::OwnedRunLaunchAdmission;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
-    let Some(targets_data) = app.panes.targets.content().cloned() else {
-        return;
-    };
-    let entries = build_target_list_from_data(&targets_data);
-    if let Some(entry) = entries.get(app.panes.targets.viewport.pos()) {
+    if let Some(entry) = app
+        .panes
+        .targets
+        .selected_available_target(&app.project_list)
+    {
         let pending_example_run = PendingExampleRun {
             abs_path:                 entry.project_path.display().to_string(),
+            package_path:             entry.package_path.clone(),
             target_name:              entry.name.clone(),
-            display_path:             target_display_path(app, entry),
+            display_path:             target_display_path(app, &entry),
             cargo_package_invocation: CargoPackageInvocation::Named(entry.package_name.clone()),
             run_target_kind:          entry.run_target_kind,
             build_mode:               mode,
@@ -909,6 +909,7 @@ mod launch_path_tests {
             run_target_kind,
             source: TargetSource::member(source.to_string()),
             project_path: AbsolutePath::from(PathBuf::from("/tmp/project")),
+            package_path: AbsolutePath::from(PathBuf::from("/tmp/project")),
             package_name: package_name.to_string(),
             src_path: AbsolutePath::from(PathBuf::from("/tmp/project/examples/demo.rs")),
             required_features: Vec::new(),

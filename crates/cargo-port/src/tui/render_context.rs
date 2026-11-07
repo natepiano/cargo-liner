@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use tui_pane::ColorMode;
 
+use super::panes::EmptyDescriptionBehavior;
 use super::panes::OutputPresentation;
+use super::panes::ProjectPresentation;
 use super::panes::SyncedDescriptionHeight;
 use super::project_list_state::ProjectList;
 use super::settings::SettingsRenderInputs;
@@ -26,7 +28,21 @@ pub(super) struct PaneRenderCtx<'a> {
     pub(super) ci_status_lookup:          &'a CiStatusLookup,
     pub(super) settings_render_inputs:    Option<&'a SettingsRenderInputs>,
     pub(super) synced_description_height: SyncedDescriptionHeight,
+    pub(super) empty_package_description: EmptyDescriptionBehavior,
     /// The one value the Output pane's layout, visibility, focus, labels,
     /// copy availability, hit testing, and rendering all derive from.
     pub(super) output_presentation:       OutputPresentation<'a>,
+}
+
+impl PaneRenderCtx<'_> {
+    pub(super) fn project_presentation(&self) -> ProjectPresentation {
+        if self
+            .selected_project_path
+            .is_some_and(|path| self.project_list.is_deleted(path))
+        {
+            ProjectPresentation::Deleted
+        } else {
+            ProjectPresentation::Current
+        }
+    }
 }

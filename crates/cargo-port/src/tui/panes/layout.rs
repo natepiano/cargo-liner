@@ -6,6 +6,7 @@ use tui_pane::PaneGridLayout;
 use tui_pane::PanePlacement;
 use tui_pane::ResolvedPane;
 use tui_pane::ResolvedPaneLayout;
+use unicode_width::UnicodeWidthStr;
 
 use super::constants::CPU_PANE_WIDTH;
 use super::constants::PANE_BORDER_HEIGHT;
@@ -123,6 +124,7 @@ pub(in crate::tui) fn tab_order(bottom_row: BottomRow) -> Vec<PaneId> {
 pub(in crate::tui) fn resolve_layout(
     area: Rect,
     left_width: u16,
+    minimum_left_width: u16,
     core_count: usize,
     bottom_row: BottomRow,
     top_required_inner: u16,
@@ -138,7 +140,11 @@ pub(in crate::tui) fn resolve_layout(
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(left_width.min(area.width / 2)),
+            Constraint::Length(project_column_width(
+                area.width,
+                left_width,
+                minimum_left_width,
+            )),
             Constraint::Min(0),
         ])
         .split(area);
@@ -160,28 +166,8 @@ fn resolve_pane_area(rows: &[Rect], cols: &[Rect], pane: PaneId, bottom_row: Bot
     let right_col = cols[1];
     let top_right_area = Rect::new(right_col.x, rows[0].y, right_col.width, rows[0].height);
     let middle_right_area = Rect::new(right_col.x, rows[1].y, right_col.width, rows[1].height);
-    let top_right = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(tui_pane::constraints_for_sizes(&[
-            super::size_spec(PaneId::Package, CPU_PANE_WIDTH).width,
-            super::size_spec(PaneId::Git, CPU_PANE_WIDTH).width,
-        ]))
-        .split(top_right_area);
-    let language_min = lang::minimum_width();
-    let targets_min = targets::minimum_width();
-    let show_targets = middle_right_area.width >= cpu_column_width().saturating_add(targets_min);
-    let show_languages = middle_right_area.width
-        >= cpu_column_width()
-            .saturating_add(language_min)
-            .saturating_add(if show_targets { targets_min } else { 0 });
-    let mut middle_panes = Vec::new();
-    if show_languages {
-        middle_panes.push((PaneId::Lang, Constraint::Min(language_min)));
-    }
-    middle_panes.push((PaneId::Cpu, Constraint::Length(cpu_column_width())));
-    if show_targets {
-        middle_panes.push((PaneId::Targets, Constraint::Min(targets_min)));
-    }
+    let top_right = top_pane_areas(top_right_area);
+    let middle_panes = middle_pane_constraints(middle_right_area.width);
     let middle_areas =
         Layout::horizontal(middle_panes.iter().map(|(_, size)| *size)).split(middle_right_area);
     let middle_area = |id| {
@@ -216,6 +202,28 @@ fn resolve_pane_area(rows: &[Rect], cols: &[Rect], pane: PaneId, bottom_row: Bot
         | PaneId::Keymap
         | PaneId::Sccache => Rect::ZERO,
     }
+}
+
+fn middle_pane_constraints(width: u16) -> Vec<(PaneId, Constraint)> {
+    let targets_min = targets::minimum_width();
+    let cpu_width = cpu_column_width();
+    let show_targets = width >= targets_min;
+    let targets_width = if show_targets { targets_min } else { 0 };
+    let show_cpu = show_targets && width >= targets_width.saturating_add(cpu_width);
+    let occupied = targets_width.saturating_add(if show_cpu { cpu_width } else { 0 });
+    let language_min = lang::minimum_width();
+    let show_languages = width >= occupied.saturating_add(language_min);
+    let mut middle_panes = Vec::new();
+    if show_languages {
+        middle_panes.push((PaneId::Lang, Constraint::Min(language_min)));
+    }
+    if show_cpu {
+        middle_panes.push((PaneId::Cpu, Constraint::Length(cpu_width)));
+    }
+    if show_targets {
+        middle_panes.push((PaneId::Targets, Constraint::Min(targets_min)));
+    }
+    middle_panes
 }
 
 /// Heights for the three tiled rows. The top row (Details/Git) is sized to the
@@ -263,6 +271,14 @@ fn tiled_row_constraints(
     }
 }
 
+fn project_column_width(window_width: u16, left_width: u16, minimum_left_width: u16) -> u16 {
+    left_width
+        .min((window_width / 2).max(minimum_left_width))
+        .min(crate::tui::columns::ProjectListWidths::pane_width_limit(
+            window_width,
+        ))
+}
+
 const fn cpu_column_width() -> u16 { CPU_PANE_WIDTH }
 
 /// Outer widths of the two top-row panes (Details and Git) for the given outer
@@ -270,23 +286,47 @@ const fn cpu_column_width() -> u16 { CPU_PANE_WIDTH }
 /// measurement wraps each pane's description to these widths, and
 /// [`resolve_pane_area`] lays the panes out at the same widths, so the
 /// measured height matches the rendered layout.
-pub(in crate::tui) fn top_pane_widths(area: Rect, left_width: u16) -> (u16, u16) {
+pub(in crate::tui) fn top_pane_widths(
+    area: Rect,
+    left_width: u16,
+    minimum_left_width: u16,
+) -> (u16, u16) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(left_width.min(area.width / 2)),
+            Constraint::Length(project_column_width(
+                area.width,
+                left_width,
+                minimum_left_width,
+            )),
             Constraint::Min(0),
         ])
         .split(area);
     let right_col = cols[1];
-    let top_right = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(tui_pane::constraints_for_sizes(&[
-            super::size_spec(PaneId::Package, CPU_PANE_WIDTH).width,
-            super::size_spec(PaneId::Git, CPU_PANE_WIDTH).width,
-        ]))
-        .split(Rect::new(right_col.x, area.y, right_col.width, area.height));
+    let top_right = top_pane_areas(Rect::new(right_col.x, area.y, right_col.width, area.height));
     (top_right[0].width, top_right[1].width)
+}
+
+fn minimum_git_width_for_whole_core_label() -> u16 {
+    let row_margins = "  …".width();
+    u16::try_from(2 * "Core".width() + row_margins + tui_pane::BLOCK_BORDER_WIDTH)
+        .unwrap_or(u16::MAX)
+}
+
+fn top_pane_areas(area: Rect) -> [Rect; 2] {
+    let minimum = minimum_git_width_for_whole_core_label();
+    if area.width < minimum {
+        return [Rect::ZERO; 2];
+    }
+    if area.width < minimum.saturating_mul(2) {
+        return [Rect::ZERO, area];
+    }
+    let areas = Layout::horizontal(tui_pane::constraints_for_sizes(&[
+        super::size_spec(PaneId::Package, CPU_PANE_WIDTH).width,
+        super::size_spec(PaneId::Git, CPU_PANE_WIDTH).width,
+    ]))
+    .split(area);
+    [areas[0], areas[1]]
 }
 
 #[cfg(test)]
@@ -378,7 +418,14 @@ mod tests {
 
     #[test]
     fn resolved_layout_keeps_top_row_flush_with_targets() {
-        let layout = resolve_layout(Rect::new(0, 0, 120, 30), 30, 12, BottomRow::Diagnostics, 20);
+        let layout = resolve_layout(
+            Rect::new(0, 0, 120, 30),
+            30,
+            30,
+            12,
+            BottomRow::Diagnostics,
+            20,
+        );
         let package = layout.area(PaneId::Package);
         let git = layout.area(PaneId::Git);
         let targets = layout.area(PaneId::Targets);
@@ -403,6 +450,7 @@ mod tests {
         let layout = resolve_layout(
             Rect::new(0, 0, 120, 40),
             30,
+            30,
             12,
             BottomRow::Diagnostics,
             100,
@@ -421,6 +469,7 @@ mod tests {
         let top_inner = 8;
         let layout = resolve_layout(
             Rect::new(0, 0, 120, 41),
+            30,
             30,
             12,
             BottomRow::Diagnostics,
@@ -441,12 +490,19 @@ mod tests {
         let tall_resolved_pane_layout = resolve_layout(
             Rect::new(0, 0, 120, 40),
             30,
+            30,
             12,
             BottomRow::Diagnostics,
             100,
         );
-        let short_resolved_pane_layout =
-            resolve_layout(Rect::new(0, 0, 120, 40), 30, 12, BottomRow::Diagnostics, 4);
+        let short_resolved_pane_layout = resolve_layout(
+            Rect::new(0, 0, 120, 40),
+            30,
+            30,
+            12,
+            BottomRow::Diagnostics,
+            4,
+        );
 
         assert!(short_resolved_pane_layout.area(PaneId::Cpu).height > cpu_floor);
         assert!(

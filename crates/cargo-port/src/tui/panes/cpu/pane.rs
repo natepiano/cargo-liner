@@ -109,6 +109,11 @@ pub struct CpuPane {
 }
 
 impl CpuPane {
+    #[cfg(test)]
+    pub(in crate::tui) fn install_sample_for_test(&mut self, usage: CpuUsage) {
+        self.sample_phase = CpuSamplePhase::Sampled(usage);
+    }
+
     pub fn new(cpu_config: &CpuConfig, startup_services: StartupServices) -> Self {
         let monitor = CpuMonitorSlot::new(cpu_config, &startup_services);
         Self {
