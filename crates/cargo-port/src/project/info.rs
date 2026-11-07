@@ -61,11 +61,30 @@ impl From<bool> for CiPagination {
     }
 }
 
-/// Persisted CI metadata for a single project hierarchy node.
+/// The repository run count and the request state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum GithubRunCount {
+    #[default]
+    Loading,
+    Known(u32),
+    Unavailable,
+}
+
+impl GithubRunCount {
+    /// Retain a known count when a request cannot supply a count.
+    pub(crate) const fn retain_known(self, incoming: Self) -> Self {
+        match (self, incoming) {
+            (_, Self::Known(count)) | (Self::Known(count), _) => Self::Known(count),
+            (_, state) => state,
+        }
+    }
+}
+
+/// CI runs and their repository count for one project.
 #[derive(Clone)]
 pub(crate) struct ProjectCiInfo {
     pub runs:          Vec<CiRun>,
-    pub github_total:  u32,
+    pub github_total:  GithubRunCount,
     pub ci_pagination: CiPagination,
 }
 
@@ -86,9 +105,9 @@ impl ProjectCiData {
         }
     }
 
-    pub(crate) const fn github_total(&self) -> u32 {
+    pub(crate) const fn github_total(&self) -> GithubRunCount {
         match self {
-            Self::Unfetched => 0,
+            Self::Unfetched => GithubRunCount::Loading,
             Self::Loaded(info) => info.github_total,
         }
     }

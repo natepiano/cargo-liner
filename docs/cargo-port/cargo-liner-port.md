@@ -530,7 +530,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 ### Phase 4i — Selected-row status glyphs read at 4.5:1  · status: dropped (showrunner, 2026-11-07: "an emoji is a coloured picture, not ink on a ground, so the 4.5:1 text bound does not apply to it"; the emoji stay as they are on selected rows)
 
-### Phase 4j — Package, Git and Targets rows read clearly at narrow widths  · status: todo
+### Phase 4j — Package, Git and Targets rows read clearly at narrow widths  · status: done
 
 **Depends on:** Phase 4e (both edit `crates/cargo-port/src/tui/panes/`) and Phase 4g (both edit `crates/cargo-port/src/tui/panes/git/render.rs`)
 
@@ -645,6 +645,12 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 - `ci80-0-early-a` r26 c51-c61: the Startup toast label reads `Cargo meta…`.
 - `long80-1-expanded`, `long80-2-git-page2` and `pair80-1-expanded` r34 c49-c79: the CI pane title message reads `CI runs — requires a GitHub or…`.
 - `pair80-1-expanded` r7-r8: the Package `Worktrees` value `2` draws alone on the next row, while `long80-1-expanded` r7 draws `Worktrees 3` on one row in the same 15-cell pane.
+
+**Source (moved from Phase 4j under the hard landing):** Phase 4j final design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4j/live/shots_4j_4/`, 2026-11-07.
+- `long95-1-expanded` r11-r13: the Worktrees Branch column keeps 11 cells (c77-c87, `verify-run…`) and Tracked gets 2 (c89-c90, `m…`). `pair95-1-expanded` r12 reads `ma…`. `ci95-5-gh-loading` r13, Remotes: `o… cargo-line… o…`. Cause: `fit_sync_trio` (`git/render.rs`) cuts Tracked to its floor before it cuts Branch. A fix cuts the wider of Branch and Tracked one cell at a time, after Name reaches its floor, so a short Tracked value draws whole. Ledger F014 of Phase 4j.
+- `ci95-2-measured` r2 and `ci80-0-early-a`, `ci80-2-measured`, `ci80-6-measured-45` r3-r9: Package and Workspace values end in the cell beside the right border, with no blank margin cell. The Git pane keeps one. This look is older than Phase 4j. Ledger F015 of Phase 4j.
+
+**Decision (F014, F015):** showrunner, 2026-11-07: keep one blank right-margin cell in each Package and Workspace row, as the Git pane does, because side-by-side panes use one margin rule. The Tracked fix (cut the wider of Branch and Tracked first) is accepted.
 
 **Decision:** showrunner, 2026-11-07: these seven looks go to this phase. A fix that lives in `tui_pane` (pane titles, toast labels) goes in `tui_pane`. The dim grey of `No CI` and `—` (4.16:1) stays: it is a deliberate dim and readable.
 

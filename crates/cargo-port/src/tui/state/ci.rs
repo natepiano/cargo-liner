@@ -35,6 +35,7 @@ use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
+use crate::project::GithubRunCount;
 use crate::project::HeadState;
 use crate::project::ProjectCiInfo;
 use crate::project::RepoInfo;
@@ -108,30 +109,18 @@ impl CiApplicability {
     }
 }
 
-/// Display value for the Ci row in the Package detail pane.
-///
-/// - `NoWorkflow` — repo has no CI workflows configured. Default for partial / placeholder
-///   `PackageData`. Renders as greyed-out "no workflow" text (matching today's `NO_CI_WORKFLOW`
-///   styling at `panes/package.rs:121-125`), not vanish — CI rows show for non-Rust projects too,
-///   unlike Lint's `NotRust` which excludes the row entirely via `package_fields_from_data`.
-/// - `UnpublishedBranch` — branch has no upstream tracking and isn't the repo's default branch; the
-///   parent repo's CI doesn't apply to this checkout.
-/// - `NoRuns` — workflows present, branch published, but zero local runs and zero `github_total`.
-/// - `Runs { ci_status, local, github_total }` — at least one run is known. `ci_status` is the
-///   latest run's outcome (renderer applies `CiStatus::icon()` at render time); `local` is the
-///   count of runs after display-mode filtering; `github_total` drives the "/ github N" suffix when
-///   > 0.
+/// CI applicability, local runs, and the GitHub count for the Package pane.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(in crate::tui) enum CiDisplay {
     #[default]
     NoWorkflow,
     UnpublishedBranch,
-    Unreadable,
     NoRuns,
+    Unreadable,
     Runs {
         ci_status:    Option<CiStatus>,
         local:        usize,
-        github_total: u32,
+        github_total: GithubRunCount,
     },
 }
 
@@ -320,20 +309,18 @@ impl Ci {
             CiApplicability::Unpublished => return CiDisplay::UnpublishedBranch,
             CiApplicability::Applies => {},
         }
-        let Some(info) = ci_info else {
-            return CiDisplay::NoRuns;
-        };
         let display_mode = self.display_mode_for(abs.as_path());
-        let local = Self::filtered_run_count(info, git_info, display_mode);
-        let github_total = info.github_total;
-        if local == 0 && github_total == 0 {
-            CiDisplay::NoRuns
-        } else {
-            CiDisplay::Runs {
-                ci_status: latest_conclusion,
-                local,
-                github_total,
-            }
+        let local = ci_info.map_or(0, |info| {
+            Self::filtered_run_count(info, git_info, display_mode)
+        });
+        let github_total = ci_info.map_or(GithubRunCount::Loading, |info| info.github_total);
+        if local == 0 && matches!(github_total, GithubRunCount::Known(0)) {
+            return CiDisplay::NoRuns;
+        }
+        CiDisplay::Runs {
+            ci_status: latest_conclusion,
+            local,
+            github_total,
         }
     }
 
@@ -402,7 +389,132 @@ impl Hittable<HoverTarget> for Ci {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::buffer::Buffer;
+
     use super::*;
+
+    fn assert_ci_count_rows(
+        buffer: &Buffer,
+        area: Rect,
+        width: u16,
+        expected: &str,
+    ) -> anyhow::Result<()> {
+        use anyhow::Context;
+
+        use crate::tui::test_support;
+
+        if expected == "No CI runs" {
+            assert!(
+                test_support::find_text_cell(buffer, area, expected).is_some(),
+                "{width}: {:?}",
+                test_support::rows(buffer)
+            );
+        } else {
+            let local =
+                test_support::find_text_cell(buffer, area, "local 0").context("Local CI count")?;
+            let github =
+                test_support::find_text_cell(buffer, area, expected).context("GitHub CI count")?;
+            assert_eq!(
+                github,
+                (local.0, local.1 + 1),
+                "{width}: {:?}",
+                test_support::rows(buffer)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ci_messages_keep_known_counts_after_failure_and_older_pages() -> anyhow::Result<()> {
+        use anyhow::Context;
+        use tui_pane::ColorMode;
+
+        use crate::project::GithubRunCount;
+        use crate::project::RepoInfo;
+        use crate::project::WorkflowPresence;
+        use crate::scan::BackgroundMsg;
+        use crate::scan::CiFetchResult;
+        use crate::tui::messages::CiFetchMsg;
+        use crate::tui::panes::CiFetchKind;
+        use crate::tui::panes::PaneId;
+        use crate::tui::test_support;
+
+        let scratch = tempfile::tempdir()?;
+        let path = AbsolutePath::from(scratch.path());
+        for width in [80, 95] {
+            let item = test_support::make_package("alpha", path.as_path());
+            let mut app = test_support::make_app_with_color_mode(&[item], ColorMode::Colored);
+            let entry = app
+                .project_list
+                .entry_containing_mut(path.as_path())
+                .context("Project entry")?;
+            entry
+                .git_repo
+                .get_or_insert_with(Default::default)
+                .repo_info = Some(RepoInfo {
+                workflows: WorkflowPresence::Present,
+                ..RepoInfo::default()
+            });
+            app.scan.bump_generation();
+            app.ensure_detail_cached();
+            let loading = test_support::draw_ui(&mut app, width)?;
+            let area = app.panes.tiled_layout.area(PaneId::Package);
+            assert!(
+                test_support::find_text_cell(&loading, area, "gh …").is_some(),
+                "{width}: {:?}",
+                test_support::rows(&loading)
+            );
+
+            for (count, expected) in [
+                (GithubRunCount::Unavailable, "gh ?"),
+                (GithubRunCount::Known(0), "No CI runs"),
+                (GithubRunCount::Unavailable, "No CI runs"),
+                (GithubRunCount::Known(2104), "gh 2104"),
+                (GithubRunCount::Unavailable, "gh 2104"),
+            ] {
+                app.background
+                    .background_sender()
+                    .send(BackgroundMsg::CiRuns {
+                        path:         path.clone(),
+                        runs:         Vec::new(),
+                        github_total: count,
+                    })?;
+                app.poll_background();
+                app.ensure_detail_cached();
+                let buffer = test_support::draw_ui(&mut app, width)?;
+                let area = app.panes.tiled_layout.area(PaneId::Package);
+                assert_ci_count_rows(&buffer, area, width, expected)?;
+            }
+            for (result, kind) in [
+                (
+                    CiFetchResult::Loaded {
+                        runs:         Vec::new(),
+                        github_total: 2,
+                    },
+                    CiFetchKind::Older,
+                ),
+                (CiFetchResult::CacheOnly(Vec::new()), CiFetchKind::Sync),
+            ] {
+                app.background
+                    .ci_fetch_sender()
+                    .send(CiFetchMsg::Complete {
+                        path: path.to_string(),
+                        result,
+                        kind,
+                    })?;
+                app.poll_background();
+                app.ensure_detail_cached();
+                let buffer = test_support::draw_ui(&mut app, width)?;
+                let area = app.panes.tiled_layout.area(PaneId::Package);
+                assert!(
+                    test_support::find_text_cell(&buffer, area, "gh 2104").is_some(),
+                    "{width}: {:?}",
+                    test_support::rows(&buffer)
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn no_workflow_when_repo_info_missing() {

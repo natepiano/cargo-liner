@@ -12,6 +12,7 @@ use crate::project::CommitDate;
 use crate::project::Comparison;
 use crate::project::DiskMeasurement;
 use crate::project::GitStatus;
+use crate::project::GithubRunCount;
 use crate::project::HeadState;
 use crate::project::LocalGitState;
 use crate::project::ProjectCiData;
@@ -31,7 +32,7 @@ use crate::tui::test_support::PROJECT_PATH;
 use crate::tui::test_support::WIDTH;
 
 #[test]
-fn phase4e_disk_loading_changes_to_measured_zero_and_completes_the_sum() -> anyhow::Result<()> {
+fn disk_loading_changes_to_measured_zero_and_completes_the_sum() -> anyhow::Result<()> {
     let mut items = [
         test_support::make_package("pending", Path::new("/tmp/pending")),
         test_support::make_package("known", Path::new("/tmp/known")),
@@ -87,7 +88,7 @@ fn phase4e_disk_loading_changes_to_measured_zero_and_completes_the_sum() -> anyh
 }
 
 #[test]
-fn phase4e_selected_status_glyphs_meet_the_contrast_floor() -> anyhow::Result<()> {
+fn selected_status_glyphs_meet_the_contrast_floor() -> anyhow::Result<()> {
     let previous = tui_pane::theme();
     tui_pane::set_active_theme(std::sync::Arc::new(test_support::shipped_dark_theme()?));
     let result = (|| -> anyhow::Result<()> {
@@ -125,7 +126,7 @@ fn phase4e_selected_status_glyphs_meet_the_contrast_floor() -> anyhow::Result<()
                 .context("Git repo")?
                 .ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                 runs:          vec![run],
-                github_total:  1,
+                github_total:  GithubRunCount::Known(1),
                 ci_pagination: CiPagination::Exhausted,
             });
             let buffer = test_support::draw_ui(&mut app, WIDTH)?;
@@ -571,5 +572,43 @@ fn hovered_clean_git_glyph_uses_the_selected_row_ink() -> anyhow::Result<()> {
     }
     let failures = test_support::contrast_failures(&selected, &["✨"], "selected clean Git");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+    Ok(())
+}
+
+#[test]
+fn long_checkout_roots_keep_distinct_labels_in_the_projects_pane() -> anyhow::Result<()> {
+    let scratch = tempfile::tempdir()?;
+    let paths = [
+        "claude-build-followups-sdlc-merge-gate",
+        "claude-build-followups-verify-run-place",
+        "long-names",
+    ]
+    .map(|parent| scratch.path().join(parent).join("proof_crate"));
+    for path in &paths {
+        std::fs::create_dir_all(path)?;
+    }
+    let items = paths
+        .each_ref()
+        .map(|path| test_support::make_package("proof_crate", path));
+    for width in [80, 95] {
+        let mut app = test_support::make_app_with_color_mode(&items, ColorMode::Colored);
+        app.ensure_visible_rows_cached();
+        let buffer = test_support::draw_ui(&mut app, width)?;
+        let area = app.panes.tiled_layout.area(PaneId::ProjectList);
+        let mut rows = Vec::new();
+        for label in ["sdlc", "verify", "long"] {
+            let position =
+                test_support::find_text_cell(&buffer, area, label).with_context(|| {
+                    format!(
+                        "{width}: missing {label}: {:?}",
+                        test_support::rows(&buffer)
+                    )
+                })?;
+            rows.push(position.1);
+        }
+        rows.sort_unstable();
+        rows.dedup();
+        assert_eq!(rows.len(), paths.len());
+    }
     Ok(())
 }

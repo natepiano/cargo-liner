@@ -27,6 +27,8 @@ pub(super) use readability::PROJECT_PATH;
 pub(super) use readability::WIDTH;
 pub(super) use readability::draw_pane;
 pub(super) use readability::draw_pane_at_size;
+pub(super) use readability::draw_pane_in_window;
+pub(super) use readability::draw_pane_in_window_at_size;
 pub(super) use readability::draw_stats;
 pub(super) use readability::draw_ui;
 pub(super) use readability::position;
@@ -398,6 +400,32 @@ pub(crate) fn draw_disk_refresh_for_test(
     app.project_list.select_root_row(0);
     app.ensure_detail_cached();
     draw_ui(&mut app, 160)
+}
+
+/// Draw the disk loading state and the result of one disk message.
+pub(super) fn draw_disk_loading_transition_for_test(
+    path: &AbsolutePath,
+    message: BackgroundMsg,
+    width: u16,
+) -> anyhow::Result<(Buffer, Buffer)> {
+    let package = Package {
+        name: Some("alpha".to_string()),
+        path: path.clone(),
+        ..Package::default()
+    };
+    let item = RootItem::Rust(RustProject::Package(package));
+    let mut app = make_app_with_color_mode(&[item], ColorMode::Colored);
+    app.project_list.select_project_path(path.clone());
+    app.ensure_visible_rows_cached();
+    app.project_list.select_root_row(0);
+    app.ensure_detail_cached();
+    let loading = draw_ui(&mut app, width)?;
+    app.background.background_sender().send(message)?;
+    app.poll_background();
+    app.project_list.select_root_row(0);
+    app.ensure_detail_cached();
+    let measured = draw_ui(&mut app, width)?;
+    Ok((loading, measured))
 }
 
 #[cfg(test)]

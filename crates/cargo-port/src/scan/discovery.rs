@@ -24,6 +24,7 @@ use crate::http::HttpClient;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::GitRepoPresence;
+use crate::project::GithubRunCount;
 use crate::project::ManifestTargets;
 use crate::project::ProjectFields;
 use crate::project::ProjectPrData;
@@ -172,7 +173,7 @@ pub(crate) struct RepoMetaInfo {
 pub(crate) struct CachedRepoData {
     pub(crate) runs:         Vec<CiRun>,
     pub(crate) meta:         Option<RepoMetaInfo>,
-    pub(crate) github_total: u32,
+    pub(crate) github_total: GithubRunCount,
     pub(crate) pr_data:      ProjectPrData,
 }
 

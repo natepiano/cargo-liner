@@ -1,3 +1,7 @@
+#[cfg(test)]
+mod ci_count_tests;
+#[cfg(test)]
+mod disk_loading_tests;
 mod pane;
 #[cfg(test)]
 mod readability_tests;
