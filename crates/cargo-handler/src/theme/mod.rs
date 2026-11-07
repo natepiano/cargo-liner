@@ -18,6 +18,10 @@
 //! drift by the tests at the bottom of this file.
 
 mod files;
+mod word_match;
+pub(crate) use word_match::WordMatchGrounds;
+#[cfg(test)]
+pub(crate) use word_match::WordMatchLimit;
 #[cfg(test)]
 mod files_tests;
 
@@ -145,6 +149,8 @@ impl ResetRank {
 /// `[variants.roles]` under [`Role::key`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Role {
+    /// The background behind a matching word.
+    WordMatch,
     /// The `claude` agent label.
     Claude,
     /// The `codex` agent label.
@@ -164,7 +170,8 @@ pub(crate) enum Role {
 
 impl Role {
     /// Every role, in the order [`RolePalette`] lists them.
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
+        Self::WordMatch,
         Self::Claude,
         Self::Codex,
         Self::Busy,
@@ -181,6 +188,7 @@ impl Role {
     /// The role's key in `[variants.roles]`.
     const fn key(self) -> &'static str {
         match self {
+            Self::WordMatch => "word_match",
             Self::Claude => CLAUDE_ROLE,
             Self::Codex => CODEX_ROLE,
             Self::Busy => BUSY_ROLE,
@@ -195,6 +203,10 @@ impl Role {
     /// role gets [`DEFAULT_DARK_ROLES`]' value.
     pub(crate) fn style(self) -> Style {
         match self {
+            Self::WordMatch => Style::default().bg(tui_pane::role_color(
+                "word_match",
+                DEFAULT_DARK_ROLES.word_match,
+            )),
             Self::Claude => SessionRowInk::Claude.style(),
             Self::Codex => SessionRowInk::Codex.style(),
             Self::Busy => SessionRowInk::Busy.style(),
@@ -268,6 +280,8 @@ impl SessionHue {
 
 /// One built-in variant's value for each [`Role`].
 struct RolePalette {
+    /// The background behind a matching word.
+    word_match:     StyleSpec,
     /// [`Role::Claude`].
     claude:         StyleSpec,
     /// [`Role::Codex`].
@@ -291,6 +305,7 @@ impl RolePalette {
     /// The value for `role`.
     const fn spec(&self, role: Role) -> StyleSpec {
         match role {
+            Role::WordMatch => self.word_match,
             Role::Claude => self.claude,
             Role::Codex => self.codex,
             Role::Busy => self.busy,
@@ -317,6 +332,7 @@ impl RolePalette {
 /// [`default_dark`]'s roles, and the value a variant without a role
 /// falls back to.
 const DEFAULT_DARK_ROLES: RolePalette = RolePalette {
+    word_match:     StyleSpec::from_color(Color::Rgb(38, 38, 38)),
     claude:         StyleSpec::from_color(Color::Rgb(217, 119, 87)),
     codex:          StyleSpec::from_color(Color::Rgb(175, 140, 255)),
     busy:           StyleSpec::from_color(Color::Rgb(100, 220, 100)),
@@ -338,6 +354,7 @@ const DEFAULT_DARK_ROLES: RolePalette = RolePalette {
 /// [`default_light`]'s roles: the same hues, darker, for a white
 /// background.
 const DEFAULT_LIGHT_ROLES: RolePalette = RolePalette {
+    word_match:     StyleSpec::from_color(Color::Rgb(240, 240, 240)),
     claude:         StyleSpec::from_color(Color::Rgb(190, 85, 50)),
     codex:          StyleSpec::from_color(Color::Rgb(110, 60, 200)),
     busy:           StyleSpec::from_color(Color::Rgb(0, 130, 0)),
@@ -359,6 +376,7 @@ const DEFAULT_LIGHT_ROLES: RolePalette = RolePalette {
 /// [`high_contrast_dark`]'s roles: bright and bold, save `idle`, which
 /// stays quiet.
 const HIGH_CONTRAST_DARK_ROLES: RolePalette = RolePalette {
+    word_match:     StyleSpec::from_color(Color::Rgb(38, 38, 38)),
     claude:         StyleSpec::bold(Color::Rgb(255, 150, 90)),
     codex:          StyleSpec::bold(Color::LightMagenta),
     busy:           StyleSpec::bold(Color::LightGreen),
@@ -379,6 +397,7 @@ const HIGH_CONTRAST_DARK_ROLES: RolePalette = RolePalette {
 /// [`high_contrast_light`]'s roles: deep and bold, save `idle`, which
 /// stays quiet.
 const HIGH_CONTRAST_LIGHT_ROLES: RolePalette = RolePalette {
+    word_match:     StyleSpec::from_color(Color::Rgb(240, 240, 240)),
     claude:         StyleSpec::bold(Color::Rgb(160, 60, 0)),
     codex:          StyleSpec::bold(Color::Rgb(100, 0, 160)),
     busy:           StyleSpec::bold(Color::Rgb(0, 100, 0)),

@@ -3,6 +3,7 @@
 #![expect(clippy::expect_used, reason = "fixture rows and terminal must exist")]
 #![expect(clippy::panic, reason = "missing rendered rows fail the regression")]
 
+use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Position;
 use tui_pane::TerminalApp;
@@ -12,6 +13,11 @@ use crate::app::App;
 use crate::render;
 
 fn paint(app: &mut App) -> Buffer {
+    // Read the selection frame after Esc clears the word match.
+    tui_pane::dispatch_key(
+        app,
+        crossterm::event::KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE),
+    );
     let mut terminal =
         ratatui::Terminal::new(ratatui::backend::TestBackend::new(180, 48)).expect("test terminal");
     let keymap = app.keymap();

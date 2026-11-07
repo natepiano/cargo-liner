@@ -36,6 +36,7 @@ use crate::render;
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub(crate) enum AppGlobalAction {
+        ClearWord => ("clear_word", "Clear the word highlight");
         ExpandAll => ("expand_all", "Expand all rows");
         CollapseAll => ("collapse_all", "Collapse all to first level");
         ExpandRow => ("expand_row", "Expand the selected row");
@@ -81,6 +82,7 @@ impl Globals<App> for AppGlobalAction {
 
     fn defaults() -> Bindings<Self::Actions> {
         let mut bindings = tui_pane::bindings! {
+            KeyCode::Esc => Self::ClearWord,
             '+' => Self::AddTile,
             KeyBind::shift(KeyCode::Delete) => Self::RemoveTile,
             KeyBind::shift(KeyCode::Left) => Self::FocusLeft,
@@ -130,6 +132,10 @@ impl Globals<App> for AppGlobalAction {
 fn dispatch(action: AppGlobalAction, app: &mut App) {
     let growth = app.loaded_config.config.tiles.growth();
     match action {
+        AppGlobalAction::ClearWord => {
+            app.word_highlight.clear();
+            app.painted_words = crate::word_highlight::PaintedWords::default();
+        },
         AppGlobalAction::ExpandAll => expansion::dispatch(
             app,
             HandlerExpansionAction::Shared(ExpansionAction::ExpandAll),
@@ -219,6 +225,7 @@ mod tests {
         let scope = AppGlobalAction::defaults().into_scope_map();
         let expected = [
             (KeyBind::from('+'), AppGlobalAction::AddTile),
+            (KeyBind::from(KeyCode::Esc), AppGlobalAction::ClearWord),
             (KeyBind::from('='), AppGlobalAction::ExpandAll),
             (KeyBind::from('-'), AppGlobalAction::CollapseAll),
             (KeyBind::from(KeyCode::Left), AppGlobalAction::CollapseRow),

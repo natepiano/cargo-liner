@@ -9,6 +9,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crossterm::event::KeyCode;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Position;
@@ -42,6 +43,11 @@ fn position(buffer: &Buffer, label: &str) -> Position {
 }
 
 fn frame(app: &mut App, now: u64) -> Buffer {
+    // Read the selection frame after Esc clears the word match.
+    tui_pane::dispatch_key(
+        app,
+        crossterm::event::KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE),
+    );
     let mut terminal = Terminal::new(TestBackend::new(200, 48)).expect("test terminal");
     let keymap = app.keymap();
     terminal
@@ -71,6 +77,11 @@ impl SelectedRowRenderer {
     }
 
     fn paint(&mut self, app: &mut App, now: u64) -> Buffer {
+        // Read the selection frame after Esc clears the word match.
+        tui_pane::dispatch_key(
+            app,
+            crossterm::event::KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE),
+        );
         let keymap = app.keymap();
         self.terminal
             .draw(|frame| draw_at_for_test(frame, app, &keymap, now))

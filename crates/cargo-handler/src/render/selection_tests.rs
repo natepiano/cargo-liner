@@ -54,6 +54,11 @@ fn application(rows: Vec<AgentRow>) -> App {
 fn paint(app: &mut App) -> Buffer { paint_at(app, census::unix_now()) }
 
 fn paint_at(app: &mut App, now: u64) -> Buffer {
+    // Read the selection frame after Esc clears the word match.
+    tui_pane::dispatch_key(
+        app,
+        crossterm::event::KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE),
+    );
     let mut terminal = Terminal::new(TestBackend::new(180, 48)).expect("test terminal");
     let keymap = app.keymap();
     terminal
