@@ -969,7 +969,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean. No test takes a second. Live: summary and accounts shots in all four themes, with each session, role and reset ink read from the shot.
 
-### Phase 34 — Tests leave no folders  · status: todo
+### Phase 34 — Tests leave no folders  · status: done
 
 **Depends on:** Phase 18
 
@@ -983,15 +983,17 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 18: `crates/cargo-handler/src/terminal/theme_note_tests.rs` builds the app through `terminal::startup_theme_notes` (`terminal.rs` ≈79) and `App::new_for_test_with_startup` (`app.rs` ≈246). Its `theme_directory()` keeps the theme folder in a `static DIRECTORY: OnceLock<TempDir>`, which is never dropped, so the folder stays after the run. The fixture function that gives the folder path takes no `self`.
 
 **Spec:**
-1. Each theme-note test owns its own `TempDir`, which is removed when the test ends, also when it fails (the owner drops on unwind). No `keep()`, no `into_path()`, and no folder outside a `TempDir`. Pass the folder path through the fixture or the config the test builds, not through a static.
+1. Each theme-note test owns its own `TempDir`, which is removed when the test ends, also when it fails (the owner drops on unwind). No `keep()`, no `into_path()`, and no folder outside a `TempDir`. Pass the folder path through the fixture or the config the test builds, not through a static. `AppIdentity::themes_dir()` takes no `self`, so `theme::install_theme` (`theme/files.rs` ≈164) takes the theme folder as a `tui_pane::ThemeSource<'_>` parameter instead of reading `I::themes_dir()`. The startup caller (`terminal.rs` ≈55) converts `themes_dir()` to `ThemeSource::{Directory, BuiltinsOnly}` at that boundary; a test passes `ThemeSource::Directory(dir.path())`. Production startup loads the same files as before.
 2. A test fails when a theme-note run leaves a folder behind: it runs a fixture to the end, also through a forced failure, and checks that the folder path no longer exists.
 3. Each test runs under a second, alone and in the full suite.
 
 **Files:**
 - `crates/cargo-handler/src/terminal/theme_note_tests.rs`
+- `crates/cargo-handler/src/theme/files.rs` — `install_theme` takes a `ThemeSource`
+- `crates/cargo-handler/src/terminal.rs` — the startup caller converts `themes_dir()`
 
 **Workers:** 1 tester.
-- `test` — the theme-note repair and the no-leftover-folder test; keep the production startup-theme handoff when the static `TempDir` fixture is replaced.
+- `test` — the `install_theme` parameter, the theme-note repair and the no-leftover-folder test; keep the production startup-theme handoff when the static `TempDir` fixture is replaced.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. After a full cargo-handler run, no new /tmp/.tmp* folder that holds a theme file is left (count before and after).
 
