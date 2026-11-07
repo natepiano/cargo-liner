@@ -501,14 +501,8 @@ where
     None
 }
 
-fn sum_disk(primary: Option<u64>, linked: impl Iterator<Item = Option<u64>>) -> Option<u64> {
-    let mut total = 0u64;
-    let mut any = false;
-    for b in std::iter::once(primary).chain(linked).flatten() {
-        total += b;
-        any = true;
-    }
-    any.then_some(total)
+fn sum_disk(primary: Option<u64>, mut linked: impl Iterator<Item = Option<u64>>) -> Option<u64> {
+    linked.try_fold(primary?, |total, bytes| Some(total.saturating_add(bytes?)))
 }
 
 #[cfg(test)]

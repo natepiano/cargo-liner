@@ -459,7 +459,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Ruled out:** a change to the Targets title; both title forms are correct.
 
-### Phase 4e — cargo-port's popups and remaining words read clearly  · status: todo
+### Phase 4e — cargo-port's popups and remaining words read clearly  · status: done
 
 **Depends on:** Phase 4c, and a merge of main at phase start (main carries shared `tui_pane` drawing and status changes that checkpoint `5e46deabd` lacks)
 
@@ -528,6 +528,132 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 **State:** none.
 
 **Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` when it changes, and `verify.sh lint cargo-port` clean; no test takes a second. The unit director takes live shots at 160x45 in colour, 160x45 under `NO_COLOR=1` and 80x30 in colour. A fresh design check on those shots raises none of these items.
+
+### Phase 4g — The rate-limit countdown never stops at 0s  · status: todo
+
+**Depends on:** Phase 4e (both edit the Git pane render path in `crates/cargo-port/src/tui/panes/`)
+
+#### Work Order
+
+**Goal:** after a GitHub rate-limit window resets, the Git pane shows the new quota and never shows `resets 0s`. Each rate-limit row keeps its `/<limit>` when it fits.
+
+**Source:** Phase 4e design check, 2026-11-07: the shots `gate-1`, `gate-2` and `gate-3` in `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4e_1/` read `Core 4629/5000 resets 0s` (r2 c110), and the value stays there. Older than Phase 4e. Showrunner, 2026-11-07: "It is a wrong value, so it is a fix under the look rule."
+
+Phase 4e design check of `shots_4e_3`, 2026-11-07: `long95-1-expanded` r6-r7 c74 reads `Core     4739` and `GraphQL  4878` with 8 blank cells. `Core     4739/5000` needs 18 of the 21 inner cells. `shots_4c_7` shows the same, so it is older than Phase 4e. Without the limit, the count has no meaning.
+
+Phase 4e design check of `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4e_4/`, 2026-11-07: `color-3-deleted-selected` r2 c116 reads `Stars    github unreachable` in yellow and r3 c125 `(github unreachable)` in red. A non-git package gets a `Stars` row with no data. The toast and the CI runs title write `GitHub`. Older than Phase 4e.
+
+**Cause:** `crates/cargo-port/src/tui/panes/pane_data/formatting.rs` `format_rate_limit_bucket` computes `reset_at.saturating_sub(now)`, so a passed reset reads `0s`. Nothing fetches the quota again when the reset time passes.
+
+**Constraints:**
+- Change no other look.
+- One extra fetch per passed reset, no more. Name its cost in the checkpoint notice.
+
+**Spec:**
+1. **Refetch once.** When a bucket's reset time passes, fetch the quota once.
+2. **No 0s.** From the reset time until the new data arrives, the row shows `<remaining>/<limit>` with no `resets` text. It never shows `resets 0s`.
+3. **Test.** A drawn test with a clock past the reset time shows no `resets` text, and a test shows that one fetch is requested.
+4. **Limit when it fits.** A row shows `<remaining>/<limit>` when it fits the pane, and adds the reset time when that fits too. Only a pane too narrow for `/<limit>` shows the bare count. A drawn test at 95 columns reads `4739/5000`.
+5. **Unreachable once.** When GitHub cannot be reached, the Git pane says so once, on one shared row, as `GitHub unreachable`, in one colour. `git/render.rs` `build_field_value` adds the second text today (Astra review, 2026-11-07). A project with no GitHub repo draws no `Stars` row. A drawn test reads one `GitHub unreachable` and no `Stars` row for a non-git project.
+
+**Files:**
+- `crates/cargo-port/src/tui/panes/pane_data/` — the rate-limit text and its tests
+- `crates/cargo-port/src/tui/state/net.rs`, `crates/cargo-port/src/tui/startup_services.rs`, `crates/cargo-port/src/tui/app/` — the quota fetch, where its trigger lives
+- `crates/cargo-port/src/tui/panes/git/render.rs` and its tests — the outage row and the Stars row
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester
+- Writer: production files and tests inside production files.
+- Tester: a new `*_tests.rs` file beside the rate-limit text.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. A live shot after a reset time passes shows no `resets 0s`.
+
+### Phase 4h — The startup toast marks hidden rows with a page mark  · status: todo
+
+**Depends on:** Phase 4e (both edit `crates/tui_pane/src/toasts/`)
+
+#### Work Order
+
+**Goal:** a toast with more rows than fit marks the hidden rows with the `▼` page mark in its bottom border, as the panes do. No row ends in a lone `…`.
+
+**Source:** Phase 4e design check, 2026-11-07: `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4e_2/color-0-early-a.txt` r42 c157 shows 6 of 8 rows and a lone `…`. It reads as a cut value, and under NO_COLOR it takes the place of a row detail. Older than Phase 4e. Showrunner, 2026-11-07: "It is a defect … The 11-06 rule allows this fix."
+
+The `shots_4e_3` design check found the same lone `…` at r41 c156 in all six early shots, colour and NO_COLOR.
+
+The `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4e_4/` design check, `w80-0-start` r25-r27: at 80x30 the 60-cell toast runs from c19 to c78, out of the 34-cell CI runs pane. It covers the No lint runs pane and the border between the panes. Toasts drew over the whole frame before Phase 4e, so this is older than Phase 4e.
+
+**Cause:** `crates/tui_pane/src/toasts/constants.rs` `ELLIPSIS` marks the hidden rows at a row end.
+
+**Constraints:**
+- Use the panes' existing page-mark code. Make no second copy of it (showrunner, 2026-11-07).
+- Change no other look.
+- Files only under `crates/tui_pane/src/toasts/`, plus tests, and the cargo-port caller that passes the corner pane's rect (`crates/cargo-port/src/tui/render/mod.rs`). tile owns `tui_pane`: take a berth reservation for those paths.
+
+**Spec:**
+1. **Page mark.** A toast with hidden rows draws the `▼` page mark in its bottom border, in the place the panes draw it.
+2. **No row-end mark.** No row ends in `…` for hidden rows. Each shown row keeps its text whole.
+3. **Test.** A drawn test of a toast with more rows than fit reads the `▼` in the bottom border and no row-end `…`, in colour and under NO_COLOR.
+4. **Width.** The toast is no wider than the interior of the pane at its placement corner, card borders and gaps included. The caller passes that pane's rect as the allowed area; do not add another scan of drawn border glyphs (Astra review, 2026-11-07). The detail column is cut first. At 80x30 the No lint runs pane and both pane borders stay whole. A drawn test at 80x30 reads both borders. `hidden_grid_contents_leave_the_toast_at_its_unrestricted_rect` in cargo-tile still passes unchanged.
+
+**Files:**
+- `crates/tui_pane/src/toasts/` — the toast card and its tests
+- `crates/cargo-port/src/tui/render/mod.rs` — the allowed toast area
+- `crates/tui_pane/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester
+- Writer: production files and tests inside production files.
+- Tester: a new `*_tests.rs` file beside the toast render code.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test tui_pane`, `verify.sh test cargo-port --filter readability` and the workspace lint clean; no test takes a second. A NO_COLOR live capture of the startup toast with hidden rows shows the `▼` mark and whole rows. The checkpoint carries a `Change-Review:` line.
+
+### Phase 4i — Selected-row status glyphs read at 4.5:1  · status: dropped (showrunner, 2026-11-07: "an emoji is a coloured picture, not ink on a ground, so the 4.5:1 text bound does not apply to it"; the emoji stay as they are on selected rows)
+
+### Phase 4j — Package, Git and Targets rows read clearly at narrow widths  · status: todo
+
+**Depends on:** Phase 4e (both edit `crates/cargo-port/src/tui/panes/`)
+
+#### Work Order
+
+**Goal:** at 80 and 95 columns, the Package CI row names its counts, the empty description takes one row when it fits, the Git Worktrees table keeps every column, and the Targets rows of same-name worktrees read differently.
+
+**Source:** Phase 4e design check of `/tmp/claude/unit/b6e56837-8fc7-4cd5-ba71-0ff1c804cfd1/phases/4/live/shots_4e_4/`, 2026-11-07. Phase 4e moved these rows here under the hard landing (repair round 4):
+- `focus-1-project-row` r8 c78-c88: Workspace `CI` reads `🔴 9 / 2104`, with no `local` and `gh` words, so it reads as "9 of 2104". Before the gh count loads, `color-3a-repo-row` r8 reads only `🔴 9`, with no loading mark.
+- `w80-1-row` r2-r3 c49-c59: the empty description wraps to `No` / `description` in a 15-cell interior. ` No description` fits one row, as `Disk      73 B` fills the same width.
+- `long95-1-expanded` r10-r11 c84-c93: the Git Worktrees third column draws as one `…` cell while the name column could be cut more. User rule C205: "columns should always be preserved - the project names should get ellipsis first".
+- `long80-1-expanded` r18-r20 c61-c71: the three same-name worktrees all read `proof_crate proof_crat… binary` in Targets. `shots_4c_7` shows the same.
+
+**Decision:** showrunner, 2026-11-07, both wording rulings:
+1. Workspace CI: `🔴 local 9` on the CI row, `gh 2104` on the next row of the same column, `gh …` while the gh count loads. If the column has no next row at a size, show only `🔴 local 9`; never cut a label.
+2. Empty description: ` No description` on one row when the interior is 15 cells or more. Below 15, keep the wrap. Show it only when it is true (Spec 8 of Phase 4e).
+
+**Constraints:**
+- Change no other look.
+- Reuse the same-name root text code of the Projects pane for the Targets Source column. Make no second copy.
+
+**Spec:**
+1. **CI counts named.** The Package CI row follows Decision 1 at every width. `CiDisplay` (`tui/state/ci.rs:125`) cannot tell loading from a known zero, so the state that feeds it gets a loading case. Test loading, known zero, a positive count and a failed fetch apart (Astra review, 2026-11-07).
+2. **One-row description.** The empty description follows Decision 2. `DescriptionBlock::for_pane` takes two padding cells, so a 15-cell interior leaves 13 cells for the 14-cell text. Make a right-inset exception for the placeholder only, from 15 cells. Keep the left inset and the wrap below 15. Update the wrap test to this decision.
+3. **Worktree columns kept.** The Worktrees table shows the Name, Branch, Tracked and Sync headers and values at 80 and 95 columns. It cuts Name first. `fit_table_line` (`git/render.rs`) cuts the whole row today; give each column a width instead. A value that fits draws whole, with no `…` beside it.
+4. **Targets rows differ.** The Targets Source of same-name worktrees shows the part of each path that differs, through `grouping::differing_path_labels`, as `resolved_root_labels` does for the Projects pane. `relabel_as_worktree` (`targets/data.rs:194`) builds the labels today. Each target keeps its launch path. Test distinct drawn Source values after the cut.
+5. **Tests.** A drawn test at 80 and 95 columns for each spec item reads the buffer.
+
+**Files:**
+- `crates/cargo-port/src/tui/panes/package/`, `crates/cargo-port/src/tui/panes/git/`, `crates/cargo-port/src/tui/panes/description.rs`, `crates/cargo-port/src/tui/panes/targets/` and their tests
+- `crates/cargo-port/src/tui/state/ci.rs` and the CI cache updates that feed it
+- the `grouping` module, only if `differing_path_labels` needs wider visibility
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer + 1 tester
+- Writer: production files and tests inside production files.
+- Tester: new `*_tests.rs` files beside the changed render code.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Live shots at 80 and 95 columns, judged by the design check, show each row. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 

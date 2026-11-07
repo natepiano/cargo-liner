@@ -10,6 +10,7 @@ use super::package_data::PackageData;
 use super::package_data::PackageRow;
 use super::package_data::PackageVersion;
 use crate::constants::GIT_UNREADABLE_LABEL;
+use crate::project::DiskMeasurement;
 use crate::project::FirstCommit;
 use crate::project::GitStatus;
 use crate::project::PinnedCommit;
@@ -112,7 +113,12 @@ impl DetailField {
                 .as_ref()
                 .map_or_else(String::new, |summary| summary.deleted.to_string()),
             Self::Path => data.path.clone(),
-            Self::Disk => data.disk.map_or_else(String::new, render::format_bytes),
+            Self::Disk => match data.disk {
+                DiskMeasurement::NotMeasured => "…".to_string(),
+                DiskMeasurement::TotalOnly(total) | DiskMeasurement::Measured { total, .. } => {
+                    render::format_bytes(total)
+                },
+            },
             Self::Targets => match &data.types {
                 None => String::new(),
                 Some(types) if types.is_empty() => "-".to_string(),
@@ -131,12 +137,14 @@ impl DetailField {
                 PackageVersion::AwaitingMetadata
                 | PackageVersion::Submodule(PinnedCommit::Absent) => "-".to_string(),
             },
-            Self::DiskTarget => data
-                .in_project_target
-                .map_or_else(String::new, render::format_bytes),
-            Self::DiskNonTarget => data
-                .in_project_non_target
-                .map_or_else(String::new, render::format_bytes),
+            Self::DiskTarget => match data.disk {
+                DiskMeasurement::Measured { target, .. } => render::format_bytes(target),
+                _ => "…".to_string(),
+            },
+            Self::DiskNonTarget => match data.disk {
+                DiskMeasurement::Measured { other, .. } => render::format_bytes(other),
+                _ => "…".to_string(),
+            },
             Self::DiskOutOfTreeTarget => data
                 .out_of_tree_target_bytes
                 .map_or_else(String::new, render::format_bytes),

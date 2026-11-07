@@ -37,6 +37,9 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 
+- Toast stacks stay in their placement corner and show fewer rows when space is short. Cards preserve pane borders, titles, and unrelated content.
+- Wrap long Settings paths at slashes when a path part fits the content width.
+
 - Optional status hints keep one trailing cell after the shortcuts hint.
 
 - Optional status hints keep two cells before the next shortcut.

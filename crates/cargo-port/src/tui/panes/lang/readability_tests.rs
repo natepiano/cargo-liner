@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::Context;
+use tui_pane::ColorMode;
 use tui_pane::PaneFocusState;
 
 use crate::project::LangEntry;
@@ -88,8 +89,15 @@ fn language_headers_use_sentence_case() -> anyhow::Result<()> {
 #[test]
 fn language_subtotals_name_the_parent_language() -> anyhow::Result<()> {
     let mut app = language_app();
+    app.framework.color_mode = ColorMode::Colored;
     let buffer = test_support::draw_pane(&mut app, PaneId::Lang, 80)?;
-    test_support::position(&buffer, "Rust: code")?;
+    test_support::position(&buffer, "Rust")?;
+    test_support::position(&buffer, "└ code")?;
+    assert!(
+        !test_support::rows(&buffer)
+            .join("\n")
+            .contains("Rust: code")
+    );
     Ok(())
 }
 
@@ -187,6 +195,154 @@ fn deleted_languages_leave_the_body_empty() -> anyhow::Result<()> {
         for x in 1..buffer.area.right() - 1 {
             assert_eq!(buffer[(x, y)].symbol(), " ");
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn phase4e_language_names_keep_their_meaning_at_normal_width() -> anyhow::Result<()> {
+    let mut app = language_app();
+    app.framework.color_mode = ColorMode::Colored;
+    let info = app
+        .project_list
+        .at_path_mut(Path::new(PROJECT_PATH))
+        .expect_found("the project");
+    let entries = &mut info
+        .language_stats
+        .as_mut()
+        .context("language stats")?
+        .entries;
+    entries[0].children[0].language = "integration".to_string();
+    for language in ["Python", "Markdown", "Autoconf"] {
+        entries.push(LangEntry {
+            language: language.to_string(),
+            files:    1,
+            code:     3,
+            comments: 0,
+            blanks:   0,
+            children: Vec::new(),
+        });
+    }
+    let frame = test_support::draw_ui(&mut app, 160)?;
+    let area = app.panes.tiled_layout.area(PaneId::Lang);
+    test_support::find_text_cell(&frame, area, "└ integr…").context("shortened child name")?;
+    let buffer = test_support::draw_pane(&mut app, PaneId::Lang, 60)?;
+    let area = buffer.area;
+    for name in ["└ integration", "Python", "Markdown", "Autoconf"] {
+        test_support::find_text_cell(&buffer, area, name).with_context(|| {
+            format!(
+                "whole language name {name}: {:?}",
+                test_support::rows(&buffer)
+            )
+        })?;
+    }
+    Ok(())
+}
+
+#[test]
+fn phase4e_empty_deleted_languages_yield_focus_like_targets() -> anyhow::Result<()> {
+    let mut app = language_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.project_list
+        .at_path_mut(Path::new(PROJECT_PATH))
+        .expect_found("the project")
+        .visibility = Visibility::Deleted;
+    app.scan.bump_generation();
+    app.ensure_detail_cached();
+    app.set_focus_to_pane(PaneId::Lang);
+    let buffer = test_support::draw_ui(&mut app, 160)?;
+    test_support::position(&buffer, "Languages — deleted")?;
+    let area = app.panes.tiled_layout.area(PaneId::Lang);
+    let title =
+        test_support::find_text_cell(&buffer, area, "Languages").context("language title")?;
+    assert!(
+        !buffer[title]
+            .modifier
+            .contains(ratatui::style::Modifier::BOLD),
+        "an empty deleted pane must yield focus"
+    );
+    assert_ne!(app.focused_pane_id(), PaneId::Lang);
+    Ok(())
+}
+
+#[test]
+fn language_width_uses_real_names_and_numeric_values() -> anyhow::Result<()> {
+    let mut app = language_app();
+    app.framework.color_mode = ColorMode::Colored;
+    let info = app
+        .project_list
+        .at_path_mut(Path::new(PROJECT_PATH))
+        .expect_found("the project");
+    let stats = info.language_stats.as_mut().context("language stats")?;
+    stats.entries[0].files = 582;
+    stats.entries[0].code = 163_601;
+    stats.entries[0].comments = 4734;
+    stats.entries[0].blanks = 11_798;
+    stats.entries[0].children[0].language = "unit tests".to_string();
+    let mut integration = stats.entries[0].children[0].clone();
+    integration.language = "integration".to_string();
+    stats.entries[0].children.push(integration);
+    let frame = test_support::draw_ui(&mut app, 160)?;
+    let area = app.panes.tiled_layout.area(PaneId::Lang);
+    for label in ["└ uni…", "└ int…", "163601"] {
+        test_support::find_text_cell(&frame, area, label)
+            .with_context(|| format!("{label}: {:?}", test_support::rows(&frame)))?;
+    }
+    let buffer = test_support::draw_pane(&mut app, PaneId::Lang, 60)?;
+    let area = buffer.area;
+    for label in ["└ unit tests", "└ integration", "163601"] {
+        test_support::find_text_cell(&buffer, area, label)
+            .with_context(|| format!("{label}: {:?}", test_support::rows(&buffer)))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn long_language_names_preserve_cpu_and_targets_widths() -> anyhow::Result<()> {
+    let mut app = test_support::sampled_cpu_app(32);
+    app.framework.color_mode = ColorMode::Colored;
+    app.project_list =
+        crate::tui::project_list_state::ProjectList::new(vec![test_support::make_package(
+            "cargo-liner-port-with-worktrees",
+            Path::new(PROJECT_PATH),
+        )]);
+    app.project_list
+        .at_path_mut(Path::new(PROJECT_PATH))
+        .expect_found("project")
+        .language_stats = Some(LanguageStats {
+        entries: vec![LangEntry {
+            language: "Rust".to_string(),
+            files:    1149,
+            code:     510_420,
+            comments: 41081,
+            blanks:   40202,
+            children: vec![LangEntry {
+                language: "integration tests".to_string(),
+                files:    69,
+                code:     82775,
+                comments: 2757,
+                blanks:   5180,
+                children: Vec::new(),
+            }],
+        }],
+    });
+    let mut targets = test_support::target_data();
+    targets.binaries[0].name = "cargo-berth".to_string();
+    targets.binaries[0].display_name = "cargo-berth".to_string();
+    targets.binaries[1].name = "cargo-handler".to_string();
+    targets.binaries[1].display_name = "cargo-handler".to_string();
+    app.panes.targets.set_content(targets);
+    let buffer = test_support::draw_ui(&mut app, 160)?;
+    let cpu = app.panes.tiled_layout.area(PaneId::Cpu);
+    let targets = app.panes.tiled_layout.area(PaneId::Targets);
+    assert_eq!(cpu.width, crate::tui::panes::constants::CPU_PANE_WIDTH);
+    for label in ["CPU cores", "32", "50%"] {
+        test_support::find_text_cell(&buffer, cpu, label)
+            .with_context(|| format!("{label}: {:?}", test_support::rows(&buffer)))?;
+    }
+    for name in ["cargo-berth", "cargo-handler"] {
+        test_support::find_text_cell(&buffer, targets, name)
+            .with_context(|| format!("{name}: {:?}", test_support::rows(&buffer)))?;
     }
     Ok(())
 }

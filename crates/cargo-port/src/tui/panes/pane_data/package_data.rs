@@ -22,6 +22,7 @@ use super::TESTS_TOTAL_LABEL;
 use super::TESTS_UNIT_LABEL;
 use super::TestCounts;
 use super::Workspace;
+use crate::project::DiskMeasurement;
 use crate::project::PinnedCommit;
 use crate::project::ProjectFields;
 use crate::tui::state::CiDisplay;
@@ -212,10 +213,8 @@ pub struct PackageData {
     /// identity into it. The renderer maps absence to a placeholder
     /// so a missing value can never render as a blank.
     pub types:                    Option<Vec<ProjectType>>,
-    /// Bytes under the project root. `None` until the disk walk has
-    /// reported; the renderer formats `Some` and leaves `None` blank,
-    /// matching the `target/` / `other` sub-rows.
-    pub disk:                     Option<u64>,
+    /// The disk total and parts retain their measurement state.
+    pub disk:                     DiskMeasurement,
     /// Structure section of the stats column — project-child counts
     /// (`members` / `vendored` / `submodules`) followed by cargo target-kind
     /// counts (`lib` / `bin` / `proc-macro` / `example` / `bench`).
@@ -233,12 +232,6 @@ pub struct PackageData {
     pub license:                  Option<String>,
     pub homepage:                 Option<String>,
     pub repository:               Option<String>,
-    /// Bytes under the project root inside any `target/` subtree.
-    /// `None` until the walker has reported a breakdown.
-    pub in_project_target:        Option<u64>,
-    /// Everything else under the project root (source, docs, .git,
-    /// vendored crates outside target, etc.).
-    pub in_project_non_target:    Option<u64>,
     /// Typed display value for the Lint field; populated at
     /// assembly time so render can read it without `&App`. The
     /// renderer matches on variants and applies
@@ -314,16 +307,9 @@ pub(super) fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
         ];
     }
     let mut fields = vec![DetailField::Path, DetailField::Disk];
-    // Insert the target / non-target breakdown immediately below the
-    // aggregate Disk row when the walker has reported one, so the user
-    // sees which half of the bytes is build artifact vs source (the
-    // two always sum to Disk for owners; for sharers the target line
-    // reads 0 — target is redirected out of tree).
-    if data.deletion == PackageDeletion::Present && data.in_project_target.is_some() {
-        fields.push(DetailField::DiskTarget);
-    }
-    if data.deletion == PackageDeletion::Present && data.in_project_non_target.is_some() {
-        fields.push(DetailField::DiskNonTarget);
+    // Reserve both disk-part rows before the measurement arrives.
+    if data.deletion == PackageDeletion::Present {
+        fields.extend([DetailField::DiskTarget, DetailField::DiskNonTarget]);
     }
     if data.deletion == PackageDeletion::Present && data.out_of_tree_target_bytes.is_some() {
         fields.push(DetailField::DiskOutOfTreeTarget);
@@ -521,6 +507,7 @@ mod test_row_tests {
 #[cfg(test)]
 mod package_row_tests {
     use super::*;
+    use crate::project::DiskMeasurement;
     use crate::project::ProjectType;
     use crate::tui::state::CiDisplay;
     use crate::tui::state::LintDisplay;
@@ -541,7 +528,7 @@ mod package_row_tests {
             description:              None,
             crates_io_rows:           Vec::new(),
             types:                    Some(vec![ProjectType::Library]),
-            disk:                     Some(38_989_922_304),
+            disk:                     DiskMeasurement::TotalOnly(38_989_922_304),
             stats_rows:               Vec::new(),
             test_rows:                Vec::new(),
             package_presence:         PackagePresence::Present,
@@ -549,8 +536,6 @@ mod package_row_tests {
             license:                  None,
             homepage:                 None,
             repository:               None,
-            in_project_target:        None,
-            in_project_non_target:    None,
             out_of_tree_target_bytes: None,
             lint_display:             LintDisplay::default(),
             ci_display:               CiDisplay::default(),
@@ -606,6 +591,8 @@ mod package_row_tests {
             vec![
                 "Path",
                 "Disk",
+                "  target/",
+                "  Other",
                 "Type",
                 "Lint",
                 "CI",

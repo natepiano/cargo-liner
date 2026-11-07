@@ -223,7 +223,22 @@ fn build_targets_title(focus: PaneFocusState, cursor: usize, data: &TargetsData)
 }
 
 fn compute_layout(target_entries: &[TargetEntry], content_width: u16) -> Layout {
-    let kind = panes::RunTargetKind::padded_label_width();
+    let kind = if usize::from(content_width)
+        < target_col_width_from(target_entries)
+            + source_col_width_from(target_entries)
+            + panes::RunTargetKind::padded_label_width()
+            + 2
+    {
+        target_entries
+            .iter()
+            .map(|entry| entry.run_target_kind.label().len())
+            .max()
+            .unwrap_or(0)
+            .max("Kind".len())
+            + 1
+    } else {
+        panes::RunTargetKind::padded_label_width()
+    };
     let source = source_col_width_from(target_entries);
     let gaps = usize::from(TARGET_TABLE_COLUMN_SPACING) * TARGET_TABLE_GAP_COUNT;
     let text_budget = usize::from(content_width).saturating_sub(kind + gaps);

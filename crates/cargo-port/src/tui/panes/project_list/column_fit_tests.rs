@@ -7,6 +7,7 @@ use tui_pane::ColorMode;
 
 use crate::config::LintIndicator;
 use crate::project::AbsolutePath;
+use crate::project::DiskMeasurement;
 use crate::project::MemberGroup;
 use crate::project::Package;
 use crate::project::RootItem;
@@ -33,6 +34,44 @@ const HEADINGS: [&str; 8] = [
     "Projects", "Lint", "CI", "Type", "Git", "Sync", "Main", "Disk",
 ];
 
+#[test]
+fn phase4e_same_named_roots_show_different_bracket_text() -> anyhow::Result<()> {
+    let scratch = tempfile::tempdir()?;
+    let items = ["alpha", "beta"]
+        .into_iter()
+        .map(|folder| {
+            package(
+                &scratch.path().join(folder).join("proof_crate"),
+                "proof_crate",
+                73,
+            )
+            .map(|package| RootItem::Rust(RustProject::Package(package)))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut app = test_support::make_app(&items);
+    app.framework.color_mode = ColorMode::Colored;
+    app.config.current_mut().lint.enabled = LintIndicator::Enabled;
+    app.ensure_visible_rows_cached();
+    for width in [95, 80] {
+        let buffer = test_support::draw_ui(&mut app, width)?;
+        let body = app.panes.project_list.body_rect;
+        let column = test_support::find_text_cell(
+            &buffer,
+            Rect::new(body.x, body.y - 1, body.width, 1),
+            "CI",
+        )
+        .context("CI heading")?
+        .0;
+        let names: Vec<String> = (body.y..body.y + 2)
+            .map(|y| text_row(&buffer, Rect::new(body.x, y, column - body.x, 1), y))
+            .collect();
+        assert_ne!(names[0], names[1], "same names at width {width}: {names:?}");
+        assert!(names.iter().any(|name| name.contains("alpha")), "{names:?}");
+        assert!(names.iter().any(|name| name.contains("beta")), "{names:?}");
+    }
+    Ok(())
+}
+
 fn package(root: &Path, name: &str, bytes: u64) -> anyhow::Result<Package> {
     std::fs::create_dir_all(root)?;
     std::fs::write(
@@ -44,7 +83,7 @@ fn package(root: &Path, name: &str, bytes: u64) -> anyhow::Result<Package> {
         name: Some(name.to_string()),
         ..Package::default()
     };
-    package.disk_usage_bytes = Some(bytes);
+    package.disk = DiskMeasurement::TotalOnly(bytes);
     Ok(package)
 }
 
@@ -199,7 +238,7 @@ fn deep_worktree_prefix_keeps_the_disk_column_at_the_name_floor() -> anyhow::Res
         name: Some("dependency-with-a-long-name".to_string()),
         ..VendoredPackage::default()
     };
-    vendored.project_info.disk_usage_bytes = Some(2 << 30);
+    vendored.project_info.disk = DiskMeasurement::TotalOnly(2 << 30);
     member.vendored.push(vendored);
     let linked = Workspace {
         path: AbsolutePath::from(scratch.path().join("linked")),
@@ -503,6 +542,54 @@ fn shortened_worktree_names_keep_group_and_primary_marks() -> anyhow::Result<()>
             test_support::find_text_cell(&buffer, Rect::new(area.x, y, area.width, 1), size)
                 .context("worktree disk value")?;
         assert_eq!(*disk_edge.get_or_insert(x + 7), x + 7);
+    }
+    Ok(())
+}
+
+#[test]
+fn same_named_roots_remove_shared_folder_words() -> anyhow::Result<()> {
+    let scratch = tempfile::tempdir()?;
+    let items = ["sdlc-merge-gate", "verify-run-place"]
+        .into_iter()
+        .map(|folder| {
+            package(
+                &scratch
+                    .path()
+                    .join(format!("claude-build-followups-{folder}"))
+                    .join("proof_crate"),
+                "proof_crate",
+                73,
+            )
+            .map(|package| RootItem::Rust(RustProject::Package(package)))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut app = test_support::make_app(&items);
+    app.framework.color_mode = ColorMode::Colored;
+    for width in [160, 95, 80] {
+        let buffer = test_support::draw_ui(&mut app, width)?;
+        let body = app.panes.project_list.body_rect;
+        let names: Vec<String> = (body.y..body.y + 2)
+            .map(|y| text_row(&buffer, body, y))
+            .collect();
+        assert_ne!(names[0], names[1], "{width}: {names:?}");
+        for prefix in ["[sdlc", "[verify"] {
+            assert!(
+                names.iter().any(|row| row.contains(prefix)),
+                "{width}: {names:?}"
+            );
+        }
+        assert!(
+            names.iter().all(|row| !row.contains("claude-")),
+            "{names:?}"
+        );
+        if width == 160 {
+            for label in [
+                "proof_crate [sdlc-merge-gate]",
+                "proof_crate [verify-run-place]",
+            ] {
+                assert!(names.iter().any(|row| row.contains(label)), "{names:?}");
+            }
+        }
     }
     Ok(())
 }

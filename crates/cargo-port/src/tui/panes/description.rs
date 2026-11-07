@@ -33,6 +33,19 @@ use super::support;
 use crate::tui::render;
 use crate::tui::theme_roles;
 
+const SHORT_PANE_BODY_HEIGHT: u16 = 12;
+const SHORT_DESCRIPTION_ROWS: u16 = 2;
+const DESCRIPTION_INSET: u16 = 1;
+const DESCRIPTION_MARGIN_COUNT: u16 = 2;
+const SHORT_NO_DESCRIPTION: &str = "No description";
+const fn empty_description_text(width: usize) -> &'static str {
+    if NO_DESCRIPTION_AVAILABLE.len() <= width {
+        NO_DESCRIPTION_AVAILABLE
+    } else {
+        SHORT_NO_DESCRIPTION
+    }
+}
+
 /// What the block renders when the source description is empty.
 #[derive(Clone, Copy)]
 pub(in crate::tui) enum EmptyDescriptionBehavior {
@@ -107,33 +120,22 @@ impl DescriptionBlock {
     ) -> Self {
         let inner_width = outer_area.width.saturating_sub(2);
         let inner_height = outer_area.height.saturating_sub(2);
-        let padding = u16::from(inner_width > 2);
-        let column_width = inner_width.saturating_sub(padding.saturating_mul(2));
-
         let trimmed = text.map(str::trim).filter(|s| !s.is_empty());
+        let padding = DESCRIPTION_INSET.min(inner_width);
+        let column_width = inner_width.saturating_sub(padding * DESCRIPTION_MARGIN_COUNT);
         let content_state = DescriptionContentState::from_trimmed(trimmed);
 
         let (body, style) = match (trimmed, empty_behavior) {
             (Some(real), _) => (Some(real), Style::default()),
             (None, EmptyDescriptionBehavior::ShowPlaceholder) => (
-                Some(NO_DESCRIPTION_AVAILABLE),
+                Some(empty_description_text(usize::from(column_width))),
                 Style::default().fg(label_color()),
             ),
             (None, EmptyDescriptionBehavior::RenderNothing) => (None, Style::default()),
         };
 
         let rows = match body {
-            Some(text) if column_width > 0 => {
-                if content_state.has_real_content() {
-                    support::word_wrap(text, usize::from(column_width))
-                } else {
-                    vec![render::truncate_with_ellipsis(
-                        text,
-                        usize::from(column_width),
-                        "…",
-                    )]
-                }
-            },
+            Some(text) if column_width > 0 => support::word_wrap(text, usize::from(column_width)),
             _ => Vec::new(),
         };
 
@@ -143,7 +145,11 @@ impl DescriptionBlock {
             column_width,
             padding,
             content_state,
-            inner_height_cap: inner_height,
+            inner_height_cap: if inner_height < SHORT_PANE_BODY_HEIGHT {
+                SHORT_DESCRIPTION_ROWS
+            } else {
+                inner_height
+            },
         }
     }
 
@@ -179,9 +185,13 @@ impl DescriptionBlock {
         if self.rows.is_empty() || self.column_width == 0 {
             return 0;
         }
-        let synced_cap = project_inner.height.saturating_sub(1);
+        let synced_cap = if project_inner.height < SHORT_PANE_BODY_HEIGHT {
+            SHORT_DESCRIPTION_ROWS
+        } else {
+            project_inner.height.saturating_sub(1)
+        };
         let synced_floor = synced_floor.rows().min(synced_cap);
-        let row_budget = max_height.max(synced_floor);
+        let row_budget = max_height.max(synced_floor).min(synced_cap);
         if row_budget == 0 {
             return 0;
         }

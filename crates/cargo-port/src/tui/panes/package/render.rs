@@ -61,6 +61,7 @@ use crate::tui::panes::pane_data::CRATES_IO_UNREACHABLE;
 use crate::tui::panes::pane_data::PackageDeletion;
 use crate::tui::panes::pane_data::PackageSection;
 use crate::tui::panes::support;
+use crate::tui::panes::support::DetailSectionHeaders;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state;
@@ -90,6 +91,12 @@ impl From<bool> for LintRenderMode {
     }
 }
 
+#[derive(Clone, Copy)]
+enum StatisticsLayout {
+    Stacked,
+    Columns,
+}
+
 struct PackageRenderCtx<'a> {
     data:              &'a PackageData,
     rows:              &'a [PackageRow],
@@ -101,6 +108,7 @@ struct PackageRenderCtx<'a> {
     /// `LintStatus`).
     animation_elapsed: Duration,
     lint_mode:         LintRenderMode,
+    statistics_layout: StatisticsLayout,
 }
 
 struct PackageRenderLayout {
@@ -147,6 +155,14 @@ struct PackageBoxes {
 }
 
 impl PackageBoxes {
+    const fn statistics_layout(&self) -> StatisticsLayout {
+        if self.structure.is_none() && self.tests.is_none() && self.crates_io.is_none() {
+            StatisticsLayout::Stacked
+        } else {
+            StatisticsLayout::Columns
+        }
+    }
+
     /// Leaf index of the stats column's top box; `None` when the pane has no
     /// stats column.
     const fn first(&self) -> Option<usize> {
@@ -184,7 +200,9 @@ fn package_region(
 ) -> (Region, PackageBoxes) {
     let metadata_count = rows
         .iter()
-        .filter(|row| matches!(row, PackageRow::Field(_) | PackageRow::Section(_)))
+        .filter(|row| {
+            stats_width == 0 || matches!(row, PackageRow::Field(_) | PackageRow::Section(_))
+        })
         .count();
     let description = Region::rows(1, Size::Fixed).lines(description_lines);
     let mut metadata = Region::rows(metadata_count, Size::Fill);
@@ -415,6 +433,22 @@ fn package_row_label_width(rows: &[PackageRow]) -> usize {
         .max(8)
 }
 
+fn package_disk_value_width(ctx: &PackageRenderCtx<'_>) -> usize {
+    ctx.rows
+        .iter()
+        .filter_map(|row| match row {
+            PackageRow::Field(
+                field @ (DetailField::Disk
+                | DetailField::DiskTarget
+                | DetailField::DiskNonTarget
+                | DetailField::DiskOutOfTreeTarget),
+            ) => Some(package_field_value(ctx, *field).width()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 fn render_column_inner(
     frame: &mut Frame,
     ctx: &PackageRenderCtx<'_>,
@@ -428,19 +462,8 @@ fn render_column_inner(
     let mut row_line_ys: Vec<(usize, usize)> = Vec::new();
     let mut field_spans = Vec::new();
     let mut header_starts = Vec::new();
-    let disk_width = rows
-        .iter()
-        .filter_map(|row| match row {
-            PackageRow::Field(
-                field @ (DetailField::Disk
-                | DetailField::DiskTarget
-                | DetailField::DiskNonTarget
-                | DetailField::DiskOutOfTreeTarget),
-            ) => Some(package_field_value(ctx, *field).width()),
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0);
+    let mut repeated_headers = Vec::new();
+    let disk_width = package_disk_value_width(ctx);
     let label_width =
         package_row_label_width(rows).min(usize::from(area.width).saturating_sub(disk_width + 2));
     for (i, row) in rows.iter().enumerate() {
@@ -467,11 +490,38 @@ fn render_column_inner(
                 row_line_ys.extend((row_start..lines.len()).map(|y| (i, y)));
             },
             PackageRow::Structure(_) | PackageRow::Tests(_) | PackageRow::CratesIo(_) => {
-                // `PackageRow::Structure`, `Tests` and `CratesIo` render in the separate stats
-                // column, which does not scroll with metadata. Anchor `focused_output_line` at the
-                // metadata column's last line rather than beyond its content so stat focus keeps
-                // metadata steady instead of scrolling it upward.
-                if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
+                if matches!(ctx.statistics_layout, StatisticsLayout::Stacked) {
+                    if matches!(
+                        row,
+                        PackageRow::Structure(0) | PackageRow::Tests(0) | PackageRow::CratesIo(0)
+                    ) {
+                        header_starts.push(lines.len());
+                    }
+                    append_inline_stat(&mut lines, ctx, *row, area.width);
+                    let start = lines.len().saturating_sub(1);
+                    if let Some(&start_y) = header_starts.last()
+                        && start_y < start
+                        && matches!(
+                            row,
+                            PackageRow::Structure(0)
+                                | PackageRow::Tests(0)
+                                | PackageRow::CratesIo(0)
+                        )
+                    {
+                        repeated_headers.push(VisualRowSpan {
+                            start_y,
+                            height: start - start_y,
+                        });
+                    }
+                    field_spans.push(VisualRowSpan {
+                        start_y: start,
+                        height:  1,
+                    });
+                    row_line_ys.push((i, start));
+                    if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
+                        focused_output_line = start;
+                    }
+                } else if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
                     focused_output_line = lines.len().saturating_sub(1);
                 }
             },
@@ -491,10 +541,13 @@ fn render_column_inner(
     }
 
     let headers = support::detail_header_groups(&field_spans, header_starts);
-    let pages = support::paginate_detail_lines(
+    let pages = support::paginate_detail_sections(
         &mut lines,
         &field_spans,
-        &headers,
+        &DetailSectionHeaders {
+            groups:   &headers,
+            repeated: &repeated_headers,
+        },
         focused_output_line,
         area.height,
         focus,
@@ -502,7 +555,16 @@ fn render_column_inner(
     for (_, line_y) in &mut row_line_ys {
         *line_y = pages.line_y(*line_y);
     }
-    let scroll_y = pages.scroll_offset;
+    draw_package_column(frame, lines, row_line_ys, pages.scroll_offset, area)
+}
+
+fn draw_package_column(
+    frame: &mut Frame,
+    lines: Vec<Line<'static>>,
+    row_line_ys: Vec<(usize, usize)>,
+    scroll_y: u16,
+    area: Rect,
+) -> PackageRenderLayout {
     let content_height = lines.len();
     frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), area);
     let scroll_offset = usize::from(scroll_y);
@@ -511,6 +573,39 @@ fn render_column_inner(
         scroll_offset,
         row_rects: visible_row_rects(row_line_ys, scroll_offset, area),
     }
+}
+
+fn append_inline_stat(
+    lines: &mut Vec<Line<'static>>,
+    ctx: &PackageRenderCtx<'_>,
+    row: PackageRow,
+    width: u16,
+) {
+    let (heading, index, label, value) = match row {
+        PackageRow::Structure(index) => {
+            let (label, value) = ctx.data.stats_rows[index];
+            ("Structure", index, label, value.to_string())
+        },
+        PackageRow::Tests(index) => {
+            let (label, value) = ctx.data.test_rows[index];
+            ("Tests", index, label, value.to_string())
+        },
+        PackageRow::CratesIo(index) => {
+            let (label, value) = &ctx.data.crates_io_rows[index];
+            ("crates.io", index, *label, value.clone())
+        },
+        _ => return,
+    };
+    if index == 0 {
+        append_package_heading(lines, heading, width, ctx);
+    }
+    let available = usize::from(width.saturating_sub(3));
+    let label = if label.is_empty() { "Total" } else { label };
+    let label_width = available.saturating_sub(value.width());
+    let label = render::truncate_with_ellipsis(label, label_width, "…");
+    let padding = " ".repeat(label_width.saturating_sub(label.width()));
+    let text = format!(" {label}{padding} {value} ");
+    lines.push(Line::from(text));
 }
 
 fn append_package_heading(
@@ -547,7 +642,35 @@ fn package_field_render(
             .patch(theme_roles::selection_style(selection, mode)),
         value_style: package_field_value_style(ctx, field)
             .patch(theme_roles::selection_style(selection, mode)),
-        value: package_field_value(ctx, field),
+        value: {
+            let budget = usize::from(area_width).saturating_sub(label_width + 2);
+            if field == DetailField::Ci {
+                ci_value_with_budget(&ctx.data.ci_display, budget)
+            } else {
+                package_field_value(ctx, field)
+            }
+        },
+    }
+}
+
+fn ci_value_with_budget(display: &CiDisplay, budget: usize) -> String {
+    let long = ci_display_to_string(display);
+    if long.width() <= budget {
+        return long;
+    }
+    match display {
+        CiDisplay::Runs {
+            ci_status,
+            local,
+            github_total,
+        } if *github_total > 0 => {
+            let counts = format!("{local} / {github_total}");
+            ci_status.map_or_else(
+                || counts.clone(),
+                |status| format!("{} {counts}", status.icon()),
+            )
+        },
+        _ => long,
     }
 }
 
@@ -599,7 +722,18 @@ fn push_package_field_lines(lines: &mut Vec<Line<'static>>, render: PackageField
         )));
         render.label = "";
     }
-    if let Some(wrap) = package_field_wrap(render.field)
+    if render.field == DetailField::Ci && render.area_width <= support::NARROW_FIELD_INNER_WIDTH {
+        lines.push(Line::from(Span::styled(
+            format!(" {}", render.field.label()),
+            render.label_style,
+        )));
+        for part in support::word_wrap(&render.value, render.area_width.saturating_sub(2)) {
+            lines.push(Line::from(Span::styled(
+                format!(" {part}"),
+                render.value_style,
+            )));
+        }
+    } else if let Some(wrap) = package_field_wrap(render.field)
         && !render.value.is_empty()
     {
         push_wrapped_package_field_lines(lines, &render, wrap);
@@ -844,6 +978,7 @@ pub(super) fn render_package_pane_body(
         styles,
         animation_elapsed: *animation_elapsed,
         lint_mode,
+        statistics_layout: columns.boxes.statistics_layout(),
     };
     let layout = render_package_columns(
         frame,
@@ -884,8 +1019,19 @@ fn package_page_label(
     columns: &PackageColumnLayout,
     data: &PackageData,
 ) -> Option<PaneFrameLabel> {
+    let label_area = if columns.boxes.structure.is_some()
+        || columns.boxes.tests.is_some()
+        || columns.boxes.crates_io.is_some()
+    {
+        Rect {
+            width: columns.placed[METADATA_BOX].content.width.saturating_add(1),
+            ..area
+        }
+    } else {
+        area
+    };
     tui_pane::overflow_affordance_label(
-        area,
+        label_area,
         ViewportOverflow::for_paged_content(
             layout.content_height.max(stats_column_line_count(data)),
             layout.scroll_offset,
@@ -993,8 +1139,8 @@ fn paint_package_selection(
         theme_roles::paint_selection(
             frame,
             Rect {
-                x: pane_inner.x,
-                width: pane_inner.width,
+                x: rect.x.max(pane_inner.x),
+                width: rect.width.min(pane_inner.width),
                 ..*rect
             },
             tui_pane::selection_state(&pane.viewport, *row, pane.focus.pane_focus_state),
@@ -1523,7 +1669,7 @@ fn ci_display_style(display: &CiDisplay) -> Style {
 fn ci_display_to_string(display: &CiDisplay) -> String {
     match display {
         CiDisplay::Unreadable => GIT_UNREADABLE_LABEL.to_string(),
-        CiDisplay::NoWorkflow => "No CI workflow configured".to_string(),
+        CiDisplay::NoWorkflow => "No CI".to_string(),
         CiDisplay::UnpublishedBranch => "unpublished branch".to_string(),
         CiDisplay::NoRuns => "No CI runs".to_string(),
         CiDisplay::Runs {
@@ -1533,7 +1679,7 @@ fn ci_display_to_string(display: &CiDisplay) -> String {
         } => {
             let icon = ci_status.map_or_else(String::new, |c| c.icon().to_string());
             let count_label = if *github_total > 0 {
-                format!("local {local} / github {github_total}")
+                format!("local {local} / gh {github_total}")
             } else if *local > 0 {
                 format!("{local}")
             } else {
@@ -1727,6 +1873,7 @@ mod moved_facade_tests {
     use super::detail_column_scroll_offset;
     use super::package_label_width;
     use super::stats_column_width;
+    use crate::project::DiskMeasurement;
     use crate::project::ProjectType;
     use crate::tui::panes::PackageVersion;
     use crate::tui::panes::pane_data;
@@ -1752,7 +1899,7 @@ mod moved_facade_tests {
             description:              None,
             crates_io_rows:           Vec::new(),
             types:                    Some(vec![ProjectType::Library]),
-            disk:                     Some(38_989_922_304),
+            disk:                     DiskMeasurement::TotalOnly(38_989_922_304),
             stats_rows:               Vec::new(),
             test_rows:                Vec::new(),
             package_presence:         PackagePresence::Present,
@@ -1760,8 +1907,6 @@ mod moved_facade_tests {
             license:                  None,
             homepage:                 None,
             repository:               None,
-            in_project_target:        None,
-            in_project_non_target:    None,
             out_of_tree_target_bytes: None,
             lint_display:             LintDisplay::default(),
             ci_display:               CiDisplay::default(),

@@ -489,6 +489,32 @@ fn name_cell_spans(cell: &CellContent, prefix: &str, width: usize) -> Vec<Span<'
         "",
     );
     let available = width.saturating_sub(display_width(&prefix) + display_width(mark));
+    if display_width(name) > available
+        && let Some(bracket) = name.find(" [")
+    {
+        let suffix = &name[bracket + 1..];
+        let suffix = render::truncate_with_ellipsis(suffix, available, "…");
+        let name_width = available.saturating_sub(display_width(&suffix) + 1);
+        let label = render::truncate_with_ellipsis(&name[..bracket], name_width, "…");
+        let separator = if label.is_empty() { "" } else { " " };
+        let padding = available
+            .saturating_sub(display_width(&label) + separator.len() + display_width(&suffix));
+        let suffix_style = segments
+            .iter()
+            .scan(0, |end, segment| {
+                *end += segment.text.len();
+                Some((*end, segment.style))
+            })
+            .find_map(|(end, style)| (end > bracket).then_some(style))
+            .unwrap_or(cell.style);
+        return vec![
+            Span::styled(prefix, cell.style),
+            Span::styled(format!("{label}{separator}"), cell.style),
+            Span::styled(suffix, suffix_style),
+            Span::styled(mark.to_string(), cell.style),
+            Span::styled(" ".repeat(padding), cell.style),
+        ];
+    }
     let cut = display_width(name) > available;
     let mut remaining = available.saturating_sub(usize::from(cut));
     let mut spans = vec![Span::styled(prefix, cell.style)];

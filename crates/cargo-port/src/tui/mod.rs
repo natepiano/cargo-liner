@@ -20,11 +20,13 @@ mod render;
 mod render_context;
 mod sccache;
 mod settings;
+#[cfg(test)]
+mod settings_readability_tests;
 mod startup_services;
 mod state;
 mod terminal;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 mod theme_roles;
 
 #[cfg(test)]

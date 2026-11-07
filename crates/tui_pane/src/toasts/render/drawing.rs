@@ -4,6 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
+use super::card;
 use super::layout;
 use super::layout::StackLayout;
 use crate::PaneFocusState;
@@ -73,6 +74,14 @@ fn render_toasts(
     let start = toasts.len().saturating_sub(max_visible);
     let visible_toasts = &toasts[start..];
     let gap = TOAST_ROW_GAP;
+    let required_height = visible_toasts
+        .iter()
+        .map(ToastView::desired_height)
+        .fold(TOAST_ROW_GAP.saturating_mul(2), u16::saturating_add)
+        .saturating_add(gap.saturating_mul(
+            u16::try_from(visible_toasts.len().saturating_sub(1)).unwrap_or(u16::MAX),
+        ));
+    let area = card::area_between_pane_borders(frame, area, settings, required_height);
     let available = area.height.saturating_sub(TOAST_ROW_GAP.saturating_mul(2));
     let allocated = layout::allocate_toast_heights(visible_toasts, available, gap);
     let width = manager::toast_card_width(settings, area.width);
@@ -160,6 +169,7 @@ impl<Ctx: crate::AppContext> super::super::Toasts<Ctx> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::convert::Infallible;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -178,10 +188,13 @@ mod tests {
     use super::*;
     use crate::ACTIVITY_SPINNER;
     use crate::AppContext;
+    use crate::ColorMode;
     use crate::Framework;
     use crate::PaneFocusState;
     use crate::Renderable;
+    use crate::ToastActivation;
     use crate::ToastId;
+    use crate::ToastStyle;
     use crate::Toasts;
     use crate::TrackedItem;
     use crate::TrackedItemActivity;
@@ -339,6 +352,252 @@ mod tests {
                 Rect::new(1, 1, 60, 23)
             );
         }
+    }
+
+    #[test]
+    fn a_toast_keeps_pane_titles_and_connected_borders_without_blank_rows() -> Result<(), Infallible>
+    {
+        for width in [32, 60] {
+            let mut toasts = Toasts::<TestApp>::with_settings(settings_with_width(width));
+            let id = toasts.push("Startup", "Read projects");
+            let now = created_at(&toasts, id) + Duration::from_secs(1);
+            let mut terminal = Terminal::new(TestBackend::new(60, 16))?;
+            terminal.draw(|frame| {
+                let chrome = crate::default_pane_chrome(ColorMode::Colored);
+                frame.render_widget(
+                    chrome.block("Projects".to_string(), false),
+                    Rect::new(0, 0, 30, 16),
+                );
+                frame.render_widget(
+                    chrome.block("No lint runs".to_string(), false),
+                    Rect::new(30, 11, 30, 5),
+                );
+                Renderable::render(
+                    &mut toasts,
+                    frame,
+                    frame.area(),
+                    &ToastsRenderCtx {
+                        now,
+                        pane_focus_state: PaneFocusState::Inactive,
+                    },
+                );
+            })?;
+            let buffer = terminal.backend().buffer();
+            let title: String = (30..60).map(|x| buffer[(x, 11)].symbol()).collect();
+            assert!(
+                title.contains("No lint runs"),
+                "the pane title is cut: {title:?}"
+            );
+            for y in 1..15 {
+                assert!(
+                    (0..60).any(|x| !buffer[(x, y)].symbol().trim().is_empty()),
+                    "blank row {y}"
+                );
+                for x in 0..60 {
+                    if buffer[(x, y)].symbol() == line::VERTICAL {
+                        assert!(
+                            [y - 1, y + 1].into_iter().any(|neighbor| {
+                                matches!(
+                                    buffer[(x, neighbor)].symbol(),
+                                    "│" | "┌"
+                                        | "┐"
+                                        | "└"
+                                        | "┘"
+                                        | "├"
+                                        | "┤"
+                                        | "╭"
+                                        | "╮"
+                                        | "╰"
+                                        | "╯"
+                                )
+                            }),
+                            "isolated border at {x},{y}"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_bottom_right_toast_keeps_a_gap_from_the_last_column_pane_border() -> Result<(), Infallible>
+    {
+        let mut toasts = Toasts::<TestApp>::with_settings(settings_with_width(60));
+        let id = toasts.start_task("Startup", "");
+        let items = [
+            "Cargo metadata",
+            "crates.io",
+            "Disk usage",
+            "GitHub repos",
+            "Languages",
+            "Lint history",
+            "Local git repos",
+            "Test counts",
+        ]
+        .map(|label| TrackedItem::new(label, label));
+        assert!(toasts.set_tracked_items(id, &items));
+        let now = Instant::now() + Duration::from_secs(5);
+        let mut terminal = Terminal::new(TestBackend::new(160, 45))?;
+        let pane = Rect::new(64, 33, 96, 11);
+        terminal.draw(|frame| {
+            let chrome = crate::default_pane_chrome(ColorMode::Colored);
+            for (title, area) in [
+                ("Projects", Rect::new(0, 0, 64, 33)),
+                ("Package", Rect::new(64, 0, 96, 33)),
+                ("No lint runs", Rect::new(0, 33, 64, 11)),
+                ("CI runs — not a git repository", pane),
+            ] {
+                frame.render_widget(chrome.block(title.to_string(), false), area);
+            }
+            Renderable::render(
+                &mut toasts,
+                frame,
+                Rect::new(0, 0, 160, 44),
+                &ToastsRenderCtx {
+                    now,
+                    pane_focus_state: PaneFocusState::Inactive,
+                },
+            );
+        })?;
+        let card = toasts.hits[0].card_rect;
+        let buffer = terminal.backend().buffer();
+        for row in [pane.top(), pane.bottom() - 1] {
+            assert!(
+                !(card.top()..card.bottom()).contains(&row),
+                "toast {card:?} shares the pane border row {row}"
+            );
+        }
+        for row in card.top()..card.bottom() {
+            assert_eq!(buffer[(card.right(), row)].symbol(), " ", "row {row}");
+            let edge: String = (card.right() - 1..=card.right())
+                .map(|column| buffer[(column, row)].symbol())
+                .collect();
+            for pair in ["││", "┐┐", "┘│"] {
+                assert!(!edge.contains(pair), "row {row}: {edge}");
+            }
+        }
+        let title: String = (pane.left()..pane.right())
+            .map(|column| buffer[(column, pane.top())].symbol())
+            .collect();
+        assert!(title.contains("CI runs — not a git repository"), "{title}");
+        for row in 0..44 {
+            let text: String = (0..160)
+                .map(|column| buffer[(column, row)].symbol())
+                .collect();
+            assert!(!text.trim().is_empty(), "blank row {row}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_bottom_right_stack_stays_below_the_pane_border_when_rows_are_hidden()
+    -> Result<(), Infallible> {
+        let mut toasts = Toasts::<TestApp>::with_settings(settings_with_width(60));
+        toasts.push(
+            "Startup",
+            "Metadata\nDisk\nLanguages\nGit\nTests\nLints\nRegistry\nTargets",
+        );
+        let mut terminal = Terminal::new(TestBackend::new(160, 45))?;
+        terminal.draw(|frame| {
+            let chrome = crate::default_pane_chrome(ColorMode::Colored);
+            for (title, area) in [
+                ("Languages", Rect::new(64, 15, 48, 18)),
+                ("CPU cores 32", Rect::new(112, 15, 20, 18)),
+                ("Targets", Rect::new(132, 15, 28, 18)),
+                ("CI runs", Rect::new(64, 33, 96, 8)),
+            ] {
+                frame.render_widget(chrome.block(title.to_string(), false), area);
+            }
+            frame.render_widget(
+                Paragraph::new("Files Code Comments"),
+                Rect::new(90, 16, 21, 1),
+            );
+            frame.render_widget(Paragraph::new("CPU cores 32"), Rect::new(114, 16, 16, 1));
+            frame.render_widget(
+                Paragraph::new("Target Kind Source"),
+                Rect::new(134, 16, 24, 1),
+            );
+            Renderable::render(
+                &mut toasts,
+                frame,
+                Rect::new(0, 0, 160, 41),
+                &ToastsRenderCtx {
+                    now:              Instant::now() + Duration::from_secs(5),
+                    pane_focus_state: PaneFocusState::Inactive,
+                },
+            );
+        })?;
+        let card = toasts.hits[0].card_rect;
+        assert!(card.top() > 33 && card.bottom() < 40, "{card:?}");
+        let buffer = terminal.backend().buffer();
+        let header: String = (90..158).map(|x| buffer[(x, 16)].symbol()).collect();
+        for text in ["Files Code Comments", "CPU cores 32", "Target Kind Source"] {
+            assert!(header.contains(text), "{header:?}");
+        }
+        assert!(
+            (card.top()..card.bottom()).any(|y| {
+                (card.left()..card.right()).any(|x| buffer[(x, y)].symbol().contains(ELISION))
+            }),
+            "the card must show the existing hidden-row mark"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pane_borders_outside_the_card_keep_the_unrestricted_toast_rect() -> Result<(), Infallible> {
+        for pane in [
+            Rect::new(0, 0, 2, 23),
+            Rect::new(40, 0, 23, 8),
+            Rect::new(0, 8, 64, 8),
+        ] {
+            let mut toasts = Toasts::<TestApp>::with_settings(settings_with_width(60));
+            let id = toasts.push_persistent(
+                "Notice",
+                "Read projects",
+                ToastStyle::Normal,
+                ToastActivation::Informational,
+                3,
+            );
+            let now = created_at(&toasts, id) + Duration::from_secs(1);
+            let mut terminal = Terminal::new(TestBackend::new(64, 24))?;
+            terminal.draw(|frame| {
+                let chrome = crate::default_pane_chrome(ColorMode::Colored);
+                frame.render_widget(chrome.block(String::new(), false), pane);
+                Renderable::render(
+                    &mut toasts,
+                    frame,
+                    Rect::new(1, 1, 62, 21),
+                    &ToastsRenderCtx {
+                        now,
+                        pane_focus_state: PaneFocusState::Inactive,
+                    },
+                );
+            })?;
+            let framed = toasts.hits[0].card_rect;
+            assert_eq!(
+                terminal.backend().buffer()[(framed.x, framed.y)].symbol(),
+                "┌"
+            );
+            terminal.draw(|frame| {
+                Renderable::render(
+                    &mut toasts,
+                    frame,
+                    Rect::new(1, 1, 62, 21),
+                    &ToastsRenderCtx {
+                        now,
+                        pane_focus_state: PaneFocusState::Inactive,
+                    },
+                );
+            })?;
+            let alone = toasts.hits[0].card_rect;
+            assert_eq!(framed, alone);
+            assert_eq!(
+                terminal.backend().buffer()[(alone.x, alone.y)].symbol(),
+                "┌"
+            );
+        }
+        Ok(())
     }
 
     #[test]

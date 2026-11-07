@@ -3,6 +3,8 @@ use tui_pane::ColorMode;
 
 use crate::project::Visibility;
 use crate::tui::panes::PaneId;
+use crate::tui::panes::RunTargetKind;
+use crate::tui::panes::TargetEntry;
 use crate::tui::test_support;
 
 #[test]
@@ -98,5 +100,55 @@ fn target_names_take_width_before_the_source_at_eighty_columns() -> anyhow::Resu
             assert!(test_support::find_text_cell(&buffer, area, "Source").is_none());
         }
     }
+    Ok(())
+}
+
+#[test]
+fn phase4e_binary_kind_returns_a_cell_to_source_at_eighty_columns() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    let mut data = test_support::target_data();
+    for (entry, source) in data
+        .binaries
+        .iter_mut()
+        .zip(["cargo-berth", "cargo-handler"])
+    {
+        entry.display_name = "proof_crate".to_string();
+        entry.source = crate::tui::panes::TargetSource::member(source.to_string());
+    }
+    app.panes.targets.set_content(data.clone());
+    let buffer = test_support::draw_ui(&mut app, 80)?;
+    let area = app.panes.tiled_layout.area(PaneId::Targets);
+    for (whole, shortened) in [("cargo-berth", "cargo-b…"), ("cargo-handler", "cargo-h…")] {
+        assert!(
+            test_support::find_text_cell(&buffer, area, whole).is_some()
+                || test_support::find_text_cell(&buffer, area, shortened).is_some(),
+            "distinct source {whole}: {:?}",
+            test_support::rows(&buffer)
+        );
+    }
+    let compact = test_support::draw_pane(&mut app, PaneId::Targets, 31)?;
+    for source in ["cargo-b…", "cargo-h…"] {
+        test_support::position(&compact, source)?;
+    }
+    let wide = test_support::draw_pane(&mut app, PaneId::Targets, 160)?;
+    for source in ["cargo-berth", "cargo-handler"] {
+        test_support::position(&wide, source)?;
+    }
+    let narrow = test_support::draw_ui(&mut app, 60)?;
+    let area = app.panes.tiled_layout.area(PaneId::Targets);
+    test_support::find_text_cell(&narrow, area, "Target")
+        .context("target priority at 60 columns")?;
+    test_support::find_text_cell(&narrow, area, "binary").context("whole Kind at 60 columns")?;
+    let hidden = test_support::draw_pane(&mut app, PaneId::Targets, 23)?;
+    assert!(!test_support::rows(&hidden).join("\n").contains("Source"));
+    data.examples.push(TargetEntry {
+        run_target_kind: RunTargetKind::Example,
+        display_name: "demo".to_string(),
+        ..data.binaries[0].clone()
+    });
+    app.panes.targets.set_content(data);
+    let mixed = test_support::draw_ui(&mut app, 80)?;
+    test_support::position(&mixed, "example")?;
     Ok(())
 }

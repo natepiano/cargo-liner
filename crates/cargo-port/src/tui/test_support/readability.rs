@@ -13,6 +13,7 @@ use tui_pane::ResolvedPane;
 use tui_pane::ResolvedPaneLayout;
 use tui_pane::Theme;
 
+use crate::project::DiskMeasurement;
 use crate::project::Package;
 use crate::project::RootItem;
 use crate::project::RustProject;
@@ -63,7 +64,7 @@ pub(in crate::tui) fn project_app() -> App {
         name: Some(PROJECT.to_string()),
         ..crate::project::Package::default()
     };
-    package.disk_usage_bytes = Some(1_073_741_824);
+    package.disk = DiskMeasurement::TotalOnly(1_073_741_824);
     let project = RootItem::Rust(RustProject::Package(package));
     let mut app = test_support::make_app(&[project]);
     app.scan
