@@ -1574,7 +1574,7 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 - `crates/cargo-tile/src/census/command_text.rs` — `CargoTransport::from_argv`, `CargoArgvAbsence::map_reason`.
 - `crates/cargo-tile/src/constants.rs` — the ordered capture shim constants.
 
-### Phase 43h — Mac reader tests stay under 1 s under load  · status: todo
+### Phase 43h — Mac reader tests stay under 1 s under load  · status: done
 
 **Depends on:** Phase 43e
 
@@ -1595,9 +1595,10 @@ CPU test stages on the Mac (one instrumented suite, 1.020 s; intervals overlap):
 **Files:**
 - `crates/cargo-tile/src/shim_registration/`
 - `crates/cargo-tile/src/root_scan/` — its test module, only for its listed test.
-- `crates/cargo-tile/tests/cli_lifecycle.rs` — only its listed test; serialize with Phase 43g.
+- `crates/cargo-tile/tests/cli_lifecycle.rs` — only its listed test and `uninstall_waits_on_a_locked_temporary_orphan_before_classifying_it` (Mac 1.034 s in the first gate; director, 2026-11-07); serialize with Phase 43g.
 - `crates/cargo-tile/tests/shim_modes.rs` — only `shared_parent_is_created_without_configuration` and its helpers; serialize shared helper changes with Phase 43g.
 - `crates/cargo-tile/src/census/invocation_cpu_accounting.rs` — only `CensusCadence::for_test` and its test constants.
+- `crates/cargo-tile/src/census/scan.rs` — only the two `InvocationLifetimeReads` doc comments that fail the Mac `doc_markdown` lint (Phase 43b defect; director, 2026-11-07).
 - `.config/nextest.toml`
 
 **Workers:** 1 writer — `test`, the listed test modules and their helpers.
@@ -1624,6 +1625,7 @@ Showrunner, 2026-11-07, on Phase 43b: keep sysinfo now and measure again after P
 2. Find whether `libproc::proc_pid::name(pid)` gives what exec detection needs in place of the sysinfo executable refresh (`process_discovery_refresh_kind` ~1457, `with_exe(UpdateKind::Always)`).
 3. If it does: on the Mac, read the name through `libproc` and remove the sysinfo executable refresh from discovery. Keep Linux as it is.
 4. If no safe crate gives the cut: change no code. Report the measured cost of the executable refresh to the director, who brings it to the showrunner.
+5. Phase 43h routes two reader-test times here (findings F002 and F004; director, 2026-11-07). At 43h head 1c9501c on the Mac, `reader_excludes_a_live_command_without_sweeping_its_capture` took 1.002-1.185 s. Its second scan took 0.446 s, and 0.301 s of that is the refresh sample `self.refresh.sample(now, self.pace)` at `census/scan.rs:1397`. `reader_keeps_one_direct_row_for_quiet_json` took 1.062 s in one gate suite. Measure that refresh sample in the excluded reader before and after the step 3 cut. If a reader test still reaches 1 s, report the stage to the director; do not change test code in this phase.
 
 **Files:**
 - `crates/cargo-tile/src/census/scan.rs`
@@ -1633,7 +1635,7 @@ Showrunner, 2026-11-07, on Phase 43b: keep sysinfo now and measure again after P
 
 **Constraints from prior phases:** No `unsafe` block, no new `#[allow]` or `#[expect]`. Keep sysinfo for every other process read. Phase 43b holds: each scan prepares one `Census` and one CPU topology, and `InvocationLifetimeReads::apply` adds Mac lifetime evidence to that census. A CPU claim needs 3 or more Mac pairs; a cut inside the spread does not land. No test takes a second.
 
-**Acceptance gate:** 3 valid Mac release pairs before and after on the same workload, with the median cut beyond the spread; the exec tests (`metadata_exec_child`, `exec_into_cargo_establishes_cpu_without_losing_ancestry`) pass; the suite passes on the Mac and on natedev.
+**Acceptance gate:** 3 valid Mac release pairs before and after on the same workload, with the median cut beyond the spread; the exec tests (`metadata_exec_child`, `exec_into_cargo_establishes_cpu_without_losing_ancestry`) pass; the suite passes on the Mac and on natedev; two Mac full suites, `--no-cache`, with no reader test at 1 s or more (Spec 5).
 
 ### Phase 43g — The install lifecycle test leaves no process behind on the Mac  · status: todo
 
@@ -1651,18 +1653,20 @@ Showrunner, 2026-11-07, from the Phase 43e gate fed9d76a: nextest marks `cli_lif
 3. Check the sibling tests that share `assert_local_report_before_completion` (`uninstall_…`, `status_…`) for the same leak, and fix them by the same cause.
 4. The Phase 43e repair 1 gate (2b342b57) also marked `app_global_action::tests::control_s_saves_a_favorite` leaky on the Mac (0.222 s). The test only builds and reads bindings: it starts no process and opens no handle. Trace the reported leak through test startup and find its owner before you change code. Report an owner outside Files to the director. Add no cleanup to the binding test without evidence of ownership.
 5. The Phase 43e round 6 natedev suite (a4fef59a, load 37-44) failed `shim_modes::tests::interrupt_to_the_process_group_lets_cargo_finish_first` at `crates/cargo-tile/tests/shim_modes.rs:1195` ("the shim returned before cargo finished stopping"). Phase 30m's suite failed it the same way under load. Find the race between the shim's return and cargo's stop, and fix its cause. Keep the assertion.
+6. Phase 43h routes `uninstall_waits_on_a_locked_temporary_orphan_before_classifying_it` here (finding F001; director, 2026-11-07). At 43h head 1c9501c it took 1.097 s on the Mac in one of six suites. Its locked child command took 0.821 s: 0.391 s before CLI entry (`main.rs:36`) and 0.423 s in ten product lock retries (`SHIM_LOCK_RETRY_ATTEMPTS` with `SHIM_LOCK_RETRY_DELAY`, `hook.rs:840`). Cut the CLI startup cost first. Keep the locked-uninstall assertions. A change to the product retry budget is a showrunner decision: report it to the director with the measured times.
+7. The Phase 43h pairs (1c9501c) marked `caller_descriptors_reach_captured_cargo` leaky on the Mac (0.395 s). Find its owner as in item 4, and fix it by its cause.
 
 **Files:**
 - `crates/cargo-tile/tests/cli_lifecycle.rs`
 - `crates/cargo-tile/src/cli.rs` and `crates/cargo-tile/src/shim_registration/` — only if step 1 shows the product leaves the child.
 - `crates/cargo-tile/src/app_global_action.rs` — its test module, for item 4; product code only if the product leaves the handle.
-- `crates/cargo-tile/tests/shim_modes.rs` — its interrupt test, for item 5; the shim product code only if the shim returns early.
+- `crates/cargo-tile/tests/shim_modes.rs` — its interrupt test, for item 5, and `caller_descriptors_reach_captured_cargo`, for item 7; the shim product code only if the shim returns early.
 
 **Workers:** 1 writer — `test`: the lifecycle tests, the action-test leak investigation, the interrupt regression, and their approved helper or product repairs.
 
 **Constraints from prior phases:** No assertion is weakened. No test takes 1 s or more. Phase 43e's copy staging of the reader executable stays.
 
-**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with no leaky test in `cli_lifecycle` and no leaky `control_s_saves_a_favorite`, the interrupt regression passing with its cargo-finished assertion, and no test at 1 s or more; the named cause is in the summary.
+**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with no leaky test in `cli_lifecycle` and no leaky `control_s_saves_a_favorite`, the interrupt regression passing with its cargo-finished assertion, no leaky `caller_descriptors_reach_captured_cargo`, and no test at 1 s or more; the named cause is in the summary.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
