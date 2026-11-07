@@ -272,16 +272,16 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 **Source:** the user (via the showrunner), 2026-10-16: "can cargo handler make mouse clicks accurate…". The repro sent to the showrunner found that misses happen only during add/remove/`+` motion. `cell_at` answers against the destination layout (`tui_pane/src/tiles/grid.rs` ≈3129) while drawing interpolates (`drawing_at`, `grid.rs` ≈3441), and there is a gap between tick, advance and draw. Showrunner ruling: `draw_tile_grid` records the last-drawn piece rects and their cell, and `cell_at` answers from the last drawn frame, which also covers the tick gap. Keep `cell_at`'s public signature. Run cargo-tile's suites. Live-check a click during motion in both apps. Since phase 6, `summary::machine_height` counts hierarchy notice lines, so a first-machine notice appearing or clearing moves later machines' clickable headers; add a two-machine draw → notice change → click regression.
 
 **Constraints from prior phases:**
-- Phases 23, 24 and 27: `shared_tree_metrics` (`agent_cell.rs`) groups tiles by `PermittedTreeColumns` (columns populated in the complete rows) and screen x. `ColumnDrop::ORDER` (`agent_cell.rs` ≈476) also drops Age and Account, and `GroupFitStep::ORDER` (≈908) has six steps. Restore saved tree viewports before measurement. Project the retained `TreeMeasurement` through `allocated` (`agent_cell.rs` ≈730) into the tallest frame interior, and get the minimum width from it. Then resolve the shared metrics for each allocation before you install the selection areas. Record the final painted header spans, Compressed headers included; `FittedTreeColumns` is not the final header.
+- Phases 23, 24 and 27: `shared_tree_metrics` (`agent_cell.rs`) groups tiles by `PermittedTreeColumns` (columns populated in the complete rows) and screen x. `ColumnDrop::ORDER` (`agent_cell.rs` ≈584) also drops Age and Account, and `GroupFitStep::ORDER` (≈1048) has six steps. Since Phase 66, `MeasuredTreeGroup::fit_tiles` (≈1066) applies each tile's own `ColumnDensity` at each `GroupFitStep::Drop` step, and `tree_header` and `tree_cell_line` share one name budget through `fit_tree_names`. Restore saved tree viewports before measurement. Project the retained `TreeMeasurement` through `allocated` (`agent_cell.rs` ≈882) into the tallest frame interior, and get the minimum width from it. Then resolve the shared metrics for each allocation before you install the selection areas. Record the final painted header spans, Compressed headers included; `FittedTreeColumns` is not the final header.
 - Phase 27 closed these outcomes: `TileWidthFloor` is visible to the application through placements and its floor tests. `ColumnPlan::NoAdmissibleColumn` is an internal choice that maps to the generic summary-only display. `TreeColumnFit::TooNarrow` is an internal request for core compression. Neither needs a new user message.
 - Phase 27: `summary::truncated_line` (`summary/mod.rs` ≈846) cuts styled text by terminal cells and grapheme clusters, and `SummarySessionTable::OmittedForWidth` (≈226) removes session lines (its 34x50 regression is green). Keep that painted row mapping across resize and intervening input. Phase 20 owns the word-target test.
 - Phase 24 motion: tui_pane `TileCells::prepare_moving_frame(destination, motion_bounds)` (`tiles/draw.rs`; the default calls `prepare_frame`) and `TileGrid::motion_preparation_allocations` (`tiles/grid.rs`) give destination positions and widths with the taller of the source and destination heights; cargo-handler `Cells::prepare_moving_frame` (`crates/cargo-handler/src/render/mod.rs` ≈697) passes those motion bounds to `prepare_frame` to measure role widths, and cargo-tile keeps the default. Keep these preparation bounds for measurement; record hit regions and header spans from the pieces actually painted, not from preparation allocations. Test: a shrinking tile clicked during motion selects the header drawn under the pointer, and the existing moving-role tests (`render/moving_role_tests.rs`) stay green.
 - Phase 4's narrow headings fit through `HeadingLocation::{Shown,Cut,Omitted}` (`agent_cell.rs`); test clicks against the fitted heading actually drawn, not the full one.
 - After phase 5 the summary's demand changes with each accounts reading.
-- Phase 28 (a35577ad) supplies the painted record: `PaintedCells::{Undrawn, Drawn}`, a stable `CellIdentity` per painted piece, `CellHit::{Missed, Retired, Current}` (`tiles/grid.rs` ≈3292 `record_painted_cells`, ≈3306 `cell_hit`, reverse paint order) and `content_click` (`tiles/host.rs` ≈176), which maps a painted frame back to source coordinates for presses and wheel steps. `handle_tile_click` absorbs `TilePick::RetiredCell` before focus or row selection. `cell_content_at` is gone. Extend this record; do not create another painted-geometry record. The content geometry in the record comes from Phase 56's one visibility-aware content allocation (`content_area`, `tiles/draw.rs` ≈928), the same one that drawing and `content_click` read; do not compute a second content rect.
+- The painted record is `LastPainted::{NeverPainted, Painted}` (`tiles/grid.rs` ≈1064), with a stable `CellIdentity` per painted piece, `CellHit::{Missed, Retired, Current}` (`record_painted_body` ≈3388, `cell_hit` ≈3407, reverse paint order) and `content_click` (`tiles/host.rs` ≈176), which maps a painted frame back to source coordinates for presses and wheel steps. Visual comparison and pointer lookup share this record. Only a body paint replaces it, so it lasts across polls and status-only draws. `handle_tile_click` absorbs `TilePick::RetiredCell` before focus or row selection. `cell_content_at` is gone. Extend this record; do not create another painted-geometry record. The content geometry in the record comes from the one visibility-aware content allocation (`content_area`, `tiles/draw.rs` ≈948), the same one that drawing and `content_click` read; do not compute a second content rect.
 - Phase 2's header click in cargo-handler (`render::cell_clicked`) rebuilds header spans from the current census and clock, so a changed name, activity, age width or Full/Compressed choice can move columns after the frame was drawn. The drawn header mapping must be kept with the frame.
 - Phase 2's attract-screen exclusion (clicks ignored while the attract screen replaces the grid) and its regression stay as they are.
-- Phase 3's tile identity is `tiles::TileKey::{Agent(AgentCell), Unassigned { machine }}` (sorts in `App::tree_sorts: HashMap<TileKey, TreeSort>`, pruned by `agent_cell::tile_keys`), and header layout carries `agent_cell::SessionHeaderLead::{OverBranch, Flush}` (the pool's session header sits over flush names). Drawn header spans are kept per `TileKey`, with the lead they were drawn with (`render/mod.rs` ≈443 `Cells::tile`, ≈448 `Cells::header_spans`; `agent_cell.rs` ≈2401 `header_spans`, ≈2164 `unassigned_header_spans`).
+- Phase 3's tile identity is `tiles::TileKey::{Agent(AgentCell), Unassigned { machine }}` (sorts in `App::tree_sorts: HashMap<TileKey, TreeSort>`, pruned by `agent_cell::tile_keys`), and header layout carries `agent_cell::SessionHeaderLead::{OverBranch, Flush}` (the pool's session header sits over flush names). Drawn header spans are kept per `TileKey`, with the lead they were drawn with (`render/mod.rs` ≈443 `Cells::tile`, ≈448 `Cells::header_spans`; `agent_cell.rs` ≈2943 `header_spans`, ≈2682 `unassigned_header_spans`).
 - Accounts-header click: phase 32 already keeps the painted summary. `App` holds `PaintedSummary::{NotDrawn, Drawn}`, and `render::cell_clicked` reads the accounts header spans from it (`render/mod.rs` ≈260), then calls `AccountsSort::select` (`sort.rs`). This phase extends that record with the painted clipping, the scrolled and pinned line mapping and the drawn identities; it does not rebuild headers from the current reading. Keep the census-change and the several-inputs-before-redraw tests.
 - Phases 16 and 20 add row and word clicks that can also hit changed content between draw and click: the frame record covers drawn row identities, clipped scrolled rows, wheel targets and word cells, tile titles and retired tiles included. Phase 20 resolves one press once, into both the row action and the painted word, and forwards tile title presses from tui_pane; keep both.
 - Public `TileGrid::cell_at` still answers from settled geometry, and `cell_hit` calls it on the before-first-paint path.
@@ -292,6 +292,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Phase 28 replaces the bare `Option` results of the selection API (`selected_span`, `containing`, `follow_focused`, `surface`, `surface_mut`, `Cells.focused`, `selection_surface`, `Cells::with_selections`) with named results. Use those names; do not add a new bare `Option`.
 - Phase 28 pins the accounts heading and column headers. Pinned header lines and scrolling body rows have different screen-to-content mappings: a pinned line maps to a fixed content line, and a body row maps through the scroll offset below the pinned lines. Keep that whole mapping (pinned lines, body offset and pinned count) with the painted frame, not only the scroll offset.
 - Phase 16's selected-row behavior (keys, clicks and the wheel; `render/selection_tests.rs`) stays as it is.
+- Phase 65 (accounts table): the role lines of one account share one selection span, and the scrolled table ends in a total tail that has no selection (`summary/accounts.rs` ≈997, `interaction.rs` ≈405). So row identities do not cover all painted content: the painted record keeps the total tail as painted content with no row identity. The total-tail regression (`render/accounts_grid_tests.rs` ≈877) stays green.
 - Phase 36: the foot readout reads the selection after the cell paints (`draw_cell_with_rows_readout` calls `TileCells::rows_readout`, `tiles/draw.rs`), and cargo-handler `Cells::rows_readout` (`render/mod.rs` ≈764) answers from `app.selections`. Keep that order when the frame record changes, so `content rows: N of M` follows the selection during motion; `selected_rows_readout_follows_moves_and_keeps_unselected_counts` (`render/mod.rs`) stays green.
 - Tests in tui_pane tiles live in the inline `mod tests` of `tiles/grid.rs` (≈6429, motion tests), `tiles/draw.rs` (≈961, motion content tests) and `tiles/host.rs` (≈205), and in `tiles/host_tests.rs` (registered at `host.rs` ≈446). There is no `tiles/tests/` directory.
 - Phase 17: drawing prepares `TreeMetrics` across all tiles in one screen column and saves them in `App.tree_layouts` (`render/mod.rs` ≈177); since phase 23 each drawn group shares one age layout (`summary/age.rs` `AgeLayout`). A click must map through the metrics that were drawn, not ones rebuilt from current rows and time. Add a regression: another tile in the same screen column changes the shared widths between draw and click, and the click still selects the header drawn under the pointer, with the drawn group's shared age layout kept.
@@ -956,15 +957,15 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `census/probe.rs` `ProbeChildWork.subagent_role` (≈96) serializes the enum across machines; `{"Specialist":"showrunner"}` and `"Review"` are on the wire today.
 - `ProbeChildWork` (`census/probe.rs` ≈96) serializes `SubagentRole` directly. The checkpoint enum (`census/transcript.rs` ≈500) accepts `Review` and `Specialist`. It does not accept `Reviewer`, `Writer` or the other new variants.
 - `render/narrow_width_tests.rs` (≈360) and its `growth_app` (≈430) use a fifty-character specialist role, so that restored or newly visible rows change the width requirement (checked at ≈488 and ≈534). A change of that fixture to `Agent` removes the tested condition. Use supported role words and fixture widths that still test off-window width growth, End/Home/cursor restoration and the first enlarged frame. Keep the whole-core and below-core compression checks, the longer Astra labels included.
-- `agent_cell.rs`: `role_text` (≈1192) draws `role.text()`; the role ink comes from `colors.named_role(role.text())` (≈1349, `footer_colors/mod.rs` ≈839).
+- `agent_cell.rs`: `TreeLine::role_text` (≈1486) draws `role.text()`; the role ink comes from `colors.named_role(role.text())` in `TreeLine::footer_role` (≈1651, `footer_colors/mod.rs` ≈839).
 - Session-row plan reviewers show "review" through `RoleLabel::ReviewFallback` (`census/placement.rs` ≈86), and Codex seats through `WorkerRole::text` (`census/worker_dispatch/mod.rs` ≈100). These rows stay as they are (showrunner, 2026-11-06: the user asked for subagent rows only).
 
 **Spec:**
-1. `SubagentRole` becomes a closed enum with no string payload: Writer, Reviewer, Impl, Test, Fix, Capture, Lint, Survey, Plan, Explore, Showrunner, and `Agent` for any name that matches no word. `text()` is a `const fn` returning a `&'static str`; the drawn word is always the variant's word, never part of a name. Reviewer draws "reviewer".
-2. The role is decided once, at the meta file boundary (`running_subagents`). `SubagentMeta` reads `name` and `spawnedAgentType` too. Source order: the name, then `agentType`, then `spawnedAgentType`, then the description words. A name splits on non-letters into whole tokens, and a token matches a role word exactly (case-insensitive, with the listed synonyms: "review" → Reviewer, "impl" → Impl). "p36-reviewer" is Reviewer, "writer77" is Writer, "judge" is Agent. A general type ("general-purpose") gives no role.
+1. `SubagentRole` becomes a closed enum with no string payload: Writer, Reviewer, Impl, Test, Fix, Capture, Lint, Survey, Plan, Explore, Showrunner, and `Agent` for any name that matches no word. `Unrecorded` stays for a subagent with no name, no specific type and no role word in its description; it draws nothing, as today (director, 2026-11-07: no visible change). `text()` is a `const fn` returning a `&'static str`; the drawn word is always the variant's word, never part of a name. Reviewer draws "reviewer".
+2. The role is decided once, at the meta file boundary (`running_subagents`). `SubagentMeta` reads `name` and `spawnedAgentType` too. Source order: the name, then `agentType`, then `spawnedAgentType`, then the description words. A name splits on non-letters into whole tokens, and a token matches a role word exactly (case-insensitive, with the listed synonyms: "review" → Reviewer, "impl" → Impl). "p36-reviewer" is Reviewer, "writer77" is Writer, "judge" is Agent. A general type ("general-purpose") gives no role. At the same boundary (`census/transcript.rs` ≈897), convert the metadata parent to `SubagentParent::{OwningSession, RecordedSubagent(String)}` before you build `Subagent`; `Subagent.parent` is no longer `Option<String>`. Keep the current root fallback for an absent or finished parent (showrunner, 2026-11-07: type rule, no visible change).
 3. The role ink comes from a typed method on `SubagentRole`, not from looking up the drawn text.
 4. Wire: decode the old role forms (`{"Specialist":"<word>"}`, `"Review"`) into the closed domain enum: the closed role for that word, else Agent. Encode new roles through a wire form that older builds accept, or through a defaulted extension. Keep any string payload inside the wire adapter, so the domain model gets no `SpecialistRole(String)` back. No string role is stored after deserialization.
-5. Tests, red first: rendered subagent rows for writer77, writer78, p36-reviewer, review3, judge and a plain "Plan" subagent show "writer", "writer", "reviewer", "reviewer", "agent" and "plan"; an old report on the new receiver, and a new report on the checkpoint receiver; callers that built a role from a free string build a variant. Every test under one second.
+5. Tests, red first: rendered subagent rows for writer77, writer78, p36-reviewer, review3, judge and a plain "Plan" subagent show "writer", "writer", "reviewer", "reviewer", "agent" and "plan"; an old report on the new receiver, and a new report on the checkpoint receiver; callers that built a role from a free string build a variant; a subagent whose meta names no parent, and one whose recorded parent has finished, both sit under the owning session. Every test under one second.
 6. CHANGELOG: one line that subagent rows show their role word, not the agent's name.
 
 **Files:**
@@ -1153,6 +1154,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `render/narrow_width_tests.rs` (≈360) and its `growth_app` (≈430) use a long role so that restored or newly visible rows change the width requirement (checked at ≈488 and ≈534). Use supported role words and fixture widths that still test off-window width growth, End/Home/cursor restoration and the first enlarged frame. Keep the whole-core and below-core compression checks, the longer Astra labels included.
 - `OpenThreadRows::read` in `census/codex.rs` accepts explicit thread IDs through `CODEX_THREAD_BY_ID_QUERY`, regardless of originator. `codex::read_threads_by_id` no longer exists. Use the named Astra Codex home. Collect the IDs of both consumers per home and read each home once: `OpenThreadRows::read` replaces a home's requested IDs (`codex.rs` ≈323), and `app_server_threads` retains only app-server homes (`scan.rs` ≈1418). Retain the combined homes. Preserve per-home caching and invalidation by database and WAL revision. Test an unchanged scan (no second read) and a WAL change (one new read). Keep startup queries restricted as before. Reuse `SessionNames`, home matching, resume handling and the no-dispatch regression.
 - The scanner captures one `StaffSnapshot` before classification. Its source and `Arc<StaffRoster>` supply names and links for that scan. Preserve this consistency when adding Astra membership. Keep database and rollout reads outside the scheduler thread and the publication lock. App-server discovery uses Linux file descriptors under the sessions directory.
+- Phase 64: `census::schedule::spawn` takes the configured `herdr_read_timeout`, and `local_scanner` passes it to the scanner (`terminal.rs` ≈81, `census/schedule.rs` ≈694). Keep this argument. `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈414). `scan_staged` stays nonblocking.
 - The staff reader has no reviewer-pool state or lease requirement. Astra busy/idle state needs a semantic type from the announced staff contract. A live Astra session must remain visible between turns without a pool file.
 - `HierarchyEdge` contains `manager`, `member` and `role`. It has no Codex home or busy/idle state. Convert announced staff fields into one checked Astra payload with a required home and state. Reject incomplete Astra membership at that boundary. Preserve the existing staff snapshot and forest validation. Do not add independent domain `Option` fields.
 - Probe schema 3 serializes `HierarchyEdges` directly; new role variants in `edges` make older receivers refuse a probe. Carry new roles in a defaulted extension.
@@ -1161,15 +1163,15 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Spec:**
 1. Extend the schema-2 staff reader for the announced Astra fields. Add `AstraDesigner` and `AstraReviewer` to `HierarchyRole` and the checked Astra membership type. Read roles from the announced role field, without inventing new staff kinds. Keep the words `astra designer` and `astra reviewer` in the role column and tile title.
-2. `FooterRole` gains `AstraDesigner` and `AstraReviewer`, read from `role.astra-designer` and `role.astra-reviewer`; the role word draws in that color everywhere a role word draws in colour (Phase 15 rules), unless phase 31 chose plain role text or another channel; then it follows phase 31's choice. On a session row both Astra role inks draw through `SessionRowInk::Management(FooterColor)`; add no new `SessionRowInk` variant for each role.
+2. `FooterRole` gains `AstraDesigner` and `AstraReviewer`, read from `role.astra-designer` and `role.astra-reviewer`; the role word draws in that color everywhere a role word draws in colour (Phase 15 rules). On a session row both Astra role inks draw through `SessionRowInk::Management(FooterColor)`; add no new `SessionRowInk` variant for each role.
 3. An Astra row draws under its edge's manager, a unit director or a showrunner alike, and keeps the edge's `state` as its idle or busy status between turns.
 4. The thread lookup also reads a `codex_exec` thread when an Astra edge names it, under the edge's `codex_home`, so the row gets its session name, activity and fast mark as other Codex rows do.
 5. Tests, each red before its fix: both roles parse from schema-2 staff rows and keep their words. Each role uses its configured color. Astra rows draw under unit directors and showrunners. Edge-named `codex_exec` threads get their names and activity. Unknown roles do not publish Astra membership. Unknown staff kinds still preserve valid known rows.
-6. Tests also cover: an edge-named `codex_exec` thread with no open app-server rollout; busy and idle Astra rows visible with no reviewer-pool lease; an older receiver parsing a new probe, and a new receiver restoring role, home and state; each Astra role, read through the production role API, draws through the rendering path phase 31 chose (colour or another channel), keeps its configured role assignment, meets phase 31's final floors from every session ink and from every other ink that can share its row, and reaches 4.5:1 covered contrast in all four themes; an Astra edge with no Codex home or no state is refused at the wire boundary.
+6. Tests also cover: an edge-named `codex_exec` thread with no open app-server rollout; busy and idle Astra rows visible with no reviewer-pool lease; an older receiver parsing a new probe, and a new receiver restoring role, home and state; each Astra role, read through the production role API, draws through `SessionRowInk::Management`, keeps its configured role assignment, meets the Phase 26 floors in the constraints above from every session ink and from every other ink that can share its row, and reaches 4.5:1 covered contrast in all four themes; an Astra edge with no Codex home or no state is refused at the wire boundary.
 7. Guild heads: a hierarchy with a `guilds` showrunner and four unit directors named `designers`, `reviewers`, `showrunners` and `units` draws them as ordinary unit director rows under that showrunner, with no new role word. An Astra designer held by a unit director of another production stays under that unit director. Rendered tests cover both.
 8. Palette tests: a new fixture `footer_colors/fixtures/statusline_astra.conf` holds the `statusline.conf` values with `role.astra-designer=mauve` and `role.astra-reviewer=bright-green`. Tests prove that both Astra roles enter `FooterColors::session_row_inks()` as `SessionRowInk::Management` from that fixture, and that the rendered session palette checks in `render/role_title_tests.rs` measure both inks.
 9. Word-match contrast (phase 20 runs first): extend `render/word_contrast_tests.rs` with rendered word-match tests for both Astra role inks, with the final production inks and the two-way 208/255 coverage (the lower of the unrounded and the byte-rounded blend). Each ink reaches 4.5:1 on the drawn match background, on the base, focused and unfocused grounds, and where a match overlaps a selected row.
-10. Reset shades: phase 31's chosen design sets this floor. Unless phase 31 replaced the role-vs-reset colour floor with another channel, each Astra role ink is CIEDE2000 >= 15 from every drawn reset shade on each light theme; if it did, the test measures the drawn treatment and proves the replacement channel for both Astra inks (a new test in `summary/accounts_gradient_tests.rs`, through `FooterColor::management_style` and `ResetRank`; phase 30 landed no reset-vs-role-ink test, and phase 31 owns that floor for the other role inks). Measure first; if an Astra ink is under 15, report it to the unit director before any palette change.
+10. Reset shades: each Astra role ink is CIEDE2000 >= 15 from every drawn reset shade on each light theme (a new test in `summary/accounts_gradient_tests.rs`, through `FooterColor::management_style` and `ResetRank`; no reset-vs-role-ink test exists yet). Measure first; if an Astra ink is under 15, report it to the unit director before any palette change.
 
 **Files:**
 - `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/scan.rs`, `crates/cargo-handler/src/census/codex.rs`, `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/footer_colors/mod.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs`, `crates/cargo-handler/src/constants.rs`, `crates/cargo-handler/CHANGELOG.md`
@@ -1186,7 +1188,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `impl` — the production files (hierarchy, scanner, probe, placement, color and rendering), `theme/mod.rs`, the registrations and the CHANGELOG; owns all shared module files; hub: `crates/cargo-handler/src/census/mod.rs` and `crates/cargo-handler/src/theme/mod.rs` (shared modules).
 - `test` — the Astra tests (`astra_role_tests.rs`), the probe compatibility tests (`probe_role_tests.rs`), the footer-color tests (`footer_colors/tests.rs`), the fixture (`statusline_astra.conf`), `render/role_title_tests.rs`, the rendered selection tests, the Astra word-match tests in `render/word_contrast_tests.rs`, the Astra-vs-reset test in `summary/accounts_gradient_tests.rs`, and the width checks in `render/narrow_width_tests.rs`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Astra rows keep their stable thread identity and the selected band through busy/idle updates and manager placement. The session palette checks in `render/role_title_tests.rs` measure both Astra inks, the Astra word-match tests in `render/word_contrast_tests.rs` pass, and the Astra-vs-reset test in `summary/accounts_gradient_tests.rs` passes (with the floor or channel phase 31 chose). Live: framed shots, in a dark and a light theme, of an Astra designer under a unit director and an Astra reviewer under a showrunner, with the real config. The checkpoint carries `Change-Review: cargo-handler shows Astra designer and Astra reviewer sessions under the unit director or showrunner that runs them, with their own role words and colors | open cargo-handler while an Astra review runs and find its row under its parent`.
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Astra rows keep their stable thread identity and the selected band through busy/idle updates and manager placement. The session palette checks in `render/role_title_tests.rs` measure both Astra inks, the Astra word-match tests in `render/word_contrast_tests.rs` pass, and the Astra-vs-reset test in `summary/accounts_gradient_tests.rs` passes. Live: framed shots, in a dark and a light theme, of an Astra designer under a unit director and an Astra reviewer under a showrunner, with the real config. The checkpoint carries `Change-Review: cargo-handler shows Astra designer and Astra reviewer sessions under the unit director or showrunner that runs them, with their own role words and colors | open cargo-handler while an Astra review runs and find its row under its parent`.
 
 ### Phase 41 — Renamed Codex sessions show in cargo-handler  · status: done
 
@@ -1495,83 +1497,31 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: shots of the accounts table on natedev with live counts, a design check line, and a Change-Review line.
 
-### Phase 65 — Tiles settle at once when the accounts table wraps  · status: todo
+### Phase 65 — Tiles settle at once when the accounts table wraps  · status: done
 
-**Depends on:** none. Runs now, beside Phase 62's checkpoint and Phase 42. Where it shares files with Phase 42, Phase 42 lands first, and this phase merges main and builds on it (showrunner, 2026-11-05).
+**Depends on:** none.
 
-#### Work Order
+#### As-built
 
-**Goal:** the accounts table of Phase 61 lands, and tiles settle in two draws as on main. The second draw keeps the first draw's placements, at no CPU cost against main.
-
-**Source:** phase 61 findings F016 and F017, moved here by showrunner ruling d024d5df; Phase 61's table changes, merged in by the showrunner on 2026-11-05. Base: the Phase 61 tree, saved as unit session `phases/65/base_61_table.patch` (main's `tui_pane` plus the table changes). Round 4 patch and evidence: unit session `phases/61/round4_whole_tree.patch`, `phases/61/evidence/round4-*.txt`. Attempts log: memory `attempts-phase61-layout-settle`.
-
-**The defect:** tile demand depends on tile width, tile width depends on demand, and provider preparation changes demand. At width 200 by height 70, the second draw changes the first draw's placements.
-
-**Tries that failed:**
-1. A draw loop in the test helper hid the defect.
-2. A candidate search before preparation settled in two draws, but made 2+P demand calls per draw and measured unprepared state.
-3. One preparation, then a search only when one named input type changed, made exactly 2 calls on an unchanged draw. The selected layout did not survive the next preparation.
-4. Group demand ignores height compression (`TreePresentation::HeightCompressed`). Width 200 settles. Width 80 flips: demand is 6 rows at width 78 and 4 rows at width 39. Kept as part of the fix.
-5. Full-view demand at every width. All 4 widths settle, but 12 existing assertions fail: a narrow tile must ask only for the rows of its compressed view. Rejected.
-
-**Why a search:** width-dependent demand is intended. When the grid measures only at current widths, width 80 has no fixed point. Each column count must be tested at its own widths (showrunner ruling c6f4c107, 2026-11-05).
-
-**Spec:**
-1. Phase 61's Spec and State model are this phase's table contract. The saved base already holds that work.
-2. Try 4 stays in the handler. The candidate search goes in `tui_pane`, per item 6 of the state model. No public `tui_pane` trait that cargo-tile implements changes.
-3. No assertion changes. The `paint` helper keeps main's two fixed draws.
-4. CHANGELOG: the Phase 61 Changed line stays; add one Fixed line only if users see the settle change.
-5. Stop rule: if the search cannot hold 2 demand calls on an unchanged draw, or an assertion must change, stop and report.
-
-**Approach (Astra review, unit session `phases/61/astra_F016_round4_review.md`):** start from main's `tui_pane`. Do not restore the planner first.
-1. Add a controlled test with the width-200 fixture. Hold source data, time and selections constant, and use a fresh provider for each comparison. Compare both draw-width sets under each draw's preparation allocations. Record raw summary height, `summary_width`, each group's rows, shared presentation, scroll offsets and minimum tile width.
-2. Let that test select the change:
-   - If group demand changes at fixed widths, separate the handler's requested content rows from allocation-dependent compression (`TreeMeasurement::allocated`, `agent_cell.rs`). Keep drawing, selection and readout in agreement.
-   - If summary demand drives the change, derive the preferred width from the source for the required account columns, not from fitted lines (`SummaryLayout::preferred_width`). Keep the exact wrapped height and all required facts.
-3. Restore a planner only if these smaller changes cannot meet the gate. The selected destination must then survive the preparation for that destination. A fixed number of hidden draws gives no general guarantee.
-
-**Acceptance condition:** the first selected destination stays unchanged on the next draw with unchanged inputs. Preparation stays before every `cells.demands` call.
-
-**Layout state model (showrunner rulings d024d5df and c6f4c107, 2026-11-05):**
-Each layout state has one owning record. Item 6 is the one new record.
-1. Provider preparation. Owner: the provider (cargo-tile `row_end`, `cell_gap`, `layouts`, `whole_short_tables`, `row_uses`; cargo-handler `summary_selection`, shared tree metrics, viewports). Built only by `prepare_moving_frame` in `draw_tile_grid`, once per draw, before any `cells.demands` call. It changes demand, so nothing re-prepares after a selection.
-2. Demands. Owner: `TileGrid.demands`. Changed only by `replace_demands`, from `sync_demands`. Each change clears item 5.
-3. Held layout (rows, focus, summary span, summary depth). Owner: `TileGrid.held`. Changed by `replan_layout_endpoints`, `sync_demands`, `resolve_destination_depth`, `advance` and `complete_arrangement`.
-4. Motion and destinations. Owner: `TileGrid.motion` and `TileGrid.pending`. Changed by `replan_layout_endpoints`, `open_waiting_commands_in_current_motion`, `queue_steps`, `advance` and `resize_for_focus`. `settle_for_test` is test-only.
-5. Admission decision. Owner: `TileGrid.layout_admission`, a cache of items 2 and 3 with the layout rules. It holds no fact of its own.
-6. Selected plan (new). Owner: one `TileGrid` field that holds the plan inputs and the selected widths, demands and depth. Built only by the candidate search in `sync_measured_demands`. The search tests each permitted column count at that count's own widths. The inputs are one named type, compared whole, and hold no state that the selection itself writes. Equal inputs reuse the selection and make no candidate `cells.demands` call; the rest of `sync_demands` still runs. Item 1 stays before every measurement. The first run of this design failed because its inputs held `held` and `slots` and the current widths; phase 65's worker records the final form in unit session `phases/65/state_model.md`, and this item takes it at the checkpoint.
-
-Draw order: prepare, measure at current widths, search only when the inputs changed, sync, draw. An unchanged draw makes exactly 2 `cells.demands` calls, as main does.
+- Phase 61's accounts table (role rows, count columns, total tail) ships here; Phase 61's Spec and State model are its contract.
+- The tile grid chooses its column count by a candidate search in `TileGrid::sync_measured_demands` (`crates/tui_pane/src/tiles/grid.rs`). Each permitted column count is tested at its own widths, and each distinct width list is measured once.
+- The `TileGrid` field `LayoutSelection` keeps the selected widths, demands and depth. Its inputs, `LayoutSelectionInputs`, are compared whole: area, target arrangement, growth, `EndpointLayoutRules`, and the `LayoutDemandMeasurement` at each candidate width list. Equal inputs reuse the selection with no candidate call, so an unchanged draw makes exactly 2 `cells.demands` calls.
+- Draw order: prepare, measure at current widths, search only when the inputs changed, sync, draw. Provider preparation (`prepare_moving_frame`) runs once per draw before every demand call; nothing prepares again after selection.
+- The handler keeps requested tree rows apart from height compression: `CellView::requested_at_width` (`agent_cell.rs`) requests the rows of the view at each width, and `TreePresentation::HeightCompressed` applies only at allocation. Width compression stays part of the demand.
+- Tiles settle in two draws at widths 200, 80, 50 and 40; the first selected destination holds on the next draw with unchanged inputs.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs`
-- `crates/tui_pane/src/tiles/draw.rs`
-- `crates/cargo-handler/src/agent_cell.rs`
-- `crates/cargo-handler/src/summary/mod.rs`
-- `crates/cargo-handler/src/render/mod.rs`
-- `crates/cargo-handler/src/terminal.rs`
-- `crates/cargo-handler/src/interaction.rs`
-- `crates/cargo-handler/src/summary/accounts.rs`
-- `crates/cargo-handler/src/summary/constants.rs`
-- `crates/cargo-handler/src/summary/accounts_tests.rs`
-- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs`
-- `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`
-- `crates/cargo-handler/src/summary/accounts_refresh_tests.rs`
-- `crates/cargo-handler/src/sort.rs`
-- `crates/cargo-handler/src/census/accounts.rs`
-- `crates/cargo-handler/src/census/account.rs`
-- `crates/cargo-handler/src/census/account/`
-- `crates/cargo-handler/src/census/accounts_wire_tests.rs`
-- `crates/cargo-handler/src/summary/role_span_tests.rs`
-- `crates/cargo-handler/src/render/accounts_grid_tests.rs`
-- `crates/cargo-handler/src/render/selected_ink_tests.rs`
-- `crates/cargo-handler/src/render/pinned_accounts_tests.rs`
-- `crates/cargo-handler/src/render/narrow_width_tests.rs`
-- `crates/cargo-handler/src/summary/hierarchy_note_tests.rs`
+- `crates/tui_pane/src/tiles/grid.rs` — `LayoutSelection`, `LayoutSelectionInputs`, `LayoutDemandMeasurement`, `sync_measured_demands`
+- `crates/tui_pane/src/tiles/draw.rs` — draw order around the search
+- `crates/cargo-handler/src/agent_cell.rs` — `CellView::requested_at_width`, `TreePresentation::HeightCompressed`
+- `crates/cargo-handler/src/interaction.rs`, `sort.rs`, `terminal.rs`, `summary/{mod,accounts,constants}.rs`, `census/accounts.rs` — accounts table, role counts and sort
+- `crates/cargo-handler/src/render/narrow_width_tests.rs` — first-frame demand calls 200:7, 80:4, 50:2, 40:2, then exactly 2; a refresh drives real motion through `tick()` to arrival with no second motion
 
-**Workers:** 1 writer.
+**Binds later work:** a tile requests rows through `CellView::requested_at_width`, and the grid reuses its selected layout while its measurement inputs stay equal; the narrow-width demand-count tests and `grid_at_height_70_keeps_all_work_rows_and_accounts` stay green. The accounts table ends in a total tail that is painted with no row identity; role lines of one account share one selection span.
 
-**Acceptance gate:** `verify.sh test cargo-handler`, `verify.sh test tui_pane`, `verify.sh test cargo-tile` and `verify.sh lint cargo-handler` clean, with no assertion changed to make a test pass; no test takes a second. `crates/cargo-tile/src/render.rs:10906` stays at exactly 2 calls. `grid_at_height_70_keeps_all_work_rows_and_accounts` passes at 200 by 70 with main's two-draw `paint`. A refresh case starts from a settled application, and checks pending motion and the drawn result across ordinary animation frames. Live shots of the accounts table at widths 200, 80, 50 and 40 on natedev with live counts. A live capture of cargo-tile against main at the same 4 widths; its layout is no worse. 3 CPU pairs against main for an unchanged draw, for cargo-handler and for cargo-tile; the result is not a cost. A Change-Review line.
+**Gotchas:** an input change that affects only an unmeasured candidate width is not seen until a current-width input changes; a current width list absent from the record forces a search, and motion can produce one (accepted limit). `settle_for_test` is test-only.
+
+**Ruled out:** a draw loop in the test helper (hid the defect); a search before preparation (2+P demand calls per draw, measured unprepared state); full-view demand at every width (a narrow tile must ask only for its compressed view's rows); a named overflow type for `RoleSessionCounts::checked_add` (it follows std `checked_add` and maps at once to `Reading::Unavailable`).
 
 ### Phase 62 — A worker that waits on a detached run shows in its unit's tree  · status: done
 
@@ -1622,10 +1572,10 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 6. A row choice (Right, Left, Enter, a marker click) wins over its tile's level until the next level key for that tile.
 
 **Spec:**
-1. Record each painted row's marker cells beside its row span in `SurfaceSelection` (`interaction.rs`). Compute them from the fitted lead: `tree_cell_line` drops `TreeLine::lead` when the session column is narrow (`agent_cell.rs` ≈2799), so a row with no drawn marker records no marker cells. Clip the cells to the painted region.
-2. Extend `RowClick` with an outcome for a marker hit, for example `RowClick::Toggled(RowIdentity)`. Keep one click dispatcher and one hit test (Phase 16 binds).
+1. Record each painted row's marker cells beside its row span in `SurfaceSelection` (`interaction.rs`). Compute them from the painted lead: since Phase 66, `tree_cell_line` (`agent_cell.rs` ≈2988) always keeps `TreeLine::lead` and shortens the name after it, and `TreeMeasurement::minimum_tile_width` (≈941) reserves `session_guide_width + 1`. Clip the cells to the painted region.
+2. Extend `RowClick` with an outcome for a marker hit, for example `RowClick::Toggled(RowIdentity)`. Keep one click dispatcher and one hit test (Phase 16 binds). Phase 9 also records painted row geometry; the phase that lands second keeps the marker cells in that one record, with one geometry owner.
 3. On a marker hit, select the row and apply the toggle that Enter applies.
-4. Tests under 1 s: a click on `▶` opens the row; a click on `▼` closes it; a click on the name only selects; a click on a leaf row's lead only selects; a click on a scrolled tile hits the painted row; a click where a narrow column omitted the marker only selects; a click on a row that left the census after the draw toggles nothing.
+4. Tests under 1 s: a click on `▶` opens the row; a click on `▼` closes it; a click on the name only selects; a click on a leaf row's lead only selects; a click on a scrolled tile hits the painted row; a click on a marker that a narrow tile keeps toggles the row, and a click on clipped marker cells toggles nothing; a click on a row that left the census after the draw toggles nothing.
 5. Replace `ResetExpansion` with one action per digit key, 0 to 9, for the focused tile. `-` keeps `CollapseAll` and now closes to `Through(1)`. The default `Through(1)` gives the same view as today's reset. The shortcuts overlay shows the digits as one row if the overlay can group them; else ten rows.
 6. The level lives in cargo-handler's `expansion.rs`. Do not add it to the shared `tui_pane` expansion model: cargo-port has no consumer for it.
 7. Tests under 1 s: `1`, `2` and `9` show the focused tile to that depth and leave other tiles as they are; `0` shows only roots; `-` closes every tile to the first level; a new deep row follows its tile's level; a row choice wins over the level until the next level key; the key table maps each digit.
@@ -1644,49 +1594,34 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. This change is visible: shots on natedev before and after a marker click, and after `0`, `2` and `-`; a design check line; and Change-Review lines for the marker click and the depth keys.
 
-### Phase 64 — A one-shot probe waits for herdr pane names  · status: todo
+### Phase 64 — A one-shot probe waits for herdr pane names  · status: done
 
-**Depends on:** Phase 62, because both phases change `census/scan.rs`. Runs beside Phase 61 or Phase 63; they share no file with it (showrunner, 2026-11-03).
+#### As-built
 
-#### Work Order
-
-**Goal:** `cargo-handler probe` on a loaded host shows a herdr-named Codex window by its name on each run, so a remote cell no longer changes between the name and `pid N`.
-
-**Source:** the showrunner, 2026-11-03, 15:47 EST. On natedev at load average 47 with the installed build 9bb05b8be, three `cargo-handler probe` runs took 6.5 s, 11.0 s and 2.4 s. Runs 1 and 2 showed morty (pid 2719866) as `pid 2719866`. Run 3 showed `morty`. A remote cell runs `ssh <host> cargo-handler probe` on each poll, and each run is a new process.
-
-**Cause (main ff9c2b2fc):**
-1. `Scanner::scan` (`scan.rs` ≈334) calls `HerdrNames::finish_initial` (`herdr.rs` ≈246) once.
-2. `finish_initial` waits only `HERDR_INITIAL_TIMEOUT` (100 ms, `constants.rs` ≈605) for the herdr worker's first answer. When the answer is late, the row keeps `pid N`.
-3. The TUI reads the late answer on a later scan. A one-shot probe has no later scan, so the late name is lost.
-4. The worker sends one `NameAnswer` after each refresh, also when it finds no names. Its socket operations use `HERDR_READ_TIMEOUT` (100 ms, `constants.rs` ≈609).
-
-**State model:**
-1. The herdr worker owns the pane names. `InitialAnswer::{Pending, Ready}` records whether the scan has the answer for its generation.
-2. The TUI path calls `scan_staged` (`schedule.rs` ≈705) and never calls `finish_initial`, so it does not wait. A late answer arrives on a later scan, as today.
-3. The probe path waits until the answer for its own generation arrives, or until a probe bound ends. After the bound, the row shows `pid N`.
-4. A herdr that is not running gives an answer or ends the wait at once. It never makes the probe wait the full bound.
-5. `SshRunner::probe` (`remote.rs` ≈155) holds the whole remote probe to `PROBE_TIMEOUT`. The herdr wait is part of that budget, so a configured wait must fit inside it.
-
-**Spec:**
-1. Give `finish_initial` a typed wait, for example `HerdrProbeWait`, read from config. Do not use a bare duration argument. Only `Scanner::scan`, the probe path, calls it. The TUI path stays on `scan_staged`, with no wait.
-2. Put the probe bound in config, not in a constant (showrunner, 2026-11-03: load sets the right value, and a change must not need a release). Add `[census] herdr_probe_wait` to `CensusConfig` (`config.rs` ≈115) as a typed value with a default, the same as `codex_thread_start_window` (`CodexStartWindow`). The probe reads it the same way, through `Scanner::with_codex_start_window`'s pattern (`probe.rs` ≈417). Choose the default from the measured probe times, and write the reason in the doc comment.
-3. Check whether `HERDR_READ_TIMEOUT` also drops names under load. If it does, move it to config by the same rule (`[census] herdr_read_timeout`), and the probe path uses that value through the same typed wait. Record the measurement in the as-built.
-4. Tests under 1 s, with a controlled answer channel and no real sleeps: an answer after 100 ms reaches the probe; `scan_staged` never waits for the herdr answer; a configured wait that does not fit inside `PROBE_TIMEOUT` is refused and a wait at the limit fits; a herdr that is not running ends the probe wait at once; an answer of an older generation does not count; a missing config key gives the default, and a set key changes the bound.
-5. CHANGELOG: one Fixed line in cargo-handler.
+- `cargo-handler probe` waits for the herdr answer of its own generation, up to one `HerdrProbeDeadline` that `LocalScanner::scan` creates before `scan_staged`. The scan and the wait share that bound. A herdr that is not running ends the wait at once. After the bound, the row shows `pid N`.
+- The TUI path stays on `scan_staged` and never waits. A late answer arrives on a later scan.
+- `[census] herdr_probe_wait` is a typed `HerdrProbeWait` (default 12000 ms, zero allowed, limit `HERDR_PROBE_WAIT_LIMIT` = `PROBE_TIMEOUT` minus `PROBE_SSH_OUTPUT_RESERVE`, 18 s). `[census] herdr_read_timeout` is a typed `HerdrReadTimeout` (default 1000 ms, above zero, limit `PROBE_TIMEOUT`). The probe and the TUI scanner both apply the socket value. `HERDR_INITIAL_TIMEOUT` and `HERDR_READ_TIMEOUT` are gone.
+- Measured before the change at load about 82: the installed probe took 5.882, 2.087, 1.814, 1.605 and 1.648 s and named the window in 3 of 5 runs. At load 79, 3 of 20 socket snapshot requests took over 100 ms (maximum 155.332 ms) and all 20 were valid, so a 100 ms socket limit lost valid names.
+- Live after the change at load 52 to 56: five probes named the window at pid 3421089, in 16.417 s (cold first run), then 5.860, 5.914, 5.860 and 5.996 s. On one debug binary at load 47 to 51, the wait adds about 0.2 to 0.4 s.
 
 **Files:**
-- `crates/cargo-handler/src/census/herdr.rs`
-- `crates/cargo-handler/src/census/scan.rs`
-- `crates/cargo-handler/src/census/probe.rs`
-- `crates/cargo-handler/src/census/remote.rs`
-- `crates/cargo-handler/src/config.rs` — and its tests
-- `crates/cargo-handler/src/constants.rs`
-- `crates/cargo-handler/src/census/herdr_tests.rs`
+- `crates/cargo-handler/src/census/herdr.rs` — `HerdrProbeDeadline`, `finish_initial`
+- `crates/cargo-handler/src/census/scan.rs` — creates the deadline before `scan_staged`
+- `crates/cargo-handler/src/census/probe.rs` — reads both config values
+- `crates/cargo-handler/src/census/schedule.rs`, `crates/cargo-handler/src/terminal.rs` — pass the socket value to the TUI scanner
+- `crates/cargo-handler/src/config.rs` — `HerdrProbeWait`, `HerdrReadTimeout` and their tests
+- `crates/cargo-handler/src/constants.rs` — `PROBE_SSH_OUTPUT_RESERVE`, `HERDR_PROBE_WAIT_LIMIT`
+- `crates/cargo-handler/src/census/herdr_tests.rs` — controlled-clock tests and the `ReturningHerdrService` fixture
 - `crates/cargo-handler/CHANGELOG.md`
 
-**Workers:** 1 writer.
+**Binds later work:** `census::schedule::spawn` takes `herdr_read_timeout`, and `local_scanner` passes it on. A scan keeps one shared `HerdrProbeDeadline`, and `scan_staged` stays nonblocking.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live check on natedev under load: five `cargo-handler probe` runs each show a herdr-named Codex window by its name. Take the window's pid from the probe's own output, and never type into or signal that window. Add a Change-Review line.
+**Gotchas:**
+- The deadline bounds the added wait, not the scan work itself. A scan past the deadline takes only an answer already queued.
+- `cargo-handler probe` ignores `LoadedConfig.error` and runs with defaults, as for every config error. Only the TUI shows a refused value.
+- No SSH live check ran; the five probes ran locally. Panic cleanup of the fixture was read, not fault-tested.
+
+**Ruled out:** a wait limit equal to `PROBE_TIMEOUT`, because it leaves no ssh or output time.
 
 ### Phase 45 — Handler rows expand and collapse like the cargo-port project list  · status: done
 
@@ -1871,8 +1806,12 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Source:** the showrunner, 2026-11-04, from the user's words "anything handler needs to do to support the staff file should be done so we can retire any mechanism scripts that are legacy".
 
+**Constraints from prior phases:**
+- Phase 42: `DispatchPairing` (`census/placement.rs` ≈159) joins a shell to its exact worker in one final tile through `DispatchPairing::join` (≈171), and `resolve_dispatches` (≈300) builds it. Its fixture is `census/fixtures/dispatch_pairing.json`. Its tests are in `census/worker_dispatch/tests.rs`, `agent_cell/tests/tree_tests.rs`, `census/scan/activity_scan_tests.rs` and `census/hierarchy_file_tests.rs`. Spec 2 changes the identities and keeps this behavior.
+- Phase 64: `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈414). `scan_staged` stays nonblocking.
+
 **Spec:**
-1. Read the announced 3n worker role through the existing schema-2 `StaffFileReader`. Extend `StaffFields`, `StaffRoster` and the shared `StaffSnapshot`; add no second reader. Reuse the checked staff ID, current session and parent session that the staff reader retains. Derive the unit from that validated parent identity. Replace `HierarchyEdges::with_worker_roles` with the staff role result. Use named results for unavailable membership, a root member and a managed member when extending the identity lookups. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
+1. Read the announced 3n worker role through the existing schema-2 `StaffFileReader`. Extend `StaffFields`, `StaffRoster` and the shared `StaffSnapshot`; add no second reader. Reuse the checked staff ID, current session and parent session that the staff reader retains. Derive the unit from that validated parent identity. Replace `HierarchyEdges::with_worker_roles` with the staff role result in each of its callers: scheduler publication (`census/schedule.rs` ≈675) and the probe report (`census/probe.rs` ≈427, in `scan_configured` since Phase 66). Use named results for unavailable membership, a root member and a managed member when extending the identity lookups. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
 2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing in `census/worker_dispatch/options.rs` and `DispatchDirectory::{Recorded, FromChild}`. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
 3. Remove the `role_map_cache.json` read in `census/command_inputs.rs`.
 4. Keep `mesh_runs` and `WorkerReference::{Staff, LegacyThread}` semantics. Resolve staff IDs again when the staff snapshot changes, even when run files do not change. Preserve live-supervisor record-path checks, finite start times and discovered run directories. A recognized command supplies only the step name; every other live run shows `waiting`. Keep one row per current thread, waiting or gate-step activity, independent director activity and completion removal. Keep legacy `director` fallback where legacy identity still needs it. A script name inside `bash -c` gives no step name.
@@ -1884,10 +1823,15 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - `crates/cargo-handler/src/census/command_inputs.rs`
 - `crates/cargo-handler/src/census/hierarchy.rs`
 - `crates/cargo-handler/src/census/hierarchy_file_tests.rs` — and its fixtures
+- `crates/cargo-handler/src/census/placement.rs` — `DispatchPairing`
+- `crates/cargo-handler/src/census/fixtures/dispatch_pairing.json`
+- `crates/cargo-handler/src/agent_cell/tests/tree_tests.rs` — the pairing consumer tests
 - `crates/cargo-handler/src/census/activity.rs`
 - `crates/cargo-handler/src/census/scan.rs`
 - `crates/cargo-handler/src/census/scan/activity_scan_tests.rs` — and its fixtures
 - `crates/cargo-handler/src/census/scan/staged_tests.rs` — and its fixtures
+- `crates/cargo-handler/src/census/schedule.rs` — scheduler publication of worker roles
+- `crates/cargo-handler/src/census/probe.rs` — `scan_configured` worker roles
 - `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer.
@@ -1969,37 +1913,38 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Acceptance gate:** `verify.sh test` and `verify.sh lint` clean for tui_pane, cargo-tile and cargo-handler; no test takes a second. Live: shots of cargo-handler and cargo-tile with the readout hidden and shown. The checkpoint adds a Change-Review line.
 
-### Phase 66 — Narrow tiles keep guides and readable names; the unassigned count matches its rows  · status: todo
+### Phase 66 — Narrow tiles keep guides and readable names; the unassigned count matches its rows  · status: done
 
-**Depends on:** none. Runs after Phase 62h, Phase 42 and Phase 65 (showrunner, 2026-11-06).
+#### As-built
 
-#### Work Order
-
-**Goal:** at every tile width, each row keeps its tree guides and its session name stays readable, and the unassigned pane's count matches the rows it draws.
-
-**Source:** showrunner order 6d8cdb12, 2026-11-06: a Spec of a dropped phase stays only when it fixes something broken today. These came from Phase 55 (design check 2026-10-30, `phases/43/shots/ages_120x40.png`) and Phase 51 (design check 2026-10-29, `phases/41/live/handler_named.png`).
-
-**Constraints from prior phases:**
-- Phase 27 keeps the core columns on narrow tiles; `TreeColumns::for_lines` (`agent_cell.rs` ≈453) keeps a column only when a drawn row has a value. Phase 49b adds model and effort columns in the same file and runs after this phase.
-- `tree_cell_line` (`agent_cell.rs` ≈2602) drops the whole guide prefix when fewer than two name cells remain after it.
-- Both width paths drop Directory, Branch, Type, Age and Account in that order: local fitting through `ColumnDrop::ORDER` (`agent_cell.rs` ≈504) and shared-column fitting through `GroupFitStep::ORDER` (≈936).
-- `SurfaceSelection::rows_readout` (`crates/cargo-handler/src/interaction.rs` ≈361) counts selectable identities. An unassigned table also draws its header line, which the count does not include.
-- Phase 41's shot: the unassigned pane says "content rows: 2 of 2" and draws 3 rows; the third, `phase41-check`, has the same status, account, branch and age as `cargo-liner-handler-c6`, with only its session cell lit.
-
-**Spec:**
-1. Reproduce each defect below on today's tree with a red test first. A defect with no reproduction leaves this phase; report it to the director.
-2. Tree guides are cut (Phase 55 Spec 1). At 120×40 the natedev tile drew two depth-3 rows ("ws-impl…", "Dispatch…") at the tile's left edge with no guides. Draw every row's guides at its own depth at every width; cut the name after the guides, never the guides.
-3. Session names are cut (Phase 55 Spec 2). The same tile cut session names to two letters ("re…" for both "report" and "resources") beside a type column empty in 17 of 19 rows. Give an empty column's space to the session column. A column that is empty on most rows never takes room from session names.
-4. The unassigned count is wrong (Phase 51 Spec 2). Find out whether `phase41-check` is a real second session or a row left from an earlier frame. Stale: the pane clears every row it no longer draws. Real: the count includes it. The test reproduces the extra session identity or the stale cells across consecutive frames; equality of the drawn line count and the readout count is not the rule.
-5. CHANGELOG: one Fixed line.
+- Every child row keeps its tree guide (`TreeLine::lead`) at every tile width. `tree_cell_line` shortens the session name after the guide, never the guide.
+- `TreeColumnPopulation::measure` counts values per tile column with one presence predicate and feeds `PermittedTreeColumns::from_population`. `TreeColumnPopulation::density` returns `ColumnDensity::{Sparse, Dense}`. A `Sparse` column drops when the full table does not fit, before it takes room from session names.
+- Density is per tile. `TreeMetrics::merge` does not sum populations. `MeasuredTreeGroup::fit_tiles` applies each tile's own population at each `GroupFitStep::Drop` step, then splits the group into single-member groups that the `(x, columns)` key merges again.
+- `fit_tree_names(columns, widths, guide_width, width)` gives `tree_header`, `tree_cell_line` and `TreeMetrics::drop_step` one name budget with reduced gaps. `TreeMeasurement::minimum_tile_width` reserves `session_guide_width + 1`.
+- `census::probe::print` delegates to `print_to(&LoadedConfig, scan, stdout, stderr)`. The probe keeps the defaults and writes `loaded.error` to stderr with the TUI's text; stdout stays one JSON report. `scan_configured(&Config)` is also in the module.
+- The unassigned-count fault does not reproduce. A test guards the count and the removal of a finished session across frames. The hung-host census test waits on `blocked_started: Sender<()>` before it asserts, and a closed signal channel does not panic the runner thread.
 
 **Files:**
-- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/agent_cell/tests/` — tree guides, column space, unassigned rows and count
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/agent_cell.rs` — population, density, group fit, name budget, guide reservation
+- `crates/cargo-handler/src/agent_cell/tests/repair_tests.rs` — guide, sparse-column, stacked-tile and minimum-width tests
+- `crates/cargo-handler/src/agent_cell/tests/unassigned_tests.rs` — unassigned count across frames
+- `crates/cargo-handler/src/census/probe.rs` — `print_to`, `scan_configured`, refused-config test
+- `crates/cargo-handler/src/census/schedule.rs` — blocked-start signal in the hung-host test
+- `crates/cargo-handler/CHANGELOG.md` — one Fixed line
 
-**Workers:** 1 writer.
+**Binds later work:**
+- `TreeColumns::for_lines` no longer exists. The model and effort columns use the per-tile `TreeColumnPopulation` and `ColumnDensity` API.
+- The work that keeps child stderr from the terminal keeps the probe's own refused-config diagnostic on stderr.
+- Marker cells depend on guide retention on narrow rows (tests `narrow_tree_rows_keep_every_ancestor_guide`, `minimum_tile_width_reserves_depth_three_guides_and_status`).
+- `tree_header` and `tree_cell_line` share `fit_tree_names`. Click mapping that reuses `tree_header` reads the same budget.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: shots at 200×50 and 120×40 show the guides and the readable names. The checkpoint adds a Change-Review line.
+**Gotchas:**
+- The narrow age budget is 34 cells: session 9, role 7, status 8, age 5, three one-cell gaps and two indents. In `a_narrow_cell_compresses_however_many_rows_it_has`, the restored-age width is 35 and the absence width is 33.
+- A minimum-width calculation must use `fit_tree_names`. Full `TABLE_COLUMN_SPACING` gaps do not match the reduced gaps that drawing uses.
+
+**Ruled out:**
+- A dependency of the marker-cell work on the click-mapping work: packaging only; a shared-geometry constraint replaces it.
+- New acceptance checks for the model and effort columns, worker-role and marker-cell work: no check is added without the user.
 
 ### Phase 49a — The census reads each agent's model and effort  · status: todo
 
@@ -2018,6 +1963,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - `Rollouts::thread` returns `Option<&RolloutRead>` (`census/tier.rs` ≈425). Give it a named result such as `ThreadRollout::{NotRetained, Retained(..)}`, and keep a retained record with unrecorded model or effort distinct from a missing rollout; add no domain-owned `Option` fields.
 - Rows are built in `census/tree.rs` (subagents ≈657, flattened children ≈740) and `census/classify.rs`.
 - Phase 47 owns `census/{activity.rs,scan.rs,hierarchy.rs,command_inputs.rs,activity_regression_tests.rs}` and `app.rs`; claim a shared file through berth, or keep the read in `transcript.rs`, `codex.rs` and a new `census/model.rs`.
+- Phase 64: `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈414). `scan_staged` stays nonblocking.
 
 **Spec:**
 1. One typed model name: `ModelName` with a short form from one table (`opus`, `sonnet`, `haiku`, `fable`, and the Codex names such as `astra`, `sol`), and `ModelName::Unrecorded` where no record names one. An unknown full id keeps a short form cut by one rule (the last word of the id with no version digits), never a placeholder string.
@@ -2052,10 +1998,11 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 **Source:** as Phase 49a. Unit session `phases/49/source.md`.
 
 **Constraints from prior phases:**
-- Two width paths: local fitting uses `ColumnDrop::ORDER` (`agent_cell.rs` ≈503); tiles that share a screen column use `GroupFitStep::ORDER` (≈935). Both drop effort before model; test both.
-- A click on the `model` or `effort` header sorts by the drawn value through `TreeLine::compare` (≈1260), `Unrecorded` included.
-- `TreeColumn` (`agent_cell.rs` ≈341) is `Session, Type, Role, Status, Account, Branch, Directory, Age`; `alignment` (≈357) and the header text (≈380) are per column. Phase 55 replaces the rule of `TreeColumns::for_lines` (≈453), which kept a column when some drawn row had a value: a column that is empty on most rows never takes room from session names. Phase 27 keeps the core columns on narrow tiles; Phase 43 changes the age text in the same file.
+- Two width paths: local fitting uses `ColumnDrop::ORDER` (`agent_cell.rs` ≈584); tiles that share a screen column use `GroupFitStep::ORDER` (≈1048). Both drop effort before model; test both.
+- A click on the `model` or `effort` header sorts by the drawn value through `TreeLine::compare` (≈1507), `Unrecorded` included.
+- `TreeColumn` (`agent_cell.rs` ≈381) is `Session, Type, Role, Status, Account, Branch, Directory, Age`; `alignment` (≈397) and the header text (≈411) are per column. Phase 66 removed `TreeColumns::for_lines`. Column presence and density come from one count per tile: `TreeColumnPopulation::measure` (≈511), `TreeColumnPopulation::density` (≈532, `ColumnDensity::{Sparse, Dense}`) and `PermittedTreeColumns::from_population` (≈559). A `Sparse` column drops when the full table does not fit, so it never takes room from session names; `MeasuredTreeGroup::fit_tiles` (≈1066) applies each tile's own density in shared fitting. Model and effort use the same population; add no second presence scan. `TreeMeasurement::minimum_tile_width` (≈941) reserves `session_guide_width + 1`. Phase 27 keeps the core columns on narrow tiles; Phase 43 changes the age text in the same file.
 - Phase 49a gives each row `ModelName` and `ReasoningEffort`, both with an `Unrecorded` case.
+- Phase 65: a tile requests its rows through `CellView::requested_at_width` (`agent_cell.rs` ≈2393), which keeps requested tree rows apart from height compression. The grid reuses its selected layout while its measurement inputs stay equal (`crates/tui_pane/src/tiles/grid.rs` ≈2385). New columns change demand only through that path. `crates/cargo-handler/src/render/narrow_width_tests.rs` (≈265: first-frame demand calls 200:7, 80:4, 50:2, 40:2, then exactly 2 on each later frame, and arrival with no second motion) stays green with no assertion changed.
 
 **Spec:**
 1. `TreeColumn::Model` (header `model`) and `TreeColumn::Effort` (header `effort`), after `Role`, left-aligned; `Unrecorded` draws nothing. Phase 66's rule applies to both columns: a column that is empty on most rows never takes room from session names.
@@ -2095,6 +2042,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
   - `codex_resume_last_uses_the_newest_older_thread_in_its_home_and_directory` (`census/codex_session_tests.rs` ≈447, module `census::scan::codex_session_tests`)
   - `pinned_accounts_require_headers_and_one_body_line` (`render/pinned_accounts_tests.rs`)
   - `selected_row_inks_keep_glyph_contrast_in_high_contrast_light` (`render/selected_ink_tests.rs`)
+- One Mac run under load on 2026-11-06 also took a second or more on three others: `shortcuts_overlay_wheel_scrolls_and_keeps_tiles_still` (`app.rs` ≈570, 1.837 s), `incremental_codex_last_tier_after_the_old_head_limit_replaces_priority` (`census/incremental_read_tests.rs` ≈265, 1.391 s) and `each_tree_sort_uses_its_own_column_instead_of_reusing_name_or_age_order` (`agent_cell/tests/sort_tests.rs` ≈621, 1.003 s). The next Mac run had every test below 1 s. Treat them as the list above: measure them, and change code only when a test takes a second or more.
 - Find each by name in a `verify.sh test cargo-handler` run's timing output. Fix each at its cause (the work it repeats, a real sleep, a fixture built per case), never by weakening an assert.
 - A test that runs under a second alone but over a second in the full suite is still a defect. There is no exemption for a test that is fast alone.
 
@@ -2109,10 +2057,13 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - `crates/cargo-handler/src/render/selected_ink_tests.rs` — the five selected-row ink tests
 - `crates/cargo-handler/src/render/pinned_accounts_tests.rs` — the pinned accounts test
 - `crates/cargo-handler/src/census/codex_session_tests.rs` — the Codex tier test
+- `crates/cargo-handler/src/app.rs` — the overlay wheel test
+- `crates/cargo-handler/src/agent_cell/tests/sort_tests.rs` — the tree sort test
+- `crates/cargo-handler/src/census/incremental_read_tests.rs` — the incremental Codex tier test
 
 **Workers:** 2 writers.
-- `palette` — the gradient, design-ink, selected-ink and pinned accounts test files.
-- `census` — `census/codex_session_tests.rs`, both Codex tests.
+- `palette` — the gradient, design-ink, selected-ink, pinned accounts and tree sort test files, and `app.rs`.
+- `census` — `census/codex_session_tests.rs` with both Codex tests, and `census/incremental_read_tests.rs`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean with no test over one second; lint clean. Change-Review: none (test time only).
 
@@ -2162,6 +2113,8 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Constraints from prior phases:**
 - `read_accounts` (`census/accounts.rs` ≈259) calls `hierarchy::run_output` (`census/hierarchy.rs` ≈512), which already sets null stdin, null stderr and piped stdout. `census/command_inputs.rs` caches commands and spawns none.
+- Phase 64: `census::schedule::spawn` takes the configured `herdr_read_timeout`, and `local_scanner` passes it to the scanner (`terminal.rs` ≈81, `census/schedule.rs` ≈694). A scheduler change keeps this argument.
+- Phase 66: `cargo-handler probe` writes a refused configuration value to its own stderr through `print_to` (`census/probe.rs` ≈432), and stdout stays one JSON report. That diagnostic is the probe's, not a child's: keep it, and keep `refused_probe_config_reports_the_same_error_without_changing_json` green.
 
 **Spec:**
 1. Reproduce the stray text first. Identify the process that wrote it and the output path that took it to the terminal, and write both in the summary.

@@ -552,6 +552,11 @@ pub(crate) const SSH_CONTROL_MASTER: &str = "ControlMaster=auto";
 const PROBE_SCAN_SSH_MARGIN: Duration = Duration::from_secs(10);
 /// Allow hierarchy discovery its deadline plus time for scanning and ssh.
 pub(crate) const PROBE_TIMEOUT: Duration = HIERARCHY_TIMEOUT.saturating_add(PROBE_SCAN_SSH_MARGIN);
+/// Reserve time for ssh and output after the local scan.
+const PROBE_SSH_OUTPUT_RESERVE: Duration = Duration::from_secs(2);
+/// Maximum scan span that leaves time for ssh and output.
+pub(crate) const HERDR_PROBE_WAIT_LIMIT: Duration =
+    PROBE_TIMEOUT.saturating_sub(PROBE_SSH_OUTPUT_RESERVE);
 /// How often a probe that has closed its output is checked for having
 /// exited.
 pub(crate) const PROBE_EXIT_CHECK: Duration = Duration::from_millis(20);
@@ -598,12 +603,8 @@ pub(crate) const REVIEW_JOB_HEADING: &str = "# ";
 
 /// Herdr exports its API address to pane processes.
 pub(crate) const HERDR_SOCKET_VARIABLE: &str = "HERDR_SOCKET_PATH";
-/// Bound the initial probe wait for the background worker.
-pub(crate) const HERDR_INITIAL_TIMEOUT: Duration = Duration::from_millis(100);
 /// The worker retries failed subscriptions without blocking a scan.
 pub(crate) const HERDR_SUBSCRIPTION_RETRY: Duration = Duration::from_millis(500);
-/// Bound each herdr API read and write.
-pub(crate) const HERDR_READ_TIMEOUT: Duration = Duration::from_millis(100);
 /// Bound each herdr API answer.
 pub(crate) const HERDR_ANSWER_LIMIT: u64 = 4 * 1024 * 1024;
 

@@ -9,6 +9,11 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
+- `StatusLineGlobal::fixed` uses the shared hint renderer for fixed modal keys.
+- `TileGrid::prepare_covered` updates covered grid geometry without painting. `cell_travel_duration` exposes the shared travel duration.
+
+- `StatusLineGlobal::after_uptime` omits an optional hint when uptime and the other status items need its space.
+- `TileGrid::draw_cell_view` paints one cell with grid travel. `CellTravel` sets its endpoints and elapsed time. `RowsReadout::shown` reports a row range.
 - `ColorMode::clear_colors` preserves terminal text modifiers when `NO_COLOR` disables colours.
 - Add `ExpansionModel`, `ExpansionTree`, and shared expansion actions and keys for application trees.
 - `wheel_framework_overlay` and `OverlayWheel` route a mouse wheel over the settings, keymap or global shortcuts overlay through the settings host; a host clears its own state first with `SettingsHost::before_settings_navigation`.
@@ -31,6 +36,10 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `PaneChrome::paint_tile_ground` paints the tile ground only on opaque screens and returns the fade colour, so transparent tiles keep fading toward the theme ground.
 
 ### Fixed
+
+- Optional status hints keep one trailing cell after the shortcuts hint.
+
+- Optional status hints keep two cells before the next shortcut.
 
 - The selected row in the global shortcuts overlay has one highlight width.
 - Tile growth, floor and area changes rebuild cached motion endpoints before reusing their bands and row measurements; unchanged frames reuse endpoint admission.

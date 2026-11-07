@@ -991,6 +991,11 @@ pub(crate) const LARGE_TABLE_TEST_AREA: Rect = Rect::new(0, 0, 70, 30);
 #[cfg(test)]
 pub(crate) const LARGE_TABLE_TEST_COMMAND: [&str; 1] = ["test"];
 
+/// The expanded cell uses a fixed Esc key.
+pub(crate) const COLLAPSE_HINT_KEY: &str = "esc";
+
+pub(crate) const COLLAPSE_HINT_LABEL: &str = "collapse";
+
 #[cfg(test)]
 mod tests {
     use super::ACCOUNT_HEADING_CLOSE;

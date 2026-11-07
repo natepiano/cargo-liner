@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Narrow session rows retain tree guides and give sparse optional columns to names. The probe reports refused configuration values on stderr.
+
 ### Added
 
 - Codex windows without a proven thread show their herdr pane name or tab label.
@@ -18,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Select rows with Up, Down, PageUp, PageDown, Home and End, click a row, or scroll the tile under the pointer. The mouse wheel scrolls the shortcuts, keymap and settings overlays and leaves the tiles behind them still. Selection follows sessions and worker seats as their work changes. Role and status widths follow the painted rows while age units remain aligned through scrolling.
 
 ### Changed
+- Match the accounts board: remove the read-age and in-use columns, show each role with busy, shell, idle and total counts, and add a total row.
 - Skip equal tile frames and repaint session ages when their minute labels or shared column width changes.
 - Read managers, members and staff names directly from the staff file (`staff_file` setting, schema 2), and reread it only when it changes. A missing staff file shows no staff names and no error. Remove the `hierarchy_command` setting and the review pool reader.
 - Idle CPU drops: the census watches its inputs, refreshes only changed process rows, reuses parsed worker data, and redraws body text only when it changes.
@@ -28,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The accounts table drops optional columns before it wraps, keeps account and error lines in view, and marks cut summary titles with “…”.
 - Reset shades follow time order: the soonest reset takes the nearest shade. On dark themes the shades go from yellow-green (soonest) to sea green (latest). On light themes a brighter violet means a sooner reset.
 - Light reset times use new ramp ends: violet to deep violet in Default Light and violet to indigo in High Contrast Light. No reset shade now matches the darkest violet session color.
-- The accounts table matches the accounts board: nine columns with lower-case headers, a separate `read` age, `enabled` and `in use` credit columns, and a green/red read dot. Session name colors stay apart from status, account and role colors. **Breaking:** user theme files must supply `session_hues` with exactly five colors under every variant; the old rainbow role keys are removed, and files without the list do not load.
+- The accounts table matches the accounts board: lower-case headers, an `enabled` credit column, and a green/red read dot. Session name colors stay apart from status, account and role colors. **Breaking:** user theme files must supply `session_hues` with exactly five colors under every variant; the old rainbow role keys are removed, and files without the list do not load.
 - Reset times use their own green (dark) or violet-to-indigo (light) ramp, never error red or a low-quota ink; a failed reading keeps its red dot. Each top-level session takes its own color whatever the size of its subtree, and light themes use more saturated session colors. Theme files can set the ramp ends with `reset_nearest` and `reset_farthest`.
 - Selected rows keep their text hues and adjust lightness for readability, reducing chroma only at the color gamut boundary; unselected rows retain their theme inks.
 - Low weekly-quota values use the theme's readable ink on dark and light backgrounds.
@@ -54,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tiles settle at once when the accounts table wraps: requested tree rows stay separate from allocation compression, so the first selected layout holds.
+- One-shot probes share a scan deadline while waiting for herdr names and use configurable socket time limits.
 - Show workers as waiting during every live detached run, including Python commands and shell strings.
 
 - Dispatch shells fold into their Codex or Claude worker rows by seat identity, including detached servers and current assign launchers.

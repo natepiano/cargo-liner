@@ -35,6 +35,17 @@ pub enum StatusLineGlobalAction<A: Action> {
     Framework(GlobalAction),
     /// App-owned global action from the registered [`Globals`] scope.
     App(A),
+    /// A fixed modal key uses the same slot styling as mapped actions.
+    Fixed {
+        key:   &'static str,
+        label: &'static str,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum GlobalSlotFit {
+    Required,
+    AfterUptime,
 }
 
 /// One global slot in the status line.
@@ -46,6 +57,7 @@ pub struct StatusLineGlobal<A: Action> {
     pub shortcut_state: ShortcutState,
     /// Whether the slot renders at all.
     pub visibility:     Visibility,
+    fit:                GlobalSlotFit,
 }
 
 impl<A: Action> StatusLineGlobal<A> {
@@ -56,6 +68,7 @@ impl<A: Action> StatusLineGlobal<A> {
             action:         StatusLineGlobalAction::Framework(action),
             shortcut_state: ShortcutState::Enabled,
             visibility:     Visibility::Visible,
+            fit:            GlobalSlotFit::Required,
         }
     }
 
@@ -73,7 +86,26 @@ impl<A: Action> StatusLineGlobal<A> {
             action:         StatusLineGlobalAction::App(action),
             shortcut_state: ShortcutState::Enabled,
             visibility:     Visibility::Visible,
+            fit:            GlobalSlotFit::Required,
         }
+    }
+
+    /// A fixed modal key rendered through the ordinary hint path.
+    #[must_use]
+    pub const fn fixed(key: &'static str, label: &'static str) -> Self {
+        Self {
+            action:         StatusLineGlobalAction::Fixed { key, label },
+            shortcut_state: ShortcutState::Enabled,
+            visibility:     Visibility::Visible,
+            fit:            GlobalSlotFit::Required,
+        }
+    }
+
+    /// Show this slot only when uptime and the other status items also fit.
+    #[must_use]
+    pub const fn after_uptime(mut self) -> Self {
+        self.fit = GlobalSlotFit::AfterUptime;
+        self
     }
 
     /// Copy of this slot with a different enabled / disabled state.
@@ -146,6 +178,7 @@ struct StatusLineItems {
     center:     Vec<Span<'static>>,
     notes:      Vec<Vec<Span<'static>>>,
     globals:    Vec<Span<'static>>,
+    with_hints: Vec<Span<'static>>,
 }
 
 impl<'a, A: Action> StatusLine<'a, A> {
@@ -204,18 +237,30 @@ pub fn render<Ctx, G>(
         .iter()
         .map(|note| status_line_note_spans(std::slice::from_ref(note), palette))
         .collect();
+    let required_globals = status
+        .globals
+        .iter()
+        .copied()
+        .filter(|global| global.fit == GlobalSlotFit::Required)
+        .collect::<Vec<_>>();
     let global_spans = if bar.global.is_empty() {
+        Vec::new()
+    } else {
+        status_line_global_spans::<Ctx, G>(keymap, &required_globals, palette)
+    };
+    let with_hints = if bar.global.is_empty() || required_globals.len() == status.globals.len() {
         Vec::new()
     } else {
         status_line_global_spans::<Ctx, G>(keymap, status.globals, palette)
     };
 
     let items = StatusLineItems {
-        uptime:     uptime_spans,
+        uptime: uptime_spans,
         navigation: navigation_spans,
-        center:     center_spans,
-        notes:      note_items,
-        globals:    global_spans,
+        center: center_spans,
+        notes: note_items,
+        globals: global_spans,
+        with_hints,
     };
     render_sections(frame, area, palette, items);
 }
@@ -250,11 +295,19 @@ where
     G: Globals<Ctx>,
 {
     let mut spans = Vec::new();
+    let mut hint_ends = Vec::new();
     for global in globals
         .iter()
         .filter(|global| matches!(global.visibility, Visibility::Visible))
     {
         let slot = match global.action {
+            StatusLineGlobalAction::Fixed { key, label } => {
+                support::push_hint(&mut spans, key, label, global.shortcut_state, palette);
+                if global.fit == GlobalSlotFit::AfterUptime {
+                    hint_ends.push(spans.len());
+                }
+                continue;
+            },
             StatusLineGlobalAction::Framework(action) => {
                 let Some(key) = keymap.framework_globals().key_for(action).cloned() else {
                     continue;
@@ -286,6 +339,15 @@ where
             },
         };
         support::push_slot(&mut spans, &slot, palette);
+        if global.fit == GlobalSlotFit::AfterUptime {
+            hint_ends.push(spans.len());
+        }
+    }
+    for end in hint_ends {
+        if let Some(separator) = spans.get_mut(end) {
+            // Keep two cells between hints, including the next key's leading cell.
+            separator.content = " ".into();
+        }
     }
     spans
 }
@@ -381,6 +443,16 @@ fn fitted_left_spans(room: usize, items: &mut StatusLineItems) -> Vec<Span<'stat
 
 /// Right-side items that fit with the trailing status-line cell retained.
 fn fitted_right_spans(total_width: usize, items: &mut StatusLineItems) -> Vec<Span<'static>> {
+    let hinted_width = items
+        .uptime
+        .iter()
+        .chain(items.notes.iter().flatten())
+        .chain(&items.with_hints)
+        .map(Span::width)
+        .sum::<usize>();
+    if !items.with_hints.is_empty() && hinted_width.saturating_add(2) <= total_width {
+        items.globals = std::mem::take(&mut items.with_hints);
+    }
     let room = total_width.saturating_sub(1);
     let global_width = items.globals.iter().map(Span::width).sum::<usize>();
     if global_width > room {
@@ -451,6 +523,7 @@ mod tests {
                 center,
                 notes,
                 globals,
+                with_hints: Vec::new(),
             };
             render_sections(
                 frame,

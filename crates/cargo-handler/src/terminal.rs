@@ -78,6 +78,7 @@ pub(crate) fn run() -> ExitCode {
                     dirs::home_dir().as_deref(),
                 ),
                 app.loaded_config.config.census.codex_thread_start_window,
+                app.loaded_config.config.census.herdr_read_timeout,
             ),
             appearance_updates,
         )
@@ -134,21 +135,10 @@ impl DisplayText {
                     .and_then(|seconds| started.checked_add(seconds))
                     .map_or(TextChange::Static, TextChange::At)
             },
-            Self::AccountReading { read_at } => {
-                let elapsed = now.saturating_sub(read_at);
-                let unit = [86_400, 3_600, 60, 1]
-                    .into_iter()
-                    .find(|unit| elapsed >= *unit)
-                    .unwrap_or(1);
-                let age = read_at
-                    .checked_add((elapsed / unit + 1).saturating_mul(unit))
-                    .map_or(TextChange::Static, TextChange::At);
-                let stale = read_at
-                    .checked_add(crate::constants::ACCOUNTS_STALE_SECONDS + 1)
-                    .filter(|at| *at > now)
-                    .map_or(TextChange::Static, TextChange::At);
-                age.earlier(stale)
-            },
+            Self::AccountReading { read_at } => read_at
+                .checked_add(crate::constants::ACCOUNTS_STALE_SECONDS + 1)
+                .filter(|at| *at > now)
+                .map_or(TextChange::Static, TextChange::At),
             Self::AccountResetDate => {
                 // A missing local midnight is retried each second across a clock transition.
                 i64::try_from(now)
@@ -821,20 +811,20 @@ mod tests {
     }
 
     #[test]
-    fn account_reading_age_and_staleness_request_body_frames() {
+    fn account_reading_requests_body_frames_only_at_staleness() {
         let mut app = App::new_for_test().expect("test app");
         app.accounts.table = AccountsTable::Ready(AccountsReading::parse(br#"{"accounts":[{"label":"fixture","roles":[],"weekly_left_percent":50,"resets_at":null,"credits":null,"use_credits":false,"read_ok":true,"read_at":"1970-01-01T00:01:40Z"}],"problems":[]}"#).expect("account reading"));
         let mut ticker = Ticker::new(mpsc::channel().1, mpsc::channel().1);
         let (now, mut terminal) = settle_body(&mut app, &mut ticker, 100);
         for (at, expected) in [
             (100, Repaint::NotNeeded),
-            (101, Repaint::Needed),
-            (159, Repaint::Needed),
-            (160, Repaint::Needed),
+            (101, Repaint::NotNeeded),
+            (159, Repaint::NotNeeded),
+            (160, Repaint::NotNeeded),
             (161, Repaint::NotNeeded),
-            (220, Repaint::Needed),
-            (3699, Repaint::Needed),
-            (3700, Repaint::Needed),
+            (220, Repaint::NotNeeded),
+            (3699, Repaint::NotNeeded),
+            (3700, Repaint::NotNeeded),
             (3701, Repaint::Needed),
             (3702, Repaint::NotNeeded),
         ] {
@@ -850,19 +840,18 @@ mod tests {
                 TextChange::At(100 + (elapsed / 60 + 1) * 60)
             );
         }
-        for (elapsed, next) in [
-            (0, 1),
-            (59, 60),
-            (60, 120),
-            (3_599, 3_600),
-            (3_600, 3_601),
-            (3_601, 7_200),
-            (86_400, 172_800),
-        ] {
+        for elapsed in [0, 59, 60, 3_599, 3_600] {
             assert_eq!(
                 DisplayText::AccountReading { read_at: 100 }.next_change(100 + elapsed),
-                TextChange::At(100 + next),
-                "reading age {elapsed}"
+                TextChange::At(100 + crate::constants::ACCOUNTS_STALE_SECONDS + 1),
+                "reading freshness {elapsed}"
+            );
+        }
+        for elapsed in [3_601, 86_400] {
+            assert_eq!(
+                DisplayText::AccountReading { read_at: 100 }.next_change(100 + elapsed),
+                TextChange::Static,
+                "stale reading {elapsed}"
             );
         }
         assert_eq!(
