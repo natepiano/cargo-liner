@@ -397,7 +397,7 @@ if [ "$1" != +%Y%m%d-%H%M%S ]; then
                 exit 1
             fi
             [ "$#" -eq 4 ] && [ "$1" = -u ] && [ "$2" = -d ] && [ "$4" = +%s ] || exit 94
-            exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" date "$3"
+            exec python3 -S "$SHIM_TEST_OBSERVATIONS/darwin-time.py" date "$3"
         fi
         [ "$#" -eq 5 ] && [ "$1" = -j ] && [ "$2" = -f ] || exit 92
         [ "$3" = '%a %b %e %H:%M:%S %Y' ] && [ "$5" = +%s ] || exit 93
@@ -405,7 +405,7 @@ if [ "$1" != +%Y%m%d-%H%M%S ]; then
             printf 'partial conversion output'
             exit 1
         fi
-        exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" date "$4"
+        exec python3 -S "$SHIM_TEST_OBSERVATIONS/darwin-time.py" date "$4"
     fi
     exec "$SHIM_TEST_REAL_DATE" "$@"
 fi
@@ -503,7 +503,7 @@ set -eu
 printf '%s\000' "${LC_ALL-}" "${TZ-}" "$@" > "$SHIM_TEST_OBSERVATIONS/ps-conversion"
 [ "${LC_ALL-}" = C ] || exit 91
 [ "$1" = -o ] && [ "$2" = lstart= ] && [ "$3" = -p ] || exit 92
-exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
+exec python3 -S "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
 "#,
     );
 }

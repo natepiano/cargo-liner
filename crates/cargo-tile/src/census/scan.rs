@@ -1047,7 +1047,7 @@ impl ProcessDiscovery {
     }
 }
 
-/// InvocationLifetimeReads selects processes that supply invocation rows, ancestry, or direct and
+/// `InvocationLifetimeReads` selects processes that supply invocation rows, ancestry, or direct and
 /// detached work.
 #[cfg(target_os = "macos")]
 struct InvocationLifetimeReads {
@@ -1082,7 +1082,8 @@ impl InvocationLifetimeReads {
         Self { pids }
     }
 
-    /// InvocationLifetimeReads adds fresh lifetimes without changing the prepared parent topology.
+    /// `InvocationLifetimeReads` adds fresh lifetimes without changing the prepared parent
+    /// topology.
     fn apply(
         self,
         census: &mut Census,
