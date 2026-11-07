@@ -556,7 +556,7 @@ struct MotionHeightPath {
 }
 
 /// A content retarget's filled endpoint, retained until its inputs change.
-#[derive(Default)]
+#[derive(Clone, Default, Eq, PartialEq)]
 enum RetargetedMotionDestination {
     /// The ordinary row allocator supplies the destination.
     #[default]
@@ -1262,6 +1262,51 @@ impl HeldCellLayout {
     }
 }
 
+/// Measurements selected together for one destination.
+#[derive(Clone)]
+pub(super) struct SelectedLayoutMeasurements<Id> {
+    pub(super) widths:  Vec<(TileContent<Id>, u16)>,
+    pub(super) demands: TileDemands<Id>,
+    depth:              usize,
+}
+
+/// A depth either has a measured fit or permits no candidate.
+enum CandidateDepthSelection<Id> {
+    NoFit,
+    Selected(SelectedLayoutMeasurements<Id>),
+}
+
+/// `LayoutDemandMeasurement` pairs candidate content `widths` with the provider's `demands`.
+#[derive(Clone, Eq, PartialEq)]
+struct LayoutDemandMeasurement<Id> {
+    widths:  Vec<(TileContent<Id>, u16)>,
+    demands: TileDemands<Id>,
+}
+
+/// `LayoutSelectionInputs` records `area`, `target`, `growth`, `rules` and candidate `measurements`
+/// for reuse checks.
+#[derive(Eq, PartialEq)]
+struct LayoutSelectionInputs<Id> {
+    area:         Rect,
+    target:       Vec<Slot<Id>>,
+    growth:       TileGrowth,
+    rules:        EndpointLayoutRules,
+    measurements: Vec<LayoutDemandMeasurement<Id>>,
+}
+
+/// `LayoutSelection` holds the `selected` destination measurements and the `inputs` that permit
+/// reuse.
+struct LayoutSelection<Id> {
+    inputs:   LayoutSelectionInputs<Id>,
+    selected: SelectedLayoutMeasurements<Id>,
+}
+
+/// A grid selects its first plan after its provider measures content.
+enum SelectedLayoutPlan<Id> {
+    Unmeasured,
+    Selected(Box<LayoutSelection<Id>>),
+}
+
 /// The arrangement a transition is moving away from.
 struct Transition<Id> {
     /// The cells as they stood before the change.
@@ -1347,6 +1392,8 @@ pub struct TileGrid<Id> {
     retargeted_destination: RetargetedMotionDestination,
     /// Admission is checked once until an arrangement or its rules change.
     layout_admission:       OnceLock<CheckedLayoutAdmission>,
+    /// One owner retains the candidate choice and its reuse inputs.
+    selected_plan:          SelectedLayoutPlan<Id>,
     #[cfg(test)]
     admission_checks:       AtomicUsize,
 }
@@ -1383,6 +1430,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             motion_heights:                MotionHeightPath::default(),
             retargeted_destination:        RetargetedMotionDestination::default(),
             layout_admission:              OnceLock::new(),
+            selected_plan:                 SelectedLayoutPlan::Unmeasured,
             #[cfg(test)]
             admission_checks:              AtomicUsize::new(0),
         }
@@ -2294,22 +2342,246 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         self.sync_demands(demands, growth, DemandSync::Independent);
     }
 
-    /// Fold demands measured by the current render into its destination.
+    /// Fold fixed render demands into the destination in internal tests.
+    #[cfg(test)]
     pub(super) fn sync_rendered_demands(&mut self, demands: &TileDemands<Id>, growth: TileGrowth) {
         self.sync_demands(demands, growth, DemandSync::CurrentRender);
     }
 
-    /// Reconcile one demand observation with the headed arrangement.
-    fn sync_demands(
+    /// Reconcile fixed demands from a scan or an internal test.
+    fn sync_demands(&mut self, demands: &TileDemands<Id>, growth: TileGrowth, sync: DemandSync) {
+        self.sync_selected_demands(demands, growth, sync, Self::fixed_selection);
+    }
+
+    /// Measure current widths before searching changed layout inputs.
+    pub(super) fn sync_measured_demands(
         &mut self,
-        demands: &TileDemands<Id>,
         growth: TileGrowth,
-        demand_sync: DemandSync,
-    ) {
+        mut measure: impl FnMut(&[(TileContent<Id>, u16)]) -> TileDemands<Id>,
+    ) -> SelectedLayoutMeasurements<Id> {
+        let widths = self.content_widths(self.area, growth);
+        let initial = measure(&widths);
+        let mut plan = std::mem::replace(&mut self.selected_plan, SelectedLayoutPlan::Unmeasured);
+        let selected = self.sync_selected_demands(
+            &initial,
+            growth,
+            DemandSync::CurrentRender,
+            |grid, target| {
+                let mut inputs = grid.selection_inputs(target, &widths, &initial);
+                if let SelectedLayoutPlan::Selected(previous) = &plan {
+                    let observation = inputs.measurements.remove(0);
+                    inputs
+                        .measurements
+                        .clone_from(&previous.inputs.measurements);
+                    if let Some(measured) = inputs
+                        .measurements
+                        .iter_mut()
+                        .find(|measured| measured.widths == widths)
+                    {
+                        *measured = observation;
+                    } else {
+                        inputs.measurements.push(observation);
+                    }
+                    if previous.inputs == inputs {
+                        return previous.selected.clone();
+                    }
+                }
+                inputs.measurements = vec![LayoutDemandMeasurement {
+                    widths:  widths.clone(),
+                    demands: initial.clone(),
+                }];
+                let mut selected =
+                    grid.search_destination(target, initial.summary_width, &mut |candidate| {
+                        if let Some(measured) = inputs
+                            .measurements
+                            .iter()
+                            .find(|measured| measured.widths == candidate)
+                        {
+                            return measured.demands.clone();
+                        }
+                        let demands = measure(candidate);
+                        inputs.measurements.push(LayoutDemandMeasurement {
+                            widths:  candidate.to_vec(),
+                            demands: demands.clone(),
+                        });
+                        demands
+                    });
+                if selected.widths.is_empty() {
+                    selected.widths.clone_from(&widths);
+                }
+                plan = SelectedLayoutPlan::Selected(Box::new(LayoutSelection {
+                    inputs,
+                    selected: selected.clone(),
+                }));
+                selected
+            },
+        );
+        self.selected_plan = plan;
+        selected
+    }
+
+    /// Read external inputs after the grid reconciles target slots.
+    fn selection_inputs(
+        &self,
+        target: &[Slot<Id>],
+        widths: &[(TileContent<Id>, u16)],
+        demands: &TileDemands<Id>,
+    ) -> LayoutSelectionInputs<Id> {
+        LayoutSelectionInputs {
+            area:         self.area,
+            target:       target.to_vec(),
+            growth:       self.growth,
+            rules:        EndpointLayoutRules::new(self.growth, &self.settings),
+            measurements: vec![LayoutDemandMeasurement {
+                widths:  widths.to_vec(),
+                demands: demands.clone(),
+            }],
+        }
+    }
+
+    /// Select depth from fixed demands when no provider can measure other widths.
+    fn fixed_selection(&self, target: &[Slot<Id>]) -> SelectedLayoutMeasurements<Id> {
+        SelectedLayoutMeasurements {
+            widths:  Vec::new(),
+            demands: self.demands.clone(),
+            depth:   summary_depth(
+                self.area,
+                &cell_wants(&self.demands, target, &self.settings),
+                self.growth,
+                &self.settings,
+            ),
+        }
+    }
+
+    /// Select the first depth that holds the summary at its own measured widths.
+    fn search_destination(
+        &self,
+        target: &[Slot<Id>],
+        preferred_width: u16,
+        measure: &mut impl FnMut(&[(TileContent<Id>, u16)]) -> TileDemands<Id>,
+    ) -> SelectedLayoutMeasurements<Id> {
+        let mut selected = self.fixed_selection(target);
+        for depth in 1..=usize::from(self.area.height).max(1) {
+            let ColumnPlan::Columns(base) = column_layout(
+                target.len() + TABLE_CELL,
+                depth,
+                self.growth,
+                self.area,
+                &self.settings,
+            ) else {
+                break;
+            };
+            if base.columns.summary_depth != depth {
+                break;
+            }
+            if let CandidateDepthSelection::Selected(candidate) =
+                self.select_depth(target, &base.columns, preferred_width, measure)
+            {
+                let stepped: Vec<_> = cell_wants(&candidate.demands, target, &self.settings)
+                    .into_iter()
+                    .map(|want| CellRowDemand::uniform(want.stepped_framed()))
+                    .collect();
+                let asked = stepped.first().map_or(0, |want| want.stepped_framed());
+                let capacity = summary_share(
+                    &stepped,
+                    self.area.height,
+                    depth,
+                    self.growth,
+                    self.settings.min_tile_height,
+                    self.area,
+                    &self.settings,
+                );
+                selected = candidate;
+                if capacity >= asked {
+                    break;
+                }
+            }
+        }
+        selected
+    }
+
+    /// Test each permitted column count and summary span at their own widths.
+    fn select_depth(
+        &self,
+        target: &[Slot<Id>],
+        base: &ColumnLayout,
+        preferred_width: u16,
+        measure: &mut impl FnMut(&[(TileContent<Id>, u16)]) -> TileDemands<Id>,
+    ) -> CandidateDepthSelection<Id> {
+        for columns in (1..=base.widths.len()).rev() {
+            let spans = if self.growth.widen_summary {
+                columns
+            } else {
+                1
+            };
+            for span in 1..=spans {
+                let widths = candidate_content_widths(target, self.area, base, columns, span);
+                let mut demands = measure(&widths);
+                demands.summary_width = preferred_width;
+                let held = self.candidate_held(target, base, &demands);
+                let layout = Grid::with_row_use(
+                    self.area,
+                    &held,
+                    self.growth,
+                    &self.settings,
+                    &mut |_, area, _| area.height,
+                );
+                let destination: Vec<_> = cells(target)
+                    .into_iter()
+                    .filter_map(|(content, index)| {
+                        layout
+                            .cell(index)
+                            .map(|rect| (content, frame_inner(rect).width))
+                    })
+                    .collect();
+                if widths == destination {
+                    return CandidateDepthSelection::Selected(SelectedLayoutMeasurements {
+                        widths,
+                        demands,
+                        depth: base.summary_depth,
+                    });
+                }
+            }
+        }
+        CandidateDepthSelection::NoFit
+    }
+
+    /// Judge a candidate without retained rows or previous frame measurements.
+    fn candidate_held(
+        &self,
+        target: &[Slot<Id>],
+        base: &ColumnLayout,
+        demands: &TileDemands<Id>,
+    ) -> HeldCellLayout {
+        HeldCellLayout {
+            rows:          cell_wants(demands, target, &self.settings),
+            focused:       FocusLocation::Departing,
+            summary_span:  if self.growth.widen_summary {
+                summary_span(self.area, base.widths.len(), demands.summary_width)
+            } else {
+                1
+            },
+            summary_depth: base.summary_depth,
+        }
+    }
+
+    /// Replace demands and retire admission checks that used the old demands.
+    fn replace_demands(&mut self, demands: &TileDemands<Id>) {
         if self.demands != *demands {
             self.layout_admission.take();
             self.demands = demands.clone();
         }
+    }
+
+    /// Reconcile one demand observation with the headed arrangement.
+    fn sync_selected_demands(
+        &mut self,
+        demands: &TileDemands<Id>,
+        growth: TileGrowth,
+        demand_sync: DemandSync,
+        select: impl FnOnce(&Self, &[Slot<Id>]) -> SelectedLayoutMeasurements<Id>,
+    ) -> SelectedLayoutMeasurements<Id> {
+        self.replace_demands(demands);
         self.set_layout(self.area, growth);
         if demand_sync == DemandSync::CurrentRender {
             self.fold_rendered_claims();
@@ -2394,17 +2666,14 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         // what they are asking for. Re-dividing the column is a step
         // like any other, and queued as one so it travels rather than
         // snapping.
-        let wanted_depth = summary_depth(
-            self.area,
-            &cell_wants(&self.demands, &arrangement, &self.settings),
-            growth,
-            &self.settings,
-        );
+        let selected = select(self, &arrangement);
+        let wanted_depth = selected.depth;
+        self.replace_demands(&selected.demands);
         if steps.is_empty() && matches!(self.motion, GridMotion::Moving(_)) {
             if demand_sync == DemandSync::CurrentRender {
-                self.resolve_key_destination_depth();
+                self.resolve_selected_destination_depth(wanted_depth);
             }
-            return;
+            return selected;
         }
         let settled = self.settled_held();
         if steps.is_empty()
@@ -2423,6 +2692,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             self.held = settled;
         }
         self.queue_with_depth(steps, wanted_depth, DestinationDepthStatus::Resolved);
+        selected
     }
 
     /// Which of `live` the grid can actually give a cell to: the ones
@@ -2707,6 +2977,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             self.growth,
             &self.settings,
         );
+        self.resolve_selected_destination_depth(wanted);
+    }
+
+    /// Resolve the active destination from candidate measurements.
+    fn resolve_selected_destination_depth(&mut self, wanted: usize) {
         let GridMotion::Moving(transition) = &mut self.motion else {
             return;
         };
@@ -2720,13 +2995,18 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             self.layout_admission.take();
         }
         self.held = held;
-        for step in &mut self.pending {
-            let depth = summary_depth(
-                self.area,
-                &cell_wants(&self.demands, &step.slots, &self.settings),
-                self.growth,
-                &self.settings,
-            );
+        let final_step = self.pending.len().saturating_sub(1);
+        for (index, step) in self.pending.iter_mut().enumerate() {
+            let depth = if index == final_step {
+                wanted
+            } else {
+                summary_depth(
+                    self.area,
+                    &cell_wants(&self.demands, &step.slots, &self.settings),
+                    self.growth,
+                    &self.settings,
+                )
+            };
             if step.depth != depth {
                 self.layout_admission.take();
                 step.depth = depth;
@@ -2986,6 +3266,21 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .and_then(|index| self.slots.get(index))
             .filter(|taken| claims(slot, taken))
             .map_or(Focus::Summary, |taken| Focus::Cell(taken.clone()));
+    }
+
+    /// Report active or queued motion for application render tests.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn has_pending_motion_for_test(&self) -> bool {
+        !matches!(self.motion, GridMotion::Settled) || !self.pending.is_empty()
+    }
+
+    /// Set zero-duration motion steps for tests that advance the grid through `tick()`.
+    #[doc(hidden)]
+    pub const fn set_instant_motion_for_test(&mut self) {
+        self.settings.animation_millis = 0;
+        self.settings.min_step_millis = 0;
+        self.settings.focus_animation_millis = 0;
     }
 
     /// Play every queued step at once, for tests that care where the
@@ -3942,6 +4237,49 @@ impl ColumnLayout {
         }
         ColumnPlan::Columns(RowAdmissibleColumnLayout { columns: self })
     }
+}
+
+/// Measure each candidate at the widths its physical columns provide.
+fn candidate_content_widths<Id: Clone>(
+    target: &[Slot<Id>],
+    area: Rect,
+    base: &ColumnLayout,
+    columns: usize,
+    span: usize,
+) -> Vec<(TileContent<Id>, u16)> {
+    let depth = base.summary_depth;
+    let positions = target.len() + TABLE_CELL + depth - 1;
+    let opened = Layout::horizontal(constraints_for_sizes(&fills(columns))).split(area);
+    let mut widths = Vec::with_capacity(positions);
+    for (column, &rect) in opened.iter().enumerate() {
+        let count = if columns == base.widths.len() {
+            base.widths[column]
+        } else {
+            positions / columns + usize::from(column < positions % columns)
+        };
+        widths.extend(std::iter::repeat_n(
+            frame_inner(share_borders(rect, area)).width,
+            count,
+        ));
+    }
+    if depth > 1 {
+        widths.drain(1..depth);
+    }
+    if let Some(last) = opened.get(span - 1) {
+        widths[0] = frame_inner(share_borders(
+            Rect {
+                width: last.right().saturating_sub(area.x),
+                ..area
+            },
+            area,
+        ))
+        .width;
+    }
+    cells(target)
+        .into_iter()
+        .map(|(content, _)| content)
+        .zip(widths)
+        .collect()
 }
 
 /// Use the deepest held summary whose physical residents fit the viewport.
@@ -6527,6 +6865,7 @@ fn eased(progress: u32) -> u32 {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::cell::Cell;
     use std::ops::RangeInclusive;
 
     use ratatui::buffer::Buffer;
@@ -8012,6 +8351,156 @@ mod tests {
         }
 
         fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
+    }
+
+    type DemandMeasurementWidths = Vec<(TileContent<u32>, u16)>;
+
+    const NARROW_TREE_WIDTH: u16 = 60;
+    const NARROW_SUMMARY_ROWS: u16 = 28;
+    const WIDE_SUMMARY_ROWS: u16 = 22;
+    const COMPRESSED_TREE_ROWS: u16 = 4;
+    const FULL_TREE_ROWS: u16 = 6;
+    const SUMMARY_PREFERRED_WIDTH: u16 = 78;
+
+    #[derive(Clone, Copy, Default, Eq, PartialEq)]
+    enum FramePreparation {
+        #[default]
+        Unprepared,
+        Prepared,
+    }
+
+    #[derive(Clone, Copy, Default, Eq, PartialEq)]
+    enum TreeHeaders {
+        #[default]
+        Full,
+        Compressed,
+    }
+
+    /// A narrow tree omits its heading and requests fewer rows.
+    #[derive(Default)]
+    struct NarrowTreeDemandCells {
+        prepared:           Cell<FramePreparation>,
+        compressed_headers: Cell<TreeHeaders>,
+        measurements:       RefCell<Vec<DemandMeasurementWidths>>,
+    }
+
+    impl crate::TileCells<u32> for NarrowTreeDemandCells {
+        fn summary_title(&self) -> &'static str { "accounts" }
+
+        fn prepare_frame(&self, allocations: impl FnOnce() -> Vec<(TileContent<u32>, Rect)>) {
+            let allocations = allocations();
+            assert!(!allocations.is_empty(), "the grid prepares its allocations");
+            self.compressed_headers.set(
+                if allocations.iter().any(|(content, area)| {
+                    matches!(content, TileContent::Group(_)) && area.width < NARROW_TREE_WIDTH
+                }) {
+                    TreeHeaders::Compressed
+                } else {
+                    TreeHeaders::Full
+                },
+            );
+            self.prepared.set(FramePreparation::Prepared);
+        }
+
+        fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            assert!(
+                self.prepared.get() == FramePreparation::Prepared,
+                "preparation precedes every measurement"
+            );
+            self.measurements.borrow_mut().push(widths.to_vec());
+            TileDemands {
+                summary:       if widths.iter().any(|(content, width)| {
+                    matches!(content, TileContent::Summary) && *width < NARROW_TREE_WIDTH
+                }) {
+                    usize::from(NARROW_SUMMARY_ROWS)
+                } else {
+                    usize::from(WIDE_SUMMARY_ROWS)
+                },
+                summary_width: SUMMARY_PREFERRED_WIDTH,
+                groups:        (1..=6)
+                    .map(|id| {
+                        let width = widths
+                            .iter()
+                            .find_map(|(content, width)| {
+                                (*content == TileContent::Group(id)).then_some(*width)
+                            })
+                            .unwrap_or(SUMMARY_PREFERRED_WIDTH);
+                        TileDemand {
+                            id,
+                            rows: if width < NARROW_TREE_WIDTH
+                                || self.compressed_headers.get() == TreeHeaders::Compressed
+                            {
+                                usize::from(COMPRESSED_TREE_ROWS)
+                            } else {
+                                usize::from(FULL_TREE_ROWS)
+                            },
+                        }
+                    })
+                    .collect(),
+            }
+        }
+
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            let rows = match content {
+                TileContent::Summary if area.width < NARROW_TREE_WIDTH => NARROW_SUMMARY_ROWS,
+                TileContent::Summary => WIDE_SUMMARY_ROWS,
+                TileContent::Group(_)
+                    if area.width < NARROW_TREE_WIDTH
+                        || self.compressed_headers.get() == TreeHeaders::Compressed =>
+                {
+                    COMPRESSED_TREE_ROWS
+                },
+                TileContent::Group(_) => FULL_TREE_ROWS,
+                TileContent::Empty(_) => 0,
+            };
+            rows.min(area.height)
+        }
+
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, area: Rect, _: Color) {
+            if matches!(content, TileContent::Group(_)) && area.height > 0 {
+                let header = if area.width < NARROW_TREE_WIDTH
+                    || self.compressed_headers.get() == TreeHeaders::Compressed
+                {
+                    "session role status"
+                } else {
+                    "session type role status account"
+                };
+                buffer.set_string(area.x, area.y, header, ratatui::style::Style::default());
+            }
+        }
+    }
+
+    #[test]
+    fn falling_tree_demand_keeps_the_first_selected_destination() {
+        let area = Rect::new(0, 0, 80, 70);
+        let growth = TileGrowth {
+            widen_summary: true,
+            ..redistribute(8)
+        };
+        let mut grid = TileGrid::<u32>::new();
+        grid.set_min_tile_width(33);
+        grid.set_summary_row_allocation(SummaryRowAllocation::BeforeTiles);
+        grid.set_tile_width_floor(TileWidthFloor::CompressSingleColumn);
+        let cells = NarrowTreeDemandCells::default();
+        draw_view_frame(&mut grid, &cells, area, growth);
+        grid.settle_for_test();
+        let destination = grid.placements(area, growth);
+        cells.prepared.set(FramePreparation::Unprepared);
+        cells.measurements.borrow_mut().clear();
+        draw_view_frame(&mut grid, &cells, area, growth);
+        grid.settle_for_test();
+        assert_eq!(
+            grid.placements(area, growth),
+            destination,
+            "the second draw keeps the selected destination"
+        );
+        cells.measurements.borrow_mut().clear();
+        draw_view_frame(&mut grid, &cells, area, growth);
+        assert_eq!(
+            cells.measurements.borrow().len(),
+            2,
+            "an unchanged draw measures only the two displays"
+        );
     }
 
     fn draw_view_frame(

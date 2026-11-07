@@ -29,6 +29,8 @@ use std::ffi::OsStr;
 use std::io::ErrorKind;
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStringExt;
+#[cfg(test)]
+use std::time::Duration;
 
 #[cfg(target_os = "macos")]
 use libproc::proc_pid::PIDInfo;
@@ -96,6 +98,8 @@ use super::worker_dispatch::WorkerNames;
 use super::worker_dispatch::WorkerRoleSource;
 use super::worker_dispatch::WorkerTask;
 use crate::config::CodexStartWindow;
+use crate::config::HerdrProbeWait;
+use crate::config::HerdrReadTimeout;
 use crate::constants::ACTIVITY_PROCESS_NAMES;
 use crate::constants::CALL_SEARCH_SETTLE;
 use crate::constants::CLAUDE_AGENT;
@@ -178,6 +182,7 @@ pub(super) struct LocalScanner {
     codex_links:         HashMap<u32, CodexSessionLink>,
     staff:               super::hierarchy::StaffDiscovery,
     codex_start_window:  CodexStartWindow,
+    herdr_probe_wait:    HerdrProbeWait,
     transcript_activity: HashMap<PathBuf, TranscriptRead>,
     subagent_activity:   HashMap<PathBuf, TranscriptRead>,
     subagent_reads:      SubagentReads,
@@ -355,6 +360,7 @@ impl LocalScanner {
             codex_links: HashMap::new(),
             staff: super::hierarchy::StaffDiscovery::Disabled,
             codex_start_window: crate::config::CodexStartWindow::default(),
+            herdr_probe_wait: HerdrProbeWait::default(),
             transcript_activity: HashMap::new(),
             subagent_activity: HashMap::new(),
             subagent_reads: SubagentReads::default(),
@@ -374,6 +380,21 @@ impl LocalScanner {
         self
     }
 
+    /// Use the configured wait only when the probe requests a completed scan.
+    pub(super) const fn with_herdr_probe_wait(mut self, wait: HerdrProbeWait) -> Self {
+        self.herdr_probe_wait = wait;
+        self
+    }
+
+    /// Use the configured socket timeout for this scanner's herdr worker.
+    pub(super) fn with_herdr_read_timeout(mut self, timeout: HerdrReadTimeout) -> Self {
+        self.herdr = self.herdr.with_read_timeout(timeout);
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) const fn herdr_socket_timeout(&self) -> Duration { self.herdr.socket_timeout() }
+
     /// Share the staff reader with hierarchy publication.
     pub(super) fn with_staff_file(
         mut self,
@@ -390,9 +411,13 @@ impl LocalScanner {
     /// Each scan refreshes the retained process table. sysinfo replaces a reused
     /// pid when its start time changes, including its command and directory.
     pub(super) fn scan(&mut self) -> (Vec<AgentRow>, StaffSnapshot) {
+        let deadline = super::herdr::HerdrProbeDeadline::from_scan_start(
+            Instant::now(),
+            self.herdr_probe_wait,
+        );
         let mut rows = Vec::new();
         let snapshot = self.scan_staged(|_, answer, _| rows = answer);
-        self.herdr.finish_initial(&mut self.codex_links);
+        self.herdr.finish_initial(&mut self.codex_links, deadline);
         self.attach_codex_names(&mut rows);
         classify::attach_staff_names(&mut rows, &snapshot.roster, &self.codex_links);
         (rows, snapshot)
@@ -1461,6 +1486,8 @@ struct ProcessCensus {
     #[cfg(test)]
     detail_refreshes: usize,
     #[cfg(test)]
+    read_starts:      Vec<Instant>,
+    #[cfg(test)]
     discovery:        TestProcessDiscovery,
 }
 
@@ -1540,6 +1567,8 @@ impl ProcessCensus {
     }
 
     fn read(&mut self, sessions: &[SessionRecord]) -> Arc<[ProcessEntry]> {
+        #[cfg(test)]
+        self.read_starts.push(Instant::now());
         self.read_at(sessions, Instant::now())
     }
 
@@ -2170,6 +2199,7 @@ mod tests {
     use std::io::BufRead;
     #[cfg(unix)]
     use std::process::Child;
+    use std::time::Duration;
 
     #[cfg(unix)]
     use census_test_support::StdinEchoExecutable;
@@ -2462,6 +2492,7 @@ mod tests {
             herdr:               HerdrNames::isolated(),
             codex_links:         HashMap::new(),
             codex_start_window:  crate::config::CodexStartWindow::default(),
+            herdr_probe_wait:    HerdrProbeWait::default(),
             transcript_activity: HashMap::new(),
             subagent_activity:   HashMap::new(),
             subagent_reads:      SubagentReads::default(),
@@ -2472,6 +2503,38 @@ mod tests {
             desktop_source: DesktopSource::Windows(Vec::new()),
             desktops:       None,
         }
+    }
+
+    #[test]
+    fn the_probe_deadline_starts_before_the_process_scan() {
+        let mut scanner = scanner();
+        scanner.processes = ProcessCensus::for_test();
+        scanner.scan();
+        assert!(
+            scanner.herdr.probe_starts[0] <= scanner.processes.read_starts[0],
+            "process discovery must spend the shared probe budget"
+        );
+    }
+
+    #[test]
+    fn scan_staged_publishes_without_waiting_for_herdr() {
+        let (finished, result) = std::sync::mpsc::channel();
+        let (received, scan) = HerdrNames::with_pending_answer(|herdr| {
+            let mut scanner = scanner();
+            scanner.processes = ProcessCensus::for_test();
+            scanner.herdr = herdr;
+            let scan = std::thread::spawn(move || {
+                let mut stages = Vec::new();
+                scanner.scan_staged(|stage, _, _| stages.push(stage));
+                finished.send(stages).expect("published stages");
+            });
+            (result.recv_timeout(Duration::from_millis(250)), scan)
+        });
+        scan.join().expect("staged scan thread");
+        assert_eq!(
+            received.expect("herdr must not block publication"),
+            vec![ScanStage::Classified, ScanStage::Completed]
+        );
     }
 
     #[test]

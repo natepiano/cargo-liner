@@ -370,6 +370,7 @@ impl SurfaceSelection {
     /// Replace section geometry only from the fitted summary lines.
     pub(crate) fn set_pin(&mut self, pin: SectionPin) {
         self.pin = pin;
+        self.update_content_height();
         self.keep_visible();
     }
 
@@ -397,9 +398,28 @@ impl SurfaceSelection {
         self.viewport.set_len(self.rows.len());
         self.viewport
             .set_pos(index.min(self.rows.len().saturating_sub(1)));
-        self.viewport
-            .set_content_height(self.rows.last().map_or(0, |(_, span)| span.end()));
+        self.update_content_height();
         self.keep_visible();
+    }
+
+    /// Include the table tail without making it selectable.
+    fn update_content_height(&mut self) {
+        let selected_end = self.rows.last().map_or(0, |(_, span)| span.end());
+        let table_end = match &self.pin {
+            SectionPin::NoAccounts => 0,
+            SectionPin::Accounts { body, .. } => body.end,
+        };
+        self.viewport
+            .set_content_height(selected_end.max(table_end));
+    }
+
+    /// Navigation after the final row can expose unselectable table lines.
+    const fn scroll_end(&self, span: RowSpan) -> usize {
+        if self.viewport.pos().saturating_add(1) == self.rows.len() {
+            self.viewport.content_height()
+        } else {
+            span.end()
+        }
     }
 
     pub(crate) fn selected_span(&self) -> SelectedSpan {
@@ -425,18 +445,19 @@ impl SurfaceSelection {
         }
         self.viewport.navigate(action);
         self.keep_visible();
-        if let Some((_, span)) = self.rows.get(self.viewport.pos())
-            && span.continuation_lines > 0
-        {
+        if let Some((_, span)) = self.rows.get(self.viewport.pos()) {
             match action {
                 NavAction::Home
                     if span.end().saturating_sub(span.start()) > self.viewport.visible_rows() =>
                 {
                     self.viewport.set_scroll_offset(span.start());
                 },
-                NavAction::End => self
-                    .viewport
-                    .set_scroll_offset(span.end().saturating_sub(self.viewport.visible_rows())),
+                NavAction::End => {
+                    let offset = self
+                        .scroll_end(*span)
+                        .saturating_sub(self.viewport.visible_rows());
+                    self.viewport.set_scroll_offset(offset);
+                },
                 _ => {},
             }
         }
@@ -448,7 +469,8 @@ impl SurfaceSelection {
         let Some((_, span)) = self.rows.get(self.viewport.pos()) else {
             return false;
         };
-        if visible == 0 || span.end().saturating_sub(span.start()) <= visible {
+        let end = self.scroll_end(*span);
+        if visible == 0 || end.saturating_sub(span.start()) <= visible {
             return false;
         }
         let offset = self.viewport.scroll_offset();
@@ -461,10 +483,8 @@ impl SurfaceSelection {
             NavAction::HalfPageUp => (false, (visible / 2).max(1)),
             NavAction::Home | NavAction::End => return false,
         };
-        let next = if forward && offset.saturating_add(visible) < span.end() {
-            offset
-                .saturating_add(step)
-                .min(span.end().saturating_sub(visible))
+        let next = if forward && offset.saturating_add(visible) < end {
+            offset.saturating_add(step).min(end.saturating_sub(visible))
         } else if !forward && offset > span.start() {
             offset.saturating_sub(step).max(span.start())
         } else {
@@ -529,7 +549,12 @@ impl SurfaceSelection {
             let mapping = ViewportMapping::new(&self.pin, offset, height);
             let (body_start, visible, _) = mapping.body();
             self.viewport.set_viewport_rows(visible);
-            offset = if span.end() - span.start() > visible {
+            let showing_tail = self.scroll_end(span) > span.end()
+                && offset >= span.start()
+                && body_start.saturating_add(visible) > span.end();
+            offset = if showing_tail {
+                offset
+            } else if span.end() - span.start() > visible {
                 if span.end() <= body_start || span.start() >= body_start.saturating_add(visible) {
                     span.start()
                 } else {

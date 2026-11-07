@@ -17,6 +17,7 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::SyncSender;
 use std::sync::mpsc::{self};
 use std::thread;
+use std::time::Duration;
 use std::time::Instant;
 
 use serde::Deserialize;
@@ -36,11 +37,28 @@ use sysinfo::UpdateKind;
 use super::classify;
 use super::classify::CodexSessionLink;
 use super::classify::ProcessEntry;
+use crate::config::HerdrProbeWait;
+use crate::config::HerdrReadTimeout;
 use crate::constants::HERDR_ANSWER_LIMIT;
-use crate::constants::HERDR_INITIAL_TIMEOUT;
-use crate::constants::HERDR_READ_TIMEOUT;
 use crate::constants::HERDR_SOCKET_VARIABLE;
 use crate::constants::HERDR_SUBSCRIPTION_RETRY;
+
+/// The probe shares one name deadline with the scan that requested the names.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct HerdrProbeDeadline {
+    scan_started: Instant,
+    wait:         HerdrProbeWait,
+}
+
+impl HerdrProbeDeadline {
+    pub(super) const fn from_scan_start(scan_started: Instant, wait: HerdrProbeWait) -> Self {
+        Self { scan_started, wait }
+    }
+
+    fn remaining(self, now: Instant) -> Duration {
+        (self.scan_started + self.wait.duration()).saturating_duration_since(now)
+    }
+}
 
 /// Environment discovery is specific to one process lifetime.
 #[derive(Clone, Debug)]
@@ -83,19 +101,23 @@ struct PaneMembership {
 /// Pane membership and environment addresses have separate lifetime keys.
 #[derive(Debug, Default)]
 struct HerdrReader {
-    addresses:   HashMap<(u32, u64), HerdrAddress>,
-    memberships: HashMap<(PathBuf, String), PaneMembership>,
-    events:      HashMap<PathBuf, PaneEvents>,
+    read_timeout: HerdrReadTimeout,
+    addresses:    HashMap<(u32, u64), HerdrAddress>,
+    memberships:  HashMap<(PathBuf, String), PaneMembership>,
+    events:       HashMap<PathBuf, PaneEvents>,
 }
 
 /// The scan uses completed answers. Only the worker reads the API.
 #[derive(Debug, Default)]
 pub(super) struct HerdrNames {
-    worker:     NameWorker,
-    clients:    Vec<NameClient>,
-    generation: u64,
-    answers:    HashMap<(u32, u64), String>,
-    initial:    InitialAnswer,
+    read_timeout:            HerdrReadTimeout,
+    #[cfg(test)]
+    pub(super) probe_starts: Vec<Instant>,
+    worker:                  NameWorker,
+    clients:                 Vec<NameClient>,
+    generation:              u64,
+    answers:                 HashMap<(u32, u64), String>,
+    initial:                 InitialAnswer,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -160,6 +182,26 @@ impl HerdrNames {
         }
     }
 
+    /// Keep an unanswered channel connected while a staged scan runs.
+    #[cfg(test)]
+    pub(super) fn with_pending_answer<T>(test: impl FnOnce(Self) -> T) -> T {
+        let (send, work) = mpsc::sync_channel(1);
+        let (answers, receive) = mpsc::channel();
+        let names = Self {
+            worker: NameWorker::Running {
+                send,
+                receive,
+                inputs: Arc::default(),
+            },
+            initial: InitialAnswer::Pending,
+            ..Self::default()
+        };
+        let result = test(names);
+        drop(answers);
+        drop(work);
+        result
+    }
+
     pub(super) fn refresh(
         &mut self,
         processes: &[ProcessEntry],
@@ -190,7 +232,7 @@ impl HerdrNames {
         if clients.iter().any(|c| c.need == NameNeed::PaneName)
             && matches!(self.worker, NameWorker::Dormant)
         {
-            self.worker = NameWorker::start();
+            self.worker = NameWorker::start(self.read_timeout);
         }
         if let NameWorker::Running { send, inputs, .. } = &self.worker {
             if clients != self.clients {
@@ -203,9 +245,7 @@ impl HerdrNames {
                     });
                     self.answers.clear();
                     self.clients = clients;
-                    if matches!(self.initial, InitialAnswer::NotRequested) {
-                        self.initial = InitialAnswer::Pending;
-                    }
+                    self.initial = InitialAnswer::Pending;
                     // Any queued signal makes the worker take the latest snapshot.
                     let _ = send.try_send(NameWork::Processes);
                 }
@@ -242,26 +282,59 @@ impl HerdrNames {
         }
     }
 
-    /// A one-shot probe gives the worker a bounded time for its initial answer.
-    pub(super) fn finish_initial(&mut self, links: &mut HashMap<u32, CodexSessionLink>) {
-        if matches!(self.initial, InitialAnswer::Pending)
-            && let NameWorker::Running { receive, .. } = &self.worker
-            && let Ok(answers) = receive.recv_timeout(HERDR_INITIAL_TIMEOUT)
-            && answers.generation == self.generation
-        {
-            self.initial = InitialAnswer::Ready;
-            self.answers = answers
-                .names
-                .into_iter()
-                .map(|(p, name)| ((p.pid, p.started), name))
-                .collect();
+    /// Set the socket timeout before the worker starts.
+    pub(super) const fn with_read_timeout(mut self, timeout: HerdrReadTimeout) -> Self {
+        self.read_timeout = timeout;
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) const fn socket_timeout(&self) -> Duration { self.read_timeout.duration() }
+
+    /// A probe waits for its current generation within the scan deadline.
+    pub(super) fn finish_initial(
+        &mut self,
+        links: &mut HashMap<u32, CodexSessionLink>,
+        deadline: HerdrProbeDeadline,
+    ) {
+        #[cfg(test)]
+        self.probe_starts.push(deadline.scan_started);
+        self.finish_initial_with(links, deadline, Instant::now, Receiver::recv_timeout);
+    }
+
+    /// The channel and clock boundary lets tests advance time without sleeping.
+    fn finish_initial_with(
+        &mut self,
+        links: &mut HashMap<u32, CodexSessionLink>,
+        deadline: HerdrProbeDeadline,
+        mut now: impl FnMut() -> Instant,
+        mut receive: impl FnMut(&Receiver<NameAnswer>, Duration) -> Result<NameAnswer, RecvTimeoutError>,
+    ) {
+        while matches!(self.initial, InitialAnswer::Pending) {
+            let NameWorker::Running {
+                receive: channel, ..
+            } = &self.worker
+            else {
+                break;
+            };
+            let Ok(answer) = receive(channel, deadline.remaining(now())) else {
+                break;
+            };
+            if answer.generation == self.generation {
+                self.initial = InitialAnswer::Ready;
+                self.answers = answer
+                    .names
+                    .into_iter()
+                    .map(|(process, name)| ((process.pid, process.started), name))
+                    .collect();
+            }
         }
         self.apply(links);
     }
 }
 
 impl NameWorker {
-    fn start() -> Self {
+    fn start(read_timeout: HerdrReadTimeout) -> Self {
         let (send, work) = mpsc::sync_channel(1);
         let (answers, receive) = mpsc::channel();
         let inputs = Arc::new(Mutex::new(None::<NameInputs>));
@@ -269,7 +342,10 @@ impl NameWorker {
         let launched = thread::Builder::new()
             .name("herdr-names".into())
             .spawn(move || {
-                let mut reader = HerdrReader::default();
+                let mut reader = HerdrReader {
+                    read_timeout,
+                    ..HerdrReader::default()
+                };
                 let mut processes = Vec::new();
                 let mut links = HashMap::new();
                 let mut generation = 0;
@@ -324,11 +400,11 @@ enum PaneEvents {
 }
 
 impl PaneEvents {
-    fn subscribe(path: &Path) -> Self {
+    fn subscribe(path: &Path, timeout: HerdrReadTimeout) -> Self {
         let open = || -> Result<UnixStream, ()> {
             let mut stream = UnixStream::connect(path).map_err(|_| ())?;
             stream
-                .set_write_timeout(Some(HERDR_READ_TIMEOUT))
+                .set_write_timeout(Some(timeout.duration()))
                 .map_err(|_| ())?;
             let subscriptions: Vec<_> = [
                 "pane.created",
@@ -365,9 +441,9 @@ impl PaneEvents {
         }
     }
 
-    fn retry(&mut self, path: &Path) -> bool {
+    fn retry(&mut self, path: &Path, timeout: HerdrReadTimeout) -> bool {
         if matches!(self, Self::Unavailable { retry_at } if Instant::now() >= *retry_at) {
-            *self = Self::subscribe(path);
+            *self = Self::subscribe(path, timeout);
             return matches!(self, Self::Connected { .. });
         }
         false
@@ -448,7 +524,7 @@ impl HerdrReader {
         let mut changed = false;
         for (path, events) in &mut self.events {
             changed |= events.changed();
-            changed |= events.retry(path);
+            changed |= events.retry(path, self.read_timeout);
         }
         changed
     }
@@ -489,10 +565,13 @@ impl HerdrReader {
         for path in &sockets {
             self.events
                 .entry(path.clone())
-                .or_insert_with(|| PaneEvents::subscribe(path))
-                .retry(path);
+                .or_insert_with(|| PaneEvents::subscribe(path, self.read_timeout))
+                .retry(path, self.read_timeout);
         }
-        self.refresh_from(processes, links, &sockets, request);
+        let timeout = self.read_timeout;
+        self.refresh_from(processes, links, &sockets, |path, method, params| {
+            request(path, method, params, timeout)
+        });
     }
 
     fn refresh_from(
@@ -650,13 +729,18 @@ fn process_address(pid: u32) -> HerdrAddress {
 }
 
 /// Send only read requests. A missing or failed API silently leaves the pid.
-fn request(socket: &Path, method: &str, params: &Value) -> Result<Value, ()> {
+fn request(
+    socket: &Path,
+    method: &str,
+    params: &Value,
+    timeout: HerdrReadTimeout,
+) -> Result<Value, ()> {
     let mut stream = UnixStream::connect(socket).map_err(|_| ())?;
     stream
-        .set_read_timeout(Some(HERDR_READ_TIMEOUT))
+        .set_read_timeout(Some(timeout.duration()))
         .map_err(|_| ())?;
     stream
-        .set_write_timeout(Some(HERDR_READ_TIMEOUT))
+        .set_write_timeout(Some(timeout.duration()))
         .map_err(|_| ())?;
     let mut bytes =
         serde_json::to_vec(&json!({"id":"cargo-handler", "method":method, "params":params}))

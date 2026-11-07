@@ -432,13 +432,16 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
         || grid.preparation_allocations(area, growth),
         || grid.motion_preparation_allocations(area, growth),
     );
-    let cells_widths = measurement_widths(grid, area, growth, GridDisplay::Cells);
-    let mut cells_demands = cells.demands(&cells_widths);
+    let selected = grid.sync_measured_demands(growth, |widths| {
+        let mut demands = cells.demands(widths);
+        add_readout_rows(&mut demands, widths);
+        demands
+    });
+    let cells_widths = selected.widths;
+    let cells_demands = selected.demands;
     let alone_widths = measurement_widths(grid, area, growth, GridDisplay::SummaryAlone);
     let mut alone_demands = cells.demands(&alone_widths);
-    add_readout_rows(&mut cells_demands, &cells_widths);
     add_readout_rows(&mut alone_demands, &alone_widths);
-    grid.sync_rendered_demands(&cells_demands, growth);
     let progress = grid.progress();
     grid.measure_row_steps(
         area,

@@ -498,9 +498,6 @@ impl SummaryLayout {
         let Some((_, first)) = self.accounts.selections.first() else {
             return SectionPin::NoAccounts;
         };
-        let Some((_, last)) = self.accounts.selections.last() else {
-            return SectionPin::NoAccounts;
-        };
         let start = self.machines.lines.len()
             + if self.machines.lines.is_empty() {
                 0
@@ -509,7 +506,7 @@ impl SummaryLayout {
             };
         SectionPin::Accounts {
             headers: start..start + first.start(),
-            body:    start + first.start()..start + last.end(),
+            body:    start + first.start()..start + self.accounts.lines.len(),
         }
     }
 

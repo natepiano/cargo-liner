@@ -2,6 +2,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::slice::Iter;
 
 use chrono::DateTime;
 use chrono::Duration;
@@ -9,6 +10,7 @@ use chrono::Local;
 use chrono::Utc;
 #[cfg(test)]
 use ratatui::buffer::Buffer;
+use ratatui::layout::Alignment;
 #[cfg(test)]
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -27,7 +29,6 @@ use tui_pane::text_default;
 
 use super::cell_width;
 use super::constants::ACCOUNT_READ_DOT;
-use super::constants::ACCOUNT_ROLE_SEPARATOR;
 use super::constants::ACCOUNTS_HEADING;
 use super::constants::LOW_WEEKLY_USAGE_COLOR;
 use super::constants::RESET_ROUNDING_SECONDS;
@@ -35,14 +36,15 @@ use super::constants::RESET_TIME_FORMAT;
 use super::constants::UNLIMITED_CREDITS_LABEL;
 use crate::census::accounts::AccountReadStatus;
 use crate::census::accounts::AccountRole;
+use crate::census::accounts::AccountRoleUsage;
 use crate::census::accounts::AccountUsage;
 use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
-use crate::census::accounts::CreditActivity;
 use crate::census::accounts::CreditPermission;
 use crate::census::accounts::Credits;
 use crate::census::accounts::Reading;
+use crate::census::accounts::RoleSessionCounts;
 use crate::constants::ACCOUNTS_LOW_PERCENT;
 use crate::constants::ACCOUNTS_STALE_SECONDS;
 use crate::constants::MISSING_VALUE;
@@ -107,8 +109,8 @@ fn compare_accounts(
             (false, false) => sort.direction.order(
                 left.roles
                     .iter()
-                    .map(|role| role.text())
-                    .cmp(right.roles.iter().map(|role| role.text())),
+                    .map(AccountRoleUsage::text)
+                    .cmp(right.roles.iter().map(AccountRoleUsage::text)),
             ),
             (left, right) => left.cmp(&right),
         },
@@ -127,17 +129,72 @@ fn compare_accounts(
             (CreditPermission::Disabled, CreditPermission::Enabled) => Ordering::Greater,
             _ => Ordering::Equal,
         },
-        AccountsColumn::InUse => match (left.credit_activity, right.credit_activity) {
-            (CreditActivity::InUse, CreditActivity::Idle) => Ordering::Less,
-            (CreditActivity::Idle, CreditActivity::InUse) => Ordering::Greater,
-            _ => Ordering::Equal,
-        },
-        AccountsColumn::Read => compare_readings(
-            &left.read_at,
-            &right.read_at,
+        AccountsColumn::Busy
+        | AccountsColumn::Shell
+        | AccountsColumn::Idle
+        | AccountsColumn::Total => compare_readings(
+            &account_count(left, sort.column),
+            &account_count(right, sort.column),
             sort.direction,
-            |left, right| right.cmp(left),
+            Ord::cmp,
         ),
+    }
+}
+
+/// Sum known role counts with the same rule for sorting and the total row.
+fn summed_counts<'a>(
+    roles: impl Iterator<Item = &'a AccountRoleUsage>,
+) -> Reading<RoleSessionCounts> {
+    roles
+        .filter_map(|role| match &role.counts {
+            Reading::Known(counts) => Some(counts.clone()),
+            Reading::Unavailable => None,
+        })
+        .try_fold(
+            RoleSessionCounts {
+                busy:  0,
+                shell: Reading::Unavailable,
+                idle:  0,
+                total: 0,
+            },
+            RoleSessionCounts::checked_add,
+        )
+        .into()
+}
+
+/// Count sorts act on the whole account and preserve its role group.
+fn account_count(account: &AccountUsage, column: AccountsColumn) -> Reading<u64> {
+    count_value(&summed_counts(account.roles.iter()), column)
+}
+
+fn role_count(role: &AccountRoleUsage, column: AccountsColumn) -> Reading<u64> {
+    count_value(&role.counts, column)
+}
+
+fn count_value(counts: &Reading<RoleSessionCounts>, column: AccountsColumn) -> Reading<u64> {
+    match column {
+        AccountsColumn::Busy => match counts {
+            Reading::Known(counts) => Reading::Known(counts.busy),
+            Reading::Unavailable => Reading::Unavailable,
+        },
+        AccountsColumn::Shell => match counts {
+            Reading::Known(counts) => counts.shell.clone(),
+            Reading::Unavailable => Reading::Unavailable,
+        },
+        AccountsColumn::Idle => match counts {
+            Reading::Known(counts) => Reading::Known(counts.idle),
+            Reading::Unavailable => Reading::Unavailable,
+        },
+        AccountsColumn::Total => match counts {
+            Reading::Known(counts) => Reading::Known(counts.total),
+            Reading::Unavailable => Reading::Unavailable,
+        },
+        AccountsColumn::Account
+        | AccountsColumn::WeeklyLeft
+        | AccountsColumn::Roles
+        | AccountsColumn::Resets
+        | AccountsColumn::Credits
+        | AccountsColumn::Enabled => Reading::Unavailable,
     }
 }
 
@@ -159,6 +216,7 @@ fn reset_colors(reading: &AccountsReading) -> BTreeMap<DateTime<Utc>, Color> {
 }
 
 /// A failure note belongs to exactly the reading it accompanies.
+#[derive(Clone, Copy)]
 enum FailureNote<'a> {
     Clear,
     Failed(&'a AccountsFailure),
@@ -193,15 +251,7 @@ impl<'a> From<&'a AccountsTable> for AccountsSection<'a> {
 
 #[cfg(test)]
 pub(super) fn height(table: &AccountsTable) -> usize {
-    match AccountsSection::from(table) {
-        AccountsSection::Hidden => 0,
-        AccountsSection::Failure(_) => 1,
-        AccountsSection::Reading { reading, note } => {
-            2 + reading.accounts.len()
-                + reading.problems.len()
-                + usize::from(matches!(note, FailureNote::Failed(_)))
-        },
-    }
+    height_at_width(table, 0, AccountsSort::SourceOrder, u16::MAX)
 }
 
 /// Measure exactly the lines drawn at this width, including wrapped accounts.
@@ -342,16 +392,6 @@ fn reset_label(at: DateTime<Utc>, now: u64) -> String {
     at.format(format).to_string()
 }
 
-/// Reading ages use only their largest whole unit, without an "ago" suffix.
-fn read_age(at: DateTime<Utc>, now: u64) -> String {
-    let seconds = now.saturating_sub(u64::try_from(at.timestamp()).unwrap_or_default());
-    let (size, unit) = [(86_400, "d"), (3_600, "h"), (60, "m"), (1, "s")]
-        .into_iter()
-        .find(|(size, _)| seconds >= *size)
-        .unwrap_or((1, "s"));
-    format!("{}{unit}", seconds / size)
-}
-
 /// Round the source balance once, then group its integer digits in thousands.
 fn credit_amount(amount: f64) -> String {
     let rounded = format!("{:.0}", amount.round());
@@ -369,44 +409,47 @@ fn credit_amount(amount: f64) -> String {
 }
 
 fn values(row: &AccountUsage, now: u64) -> [String; AccountsColumn::ALL.len()] {
-    let roles = if row.roles.is_empty() {
-        String::new()
-    } else {
-        row.roles
-            .iter()
-            .map(|role| role.text())
-            .collect::<Vec<_>>()
-            .join(ACCOUNT_ROLE_SEPARATOR)
-    };
-    [
-        row.label.clone(),
-        roles,
-        match row.weekly_left_percent {
+    AccountsColumn::ALL.map(|column| match column {
+        AccountsColumn::Account => row.label.clone(),
+        AccountsColumn::WeeklyLeft => match row.weekly_left_percent {
             Reading::Known(left) => format!("{:.0}%", left.round()),
             Reading::Unavailable => MISSING_VALUE.to_owned(),
         },
-        match row.resets_at {
+        AccountsColumn::Resets => match row.resets_at {
             Reading::Known(at) => reset_label(at, now),
             Reading::Unavailable => String::new(),
         },
-        match row.credits {
+        AccountsColumn::Credits => match row.credits {
             Credits::Amount(amount) => credit_amount(amount),
             Credits::Unlimited => UNLIMITED_CREDITS_LABEL.to_owned(),
             Credits::Unavailable => String::new(),
         },
-        match row.credit_permission {
+        AccountsColumn::Enabled => match row.credit_permission {
             CreditPermission::Enabled => "yes".to_owned(),
             CreditPermission::Disabled => String::new(),
         },
-        match row.credit_activity {
-            CreditActivity::InUse => "yes".to_owned(),
-            CreditActivity::Idle => String::new(),
-        },
-        match row.read_at {
-            Reading::Known(at) => read_age(at, now),
+        _ => String::new(),
+    })
+}
+
+/// Sum known role counts without inventing a shell reading.
+fn total_values(reading: &AccountsReading) -> [String; AccountsColumn::ALL.len()] {
+    let counts = summed_counts(reading.accounts.iter().flat_map(|account| &account.roles));
+    AccountsColumn::ALL.map(|column| match column {
+        AccountsColumn::Account => "total".to_owned(),
+        AccountsColumn::Busy
+        | AccountsColumn::Shell
+        | AccountsColumn::Idle
+        | AccountsColumn::Total => match count_value(&counts, column) {
+            Reading::Known(count) => count.to_string(),
             Reading::Unavailable => String::new(),
         },
-    ]
+        AccountsColumn::WeeklyLeft
+        | AccountsColumn::Roles
+        | AccountsColumn::Resets
+        | AccountsColumn::Credits
+        | AccountsColumn::Enabled => String::new(),
+    })
 }
 
 /// The width chooses exactly one presentation for headers, rows and selection.
@@ -462,35 +505,33 @@ impl AccountsFit {
     }
 }
 
-/// The continuation starts at Resets; account, role and quota share the first line.
+/// Role lines contain the counts. One account detail line contains the remaining columns.
 const fn on_first_line(column: AccountsColumn) -> bool {
     match column {
-        AccountsColumn::Account | AccountsColumn::Roles | AccountsColumn::WeeklyLeft => true,
-        AccountsColumn::Resets
-        | AccountsColumn::Credits
-        | AccountsColumn::Enabled
-        | AccountsColumn::InUse
-        | AccountsColumn::Read => false,
+        AccountsColumn::Account
+        | AccountsColumn::Roles
+        | AccountsColumn::WeeklyLeft
+        | AccountsColumn::Busy
+        | AccountsColumn::Shell
+        | AccountsColumn::Idle
+        | AccountsColumn::Total => true,
+        AccountsColumn::Resets | AccountsColumn::Credits | AccountsColumn::Enabled => false,
     }
 }
 
 /// Only these columns can leave the accounts table, in this order.
 #[derive(Clone, Copy)]
 enum AccountsColumnDrop {
-    InUse,
     Enabled,
-    Read,
     Credits,
 }
 
 impl AccountsColumnDrop {
-    const ORDER: [Self; 4] = [Self::InUse, Self::Enabled, Self::Read, Self::Credits];
+    const ORDER: [Self; 2] = [Self::Enabled, Self::Credits];
 
     const fn column(self) -> AccountsColumn {
         match self {
-            Self::InUse => AccountsColumn::InUse,
             Self::Enabled => AccountsColumn::Enabled,
-            Self::Read => AccountsColumn::Read,
             Self::Credits => AccountsColumn::Credits,
         }
     }
@@ -534,13 +575,7 @@ fn column_line(
         let value = &cells[index];
         let padding =
             widths[index].saturating_sub(u16::try_from(value.width()).unwrap_or(u16::MAX));
-        let right = matches!(
-            column,
-            AccountsColumn::WeeklyLeft
-                | AccountsColumn::Resets
-                | AccountsColumn::Credits
-                | AccountsColumn::Read
-        );
+        let right = column.alignment() == Alignment::Right;
         if right {
             spans.push(Span::raw(" ".repeat(usize::from(padding))));
         }
@@ -555,7 +590,7 @@ fn column_line(
     Line::from(spans)
 }
 
-/// Pack styled words; punctuation belongs to the preceding word.
+/// Pack styled words. Keep separators separate and punctuation with the preceding word.
 fn wrap_line(line: Line<'static>, width: u16, indent: u16) -> Vec<Line<'static>> {
     let room = width.saturating_sub(indent).max(1);
     let mut words: Vec<Line<'static>> = Vec::new();
@@ -581,6 +616,9 @@ fn wrap_line(line: Line<'static>, width: u16, indent: u16) -> Vec<Line<'static>>
             .iter()
             .all(|span| span.content.chars().all(|ch| matches!(ch, ',' | ':' | '·')));
         if punctuation && let Some(previous) = attached.last_mut() {
+            if word.spans.iter().any(|span| span.content.contains('·')) {
+                previous.spans.push(Span::raw(" "));
+            }
             previous.spans.extend(word.spans);
         } else {
             attached.push(word);
@@ -614,32 +652,28 @@ fn stacked_facts(
     fit: &AccountsFit,
 ) -> Vec<Line<'static>> {
     let mut facts = Vec::new();
-    for (column, prefix, suffix) in [
-        (AccountsColumn::WeeklyLeft, "", " left"),
-        (AccountsColumn::Resets, "resets ", ""),
-        (AccountsColumn::Credits, "credits ", ""),
-        (AccountsColumn::Enabled, "", ""),
-        (AccountsColumn::InUse, "", ""),
-        (AccountsColumn::Read, "read ", " ago"),
-    ] {
+    let facts_columns = std::iter::once((AccountsColumn::WeeklyLeft, String::new(), " left"))
+        .chain(AccountsColumn::COUNTS.map(|column| (column, format!("{} ", column.header()), "")))
+        .chain([
+            (AccountsColumn::Resets, "resets ".to_owned(), ""),
+            (AccountsColumn::Credits, "credits ".to_owned(), ""),
+            (AccountsColumn::Enabled, String::new(), ""),
+        ]);
+    for (column, prefix, suffix) in facts_columns {
         let index = column.index();
         if !fit.columns.contains(&column) || cells[index].width() == 0 {
             continue;
         }
         let mut fact = cells[index].clone();
-        match column {
-            AccountsColumn::Enabled => {
-                fact = Line::from(Span::styled("enabled", fact.spans[0].style));
-            },
-            AccountsColumn::InUse => fact = Line::from(Span::styled("in use", fact.spans[0].style)),
-            _ => {
-                let style = fact
-                    .spans
-                    .first()
-                    .map_or_else(Style::default, |span| span.style);
-                fact.spans.insert(0, Span::styled(prefix, style));
-                fact.spans.push(Span::styled(suffix, style));
-            },
+        if column == AccountsColumn::Enabled {
+            fact = Line::from(Span::styled("enabled", fact.spans[0].style));
+        } else {
+            let style = fact
+                .spans
+                .first()
+                .map_or_else(Style::default, |span| span.style);
+            fact.spans.insert(0, Span::styled(prefix, style));
+            fact.spans.push(Span::styled(suffix, style));
         }
         facts.push(fact);
     }
@@ -668,6 +702,49 @@ fn stacked_facts(
 }
 
 impl AccountLines {
+    /// Draw one role row with the fitted columns or stacked facts.
+    fn push_role_row(
+        &mut self,
+        fit: &AccountsFit,
+        dot: Span<'static>,
+        cells: &[Line<'static>; AccountsColumn::ALL.len()],
+        width: u16,
+    ) {
+        match fit.layout {
+            AccountsLayout::Full => self.push_columns(fit, &dot, cells, false),
+            AccountsLayout::TwoLine => {
+                let split = fit.columns.partition_point(|column| on_first_line(*column));
+                self.push_column_set(fit, &dot, cells, &fit.columns[..split], false);
+            },
+            AccountsLayout::Stacked => {
+                let mut heading = vec![dot, Span::raw(" ")];
+                heading.extend(cells[0].spans.iter().cloned());
+                if cells[AccountsColumn::Roles.index()].width() > 0 {
+                    heading.push(Span::raw("  "));
+                    heading.extend(cells[AccountsColumn::Roles.index()].spans.iter().cloned());
+                }
+                self.lines.extend(wrap_line(
+                    Line::from(heading),
+                    width,
+                    cell_width(SECTION_ITEM_INDENT).min(width.saturating_sub(1)),
+                ));
+                self.lines.extend(stacked_facts(cells, width, fit));
+            },
+        }
+    }
+
+    /// Append source problems and the last refresh failure.
+    fn push_notes(&mut self, reading: &AccountsReading, failure: FailureNote<'_>, width: u16) {
+        for problem in &reading.problems {
+            self.lines
+                .extend(wrap_line(note(problem.clone()), width, 0));
+        }
+        if let FailureNote::Failed(failure) = failure {
+            self.lines
+                .extend(wrap_line(note(failure.to_string()), width, 0));
+        }
+    }
+
     /// Build the section heading and fitted column headers with their hit regions.
     fn push_headers(&mut self, fit: &AccountsFit, sort: AccountsSort) {
         self.lines.push(Line::from(Span::styled(
@@ -678,19 +755,13 @@ impl AccountLines {
         )));
         let headers = std::array::from_fn(|index| {
             let column = AccountsColumn::ALL[index];
-            let mut header = super::truncated_line(
+            super::truncated_line(
                 Line::from(Span::styled(
                     sort.header(column),
                     Style::default().fg(label_color()),
                 )),
                 usize::from(fit.widths[index]),
-            );
-            if matches!(fit.layout, AccountsLayout::TwoLine) && column == AccountsColumn::Resets {
-                // The continuation header anchors the line; reset values stay right-aligned.
-                let padding = usize::from(fit.widths[index]).saturating_sub(header.width());
-                header.spans.push(Span::raw(" ".repeat(padding)));
-            }
-            header
+            )
         });
         self.push_columns(fit, &Span::raw(" "), &headers, true);
     }
@@ -702,7 +773,6 @@ impl AccountLines {
         cells: &[Line<'static>; AccountsColumn::ALL.len()],
         headers: bool,
     ) {
-        let widths = &fit.widths;
         let split = fit.columns.partition_point(|column| on_first_line(*column));
         let sets: &[&[AccountsColumn]] = match fit.layout {
             AccountsLayout::Full => &[&fit.columns],
@@ -710,59 +780,65 @@ impl AccountLines {
             AccountsLayout::Stacked => &[],
         };
         for &columns in sets {
-            let start = columns[0];
-            let prefix = if start == AccountsColumn::Account {
-                vec![
-                    Span::raw(SECTION_ITEM_INDENT),
-                    dot.clone(),
-                    Span::raw(" ".repeat(usize::from(TABLE_COLUMN_SPACING))),
-                ]
-            } else {
-                vec![Span::raw(" ".repeat(usize::from(account_name_indent())))]
-            };
-            if headers {
-                let mut x = prefix
-                    .iter()
-                    .map(|span| cell_width(&span.content))
-                    .sum::<u16>();
-                for &column in columns {
-                    let width = widths[column.index()];
-                    self.headers.push(HeaderSpan {
-                        column,
-                        columns: x..x.saturating_add(width),
-                        row: u16::try_from(self.lines.len()).unwrap_or(u16::MAX),
-                    });
-                    x = x.saturating_add(width).saturating_add(TABLE_COLUMN_SPACING);
-                }
-            }
-            self.lines.push(column_line(prefix, cells, widths, columns));
+            self.push_column_set(fit, dot, cells, columns, headers);
         }
+    }
+
+    fn push_column_set(
+        &mut self,
+        fit: &AccountsFit,
+        dot: &Span<'static>,
+        cells: &[Line<'static>; AccountsColumn::ALL.len()],
+        columns: &[AccountsColumn],
+        headers: bool,
+    ) {
+        let widths = &fit.widths;
+        let start = columns[0];
+        let prefix = if start == AccountsColumn::Account {
+            vec![
+                Span::raw(SECTION_ITEM_INDENT),
+                dot.clone(),
+                Span::raw(" ".repeat(usize::from(TABLE_COLUMN_SPACING))),
+            ]
+        } else {
+            vec![Span::raw(" ".repeat(usize::from(account_name_indent())))]
+        };
+        if headers {
+            let mut x = prefix
+                .iter()
+                .map(|span| cell_width(&span.content))
+                .sum::<u16>();
+            for &column in columns {
+                let width = widths[column.index()];
+                self.headers.push(HeaderSpan {
+                    column,
+                    columns: x..x.saturating_add(width),
+                    row: u16::try_from(self.lines.len()).unwrap_or(u16::MAX),
+                });
+                x = x.saturating_add(width).saturating_add(TABLE_COLUMN_SPACING);
+            }
+        }
+        self.lines.push(column_line(prefix, cells, widths, columns));
     }
 }
 
 /// Management roles use footer ink; other words and punctuation keep the row style.
-fn role_words(row: &AccountUsage, freshness: &Freshness, colors: &FooterColors) -> Line<'static> {
+fn role_words(
+    role: &AccountRoleUsage,
+    freshness: &Freshness,
+    colors: &FooterColors,
+) -> Line<'static> {
     let base = freshness.style();
-    if row.roles.is_empty() {
-        return Line::default();
-    }
-    let mut spans = Vec::new();
-    for role in &row.roles {
-        if !spans.is_empty() {
-            spans.push(Span::styled(ACCOUNT_ROLE_SEPARATOR, base));
-        }
-        let tint = match role {
-            AccountRole::Units => colors.role(FooterRole::UnitDirector),
-            AccountRole::Showrunners => colors.role(FooterRole::Showrunner),
-            AccountRole::Workers | AccountRole::Spare => FooterTint::Plain,
-        };
-        let style = match freshness {
-            Freshness::Fresh => tint.style(base),
-            Freshness::Stale | Freshness::Unread => tint.subdued_style(base),
-        };
-        spans.push(Span::styled(role.text(), style));
-    }
-    Line::from(spans)
+    let tint = match role.role {
+        AccountRole::Units => colors.role(FooterRole::UnitDirector),
+        AccountRole::Showrunners => colors.role(FooterRole::Showrunner),
+        AccountRole::Workers | AccountRole::Spare => FooterTint::Plain,
+    };
+    let style = match freshness {
+        Freshness::Fresh => tint.style(base),
+        Freshness::Stale | Freshness::Unread => tint.subdued_style(base),
+    };
+    Line::from(Span::styled(role.text(), style))
 }
 
 /// Source positions resolve equal sort keys in the same order for painting and selection.
@@ -783,6 +859,7 @@ fn row_cells(
     freshness: &Freshness,
     colors: &FooterColors,
     palette: &BTreeMap<DateTime<Utc>, Color>,
+    count_style: Style,
 ) -> [Line<'static>; AccountsColumn::ALL.len()] {
     let base = freshness.style();
     let mut cells = values.map(|value| Span::styled(value, base));
@@ -791,7 +868,7 @@ fn row_cells(
         Freshness::Stale | Freshness::Unread => colors.account(&row.label).subdued_style(base),
     };
     let numeric = Style::default().fg(text_default());
-    cells[2].style = match row.weekly_left_percent {
+    cells[AccountsColumn::WeeklyLeft.index()].style = match row.weekly_left_percent {
         Reading::Known(left) if left < ACCOUNTS_LOW_PERCENT => {
             footer_colors::readable_status_style(numeric.fg(LOW_WEEKLY_USAGE_COLOR))
         },
@@ -800,20 +877,128 @@ fn row_cells(
         },
         Reading::Known(_) | Reading::Unavailable => numeric,
     };
-    cells[3].style = match row.resets_at {
+    cells[AccountsColumn::Resets.index()].style = match row.resets_at {
         Reading::Known(at) => footer_colors::readable_status_style(numeric.fg(palette[&at])),
         Reading::Unavailable => numeric,
     };
-    cells[4].style = match row.credit_permission {
+    cells[AccountsColumn::Credits.index()].style = match row.credit_permission {
         CreditPermission::Enabled => numeric,
         CreditPermission::Disabled => {
             footer_colors::readable_status_style(FooterTint::Plain.subdued_style(numeric))
         },
     };
-    cells[7].style = footer_colors::readable_status_style(numeric);
-    let mut cells = cells.map(Line::from);
-    cells[1] = role_words(row, freshness, colors);
-    cells
+    for column in AccountsColumn::COUNTS {
+        cells[column.index()].style = count_style;
+    }
+    cells.map(Line::from)
+}
+
+/// Set the role and count cells for one account row.
+fn fill_role_values(values: &mut [String; AccountsColumn::ALL.len()], role: &AccountRoleUsage) {
+    role.text()
+        .clone_into(&mut values[AccountsColumn::Roles.index()]);
+    for column in AccountsColumn::COUNTS {
+        values[column.index()] = match role_count(role, column) {
+            Reading::Known(count) => count.to_string(),
+            Reading::Unavailable => String::new(),
+        };
+    }
+}
+
+/// One drawn role row belongs to an account group.
+#[derive(Clone)]
+struct AccountRoleRow {
+    values: [String; AccountsColumn::ALL.len()],
+    role:   Line<'static>,
+}
+
+/// An account group owns its first row, freshness and role continuations.
+struct AccountGroup<'a> {
+    account:       &'a AccountUsage,
+    freshness:     Freshness,
+    first:         AccountRoleRow,
+    continuations: Iter<'a, AccountRoleUsage>,
+}
+
+impl<'a> AccountGroup<'a> {
+    fn new(account: &'a AccountUsage, now: u64, colors: &FooterColors) -> Self {
+        let freshness = Freshness::new(account, now);
+        let mut roles = account.roles.iter();
+        let mut first = AccountRoleRow {
+            values: values(account, now),
+            role:   Line::default(),
+        };
+        if let Some(role) = roles.next() {
+            fill_role_values(&mut first.values, role);
+            first.role = role_words(role, &freshness, colors);
+        }
+        Self {
+            account,
+            freshness,
+            first,
+            continuations: roles,
+        }
+    }
+
+    fn rows<'b>(&'b self, colors: &'b FooterColors) -> impl Iterator<Item = AccountRoleRow> + 'b {
+        std::iter::once(self.first.clone()).chain(self.continuations.clone().map(|role| {
+            let mut values = std::array::from_fn(|_| String::new());
+            fill_role_values(&mut values, role);
+            AccountRoleRow {
+                values,
+                role: role_words(role, &self.freshness, colors),
+            }
+        }))
+    }
+
+    fn draw(
+        self,
+        result: &mut AccountLines,
+        fit: &AccountsFit,
+        colors: &FooterColors,
+        palette: &BTreeMap<DateTime<Utc>, Color>,
+        count_style: Style,
+        width: u16,
+    ) {
+        let first = result.lines.len();
+        let dot = match self.account.read_status {
+            AccountReadStatus::Ok => tui_pane::success_color(),
+            AccountReadStatus::Failed => tui_pane::error_color(),
+        };
+        let mut mark = Span::styled(ACCOUNT_READ_DOT, Style::default().fg(dot));
+        for row in self.rows(colors) {
+            let mut cells = row_cells(
+                self.account,
+                row.values,
+                &self.freshness,
+                colors,
+                palette,
+                count_style,
+            );
+            cells[AccountsColumn::Roles.index()] = super::truncated_line(
+                row.role,
+                usize::from(fit.widths[AccountsColumn::Roles.index()]),
+            );
+            result.push_role_row(fit, mark, &cells, width);
+            mark = Span::raw(" ");
+        }
+        if matches!(fit.layout, AccountsLayout::TwoLine) {
+            let cells = row_cells(
+                self.account,
+                self.first.values,
+                &self.freshness,
+                colors,
+                palette,
+                count_style,
+            );
+            let split = fit.columns.partition_point(|column| on_first_line(*column));
+            result.push_column_set(fit, &Span::raw(" "), &cells, &fit.columns[split..], false);
+        }
+        result.selections.push((
+            self.account.label.clone(),
+            RowSpan::single(first).with_continuations(result.lines.len() - first - 1),
+        ));
+    }
 }
 
 /// Resolve one reading into ordered, measured lines for drawing and hit testing.
@@ -838,72 +1023,33 @@ pub(super) fn build_lines(
         AccountsSection::Reading { reading, note } => (reading, note),
     };
     let palette = reset_colors(reading);
-    let ordered = ordered_rows(reading, sort);
-    let rows: Vec<_> = ordered
-        .iter()
-        .map(|(_, row)| *row)
-        .map(|row| {
-            let freshness = Freshness::new(row, now);
-            (values(row, now), freshness)
-        })
+    let count_style = footer_colors::readable_status_style(Style::default().fg(text_default()));
+    let groups: Vec<_> = ordered_rows(reading, sort)
+        .into_iter()
+        .map(|(_, row)| AccountGroup::new(row, now, colors))
         .collect();
-    let widths = std::array::from_fn(|column| {
-        rows.iter()
-            .map(|(values, _)| cell_width(&values[column]))
-            .fold(
-                cell_width(&sort.header(AccountsColumn::ALL[column])),
-                u16::max,
-            )
+    let totals = total_values(reading);
+    let mut widths = std::array::from_fn(|column| {
+        cell_width(&sort.header(AccountsColumn::ALL[column])).max(cell_width(&totals[column]))
     });
-    let fit = AccountsFit::for_width(width, &widths);
-    let widths = &fit.widths;
-    result.push_headers(&fit, sort);
-    for ((_, row), (values, freshness)) in ordered.into_iter().zip(rows) {
-        let mut cells = row_cells(row, values, &freshness, colors, &palette);
-        let roles = &mut cells[AccountsColumn::Roles.index()];
-        *roles = super::truncated_line(
-            std::mem::take(roles),
-            usize::from(widths[AccountsColumn::Roles.index()]),
-        );
-        let dot = match row.read_status {
-            AccountReadStatus::Ok => tui_pane::success_color(),
-            AccountReadStatus::Failed => tui_pane::error_color(),
-        };
-        let first = result.lines.len();
-        let dot = Span::styled(ACCOUNT_READ_DOT, Style::default().fg(dot));
-        match fit.layout {
-            AccountsLayout::Full | AccountsLayout::TwoLine => {
-                result.push_columns(&fit, &dot, &cells, false);
-            },
-            AccountsLayout::Stacked => {
-                let mut heading = vec![dot, Span::raw(" ")];
-                heading.extend(cells[0].spans.iter().cloned());
-                if cells[1].width() > 0 {
-                    heading.push(Span::raw("  "));
-                    heading.extend(cells[1].spans.iter().cloned());
-                }
-                result.lines.extend(wrap_line(
-                    Line::from(heading),
-                    width,
-                    cell_width(SECTION_ITEM_INDENT).min(width.saturating_sub(1)),
-                ));
-                result.lines.extend(stacked_facts(&cells, width, &fit));
-            },
+    for row in groups.iter().flat_map(|group| group.rows(colors)) {
+        for column in AccountsColumn::ALL {
+            let index = column.index();
+            widths[index] = widths[index].max(cell_width(&row.values[index]));
         }
-        result.selections.push((
-            row.label.clone(),
-            RowSpan::single(first).with_continuations(result.lines.len() - first - 1),
-        ));
     }
-    for problem in &reading.problems {
-        result
-            .lines
-            .extend(wrap_line(note(problem.clone()), width, 0));
+    let fit = AccountsFit::for_width(width, &widths);
+    result.push_headers(&fit, sort);
+    for group in groups {
+        group.draw(&mut result, &fit, colors, &palette, count_style, width);
     }
-    if let FailureNote::Failed(failure) = failure {
-        result
-            .lines
-            .extend(wrap_line(note(failure.to_string()), width, 0));
+    if !reading.accounts.is_empty() {
+        let mut cells = totals.map(|value| Line::from(Span::styled(value, count_style)));
+        for span in &mut cells[AccountsColumn::Account.index()].spans {
+            span.style = span.style.add_modifier(Modifier::BOLD);
+        }
+        result.push_role_row(&fit, Span::raw(" "), &cells, width);
     }
+    result.push_notes(reading, failure, width);
     result
 }

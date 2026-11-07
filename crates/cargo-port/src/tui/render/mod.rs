@@ -18,7 +18,6 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -665,12 +664,8 @@ fn sync_hovered_pane_row(app: &mut App) {
 
 /// Preserve attributes and cursor positions in terminal output.
 fn prepare_terminal_buffer(buffer: &mut Buffer, mode: ColorMode) {
-    let no_color = mode == ColorMode::NoColor;
+    mode.clear_colors(buffer);
     for (cell, position) in buffer.content.iter_mut().zip(buffer.area.positions()) {
-        if no_color {
-            cell.fg = Color::Reset;
-            cell.bg = Color::Reset;
-        }
         if cell.symbol().ends_with('\u{fe0f}') {
             let width = u16::try_from(cell.symbol().width()).unwrap_or(u16::MAX);
             if let Some(width) = NonZeroU16::new(width) {

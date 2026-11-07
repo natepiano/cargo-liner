@@ -20,6 +20,7 @@ use crate::census::HierarchyEdges;
 use crate::census::MachineState;
 use crate::census::ShellTimerObservation;
 use crate::census::Timer;
+use crate::census::accounts::AccountsFailure;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
 use crate::census::scan::ScanStage;
@@ -110,6 +111,224 @@ fn paint(app: &mut App, width: u16, height: u16) -> Buffer {
     terminal.backend().buffer().clone()
 }
 
+/// Record the geometry supplied by the real grid before each demand call.
+struct ObservedCells<'a> {
+    cells:       Cells<'a>,
+    allocations: RefCell<Vec<(TileContent, Rect)>>,
+    widths:      RefCell<Vec<Vec<(TileContent, u16)>>>,
+}
+
+impl TileCells<TileKey> for ObservedCells<'_> {
+    fn summary_title(&self) -> &str { self.cells.summary_title() }
+
+    fn prepare_moving_frame(
+        &self,
+        _: impl FnOnce() -> Vec<(TileContent, Rect)>,
+        motion_bounds: impl FnOnce() -> Vec<(TileContent, Rect)>,
+    ) {
+        let allocations = motion_bounds();
+        self.allocations.replace(allocations.clone());
+        self.cells.prepare_frame(|| allocations);
+    }
+
+    fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands {
+        assert!(
+            !self.allocations.borrow().is_empty(),
+            "prepare before demand"
+        );
+        self.widths.borrow_mut().push(widths.to_vec());
+        self.cells.demands(widths)
+    }
+
+    fn rows_readout(&self, content: &TileContent, area: Rect, rows: usize) -> RowsReadout {
+        self.cells.rows_readout(content, area, rows)
+    }
+
+    fn draw(&self, buffer: &mut Buffer, content: &TileContent, area: Rect, ground: Color) {
+        self.cells.draw(buffer, content, area, ground);
+    }
+
+    fn group_title(&self, id: &TileKey) -> Option<Line<'static>> { self.cells.group_title(id) }
+}
+
+fn observed_cells(app: &App) -> ObservedCells<'_> {
+    ObservedCells {
+        cells:       Cells::new(
+            app.census
+                .machines(&app.loaded_config.config.machines.remote),
+            NOW,
+            app.footer_colors.colors(),
+            &app.tree_sorts,
+            app.summary_sort,
+        )
+        .with_expansion(&app.expansion)
+        .with_accounts(&app.accounts.table)
+        .with_accounts_sort(app.accounts_sort)
+        .with_selections(app.selections.clone(), SelectableSurface::EmptyCell),
+        allocations: RefCell::new(Vec::new()),
+        widths:      RefCell::new(Vec::new()),
+    }
+}
+
+/// Unchanged source data keeps the first destination on the next draw.
+#[test]
+fn unchanged_account_inputs_keep_the_first_selected_destination() {
+    assert_account_destination(&fixture(6));
+}
+
+fn assert_account_destination(source: &App) {
+    for width in [200, 80, 50, 40] {
+        let mut app = fixture(6);
+        let area = Rect::new(0, 0, width, 70);
+        let growth = app.loaded_config.config.tiles.growth();
+        app.tiles
+            .set_summary_row_allocation(SummaryRowAllocation::BeforeTiles);
+        app.tiles
+            .set_tile_width_floor(TileWidthFloor::CompressSingleColumn);
+        let mut destinations = Vec::new();
+        for _ in 0..2 {
+            let observed = observed_cells(source);
+            app.tiles
+                .set_min_tile_width(observed.cells.measure_trees(area));
+            tui_pane::draw_tile_grid(
+                &mut Buffer::empty(area),
+                &mut app.tiles,
+                area,
+                growth,
+                TileGridContents::Shown,
+                &observed,
+                ColorMode::Colored,
+            );
+            app.tiles.settle_for_test();
+            destinations.push(app.tiles.placements(area, growth));
+        }
+        assert_eq!(
+            destinations[1], destinations[0],
+            "the next draw keeps the first destination"
+        );
+    }
+}
+
+#[test]
+fn absent_accounts_keep_the_first_selected_destination() {
+    let mut source = fixture(6);
+    source.accounts.table = AccountsTable::NotConfigured;
+    assert_account_destination(&source);
+}
+
+#[test]
+fn failed_accounts_keep_the_first_selected_destination() {
+    let mut source = fixture(6);
+    source.accounts.table = AccountsTable::Failed(AccountsFailure::InvalidReading);
+    assert_account_destination(&source);
+}
+
+#[test]
+fn account_refresh_keeps_the_destination_through_animation_frames() {
+    for (width, search_calls, pending_motion) in
+        [(200, 7, true), (80, 4, true), (50, 2, true), (40, 2, true)]
+    {
+        let mut app = fixture(6);
+        app.accounts.table = AccountsTable::Ready(
+        AccountsReading::parse(br#"{"accounts":[{"label":"claude1","tool":"claude","roles":["workers"],"weekly_left_percent":60,"use_credits":false}],"problems":[]}"#)
+            .expect("the initial account reading"),
+    );
+        paint(&mut app, width, 70);
+        app.tiles.settle_for_test();
+        app.tiles.set_instant_motion_for_test();
+        let source = fixture(6);
+        let area = Rect::new(0, 0, width, 70);
+        let growth = app.loaded_config.config.tiles.growth();
+        for frame in 0..32 {
+            let observed = observed_cells(&source);
+            app.tiles
+                .set_min_tile_width(observed.cells.measure_trees(area));
+            let mut buffer = Buffer::empty(area);
+            tui_pane::draw_tile_grid(
+                &mut buffer,
+                &mut app.tiles,
+                area,
+                growth,
+                TileGridContents::Shown,
+                &observed,
+                ColorMode::Colored,
+            );
+            let text = lines(&buffer, area).join("\n");
+            assert!(
+                text.contains("accounts"),
+                "accounts during frame {frame}: {text}"
+            );
+            assert!(
+                text.contains("role"),
+                "tree headers during frame {frame}: {text}"
+            );
+            assert_eq!(
+                observed.widths.borrow().len(),
+                if frame == 0 { search_calls } else { 2 },
+                "demand calls at width {width} on frame {frame}",
+            );
+            if frame == 0 {
+                assert_eq!(
+                    app.tiles.has_pending_motion_for_test(),
+                    pending_motion,
+                    "the refresh has pending motion at width {width}",
+                );
+            }
+            app.tiles.tick();
+            if frame >= 3 && !app.tiles.has_pending_motion_for_test() {
+                break;
+            }
+        }
+        assert!(
+            !app.tiles.has_pending_motion_for_test(),
+            "tick completes the refresh motion at width {width}"
+        );
+        assert_account_arrival(&mut app, &source, area);
+    }
+}
+
+fn assert_account_arrival(app: &mut App, source: &App, area: Rect) {
+    let width = area.width;
+    let growth = app.loaded_config.config.tiles.growth();
+    let selected = app.tiles.placements(area, growth);
+    let observed = observed_cells(source);
+    let mut buffer = Buffer::empty(area);
+    tui_pane::draw_tile_grid(
+        &mut buffer,
+        &mut app.tiles,
+        area,
+        growth,
+        TileGridContents::Shown,
+        &observed,
+        ColorMode::Colored,
+    );
+    assert!(
+        !app.tiles.has_pending_motion_for_test(),
+        "arrival starts no second motion"
+    );
+    assert_eq!(
+        observed.widths.borrow().len(),
+        2,
+        "an arrival draw measures only the two displays at width {width}"
+    );
+    assert_eq!(
+        app.tiles.placements(area, growth),
+        selected,
+        "arrival starts no second motion"
+    );
+    let text = lines(&buffer, area).join("\n");
+    for label in LABELS {
+        assert!(
+            text.contains(label),
+            "account after arrival: {label}: {text}"
+        );
+    }
+    assert!(
+        text.contains(ERROR),
+        "the account error remains visible: {text}"
+    );
+}
+
 fn lines(buffer: &Buffer, area: Rect) -> Vec<String> {
     let area = area.intersection(buffer.area);
     (area.y..area.bottom())
@@ -169,7 +388,7 @@ fn assert_core_columns(text: &[String], width: u16) {
 
 fn assert_width(width: u16) {
     let mut app = fixture(6);
-    let buffer = paint(&mut app, width, 62);
+    let buffer = paint(&mut app, width, 70);
     let placements = app
         .tiles
         .placements(app.selection_area, app.loaded_config.config.tiles.growth());
@@ -223,17 +442,13 @@ fn assert_width(width: u16) {
         );
     }
     assert!(text.contains(ERROR), "lost error at {width}: {text}");
-    eprintln!(
-        "narrow width={width}: tiles={}/6, summary_rows={}, accounts=6/6, error=1",
-        groups.len(),
-        summary.frame.inner().height
-    );
 }
 
-/// Height 50 keeps the tiles and accounts while narrow tiles overflow their work rows.
+/// The viewport fits the accounts while narrow tiles still overflow their work rows.
 fn assert_constrained_width(width: u16) {
     let mut app = fixture(6);
-    let buffer = paint(&mut app, width, 50);
+    let height = if width <= 50 { 59 } else { 51 };
+    let buffer = paint(&mut app, width, height);
     let placements = app
         .tiles
         .placements(app.selection_area, app.loaded_config.config.tiles.growth());
@@ -314,7 +529,7 @@ fn narrow_grid_at_50_keeps_cells_and_core_headers() { assert_constrained_width(5
 fn narrow_grid_at_40_keeps_cells_and_core_headers() { assert_constrained_width(40); }
 
 #[test]
-fn grid_at_height_62_keeps_all_work_rows_and_accounts() {
+fn grid_at_height_70_keeps_all_work_rows_and_accounts() {
     for width in [200, 80, 50, 40] {
         assert_width(width);
     }
@@ -597,12 +812,6 @@ fn narrow_growth_at_end_includes_a_wide_role_above_the_saved_window() {
         })
         .expect("grown tile");
     let text = lines(buffer, placement.frame.inner()).join("\n");
-    eprintln!(
-        "growth width={} body={} offset={}",
-        placement.frame.inner().width,
-        state.viewport().visible_rows(),
-        state.viewport().scroll_offset()
-    );
     assert!(
         text.lines().any(|line| line
             .contains("rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr")
@@ -675,8 +884,8 @@ fn narrow_growth_reports_fixture_counts() {
     for (count, width, expected_groups, expected_summary_rows) in [
         (6, 200, 6, 28),
         (6, 80, 6, 28),
-        (6, 50, 6, 22),
-        (6, 40, 6, 22),
+        (6, 50, 6, 29),
+        (6, 40, 6, 29),
         (20, 34, 2, 43),
     ] {
         let mut app = fixture(count);

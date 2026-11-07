@@ -364,6 +364,7 @@ impl TerminalApp for App {
 
     fn draw(&mut self, frame: &mut Frame, keymap: &Keymap<Self>) {
         render::draw(frame, self, keymap);
+        self.framework.color_mode.clear_colors(frame.buffer_mut());
         #[cfg(test)]
         cpu_observation::publish_frame();
     }
@@ -470,6 +471,46 @@ impl FavoritesHost for App {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use ratatui::layout::Position;
+    use tui_pane::Appearance;
+    use tui_pane::ColorMode;
+    use tui_pane::GlobalAction;
+    use tui_pane::Hittable;
+    use tui_pane::ScrollDirection;
+    use tui_pane::TerminalApp;
+
+    use super::App;
+    use crate::progress::capture_roots::AccountCaptureDirectory;
+
+    #[test]
+    fn no_color_frame_keeps_the_focused_title_bold() {
+        let mut app = App::new_for_test().expect("test app");
+        app.framework.color_mode = ColorMode::NoColor;
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24))
+            .expect("test terminal");
+        terminal
+            .draw(|frame| app.draw(frame, &keymap))
+            .expect("app frame");
+        let buffer = terminal.backend().buffer();
+        assert!(
+            buffer
+                .content
+                .iter()
+                .all(|cell| cell.fg == ratatui::style::Color::Reset
+                    && cell.bg == ratatui::style::Color::Reset),
+            "every frame clears colours"
+        );
+        let title = (0..buffer.area.width)
+            .map(|x| &buffer[(x, 0)])
+            .find(|cell| cell.symbol().chars().any(char::is_alphabetic))
+            .expect("focused title");
+        assert!(
+            title.modifier.contains(ratatui::style::Modifier::BOLD),
+            "the focused title stays bold"
+        );
+    }
+
     #[test]
     fn shortcuts_overlay_wheel_scrolls_and_keeps_tiles_still() {
         let mut app = App::new_for_test().expect("test app");
@@ -547,16 +588,6 @@ mod tests {
         assert_eq!(app.framework.global_shortcuts_pane.viewport().pos(), start);
         assert_eq!(app.tiles.hit_test_at(outside), tile_before);
     }
-
-    use ratatui::layout::Position;
-    use tui_pane::Appearance;
-    use tui_pane::GlobalAction;
-    use tui_pane::Hittable;
-    use tui_pane::ScrollDirection;
-    use tui_pane::TerminalApp;
-
-    use super::App;
-    use crate::progress::capture_roots::AccountCaptureDirectory;
 
     #[test]
     fn roots_wait_for_worker_observations() {

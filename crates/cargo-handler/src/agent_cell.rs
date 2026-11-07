@@ -564,6 +564,7 @@ impl ColumnDrop {
 #[derive(Clone, Copy, Debug)]
 enum TreePresentation {
     Full,
+    HeightCompressed,
     Compressed,
 }
 
@@ -601,9 +602,15 @@ impl TreeMetrics {
         for (width, &other) in self.widths.iter_mut().zip(&other.widths) {
             *width = (*width).max(other);
         }
-        if matches!(other.presentation, TreePresentation::Compressed) {
-            self.presentation = TreePresentation::Compressed;
-        }
+        self.presentation = match (self.presentation, other.presentation) {
+            (TreePresentation::Compressed, _) | (_, TreePresentation::Compressed) => {
+                TreePresentation::Compressed
+            },
+            (TreePresentation::HeightCompressed, _) | (_, TreePresentation::HeightCompressed) => {
+                TreePresentation::HeightCompressed
+            },
+            (TreePresentation::Full, TreePresentation::Full) => TreePresentation::Full,
+        };
     }
 
     fn drop_step(&mut self, step: ColumnDrop, width: u16) {
@@ -646,7 +653,7 @@ impl<T: Copy> PresentationValues<T> {
     const fn get(&self, presentation: TreePresentation) -> T {
         match presentation {
             TreePresentation::Full => self.full,
-            TreePresentation::Compressed => self.compressed,
+            TreePresentation::Compressed | TreePresentation::HeightCompressed => self.compressed,
         }
     }
 }
@@ -709,7 +716,7 @@ impl TreeMeasurement {
         if full_above + usize::from(TABLE_HEADER_HEIGHT) + entry.lines.len()
             > usize::from(area.height)
         {
-            measurement.metrics.presentation = TreePresentation::Compressed;
+            measurement.metrics.presentation = TreePresentation::HeightCompressed;
         }
         measurement
     }
@@ -846,7 +853,7 @@ impl TreeMeasurement {
             if self.heading.rows.full + usize::from(TABLE_HEADER_HEIGHT) + self.role_rows.len()
                 > usize::from(area.height)
             {
-                TreePresentation::Compressed
+                TreePresentation::HeightCompressed
             } else {
                 TreePresentation::Full
             };
@@ -2290,6 +2297,31 @@ enum CellView {
 }
 
 impl CellView {
+    /// Request rows before the allocation compresses a tree that fits this width.
+    fn requested_at_width(
+        entry: &AgentEntry<'_>,
+        width: u16,
+        now: u64,
+        account_column: AccountColumn,
+    ) -> Self {
+        let sizing = entry.sizing.borrow();
+        if let TreeSizing::Shared(metrics) = &*sizing
+            && matches!(metrics.presentation, TreePresentation::HeightCompressed)
+            && metrics.heading_width <= width
+        {
+            return Self::tree_at_width(
+                &entry.lines,
+                entry.sort,
+                header_width(width),
+                now,
+                account_column,
+                SessionHeaderLead::OverBranch,
+                &sizing,
+            );
+        }
+        Self::at_width(entry, width, now, account_column)
+    }
+
     /// Fit every full tree column using the same header and value widths.
     fn tree_at_width(
         lines: &[TreeLine<'_>],
@@ -2388,7 +2420,7 @@ impl FittedTreeColumns {
     }
 }
 
-/// Rows requested for the exact view drawn at this width.
+/// Rows requested at this width before allocation-dependent height compression.
 pub(crate) fn height(
     entry: &AgentEntry<'_>,
     width: u16,
@@ -2399,7 +2431,7 @@ pub(crate) fn height(
         entry,
         width,
         now,
-        &CellView::at_width(entry, width, now, account_column),
+        &CellView::requested_at_width(entry, width, now, account_column),
         account_column,
     )
 }
@@ -2986,7 +3018,7 @@ enum TreeHeadingRow {
 
 fn above_tree_rows(row: &AgentRow, presentation: TreePresentation) -> Vec<TreeHeadingRow> {
     match (presentation, row.launched_by) {
-        (TreePresentation::Compressed, None) => Vec::new(),
+        (TreePresentation::Compressed | TreePresentation::HeightCompressed, None) => Vec::new(),
         (_, None) => vec![TreeHeadingRow::Heading, TreeHeadingRow::Place],
         (_, Some(launcher)) => vec![
             TreeHeadingRow::Heading,

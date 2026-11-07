@@ -52,6 +52,7 @@ use super::remote::SshRunner;
 use super::scan::LocalScanner;
 use super::scan::ScanStage;
 use crate::config::CodexStartWindow;
+use crate::config::HerdrReadTimeout;
 #[cfg(test)]
 use crate::constants::HIERARCHY_FIRST_PUBLISH_BUDGET;
 #[cfg(test)]
@@ -690,10 +691,10 @@ pub(crate) fn spawn(
     hierarchy: StaffFileSetting,
     account_labels: AccountLabels,
     codex_start_window: CodexStartWindow,
+    herdr_read_timeout: HerdrReadTimeout,
 ) -> Receiver<CensusUpdate> {
     let staff = StaffFileReader::default();
-    let mut scanner = LocalScanner::new(account_labels)
-        .with_codex_start_window(codex_start_window)
+    let mut scanner = local_scanner(account_labels, codex_start_window, herdr_read_timeout)
         .with_staff_file(hierarchy.clone(), staff.clone());
     spawn_staged_with(
         remotes,
@@ -711,6 +712,17 @@ pub(crate) fn spawn(
         },
         Cadence::LIVE,
     )
+}
+
+/// Apply the census settings before the TUI starts its scanner.
+fn local_scanner(
+    account_labels: AccountLabels,
+    codex_start_window: CodexStartWindow,
+    herdr_read_timeout: HerdrReadTimeout,
+) -> LocalScanner {
+    LocalScanner::new(account_labels)
+        .with_codex_start_window(codex_start_window)
+        .with_herdr_read_timeout(herdr_read_timeout)
 }
 
 /// Start the scheduler with `runner` probing the remotes and
@@ -986,6 +998,19 @@ mod tests {
     use crate::census::SessionIdentity;
     use crate::census::StaffRowNames;
     use crate::census::hierarchy::HierarchyError;
+    use crate::config::Config;
+
+    #[test]
+    fn the_tui_scanner_uses_the_configured_herdr_socket_timeout() {
+        let config: Config =
+            toml::from_str("[census]\nherdr_read_timeout = 275\n").expect("census settings");
+        let scanner = local_scanner(
+            AccountLabels::default(),
+            config.census.codex_thread_start_window,
+            config.census.herdr_read_timeout,
+        );
+        assert_eq!(scanner.herdr_socket_timeout(), Duration::from_millis(275));
+    }
 
     /// The host whose probe waits until the test lets it finish.
     const BLOCKED: &str = "blocked";
