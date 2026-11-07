@@ -394,41 +394,26 @@ A deleted project stays on the list, struck through and dismissable, until the u
 
 **Ruled out:** a separate selection paint in each pane; one shared last pass owns the selection.
 
-### Phase 4d — Drawing code takes the colour mode as a value  · status: todo
+### Phase 4d — Drawing code takes the colour mode as a value  · status: done
 
-**Depends on:** Phase 4b
+#### As-built
 
-#### Work Order
+Drawing code does not read `NO_COLOR`. `tui_pane::ColorMode { Colored, NoColor }` is the value, and `ColorMode::from_environment()` is the only caller of `Colored::ansi_color_disabled_memoized()` in `crates/`. Each app reads the mode once at startup and holds it in `Framework::color_mode` (default `Colored`). The `tui_pane` suite passes with `NO_COLOR=1` and without it. The drawn output does not change.
 
-**Goal:** the `tui_pane` test suite passes with `NO_COLOR=1` and without it, because drawing code no longer reads the variable. What the apps draw does not change.
+Signatures: `default_pane_chrome(mode)`, `selection_style(focus, mode)`, `PaneSelectionState::overlay_style(self, mode)`, `patch(style, mode)`, `prepare_terminal_buffer(buffer, mode)`. `PaneChrome` holds the mode; `PaneChrome::block` and `GridLines::render` read it. The `cargo-berth` board has `pane_chrome(mode)`. `DescriptionBlock::render` is removed; `render_with_selection` remains.
 
-**Why:** six `tui_pane` tests fail when `NO_COLOR=1` is set in the test process. Codex worker shells carry it, so every Codex run on natedev fails. Phase 4b added `Colored::ansi_color_disabled_memoized()` to drawing code. It reads the variable once for each process, and the tests do not set the mode. Failing tests: `pane::frame::tests::a_styled_title_is_patched_over_the_title_style`, `focus_does_not_close_a_shared_border`, `focus_does_not_close_a_crossing`, `title_segments_keep_their_styles_and_focus_weight_when_clipped`, `pane::state::tests::selection_patch_preserves_existing_foreground`, `active_selection_style_only_adds_background_and_emphasis`.
-
-**Constraints:** do not change the drawn output. The C206 look stays. Showrunner: "Fix it first, before 4c continues."
-
-**Spec:**
-
-1. **The value.** `tui_pane` gets `pub enum ColorMode { Colored, NoColor }` with `ColorMode::from_environment()`. That function is the only caller of `Colored::ansi_color_disabled_memoized()` in the workspace.
-2. **The app edge.** `cargo-port`, `cargo-tile`, `cargo-handler` and the `cargo-berth` board each call `ColorMode::from_environment()` once at startup and hold the value in their render state. No global, `static` or thread-local holds the mode.
-3. **The drawing code.** Each read below takes the value instead:
-   - `default_pane_chrome(mode)` stores it in a new `PaneChrome` field. `PaneChrome::block` and `GridLines::render` read that field.
-   - `selection_style(focus, mode)` and `PaneSelectionState::overlay_style(self, mode)` take it as an argument.
-   - `prepare_terminal_buffer(buffer, mode)` in `crates/cargo-port/src/tui/render/mod.rs` takes it as an argument.
-4. **The tests.** Each test that asserts a drawn style states the mode it asserts. Add one test for each mode at each no-colour path: the `PaneChrome::block` border type, the `default_pane_chrome` active border, the `GridLines::render` line glyphs, `selection_style` for Active and Remembered, and `prepare_terminal_buffer`. A test that builds an app states the mode and does not read the environment. The child-process tests in `crates/cargo-port/src/tui/terminal/no_color_tests.rs` keep setting `NO_COLOR=1`: they prove the app edge reads it.
+Tests state their mode. `make_app` selects `ColorMode::Colored`. `make_app_with_color_mode(projects, mode)` passes the mode through `App::new`, so a child-process test proves the assignment in `app/construct.rs`.
 
 **Files:**
-- `crates/tui_pane/src/` — the type, the three read sites and their callers and tests
-- `crates/cargo-port/src/` — the app edge, `prepare_terminal_buffer`, callers and tests
-- `crates/cargo-tile/src/` — the app edge and callers
-- `crates/cargo-handler/src/` — the app edge, callers and tests
-- `crates/cargo-berth/src/board/tui.rs` — the board's app edge and its `PaneChrome` value
-- `crates/tui_pane/CHANGELOG.md` — the changed public functions
+- `crates/tui_pane/src/color_mode.rs` — the value and the only environment read
+- `crates/tui_pane/src/pane/chrome.rs`, `frame.rs`, `state.rs` — drawing code takes the value
+- `crates/cargo-port/src/tui/terminal/run.rs`, `tui/app/construct.rs` — cargo-port's app edge
+- `crates/cargo-handler/src/app.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-berth/src/board/tui.rs` — the other app edges
+- `crates/cargo-port/src/tui/test_support/mod.rs` — test constructors with a stated mode
 
-**Workers:** 1 writer. The signature change crosses all the files, so the set cannot split.
+**Binds later work:** the colour-clearing step and the popup border take the mode from `Framework::color_mode`. No drawing code reads the environment.
 
-**State:** none.
-
-**Acceptance gate:** the six named tests and the whole `tui_pane` suite pass with `NO_COLOR=1` (`verify.sh test tui_pane --local`, from the worker shell that carries it) and without it (`verify.sh test tui_pane`). `verify.sh test cargo-port`, `verify.sh test cargo-tile`, `verify.sh test cargo-handler` and `verify.sh lint tui_pane` pass. No existing assertion about drawn output changes. `git grep ansi_color_disabled_memoized -- crates` names one site.
+**Gotchas:** `verify.sh test tui_pane` can reuse a `--local` `NO_COLOR=1` record, because the cache key has no `NO_COLOR`. Use `--no-cache` for a true run without it.
 
 ### Phase 4f — Bold and reverse survive NO_COLOR in every tui_pane app  · status: todo
 
@@ -482,6 +467,7 @@ A deleted project stays on the list, struck through and dismissable, until the u
   - Spec 15: `narrow_ci_draws_only_complete_columns`, which requires `Branch` at width 24.
   - Spec 19: `sccache_reasons_explain_the_uncached_call`, `parse_stat_line_explains_raw_reason_keys`.
 - **Constraints from prior phases:**
+  - Phase 4d: drawing code takes `tui_pane::ColorMode` as a value. `ColorMode::from_environment()` is the only read of `NO_COLOR`, and each app holds the value in `Framework::color_mode`. Spec 20's border in `crates/tui_pane/src/pane/popup.rs` takes the value from its caller. Tests state their mode.
   - `theme_roles::paint_selection` applies the selection style last across the inner row width. A selected row keeps one fill and one text colour, floor 4.5:1 by `covered_contrast`.
   - Keep `narrow_layout_keeps_git_values_and_hides_unreadable_panes` and `narrow_layout_moves_focus_once_and_restores_panes_without_moving_focus` in `tui/render/readability_tests.rs`.
   - `tui_pane::selection_style` (`crates/tui_pane/src/pane/state.rs:112`) also serves cargo-tile and cargo-handler. Their behaviour stays, and so do the Active reverse video and the Remembered bold under `NO_COLOR`.
