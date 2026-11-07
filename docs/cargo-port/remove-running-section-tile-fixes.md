@@ -2,7 +2,6 @@
 
 > **Status: IMPLEMENTATION PLAN — phased, delegate-ready.** cargo-tile draws a moving cell on the painted ground, keeps every label and readout whole or marked, follows the system's light or dark setting, shows the summary alone when the window is too small for cells, sizes the summary to what it asks, and nextest starts the slow tests first.
 
-> **Production: remove-running-section** — unit `tile-fixes-unit`; production doc `docs/cargo-port/cargo-liner-production.md`
 
 > Renumbered 2026-10-12: the slow-test shortening was split out of the old phase 19 as phase 17; the old phases 17, 18, 19, 20 are now 18, 19, 20, 21.
 
@@ -664,7 +663,7 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 **Ruled out:**
 - Option skipping for the excluded-list reader in this phase — not caused by this phase; placed in `No cell stands empty` as one option-skipping function shared by `CommandText::subcommand`, the excluded-list reader and the shim's skip list.
 
-### Phase 22 — No cell stands empty: an ended command leaves at once, and a drawn cell shows its rows  · status: not landed
+### Phase 22 — No cell stands empty: an ended command leaves at once, and a drawn cell shows its rows  · status: dropped (showrunner, 2026-11-06: not landed; the defects that remain live in Phases 31 and 32)
 
 **Outcome (2026-10-21).** Two trees were measured with a paired live capture against main: round 18 (the item 14 model) and the round 16 tree. Both were worse than main on some counts. Round 18: never-drawn jobs 17, d80 time to census up to 6.01 s, new cells that start blank (F040) 7, and one lost live cell (F045). Round 16 tree: F040 13, lost live cells (F045) 10, census time worse than main, and CPU per drawn cell worse than main in d80 and d40. By the showrunner's ruling, phase 22 does not land, and its code is not on the branch. The round 16, 17 and 18 trees are kept as patches in the session folder, `phases/22/trees` (`/tmp/claude/delegate/03f9b80e-dbe5-47c6-b29e-a7e6587ab721/phases/22/trees`). The item 14 state model stays as the base for Phase 24, which also carries items 1 to 13 of this Work Order. Evidence: `shots39_reply.txt` (round 18) and `shots40_reply.txt` (round 16 tree) in `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad`.
 
@@ -758,7 +757,7 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 
 **Ruled out:** a cut rebuilt from painted text (offsets drift from argv); `SummaryDetail::Trimmed` (dead, removed).
 
-### Phase 24 — One lifecycle for every invocation  · status: not landed
+### Phase 24 — One lifecycle for every invocation  · status: dropped (showrunner, 2026-11-06: not landed; the defects that remain live in Phases 31 and 32)
 
 **Outcome (2026-10-25).** Phase 24 used its 3 repair rounds and one bounded step past the cap that the showrunner allowed for one regression, and its second paired live capture against main (fa651052) failed the landing rule. By the showrunner's ruling, phase 24 does not land. Its round 3 tree is on the unit branch as a plain commit, not a checkpoint, and Phases 24a and 24b start from it.
 - The repair that worked: a new job waited 2.3 to 4.4 s for its first cell while rows were free (first capture, `shots41_reply.txt` CAUSES 1). The cause was the census metadata read queue: each new cargo job waited behind the reads of known lifetimes. `DetailRead` (`Queued`, `Reading`, `Ready`, `Refreshing`) now reads a new lifetime first, and a source change has its own state (`SourceChanged`), so it does not wait behind ordinary refreshes. After the repair, 64 of 64 jobs got a cell (before: 54), and the d80 first cell came in 0.43 to 2.20 s.
@@ -836,7 +835,7 @@ A command whose subcommand is on `commands.hidden` gets no cell, no summary row,
 - Change-review line: under a full tile, a live command with no cell is in the summary.
 - Change-review line: a new cell fades in from its first frame, and no live cell leaves the tile when another cell grows.
 
-### Phase 25 — One invocation, one place  · status: not landed
+### Phase 25 — One invocation, one place  · status: dropped (showrunner, 2026-11-06: not landed; Phase 28, its rebuild, was dropped because the user did not ask for it)
 
 **Depends on:** Phase 24 (its round 3 tree, its Outcome and its state model)
 
@@ -1369,6 +1368,8 @@ Port of the approved capture shim cost work (one process per call apart from car
 
 ### Phase 35m — Summary arguments on main  · status: todo
 
+**Sort (2026-11-06):** the ANSI handling (B) stays: it fixes wrong header text. The summary-arguments rule (A) stays. The user asked for it on 2026-10-29 (phases/35/implementation_prompt.md).
+
 Port of the summary-arguments rule and the nextest header ANSI handling onto main. Work order: phases/35m/implementation_prompt.md.
 
 ### Phase 36m — Directory header rule on main  · status: done
@@ -1495,7 +1496,7 @@ User, 2026-10-30: this work goes in Phase 42, and Phase 42 does not hold full in
 
 ### Phase 43c — No cargo-tile test takes a second or more  · status: todo
 
-**Depends on:** Phase 43b
+**Depends on:** none (its files do not overlap the Phase 43a and 43b reader work)
 
 **Work Order.** Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests take 1.03 s to 2.90 s: in `shim_registration::reader_scenarios`, `shim_registration::installed`, and `progress::capture::incomplete_registration_inventory_sweeps_any_sampled_proven_pair`. Names and times: handler Phase 54 Mac log. natedev also shows `reader_scenarios` tests at 1.2 to 2.3 s (2026-11-02 runs).
 
@@ -1510,7 +1511,7 @@ User, 2026-10-30: this work goes in Phase 42, and Phase 42 does not hold full in
 
 - **Acceptance:** the phase style review passes for both sites; the suite passes.
 
-### Phase 43 — The reader uses less CPU under load  · status: held; continues as Phase 43a
+### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
 **Depends on:** Phase 32m
 
@@ -1598,7 +1599,7 @@ From phase 30m review 3 (routed at repair round 4). When `sh` runs but `tee` is 
 
 **Files:** `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/cargo-capture-shim.sh`, `crates/cargo-tile/tests/shim_modes.rs`.
 
-### Phase 42 — A delayed cell decides its entry on the frame its text first shows  · status: todo
+### Phase 42 — A delayed cell decides its entry on the frame its text first shows  · status: done (merged c1efe2543)
 
 **Depends on:** Phase 38
 
@@ -1735,7 +1736,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - Unit director's live capture: a running tile with many cells; Enter on the summary grows it smoothly to the full area and shows all its rows; End scrolls to the last row; Esc shrinks it back to its grid size with focus kept; frame times and CPU during the motion against the grid's ordinary travel; Enter on a command cell and the command ends, and the view returns to the grid.
 - Change-review line: Enter shows the focused cell on the full screen, and Esc returns to the grid.
 
-### Phase 30 — The capture shim costs one process per cargo call  · status: todo
+### Phase 30 — The capture shim costs one process per cargo call  · status: folded into Phase 30m
 
 **Depends on:** none (Phase 28 was dropped, 2026-10-29). It does not depend on Phase 29: its files are not the files of Phase 29's splits, thus it can run beside Phase 29.
 
@@ -1795,6 +1796,8 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - Change-review line: an ended cell never paints as a headless row.
 
 ### Phase 32 — Phase 23's follow-ups: rows name what runs, and all arguments fit the screen  · status: todo
+
+**Sort (2026-11-06):** the `run` ink lift in item 5 is dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for'). All other items fix a wrong label, lost rows or draw time, and stay.
 
 **Depends on:** Phase 23, Phase 31
 
@@ -1969,6 +1972,8 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - Change-review line (production doc's change review file): space pauses and unpauses the display, and the status bar says `paused`.
 
 ### Phase 35 — Phase 20's follow-ups: one table walk, plain caches, and whole marks  · status: todo
+
+**Sort (2026-11-06):** items 4, 20, 22, 24, 29, 30, 36, 37 and 39 are dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for'). Item 2 was met. Items 1, 3, 11, 13, 15, 16, 27, 31 and 32 stay (showrunner, 2026-11-06: the user's rule covers visible changes only). Items 5 to 10, 12, 14, 17 to 19, 21, 23, 25, 26, 28, 33, 34, 35 and 38 stay: each fixes a wrong, clipped or unreadable result.
 
 **Depends on:** Phase 20, Phase 21, Phase 23, Phase 32, Phase 33, Phase 34
 
@@ -2578,7 +2583,29 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 **Acceptance gate:**
 - `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green on natedev and the Mac; no new test takes 1 s or more.
 - A live shot shows the disk value in GiB after mem.
-- Idle tile CPU does not rise by more than the spread of 3 live pairs.
+- Idle tile CPU does not rise by more than the spread of 
+
+### Phase 54 — The reader SIGKILL scenario passes in a full Mac run  · status: done
+
+**Depends on:** none (showrunner, 2026-11-06: it runs before Phase 43c because it blocked two merges)
+
+#### Work Order
+
+**Goal:** `reader_scenario_sigkill_ends_its_waiting_writer_group` passes in a full cargo-tile run on the Mac. Showrunner, 2026-11-06: it failed twice in full runs with "scenario does not start a writer", at the 0.4 s select at `reader_scenario.py:1785`. It passed alone.
+
+**Spec:**
+1. Find the cause in the log of a failed run. Do not lengthen a wait.
+2. The scenario waits on the writer's start event, not on a timed select. No multi-second wait.
+
+**Files:**
+- `crates/cargo-tile/src/shim_registration/reader_scenario.py`
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`
+
+**Acceptance gate:**
+- `verify.sh test cargo-tile` passes on the Mac.
+- The test takes less than 1 s, and no assertion is weakened.
+
+3 live pairs.
 
 ### Phase 50 — A CI nextest run shows its progress meter  · status: done
 

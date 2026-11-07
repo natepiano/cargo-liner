@@ -1782,10 +1782,10 @@ def assert_killed_scenario_ends_writer_group() -> None:
     group_ended = False
     try:
         with required(victim.stdout, 'scenario has no readiness pipe') as ready:
-            assert select.select([ready], [], [], 0.4)[0], 'scenario does not start a writer'
-            writer_pid = int(ready.readline())
-            assert select.select([ready], [], [], 0.4)[0], 'writer does not reach its wait'
-            assert ready.readline() == b'ready\n', 'writer readiness is missing'
+            with named_wait('scenario to start a writer'):
+                writer_pid = int(ready.readline())
+            with named_wait('writer to reach its wait'):
+                assert ready.readline() == b'ready\n', 'writer readiness is missing'
 
         def live_writer_group() -> list[int]:
             table = subprocess.check_output(['ps', '-axo', 'pid=,pgid=,stat='], text=True)
@@ -1800,9 +1800,9 @@ def assert_killed_scenario_ends_writer_group() -> None:
         victim.returncode = os.waitstatus_to_exitcode(status)
         scenario_reaped = True
         assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
-        wait_for(lambda: not live_writer_group(), 'SIGKILL leaves the writer group alive',
-                 diagnostics=lambda: str(live_writer_group()), pause=0.005,
-                 deadline=time.monotonic() + 0.3)
+        with named_wait('writer group to exit after scenario SIGKILL'):
+            while live_writer_group():
+                time.sleep(0.005)
         group_ended = True
     finally:
         if not scenario_reaped:
