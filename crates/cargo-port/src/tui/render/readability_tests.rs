@@ -33,6 +33,7 @@ use crate::tui::panes::PackageData;
 use crate::tui::panes::PackagePresence;
 use crate::tui::panes::PackageVersion;
 use crate::tui::panes::PaneId;
+use crate::tui::panes::QuotaObservation;
 use crate::tui::panes::WorktreeInfo;
 use crate::tui::project_list::ExpandKey;
 use crate::tui::sccache;
@@ -411,6 +412,14 @@ fn short_git_description_keeps_five_rows_and_aligned_dividers() -> anyhow::Resul
     package.description = Some(description.to_string());
     app.panes.package.set_content(package);
     let mut git = app.panes.git.content().context("Git content")?.clone();
+    let quota = QuotaObservation::Observed(RateLimitQuota {
+        limit:     5000,
+        used:      42,
+        remaining: 4958,
+        reset_at:  None,
+    });
+    git.rate_limit_core = quota;
+    git.rate_limit_graphql = quota;
     git.description = Some(description.to_string());
     app.panes.git.set_content(git);
     app.set_focus_to_pane(PaneId::Git);
@@ -902,8 +911,8 @@ fn one_line_git_fields_keep_whole_labels_and_shortened_values() -> anyhow::Resul
         remaining: 4851,
         reset_at:  None,
     };
-    data.rate_limit_core = Some(quota);
-    data.rate_limit_graphql = Some(quota);
+    data.rate_limit_core = QuotaObservation::Observed(quota);
+    data.rate_limit_graphql = QuotaObservation::Observed(quota);
     let fields = panes::git_fields_from_data(&data);
     app.panes.git.set_content(data);
     app.set_focus_to_pane(PaneId::Git);
@@ -1022,6 +1031,16 @@ fn assert_pane_page(buffer: &Buffer, area: Rect, expected: &str) {
 fn git_worktree_pages_keep_the_divider_title_and_drawn_page_number() -> anyhow::Result<()> {
     let scratch = tempfile::tempdir()?;
     let mut app = app_with_paged_worktrees(scratch.path())?;
+    let quota = QuotaObservation::Observed(RateLimitQuota {
+        limit:     5000,
+        used:      42,
+        remaining: 4958,
+        reset_at:  None,
+    });
+    let mut git = app.panes.git.content().context("Git content")?.clone();
+    git.rate_limit_core = quota;
+    git.rate_limit_graphql = quota;
+    app.panes.git.set_content(git);
     app.set_focus_to_pane(PaneId::Git);
     app.panes.git.viewport.home();
     let first = draw_short_ui(&mut app)?;

@@ -45,6 +45,9 @@ pub(crate) const TOAST_FULL_WIDTH_SLACK: u16 = 8;
 pub(crate) const TOAST_SIDE_GAP: u16 = 1;
 /// Cleared rows around toast cards and between cards in a stack.
 pub(crate) const TOAST_ROW_GAP: u16 = 1;
+/// Guard the `TOAST_ROW_GAP` reserve in `render_toasts`.
+/// Keep three body rows and two border rows before reserving the gap.
+pub(crate) const MIN_PANE_ROWS_WITH_EDGE_GAP: u16 = 6;
 
 /// Characters after which an overlong word may wrap.
 pub(crate) const WRAP_BREAK_AFTER: &str = "/-=_.:,";

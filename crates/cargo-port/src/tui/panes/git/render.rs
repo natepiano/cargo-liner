@@ -50,6 +50,7 @@ use crate::tui::panes::PullRequestPolling;
 use crate::tui::panes::PullRequestRow;
 use crate::tui::panes::PullRequestSection;
 use crate::tui::panes::PullRequestSectionState;
+use crate::tui::panes::QuotaObservation;
 use crate::tui::panes::RemoteRow;
 use crate::tui::panes::RenderStyles;
 use crate::tui::panes::SyncedDescriptionHeight;
@@ -1060,19 +1061,20 @@ fn fit_rate_limit_value(
     if value.width() <= available {
         return value;
     }
-    let quota = match field {
-        DetailField::RateLimitCore => data.rate_limit_core.as_ref(),
-        DetailField::RateLimitGraphQl => data.rate_limit_graphql.as_ref(),
-        _ => None,
+    let observation = match field {
+        DetailField::RateLimitCore => data.rate_limit_core,
+        DetailField::RateLimitGraphQl => data.rate_limit_graphql,
+        _ => return value,
     };
-    quota.map_or(value, |quota| {
-        let base = format!("{}/{}", quota.remaining, quota.limit);
-        if base.width() <= available {
-            base
-        } else {
-            quota.remaining.to_string()
-        }
-    })
+    let QuotaObservation::Observed(quota) = observation else {
+        return value;
+    };
+    let base = format!("{}/{}", quota.remaining, quota.limit);
+    if base.width() <= available {
+        base
+    } else {
+        quota.remaining.to_string()
+    }
 }
 
 // `SyncColLayout` shares trailing column widths between Remotes and Worktrees.
@@ -1507,7 +1509,7 @@ pub(super) fn render_git_pane_body(
     if total_rows == 0 && git_data.description.as_deref().is_none_or(str::is_empty) {
         pane.viewport.clear_surface();
         pane.clear_row_layout();
-        return empty_git_chrome(" Not a git repo ");
+        return empty_git_chrome(tui_pane::pane_title("Git", &PaneTitleCount::None));
     }
 
     pane.viewport.set_len(total_rows);

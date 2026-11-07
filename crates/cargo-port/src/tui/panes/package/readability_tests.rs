@@ -907,6 +907,34 @@ fn empty_description_wraps_inside_the_inset_at_each_window_width() -> anyhow::Re
 }
 
 #[test]
+fn empty_description_keeps_the_right_margin_at_fifteen_and_sixteen_inner_cells()
+-> anyhow::Result<()> {
+    for inner_width in [15, 16] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        let outer_width = inner_width + 2;
+        let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Package, 80, outer_width)?;
+        let row = |y| {
+            (2..outer_width - 2)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        };
+        assert_eq!(buffer[(1, 1)].symbol(), " ");
+        assert_eq!(buffer[(outer_width - 2, 1)].symbol(), " ");
+        if inner_width == 15 {
+            assert_eq!(row(1).trim_end(), "No");
+            assert_eq!(row(2).trim_end(), "description");
+            assert_eq!(buffer[(1, 2)].symbol(), " ");
+            assert_eq!(buffer[(outer_width - 2, 2)].symbol(), " ");
+        } else {
+            assert_eq!(row(1), "No description");
+            assert!(!row(2).contains("description"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn narrow_statistics_pages_repeat_headings_and_align_labeled_counts() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
