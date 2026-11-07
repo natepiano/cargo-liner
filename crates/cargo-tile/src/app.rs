@@ -47,6 +47,7 @@ use crate::census::ExcludedCommands;
 use crate::census::InvocationId;
 #[cfg(test)]
 use crate::census::cpu_observation;
+use crate::census::scan::FreeDiskSpace;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
 use crate::constants::CONFIG_DIRNAME;
@@ -219,6 +220,8 @@ pub(crate) struct App {
     /// What sccache last reported, for the summary cell's top border,
     /// and where the poll that refreshes it stands.
     pub(crate) sccache:           SccacheStats,
+    /// Available disk bytes from the latest census publication.
+    pub(crate) free_disk_space:   FreeDiskSpace,
     /// Message shown on the keymap overlay's selected row after a
     /// rejected capture.
     inline_error:                 Option<String>,
@@ -280,6 +283,7 @@ impl App {
             tiles,
             grid_view: GridView::Grid,
             sccache: SccacheStats::new(),
+            free_disk_space: FreeDiskSpace::Unavailable,
             inline_error: None,
             started: Instant::now(),
             updates: Updates::Live,

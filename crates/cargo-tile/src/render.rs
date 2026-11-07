@@ -42,8 +42,13 @@ use frame_preparation::CellRowIdentity;
 use frame_preparation::FrameAllocationPreparation;
 use frame_preparation::PreparedCellRows;
 use frame_preparation::PreparedFrameAllocation;
+#[cfg(test)]
 use frame_preparation::PreparedFrameTables;
+use frame_preparation::PreparedPaneFrame;
 pub(crate) use frame_preparation::PreparedTables;
+pub(crate) use frame_preparation::SummaryDiskSpace;
+#[cfg(test)]
+use frame_preparation::SummaryFootPreparation;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
@@ -174,6 +179,7 @@ use crate::census::command_text::CargoProfile;
 use crate::census::command_text::CommandName;
 use crate::census::command_text::CommandText;
 use crate::census::scan::AncestryWalk;
+use crate::census::scan::FreeDiskSpace;
 use crate::census::scan::InvocationResourceUse;
 use crate::constants::ACCOUNT_HEADING_CLOSE;
 use crate::constants::ACCOUNT_HEADING_OPEN;
@@ -217,6 +223,8 @@ use crate::constants::STATE_BLOCKED;
 use crate::constants::STATE_COLUMN;
 use crate::constants::STATUS_LINE_HEIGHT;
 use crate::constants::SUMMARY_CELL_TITLE;
+use crate::constants::SUMMARY_DISK_LABEL;
+use crate::constants::SUMMARY_DISK_SEPARATOR;
 use crate::constants::SUMMARY_HIDDEN_COLUMNS;
 use crate::constants::SUMMARY_LABEL_BORDER_RESERVE;
 use crate::constants::SUMMARY_LABEL_RIGHT_INSET;
@@ -328,15 +336,24 @@ enum SummaryMemoryTotal {
 impl SummaryMemoryTotal {
     /// The text this state supplies to the summary cell's readout row.
     fn foot(&self) -> SummaryFoot {
+        let line = self.line();
+        if line.spans.is_empty() {
+            SummaryFoot::Empty
+        } else {
+            SummaryFoot::Text(line)
+        }
+    }
+
+    fn line(&self) -> Line<'static> {
         let value = match *self {
-            Self::NoRunningCommands | Self::NoReadableCommands => return SummaryFoot::Empty,
+            Self::NoRunningCommands | Self::NoReadableCommands => return Line::default(),
             Self::Complete(bytes) => memory_label(bytes),
             Self::AtLeast(bytes) => format!("{}{PARTIAL_TOTAL_MARK}", memory_label(bytes)),
         };
-        SummaryFoot::Text(Line::from(vec![
+        Line::from(vec![
             Span::styled(SUMMARY_MEMORY_LABEL, Style::default().fg(label_color())),
             Span::styled(value, Style::default().fg(text_default())),
-        ]))
+        ])
     }
 }
 
@@ -350,7 +367,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 
     let prepared = prepare_panes(app, body.height);
     #[cfg(feature = "attract")]
-    let work = if prepared.roster.groups().is_empty() {
+    let work = if prepared.tables.roster.groups().is_empty() {
         AttractWork::Idle
     } else {
         AttractWork::Running
@@ -403,7 +420,7 @@ fn draw_panes(
     draw_visible_panes(frame, app, area, contents, prepared)
 }
 
-fn prepare_panes(app: &mut App, height: u16) -> PreparedFrameTables {
+fn prepare_panes(app: &mut App, height: u16) -> PreparedPaneFrame {
     let view = CommandView::new(
         app.tree,
         app.arguments,
@@ -414,6 +431,7 @@ fn prepare_panes(app: &mut App, height: u16) -> PreparedFrameTables {
         &app.loaded_config.config.commands.hidden,
         &view,
         height.saturating_sub(3),
+        app.free_disk_space,
     )
 }
 
@@ -422,7 +440,7 @@ fn draw_visible_panes(
     app: &mut App,
     area: Rect,
     contents: TileGridContents,
-    prepared: PreparedFrameTables,
+    prepared: PreparedPaneFrame,
 ) -> DrawnSummaryFrames {
     let growth = app.loaded_config.config.tiles.growth();
     let cells = Cells::from_prepared(prepared, &app.sccache);
@@ -519,6 +537,7 @@ fn draw_cell_view(frame: &mut Frame, app: &mut App, area: Rect) {
         &mut app.roster,
         &app.loaded_config.config.commands.hidden,
         &view,
+        app.free_disk_space,
     );
     let mut cells = Cells::from_prepared(prepared, &app.sccache);
     let command_remains = match &content {
@@ -717,6 +736,7 @@ mod expanded_view_tests {
     use super::TileGridContents;
     use super::tests;
     use crate::app::GridView;
+    use crate::census::Measurement;
 
     fn app() -> Result<App, Box<dyn Error>> {
         let mut app = App::new_for_test()?;
@@ -980,6 +1000,66 @@ mod expanded_view_tests {
     }
 
     #[test]
+    fn an_expanded_summary_updates_its_disk_footer_after_scroll_and_resize()
+    -> Result<(), Box<dyn Error>> {
+        let mut app = App::new_for_test()?;
+        let memories = (4100..4130)
+            .map(|pid| (pid, Measurement::Reading(super::BYTES_PER_GIBIBYTE)))
+            .collect::<Vec<_>>();
+        app.roster = tests::memory_roster(&memories);
+        app.free_disk_space = super::FreeDiskSpace::Available(super::BYTES_PER_GIBIBYTE);
+        for _ in 0..3 {
+            paint(&mut app, Instant::now(), 160, 36)?;
+            app.tiles.settle_for_test();
+        }
+        press(&mut app, KeyCode::Enter);
+        let first = paint(&mut app, Instant::now() + Duration::from_secs(2), 160, 14)?;
+        assert!(tests::buffer_rows(&first)[12].contains("mem 30.0G  disk 1.0G"));
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Down);
+        }
+        for (width, height, disk, expected) in [
+            (
+                160,
+                14,
+                super::FreeDiskSpace::Available(super::BYTES_PER_GIBIBYTE * 5 / 2),
+                "mem 30.0G  disk 2.5G",
+            ),
+            (
+                100,
+                16,
+                super::FreeDiskSpace::Available(super::BYTES_PER_GIBIBYTE * 3),
+                "mem 30.0G  disk 3.0G",
+            ),
+            (
+                20,
+                16,
+                super::FreeDiskSpace::Available(super::BYTES_PER_GIBIBYTE * 3),
+                "mem 30.0G",
+            ),
+            (160, 16, super::FreeDiskSpace::Unavailable, "mem 30.0G"),
+        ] {
+            app.free_disk_space = disk;
+            let buffer = paint(
+                &mut app,
+                Instant::now() + Duration::from_secs(2),
+                width,
+                height,
+            )?;
+            let footer = &tests::buffer_rows(&buffer)[usize::from(height - 2)];
+            assert!(footer.contains(expected), "{width}x{height}: {footer}");
+            if expected == "mem 30.0G" {
+                assert!(!footer.contains("disk"), "{footer}");
+            }
+            let GridView::Expanded { cell } = &app.grid_view else {
+                return Err("the summary must stay expanded".into());
+            };
+            assert_eq!(cell.scroll, 5);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn an_expanded_summary_keeps_its_footer_above_a_bottom_right_toast()
     -> Result<(), Box<dyn Error>> {
         let mut app = app()?;
@@ -1186,16 +1266,17 @@ struct DrawnSummaryFrames(Vec<Rect>);
 struct Cells<'a> {
     /// Every command group, which the summary gathers and each group's
     /// own cell draws.
-    roster:     Rc<VisibleRoster>,
+    roster:       Rc<VisibleRoster>,
     /// What sccache reports, written along the summary cell's top border.
-    sccache:    &'a SccacheStats,
+    sccache:      &'a SccacheStats,
+    summary_foot: Rc<SummaryFoot>,
     /// Content-row answers already computed during this draw.
-    row_uses:   Rc<RefCell<HashMap<CellMeasurementKey, PreparedCellRows>>>,
-    allocation: Rc<RefCell<FrameAllocationPreparation>>,
-    paintings:  Rc<RefCell<HashMap<CellRowIdentity, PaintedCellContents>>>,
+    row_uses:     Rc<RefCell<HashMap<CellMeasurementKey, PreparedCellRows>>>,
+    allocation:   Rc<RefCell<FrameAllocationPreparation>>,
+    paintings:    Rc<RefCell<HashMap<CellRowIdentity, PaintedCellContents>>>,
     /// Intrinsic column inputs shared by every allocation in this frame.
-    grids:      FrameColumnGrids,
-    view:       GridView,
+    grids:        FrameColumnGrids,
+    view:         GridView,
 }
 
 impl<'a> Cells<'a> {
@@ -1210,6 +1291,7 @@ impl<'a> Cells<'a> {
             roster.clone().visible(hidden_commands),
             view,
             sccache,
+            FreeDiskSpace::Unavailable,
             u16::MAX,
         )
     }
@@ -1220,16 +1302,25 @@ impl<'a> Cells<'a> {
         roster: VisibleRoster,
         view: &CommandView,
         sccache: &'a SccacheStats,
+        free_disk_space: FreeDiskSpace,
         height: u16,
     ) -> Self {
         Self::from_prepared(
-            PreparedFrameTables::new(roster, view, height, Rc::default()),
+            PreparedPaneFrame::new(
+                PreparedFrameTables::new(roster, view, height, Rc::default()),
+                free_disk_space,
+                &mut SummaryFootPreparation::default(),
+            ),
             sccache,
         )
     }
 
     /// Keep geometry decisions local to this draw while retaining intrinsic work.
-    fn from_prepared(prepared: PreparedFrameTables, sccache: &'a SccacheStats) -> Self {
+    fn from_prepared(prepared: PreparedPaneFrame, sccache: &'a SccacheStats) -> Self {
+        let PreparedPaneFrame {
+            tables: prepared,
+            summary_foot,
+        } = prepared;
         let grids = (*prepared.grids).clone();
         for grid in [&grids.commands.0, &grids.summary.0] {
             grid.row_end.set(TableRowEnd::Unresolved);
@@ -1242,6 +1333,7 @@ impl<'a> Cells<'a> {
             grid.prepared_plans.borrow_mut().clear();
         }
         Self {
+            summary_foot,
             sccache,
             row_uses: prepared.row_uses,
             allocation: prepared.allocation,
@@ -1387,7 +1479,7 @@ impl TileCells<InvocationId> for Cells<'_> {
         tests::ROW_USE_LAYOUTS.with(|layouts| layouts.borrow_mut().clear());
     }
 
-    fn summary_foot(&self) -> SummaryFoot { memory_total(&self.roster).foot() }
+    fn summary_foot(&self) -> SummaryFoot { (*self.summary_foot).clone() }
 
     fn content_extent(&self, content: &TileContent) -> CellContentExtent {
         let cut = match content {
@@ -6712,10 +6804,27 @@ fn managed_text(process: &CargoProcess) -> String {
 }
 
 /// Resident bytes as gibibytes to one decimal place, rounded half up.
-fn memory_label(bytes: u64) -> String {
-    let tenths = (u128::from(bytes) * 10 + u128::from(BYTES_PER_GIBIBYTE) / 2)
-        / u128::from(BYTES_PER_GIBIBYTE);
-    format!("{}.{}{MEMORY_UNIT}", tenths / 10, tenths % 10)
+fn memory_label(bytes: u64) -> String { gibibytes_label(bytes, GibibytePrecision::Tenths) }
+
+/// The precision of a gibibyte reading.
+#[derive(Clone, Copy)]
+enum GibibytePrecision {
+    Tenths,
+    WholeFromTen,
+}
+
+/// Round bytes to the requested precision with the shared unit suffix.
+fn gibibytes_label(bytes: u64, precision: GibibytePrecision) -> String {
+    let rounded = |parts: u128| {
+        (u128::from(bytes) * parts + u128::from(BYTES_PER_GIBIBYTE) / 2)
+            / u128::from(BYTES_PER_GIBIBYTE)
+    };
+    let tenths = rounded(10);
+    if matches!(precision, GibibytePrecision::WholeFromTen) && tenths >= 100 {
+        format!("{}{MEMORY_UNIT}", rounded(1))
+    } else {
+        format!("{}.{}{MEMORY_UNIT}", tenths / 10, tenths % 10)
+    }
 }
 
 /// The `compiler` cell: driver name in the active color, its count muted
@@ -9161,7 +9270,13 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(groups, Instant::now());
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(roster.visible(&[]), CommandView::long(), &stats, 50);
+        let cells = Cells::for_frame(
+            roster.visible(&[]),
+            CommandView::long(),
+            &stats,
+            FreeDiskSpace::Unavailable,
+            50,
+        );
         let area = Rect::new(0, 0, 200, 50);
         let (grid, buffer) = settled_buffer_with_cells(&cells, area);
         let placement = grid
@@ -9315,7 +9430,13 @@ mod tests {
         ));
 
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(roster.visible(&[]), CommandView::long(), &stats, 50);
+        let cells = Cells::for_frame(
+            roster.visible(&[]),
+            CommandView::long(),
+            &stats,
+            FreeDiskSpace::Unavailable,
+            50,
+        );
         let area = Rect::new(0, 0, 200, 50);
         let (grid, buffer) = settled_buffer_with_cells(&cells, area);
         let placements = grid.placements(
@@ -9381,7 +9502,13 @@ mod tests {
             .collect();
         app.roster.observe(groups, Instant::now());
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(app.roster.visible(&[]), CommandView::short(), &stats, 120);
+        let cells = Cells::for_frame(
+            app.roster.visible(&[]),
+            CommandView::short(),
+            &stats,
+            FreeDiskSpace::Unavailable,
+            120,
+        );
         let area = Rect::new(0, 0, 46, 30);
         let mut allocations = vec![(TileContent::Summary, area)];
         allocations.extend(
@@ -9542,7 +9669,13 @@ mod tests {
         .collect();
         roster.observe(groups, Instant::now());
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(roster.visible(&[]), CommandView::long(), &stats, 32);
+        let cells = Cells::for_frame(
+            roster.visible(&[]),
+            CommandView::long(),
+            &stats,
+            FreeDiskSpace::Unavailable,
+            32,
+        );
         let allocations: Vec<_> = roster
             .groups()
             .iter()
@@ -9565,7 +9698,13 @@ mod tests {
     fn blocked_frames_keep_ordinary_cell_gaps_at_two_hundred_columns() {
         let mut app = subcommand_frame(CommandView::short(), &["clippy", "--locked"], 4_180_000);
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(app.roster.visible(&[]), CommandView::short(), &stats, 120);
+        let cells = Cells::for_frame(
+            app.roster.visible(&[]),
+            CommandView::short(),
+            &stats,
+            FreeDiskSpace::Unavailable,
+            120,
+        );
         let area = Rect::new(0, 0, 198, 8);
         let mut allocations = vec![(TileContent::Summary, area)];
         allocations.extend(
@@ -9764,7 +9903,13 @@ mod tests {
         }
         {
             let stats = SccacheStats::default();
-            let cells = Cells::for_frame(app.roster.visible(&[]), view, &stats, height);
+            let cells = Cells::for_frame(
+                app.roster.visible(&[]),
+                view,
+                &stats,
+                FreeDiskSpace::Unavailable,
+                height,
+            );
             cells.grids.commands.0.row_end.set(TableRowEnd::Reserved);
             cells.grids.summary.0.row_end.set(TableRowEnd::Reserved);
             assert_main_state_columns(&cells, shot_width, &mut failures);
@@ -10147,6 +10292,7 @@ mod tests {
             roster.visible(&[]),
             CommandView::short(),
             &stats,
+            FreeDiskSpace::Unavailable,
             area.height.saturating_sub(3),
         );
         let mut grid = tui_pane::TileGrid::new();
@@ -12083,7 +12229,13 @@ mod tests {
     fn a_height_cut_keeps_its_hidden_childs_compiler_column() {
         let mut roster = reading_scope_roster();
         let stats = SccacheStats::default();
-        let cells = Cells::for_frame(roster.visible(&[]), CommandView::long(), &stats, 3);
+        let cells = Cells::for_frame(
+            roster.visible(&[]),
+            CommandView::long(),
+            &stats,
+            FreeDiskSpace::Unavailable,
+            3,
+        );
         let area = Rect::new(0, 0, 200, 4);
         let mut buffer = Buffer::empty(area);
         cells.draw(
@@ -12204,7 +12356,13 @@ mod tests {
     fn a_summary_alone_uses_its_last_row_for_a_separator_before_its_foot() {
         let mut roster = directory_rich_roster(&[1; 26]);
         let stats = SccacheStats::new();
-        let cells = Cells::for_frame(roster.visible(&[]), CommandView::short(), &stats, 46);
+        let cells = Cells::for_frame(
+            roster.visible(&[]),
+            CommandView::short(),
+            &stats,
+            FreeDiskSpace::Unavailable,
+            46,
+        );
         let area = Rect::new(0, 0, 40, 49);
         let mut buffer = Buffer::empty(area);
         let mut grid = TileGrid::new();
@@ -12657,7 +12815,13 @@ mod tests {
         let sccache = SccacheStats::new();
         for view in [CommandView::short(), CommandView::long()] {
             let area = Rect::new(0, 0, 46, 16);
-            let cells = Cells::for_frame(roster.visible(&[]), view, &sccache, area.height);
+            let cells = Cells::for_frame(
+                roster.visible(&[]),
+                view,
+                &sccache,
+                FreeDiskSpace::Unavailable,
+                area.height,
+            );
             let mut buffer = Buffer::empty(area);
             cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
             let text = buffer_rows(&buffer).join("\n");
@@ -12734,7 +12898,13 @@ mod tests {
             Instant::now(),
         );
         let sccache = SccacheStats::new();
-        let cells = Cells::for_frame(roster.visible(&[]), CommandView::long(), &sccache, 3);
+        let cells = Cells::for_frame(
+            roster.visible(&[]),
+            CommandView::long(),
+            &sccache,
+            FreeDiskSpace::Unavailable,
+            3,
+        );
         let area = Rect::new(0, 0, 160, 3);
         let mut buffer = Buffer::empty(area);
         cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
@@ -12861,7 +13031,13 @@ mod tests {
         );
         let sccache = SccacheStats::new();
         let area = Rect::new(1, 1, width - 2, 8);
-        let cells = Cells::for_frame(roster.visible(&[]), view, &sccache, area.height);
+        let cells = Cells::for_frame(
+            roster.visible(&[]),
+            view,
+            &sccache,
+            FreeDiskSpace::Unavailable,
+            area.height,
+        );
         let mut buffer = Buffer::empty(Rect::new(0, 0, width, 10));
         cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
         buffer
@@ -14666,6 +14842,162 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_summary_formats_free_disk_space_after_memory() {
+        let roster = memory_roster(&[(4100, Measurement::Reading(BYTES_PER_GIBIBYTE))]);
+        let stats = SccacheStats::new();
+        let mut cells = Cells::new(&roster, &[], CommandView::long(), &stats);
+        for (disk, expected) in [
+            (FreeDiskSpace::Available(0), "mem 1.0G  disk 0.0G"),
+            (
+                FreeDiskSpace::Available(BYTES_PER_GIBIBYTE * 5 / 2),
+                "mem 1.0G  disk 2.5G",
+            ),
+            (FreeDiskSpace::Unavailable, "mem 1.0G"),
+        ] {
+            cells.summary_foot = SummaryFootPreparation::default().for_frame(&cells.roster, disk);
+            let foot = cells.summary_foot();
+            assert_eq!(summary_foot_text(foot.clone()), expected);
+            let line = match foot {
+                SummaryFoot::Text(line) => line,
+                SummaryFoot::WithOptionalSuffix { mut prefix, suffix } => {
+                    prefix.spans.extend(suffix.spans);
+                    prefix
+                },
+                SummaryFoot::Empty => Line::default(),
+            };
+            {
+                for span in line
+                    .spans
+                    .iter()
+                    .filter(|span| matches!(span.content.as_ref(), "mem " | "disk "))
+                {
+                    assert_eq!(span.style.fg, Some(label_color()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn disk_gives_way_before_memory_when_the_disk_suffix_does_not_fit() {
+        assert_disk_after_memory_at_widths(0..=29);
+    }
+
+    fn assert_disk_after_memory_at_widths(widths: impl Iterator<Item = u16>) {
+        let roster = memory_roster(&[(4100, Measurement::Reading(BYTES_PER_GIBIBYTE))]);
+        let stats = SccacheStats::new();
+        let mut cells = Cells::new(&roster, &[], CommandView::long(), &stats);
+        cells.summary_foot = SummaryFootPreparation::default().for_frame(
+            &cells.roster,
+            FreeDiskSpace::Available(BYTES_PER_GIBIBYTE * 5 / 2),
+        );
+        let memory = "mem 1.0G";
+        let foot = "mem 1.0G  disk 2.5G";
+        for width in widths {
+            let area = Rect::new(0, 0, width, 8);
+            let mut buffer = Buffer::empty(area);
+            let mut grid = tui_pane::TileGrid::new();
+            grid.set_view(TileView::Summary);
+            tui_pane::draw_tile_grid(
+                &mut buffer,
+                &mut grid,
+                area,
+                TileGrowth::default(),
+                TileGridContents::Shown,
+                &cells,
+                ColorMode::Colored,
+            );
+            grid.settle_for_test();
+            buffer.reset();
+            tui_pane::draw_tile_grid(
+                &mut buffer,
+                &mut grid,
+                area,
+                TileGrowth::default(),
+                TileGridContents::Shown,
+                &cells,
+                ColorMode::Colored,
+            );
+            let rows = buffer_rows(&buffer);
+            let foot_width = width.saturating_sub(
+                u16::try_from(tui_pane::BLOCK_BORDER_WIDTH).expect("frame width") + cell_width(" "),
+            );
+            let text = rows.join("\n");
+            assert_eq!(
+                text.contains(memory),
+                foot_width >= cell_width(memory),
+                "width {width}: {text}"
+            );
+            assert_eq!(
+                text.contains("disk"),
+                foot_width >= cell_width(foot),
+                "width {width}: {text}"
+            );
+            if foot_width >= cell_width(memory) && foot_width < cell_width(foot) {
+                let remaining = foot_width - cell_width(memory);
+                let after_memory: String = rows[6]
+                    .chars()
+                    .skip(usize::from(width - foot_width - 1 + cell_width(memory)))
+                    .take(usize::from(remaining))
+                    .collect();
+                assert_eq!(
+                    after_memory,
+                    " ".repeat(usize::from(remaining)),
+                    "width {width}: {text}"
+                );
+            }
+            if width
+                >= cell_width(foot)
+                    + u16::try_from(tui_pane::BLOCK_BORDER_WIDTH).expect("frame width")
+                    + cell_width(" ")
+            {
+                assert!(rows[6].contains(foot), "width {width}: {rows:?}");
+                let memory_x = u16::try_from(tui_pane::BLOCK_BORDER_WIDTH).expect("frame width");
+                let disk_x = memory_x + cell_width("mem 1.0G") + cell_width(SUMMARY_DISK_SEPARATOR);
+                assert_eq!(buffer[(disk_x, 6)].fg, buffer[(memory_x, 6)].fg);
+            } else {
+                assert!(
+                    rows.iter().all(|row| !row.contains("disk")),
+                    "width {width}: {rows:?}"
+                );
+            }
+        }
+    }
+
+    macro_rules! summary_disk_width_tests {
+        ($($name:ident: $widths:expr),+ $(,)?) => {
+            $(
+                #[test]
+                fn $name() { assert_disk_after_memory_at_widths($widths); }
+            )+
+        };
+    }
+
+    summary_disk_width_tests! {
+        summary_disk_widths_0_to_9: 0..=9,
+        summary_disk_widths_10_to_19: 10..=19,
+        summary_disk_widths_20_to_29: 20..=29,
+        summary_disk_widths_30_to_39: 30..=39,
+        summary_disk_widths_40_to_49: 40..=49,
+        summary_disk_widths_50_to_59: 50..=59,
+        summary_disk_widths_60_to_69: 60..=69,
+        summary_disk_widths_70_to_79: 70..=79,
+        summary_disk_widths_80_to_89: 80..=89,
+        summary_disk_widths_90_to_99: 90..=99,
+        summary_disk_widths_100_to_109: 100..=109,
+        summary_disk_widths_110_to_119: 110..=119,
+        summary_disk_widths_120_to_129: 120..=129,
+        summary_disk_widths_130_to_139: 130..=139,
+        summary_disk_widths_140_to_149: 140..=149,
+        summary_disk_widths_150_to_159: 150..=159,
+        summary_disk_widths_160_to_169: 160..=169,
+        summary_disk_widths_170_to_179: 170..=179,
+        summary_disk_widths_180_to_189: 180..=189,
+        summary_disk_widths_190_to_199: 190..=199,
+        summary_disk_width_200: std::iter::once(200),
+        summary_disk_width_393: std::iter::once(393),
+    }
+
     /// The light summary value reads on both its transparent and painted grounds.
     #[test]
     fn the_summary_memory_total_reads_on_the_light_theme() {
@@ -14767,7 +15099,7 @@ mod tests {
     }
 
     /// Flatten a text foot for assertions on its label and value.
-    fn summary_foot_text(foot: SummaryFoot) -> String {
+    pub(super) fn summary_foot_text(foot: SummaryFoot) -> String {
         match foot {
             SummaryFoot::Text(line) => line
                 .spans
@@ -14775,6 +15107,10 @@ mod tests {
                 .map(|span| span.content.as_ref())
                 .collect(),
             SummaryFoot::Empty => String::new(),
+            SummaryFoot::WithOptionalSuffix { mut prefix, suffix } => {
+                prefix.spans.extend(suffix.spans);
+                prefix.to_string()
+            },
         }
     }
 
@@ -15502,7 +15838,7 @@ mod tests {
     }
 
     /// A roster whose running groups carry the supplied memory states.
-    fn memory_roster(memories: &[(u32, Measurement<u64>)]) -> Roster {
+    pub(super) fn memory_roster(memories: &[(u32, Measurement<u64>)]) -> Roster {
         let groups = memories
             .iter()
             .map(|&(pid, memory)| cargo_group(memory_invocation(pid, memory)))
@@ -15557,6 +15893,7 @@ mod tests {
             baseline.visible(&hidden),
             CommandView::long(),
             &stats,
+            FreeDiskSpace::Unavailable,
             area.height,
         )
         .draw(&mut expected, &content, area, Color::Reset);
@@ -15565,6 +15902,7 @@ mod tests {
             roster.visible(&hidden),
             CommandView::long(),
             &stats,
+            FreeDiskSpace::Unavailable,
             area.height,
         )
         .draw(&mut actual, &content, area, Color::Reset);
@@ -15672,7 +16010,13 @@ mod tests {
         }
         let stats = SccacheStats::default();
         let area = Rect::new(0, 0, 160, 15);
-        let cells = Cells::for_frame(visible, CommandView::long(), &stats, area.height);
+        let cells = Cells::for_frame(
+            visible,
+            CommandView::long(),
+            &stats,
+            FreeDiskSpace::Unavailable,
+            area.height,
+        );
         let mut buffer = Buffer::empty(area);
         cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
         assert_eq!(
@@ -15969,12 +16313,14 @@ mod tests {
                 baseline.visible(&hidden_commands),
                 CommandView::long(),
                 &stats,
+                FreeDiskSpace::Unavailable,
                 u16::MAX,
             );
             let actual = Cells::for_frame(
                 roster.visible(&hidden_commands),
                 CommandView::long(),
                 &stats,
+                FreeDiskSpace::Unavailable,
                 u16::MAX,
             );
             for content in [
@@ -18003,7 +18349,7 @@ mod tests {
     }
 
     /// Draw a settled grid using one cell-content implementation.
-    fn settled_buffer_with_cells(
+    pub(super) fn settled_buffer_with_cells(
         cells: &impl TileCells<InvocationId>,
         area: Rect,
     ) -> (TileGrid<InvocationId>, Buffer) {

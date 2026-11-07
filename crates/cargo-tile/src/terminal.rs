@@ -25,10 +25,12 @@ use crate::census::CensusScope;
 use crate::census::ExcludedCommands;
 #[cfg(test)]
 use crate::census::cpu_observation::CpuScanPublication;
+use crate::census::scan::FreeDiskSpace;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
 use crate::constants::CAPTURE_ROOT;
 use crate::progress::capture_roots::AccountCaptureDirectory;
+use crate::render::SummaryDiskSpace;
 use crate::root_scan::SharedCaptureDirectory;
 use crate::sccache;
 use crate::sccache::SccacheServer;
@@ -51,6 +53,8 @@ pub(crate) struct Scan {
     pub(crate) groups:               Vec<CargoGroup>,
     /// Whether a process named [`crate::constants::SCCACHE_BINARY`] was among them.
     pub(crate) sccache:              SccacheServer,
+    /// Available disk bytes read with this census.
+    pub(crate) free_disk_space:      FreeDiskSpace,
     /// Settings reads these observations without reopening any capture path.
     pub(crate) root_status:          Vec<AccountCaptureDirectory>,
     pub(crate) shared_directory:     SharedCaptureDirectory,
@@ -288,13 +292,16 @@ fn drain_scans(app: &mut App, scans: &Receiver<Scan>) -> bool {
         return false;
     };
     app.sccache.observe_server(scan.sccache);
+    let disk_changed =
+        SummaryDiskSpace::from(app.free_disk_space) != SummaryDiskSpace::from(scan.free_disk_space);
+    app.free_disk_space = scan.free_disk_space;
     let status_changed =
         app.root_status != scan.root_status || app.shared_directory != scan.shared_directory;
     app.shared_directory = scan.shared_directory;
     app.root_status = scan.root_status;
     #[cfg(test)]
     census::cpu_observation::accept(scan.cpu_scan_publication);
-    app.roster.observe(scan.groups, Instant::now()) || status_changed
+    app.roster.observe(scan.groups, Instant::now()) || status_changed || disk_changed
 }
 
 /// Take whatever the sccache workers have replied, reporting whether the
@@ -426,6 +433,7 @@ fraying = "leading"
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {
+                free_disk_space:      FreeDiskSpace::Unavailable,
                 cpu_scan_publication: CpuScanPublication::Unobserved,
                 groups:               Vec::new(),
                 sccache:              SccacheServer::Stopped,
@@ -534,6 +542,7 @@ fraying = "leading"
         for process in [&first, &replacement] {
             sender
                 .send(Scan {
+                    free_disk_space:      FreeDiskSpace::Unavailable,
                     cpu_scan_publication: CpuScanPublication::Unobserved,
                     groups:               vec![CargoGroup {
                         lead:     process.clone(),
@@ -554,6 +563,36 @@ fraying = "leading"
             app.roster.tiled_ids(&[]),
             vec![first.invocation_id, replacement.invocation_id]
         );
+    }
+
+    #[test]
+    fn disk_scans_mark_changes_only_when_the_shown_value_changes() {
+        let mut app = App::new_for_test().expect("test app");
+        app.free_disk_space = FreeDiskSpace::Unavailable;
+        let (sender, scans) = mpsc::channel();
+        let gibibyte = 1_u64 << 30;
+
+        for (free_disk_space, changed) in [
+            (FreeDiskSpace::Available(gibibyte), true),
+            (FreeDiskSpace::Available(gibibyte + 1), false),
+            (FreeDiskSpace::Available(2 * gibibyte), true),
+            (FreeDiskSpace::Unavailable, true),
+            (FreeDiskSpace::Unavailable, false),
+        ] {
+            sender
+                .send(Scan {
+                    free_disk_space,
+                    cpu_scan_publication: CpuScanPublication::Unobserved,
+                    groups: Vec::new(),
+                    sccache: SccacheServer::Stopped,
+                    root_status: app.root_status.clone(),
+                    shared_directory: app.shared_directory.clone(),
+                })
+                .expect("scan receiver is alive");
+
+            assert_eq!(drain_scans(&mut app, &scans), changed);
+            assert_eq!(app.free_disk_space, free_disk_space);
+        }
     }
 
     /// Availability changes must redraw and reach the roster without a stale value.
@@ -585,6 +624,7 @@ fraying = "leading"
         ] {
             sender
                 .send(Scan {
+                    free_disk_space:      FreeDiskSpace::Unavailable,
                     cpu_scan_publication: CpuScanPublication::Unobserved,
                     groups:               vec![CargoGroup {
                         lead:     process.clone(),
@@ -767,6 +807,7 @@ fraying = "leading"
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {
+                free_disk_space:      FreeDiskSpace::Unavailable,
                 cpu_scan_publication: CpuScanPublication::Unobserved,
                 groups:               vec![CargoGroup {
                     lead:     process.clone(),
