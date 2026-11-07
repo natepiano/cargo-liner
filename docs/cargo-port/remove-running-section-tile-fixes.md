@@ -1495,7 +1495,7 @@ Model for 44b and 43a; no product change. Source: `6cadd2bd901e5d24ca6198ccc6e84
 
 User, 2026-10-30: this work goes in Phase 42, and Phase 42 does not hold full ink. Its Work Order is now in Phase 42.
 
-### Phase 43b — Census CPU falls toward its goal  · status: todo
+### Phase 43b — Census CPU falls toward its goal  · status: done
 
 **Depends on:** Phase 43a
 
