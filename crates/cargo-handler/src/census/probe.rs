@@ -409,6 +409,8 @@ pub(crate) fn print() -> ExitCode {
         dirs::home_dir().as_deref(),
     ))
     .with_codex_start_window(loaded.config.census.codex_thread_start_window)
+    .with_herdr_probe_wait(loaded.config.census.herdr_probe_wait)
+    .with_herdr_read_timeout(loaded.config.census.herdr_read_timeout)
     .with_staff_file(super::StaffFileSetting::new(source), staff)
     .scan();
     let edges = snapshot.publication().edges.with_worker_roles(&rows);
