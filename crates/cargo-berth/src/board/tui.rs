@@ -39,6 +39,7 @@ use ratatui::widgets::Widget;
 use serde_json::Map;
 use serde_json::Value;
 use tui_pane::AppContext;
+use tui_pane::ColorMode;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::GlobalAction;
@@ -117,6 +118,7 @@ pub(crate) fn run(
 ) -> Result<(), BoardTerminalViewRunFailure> {
     let mut application =
         BoardApplication::new(model).map_err(BoardTerminalViewRunFailure::BeforeOpening)?;
+    application.framework.color_mode = ColorMode::from_environment();
     let mut terminal = setup_terminal().map_err(|error| {
         BoardTerminalViewRunFailure::BeforeOpening(BoardTerminalViewOpeningFailure::TerminalSetup(
             error,
@@ -866,7 +868,11 @@ fn draw_focused_pane(frame: &mut Frame, application: &mut BoardApplication, area
     });
     let mut grid = GridLines::new(area);
     grid.add_titled(pane_frame, pane_id.title());
-    grid.render(frame.buffer_mut(), pane_chrome(), PaneBorders::Separate);
+    grid.render(
+        frame.buffer_mut(),
+        pane_chrome(application.framework.color_mode),
+        PaneBorders::Separate,
+    );
 }
 
 fn draw_footer(frame: &mut Frame, application: &BoardApplication, area: Rect) {
@@ -929,8 +935,9 @@ fn footer_key(key: String) -> Span<'static> {
     )
 }
 
-const fn pane_chrome() -> PaneChrome {
+const fn pane_chrome(mode: ColorMode) -> PaneChrome {
     PaneChrome {
+        color_mode:      mode,
         active_border:   Style::new().fg(Color::Cyan),
         inactive_border: Style::new().fg(Color::DarkGray),
         active_title:    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),

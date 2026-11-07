@@ -332,7 +332,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         .area_avoiding_frames(tui_pane::frame_inner(body), &summary_frames.0);
     tui_pane::render_toasts(frame, &mut app.framework, toast_area);
     #[cfg(feature = "attract")]
-    app.favorites_overlay.render(frame);
+    app.favorites_overlay
+        .render(frame, app.framework.color_mode);
     tui_pane::draw_framework_overlay(frame, app, keymap, settings::rows);
 }
 
@@ -384,6 +385,7 @@ fn draw_visible_panes(
         growth,
         contents,
         &cells,
+        app.framework.color_mode,
     );
     DrawnSummaryFrames(app.tiles.painted_summary_frames().to_vec())
 }
@@ -6930,6 +6932,7 @@ mod tests {
     use tui_pane::Appearance;
     #[cfg(feature = "attract")]
     use tui_pane::BackdropNotice;
+    use tui_pane::ColorMode;
     #[cfg(feature = "attract")]
     use tui_pane::FavoritesFileState;
     use tui_pane::GlobalAction;
@@ -9634,6 +9637,7 @@ mod tests {
             tui_pane::TileGrowth::default(),
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         let content = TileContent::Group(roster.groups()[0].id.clone());
         for height in 0..=area.height {
@@ -11677,6 +11681,7 @@ mod tests {
             TileGrowth::default(),
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         let lines = buffer_rows(&buffer);
         assert!(lines[47].contains("content rows:"), "{lines:#?}");
@@ -12527,6 +12532,7 @@ mod tests {
                 growth,
                 TileGridContents::Shown,
                 &cells,
+                ColorMode::Colored,
             );
             grid.settle_for_test();
             buffer = Buffer::empty(area);
@@ -12537,6 +12543,7 @@ mod tests {
                 growth,
                 TileGridContents::Shown,
                 &cells,
+                ColorMode::Colored,
             );
             let y = height - 2;
             let foot = buffer_line(&buffer, y);
@@ -12684,6 +12691,7 @@ mod tests {
                     growth,
                     TileGridContents::Shown,
                     &cells,
+                    ColorMode::Colored,
                 );
                 for placement in grid.placements(area, growth) {
                     if !placement.frame.is_focused() {
@@ -17443,6 +17451,7 @@ mod tests {
             tui_pane::TileGrowth::default(),
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         buffer = Buffer::empty(area);
@@ -17453,6 +17462,7 @@ mod tests {
             tui_pane::TileGrowth::default(),
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         buffer
     }
@@ -17479,6 +17489,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         buffer = Buffer::empty(area);
@@ -17489,6 +17500,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             cells,
+            ColorMode::Colored,
         );
         (grid, buffer)
     }
@@ -18250,6 +18262,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         buffer = Buffer::empty(short);
@@ -18260,6 +18273,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
 
         let placements = grid.placements(short, growth);
@@ -18293,6 +18307,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         grid.settle_for_test();
         buffer = Buffer::empty(tall);
@@ -18303,6 +18318,7 @@ mod tests {
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
 
         let command = grid

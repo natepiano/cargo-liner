@@ -36,6 +36,7 @@ pub(super) use readability::stats_app;
 pub(super) use readability::target_data;
 use tempfile::TempDir;
 use tui_pane::Appearance;
+use tui_pane::ColorMode;
 use tui_pane::SettingsFileSpec;
 use tui_pane::SettingsStore;
 
@@ -105,17 +106,30 @@ fn test_http_client_with_startup_services(startup_services: &StartupServices) ->
 }
 
 pub(super) fn make_app(projects: &[RootItem]) -> App {
-    make_app_with_config(projects, &CargoPortConfig::default())
+    make_app_with_color_mode(projects, ColorMode::Colored)
+}
+
+pub(super) fn make_app_with_color_mode(projects: &[RootItem], color_mode: ColorMode) -> App {
+    make_app_with_config_and_color_mode(projects, &CargoPortConfig::default(), color_mode)
 }
 
 pub(super) fn make_app_with_config(
     projects: &[RootItem],
     cargo_port_config: &CargoPortConfig,
 ) -> App {
+    make_app_with_config_and_color_mode(projects, cargo_port_config, ColorMode::Colored)
+}
+
+fn make_app_with_config_and_color_mode(
+    projects: &[RootItem],
+    cargo_port_config: &CargoPortConfig,
+    color_mode: ColorMode,
+) -> App {
     let app = make_test_app_with_startup_services(
         projects,
         cargo_port_config,
         StartupServices::quiet_unit_test(),
+        color_mode,
     )
     .into_quiet_app();
     assert_eq!(app.startup_effect_counts().real_total(), 0);
@@ -130,6 +144,7 @@ pub(super) fn make_app_with_lint_runtime(
         projects,
         cargo_port_config,
         StartupServices::quiet_unit_test_with_lint_runtime(),
+        ColorMode::Colored,
     )
 }
 
@@ -141,6 +156,7 @@ pub(super) fn make_local_startup_test_app(
         projects,
         cargo_port_config,
         StartupServices::local_startup_unit_test(),
+        ColorMode::Colored,
     )
 }
 
@@ -148,6 +164,7 @@ fn make_test_app_with_startup_services(
     projects: &[RootItem],
     cargo_port_config: &CargoPortConfig,
     startup_services: StartupServices,
+    color_mode: ColorMode,
 ) -> TestApp {
     assert!(
         !startup_services.has_production_profile_for_test(),
@@ -199,12 +216,13 @@ fn make_test_app_with_startup_services(
         metadata_store,
         startup_services,
     );
-    let mut app = App::new_with_startup_environment(
+    let mut app = App::new(
         projects,
         background_tx,
         background_rx,
         startup_settings,
         startup_environment,
+        color_mode,
     )
     .expect("test app initializes");
     app.scan.set_retry_spawn_mode(RetrySpawnMode::Disabled);

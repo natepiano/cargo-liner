@@ -5,6 +5,7 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
 use ratatui::backend::TestBackend;
+use tui_pane::ColorMode;
 use tui_pane::PaneFocusState;
 
 use crate::project::RootItem;
@@ -45,7 +46,7 @@ fn deleted_row_under_no_color_keeps_strikethrough_in_output_bytes() -> anyhow::R
     let scratch = tempfile::tempdir()?;
     let path = scratch.path().join(PROJECT_NAME);
     let project = test_support::make_package(PROJECT_NAME, &path);
-    let mut app = test_support::make_app(&[project]);
+    let mut app = test_support::make_app_with_color_mode(&[project], ColorMode::from_environment());
     let project = app
         .project_list
         .at_path_mut(&path)
@@ -148,13 +149,16 @@ fn selected_row_and_focused_border_remain_distinct_without_color() -> anyhow::Re
     ) else {
         anyhow::bail!("the linked fixture must be a Rust project");
     };
-    let mut app = test_support::make_app(&[
-        RootItem::Worktrees(crate::project::WorktreeGroup::new(primary, vec![linked])),
-        test_support::make_package(
-            "other-project",
-            std::path::Path::new("/tmp/test/other-project"),
-        ),
-    ]);
+    let mut app = test_support::make_app_with_color_mode(
+        &[
+            RootItem::Worktrees(crate::project::WorktreeGroup::new(primary, vec![linked])),
+            test_support::make_package(
+                "other-project",
+                std::path::Path::new("/tmp/test/other-project"),
+            ),
+        ],
+        ColorMode::from_environment(),
+    );
     app.project_list.select_project_in_tree(path, true);
     app.project_list.collapse_all(true);
     app.ensure_visible_rows_cached();
@@ -212,7 +216,10 @@ fn no_color_focus_uses_heavy_borders_and_one_active_selection() -> anyhow::Resul
         return Ok(());
     }
     let path = std::path::Path::new("/tmp/test/selected-project");
-    let mut app = test_support::make_app(&[test_support::make_package("selected-project", path)]);
+    let mut app = test_support::make_app_with_color_mode(
+        &[test_support::make_package("selected-project", path)],
+        ColorMode::from_environment(),
+    );
     app.ensure_visible_rows_cached();
     app.ensure_detail_cached();
     app.ensure_fit_widths_cached();
@@ -277,7 +284,16 @@ fn selected_description_reverses_every_inner_cell_without_color() -> anyhow::Res
         return Ok(());
     }
     for pane in [PaneId::Package, PaneId::Git] {
-        let mut app = test_support::project_app();
+        let path = std::path::Path::new(test_support::PROJECT_PATH);
+        let mut app = test_support::make_app_with_color_mode(
+            &[test_support::make_package(test_support::PROJECT, path)],
+            ColorMode::from_environment(),
+        );
+        app.scan
+            .manifest_metadata
+            .record_success(&crate::project::AbsolutePath::from(path));
+        app.ensure_visible_rows_cached();
+        app.ensure_detail_cached();
         if pane == PaneId::Package {
             app.panes.package.focus.pane_focus_state = PaneFocusState::Active;
         } else {

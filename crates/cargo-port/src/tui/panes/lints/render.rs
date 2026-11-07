@@ -13,6 +13,7 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use tui_pane::ACTIVITY_SPINNER;
+use tui_pane::ColorMode;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameChrome;
 use tui_pane::PaneTitleCount;
@@ -70,6 +71,7 @@ fn build_lint_rows(
     animation_elapsed: Duration,
     pane: &Viewport,
     focus: PaneFocusState,
+    mode: ColorMode,
 ) -> Vec<Row<'static>> {
     let date_style = Style::default()
         .fg(title_color())
@@ -142,7 +144,7 @@ fn build_lint_rows(
                 ),
                 result_cell,
             ])
-            .style(pane_selection_state.patch(row_style)),
+            .style(pane_selection_state.patch(row_style, mode)),
         );
     }
 
@@ -162,6 +164,7 @@ pub fn render_lints_pane_body(
     pane: &mut Lint,
     pane_render_ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
+    let mode = pane_render_ctx.color_mode;
     let Some(lints_data) = pane.content().cloned() else {
         return empty_lints_chrome(" No Lint Runs ");
     };
@@ -195,6 +198,7 @@ pub fn render_lints_pane_body(
         pane_render_ctx.animation_elapsed,
         &viewport_clone,
         pane_focus_state,
+        mode,
     );
     pane.viewport.set_len(rows.len());
 

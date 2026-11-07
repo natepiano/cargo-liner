@@ -400,28 +400,40 @@ where
             Line::from(vec![
                 Span::styled(
                     format!("{SECTION_ITEM_INDENT}  {padded_desc}"),
-                    selection.patch(Style::default().fg(label_color())),
+                    selection.patch(
+                        Style::default().fg(label_color()),
+                        ctx.framework().color_mode,
+                    ),
                 ),
                 Span::styled(
                     key_text,
-                    selection.patch(Style::default().fg(error_color())),
+                    selection.patch(
+                        Style::default().fg(error_color()),
+                        ctx.framework().color_mode,
+                    ),
                 ),
             ])
         } else if selection != PaneSelectionState::Unselected {
             Line::from(vec![
                 Span::styled(
                     format!("{SECTION_ITEM_INDENT}▸ {padded_desc}"),
-                    selection.patch(Style::default().fg(label_color())),
+                    selection.patch(
+                        Style::default().fg(label_color()),
+                        ctx.framework().color_mode,
+                    ),
                 ),
                 Span::styled(
                     key_text,
-                    selection.patch(if is_capturing {
-                        Style::default()
-                            .fg(title_color())
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(text_default())
-                    }),
+                    selection.patch(
+                        if is_capturing {
+                            Style::default()
+                                .fg(title_color())
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(text_default())
+                        },
+                        ctx.framework().color_mode,
+                    ),
                 ),
             ])
         } else {

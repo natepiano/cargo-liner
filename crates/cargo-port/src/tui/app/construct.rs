@@ -20,6 +20,7 @@ use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Error;
+use tui_pane::ColorMode;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::Keymap as FrameworkKeymap;
@@ -76,6 +77,7 @@ use crate::tui::theme_roles;
 /// reference are cloned at the entry point so the builder can outlive
 /// its caller's stack frame).
 pub(super) struct Inputs {
+    color_mode:          ColorMode,
     background_tx:       Sender<BackgroundMsg>,
     background_rx:       Receiver<BackgroundMsg>,
     cargo_port_config:   CargoPortConfig,
@@ -122,9 +124,11 @@ impl AppBuilder<Inputs> {
         background_rx: Receiver<BackgroundMsg>,
         startup_settings: StartupSettings,
         startup_environment: StartupEnvironment,
+        color_mode: ColorMode,
     ) -> Self {
         Self {
             state: Inputs {
+                color_mode,
                 background_tx,
                 background_rx,
                 cargo_port_config: startup_settings.cargo_port_config,
@@ -264,7 +268,11 @@ impl AppBuilder<Started> {
         if let Some(warning) = started.lint_warning {
             overlays.set_status_flash(warning, Instant::now());
         }
-        let mut framework = app_framework(inputs.settings_store, inputs.toast_settings);
+        let mut framework = app_framework(
+            inputs.settings_store,
+            inputs.toast_settings,
+            inputs.color_mode,
+        );
         let framework_builder = FrameworkKeymap::<App>::builder().vim_mode(
             integration::vim_mode_from_config(config.current().tui.navigation_keys),
         );
@@ -317,14 +325,20 @@ impl AppBuilder<Started> {
     }
 }
 
-fn app_framework(settings_store: SettingsStore, toast_settings: ToastSettings) -> Framework<App> {
-    tui_pane::Framework::new_with_settings(
+fn app_framework(
+    settings_store: SettingsStore,
+    toast_settings: ToastSettings,
+    color_mode: ColorMode,
+) -> Framework<App> {
+    let mut framework = tui_pane::Framework::new_with_settings(
         FocusedPane::App(AppPaneId::ProjectList),
         LoadedSettings {
             store: settings_store,
             toast_settings,
         },
-    )
+    );
+    framework.color_mode = color_mode;
+    framework
 }
 
 impl App {

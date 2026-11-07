@@ -1526,8 +1526,11 @@ pub(super) fn prepare_settings_render_inputs(
         success_style: Style::default().fg(success_color()),
         error_style: Style::default().fg(error_color()),
         inline_error_style: Style::default().fg(inline_error_color()),
-        active_style: tui_pane::selection_style(PaneFocusState::Active),
-        remembered_style: tui_pane::selection_style(PaneFocusState::Remembered),
+        active_style: tui_pane::selection_style(PaneFocusState::Active, app.framework.color_mode),
+        remembered_style: tui_pane::selection_style(
+            PaneFocusState::Remembered,
+            app.framework.color_mode,
+        ),
         hovered_style: Style::default().bg(tui_pane::hover_focus_color()),
     };
     let rendered = app

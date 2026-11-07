@@ -8,6 +8,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::ColorMode;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameChrome;
 use tui_pane::PaneSelectionState;
@@ -114,6 +115,7 @@ struct PackageFieldRender {
 }
 
 struct StatsColumnRender<'a> {
+    color_mode:   ColorMode,
     data:         &'a PackageData,
     rows:         &'a [PackageRow],
     pane:         &'a Viewport,
@@ -485,6 +487,7 @@ fn package_field_render(
     area_width: u16,
     selection: PaneSelectionState,
 ) -> PackageFieldRender {
+    let mode = ctx.styles.chrome.color_mode;
     PackageFieldRender {
         field,
         label: field.label(),
@@ -493,9 +496,9 @@ fn package_field_render(
         label_style: ctx
             .styles
             .readonly_label
-            .patch(theme_roles::selection_style(selection)),
+            .patch(theme_roles::selection_style(selection, mode)),
         value_style: package_field_value_style(ctx, field)
-            .patch(theme_roles::selection_style(selection)),
+            .patch(theme_roles::selection_style(selection, mode)),
         value: package_field_value(ctx, field),
     }
 }
@@ -652,7 +655,7 @@ struct ProjectPanelRender<'a> {
     styles:                    &'a RenderStyles,
     /// Inter-pane description sync floor; clamped per-pane by the
     /// available `description_max_height`. Read by
-    /// [`DescriptionBlock::render`] so the rendered content stays in
+    /// [`DescriptionBlock::render_with_selection`] so the rendered content stays in
     /// step with what `sync_floor` saw at the top of the frame.
     synced_description_height: SyncedDescriptionHeight,
 }
@@ -713,6 +716,7 @@ pub(super) fn render_package_pane_body(
     styles: &RenderStyles,
     ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
+    let mode = ctx.color_mode;
     let pane_focus_state = pane.focus.pane_focus_state;
     let PaneRenderCtx {
         animation_elapsed,
@@ -755,7 +759,7 @@ pub(super) fn render_package_pane_body(
     // `render_project_description` runs first because its returned `description_height` fixes the
     // description region's rendered lines for this frame's `package_region` tree.
     let description_height =
-        render_project_description(frame, &context, area, project_inner, metadata_state);
+        render_project_description(frame, &context, area, project_inner, metadata_state, mode);
     let separator = u16::from(
         description_height > 0
             && project_inner.y.saturating_add(description_height) < project_inner.bottom(),
@@ -789,6 +793,7 @@ pub(super) fn render_package_pane_body(
     row_rects.extend(render_stats_column(
         frame,
         &StatsColumnRender {
+            color_mode: mode,
             data: &pkg_data,
             rows: &rows,
             pane: &pane.viewport,
@@ -811,7 +816,7 @@ pub(super) fn render_package_pane_body(
     if description_height > 0 {
         row_rects.push((placed[DESCRIPTION_BOX].content, 0));
     }
-    paint_package_selection(frame, pane_inner, pane, &row_rects);
+    paint_package_selection(frame, pane_inner, pane, &row_rects, mode);
     pane.set_row_rects(row_rects);
     chrome.labels.extend(tui_pane::overflow_affordance_label(
         area,
@@ -826,6 +831,7 @@ fn paint_package_selection(
     pane_inner: Rect,
     pane: &PackagePane,
     row_rects: &[(Rect, usize)],
+    mode: ColorMode,
 ) {
     for (rect, row) in row_rects {
         theme_roles::paint_selection(
@@ -836,6 +842,7 @@ fn paint_package_selection(
                 ..*rect
             },
             tui_pane::selection_state(&pane.viewport, *row, pane.focus.pane_focus_state),
+            mode,
         );
     }
 }
@@ -907,6 +914,7 @@ fn render_project_description(
     area: Rect,
     project_inner: Rect,
     metadata_state: &ProjectMetadataState,
+    mode: ColorMode,
 ) -> u16 {
     let lower_metadata_height = package_lower_metadata_height(context.pkg_data, context.rows);
     let reserved_lower_height = u16::from(lower_metadata_height > 0);
@@ -943,6 +951,7 @@ fn render_project_description(
         synced_floor,
         baseline_max,
         tui_pane::selection_state(context.pane, 0, context.focus),
+        mode,
     )
 }
 
@@ -989,6 +998,7 @@ fn push_separator(
 /// Shared geometry and pane state for rendering one stat section
 /// (Structure or Tests) inside the stats column.
 struct StatSectionCtx<'a> {
+    color_mode:  ColorMode,
     rows:        &'a [PackageRow],
     pane:        &'a Viewport,
     focus:       PaneFocusState,
@@ -1032,6 +1042,7 @@ fn render_stats_column(
     });
 
     let stat_section_context = StatSectionCtx {
+        color_mode:  context.color_mode,
         rows:        context.rows,
         pane:        context.pane,
         focus:       context.focus,
@@ -1244,13 +1255,16 @@ fn render_stat_section(
                 tui_pane::selection_state(ctx.pane, index, ctx.focus)
             });
             Line::from(vec![
-                Span::styled(format!(" {label:<lw$} "), selection.patch(label_style)),
+                Span::styled(
+                    format!(" {label:<lw$} "),
+                    selection.patch(label_style, ctx.color_mode),
+                ),
                 Span::styled(
                     format!("{value:>vw$} "),
-                    selection.patch(value_style(label, value)),
+                    selection.patch(value_style(label, value), ctx.color_mode),
                 ),
             ])
-            .style(theme_roles::selection_style(selection))
+            .style(theme_roles::selection_style(selection, ctx.color_mode))
         })
         .collect();
     let section_area = Rect {
