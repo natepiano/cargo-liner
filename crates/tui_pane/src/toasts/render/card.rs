@@ -16,6 +16,8 @@ use unicode_width::UnicodeWidthStr;
 use super::fallback_toast_palette;
 use super::format;
 use crate::ACTIVITY_SPINNER;
+use crate::ToastPlacement;
+use crate::ToastSettings;
 use crate::constants::ELISION;
 use crate::constants::TOAST_BODY_HORIZONTAL_PADDING;
 use crate::constants::TOAST_ROW_GAP;
@@ -32,6 +34,7 @@ use crate::toasts::TrackedItemActivity;
 use crate::toasts::TrackedItemElapsed;
 use crate::toasts::TrackedItemLifecycle;
 use crate::toasts::TrackedItemView;
+use crate::toasts::manager;
 use crate::wrap;
 
 pub(super) fn render_toast(
@@ -148,7 +151,58 @@ pub(super) fn render_toast(
     close_rect
 }
 
-/// Clear the card and its gaps, then close the frame columns beside them.
+/// Keep the stack in its corner region between the drawn pane borders.
+pub(super) fn area_between_pane_borders(
+    frame: &mut Frame,
+    area: Rect,
+    settings: &ToastSettings,
+    required_height: u16,
+) -> Rect {
+    let area = area.intersection(frame.area());
+    if area.is_empty() {
+        return area;
+    }
+    let width = manager::toast_card_width(settings, area.width);
+    let left = area
+        .right()
+        .saturating_sub(width)
+        .saturating_sub(TOAST_SIDE_GAP.saturating_mul(2))
+        .max(area.left());
+    let mut selected = Rect::new(area.x, area.y, area.width, 0);
+    let mut start = area.top();
+    for row in area.top()..=area.bottom() {
+        let border = row == area.bottom()
+            || (left..area.right())
+                .any(|x| is_horizontal_frame(frame.buffer_mut()[(x, row)].symbol()));
+        if !border {
+            continue;
+        }
+        let candidate = Rect::new(area.x, start, area.width, row.saturating_sub(start));
+        if !candidate.is_empty() {
+            selected = candidate;
+            // The preceding border already supplies the top gap.
+            selected.y = start.saturating_sub(TOAST_ROW_GAP).max(area.top());
+            selected.height = row.saturating_sub(selected.y);
+            if settings.placement == ToastPlacement::TopRight {
+                break;
+            }
+        }
+        start = row.saturating_add(1);
+    }
+    let occupied_height = required_height.min(selected.height);
+    let mut occupied = match settings.placement {
+        ToastPlacement::TopRight => selected.top()..selected.top().saturating_add(occupied_height),
+        ToastPlacement::BottomRight => {
+            selected.bottom().saturating_sub(occupied_height)..selected.bottom()
+        },
+    };
+    if occupied.any(|y| is_vertical_frame(frame.buffer_mut()[(selected.right() - 1, y)].symbol())) {
+        selected.width = selected.width.saturating_sub(TOAST_SIDE_GAP);
+    }
+    selected
+}
+
+/// Clear the card and plain gap cells. Keep pane borders and whole title rows in the gaps.
 fn clear_toast_surroundings(frame: &mut Frame, area: Rect, card: Rect) {
     let clear_left = card.x.saturating_sub(TOAST_SIDE_GAP).max(area.x);
     let clear_right = card
@@ -160,16 +214,93 @@ fn clear_toast_surroundings(frame: &mut Frame, area: Rect, card: Rect) {
         .bottom()
         .saturating_add(TOAST_ROW_GAP)
         .min(area.bottom());
-    frame.render_widget(
-        Clear,
-        Rect {
-            x:      clear_left,
-            y:      clear_top,
-            width:  clear_right.saturating_sub(clear_left),
-            height: clear_bottom.saturating_sub(clear_top),
-        },
+    let gaps = Rect::new(
+        clear_left,
+        clear_top,
+        clear_right.saturating_sub(clear_left),
+        clear_bottom.saturating_sub(clear_top),
     );
+    for y in gaps.top()..gaps.bottom() {
+        let frame_row = (gaps.left()..gaps.right())
+            .any(|x| is_horizontal_frame(frame.buffer_mut()[(x, y)].symbol()));
+        if frame_row {
+            continue;
+        }
+        for x in gaps.left()..gaps.right() {
+            if !card.contains((x, y).into())
+                && !is_vertical_frame(frame.buffer_mut()[(x, y)].symbol())
+            {
+                frame.buffer_mut()[(x, y)].reset();
+            }
+        }
+    }
+    frame.render_widget(Clear, card);
+    clear_covered_border_fragments(frame, gaps, card);
     join_adjacent_frame_columns(frame, area, card);
+}
+
+fn is_horizontal_frame(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "─" | "━"
+            | "═"
+            | "┌"
+            | "┐"
+            | "└"
+            | "┘"
+            | "╭"
+            | "╮"
+            | "╰"
+            | "╯"
+            | "┏"
+            | "┓"
+            | "┗"
+            | "┛"
+            | "╔"
+            | "╗"
+            | "╚"
+            | "╝"
+            | "├"
+            | "┤"
+            | "┬"
+            | "┴"
+            | "┼"
+            | "┣"
+            | "┫"
+            | "┳"
+            | "┻"
+            | "╋"
+            | "╠"
+            | "╣"
+            | "╦"
+            | "╩"
+            | "╬"
+    )
+}
+
+fn is_vertical_frame(symbol: &str) -> bool { matches!(symbol, "│" | "┃" | "║") }
+
+/// Remove a lone border cell only where the card covers its neighbour.
+fn clear_covered_border_fragments(frame: &mut Frame, gaps: Rect, card: Rect) {
+    let bounds = frame.area();
+    for y in gaps.top()..gaps.bottom() {
+        for x in gaps.left()..gaps.right() {
+            if !is_vertical_frame(frame.buffer_mut()[(x, y)].symbol()) {
+                continue;
+            }
+            let neighbors = y.saturating_sub(1)..=y.saturating_add(1);
+            let covered = neighbors.clone().any(|row| card.contains((x, row).into()));
+            let connected = neighbors.filter(|row| *row != y).any(|row| {
+                bounds.contains((x, row).into()) && {
+                    let symbol = frame.buffer_mut()[(x, row)].symbol();
+                    is_vertical_frame(symbol) || is_horizontal_frame(symbol)
+                }
+            });
+            if covered && !connected {
+                frame.buffer_mut()[(x, y)].reset();
+            }
+        }
+    }
 }
 
 /// Remove divider stubs that point into a toast's cleared side gaps.

@@ -287,6 +287,31 @@ impl TestCounts {
     }
 }
 
+/// The measurement state of a project's disk total and parts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum DiskMeasurement {
+    /// No disk measurement has arrived.
+    #[default]
+    NotMeasured,
+    /// The total is known, but its parts have not arrived.
+    TotalOnly(u64),
+    /// The total and both parts come from one measurement.
+    Measured {
+        total:  u64,
+        target: u64,
+        other:  u64,
+    },
+}
+
+impl DiskMeasurement {
+    pub(crate) const fn total(self) -> Option<u64> {
+        match self {
+            Self::NotMeasured => None,
+            Self::TotalOnly(total) | Self::Measured { total, .. } => Some(total),
+        }
+    }
+}
+
 /// Shared metadata for all project types (Rust and non-Rust).
 ///
 /// Identity fields (`path`, `name`) live on each project struct directly —
@@ -294,26 +319,13 @@ impl TestCounts {
 /// mutation of lookup keys.
 #[derive(Clone, Default)]
 pub(crate) struct ProjectInfo {
-    pub disk_usage_bytes:      Option<u64>,
-    /// Bytes rooted at this project's path that do **not** live inside
-    /// any `target/` subtree (source, docs, .git, etc.). Populated by
-    /// the scan walker in a single pass alongside `disk_usage_bytes`.
-    /// Step 5's detail-pane breakdown renders this as the "non-target"
-    /// portion; the sum `in_project_non_target + in_project_target`
-    /// equals `disk_usage_bytes` for every owner (target is in-tree)
-    /// and stays smaller for a sharer (its `in_project_target == 0`
-    /// because the real target lives elsewhere).
-    pub in_project_non_target: Option<u64>,
-    /// Bytes rooted at this project's path that live inside any
-    /// `target/` subtree. Zero for sharers whose workspace redirects
-    /// the target dir out-of-tree (e.g. via `CARGO_TARGET_DIR`).
-    pub in_project_target:     Option<u64>,
-    pub local_git_state:       LocalGitState,
-    pub language_stats:        Option<LanguageStats>,
-    pub test_counts:           Option<TestCounts>,
-    pub visibility:            Visibility,
-    pub worktree_health:       WorktreeHealth,
-    pub submodules:            Vec<Submodule>,
+    pub disk:            DiskMeasurement,
+    pub local_git_state: LocalGitState,
+    pub language_stats:  Option<LanguageStats>,
+    pub test_counts:     Option<TestCounts>,
+    pub visibility:      Visibility,
+    pub worktree_health: WorktreeHealth,
+    pub submodules:      Vec<Submodule>,
 }
 
 impl ProjectInfo {

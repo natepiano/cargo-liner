@@ -70,10 +70,10 @@ pub(super) fn target_bench_color() -> Color { role_color(TARGET_BENCH) }
 pub(super) fn selection_style(selection: PaneSelectionState, mode: ColorMode) -> Style {
     let style = selection.overlay_style(mode);
     match selection {
-        PaneSelectionState::Active | PaneSelectionState::Remembered => {
-            style.fg(role_color(SELECTION_TEXT))
-        },
-        _ => style,
+        PaneSelectionState::Active
+        | PaneSelectionState::Remembered
+        | PaneSelectionState::Hovered => style.fg(role_color(SELECTION_TEXT)),
+        PaneSelectionState::Unselected => style,
     }
 }
 

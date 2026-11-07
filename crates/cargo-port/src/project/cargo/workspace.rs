@@ -55,7 +55,7 @@ impl ProjectFields for Workspace {
 
     fn worktree_health(&self) -> WorktreeHealth { self.rust.project_info.worktree_health }
 
-    fn disk_usage_bytes(&self) -> Option<u64> { self.rust.project_info.disk_usage_bytes }
+    fn disk_usage_bytes(&self) -> Option<u64> { self.rust.project_info.disk.total() }
 
     fn git_info(&self) -> Option<&CheckoutInfo> { self.rust.project_info.local_git_state.info() }
 

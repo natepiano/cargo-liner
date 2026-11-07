@@ -103,9 +103,9 @@ pub(super) fn spawn_initial_disk_usage(
 }
 
 #[derive(Clone)]
-pub(super) struct DiskUsageTree {
-    pub(super) root_abs_path: AbsolutePath,
-    pub(super) entries:       Vec<AbsolutePath>,
+pub(crate) struct DiskUsageTree {
+    pub(crate) root_abs_path: AbsolutePath,
+    pub(crate) entries:       Vec<AbsolutePath>,
 }
 
 pub(super) fn group_disk_usage_trees(
@@ -246,7 +246,7 @@ fn is_lint_source(path: &Path) -> bool {
     }
 }
 
-fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {
+pub(crate) fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {
     let mut totals: HashMap<AbsolutePath, DirSizes> = tree
         .entries
         .iter()

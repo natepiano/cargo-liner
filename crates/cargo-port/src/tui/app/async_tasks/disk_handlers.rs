@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use super::constants::PROJECT_STORAGE_REFRESH_SECS;
 use crate::project::AbsolutePath;
+use crate::project::DiskMeasurement;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Dismissed;
 use crate::project::Visibility::Visible;
@@ -61,28 +62,28 @@ impl App {
             self.apply_disk_usage_breakdown(path.as_path(), sizes);
         }
     }
-    /// Apply a [`DirSizes`] breakdown to the matching project. Shares
-    /// the post-set logic with `apply_disk_usage` (visibility /
-    /// lint-runtime registration) by reusing that helper for the
-    /// total — the breakdown fields are stored alongside.
+    /// Store the total and its parts from the same measurement.
     pub(super) fn apply_disk_usage_breakdown(&mut self, path: &Path, sizes: DirSizes) {
-        match self.project_list.at_path_mut(path) {
-            Found(project) => {
-                project.in_project_target = Some(sizes.in_project_target);
-                project.in_project_non_target = Some(sizes.in_project_non_target);
-            },
-            UnknownPath | StaleRoute => {},
-        }
         self.apply_disk_usage(path, sizes.total);
+        if let Found(project) = self.project_list.at_path_mut(path) {
+            project.disk = DiskMeasurement::Measured {
+                total:  sizes.total,
+                target: sizes.in_project_target,
+                other:  sizes.in_project_non_target,
+            };
+        }
     }
     pub(super) fn apply_disk_usage(&mut self, path: &Path, bytes: u64) {
-        // `project_list.at_path_mut` locates the `ProjectInfo` whose `disk_usage_bytes` and
-        // `visibility` are updated to reflect `Deleted` or `Visible`; `lint_runtime_changed` tracks
-        // required registration updates.
+        // Update the measurement and visibility for this path.
+        // Refresh lint registration when visibility changes.
         let mut lint_runtime_changed = false;
         match self.project_list.at_path_mut(path) {
             Found(project) => {
-                project.disk_usage_bytes = Some(bytes);
+                if !matches!(project.disk, DiskMeasurement::Measured { .. })
+                    || (bytes == 0 && !path.exists())
+                {
+                    project.disk = DiskMeasurement::TotalOnly(bytes);
+                }
                 // Periodic probes also include dismissed roots. Their result must
                 // not undo the user's explicit dismissal of a deleted project.
                 if project.visibility == Dismissed {

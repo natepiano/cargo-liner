@@ -40,6 +40,7 @@ use super::draw_frame_with_renderer;
 use super::process_input_frame;
 use crate::channel;
 use crate::project::AbsolutePath;
+use crate::project::DiskMeasurement;
 use crate::project::FileStamp;
 use crate::project::ManifestFingerprint;
 use crate::project::NonRustProject;
@@ -323,9 +324,7 @@ fn delayed_storage_reply_after_identical_disk_reply_changes_the_row_frame_input(
 fn equal_zero_bytes_still_draws_deletion_once() {
     let path = AbsolutePath::from("/tmp/phase3-nonexistent/deleted");
     let mut item = project(path.as_path().to_str().expect("fixture path"));
-    item.at_path_mut(&path)
-        .expect("fixture project")
-        .disk_usage_bytes = Some(0);
+    item.at_path_mut(&path).expect("fixture project").disk = DiskMeasurement::TotalOnly(0);
     let mut app = test_support::make_app(&[project("/tmp/phase3-selected"), item]);
     select_fixture_project(&mut app, "/tmp/phase3-selected");
     let now = Instant::now();
@@ -596,8 +595,15 @@ fn disk_batch_changes_breakdown_once_and_preserves_identical_detail_generation()
     assert!(frames.needs_draw(&app, now));
     assert!(app.scan.generation() > generation);
     let info = app.project_list.at_path(&path).expect_found("batch row");
-    assert_eq!(info.disk_usage_bytes, Some(100));
-    assert_eq!(info.in_project_target, Some(60));
+    assert_eq!(info.disk.total(), Some(100));
+    assert!(matches!(
+        info.disk,
+        crate::project::DiskMeasurement::Measured {
+            total:  100,
+            target: 60,
+            other:  40,
+        }
+    ));
 }
 
 #[test]

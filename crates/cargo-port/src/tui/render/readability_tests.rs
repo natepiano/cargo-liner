@@ -12,6 +12,7 @@ use crate::http::RateLimitQuota;
 use crate::project::AheadBehind;
 use crate::project::CommitDate;
 use crate::project::Comparison;
+use crate::project::DiskMeasurement;
 use crate::project::FirstCommit;
 use crate::project::GitStatus;
 use crate::project::Package;
@@ -36,6 +37,153 @@ use crate::tui::sccache;
 use crate::tui::test_support;
 use crate::tui::test_support::PROJECT;
 use crate::tui::test_support::WIDTH;
+
+#[test]
+fn a_toast_keeps_a_one_row_content_divider_outside_its_card() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.show_timed_toast("Startup", "Read projects");
+    let mut terminal = Terminal::new(TestBackend::new(WIDTH, 45))?;
+    terminal.draw(|frame| {
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new("left │ right"),
+            Rect::new(2, 2, 20, 1),
+        );
+        super::render_toasts_over_panes(frame, &mut app, frame.area());
+    })?;
+    let buffer = terminal.backend().buffer();
+    assert!(test_support::find_text_cell(buffer, buffer.area, "left │ right").is_some());
+    assert_ne!(app.framework.toasts.hits(), []);
+    Ok(())
+}
+
+#[test]
+fn phase4e_startup_toast_leaves_whole_titles_and_connected_borders() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.show_timed_toast("Startup", "Scan projects\nRead Git data\nLoad lint results");
+    let buffer = test_support::draw_ui(&mut app, WIDTH)?;
+    let cards: Vec<_> = app
+        .framework
+        .toasts
+        .hits()
+        .iter()
+        .map(|hit| hit.card_rect)
+        .collect();
+    assert!(!cards.is_empty(), "the startup toast must draw");
+    let rows = test_support::rows(&buffer);
+    for y in 1..buffer.area.bottom() - 2 {
+        assert!(
+            !rows[usize::from(y)].trim().is_empty(),
+            "blank row {y}: {rows:?}"
+        );
+        for x in 1..buffer.area.right() - 1 {
+            if buffer[(x, y)].symbol() != "│" {
+                continue;
+            }
+            let connected = [y - 1, y + 1].into_iter().any(|neighbor| {
+                matches!(
+                    buffer[(x, neighbor)].symbol(),
+                    "│" | "├"
+                        | "┤"
+                        | "┼"
+                        | "┬"
+                        | "┴"
+                        | "┌"
+                        | "┐"
+                        | "└"
+                        | "┘"
+                        | "╭"
+                        | "╮"
+                        | "╰"
+                        | "╯"
+                )
+            });
+            assert!(connected, "an isolated border remains at {x},{y}: {rows:?}");
+        }
+    }
+    let area = app.panes.tiled_layout.area(PaneId::Lints);
+    let title_covered =
+        (area.x..area.right()).all(|x| cards.iter().any(|card| card.contains((x, area.y).into())));
+    assert!(
+        title_covered || test_support::find_text_cell(&buffer, area, "No lint runs").is_some(),
+        "the Lints title must remain whole: {rows:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn phase4e_short_git_description_keeps_five_rows_and_aligned_dividers() -> anyhow::Result<()> {
+    let mut app = app_with_narrow_detail_fields();
+    app.framework.color_mode = ColorMode::Colored;
+    let description = "A collection of tools for Rust projects with builds, tests, worktrees, caches and continuous integration";
+    let mut package = app
+        .panes
+        .package
+        .content()
+        .context("Package content")?
+        .clone();
+    package.description = Some(description.to_string());
+    app.panes.package.set_content(package);
+    let mut git = app.panes.git.content().context("Git content")?.clone();
+    git.description = Some(description.to_string());
+    app.panes.git.set_content(git);
+    app.set_focus_to_pane(PaneId::Git);
+    app.panes.git.viewport.home();
+    let first = draw_short_ui(&mut app)?;
+    let git_area = app.panes.tiled_layout.area(PaneId::Git);
+    let package_area = app.panes.tiled_layout.area(PaneId::Package);
+    let divider_y = (git_area.y + 1..git_area.bottom() - 1)
+        .find(|y| matches!(first[(git_area.x, *y)].symbol(), "├" | "┝"))
+        .context("Git divider")?;
+    assert!(
+        divider_y <= git_area.y + 3,
+        "the description takes at most two rows: {:?}",
+        test_support::rows(&first)
+    );
+    let last_description: String = (git_area.x + 1..git_area.right() - 1)
+        .map(|x| first[(x, divider_y - 1)].symbol())
+        .collect();
+    assert!(
+        last_description.trim_end().ends_with('…'),
+        "{last_description}"
+    );
+    assert!(
+        matches!(first[(package_area.x, divider_y)].symbol(), "├" | "┝"),
+        "the two description dividers must align"
+    );
+    assert!(
+        app.panes.git.viewport.content_area().height >= 5,
+        "five data rows must remain"
+    );
+    assert_visible_field_is_whole(&first, git_area, "Status", "✨ clean")?;
+    assert_visible_field_is_whole(&first, git_area, "Branch", "master")?;
+    let first_rows = test_support::rows(&first);
+    assert!(
+        first_rows[usize::from(git_area.bottom() - 1)].contains("1 of"),
+        "{first_rows:?}"
+    );
+    app.panes.git.viewport.end();
+    let last = draw_short_ui(&mut app)?;
+    let last_rows = test_support::rows(&last);
+    assert!(
+        last_rows[usize::from(git_area.bottom() - 1)].contains('▲'),
+        "{last_rows:?}"
+    );
+    assert!(
+        (git_area.x..git_area.right()).all(|x| last[(x, git_area.bottom() - 1)].symbol() != "▼"),
+        "{last_rows:?}"
+    );
+    app.panes.git.viewport.home();
+    let again = draw_short_ui(&mut app)?;
+    assert_eq!(test_support::rows(&again), first_rows);
+    let tall = test_support::draw_pane_at_size(&mut app, PaneId::Git, git_area.width, 30)?;
+    let tall_divider = (1..tall.area.bottom() - 1)
+        .find(|y| matches!(tall[(0, *y)].symbol(), "├" | "┝"))
+        .context("tall Git divider")?;
+    assert!(tall_divider > 3, "the tall pane keeps the full description");
+    Ok(())
+}
 
 #[test]
 fn targets_keep_the_cursor_across_full_frames() -> anyhow::Result<()> {
@@ -158,7 +306,7 @@ fn narrow_workspace_shows_path_and_disk_values() -> anyhow::Result<()> {
         title: "Workspace".to_string(),
         name: PROJECT.to_string(),
         path: "/tmp/workspace".to_string(),
-        disk: Some(73),
+        disk: DiskMeasurement::TotalOnly(73),
         ..crate::tui::panes::PackageData::default()
     });
     let buffer = test_support::draw_ui(&mut app, 80)?;
@@ -261,7 +409,7 @@ fn narrow_workspace_focus_selects_a_drawn_field() -> anyhow::Result<()> {
     app.panes.package.set_content(PackageData {
         title: "Workspace".to_string(),
         path: "/tmp/workspace".to_string(),
-        disk: Some(73),
+        disk: DiskMeasurement::TotalOnly(73),
         ..PackageData::default()
     });
     app.panes.git.set_content(GitData {
@@ -310,9 +458,11 @@ fn app_with_narrow_detail_fields() -> App {
         .observe(crate::tui::columns::COL_NAME, 100);
     app.panes.package.set_content(PackageData {
         path: "/tmp/long-package-path".to_string(),
-        disk: Some(26_521_488_179),
-        in_project_target: Some(25_769_803_776),
-        in_project_non_target: Some(751_684_403),
+        disk: DiskMeasurement::Measured {
+            total:  26_521_488_179,
+            target: 25_769_803_776,
+            other:  751_684_403,
+        },
         types: Some(vec![crate::project::ProjectType::Binary]),
         version: PackageVersion::Manifest("0.1.0".to_string()),
         package_presence: PackagePresence::Present,
@@ -336,13 +486,25 @@ fn assert_visible_field_is_whole(
     label: &str,
     value: &str,
 ) -> anyhow::Result<()> {
+    let area = Rect {
+        y: area.y + 1,
+        height: area.height.saturating_sub(2),
+        ..area
+    };
+    let label_position = test_support::find_text_cell(buffer, area, label);
+    let value_position = test_support::find_text_cell(buffer, area, value);
+    if let (Some((_, label_y)), Some((_, value_y))) = (label_position, value_position)
+        && label_y == value_y
+    {
+        return Ok(());
+    }
     if let Some((_, y)) = test_support::find_text_cell(buffer, area, label) {
         let value_area = ratatui::layout::Rect::new(area.x, y + 1, area.width, 1);
-        assert!(y + 1 < area.bottom() - 1, "{label} has no value row");
+        assert!(y + 1 < area.bottom(), "{label} has no value row");
         test_support::find_text_cell(buffer, value_area, value).context("value below its label")?;
     }
     if let Some((_, y)) = test_support::find_text_cell(buffer, area, value) {
-        assert!(y > area.y + 1, "{value} has no label row");
+        assert!(y > area.y, "{value} has no label row");
         let label_area = ratatui::layout::Rect::new(area.x, y - 1, area.width, 1);
         test_support::find_text_cell(buffer, label_area, label).context("label above its value")?;
     }
@@ -464,7 +626,10 @@ fn one_line_git_fields_keep_whole_labels_and_shortened_values() -> anyhow::Resul
         app.panes.git.viewport.set_pos(index + 1);
         let buffer = draw_short_ui(&mut app)?;
         let area = app.panes.git.viewport.content_area();
-        assert_eq!(area.height, 1, "the description leaves one Git row");
+        assert!(
+            area.height >= 5,
+            "the short description leaves five Git rows"
+        );
         let (x, y) =
             test_support::find_text_cell(&buffer, area, field.label()).with_context(|| {
                 format!(
@@ -474,9 +639,20 @@ fn one_line_git_fields_keep_whole_labels_and_shortened_values() -> anyhow::Resul
                 )
             })?;
         let value_x = x + u16::try_from(field.label().len())?;
-        let value = (value_x..area.right())
+        let inline_value = (value_x..area.right())
             .map(|x| buffer[(x, y)].symbol())
             .collect::<String>();
+        let value = if inline_value.trim().is_empty() {
+            assert!(
+                y + 1 < area.bottom(),
+                "the value must stay on the label page"
+            );
+            (area.x..area.right())
+                .map(|x| buffer[(x, y + 1)].symbol())
+                .collect::<String>()
+        } else {
+            inline_value
+        };
         assert!(
             !value.trim().is_empty(),
             "{} has no value: {value:?}",
@@ -503,7 +679,7 @@ fn app_with_paged_worktrees(root: &Path) -> anyhow::Result<App> {
             name: Some("proof_crate [claude-build-followups-sdlc-merge-gate/scripts/aws_target/production]".to_string()),
             ..crate::project::Package::default()
         };
-        package.disk_usage_bytes = Some(1 << 30);
+        package.disk = DiskMeasurement::TotalOnly(1 << 30);
         projects.push(RustProject::Package(package));
     }
     let mut projects = projects.into_iter();
@@ -525,7 +701,7 @@ fn app_with_paged_worktrees(root: &Path) -> anyhow::Result<App> {
         title: "Project".to_string(),
         name: "proof_crate".to_string(),
         path: root.display().to_string(),
-        disk: Some(26_521_488_179),
+        disk: DiskMeasurement::TotalOnly(26_521_488_179),
         ..PackageData::default()
     });
     let mut data = app.panes.git.content().context("Git content")?.clone();

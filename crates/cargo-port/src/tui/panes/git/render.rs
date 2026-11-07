@@ -229,19 +229,7 @@ fn render_git_column_inner(
         &ctx.data.worktrees,
         usize::from(inner_area.width),
     );
-    let remote_layout = if usize::from(inner_area.width) <= support::NARROW_FIELD_INNER_WIDTH {
-        sync_col_layout(
-            ctx.data.remotes.listed(),
-            &[],
-            usize::from(inner_area.width),
-        )
-    } else {
-        sync_col_layout(
-            ctx.data.remotes.listed(),
-            &ctx.data.worktrees,
-            usize::from(inner_area.width),
-        )
-    };
+    let remote_layout = remote_col_layout(ctx.data, usize::from(inner_area.width));
     append_remotes_section(
         &mut accum,
         ctx,
@@ -715,15 +703,32 @@ fn push_section_overlays(
             height: 1,
         };
         chrome.rules.push(rule_area);
+        let title =
+            section_title_with_count(&rule.title, usize::from(rule_area.width.saturating_sub(3)));
         chrome.labels.extend(tui_pane::rule_title_label(
             rule_area,
             RuleTitle {
-                text:  &rule.title,
+                text:  &title,
                 style: title_style,
             },
             None,
         ));
     }
+}
+
+fn section_title_with_count(title: &str, width: usize) -> String {
+    let Some((word, count)) = title.rsplit_once(" (") else {
+        return render::truncate_with_ellipsis(title, width, "…");
+    };
+    let count = format!(" ({count}");
+    if title.width() <= width {
+        return title.to_string();
+    }
+    format!(
+        "{}{}",
+        render::truncate_with_ellipsis(word, width.saturating_sub(count.width()), "…"),
+        count
+    )
 }
 
 struct RenderFlatArgs<'a> {
@@ -1080,6 +1085,7 @@ fn fit_rate_limit_value(
 /// Branch/Tracked/Sync trio uses identical widths and starts at the same
 /// `lead` display column in both tables, so the two sections line up.
 struct SyncColLayout {
+    available:     usize,
     remote_name:   usize,
     remote_url:    usize,
     worktree_name: usize,
@@ -1088,6 +1094,15 @@ struct SyncColLayout {
     branch:        usize,
     tracked:       usize,
     sync:          usize,
+}
+
+fn remote_col_layout(data: &GitData, available: usize) -> SyncColLayout {
+    let worktrees = if available <= support::NARROW_FIELD_INNER_WIDTH {
+        &[]
+    } else {
+        data.worktrees.as_slice()
+    };
+    sync_col_layout(data.remotes.listed(), worktrees, available)
 }
 
 /// The worktree's own checked-out branch — the source side of its delta.
@@ -1162,13 +1177,14 @@ fn sync_col_layout(
         .max(worktree_lead_or(worktrees, worktree_fixed + MIN_FLEX_COL))
         .min(natural_lead);
     let trio_total = branch + 2 + tracked + 2 + sync;
-    let budget_lead = available.saturating_sub(trio_total);
+    let budget_lead = available.saturating_sub(1).saturating_sub(trio_total);
     let lead = budget_lead.clamp(min_lead, natural_lead);
 
     if available <= support::NARROW_FIELD_INNER_WIDTH && !worktrees.is_empty() {
         let branch = 7.min(available.saturating_sub(3));
         let lead = available.saturating_sub(branch);
         return SyncColLayout {
+            available,
             remote_name,
             remote_url: remote_url.min(lead.saturating_sub(remote_fixed)),
             worktree_name: lead.saturating_sub(worktree_fixed),
@@ -1180,6 +1196,7 @@ fn sync_col_layout(
     }
 
     SyncColLayout {
+        available: available.saturating_sub(1),
         remote_name,
         // Clamp `SyncColLayout::remote_url` and `worktree_name` to the space `lead` leaves;
         // `fit_text` ellipsis-truncates their rendered content to those widths.
@@ -1207,10 +1224,32 @@ const fn worktree_lead_or(worktrees: &[WorktreeInfo], lead: usize) -> usize {
 fn sync_trio(layout: &SyncColLayout, branch: &str, tracked: &str, sync: &str) -> String {
     format!(
         "{branch:<bw$}  {tracked:<tw$}  {sync:>sw$}",
+        branch = fit_text(branch, layout.branch),
+        tracked = fit_text(tracked, layout.tracked),
+        sync = fit_text(sync, layout.sync),
         bw = layout.branch,
         tw = layout.tracked,
         sw = layout.sync,
     )
+}
+
+fn fit_table_line(mut line: Line<'static>, width: usize) -> Line<'static> {
+    if line.width() <= width {
+        return line;
+    }
+    let mut remaining = width.saturating_sub(1);
+    let mut spans = Vec::new();
+    for span in line.spans {
+        let text = render::truncate_with_ellipsis(&span.content, remaining, "");
+        remaining = remaining.saturating_sub(text.width());
+        spans.push(Span::styled(text, span.style));
+        if remaining == 0 {
+            spans.push(Span::styled("…", span.style));
+            break;
+        }
+    }
+    line.spans = spans;
+    line
 }
 
 fn render_remote_header(lines: &mut Vec<Line<'static>>, layout: &SyncColLayout, focused: bool) {
@@ -1227,10 +1266,10 @@ fn render_remote_header(lines: &mut Vec<Line<'static>>, layout: &SyncColLayout, 
     );
     let pad = " ".repeat(layout.lead.saturating_sub(leading.width()));
     let trio = sync_trio(layout, BRANCH_HEADER, TRACKED_HEADER, SYNC_HEADER);
-    lines.push(Line::from(Span::styled(
-        format!("{leading}{pad}{trio}"),
-        style,
-    )));
+    lines.push(fit_table_line(
+        Line::from(Span::styled(format!("{leading}{pad}{trio}"), style)),
+        layout.available,
+    ));
 }
 
 fn remote_row_line(
@@ -1255,11 +1294,11 @@ fn remote_row_line(
     let url = fit_text(&row.display_url, layout.remote_url);
     let leading = format!(
         "{:<name$}  {:<url$}{pad}{branch_text:<branch$}  ",
-        row.name,
+        fit_text(&row.name, layout.remote_name),
         url,
         name = layout.remote_name,
         url = layout.remote_url,
-        branch_text = row.branch,
+        branch_text = fit_text(&row.branch, layout.branch),
         branch = layout.branch
     );
     let data_style = selection.patch(Style::default().fg(inactive_title_color()), mode);
@@ -1279,20 +1318,23 @@ fn remote_row_line(
         },
         mode,
     );
-    Line::from(vec![
-        Span::raw(" "),
-        Span::styled(icon_cell, selection.patch(Style::default(), mode)),
-        Span::styled(leading, data_style),
-        Span::styled(
-            format!("{:<width$}", row.tracked_text(), width = layout.tracked),
-            tracked_style,
-        ),
-        Span::styled(
-            format!("  {:>width$}", row.status_text(), width = layout.sync),
-            sync_style,
-        ),
-        Span::styled(push_suffix, data_style),
-    ])
+    fit_table_line(
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(icon_cell, selection.patch(Style::default(), mode)),
+            Span::styled(leading, data_style),
+            Span::styled(
+                format!("{:<width$}", row.tracked_text(), width = layout.tracked),
+                tracked_style,
+            ),
+            Span::styled(
+                format!("  {:>width$}", row.status_text(), width = layout.sync),
+                sync_style,
+            ),
+            Span::styled(push_suffix, data_style),
+        ]),
+        layout.available,
+    )
 }
 
 // `render_worktree_header` and `worktree_row_line` render Worktrees with the shared
@@ -1307,10 +1349,10 @@ fn render_worktree_header(lines: &mut Vec<Line<'static>>, layout: &SyncColLayout
     );
     let pad = " ".repeat(layout.lead.saturating_sub(leading.width()));
     let trio = sync_trio(layout, BRANCH_HEADER, TRACKED_HEADER, SYNC_HEADER);
-    lines.push(Line::from(Span::styled(
-        format!("{leading}{pad}{trio}"),
-        style,
-    )));
+    lines.push(fit_table_line(
+        Line::from(Span::styled(format!("{leading}{pad}{trio}"), style)),
+        layout.available,
+    ));
 }
 
 fn worktree_row_line(
@@ -1339,10 +1381,13 @@ fn worktree_row_line(
         },
         mode,
     );
-    Line::from(vec![
-        Span::styled(prefix, style),
-        Span::styled(format!("{sync:>width$}", width = layout.sync), sync_style),
-    ])
+    fit_table_line(
+        Line::from(vec![
+            Span::styled(prefix, style),
+            Span::styled(format!("{sync:>width$}", width = layout.sync), sync_style),
+        ]),
+        layout.available,
+    )
 }
 
 fn git_panel_title(data: &GitData) -> String {

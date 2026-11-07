@@ -141,7 +141,6 @@ use super::app_render_state::RenderBorrows;
 use super::app_render_state::RenderRegistry;
 use super::background::Background;
 #[cfg(test)]
-#[cfg(test)]
 use super::columns::LintCell;
 #[cfg(test)]
 use super::columns::StyledSegment;
@@ -205,6 +204,7 @@ use crate::project::AbsolutePath;
 #[cfg(test)]
 use crate::project::GitStatus;
 use crate::project::RootItem;
+use crate::project::Visibility;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::MetadataDispatchContext;
@@ -1311,8 +1311,10 @@ impl App {
                     .selected_project_path()
                     .is_some_and(|path| {
                         (match self.project_list.at_path(path) {
-                            Found(p) => p.language_stats.as_ref(),
-                            UnknownPath | StaleRoute => None,
+                            Found(p) if p.visibility == Visibility::Visible => {
+                                p.language_stats.as_ref()
+                            },
+                            Found(_) | UnknownPath | StaleRoute => None,
                         })
                         .is_some_and(|ls| !ls.entries.is_empty())
                     }),
@@ -2761,6 +2763,7 @@ mod tests {
         use crate::lint::LintRun;
         use crate::lint::LintRunStatus;
         use crate::project::Comparison;
+        use crate::project::DiskMeasurement;
         use crate::project::PinnedCommit;
         use crate::project::ProjectType;
         use crate::project::RootItem;
@@ -2988,7 +2991,7 @@ mod tests {
                 description:              None,
                 crates_io_rows:           Vec::new(),
                 types:                    Some(vec![ProjectType::Library]),
-                disk:                     Some(1_048_576),
+                disk:                     DiskMeasurement::TotalOnly(1_048_576),
                 stats_rows:               Vec::new(),
                 test_rows:                Vec::new(),
                 package_presence:         PackagePresence::Present,
@@ -2996,8 +2999,6 @@ mod tests {
                 license:                  None,
                 homepage:                 None,
                 repository:               None,
-                in_project_target:        None,
-                in_project_non_target:    None,
                 out_of_tree_target_bytes: None,
                 lint_display:             crate::tui::state::LintDisplay::default(),
                 ci_display:               crate::tui::state::CiDisplay::default(),
@@ -4795,6 +4796,7 @@ mod tests {
             keymap.dispatch_framework_global(FrameworkGlobalAction::OpenKeymap, app);
         }
 
+        use crate::project::DiskMeasurement;
         use crate::tui::project_list::ReplacementExpansion;
         use crate::tui::test_support;
 
@@ -5306,7 +5308,7 @@ mod tests {
                 .project_list
                 .at_path_mut(path)
                 .expect_found("test project should exist in project list");
-            project.disk_usage_bytes = Some(0);
+            project.disk = DiskMeasurement::TotalOnly(0);
             project.visibility = Visibility::Deleted;
         }
 
@@ -7479,10 +7481,10 @@ mod tests {
             let linked_path = tmp.path().join(linked_name);
             let mut primary =
                 make_package_worktree("demo", &primary_path, false, Some(&primary_path));
-            primary.rust.project_info.disk_usage_bytes = Some(39_000_000_000);
+            primary.rust.project_info.disk = DiskMeasurement::TotalOnly(39_000_000_000);
             let mut linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
             linked.rust.project_info.worktree_health = WorktreeHealth::Broken;
-            linked.rust.project_info.disk_usage_bytes = Some(304);
+            linked.rust.project_info.disk = DiskMeasurement::TotalOnly(304);
             let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
                 RustProject::Package(primary),
                 vec![RustProject::Package(linked)],
@@ -7537,7 +7539,7 @@ mod tests {
                 make_package_worktree("demo", &primary_path, false, Some(&primary_path));
             // The fitted Disk width includes the linked row's whole suffix,
             // even alongside a primary with a larger size value.
-            primary.rust.project_info.disk_usage_bytes = Some(1_073_741_824);
+            primary.rust.project_info.disk = DiskMeasurement::TotalOnly(1_073_741_824);
             let mut linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
             linked.rust.project_info.worktree_health = WorktreeHealth::Broken;
             let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
@@ -7577,7 +7579,7 @@ mod tests {
                 make_package_worktree("demo", &primary_path, false, Some(&primary_path));
             // The fitted Disk width includes the linked row's whole suffix,
             // even alongside a primary with a larger size value.
-            primary.rust.project_info.disk_usage_bytes = Some(1_073_741_824);
+            primary.rust.project_info.disk = DiskMeasurement::TotalOnly(1_073_741_824);
             let mut linked = make_package_worktree("demo", &linked_path, true, Some(&primary_path));
             linked.rust.project_info.worktree_health = WorktreeHealth::Broken;
             let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
@@ -10601,7 +10603,7 @@ mod tests {
             app.handle_disk_usage(Path::new(&member_path), 1_234_567);
             assert_eq!(
                 match app.project_list.at_path(Path::new(&member_path)) {
-                    Found(info) => info.disk_usage_bytes,
+                    Found(info) => info.disk.total(),
                     UnknownPath | StaleRoute => None,
                 },
                 Some(1_234_567)
@@ -10626,7 +10628,7 @@ mod tests {
 
             assert_eq!(
                 match app.project_list.at_path(Path::new(&member_path)) {
-                    Found(info) => info.disk_usage_bytes,
+                    Found(info) => info.disk.total(),
                     UnknownPath | StaleRoute => None,
                 },
                 Some(1_234_567),
@@ -10985,15 +10987,13 @@ mod tests {
             let names = rendered_root_name_cells(&mut app);
 
             assert!(
-                names
-                    .iter()
-                    .any(|name| name.contains("cargo-port [rust/cargo-port]")),
+                names.iter().any(|name| name.contains("cargo-port [rust]")),
                 "colliding dir-leaf roots should disambiguate by parent path: {names:?}"
             );
             assert!(
                 names
                     .iter()
-                    .any(|name| name.contains("cargo-port [archive/cargo-port]")),
+                    .any(|name| name.contains("cargo-port [archive]")),
                 "colliding dir-leaf roots should disambiguate by parent path: {names:?}"
             );
             assert_ne!(
@@ -11019,15 +11019,13 @@ mod tests {
             let names = rendered_root_name_cells(&mut app);
 
             assert!(
-                names
-                    .iter()
-                    .any(|name| name.contains("cargo-port [rust/cargo-port]")),
+                names.iter().any(|name| name.contains("cargo-port [rust]")),
                 "root label should prepend parents until the suffix becomes unique: {names:?}"
             );
             assert!(
                 names
                     .iter()
-                    .any(|name| name.contains("cargo-port [archive/cargo-port]")),
+                    .any(|name| name.contains("cargo-port [archive]")),
                 "root label should prepend parents until the suffix becomes unique: {names:?}"
             );
             assert!(
@@ -12654,7 +12652,7 @@ mod tests {
                 .project_list
                 .vendored_at_path(vendored_path.as_path())
                 .expect("member-owned vendored package should be addressable by path");
-            assert_eq!(vendored.project_info.disk_usage_bytes, Some(4097));
+            assert_eq!(vendored.project_info.disk.total(), Some(4097));
             assert_eq!(
                 vendored
                     .project_info

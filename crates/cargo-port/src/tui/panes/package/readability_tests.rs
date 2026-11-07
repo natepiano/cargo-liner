@@ -6,10 +6,13 @@ use tui_pane::ColorMode;
 use tui_pane::Hittable;
 use tui_pane::PaneFocusState;
 
+use crate::ci::CiStatus;
 use crate::config::NonRustInclusion;
 use crate::project::CratesIoRelease;
+use crate::project::DiskMeasurement;
 use crate::project::RootItem;
 use crate::project::Visibility;
+use crate::scan::BackgroundMsg;
 use crate::tui::panes;
 use crate::tui::panes::GitData;
 use crate::tui::panes::PackageData;
@@ -17,7 +20,10 @@ use crate::tui::panes::PackagePresence;
 use crate::tui::panes::PackageSection;
 use crate::tui::panes::PackageVersion;
 use crate::tui::panes::PaneId;
+use crate::tui::panes::pane_data::PackageDeletion;
 use crate::tui::panes::pane_data::WorktreeGroupSummary;
+use crate::tui::render;
+use crate::tui::state::CiDisplay;
 use crate::tui::test_support;
 use crate::tui::test_support::PROJECT;
 use crate::tui::test_support::PROJECT_PATH;
@@ -58,9 +64,11 @@ fn deleted_non_rust_details_keep_the_project_fields() -> anyhow::Result<()> {
 fn narrow_package_disk_values_share_one_column() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.package.set_content(PackageData {
-        disk: Some(73),
-        in_project_target: Some(0),
-        in_project_non_target: Some(73),
+        disk: DiskMeasurement::Measured {
+            total:  73,
+            target: 0,
+            other:  73,
+        },
         ..crate::tui::panes::PackageData::default()
     });
     let buffer = test_support::draw_pane(&mut app, PaneId::Package, 20)?;
@@ -95,8 +103,11 @@ fn deleted_package_details_name_the_state_and_clear_disk_breakdown() -> anyhow::
         .at_path_mut(Path::new(PROJECT_PATH))
         .expect_found("the fixture project");
     info.visibility = Visibility::Deleted;
-    info.disk_usage_bytes = Some(0);
-    info.in_project_non_target = Some(74);
+    info.disk = DiskMeasurement::Measured {
+        total:  0,
+        target: 0,
+        other:  74,
+    };
     app.scan.bump_generation();
     app.ensure_detail_cached();
     let buffer = test_support::draw_pane(&mut app, PaneId::Package, 60)?;
@@ -154,7 +165,12 @@ fn empty_description_is_one_marked_row() -> anyhow::Result<()> {
         .filter(|row| row.contains("No description"))
         .collect();
     assert_eq!(matching.len(), 1);
-    assert!(matching[0].trim_end_matches(['│', ' ']).ends_with('…'));
+    assert!(
+        matching[0]
+            .trim_end_matches(['│', ' '])
+            .ends_with("No description")
+    );
+    assert!(!matching[0].contains('…'));
     assert!(
         !test_support::rows(&buffer)
             .iter()
@@ -167,9 +183,11 @@ fn empty_description_is_one_marked_row() -> anyhow::Result<()> {
 fn compact_target_disk_value_stays_on_its_label_row() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.package.set_content(PackageData {
-        disk: Some(73),
-        in_project_target: Some(0),
-        in_project_non_target: Some(73),
+        disk: DiskMeasurement::Measured {
+            total:  73,
+            target: 0,
+            other:  73,
+        },
         ..PackageData::default()
     });
     let buffer = test_support::draw_pane(&mut app, PaneId::Package, 18)?;
@@ -193,8 +211,11 @@ fn package_draws_sentence_case_release_and_disk_labels() -> anyhow::Result<()> {
         .project_list
         .at_path_mut(Path::new(PROJECT_PATH))
         .expect_found("fixture project");
-    info.in_project_target = Some(0);
-    info.in_project_non_target = Some(73);
+    info.disk = DiskMeasurement::Measured {
+        total:  73,
+        target: 0,
+        other:  73,
+    };
     app.scan.bump_generation();
     app.ensure_detail_cached();
     let buffer = test_support::draw_pane(&mut app, PaneId::Package, 80)?;
@@ -263,7 +284,7 @@ fn narrow_package_structure_follows_path_and_disk() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.package.set_content(PackageData {
         path: "/tmp/workspace".to_string(),
-        disk: Some(73),
+        disk: DiskMeasurement::TotalOnly(73),
         types: Some(vec![crate::project::ProjectType::Binary]),
         stats_rows: vec![(crate::tui::constants::TARGET_KIND_BIN_LABEL, 2)],
         test_rows: vec![("Total", 1)],
@@ -312,7 +333,7 @@ fn package_keeps_statistics_and_release_values_at_forty_columns() -> anyhow::Res
         title: "Package".to_string(),
         name: "alpha".to_string(),
         path: "/tmp/alpha".to_string(),
-        disk: Some(73),
+        disk: DiskMeasurement::TotalOnly(73),
         stats_rows: vec![(crate::tui::constants::TARGET_KIND_BIN_LABEL, 1)],
         crates_io_rows: vec![
             ("Version", "0.0.0".to_string()),
@@ -343,8 +364,7 @@ fn narrow_package_has_one_column_and_keeps_whole_disk_values() -> anyhow::Result
     let mut app = test_support::project_app();
     app.panes.package.set_content(PackageData {
         title: "Workspace".to_string(),
-        disk: Some(25_662_849_843),
-        in_project_target: Some(0),
+        disk: DiskMeasurement::TotalOnly(25_662_849_843),
         types: Some(vec![crate::project::ProjectType::Binary]),
         stats_rows: vec![(crate::tui::constants::TARGET_KIND_BIN_LABEL, 1)],
         ..PackageData::default()
@@ -422,9 +442,11 @@ fn narrow_package_fields_keep_values_and_wrap_section_words() -> anyhow::Result<
         types: Some(vec![crate::project::ProjectType::Binary]),
         version: PackageVersion::Manifest("0.1.0".to_string()),
         package_presence: PackagePresence::Present,
-        disk: Some(73),
-        in_project_target: Some(0),
-        in_project_non_target: Some(73),
+        disk: DiskMeasurement::Measured {
+            total:  73,
+            target: 0,
+            other:  73,
+        },
         primary_section: Some(PackageSection::PrimaryPackage),
         worktree_group_summary: Some(WorktreeGroupSummary {
             worktrees: 3,
@@ -489,5 +511,472 @@ fn wrapped_package_values_share_selection_and_row_hits() -> anyhow::Result<()> {
         assert!(matches!(app.panes.package.hit_test_at(Position::new(x, y)),
             Some(crate::tui::hit_test::HoverTarget::PaneRow { pane: PaneId::Package, row }) if row == index));
     }
+    Ok(())
+}
+
+#[test]
+fn phase4e_narrow_package_keeps_both_ci_counts_and_whole_empty_messages() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(PackageData {
+        ci_display: CiDisplay::Runs {
+            ci_status:    Some(CiStatus::Failed),
+            local:        7,
+            github_total: 19,
+        },
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 17)?;
+    let text = test_support::rows(&buffer).join("\n");
+    let ci = test_support::position(&buffer, "CI")?;
+    let ci_rows = &test_support::rows(&buffer)[usize::from(ci.1)..];
+    assert!(
+        ci_rows.iter().take(3).any(|row| row.contains('7')),
+        "{text}"
+    );
+    assert!(
+        ci_rows.iter().take(3).any(|row| row.contains("19")),
+        "{text}"
+    );
+    assert!(!text.contains("No description …"), "{text}");
+    app.panes.package.set_content(PackageData::default());
+    let empty = test_support::draw_pane(&mut app, PaneId::Package, 17)?;
+    let rows = test_support::rows(&empty);
+    assert!(
+        !rows.iter().any(|row| row.contains("No CI workflo…")),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("No CI") && !row.contains('…')),
+        "{rows:?}"
+    );
+    let (x, y) = test_support::position(&empty, "No")?;
+    assert_eq!(x, 2);
+    assert_eq!(test_support::position(&empty, "description")?, (x, y + 1));
+    assert!(!rows[usize::from(y)].contains('…'));
+    assert!(!rows[usize::from(y + 1)].contains('…'));
+    Ok(())
+}
+
+#[test]
+fn phase4e_deleted_metadata_keeps_its_style_and_accurate_description() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    let data = PackageData {
+        title: "Package".to_string(),
+        types: Some(vec![crate::project::ProjectType::Binary]),
+        version: PackageVersion::Manifest("0.1.0".to_string()),
+        edition: Some("2024".to_string()),
+        package_presence: PackagePresence::Present,
+        description: Some("A retained description".to_string()),
+        ..PackageData::default()
+    };
+    app.panes.package.set_content(data.clone());
+    let live = test_support::draw_pane(&mut app, PaneId::Package, 80)?;
+    let mut deleted = data;
+    deleted.deletion = PackageDeletion::Deleted;
+    app.panes.package.set_content(deleted.clone());
+    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 80)?;
+    for text in ["binary", "0.1.0", "2024"] {
+        let before = test_support::position(&live, text)?;
+        let after = test_support::position(&buffer, text)?;
+        assert_eq!(live[before].style(), buffer[after].style(), "{text}");
+    }
+    assert!(
+        !test_support::rows(&buffer)
+            .join("\n")
+            .contains("No description")
+    );
+    deleted.description = None;
+    app.panes.package.set_content(deleted);
+    let empty = test_support::draw_pane(&mut app, PaneId::Package, 80)?;
+    test_support::position(&empty, "No description")?;
+    Ok(())
+}
+
+fn phase4e_workspace_data() -> PackageData {
+    PackageData {
+        title: "Workspace".to_string(),
+        path: "/tmp/workspace".to_string(),
+        types: Some(vec![crate::project::ProjectType::Workspace]),
+        disk: DiskMeasurement::Measured {
+            total:  73,
+            target: 0,
+            other:  73,
+        },
+        stats_rows: vec![("members", 8), ("lib", 3), ("binary", 5)],
+        test_rows: vec![("unit", 12), ("integration", 7)],
+        ..PackageData::default()
+    }
+}
+
+#[test]
+fn phase4e_one_column_workspace_pages_include_structure_and_tests() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(phase4e_workspace_data());
+    app.panes.package.focus.pane_focus_state = PaneFocusState::Active;
+    let mut drawn = String::new();
+    for position in 0..24 {
+        app.panes.package.viewport.set_pos(position);
+        let buffer = test_support::draw_pane_at_size(&mut app, PaneId::Package, 17, 12)?;
+        drawn.push_str(&test_support::rows(&buffer).join("\n"));
+    }
+    for text in [
+        "Structure",
+        "members",
+        "lib",
+        "binary",
+        "Tests",
+        "unit",
+        "integration",
+    ] {
+        assert!(drawn.contains(text), "missing {text}: {drawn}");
+    }
+    Ok(())
+}
+
+#[test]
+fn phase4e_new_package_page_keeps_a_visible_selection() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(phase4e_workspace_data());
+    app.panes.package.focus.pane_focus_state = PaneFocusState::Active;
+    test_support::draw_pane_at_size(&mut app, PaneId::Package, 17, 10)?;
+    app.panes.package.viewport.end();
+    let buffer = test_support::draw_pane_at_size(&mut app, PaneId::Package, 17, 10)?;
+    let selected = tui_pane::selection_style(PaneFocusState::Active, ColorMode::Colored)
+        .bg
+        .context("selection fill")?;
+    assert!(
+        (1..buffer.area.bottom() - 1).any(|y| (1..buffer.area.right() - 1)
+            .any(|x| buffer[(x, y)].bg == selected && !buffer[(x, y)].symbol().trim().is_empty())),
+        "the new page needs a selected item: {:?}",
+        test_support::rows(&buffer)
+    );
+    Ok(())
+}
+
+#[test]
+fn phase4e_package_selection_stays_in_its_own_column() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(phase4e_workspace_data());
+    app.panes.package.focus.pane_focus_state = PaneFocusState::Active;
+    let rows = panes::package_rows_from_data(app.panes.package.content().context("package")?);
+    let path_index = rows
+        .iter()
+        .position(|row| {
+            matches!(
+                row,
+                crate::tui::panes::PackageRow::Field(crate::tui::panes::DetailField::Path)
+            )
+        })
+        .context("Path row")?;
+    app.panes.package.viewport.set_pos(path_index);
+    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 80)?;
+    let path = test_support::position(&buffer, "Path")?;
+    let members = test_support::position(&buffer, "members")?;
+    assert_ne!(
+        buffer[path].bg, buffer[members].bg,
+        "the other column must keep its background"
+    );
+    Ok(())
+}
+
+#[test]
+fn phase4e_package_page_mark_stays_clear_of_the_column_join() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(phase4e_workspace_data());
+    let buffer = test_support::draw_pane_at_size(&mut app, PaneId::Package, 40, 8)?;
+    let bottom = test_support::rows(&buffer).pop().context("bottom border")?;
+    assert!(
+        bottom.contains("of"),
+        "the fixture must draw a page mark: {bottom}"
+    );
+    assert!(
+        bottom.contains('┴'),
+        "the column join must remain intact: {bottom}"
+    );
+    assert!(!bottom.contains("▼┴") && !bottom.contains("▲┴"), "{bottom}");
+    Ok(())
+}
+
+#[test]
+fn disk_parts_keep_their_rows_before_measurement() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    let mut positions = Vec::new();
+    for disk in [
+        DiskMeasurement::NotMeasured,
+        DiskMeasurement::TotalOnly(73),
+        DiskMeasurement::Measured {
+            total:  73,
+            target: 0,
+            other:  73,
+        },
+    ] {
+        app.panes.package.set_content(PackageData {
+            disk,
+            ..PackageData::default()
+        });
+        let buffer = test_support::draw_pane(&mut app, PaneId::Package, 40)?;
+        let target = test_support::position(&buffer, "target/")?;
+        let other = test_support::position(&buffer, "Other")?;
+        let rows = test_support::rows(&buffer);
+        let value = if matches!(disk, DiskMeasurement::Measured { .. }) {
+            "0 B"
+        } else {
+            "…"
+        };
+        assert!(rows[usize::from(target.1)].contains(value), "{rows:?}");
+        positions.push((target.1, other.1));
+    }
+    assert!(positions.windows(2).all(|pair| pair[0] == pair[1]));
+    Ok(())
+}
+
+#[test]
+fn empty_description_keeps_its_inset_without_a_cut_word() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(PackageData::default());
+    for width in [17, 15, 20, 8, 5] {
+        let buffer = test_support::draw_pane(&mut app, PaneId::Package, width)?;
+        let mut text = String::new();
+        for y in 1..buffer.area.bottom() - 1 {
+            let row: String = (2..buffer.area.right() - 2)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            assert_eq!(buffer[(1, y)].symbol(), " ");
+            assert!(!row.contains('…'));
+            text.extend(row.chars().filter(|ch| !ch.is_whitespace()));
+            if text == "Nodescription" {
+                break;
+            }
+        }
+        assert_eq!(text, "Nodescription", "width {width}");
+        if (15..18).contains(&width) {
+            assert_eq!(test_support::position(&buffer, "No")?, (2, 1));
+            assert_eq!(test_support::position(&buffer, "description")?, (2, 2));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn narrow_test_counts_cut_the_label_before_the_count() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(PackageData {
+        test_rows: vec![("integration", 1273)],
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 17)?;
+    let (x, y) = test_support::position(&buffer, "1273")?;
+    assert!(x < 16);
+    let row = &test_support::rows(&buffer)[usize::from(y)];
+    assert!(row.contains("integra…"), "{row}");
+    assert_eq!(buffer[(buffer.area.right() - 2, y)].symbol(), " ");
+    Ok(())
+}
+
+#[test]
+fn workspace_ci_counts_stay_whole_in_two_columns() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(PackageData {
+        title: "Workspace".to_string(),
+        stats_rows: vec![("members", 8)],
+        ci_display: CiDisplay::Runs {
+            ci_status:    Some(CiStatus::Failed),
+            local:        9,
+            github_total: 17,
+        },
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane(&mut app, PaneId::Package, 47)?;
+    let rows = test_support::rows(&buffer);
+    let row = rows
+        .iter()
+        .find(|row| row.contains("CI "))
+        .context("CI row")?;
+    assert!(row.contains('9') && row.contains("17"), "{rows:?}");
+    assert!(!row.contains('…'), "{row}");
+    Ok(())
+}
+
+#[test]
+fn late_total_only_message_keeps_measured_disk_parts() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    let path = crate::project::AbsolutePath::from(PROJECT_PATH);
+    test_support::draw_ui(&mut app, 160)?;
+    let sender = app.background.background_sender();
+    sender.send(BackgroundMsg::DiskUsageBatch {
+        root_path: path.clone(),
+        entries:   vec![(
+            path.clone(),
+            crate::scan::DirSizes {
+                total:                 4194,
+                in_project_target:     4096,
+                in_project_non_target: 98,
+                max_source_mtime:      None,
+            },
+        )],
+    })?;
+    app.poll_background();
+    app.ensure_detail_cached();
+    let measured = test_support::draw_ui(&mut app, 160)?;
+    sender.send(BackgroundMsg::DiskUsage { path, bytes: 73 })?;
+    app.poll_background();
+    app.ensure_detail_cached();
+    let late = test_support::draw_ui(&mut app, 160)?;
+    for buffer in [&measured, &late] {
+        let area = app.panes.tiled_layout.area(PaneId::Package);
+        for value in ["4.0 KiB", "98 B"] {
+            test_support::find_text_cell(buffer, area, value)
+                .with_context(|| format!("{value}: {:?}", test_support::rows(buffer)))?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_ci_uses_counts_when_the_metadata_column_is_short() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(PackageData {
+        title: "Workspace".to_string(),
+        stats_rows: vec![("members", 8), ("lib", 3), ("binary", 5)],
+        ci_display: CiDisplay::Runs {
+            ci_status:    Some(CiStatus::Failed),
+            local:        9,
+            github_total: 27,
+        },
+        ..PackageData::default()
+    });
+    for width in [40, 47, 80] {
+        let buffer = test_support::draw_pane(&mut app, PaneId::Package, width)?;
+        let rows = test_support::rows(&buffer);
+        let row = rows
+            .iter()
+            .find(|row| row.contains("CI "))
+            .context("CI row")?;
+        assert!(row.contains('9') && row.contains("27"), "{width}: {row}");
+        assert!(!row.contains('…'), "{width}: {row}");
+    }
+    Ok(())
+}
+
+#[test]
+fn empty_description_wraps_inside_the_inset_at_each_window_width() -> anyhow::Result<()> {
+    for width in [160, 80, 60] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        let buffer = test_support::draw_ui(&mut app, width)?;
+        let area = app.panes.tiled_layout.area(PaneId::Package);
+        let x = area.x + 2;
+        let y = area.y + 1;
+        assert_eq!(buffer[(x - 1, y)].symbol(), " ");
+        let row = |y| {
+            (x..area.right() - 2)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        };
+        if width == 160 {
+            assert!(row(y).starts_with("No description available"), "{}", row(y));
+        } else if area.width >= 18 {
+            assert_eq!(row(y).trim_end(), "No description");
+        } else {
+            assert_eq!(row(y).trim_end(), "No");
+            assert_eq!(row(y + 1).trim_end(), "description");
+            assert_eq!(buffer[(x - 1, y + 1)].symbol(), " ");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn narrow_statistics_pages_repeat_headings_and_align_labeled_counts() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(PackageData {
+        title: "Workspace".to_string(),
+        stats_rows: vec![("members", 8), ("lib", 3), ("binary", 5)],
+        test_rows: vec![
+            ("unit", 5908),
+            ("integration", 1273),
+            ("doc", 10),
+            ("(ignored)", 5),
+            ("", 7191),
+        ],
+        ..PackageData::default()
+    });
+    app.set_focus_to_pane(PaneId::Package);
+    let count =
+        panes::package_rows_from_data(app.panes.package.content().context("Package data")?).len();
+    let mut seen = std::collections::HashSet::new();
+    for cursor in 0..count {
+        app.panes.package.viewport.set_pos(cursor);
+        app.ensure_fit_widths_cached();
+        app.ensure_disk_cache();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 30))?;
+        let frame = terminal.draw(|frame| render::ui(frame, &mut app))?;
+        let area = app.panes.tiled_layout.area(PaneId::Package);
+        let mut buffer = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(
+            0,
+            0,
+            area.width,
+            area.height,
+        ));
+        for y in 0..area.height {
+            for x in 0..area.width {
+                buffer[(x, y)] = frame.buffer[(area.x + x, area.y + y)].clone();
+            }
+        }
+        let edge = area.width - 2;
+        let rows = test_support::rows(&buffer);
+        for (label, value) in [
+            ("unit", "5908"),
+            ("inte", "1273"),
+            ("doc", "10"),
+            ("(ignored)", "5"),
+            ("Total", "7191"),
+        ] {
+            if let Some(y) = rows.iter().position(|row| row.contains(label)) {
+                let row = &rows[y];
+                let y = u16::try_from(y)?;
+                let (x, _) = test_support::find_text_cell(
+                    &buffer,
+                    ratatui::layout::Rect::new(1, y, area.width - 2, 1),
+                    value,
+                )
+                .context("count beside label")?;
+                assert_eq!(usize::from(x) + value.len(), usize::from(edge), "{row}");
+                assert_eq!(buffer[(edge, y)].symbol(), " ");
+                assert!(
+                    rows[1..usize::from(y)]
+                        .iter()
+                        .any(|row| row.contains("Tests")),
+                    "{rows:?}"
+                );
+                seen.insert(value);
+            }
+        }
+        for value in ["lib", "binary"] {
+            if let Ok((_, y)) = test_support::position(&buffer, value) {
+                assert!(
+                    rows[1..usize::from(y)]
+                        .iter()
+                        .any(|row| row.contains("Structure")),
+                    "{rows:?}"
+                );
+            }
+        }
+    }
+    assert_eq!(seen.len(), 5);
     Ok(())
 }

@@ -64,10 +64,12 @@ use crate::constants::CONFIG_FILE;
 use crate::constants::KEYMAP_FILE;
 use crate::http::HttpClient;
 use crate::project::AbsolutePath;
+use crate::project::DiskMeasurement;
 use crate::project::Package;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::WorkspaceMetadataStore;
+use crate::scan::BackgroundMsg;
 use crate::test_support;
 use crate::themes;
 use crate::themes::ThemesDirOverrideGuard;
@@ -368,6 +370,34 @@ fn acquire_startup_test_lock() -> MutexGuard<'static, ()> {
 fn startup_test_lock() -> &'static Mutex<()> {
     static STARTUP_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     STARTUP_TEST_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+pub(crate) fn draw_disk_refresh_for_test(
+    path: &AbsolutePath,
+    message: BackgroundMsg,
+) -> anyhow::Result<Buffer> {
+    let mut package = Package {
+        name: Some("alpha".to_string()),
+        path: path.clone(),
+        ..crate::project::Package::default()
+    };
+    package.disk = DiskMeasurement::Measured {
+        total:  1,
+        target: 1,
+        other:  0,
+    };
+    let item = RootItem::Rust(RustProject::Package(package));
+    let mut app = make_app_with_color_mode(&[item], ColorMode::Colored);
+    app.project_list.select_project_path(path.clone());
+    app.ensure_visible_rows_cached();
+    app.project_list.select_root_row(0);
+    app.ensure_detail_cached();
+    draw_ui(&mut app, 160)?;
+    app.background.background_sender().send(message)?;
+    app.poll_background();
+    app.project_list.select_root_row(0);
+    app.ensure_detail_cached();
+    draw_ui(&mut app, 160)
 }
 
 #[cfg(test)]

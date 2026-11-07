@@ -10,7 +10,6 @@ use super::NonRustProject;
 use super::Package;
 use super::PackageRecord;
 use super::Path;
-use super::ProjectList;
 use super::ProjectType;
 use super::Rect;
 use super::RootItem;
@@ -39,6 +38,7 @@ use super::package_data::WorktreeGroupSummary;
 use super::project;
 use crate::project::CratesIoRelease;
 use crate::project::CratesIoReleaseState;
+use crate::project::DiskMeasurement;
 use crate::project::ProjectFields;
 use crate::scan;
 use crate::tui::panes::DescriptionBlock;
@@ -316,7 +316,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             description:              submodule.url.clone(),
             crates_io_rows:           Vec::new(),
             types:                    None,
-            disk:                     submodule.project_info.disk_usage_bytes,
+            disk:                     submodule.project_info.disk,
             stats_rows:               Vec::new(),
             test_rows:                Vec::new(),
             package_presence:         PackagePresence::Missing,
@@ -324,8 +324,6 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             license:                  None,
             homepage:                 None,
             repository:               None,
-            in_project_target:        None,
-            in_project_non_target:    None,
             out_of_tree_target_bytes: None,
             // Submodules don't render the Lint/Ci fields; the
             // `package_fields_from_data` filter excludes them when
@@ -581,9 +579,7 @@ pub(super) struct BuildPackageDataArgs {
     manifest:                 ManifestFields,
     crates_io_rows:           Vec<(&'static str, String)>,
     types:                    Option<Vec<ProjectType>>,
-    disk:                     Option<u64>,
-    in_project_target:        Option<u64>,
-    in_project_non_target:    Option<u64>,
+    disk:                     DiskMeasurement,
     out_of_tree_target_bytes: Option<u64>,
     lint_display:             LintDisplay,
     ci_display:               CiDisplay,
@@ -620,8 +616,6 @@ pub(super) fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
         license,
         homepage,
         repository,
-        in_project_target: args.in_project_target,
-        in_project_non_target: args.in_project_non_target,
         out_of_tree_target_bytes: args.out_of_tree_target_bytes,
         lint_display: args.lint_display,
         ci_display: args.ci_display,
@@ -639,13 +633,6 @@ pub(super) fn worktree_group_summary_for(item: &RootItem) -> Option<WorktreeGrou
             .filter(|entry| entry.visibility() == Visibility::Deleted)
             .count(),
     })
-}
-
-fn compute_in_project_bytes(pl: &ProjectList, abs_path: &Path) -> (Option<u64>, Option<u64>) {
-    match pl.at_path(abs_path) {
-        Found(pi) => (pi.in_project_target, pi.in_project_non_target),
-        UnknownPath | StaleRoute => (None, None),
-    }
 }
 
 fn compute_ci_status(
@@ -693,8 +680,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let abs_path_owned = AbsolutePath::from(abs_path);
 
     let runtime = collect_runtime_fields(app, abs_path, src.worktree_item);
-    let metadata =
-        collect_metadata_fields(app, abs_path, &abs_path_owned, src.cargo, src.fallback_type);
+    let metadata = collect_metadata_fields(app, &abs_path_owned, src.cargo, src.fallback_type);
     log_pane_common_breakdown(abs_path, &runtime, &metadata);
 
     let (lint_display, ci_display) =
@@ -713,8 +699,6 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         crates_io_rows: build_crates_io_rows(&runtime.crates_io),
         types: metadata.types,
         disk: runtime.disk,
-        in_project_target: metadata.in_project_target,
-        in_project_non_target: metadata.in_project_non_target,
         out_of_tree_target_bytes: metadata.out_of_tree_target_bytes,
         lint_display,
         ci_display,
@@ -722,7 +706,11 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 
     if app.project_list.is_deleted(abs_path) {
         package.deletion = PackageDeletion::Deleted;
-        package.disk = Some(0);
+        package.disk = DiskMeasurement::Measured {
+            total:  0,
+            target: 0,
+            other:  0,
+        };
     }
 
     let targets = targets::lookup_targets_data(app, &abs_path_owned, src.worktree_item);
@@ -737,7 +725,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 pub(super) struct RuntimeFields {
     git_detail:             GitDetailFields,
     crates_io:              CratesIoSection,
-    disk:                   Option<u64>,
+    disk:                   DiskMeasurement,
     worktree_group_summary: Option<WorktreeGroupSummary>,
     ci:                     Option<CiStatus>,
     worktrees:              Vec<WorktreeInfo>,
@@ -752,8 +740,6 @@ pub(super) struct RuntimeFields {
 pub(super) struct MetadataFields {
     types:                    Option<Vec<ProjectType>>,
     manifest:                 ManifestFields,
-    in_project_target:        Option<u64>,
-    in_project_non_target:    Option<u64>,
     out_of_tree_target_bytes: Option<u64>,
     metadata_ms:              u64,
     out_of_tree_ms:           u64,
@@ -775,8 +761,8 @@ pub(super) fn collect_runtime_fields(
 
     let t_disk = std::time::Instant::now();
     let disk = match app.project_list.at_path(abs_path) {
-        Found(project) => project.disk_usage_bytes,
-        UnknownPath | StaleRoute => None,
+        Found(project) => project.disk,
+        UnknownPath | StaleRoute => DiskMeasurement::NotMeasured,
     };
     let worktree_group_summary = worktree_item.and_then(worktree_group_summary_for);
     let ci = compute_ci_status(app, abs_path, worktree_item);
@@ -804,7 +790,6 @@ pub(super) fn collect_runtime_fields(
 /// the cargo target-kind list into a comma-separated label.
 pub(super) fn collect_metadata_fields(
     app: &App,
-    abs_path: &Path,
     abs_path_owned: &AbsolutePath,
     cargo: Option<&Cargo>,
     fallback_type: Option<ProjectType>,
@@ -828,8 +813,6 @@ pub(super) fn collect_metadata_fields(
     let metadata_ms = tui_pane::perf_log_ms(t_meta.elapsed().as_millis());
     let manifest = manifest_fields_from(package_record.as_ref());
 
-    let (in_project_target, in_project_non_target) =
-        compute_in_project_bytes(&app.project_list, abs_path);
     let t_out_of_tree = std::time::Instant::now();
     let out_of_tree_target_bytes =
         package_data::lookup_out_of_tree_target_bytes(app, abs_path_owned);
@@ -838,8 +821,6 @@ pub(super) fn collect_metadata_fields(
     MetadataFields {
         types,
         manifest,
-        in_project_target,
-        in_project_non_target,
         out_of_tree_target_bytes,
         metadata_ms,
         out_of_tree_ms,

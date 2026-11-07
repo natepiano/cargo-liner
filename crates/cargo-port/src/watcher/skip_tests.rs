@@ -316,6 +316,9 @@ fn target_size_reaches_project_without_filesystem_events() {
         .recv_timeout(Duration::from_millis(250))
         .expect("poll publishes project disk usage without an event");
     assert!(
-        matches!(message, BackgroundMsg::DiskUsage { path, bytes } if path == project_path && bytes == 4096 + 12)
+        matches!(message, BackgroundMsg::DiskUsageBatch { root_path, entries }
+            if root_path == project_path && entries.len() == 1 && entries[0].0 == project_path
+                && entries[0].1.total == 4096 + 12 && entries[0].1.in_project_target == 4096
+                && entries[0].1.in_project_non_target == 12)
     );
 }

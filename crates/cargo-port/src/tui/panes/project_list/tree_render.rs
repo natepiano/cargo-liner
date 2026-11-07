@@ -145,8 +145,10 @@ pub(super) fn render_project_list_pane_body(
 }
 
 fn project_summary_lines(projects: &ProjectList, widths: &ProjectListWidths) -> Vec<Line<'static>> {
-    let total = projects.visible_project_disk_usage();
-    let total_str = render::format_bytes(total);
+    let total_str = projects
+        .visible_disk_total()
+        .total()
+        .map_or_else(|| "…".to_string(), render::format_bytes);
     let mut summaries = vec![columns::row_to_line(
         &columns::build_summary_cells(widths, &total_str),
         widths,
