@@ -6,8 +6,8 @@
 )]
 
 use ratatui::buffer::Buffer;
-use tui_pane::CellClick;
 use tui_pane::CellPoint;
+use tui_pane::CellPointer;
 use tui_pane::TileContent;
 
 use super::accounts_gradient_tests;
@@ -69,6 +69,11 @@ fn with_agents(mut app: App) -> App {
     app
 }
 
+fn drawn(app: &mut App) -> Buffer {
+    let area = accounts_gradient_tests::drawn(app).area;
+    render::draw_summary_for_test(app, area)
+}
+
 fn header_point(buffer: &Buffer, column: AccountsColumn) -> CellPoint {
     let row = accounts_gradient_tests::locate(buffer, "left").row;
     let line: String = (buffer.area.x..buffer.area.right())
@@ -84,7 +89,7 @@ fn header_point(buffer: &Buffer, column: AccountsColumn) -> CellPoint {
 fn click_header(app: &mut App, buffer: &Buffer, column: AccountsColumn) {
     render::cell_clicked(
         app,
-        CellClick {
+        CellPointer {
             index:   0,
             content: TileContent::Summary,
             area:    buffer.area,
@@ -136,12 +141,12 @@ fn accounts_header_sort_each_column_orders_and_reverses_only_accounts() {
     for (column, ascending, descending) in cases {
         let mut app = with_agents(app_with_accounts(accounts()));
         let original_sort = app.summary_sort;
-        let before = accounts_gradient_tests::drawn(&app);
+        let before = drawn(&mut app);
         assert_order(&before, &SOURCE_ORDER);
         let agents_before = ["session-first", "session-second"]
             .map(|label| accounts_gradient_tests::locate(&before, label).row);
         click_header(&mut app, &before, column);
-        let first = accounts_gradient_tests::drawn(&app);
+        let first = drawn(&mut app);
         assert_order(&first, &ascending);
         assert_eq!(app.summary_sort, original_sort);
         assert_eq!(
@@ -150,13 +155,13 @@ fn accounts_header_sort_each_column_orders_and_reverses_only_accounts() {
             agents_before,
         );
         click_header(&mut app, &first, column);
-        let second = accounts_gradient_tests::drawn(&app);
+        let second = drawn(&mut app);
         assert_order(&second, &descending);
         assert_eq!(app.summary_sort, original_sort);
         let agent_header = accounts_gradient_tests::locate(&second, "session");
         render::cell_clicked(
             &mut app,
-            CellClick {
+            CellPointer {
                 index:   0,
                 content: TileContent::Summary,
                 area:    second.area,
@@ -182,7 +187,7 @@ fn accounts_header_sort_signed_zero_values_keep_source_order() {
             })
             .into();
         let mut app = app_with_accounts(rows);
-        let before = accounts_gradient_tests::drawn(&app);
+        let before = drawn(&mut app);
         click_header(&mut app, &before, column);
         assert_order(&accounts_gradient_tests::drawn(&app), &["A", "B"]);
     }
@@ -208,9 +213,9 @@ fn accounts_header_sort_unknown_values_stay_after_numeric_and_chronological_valu
         rows.insert(2, unavailable);
         let mut app = app_with_accounts(rows);
         for _ in 0..2 {
-            let before = accounts_gradient_tests::drawn(&app);
+            let before = drawn(&mut app);
             click_header(&mut app, &before, column);
-            let after = accounts_gradient_tests::drawn(&app);
+            let after = drawn(&mut app);
             let first_unknown = ["unlimited-account", "unavailable-account"]
                 .map(|label| accounts_gradient_tests::locate(&after, label).row)
                 .into_iter()
@@ -229,7 +234,7 @@ fn accounts_header_sort_unknown_values_stay_after_numeric_and_chronological_valu
 #[test]
 fn accounts_header_sort_data_rows_and_column_gaps_keep_source_order() {
     let mut app = app_with_accounts(accounts());
-    let before = accounts_gradient_tests::drawn(&app);
+    let before = drawn(&mut app);
     let header = header_point(&before, AccountsColumn::Credits);
     for point in [
         CellPoint {
@@ -243,7 +248,7 @@ fn accounts_header_sort_data_rows_and_column_gaps_keep_source_order() {
     ] {
         render::cell_clicked(
             &mut app,
-            CellClick {
+            CellPointer {
                 index: 0,
                 content: TileContent::Summary,
                 area: before.area,
@@ -261,8 +266,8 @@ fn accounts_header_sort_data_rows_and_column_gaps_keep_source_order() {
 
 #[test]
 fn numeric_account_cells_align_their_right_edges_with_their_headers() {
-    let app = app_with_accounts(accounts());
-    let buffer = accounts_gradient_tests::drawn(&app);
+    let mut app = app_with_accounts(accounts());
+    let buffer = drawn(&mut app);
     for (column, previous_column, values) in [
         (
             AccountsColumn::WeeklyLeft,
@@ -309,11 +314,11 @@ fn account_enabled_header_toggles_and_keeps_disabled_states_last() {
     );
     let mut app = accounts_gradient_tests::app_with_accounts(table.accounts);
     for (marker, order) in [("▲", first), ("▼", second)] {
-        let before = accounts_gradient_tests::drawn(&app);
+        let before = drawn(&mut app);
         let point = accounts_gradient_tests::locate(&before, header);
         render::cell_clicked(
             &mut app,
-            CellClick {
+            CellPointer {
                 index:   0,
                 content: TileContent::Summary,
                 area:    before.area,
@@ -323,7 +328,7 @@ fn account_enabled_header_toggles_and_keeps_disabled_states_last() {
                 },
             },
         );
-        let after = accounts_gradient_tests::drawn(&app);
+        let after = drawn(&mut app);
         assert_order(&after, &order);
         accounts_gradient_tests::locate(&after, &format!("{header} {marker}"));
     }

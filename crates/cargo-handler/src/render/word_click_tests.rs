@@ -6,7 +6,6 @@ use crossterm::event::KeyModifiers;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Position;
-use tui_pane::FocusLocation;
 use tui_pane::TerminalApp;
 use tui_pane::TileView;
 
@@ -626,11 +625,7 @@ fn a_retired_painted_tile_keeps_focus_selection_and_highlight() -> TestResult {
         .inner()
         .intersection(departure.frame.clip())
         .positions()
-        .find(|point| {
-            app.tiles
-                .cell_at(*point)
-                .is_some_and(|index| FocusLocation::Cell(index) != app.tiles.focused_cell())
-        })
+        .find(|point| app.tiles.cell_at(*point).is_none())
         .ok_or("departure overlaps a replacement")?;
     let focus = app.tiles.focused_cell();
     let selected = selections(&app);
@@ -852,17 +847,22 @@ fn a_press_before_the_first_frame_keeps_the_existing_word() -> TestResult {
 }
 
 #[test]
-fn an_unavailable_frame_keeps_the_word_while_a_content_press_selects_its_row() -> TestResult {
+fn a_body_invalidation_keeps_the_painted_word_available_for_a_content_press() -> TestResult {
     let mut app = application()?;
     app.word_highlight
         .press(crate::word_highlight::HighlightWord::from_token(ACCOUNT));
     let mut renderer = Renderer::new(&mut app, WIDTH, HEIGHT)?;
     let painted = renderer.paint(&mut app)?;
     let point = tree_word(&painted, "first-work")?;
-    let highlight = app.word_highlight.clone();
     app.invalidate_body();
     app.click(point);
-    assert_eq!(app.word_highlight, highlight);
+    assert_eq!(app.word_highlight, {
+        let mut expected = WordHighlight::Off;
+        expected.press(crate::word_highlight::HighlightWord::from_token(
+            "first-work",
+        ));
+        expected
+    });
     assert!(selections(&app).iter().any(|selection| matches!(
         selection,
         TileSelection::Row(crate::interaction::RowIdentity::Shell { pid: 11, .. })

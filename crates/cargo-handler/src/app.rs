@@ -20,7 +20,7 @@ use tui_pane::AppIdentity;
 use tui_pane::Appearance;
 use tui_pane::AttractHost;
 use tui_pane::AttractMode;
-use tui_pane::CellClick;
+use tui_pane::CellPointer;
 use tui_pane::CellPress;
 use tui_pane::ColorMode;
 use tui_pane::FavoritesHost;
@@ -44,7 +44,6 @@ use tui_pane::ToastVisualDeadline;
 use tui_pane::VisualDeadline;
 
 use crate::agent_cell;
-use crate::agent_cell::TreeMetrics;
 use crate::census;
 use crate::census::AgentPlacement;
 use crate::census::Census;
@@ -66,6 +65,7 @@ use crate::globals::AppGlobalAction;
 use crate::interaction::Selections;
 use crate::keymap;
 use crate::render;
+use crate::render::PaintedSurface;
 use crate::settings;
 use crate::sort::AccountsSort;
 use crate::sort::SummarySort;
@@ -122,7 +122,14 @@ enum FrameRequest {
     StatusClock,
 }
 
-/// Geometry and toast timing belong to the retained body they validate.
+/// `BodyReuse` controls repaint reuse without removing input pixels.
+#[derive(Clone, Copy)]
+enum BodyReuse {
+    Reusable,
+    Invalidated,
+}
+
+/// `PaintedFrame` retains the last painted pixels and toast timing.
 #[derive(Default)]
 enum PaintedFrame {
     #[default]
@@ -130,6 +137,7 @@ enum PaintedFrame {
     Current {
         buffer:       Box<Buffer>,
         toast_change: ToastVisualDeadline,
+        reuse:        BodyReuse,
     },
 }
 
@@ -169,7 +177,7 @@ pub(crate) struct App {
     pub(crate) match_inks:        MatchInkCache,
     pub(crate) expansion:         HandlerExpansion,
     pub(crate) tree_sorts:        HashMap<TileKey, TreeSort>,
-    pub(crate) tree_layouts:      HashMap<TileKey, TreeMetrics>,
+    pub(crate) painted_surfaces:  Vec<PaintedSurface>,
     /// The summary allocation retained for header clicks until the next paint.
     pub(crate) painted_summary:   RefCell<PaintedSummary>,
     /// One preference shared by the summary machine groups.
@@ -222,9 +230,11 @@ impl App {
         self.frame_request = FrameRequest::StatusClock;
     }
 
-    /// Events and changed data require a new body, including selection hit geometry.
-    pub(crate) fn invalidate_body(&mut self) {
-        self.painted_frame = PaintedFrame::Absent;
+    /// `invalidate_body` requires a repaint and preserves the last painted input pixels.
+    pub(crate) const fn invalidate_body(&mut self) {
+        if let PaintedFrame::Current { reuse, .. } = &mut self.painted_frame {
+            *reuse = BodyReuse::Invalidated;
+        }
         self.frame_request = FrameRequest::Full;
     }
 
@@ -302,7 +312,7 @@ impl App {
             selection_area: Rect::ZERO,
             expansion: expansion::HandlerExpansion::default(),
             tree_sorts: HashMap::new(),
-            tree_layouts: HashMap::new(),
+            painted_surfaces: Vec::new(),
             painted_summary: std::cell::RefCell::new(PaintedSummary::NotDrawn),
             summary_sort: SummarySort::default(),
             accounts_sort: AccountsSort::SourceOrder,
@@ -422,6 +432,7 @@ impl TerminalApp for App {
             && let PaintedFrame::Current {
                 buffer,
                 toast_change: painted_toast_change,
+                reuse: BodyReuse::Reusable,
             } = &self.painted_frame
             && buffer.area == frame.area()
             && *painted_toast_change == toast_change
@@ -448,6 +459,7 @@ impl TerminalApp for App {
             PaintedFrame::Current {
                 buffer: Box::new(frame.buffer_mut().clone()),
                 toast_change,
+                reuse: BodyReuse::Reusable,
             }
         } else {
             PaintedFrame::Absent
@@ -525,11 +537,11 @@ impl TileGridHost for App {
 
     fn tile_grid_mut(&mut self) -> &mut TileGrid { &mut self.tiles }
 
-    fn cell_scrolled(&mut self, cell: CellClick<TileKey>, direction: ScrollDirection) {
+    fn cell_scrolled(&mut self, cell: CellPointer<TileKey>, direction: ScrollDirection) {
         render::cell_scrolled(self, &cell, direction);
     }
 
-    fn cell_clicked(&mut self, click: CellClick<TileKey>) { render::cell_clicked(self, click); }
+    fn cell_clicked(&mut self, click: CellPointer<TileKey>) { render::cell_clicked(self, click); }
 
     fn cell_pressed(&mut self, press: CellPress<TileKey>) { render::cell_pressed(self, press); }
 }

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Clicks use the headers and rows from the last painted frame, including during tile motion and repeated input.
+
 - Subagent rows show their role word instead of the agent name.
 
 - Narrow session rows retain tree guides and give sparse optional columns to names. The probe reports refused configuration values on stderr.
