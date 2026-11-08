@@ -2007,6 +2007,7 @@ The showrunner assigned this phase on 2026-11-08. The user's rule: a test that t
 - `crates/cargo-berth/tests/` — the integration tests, except the three files of Phase 57.
 - `crates/cargo-berth/src/git/child.rs` — the child runtime polls exit every 1 ms (`child.rs:421`) and starts a thread for a pipe that does not exist (`child.rs:245`). Test support includes this file.
 - `crates/cargo-berth/src/git/read.rs`, `crates/cargo-berth/src/git/command.rs` — in-process reads fall back to git subprocesses when a hook passes a repository selector (`read.rs:202`, `read.rs:265`).
+- `crates/cargo-berth/src/board/rows.rs`, `crates/cargo-berth/src/board/answers.rs` — test modules only: one slow unit test in each (`rows.rs:1847`). The showrunner assigned them on 2026-11-08; the claim runs before the quiet style cover `01a192d3`.
 - `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/lifecycle.rs` — only after Phase 57 merges: a recorded template for the two-orphan setup (`hooks.rs:2785`) and the partly landed lane (`lifecycle.rs:2739`), and one test per landing mode (`lifecycle.rs:322`).
 
 The diagnosis found that none of the four earlier causes came back. The new shared costs are the 1 ms exit poll, the empty pipe threads, the git subprocess fallback and fixture setup inside the test clock. Phase 56 and Phase 57 keep only their own failures.
