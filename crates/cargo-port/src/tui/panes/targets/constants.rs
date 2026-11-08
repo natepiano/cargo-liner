@@ -1,6 +1,7 @@
-/// Header text for the Source column — also defines the column's
-/// minimum width so the header never gets truncated.
+/// Source header text. Narrow tables fit it with an ellipsis.
 pub(super) const SOURCE_HEADER: &str = "Source";
+/// Minimum Source width: one letter and an ellipsis.
+pub(super) const SOURCE_MIN_WIDTH: usize = 2;
 /// Leaf index of the targets table box in the pane's tree.
 pub(super) const TABLE_BOX: usize = 0;
 /// Header text for Target columns; the main table adds its leading pad.

@@ -74,7 +74,7 @@ case ${SHIM_TEST_SCENARIO-} in
         exit "$SHIM_TEST_EXIT_STATUS"
         ;;
     interrupt-group)
-        trap 'sleep 0.2; printf "shutting down\n" >&2; true > "$SHIM_TEST_OBSERVATIONS/cargo-finished"; trap - INT; kill -INT $$' INT
+        trap 'trap "" INT; true > "$SHIM_TEST_OBSERVATIONS/cargo-stopping"; sleep 0.2; printf "shutting down\n" >&2; true > "$SHIM_TEST_OBSERVATIONS/cargo-finished"; trap - INT; kill -INT $$' INT
         kill -INT 0
         sleep 5
         exit 99
@@ -1185,7 +1185,13 @@ case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
         command
             .env("SHIM_TEST_SCENARIO", "interrupt-group")
             .process_group(0);
-        let run = toolchain.run_detached(command);
+        let run = toolchain.run_detached_after_start(command, |shim| {
+            toolchain.wait_for_observation("cargo-stopping");
+            let group = rustix::process::Pid::from_raw(shim.id().cast_signed())
+                .expect("the launched shim has a positive process group");
+            rustix::process::kill_process_group(group, rustix::process::Signal::INT)
+                .expect("interrupt the shim while cargo completes its shutdown");
+        });
         assert_eq!(
             run.status.as_ref().and_then(ExitStatus::code),
             Some(130),

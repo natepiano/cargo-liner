@@ -4925,7 +4925,7 @@ mod tests {
 
     #[test]
     fn moving_tiles_keep_title_segments_together_and_inside_their_width() {
-        for (width, title) in [(18, "worker · impl"), (14, "worker · im…")] {
+        for (width, title) in [(18, "worker · impl"), (14, "worker · i… ")] {
             let area = Rect::new(0, 0, width, 8);
             for y in [0_u16, 1, 2] {
                 let shift = i32::from(y);
