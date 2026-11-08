@@ -654,6 +654,40 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: no `No description` row while the description loads or after a failed fetch, the three description states, and no page count change or row move when a placeholder goes away; the `Structure` divider column before and after the crates.io data, with a long version and `Unreachable`; the CPU / GPU page count in the bottom border; no Pull Requests count while the pull requests load or when the fetch is unavailable, and the last known count on stale data. 80- and 160-column live captures in colour and under NO_COLOR, before and after the data, judged by the design check. The checkpoint carries a `Change-Review:` line.
 
+### Phase 4p — cargo-port memory stays bounded over days  · status: todo
+
+**Depends on:** none. It runs before the Phase 4n checkpoint and Phase 4o (user, 2026-11-08: top priority).
+
+#### Work Order
+
+**Goal:** a cargo-port process that runs for days keeps its memory bounded. Resident plus swap memory does not grow with uptime, refreshes, watcher events or CI polls.
+
+**Source:** user, 2026-11-08, via accounts-unit and the showrunner: "tell cargo-liner it needs to prioritize fixing the cargo-port memory leak". On natedev one `cargo-port port` process (pid 3539446, now gone) ran for 1 day 19 hours and held 8.8 GB in swap and about 190 MB resident; swap was 36 of 38 GB in use. It ran the build from before `~/.cargo/bin/cargo-port` was replaced on 2026-11-07 21:18 EST, so the leak can be in that build, the current build, or both.
+
+**Decision:** showrunner, 2026-11-08: this phase is the unit's top priority, before Phases 4n and 4o.
+
+**Constraints:**
+- Never stop or signal a cargo-port process the worker did not start. Take the pid from the worker's own launch chain, never from `pgrep` by name.
+- Measure the current build. Sample `VmRSS` and `VmSwap` from `/proc/<pid>/status` over time.
+- Fix the cause where it lives. A cap that hides growth in a structure that should not grow is not a fix.
+- No test takes a second.
+
+**Spec:**
+1. **Measure the growth.** Launch the current build in a terminal the worker owns, with the user's real config read-only or a scratch config that scans `~/rust`. Drive the events a long run sees (watcher events from file changes in a scratch project, refreshes, CI and GitHub polls, CPU samples) at a fast rate. Record memory at fixed times. Name the event kind whose count tracks the growth.
+2. **Find the cause.** Find the structure that grows without a bound: for example a cache keyed by a value that never repeats, a history buffer, a watcher or subscription list, a channel with no reader, or a task handle list. Check `crates/cargo-port/src/watcher/`, `crates/cargo-port/src/scan/`, `crates/cargo-port/src/tui/app/async_tasks/`, `crates/cargo-port/src/tui/state/`, `crates/cargo-port/src/http/`, `crates/cargo-port/src/ci.rs` and `crates/cargo-port/src/lint/` first.
+3. **Fix it.** Remove the growth at its cause: drop entries when their owner goes, keep one entry per key, or bound a history by its use.
+4. **Hold the bound.** Add a test that drives the growing event many times and asserts the structure's size stays at its bound. Then measure the fixed build again with the Spec 1 driver and show memory flat over the same time.
+
+**Files:**
+- `crates/cargo-port/src/` — the cause, its fix and its test; the exact files come from Spec 2
+- `crates/cargo-port/CHANGELOG.md` — the fix entry
+
+**Workers:** 1 writer: Specs 1-4, the test and the changelog.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. A bound test fails before the fix. Two memory measures of the same driven run, before and after the fix, with times, `VmRSS` and `VmSwap`. The checkpoint carries a `Change-Review:` line.
+
 ### Phase 4n — Targets, cut titles and the footer read clean in narrow windows  · status: todo
 
 **Depends on:** Phase 4l (both edit `crates/cargo-port/src/tui/panes/targets/` and `crates/tui_pane/src/pane/frame.rs`). No file overlaps Phase 4m, so this phase runs beside it.
