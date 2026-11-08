@@ -15,7 +15,9 @@ use crate::project::RootItem;
 use crate::project::Visibility;
 use crate::scan::BackgroundMsg;
 use crate::tui::panes;
+use crate::tui::panes::GitCheckout;
 use crate::tui::panes::GitData;
+use crate::tui::panes::HeadRelation;
 use crate::tui::panes::PackageData;
 use crate::tui::panes::PackagePresence;
 use crate::tui::panes::PackageSection;
@@ -25,6 +27,7 @@ use crate::tui::panes::pane_data::PackageDeletion;
 use crate::tui::panes::pane_data::WorktreeGroupSummary;
 use crate::tui::render;
 use crate::tui::state::CiDisplay;
+use crate::tui::state::LintDisplay;
 use crate::tui::test_support;
 use crate::tui::test_support::PROJECT;
 use crate::tui::test_support::PROJECT_PATH;
@@ -463,8 +466,8 @@ fn narrow_package_fields_keep_values_and_wrap_section_words() -> anyhow::Result<
         "0.1.0",
         "Primary",
         "package",
-        "Worktree group",
-        "summary",
+        "Worktree",
+        "group summary",
         "Disk",
         "target/",
         "Other",
@@ -475,8 +478,8 @@ fn narrow_package_fields_keep_values_and_wrap_section_words() -> anyhow::Result<
     }
     let primary = test_support::position(&buffer, "Primary")?;
     assert!(test_support::rows(&buffer)[usize::from(primary.1 + 1)].contains("package"));
-    let group = test_support::position(&buffer, "Worktree group")?;
-    assert!(test_support::rows(&buffer)[usize::from(group.1 + 1)].contains("summary"));
+    let group = test_support::position(&buffer, "Worktree")?;
+    assert!(test_support::rows(&buffer)[usize::from(group.1 + 1)].contains("group summary"));
     Ok(())
 }
 
@@ -1013,5 +1016,260 @@ fn narrow_statistics_pages_repeat_headings_and_align_labeled_counts() -> anyhow:
         }
     }
     assert_eq!(seen.len(), 5);
+    Ok(())
+}
+
+#[test]
+fn narrow_package_titles_keep_the_label_and_worktree_count_on_one_row() -> anyhow::Result<()> {
+    for (window, pane_width) in [(80, 17), (95, 24)] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        app.panes.package.set_content(PackageData {
+            title: "Worktree Group".to_string(),
+            name: "proof_crate_with_a_long_name".to_string(),
+            worktree_group_summary: Some(WorktreeGroupSummary {
+                worktrees: 2,
+                deleted:   0,
+            }),
+            ..PackageData::default()
+        });
+        let buffer =
+            test_support::draw_pane_in_window(&mut app, PaneId::Package, window, pane_width)?;
+        let title = test_support::rows(&buffer)[0].clone();
+        assert!(title.contains("Worktree Group"), "{title}");
+        let count = test_support::position(&buffer, "Worktrees")?;
+        let row = &test_support::rows(&buffer)[usize::from(count.1)];
+        assert!(row.contains("Worktrees 2"), "{row}");
+        assert_eq!(buffer[(pane_width - 2, count.1)].symbol(), " ");
+    }
+    Ok(())
+}
+
+#[test]
+fn package_values_keep_a_blank_cell_before_borders_and_structure() -> anyhow::Result<()> {
+    for (window, pane_width) in [(80, 17), (95, 24), (160, 80)] {
+        for title in ["Package", "Workspace"] {
+            let mut app = test_support::project_app();
+            app.framework.color_mode = ColorMode::Colored;
+            app.panes.git.set_content(GitData {
+                checkout: GitCheckout::Branch {
+                    name:     "a_branch_with_a_long_name_that_wraps".to_string(),
+                    relation: HeadRelation::Default,
+                },
+                description: Some("Shared description".to_string()),
+                ..GitData::default()
+            });
+            app.panes.package.set_content(PackageData {
+                title: title.to_string(),
+                name: "proof_crate_with_a_long_name".to_string(),
+                path: "/tmp/a_long_workspace_path/with_a_long_package_name".to_string(),
+                disk: DiskMeasurement::Measured {
+                    total:  74,
+                    target: 0,
+                    other:  74,
+                },
+                stats_rows: vec![("binary", 1)],
+                package_presence: PackagePresence::Present,
+                ..PackageData::default()
+            });
+            let buffer =
+                test_support::draw_pane_in_window(&mut app, PaneId::Package, window, pane_width)?;
+            let path = test_support::position(&buffer, "Path")?;
+            let mut border = pane_width - 1;
+            for x in path.0 + 1..pane_width - 1 {
+                if buffer[(x, path.1)].symbol() == "│" {
+                    border = x;
+                    break;
+                }
+            }
+            for y in path.1..buffer.area.bottom() - 1 {
+                if buffer[(border, y)].symbol() == "│" {
+                    assert_eq!(
+                        buffer[(border - 1, y)].symbol(),
+                        " ",
+                        "{window}: {title}: {y}: {:?}",
+                        test_support::rows(&buffer)
+                    );
+                }
+            }
+            if window == 160 {
+                assert!(border < pane_width - 1, "Structure divider");
+                let structure = test_support::position(&buffer, "Structure")?;
+                assert_eq!(structure.1, 0);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn worktree_counts_share_the_label_row_and_lint_keeps_its_column() -> anyhow::Result<()> {
+    let mut lint_columns = Vec::new();
+    for (worktrees, bytes) in [(3, 73), (2, 100_000_000)] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        app.panes.package.set_content(PackageData {
+            lint_display: LintDisplay::NoRuns,
+            disk: DiskMeasurement::Measured {
+                total:  bytes,
+                target: 0,
+                other:  bytes,
+            },
+            worktree_group_summary: Some(WorktreeGroupSummary {
+                worktrees,
+                deleted: 0,
+            }),
+            ..PackageData::default()
+        });
+        let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Package, 80, 17)?;
+        let label = test_support::position(&buffer, "Worktrees")?;
+        let rows = test_support::rows(&buffer);
+        assert!(
+            rows[usize::from(label.1)].contains(&format!(" Worktrees {worktrees} ")),
+            "{rows:?}"
+        );
+        let lint = test_support::position(&buffer, "Lint")?;
+        let value = test_support::find_text_cell(
+            &buffer,
+            ratatui::layout::Rect::new(lint.0 + 4, lint.1, 11, 1),
+            "—",
+        )
+        .with_context(|| format!("{rows:?}"))?;
+        lint_columns.push(value.0);
+    }
+    assert_eq!(lint_columns[0], lint_columns[1]);
+    Ok(())
+}
+
+#[test]
+fn target_disk_zero_shares_its_label_row_and_the_disk_start_column() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(PackageData {
+        disk: DiskMeasurement::Measured {
+            total:  73,
+            target: 0,
+            other:  73,
+        },
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Package, 80, 17)?;
+    let disk = test_support::position(&buffer, "73 B")?;
+    let target = test_support::position(&buffer, "target/")?;
+    let value = test_support::position(&buffer, "0 B")?;
+    assert_eq!(target.1, value.1, "{:?}", test_support::rows(&buffer));
+    assert_eq!(disk.0, value.0);
+    assert_eq!(buffer[(15, value.1)].symbol(), " ");
+    Ok(())
+}
+
+#[test]
+fn disk_children_keep_one_indent_and_the_shared_value_column() -> anyhow::Result<()> {
+    for (window_width, pane_width, child_column) in [(80, 17, 3), (95, 24, 4)] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        app.panes.package.set_content(PackageData {
+            disk: DiskMeasurement::Measured {
+                total:  73,
+                target: 0,
+                other:  73,
+            },
+            ..PackageData::default()
+        });
+        let buffer =
+            test_support::draw_pane_in_window(&mut app, PaneId::Package, window_width, pane_width)?;
+        let rows = test_support::rows(&buffer);
+        let disk = test_support::position(&buffer, "Disk")?;
+        let target = test_support::position(&buffer, "target/")?;
+        let other = test_support::position(&buffer, "Other")?;
+        assert_eq!(target.0, other.0, "{window_width}: {rows:?}");
+        assert_eq!(target.0, child_column, "{window_width}: {rows:?}");
+        let mut value_columns = Vec::new();
+        for (label, value) in [(disk, "73 B"), (target, "0 B"), (other, "73 B")] {
+            let area = ratatui::layout::Rect::new(1, label.1, pane_width - 2, 1);
+            let position = test_support::find_text_cell(&buffer, area, value)
+                .with_context(|| format!("{value} beside its label at {window_width}: {rows:?}"))?;
+            value_columns.push(position.0);
+            assert_eq!(buffer[(pane_width - 2, label.1)].symbol(), " ");
+        }
+        assert!(
+            value_columns
+                .iter()
+                .all(|column| *column == value_columns[0]),
+            "{rows:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_disk_children_keep_the_normal_indent_when_values_wrap() -> anyhow::Result<()> {
+    for (window_width, pane_width, value_row_offset) in [(80, 17, 1), (95, 24, 0)] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        let target_bytes = 25_622_060_237;
+        let other_bytes = 40_789_606;
+        app.panes.package.set_content(PackageData {
+            disk: DiskMeasurement::Measured {
+                total:  target_bytes + other_bytes,
+                target: target_bytes,
+                other:  other_bytes,
+            },
+            ..workspace_data()
+        });
+        let buffer =
+            test_support::draw_pane_in_window(&mut app, PaneId::Package, window_width, pane_width)?;
+        let rows = test_support::rows(&buffer);
+        let disk = test_support::position(&buffer, "Disk")?;
+        let target = test_support::position(&buffer, "target/")?;
+        let other = test_support::position(&buffer, "Other")?;
+        assert_eq!(target.0, 4, "{window_width}: {rows:?}");
+        assert_eq!(target.0, other.0, "{window_width}: {rows:?}");
+        let mut value_columns = Vec::new();
+        for (label, offset, value) in [
+            (disk, 0, "23.9 GiB"),
+            (target, value_row_offset, "23.9 GiB"),
+            (other, value_row_offset, "38.9 MiB"),
+        ] {
+            let value_row = label.1 + offset;
+            let area = ratatui::layout::Rect::new(1, value_row, pane_width - 2, 1);
+            let position = test_support::find_text_cell(&buffer, area, value)
+                .with_context(|| format!("{value} at {window_width}: {rows:?}"))?;
+            value_columns.push(position.0);
+            for y in label.1..=value_row {
+                assert_eq!(buffer[(pane_width - 2, y)].symbol(), " ");
+            }
+        }
+        assert!(
+            value_columns
+                .iter()
+                .all(|column| *column == value_columns[0]),
+            "{rows:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn worktree_group_heading_wraps_before_the_margin_cell() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.framework.color_mode = ColorMode::Colored;
+    app.panes.package.set_content(PackageData {
+        worktree_group_summary: Some(WorktreeGroupSummary {
+            worktrees: 3,
+            deleted:   0,
+        }),
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Package, 80, 17)?;
+    let group = test_support::position(&buffer, "group summary")?;
+    let rows = test_support::rows(&buffer);
+    assert!(
+        rows[usize::from(group.1 - 1)].contains(" Worktree "),
+        "{rows:?}"
+    );
+    for y in group.1 - 1..=group.1 {
+        assert_eq!(buffer[(15, y)].symbol(), " ");
+    }
     Ok(())
 }

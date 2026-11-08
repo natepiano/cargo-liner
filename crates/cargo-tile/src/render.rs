@@ -20536,7 +20536,7 @@ mod tests {
             [
                 "┌ summary ─────────────────────────────────────────────────┐",
                 "│                                                          │",
-                "│ ┌ toast title ─────────────────────────────────────[x]─┐ │",
+                "│ ┌ toast title ──────────────────────────────────── [x]─┐ │",
                 "│ │ the toast's body                                     │ │",
                 "│ │                                                      │ │",
                 "│ ┌ Favorites -- 0 saved -- ● matches the current paramet┐ │",

@@ -15,6 +15,7 @@ use super::body;
 use super::body::ToastRenderBody;
 use super::manager::ToastVisualDeadline;
 use super::render;
+use super::view::ToastExitState;
 use crate::ACTIVITY_SPINNER;
 use crate::AppContext;
 use crate::ToastSettings;
@@ -338,6 +339,11 @@ impl<Ctx: AppContext> Toast<Ctx> {
             min_height,
             desired_height,
             settled_height: self.target_height(card_width),
+            exit_state: if matches!(self.phase, ToastPhase::Exiting { .. }) {
+                ToastExitState::Exiting
+            } else {
+                ToastExitState::Visible
+            },
         }
     }
 

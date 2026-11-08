@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Align Disk child labels at narrow widths. Keep their values in the Disk value column.
+- Keep the normal Disk child indent when the values need separate rows.
+- Keep RON icons, known CI counts, and disk child rows whole. Preserve Package columns and section margins.
+- Give spare CI table space to cut commit messages.
+
+- Keep Source columns, whole labels, and whole section titles in narrow panes. Cut names and values first.
+- Keep blank margins beside Package, CI, and Languages values. Balance Git Branch and Tracked widths.
+
 - Hide GitHub quota rows until each bucket has data. Retain measured quota after refresh failures.
 - Keep the Git pane title unchanged when quota data arrives for a project without a Git repository.
 - Label local and GitHub CI counts. Show loading and failure states, retain known counts, and show `No CI runs` for known zero.

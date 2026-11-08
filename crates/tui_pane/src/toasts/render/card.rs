@@ -91,14 +91,17 @@ pub(super) fn render_toast(
 
     let close_text = "[x]";
     let close_width = u16::try_from(close_text.len()).unwrap_or(u16::MAX);
-    let title_max = usize::from(card.width.saturating_sub(close_width + 4));
-    let raw_title = match toast_style {
-        ToastStyle::Error => format!("x {}", toast.title()),
-        ToastStyle::Warning => format!("! {}", toast.title()),
-        ToastStyle::Success => format!("\u{2713} {}", toast.title()),
-        ToastStyle::Normal => toast.title().to_owned(),
+    let raw_title = toast_title(toast);
+    let title_max = usize::from(card.width.saturating_sub(close_width + 5));
+    // Use the last border cell before the corner when it keeps the title whole.
+    let title_uses_border_cell = raw_title.width() == title_max.saturating_add(1);
+    let close_padding = u16::from(!title_uses_border_cell);
+    let title_max = title_max.saturating_add(usize::from(title_uses_border_cell));
+    let title = if raw_title.width() > title_max && title_max > 0 {
+        format!("{}…", format::truncate(&raw_title, title_max - 1))
+    } else {
+        format::truncate(&raw_title, title_max)
     };
-    let title = format::truncate(&raw_title, title_max);
 
     let block = Block::default()
         .title(Span::styled(format!(" {title} "), text_style))
@@ -108,15 +111,12 @@ pub(super) fn render_toast(
     frame.render_widget(block, card);
 
     let close_rect = Rect {
-        x:      card.x + card.width.saturating_sub(close_width + 2),
+        x:      card.x + card.width.saturating_sub(close_width + 1 + close_padding),
         y:      card.y,
-        width:  close_width + 1,
+        width:  close_width + close_padding,
         height: 1,
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(close_text, text_style))),
-        close_rect,
-    );
+    render_close_button(frame, close_rect, text_style);
 
     let mut page_area = card;
     if let ToastCountdownState::CountingDown {
@@ -155,6 +155,31 @@ pub(super) fn render_toast(
     }
 
     close_rect
+}
+
+fn toast_title(toast: &ToastView) -> String {
+    match toast.style() {
+        ToastStyle::Error => format!("x {}", toast.title()),
+        ToastStyle::Warning => format!("! {}", toast.title()),
+        ToastStyle::Success => format!("\u{2713} {}", toast.title()),
+        ToastStyle::Normal => toast.title().to_owned(),
+    }
+}
+
+pub(super) fn title_card_width(toast: &ToastView) -> u16 {
+    u16::try_from(toast_title(toast).width().saturating_add(8)).unwrap_or(u16::MAX)
+}
+
+/// Draw the close button with one blank cell before it.
+fn render_close_button(frame: &mut Frame, close_rect: Rect, style: Style) {
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(" [x]", style))),
+        Rect {
+            x: close_rect.x.saturating_sub(1),
+            width: close_rect.width.saturating_add(1),
+            ..close_rect
+        },
+    );
 }
 
 /// Keep the stack in its corner region between the drawn pane borders.
@@ -568,6 +593,7 @@ mod tests {
     use crate::toasts::TrackedItemElapsed;
     use crate::toasts::TrackedItemLifecycle;
     use crate::toasts::TrackedItemView;
+    use crate::toasts::view::ToastExitState;
 
     fn toast() -> ToastView {
         let body = "Metadata\nDisk\nLanguages\nGit\nTests\nLints".to_owned();
@@ -584,6 +610,7 @@ mod tests {
             min_height: 3,
             desired_height: 8,
             settled_height: 8,
+            exit_state: ToastExitState::Visible,
         }
     }
 

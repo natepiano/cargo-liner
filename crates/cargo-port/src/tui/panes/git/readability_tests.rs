@@ -9,6 +9,7 @@ use tui_pane::PaneFocusState;
 
 use super::sync_column_tests;
 use crate::http::RateLimitQuota;
+use crate::project::AheadBehind;
 use crate::project::CommitDate;
 use crate::project::Comparison;
 use crate::project::FirstCommit;
@@ -21,6 +22,8 @@ use crate::tui::panes::GitData;
 use crate::tui::panes::HeadRelation;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::pane_data::GitProbe;
+use crate::tui::panes::pane_data::PullRequestSection;
+use crate::tui::panes::pane_data::PullRequestSectionState;
 use crate::tui::panes::pane_data::QuotaObservation;
 use crate::tui::panes::pane_data::RemoteRow;
 use crate::tui::panes::pane_data::RemoteRows;
@@ -464,6 +467,36 @@ fn narrow_worktree_divider_keeps_its_count() -> anyhow::Result<()> {
             .find(|row| row.contains("(3)"))
             .context("whole count")?;
         assert!(title.contains('├') && title.contains('┤'), "{title}");
+    }
+    Ok(())
+}
+
+#[test]
+fn narrow_git_fields_keep_ahead_behind_whole_and_loading_has_an_ellipsis() -> anyhow::Result<()> {
+    for (window, pane_width) in [(80, 17), (95, 24)] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        app.panes.git.set_content(GitData {
+            vs_local: GitProbe::Probed(Comparison::Counted(AheadBehind {
+                ahead:  123,
+                behind: 456,
+            })),
+            pull_requests: PullRequestSection {
+                state: PullRequestSectionState::Loading,
+                ..Default::default()
+            },
+            ..GitData::default()
+        });
+        let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Git, window, pane_width)?;
+        test_support::position(&buffer, "Ahead/Behind")?;
+        let loading = test_support::rows(&buffer)
+            .into_iter()
+            .find(|row| row.contains("loading pull"))
+            .context("Pull request loading row")?;
+        let body: String = loading.chars().take(usize::from(pane_width - 1)).collect();
+        assert!(body.trim_end().ends_with('…'), "{loading}");
+        let y = test_support::position(&buffer, "loading pull")?.1;
+        assert_eq!(buffer[(pane_width - 2, y)].symbol(), " ");
     }
     Ok(())
 }
