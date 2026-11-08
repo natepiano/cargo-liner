@@ -8,27 +8,55 @@ use super::info::ProjectCiData;
 use super::info::ProjectPrData;
 use super::root_item::RootItem;
 
-/// Repo-level metadata shared by every checkout of the same git repo.
-///
-/// Stored on the containing `ProjectEntry`, not on each `ProjectInfo`, so
-/// the fields below cannot drift between sibling worktrees of the same
-/// repo. `repo_info` is `None` while the repo is known but the background
-/// `LocalGitInfo::get` call hasn't completed yet — the UI can use that
-/// distinction to show "loading" instead of empty values.
+/// The Git probe distinguishes pending data from a completed probe outside Git.
+#[derive(Clone, Default)]
+pub(crate) enum RepositoryProbe {
+    #[default]
+    Awaiting,
+    NoRepository,
+    Repository(RepoInfo),
+}
+
+impl RepositoryProbe {
+    pub(crate) const fn as_ref(&self) -> Option<&RepoInfo> {
+        match self {
+            Self::Repository(info) => Some(info),
+            Self::Awaiting | Self::NoRepository => None,
+        }
+    }
+
+    pub(crate) const fn as_mut(&mut self) -> Option<&mut RepoInfo> {
+        match self {
+            Self::Repository(info) => Some(info),
+            Self::Awaiting | Self::NoRepository => None,
+        }
+    }
+}
+
+/// Store the repository probe and shared metadata on the containing entry.
 #[derive(Clone, Default)]
 pub(crate) struct GitRepo {
-    pub repo_info:   Option<RepoInfo>,
+    pub repo_info:   RepositoryProbe,
     pub github_info: Option<GitHubInfo>,
     pub ci_data:     ProjectCiData,
     pub pr_data:     ProjectPrData,
+}
+
+impl GitRepo {
+    pub(crate) fn without_repository() -> Self {
+        Self {
+            repo_info: RepositoryProbe::NoRepository,
+            ..Self::default()
+        }
+    }
 }
 
 /// A top-level entry in the project list. Wraps a `RootItem` with the
 /// repo-level data that belongs to the entire entry (one repo, possibly
 /// multiple checkouts).
 ///
-/// `git_repo` is `None` when the entry is not inside a git repo (e.g. a
-/// non-Rust project outside any repo, or an uninitialized directory).
+/// `git_repo` can be absent before the background probe completes.
+/// A completed probe outside Git stores `RepositoryProbe::NoRepository`.
 #[derive(Clone)]
 pub(crate) struct ProjectEntry {
     pub root_item: RootItem,

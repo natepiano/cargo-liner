@@ -793,9 +793,13 @@ mod tests {
     use crate::census::MachineState;
     use crate::census::ServiceTier;
     use crate::census::StaffRowNames;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
 
     fn agent(pid: u32, id: &str) -> AgentRow {
         AgentRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             staff_names: StaffRowNames::default(),
             agent: Agent::Claude,
             role_fallback: crate::census::RoleFallback::None,

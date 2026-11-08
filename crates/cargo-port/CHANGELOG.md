@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Resolve empty descriptions after a Git probe finds no repository. Add a margin after label-only Package titles when it fits.
+- Keep descriptions pending until each source resolves. Keep a blank cell after cut Package titles.
+- Hide unknown descriptions until Cargo or GitHub supplies data. Keep known-empty descriptions distinct from pending descriptions.
+- Keep the Structure divider fixed when crates.io values arrive. Cut long release values inside their column.
+- Draw the CPU page count in the bottom border. Keep unknown Pull Requests counts out of the title.
+
 - Align Disk child labels at narrow widths. Keep their values in the Disk value column.
 - Keep the normal Disk child indent when the values need separate rows.
 - Keep RON icons, known CI counts, and disk child rows whole. Preserve Package columns and section margins.

@@ -1089,6 +1089,8 @@ mod tests {
     use crate::census::SessionIdentity;
     use crate::census::StaffRowNames;
     use crate::census::WorkIdentity;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
     use crate::census::transcript::SubagentRole;
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
@@ -1667,6 +1669,8 @@ fraying = "leading"
     /// one thread, and a subagent, started `age` seconds before [`NOW`].
     fn boss(age: u64) -> AgentRow {
         let child = |depth, kind, pid, name: &str, age: u64| ChildRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             worker_task: WorkerTask::Unrecorded,
             dispatch: WorkerDispatch::Plain,
             activity: AgentActivity::Idle,
@@ -1681,6 +1685,8 @@ fraying = "leading"
             work_id: WorkIdentity::Legacy,
         };
         AgentRow {
+            model:           ModelName::Unrecorded,
+            effort:          ReasoningEffort::Unrecorded,
             staff_names:     StaffRowNames::default(),
             role_fallback:   RoleFallback::None,
             session_id:      SessionIdentity::Unrecorded,

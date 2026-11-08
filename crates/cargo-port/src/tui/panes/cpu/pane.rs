@@ -249,14 +249,14 @@ mod tests {
 |│ 3 ███████   88% │|
 |│ 4            0% │|
 |│ 5 ████████ 100% │|
-|│ 1 of 2 ▼        │|
+|│ 6 █          1% │|
 |├─────────────────┤|
 |│ System      12% │|
 |│ User        25% │|
 |│ Idle        63% │|
 |├─────────────────┤|
 |│ GPU unavailable │|
-|└─────────────────┘|
+|└────1 of 2 ▼─────┘|
 ";
 
     #[cfg(target_os = "macos")]
@@ -409,14 +409,25 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
+                let mut chrome = PaneFrameChrome::default();
                 render::render_cpu_sample_phase(
                     frame,
                     tui_pane::frame_inner(area),
                     area,
                     pane,
                     &CpuConfig::default(),
-                    &mut PaneFrameChrome::default(),
+                    &mut chrome,
                     ColorMode::Colored,
+                );
+                let pane_frame = tui_pane::PaneFrame::new(area);
+                let mut grid = tui_pane::GridLines::new(area);
+                for label in chrome.labels {
+                    grid.add_label(pane_frame, label);
+                }
+                grid.render(
+                    frame.buffer_mut(),
+                    tui_pane::default_pane_chrome(ColorMode::Colored),
+                    PaneBorders::Separate,
                 );
             })
             .unwrap();
@@ -439,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn overflowing_cores_keep_the_pager_on_its_own_row() {
+    fn overflowing_cores_keep_the_pager_in_the_bottom_border() {
         let mut pane = quiet_pane();
         pane.sample_phase = CpuSamplePhase::Sampled(usage_with_cores(16, 42));
         for cursor in [0, 17] {
@@ -453,9 +464,10 @@ mod tests {
             assert_eq!(pagers.len(), 1, "one overflow pager: {rows:?}");
             let pager = pagers[0];
             assert!(!rows[pager].contains('%'), "pager covers a core: {rows:?}");
-            assert!(
-                rows[pager - 1].contains("42%"),
-                "pager is not at the band edge: {rows:?}"
+            assert_eq!(
+                pager,
+                rows.len() - 1,
+                "pager uses the bottom border: {rows:?}"
             );
             assert!(
                 pane.row_rects
@@ -479,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn core_pager_starts_at_the_metric_labels_left_edge() {
+    fn core_pager_is_centered_in_the_bottom_border() {
         let mut pane = quiet_pane();
         for (cursor, label) in [(0, "1 of 2 ▼"), (9, "▲ 2 of 2")] {
             pane.sample_phase = CpuSamplePhase::Sampled(usage_with_cores(8, 42));
@@ -493,8 +505,8 @@ mod tests {
             );
             let pager = pagers[0];
             assert_eq!(pager.trim(), label, "{rows:?}");
-            assert_eq!(pager.find(label), rows[1].find("CPU cores"), "{rows:?}");
-            assert_eq!(pager.find(label), Some(2), "{rows:?}");
+            assert_eq!(Some(pager), rows.last(), "{rows:?}");
+            assert_eq!(pager.find(label), Some(5), "{rows:?}");
         }
     }
 
@@ -758,8 +770,8 @@ mod tests {
         assert_eq!(pane.viewport.len(), 22);
         let unavailable_core_rows = rows.iter().filter(|row| row.contains("42%")).count();
         assert_eq!(
-            unavailable_core_rows, 5,
-            "freed GPU rows must go to cores, with a separate pager: {rows:?}"
+            unavailable_core_rows, 6,
+            "freed GPU rows must go to cores, with the pager in the border: {rows:?}"
         );
         #[cfg(target_os = "macos")]
         {
@@ -853,6 +865,9 @@ mod tests {
                     grid.add_titled(pane_frame, " CPU / GPU ");
                     for rule in chrome.rules {
                         grid.add_rule(pane_frame, rule);
+                    }
+                    for label in chrome.labels {
+                        grid.add_label(pane_frame, label);
                     }
                     grid.render(
                         frame.buffer_mut(),

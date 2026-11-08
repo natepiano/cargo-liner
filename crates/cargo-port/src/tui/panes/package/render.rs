@@ -34,6 +34,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::PackagePane;
 use super::constants::PATH_VALUE_RESERVE;
+use super::constants::STATS_VALUE_WIDTH;
 use crate::constants::GIT_UNREADABLE_LABEL;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::LintStatus;
@@ -53,12 +54,12 @@ use crate::tui::panes::SyncedDescriptionHeight;
 use crate::tui::panes::constants::CRATES_IO_TITLE;
 use crate::tui::panes::constants::DESCRIPTION_BOX;
 use crate::tui::panes::constants::METADATA_BOX;
-use crate::tui::panes::constants::MIN_METADATA_WIDTH;
 use crate::tui::panes::constants::MIN_STATS_LABEL_WIDTH;
 use crate::tui::panes::constants::STATS_TITLE;
 use crate::tui::panes::constants::TESTS_IGNORED_LABEL;
 use crate::tui::panes::constants::TESTS_TITLE;
 use crate::tui::panes::constants::TESTS_TOTAL_LABEL;
+use crate::tui::panes::pane_data::CRATES_IO_LABELS;
 use crate::tui::panes::pane_data::CRATES_IO_UNREACHABLE;
 use crate::tui::panes::pane_data::PackageDeletion;
 use crate::tui::panes::pane_data::PackageSection;
@@ -278,7 +279,7 @@ fn package_region(
     let region = Region::stack(vec![
         description,
         Region::columns(vec![
-            (Constraint::Min(MIN_METADATA_WIDTH), metadata),
+            (Constraint::Fill(1), metadata),
             (Constraint::Length(stats_width), Region::stack(sections)),
         ]),
     ]);
@@ -301,22 +302,9 @@ pub(super) fn stats_column_width(data: &PackageData) -> (u16, u16) {
         .map(|(_, count)| *count)
         .max()
         .unwrap_or(0);
-    let digit_width: u16 = match max_count {
-        0..1000 => 3,
-        1000..10_000 => 4,
-        10_000..100_000 => 5,
-        _ => 6,
-    };
-    // `data.crates_io_rows` contains versions and formatted download counts that can exceed numeric
-    // counts; widen `value_width` using `widest_crates_io` so all three sections share one right
-    // edge.
-    let widest_crates_io = data
-        .crates_io_rows
-        .iter()
-        .map(|(_, value)| value.as_str().width())
-        .max()
-        .unwrap_or(0);
-    let value_width = digit_width.max(u16::try_from(widest_crates_io).unwrap_or(u16::MAX));
+    let value_width = u16::try_from(max_count.to_string().len())
+        .unwrap_or(u16::MAX)
+        .max(STATS_VALUE_WIDTH);
     let label_width = stats_label_width(data);
     let total = 1 + 1 + label_width + 1 + value_width + 1;
     (total, value_width)
@@ -331,7 +319,10 @@ fn stats_label_width(data: &PackageData) -> u16 {
         .iter()
         .chain(&data.test_rows)
         .map(|(label, _)| label.width());
-    let crates_io_labels = data.crates_io_rows.iter().map(|(label, _)| label.width());
+    let crates_io_labels = CRATES_IO_LABELS
+        .into_iter()
+        .map(unicode_width::UnicodeWidthStr::width)
+        .chain(data.crates_io_rows.iter().map(|(label, _)| label.width()));
     let widest = count_labels.chain(crates_io_labels).max().unwrap_or(0);
     u16::try_from(widest)
         .unwrap_or(u16::MAX)
@@ -1227,12 +1218,14 @@ fn fit_package_title(data: &PackageData, width: usize) -> String {
     } else {
         data.title.clone()
     };
-    let available = width.saturating_sub(label.width());
+    let available = width.saturating_sub(label.width()).saturating_sub(1);
     if available > 3 {
         format!(
-            "{label} - {}",
+            "{label} - {} ",
             render::truncate_with_ellipsis(&data.name, available - 3, "…")
         )
+    } else if label.width() < width {
+        format!("{label} ")
     } else {
         label
     }
@@ -1332,7 +1325,7 @@ fn render_project_description(
     // description height; `block.render_with_selection` draws those owned rows so content cannot
     // drift from the height used for inter-pane synchronization.
     let block = DescriptionBlock::for_pane(
-        context.pkg_data.description.as_deref(),
+        &context.pkg_data.description,
         area,
         context.empty_description,
     );
@@ -1647,7 +1640,8 @@ fn render_stat_section(
         .min(section_rows.len());
     let lines: Vec<Line<'_>> = (placement.row_offset..end)
         .map(|i| {
-            let (label, value) = (section_rows[i].0, section_rows[i].1.as_str());
+            let (label, full_value) = (section_rows[i].0, section_rows[i].1.as_str());
+            let value = render::truncate_with_ellipsis(full_value, vw, "…");
             let slot = i - placement.row_offset;
             let y_abs = placement
                 .start_y
@@ -1675,7 +1669,7 @@ fn render_stat_section(
                 ),
                 Span::styled(
                     format!("{value:>vw$} "),
-                    selection.patch(value_style(label, value), ctx.color_mode),
+                    selection.patch(value_style(label, full_value), ctx.color_mode),
                 ),
             ])
             .style(theme_roles::selection_style(selection, ctx.color_mode))
@@ -1951,6 +1945,7 @@ mod moved_facade_tests {
     use super::stats_column_width;
     use crate::project::DiskMeasurement;
     use crate::project::ProjectType;
+    use crate::tui::panes::DescriptionState;
     use crate::tui::panes::PackageVersion;
     use crate::tui::panes::pane_data;
     use crate::tui::panes::pane_data::PackageData;
@@ -1972,7 +1967,7 @@ mod moved_facade_tests {
             primary_section:          None,
             path:                     "~/demo".to_string(),
             version:                  PackageVersion::Manifest("0.1.0".to_string()),
-            description:              None,
+            description:              DescriptionState::KnownEmpty,
             crates_io_rows:           Vec::new(),
             types:                    Some(vec![ProjectType::Library]),
             disk:                     DiskMeasurement::TotalOnly(38_989_922_304),
@@ -1995,17 +1990,17 @@ mod moved_facade_tests {
             (
                 "three_digit_counts",
                 vec![("example", 999), ("lib", 1)],
-                17,
-                3,
+                22,
+                8,
             ),
             (
                 "four_digit_counts",
                 vec![("example", 1000), ("lib", 1)],
-                18,
-                4,
+                22,
+                8,
             ),
-            ("short_labels", vec![("lib", 5), ("bin", 2)], 17, 3),
-            ("empty_rows", vec![], 17, 3),
+            ("short_labels", vec![("lib", 5), ("bin", 2)], 22, 8),
+            ("empty_rows", vec![], 22, 8),
         ];
 
         for (name, rows, expected_total, expected_digits) in cases {

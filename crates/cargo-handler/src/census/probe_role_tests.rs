@@ -7,6 +7,8 @@
 
 use super::*;
 use crate::census::WorkIdentity;
+use crate::census::model::ModelName;
+use crate::census::model::ReasoningEffort;
 use crate::census::transcript::SubagentRole;
 
 #[test]
@@ -69,6 +71,8 @@ struct PreviousChildRow {
 
 fn recorded_subagent() -> ChildRow {
     ChildRow {
+        model:        ModelName::Unrecorded,
+        effort:       ReasoningEffort::Unrecorded,
         worker_task:  WorkerTask::Unrecorded,
         activity:     AgentActivity::Idle,
         dispatch:     WorkerDispatch::Plain,

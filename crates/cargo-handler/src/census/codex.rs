@@ -23,12 +23,16 @@ use rusqlite::OptionalExtension;
 use rusqlite::Row;
 use rusqlite::params;
 
+use super::ProvenCodexThread;
+use super::SessionIdentity;
 use super::account::ConfigHome;
 use super::account::Program;
 use super::classify;
 use super::classify::ProcessEntry;
 use super::codex_names::SessionName;
 use super::hierarchy::FileRevision;
+use super::model::ConversationModel;
+use super::transcript::TranscriptModels;
 use crate::config::CodexStartWindow;
 use crate::constants::CODEX_DIRNAME;
 use crate::constants::CODEX_LAST_THREAD_QUERY;
@@ -50,6 +54,19 @@ use crate::constants::TRUNCATION_MARK;
 use crate::constants::UUID_TEXT_LENGTH;
 use crate::startup_log;
 use crate::summary;
+
+/// `CodexModels` retains model settings separately from the bounded activity read.
+#[derive(Debug, Default)]
+pub(super) struct CodexModels(TranscriptModels);
+
+impl CodexModels {
+    pub(super) fn read(&mut self, path: &Path) -> ConversationModel { self.0.read_codex(path) }
+
+    pub(super) fn retain(&mut self, paths: &HashSet<PathBuf>) { self.0.retain(paths); }
+
+    #[cfg(test)]
+    pub(super) const fn content_reads(&self) -> usize { self.0.content_reads() }
+}
 
 /// Resolve the process's own configuration home, never another account's index.
 pub(super) fn session_home(process: &ProcessEntry, home: Option<&Path>) -> Option<PathBuf> {
@@ -373,14 +390,60 @@ impl ThreadDatabaseRevision {
 }
 
 impl OpenThreadRows {
-    /// A new requested id or a database revision refreshes the account answer.
+    /// `process_rollouts` resolves proven ids only within each process's account home.
+    pub(super) fn process_rollouts(
+        &mut self,
+        processes: &[ProcessEntry],
+        rows: &[super::AgentRow],
+        home: Option<&Path>,
+    ) -> HashMap<u32, PathBuf> {
+        let mut requests: HashMap<PathBuf, Vec<(u32, String)>> = HashMap::new();
+        for process in processes
+            .iter()
+            .filter(|process| process.is_codex() && !process.is_app_server())
+        {
+            let id = rows
+                .iter()
+                .find(|row| row.pid == process.pid)
+                .and_then(|row| match &row.session_id {
+                    SessionIdentity::Codex(proof) => match proof {
+                        ProvenCodexThread::ResumeArgument(id)
+                        | ProvenCodexThread::OpenStaffRollout(id) => Some(id.as_str()),
+                    },
+                    _ => None,
+                })
+                .or_else(|| match resume_request(process) {
+                    ResumeRequest::NamedId(id) => Some(id),
+                    _ => None,
+                });
+            if let (Some(id), Some(account)) = (id, session_home(process, home)) {
+                requests
+                    .entry(account)
+                    .or_default()
+                    .push((process.pid, id.to_owned()));
+            }
+        }
+        let mut paths = HashMap::new();
+        for (account, requested) in requests {
+            let ids: Vec<_> = requested.iter().map(|(_, id)| id.clone()).collect();
+            let threads = self.read(&account, &ids);
+            for (pid, id) in requested {
+                if let Some(thread) = threads.get(&id) {
+                    paths.insert(pid, thread.rollout.clone());
+                }
+            }
+        }
+        paths
+    }
+
+    /// `OpenThreadRows::read` retains every requested id until its account home expires.
     pub(super) fn read(
         &mut self,
         codex_home: &Path,
         ids: &[String],
     ) -> &HashMap<String, CodexThread> {
         let revision = ThreadDatabaseRevision::read(codex_home);
-        let requested: HashSet<_> = ids.iter().cloned().collect();
+        let mut requested: HashSet<_> = ids.iter().cloned().collect();
         if self.homes.get(codex_home).is_none_or(|cached| {
             cached.revision != revision || !requested.is_subset(&cached.requested)
         }) {
@@ -388,9 +451,15 @@ impl OpenThreadRows {
             {
                 self.database_reads += 1;
             }
+            if let Some(cached) = self.homes.get(codex_home) {
+                requested.extend(cached.requested.iter().cloned());
+            }
+            let ids: Vec<_> = requested.iter().cloned().collect();
             let answer = match &revision {
                 ThreadDatabaseRevision::Missing => None,
-                ThreadDatabaseRevision::Present { path, .. } => query_threads_by_id(path, ids).ok(),
+                ThreadDatabaseRevision::Present { path, .. } => {
+                    query_threads_by_id(path, &ids).ok()
+                },
             }
             .unwrap_or(OpenThreadAccount {
                 revision,
@@ -1384,6 +1453,82 @@ mod tests {
             )
             .expect("the fixture table should create");
         assert!(rows.read(changed.path(), &ids).is_empty());
+    }
+
+    #[test]
+    fn pane_and_server_requests_share_one_unchanged_account_cache() {
+        const PANE: &str = "01a18dbb-7e8f-7641-b3dd-bb2071ab9d7a";
+        const SERVER: &str = "01a18dbb-7e8f-7641-b3dd-bb2071ab9d7b";
+        let directory = TempDir::new().expect("account directory");
+        let pane = thread(directory.path(), 1500, Some("pane worker"), "");
+        let server = thread(directory.path(), 2000, Some("server thread"), "");
+        write_database(
+            directory.path(),
+            "state_6.sqlite",
+            &[
+                StoredThread {
+                    id:         PANE,
+                    originator: CODEX_LEGACY_TUI_ORIGINATOR,
+                    thread:     pane.clone(),
+                },
+                StoredThread {
+                    id:         SERVER,
+                    originator: CODEX_LEGACY_TUI_ORIGINATOR,
+                    thread:     server.clone(),
+                },
+            ],
+        );
+        let process = ProcessEntry {
+            pid:         40,
+            parent:      Some(1),
+            name:        "codex".into(),
+            arguments:   vec!["codex".into(), "resume".into(), PANE.into()],
+            started:     1,
+            directory:   None,
+            claude_pid:  None,
+            config_home: ConfigHome::Named(directory.path().into()),
+        };
+        let mut cache = OpenThreadRows::default();
+        let pane_paths = cache.process_rollouts(std::slice::from_ref(&process), &[], None);
+        assert_eq!(pane_paths.get(&40), Some(&pane.rollout));
+        assert_eq!(
+            cache.read(directory.path(), &[SERVER.into()]).get(SERVER),
+            Some(&server)
+        );
+        let initial_reads = cache.database_reads;
+        for scan in 1..=4 {
+            let paths = cache.process_rollouts(std::slice::from_ref(&process), &[], None);
+            assert_eq!(paths.get(&40), Some(&pane.rollout));
+            assert_eq!(
+                cache.read(directory.path(), &[SERVER.into()]).get(SERVER),
+                Some(&server)
+            );
+            assert_eq!(
+                cache.database_reads, initial_reads,
+                "unchanged scan {scan} must reuse both callers' account rows"
+            );
+        }
+        Connection::open(directory.path().join("state_6.sqlite"))
+            .expect("account database")
+            .execute(
+                "UPDATE threads SET name='renamed server' WHERE id=?1",
+                params![SERVER],
+            )
+            .expect("rename server thread");
+        cache.process_rollouts(std::slice::from_ref(&process), &[], None);
+        let refreshed_reads = cache.database_reads;
+        let renamed = CodexThread {
+            name: SessionName::from(Some("renamed server".into())),
+            ..server
+        };
+        assert_eq!(
+            cache.read(directory.path(), &[SERVER.into()]).get(SERVER),
+            Some(&renamed)
+        );
+        assert_eq!(
+            cache.database_reads, refreshed_reads,
+            "a revision refresh retains both callers' requested ids"
+        );
     }
 
     /// A name wins over the first prompt; a prompt stands in for a

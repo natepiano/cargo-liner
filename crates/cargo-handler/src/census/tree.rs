@@ -34,6 +34,8 @@ use super::WorkIdentity;
 use super::classify;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
+use super::model::ModelName;
+use super::model::ReasoningEffort;
 use super::transcript::BashCall;
 use super::transcript::Subagent;
 use super::transcript::SubagentParent;
@@ -325,6 +327,8 @@ fn append_run_threads(
             if present.insert(thread.id.clone()) {
                 added.insert(thread.id.clone());
                 children.push(ChildRow {
+                    model:        ModelName::Unrecorded,
+                    effort:       ReasoningEffort::Unrecorded,
                     work_id:      WorkIdentity::Legacy,
                     worker_task:  WorkerTask::RoleOnly,
                     activity:     thread.activity,
@@ -772,6 +776,8 @@ fn flatten(mut nodes: Vec<Node>, depth: u8, rows: &mut Vec<ChildRow>) {
     });
     for node in nodes {
         rows.push(ChildRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             worker_task: WorkerTask::Unrecorded,
             activity: node.activity,
             thread_id: node.thread_id,
@@ -807,6 +813,8 @@ mod tests {
     use crate::census::StaffRowNames;
     use crate::census::account::AccountLabels;
     use crate::census::account::ConfigHome;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
     use crate::census::transcript::SubagentRole;
 
     /// The home directory every fixture's paths sit under.
@@ -1076,6 +1084,8 @@ mod tests {
     /// An agent row for `pid`, started at `started`.
     fn agent_row(pid: u32, started: u64) -> AgentRow {
         AgentRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             staff_names: StaffRowNames::default(),
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,

@@ -21,6 +21,7 @@ use crate::project::CommitDate;
 use crate::project::Comparison;
 use crate::project::CratesIoReleaseState;
 use crate::project::FirstCommit;
+use crate::project::GitRepo;
 use crate::project::GitStatus;
 use crate::project::GithubRunCount;
 use crate::project::LocalGitState;
@@ -32,6 +33,7 @@ use crate::project::PullRequestInfo;
 use crate::project::PullRequestState;
 use crate::project::PullRequestUnavailableReason;
 use crate::project::RepoInfo;
+use crate::project::RepositoryProbe;
 use crate::project::RootItem;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -283,7 +285,7 @@ impl App {
         let is_submodule_target = self.project_list.is_submodule_path(path);
         if is_submodule_target {
             if let Some(git_repo) = self.project_list.ensure_git_repo_for(path) {
-                git_repo.repo_info = Some(info);
+                git_repo.repo_info = RepositoryProbe::Repository(info);
             }
         } else if let Some(entry) = self.project_list.entry_containing_mut(path) {
             if entry.root_item.path().as_path() != path {
@@ -292,7 +294,7 @@ impl App {
                 return;
             }
             let git_repo = entry.git_repo.get_or_insert_with(Default::default);
-            git_repo.repo_info = Some(info);
+            git_repo.repo_info = RepositoryProbe::Repository(info);
         }
         if fetch_head_advanced
             && self.scan.is_complete()
@@ -304,6 +306,19 @@ impl App {
         }
         self.record_sync_observation(path);
         self.maybe_trigger_repo_fetch(path);
+    }
+
+    /// Store a completed probe outside Git without starting a remote fetch.
+    pub(super) fn handle_no_repository(&mut self, path: &Path) {
+        if self.project_list.is_submodule_path(path) {
+            if let Some(repo) = self.project_list.ensure_git_repo_for(path) {
+                *repo = GitRepo::without_repository();
+            }
+        } else if let Some(entry) = self.project_list.entry_containing_mut(path)
+            && entry.root_item.path().as_path() == path
+        {
+            entry.git_repo = Some(GitRepo::without_repository());
+        }
     }
     /// Diff the current sync state for `path` against the tracker's
     /// baseline; on transition, push or extend the "Sync changes" task

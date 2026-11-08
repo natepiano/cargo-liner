@@ -69,6 +69,8 @@ mod toast_action;
 mod tree_mutation;
 
 #[cfg(test)]
+mod loading_layout_tests;
+#[cfg(test)]
 mod quota_transition_tests;
 
 use std::collections::HashMap;
@@ -161,6 +163,7 @@ use super::keymap;
 use super::overlays::Overlays;
 use super::panes;
 use super::panes::BottomRow;
+use super::panes::DescriptionState;
 use super::panes::EmptyDescriptionBehavior;
 use super::panes::OutputCopyAvailability;
 use super::panes::OutputPane;
@@ -660,18 +663,13 @@ impl App {
         }
     }
 
-    /// Hide the empty Package description when Git shows a description.
+    /// Hide the Package placeholder while Git is pending or shows its own description.
     pub(super) fn empty_package_description(&self) -> EmptyDescriptionBehavior {
-        if self
-            .panes
-            .git
-            .content()
-            .and_then(|data| data.description.as_deref())
-            .is_some_and(|text| !text.is_empty())
-        {
-            EmptyDescriptionBehavior::RenderNothing
-        } else {
-            EmptyDescriptionBehavior::ShowPlaceholder
+        match self.panes.git.content().map(|data| &data.description) {
+            Some(DescriptionState::KnownEmpty) => EmptyDescriptionBehavior::ShowPlaceholder,
+            Some(DescriptionState::Pending | DescriptionState::Known(_)) | None => {
+                EmptyDescriptionBehavior::RenderNothing
+            },
         }
     }
 
@@ -2801,6 +2799,7 @@ mod tests {
         use crate::tui::panes;
         use crate::tui::panes::CiData;
         use crate::tui::panes::CiEmptyState;
+        use crate::tui::panes::DescriptionState;
         use crate::tui::panes::GitCheckout;
         use crate::tui::panes::GitData;
         use crate::tui::panes::HeadRelation;
@@ -3002,7 +3001,7 @@ mod tests {
                 primary_section:          None,
                 path:                     "~/demo".to_string(),
                 version:                  PackageVersion::Manifest("0.1.0".to_string()),
-                description:              None,
+                description:              DescriptionState::KnownEmpty,
                 crates_io_rows:           Vec::new(),
                 types:                    Some(vec![ProjectType::Library]),
                 disk:                     DiskMeasurement::TotalOnly(1_048_576),
@@ -4826,6 +4825,7 @@ mod tests {
         }
 
         use crate::project::DiskMeasurement;
+        use crate::tui::panes::DescriptionState;
         use crate::tui::project_list::ReplacementExpansion;
         use crate::tui::test_support;
 
@@ -6151,6 +6151,14 @@ mod tests {
             std::fs::create_dir_all(&project_dir).expect("create test directory");
 
             let mut app = make_app(&[test_support::make_package("demo", &project_dir)]);
+            app.ensure_visible_rows_cached();
+            app.ensure_detail_cached();
+            let mut package = app.panes.package.content().cloned().unwrap_or_default();
+            package.description = DescriptionState::KnownEmpty;
+            app.panes.package.set_content(package);
+            let mut git = app.panes.git.content().cloned().unwrap_or_default();
+            git.description = DescriptionState::KnownEmpty;
+            app.panes.git.set_content(git);
             app.panes.package.viewport.set_pos(1);
             render_ui(&mut app);
 
@@ -6184,6 +6192,14 @@ mod tests {
                 ))],
             ))]);
             app.set_focus_to_pane(PaneId::Package);
+            app.ensure_visible_rows_cached();
+            app.ensure_detail_cached();
+            let mut package = app.panes.package.content().cloned().unwrap_or_default();
+            package.description = DescriptionState::KnownEmpty;
+            app.panes.package.set_content(package);
+            let mut git = app.panes.git.content().cloned().unwrap_or_default();
+            git.description = DescriptionState::KnownEmpty;
+            app.panes.git.set_content(git);
             app.panes.package.viewport.set_pos(1);
             render_ui(&mut app);
 
@@ -6227,6 +6243,14 @@ mod tests {
                 ))],
             ))]);
             app.set_focus_to_pane(PaneId::Package);
+            app.ensure_visible_rows_cached();
+            app.ensure_detail_cached();
+            let mut package = app.panes.package.content().cloned().unwrap_or_default();
+            package.description = DescriptionState::KnownEmpty;
+            app.panes.package.set_content(package);
+            let mut git = app.panes.git.content().cloned().unwrap_or_default();
+            git.description = DescriptionState::KnownEmpty;
+            app.panes.git.set_content(git);
             render_ui(&mut app);
 
             let package = app.panes.package.content().expect("package pane content");
@@ -7284,7 +7308,7 @@ mod tests {
                 .content()
                 .expect("selected package")
                 .clone();
-            package.description = Some(description.to_string());
+            package.description = DescriptionState::Known(description.to_string());
             let rows = panes::package_rows_from_data(&package);
             let (field_row, field) = rows
                 .iter()
@@ -7296,7 +7320,7 @@ mod tests {
                 .expect("selectable field");
             app.panes.package.set_content(package);
             let mut git = app.panes.git.content().expect("selected Git data").clone();
-            git.description = Some(description.to_string());
+            git.description = DescriptionState::Known(description.to_string());
             app.panes.git.set_content(git);
             app.set_focus_to_pane(PaneId::Package);
             let mut terminal = Terminal::new(TestBackend::new(160, height)).expect("app terminal");

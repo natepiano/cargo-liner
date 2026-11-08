@@ -200,6 +200,16 @@ impl From<ChildKind> for ProbeChildWork {
 /// Child rows keep the schema-3 task vocabulary at the wire boundary.
 #[derive(Debug, Deserialize, Serialize)]
 pub(super) struct ProbeChildRow {
+    #[serde(
+        default,
+        skip_serializing_if = "super::model::ModelName::is_unrecorded"
+    )]
+    model:         super::model::ModelName,
+    #[serde(
+        default,
+        skip_serializing_if = "super::model::ReasoningEffort::is_unrecorded"
+    )]
+    effort:        super::model::ReasoningEffort,
     #[serde(default, skip_serializing_if = "work_id_is_legacy")]
     work_id:       WorkIdentity,
     /// Task naming survives placement so the final hierarchy role supplies its label.
@@ -269,6 +279,8 @@ impl From<ChildRow> for ProbeChildRow {
             ),
         };
         Self {
+            model: row.model,
+            effort: row.effort,
             worker_task,
             reviewer_task,
             activity: row.activity,
@@ -301,6 +313,8 @@ impl From<ProbeChildRow> for ChildRow {
             },
         };
         Self {
+            model: row.model,
+            effort: row.effort,
             worker_task,
 
             activity: row.activity,
@@ -327,6 +341,10 @@ impl From<ProbeChildRow> for ChildRow {
 /// A probe row before compatibility defaults are resolved into domain values.
 #[derive(Deserialize)]
 pub(super) struct ProbeAgentRow {
+    #[serde(default)]
+    model:           super::model::ModelName,
+    #[serde(default)]
+    effort:          super::model::ReasoningEffort,
     agent:           super::Agent,
     #[serde(default)]
     role_fallback:   super::RoleFallback,
@@ -359,6 +377,8 @@ pub(super) struct ProbeAgentRow {
 impl From<ProbeAgentRow> for AgentRow {
     fn from(row: ProbeAgentRow) -> Self {
         Self {
+            model:           row.model,
+            effort:          row.effort,
             agent:           row.agent,
             role_fallback:   row.role_fallback,
             session_id:      row.codex_session.map_or_else(
@@ -593,6 +613,8 @@ mod tests {
     /// One row of an agent's cell.
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, started: u64) -> ChildRow {
         ChildRow {
+            model: crate::census::model::ModelName::Unrecorded,
+            effort: crate::census::model::ReasoningEffort::Unrecorded,
             worker_task: WorkerTask::Unrecorded,
             thread_id: crate::census::CodexThreadId::Unrecorded,
             dispatch: WorkerDispatch::Plain,
@@ -619,95 +641,103 @@ mod tests {
             machine:          "mac".to_string(),
             thread_hosts:     Vec::new(),
             edges:            HierarchyEdges::default(),
-            rows:             vec![
-                AgentRow {
-                    staff_names:     StaffRowNames::default(),
-                    agent:           Agent::Codex,
-                    role_fallback:   crate::census::RoleFallback::None,
-                    session_id:      SessionIdentity::Unrecorded,
-                    service_tier:    ServiceTier::Unrecorded,
-                    account:         Account::Unrecorded,
-                    name:            "ChatGPT".to_string(),
-                    activity:        AgentActivity::Unreported,
-                    started:         1_790_000_000,
-                    process_started: 1_790_000_000,
-                    pid:             76_130,
-                    desktop:         None,
-                    directory:       "/".to_string(),
-                    branch:          None,
-                    launched_by:     None,
-                    children:        Vec::new(),
+            rows:             vec![codex_report_row(), claude_report_row(), worker()],
+        }
+    }
+
+    fn codex_report_row() -> AgentRow {
+        AgentRow {
+            model:           crate::census::model::ModelName::Unrecorded,
+            effort:          crate::census::model::ReasoningEffort::Unrecorded,
+            staff_names:     StaffRowNames::default(),
+            agent:           Agent::Codex,
+            role_fallback:   RoleFallback::None,
+            session_id:      SessionIdentity::Unrecorded,
+            service_tier:    ServiceTier::Unrecorded,
+            account:         Account::Unrecorded,
+            name:            "ChatGPT".to_string(),
+            activity:        AgentActivity::Unreported,
+            started:         1_790_000_000,
+            process_started: 1_790_000_000,
+            pid:             76_130,
+            desktop:         None,
+            directory:       "/".to_string(),
+            branch:          None,
+            launched_by:     None,
+            children:        Vec::new(),
+        }
+    }
+
+    fn claude_report_row() -> AgentRow {
+        AgentRow {
+            model:           crate::census::model::ModelName::Unrecorded,
+            effort:          crate::census::model::ReasoningEffort::Unrecorded,
+            staff_names:     StaffRowNames::default(),
+            agent:           Agent::Claude,
+            role_fallback:   RoleFallback::None,
+            session_id:      SessionIdentity::Unrecorded,
+            service_tier:    ServiceTier::Unrecorded,
+            account:         Account::Unrecorded,
+            name:            "natemccoy-30".to_string(),
+            activity:        AgentActivity::from(Some("idle")),
+            started:         1_790_000_100,
+            process_started: 1_790_000_100,
+            pid:             80_020,
+            desktop:         None,
+            directory:       "~".to_string(),
+            branch:          Some("main".to_string()),
+            launched_by:     None,
+            children:        vec![
+                child(
+                    0,
+                    ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                    Some(80_100),
+                    "Run the mesh",
+                    1_790_000_110,
+                ),
+                child(
+                    1,
+                    ChildKind::UnderShell(Agent::Codex),
+                    Some(80_200),
+                    "app-server",
+                    1_790_000_111,
+                ),
+                ChildRow {
+                    worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
+                    service_tier: ServiceTier::Fast,
+                    account: Account::Unrecorded,
+                    ..child(2, ChildKind::Thread, None, "phase 1", 1_790_000_112)
                 },
-                AgentRow {
-                    staff_names:     StaffRowNames::default(),
-                    agent:           Agent::Claude,
-                    role_fallback:   crate::census::RoleFallback::None,
-                    session_id:      SessionIdentity::Unrecorded,
-                    service_tier:    ServiceTier::Unrecorded,
-                    account:         Account::Unrecorded,
-                    name:            "natemccoy-30".to_string(),
-                    activity:        AgentActivity::from(Some("idle")),
-                    started:         1_790_000_100,
-                    process_started: 1_790_000_100,
-                    pid:             80_020,
-                    desktop:         None,
-                    directory:       "~".to_string(),
-                    branch:          Some("main".to_string()),
-                    launched_by:     None,
-                    children:        vec![
-                        child(
-                            0,
-                            ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
-                            Some(80_100),
-                            "Run the mesh",
-                            1_790_000_110,
-                        ),
-                        child(
-                            1,
-                            ChildKind::UnderShell(Agent::Codex),
-                            Some(80_200),
-                            "app-server",
-                            1_790_000_111,
-                        ),
-                        ChildRow {
-                            worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
-                            service_tier: ServiceTier::Fast,
-                            account: Account::Unrecorded,
-                            ..child(2, ChildKind::Thread, None, "phase 1", 1_790_000_112)
-                        },
-                        child(
-                            0,
-                            ChildKind::Subagent(SubagentRole::Unrecorded),
-                            None,
-                            "Review",
-                            1_790_000_120,
-                        ),
-                        ChildRow {
-                            worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
-                            kind: ChildKind::Shell(
-                                crate::census::ShellTimerObservation::ObservedCountdown(Timer {
-                                    started:  1_790_000_125,
-                                    deadline: 1_790_000_425,
-                                }),
-                            ),
-                            ..child(
-                                0,
-                                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
-                                Some(80_300),
-                                "Re-arm the progress timer",
-                                1_790_000_125,
-                            )
-                        },
-                        child(
-                            0,
-                            ChildKind::Session(Agent::Claude),
-                            Some(81_020),
-                            "worker",
-                            1_790_000_130,
-                        ),
-                    ],
+                child(
+                    0,
+                    ChildKind::Subagent(SubagentRole::Unrecorded),
+                    None,
+                    "Review",
+                    1_790_000_120,
+                ),
+                ChildRow {
+                    worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
+                    kind: ChildKind::Shell(
+                        crate::census::ShellTimerObservation::ObservedCountdown(Timer {
+                            started:  1_790_000_125,
+                            deadline: 1_790_000_425,
+                        }),
+                    ),
+                    ..child(
+                        0,
+                        ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                        Some(80_300),
+                        "Re-arm the progress timer",
+                        1_790_000_125,
+                    )
                 },
-                worker(),
+                child(
+                    0,
+                    ChildKind::Session(Agent::Claude),
+                    Some(81_020),
+                    "worker",
+                    1_790_000_130,
+                ),
             ],
         }
     }
@@ -715,6 +745,8 @@ mod tests {
     /// The separate session launched by the report's Claude row.
     fn worker() -> AgentRow {
         AgentRow {
+            model:           crate::census::model::ModelName::Unrecorded,
+            effort:          crate::census::model::ReasoningEffort::Unrecorded,
             staff_names:     StaffRowNames::default(),
             agent:           Agent::Claude,
             role_fallback:   RoleFallback::None,
