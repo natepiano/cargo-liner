@@ -1081,6 +1081,19 @@ impl AstraRole {
     }
 }
 
+/// `AstraRunActivity` keeps live detached work separate from the pane's turn state.
+#[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AstraRunActivity {
+    #[default]
+    Inactive,
+    Live(Activity),
+}
+
+impl AstraRunActivity {
+    const fn is_inactive(&self) -> bool { matches!(self, Self::Inactive) }
+}
+
 /// A checked Astra member always has a staff identity and an absolute account home.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(try_from = "AstraMemberWire")]
@@ -1090,6 +1103,8 @@ pub(crate) struct AstraMembership {
     home:     PathBuf,
     role:     AstraRole,
     work:     PaneWork,
+    #[serde(default, skip_serializing_if = "AstraRunActivity::is_inactive")]
+    run:      AstraRunActivity,
 }
 
 /// Probe fields are unchecked until the membership constructor accepts them.
@@ -1100,6 +1115,8 @@ struct AstraMemberWire {
     home:     PathBuf,
     role:     AstraRole,
     work:     PaneWork,
+    #[serde(default)]
+    run:      AstraRunActivity,
 }
 
 impl TryFrom<AstraMemberWire> for AstraMembership {
@@ -1118,6 +1135,7 @@ impl TryFrom<AstraMemberWire> for AstraMembership {
             home:     wire.home,
             role:     wire.role,
             work:     wire.work,
+            run:      wire.run,
         })
     }
 }
@@ -1128,7 +1146,22 @@ impl AstraMembership {
     const fn role(&self) -> AstraRole { self.role }
     pub(crate) const fn work(&self) -> PaneWork { self.work }
 
+    pub(crate) const fn has_live_run(&self) -> bool {
+        matches!(self.run, AstraRunActivity::Live(_))
+    }
+
+    pub(super) const fn with_run_activity(mut self, observed: AgentActivity) -> Self {
+        self.run = match observed {
+            AgentActivity::Active(activity) => AstraRunActivity::Live(activity),
+            AgentActivity::Idle | AgentActivity::Unreported => AstraRunActivity::Inactive,
+        };
+        self
+    }
+
     pub(super) const fn activity(&self, observed: super::AgentActivity) -> super::AgentActivity {
+        if let AstraRunActivity::Live(activity) = self.run {
+            return AgentActivity::Active(activity);
+        }
         match self.work {
             PaneWork::Idle => AgentActivity::Idle,
             PaneWork::Busy => match observed {
@@ -1164,6 +1197,7 @@ impl AstraMembership {
             home: PathBuf::from(home),
             role,
             work: PaneWork::Unknown,
+            run: AstraRunActivity::Inactive,
         })
         .map_or(
             AstraWorkerMembership::Ordinary,

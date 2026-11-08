@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep pane workers visible and show their detached run activity without separate dispatch rows.
+
 - Codex remote option values cannot supply resume proof for staff placement.
 
 - Unknown Codex switches preserve resume proof when the census places workers under their staff manager.

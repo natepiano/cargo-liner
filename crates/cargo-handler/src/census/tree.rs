@@ -307,19 +307,54 @@ pub(super) fn attach_children(
     added
 }
 
+/// `fold_run_processes` removes command rows that `WorkerRuns` joins to a worker row.
+pub(super) fn fold_run_processes(rows: &mut [AgentRow], processes: &HashSet<u32>) {
+    for row in rows {
+        let mut removed_depth = None;
+        row.children.retain(|child| {
+            if removed_depth.is_some_and(|depth| child.depth > depth) {
+                return false;
+            }
+            removed_depth = None;
+            if child.pid.is_some_and(|pid| processes.contains(&pid)) {
+                removed_depth = Some(child.depth);
+                return false;
+            }
+            true
+        });
+    }
+}
+
+/// Keep run-only seats that have no native conversation identity.
+pub(super) fn append_named_run_workers(
+    rows: &mut [AgentRow],
+    workers: &HashMap<u32, Vec<ChildRow>>,
+) {
+    for row in rows {
+        if let Some(children) = workers.get(&row.pid) {
+            row.children.extend(children.iter().cloned());
+        }
+    }
+}
+
 /// Add only missing run threads after the tree builder lays out all process sources.
 fn append_run_threads(
     rows: &[AgentRow],
     trees: &mut [Vec<ChildRow>],
     sources: &TreeSources<'_>,
 ) -> HashSet<String> {
-    let mut present: HashSet<_> = trees
+    let mut present: HashSet<_> = rows
         .iter()
-        .flatten()
-        .filter_map(|child| match &child.thread_id {
-            CodexThreadId::Recorded(id) => Some(id.clone()),
-            CodexThreadId::Unrecorded => None,
-        })
+        .flat_map(|row| row.session_id.ids().map(str::to_owned))
+        .chain(
+            trees
+                .iter()
+                .flatten()
+                .filter_map(|child| match &child.thread_id {
+                    CodexThreadId::Recorded(id) => Some(id.clone()),
+                    CodexThreadId::Unrecorded => None,
+                }),
+        )
         .collect();
     let mut added = HashSet::new();
     for (row, children) in rows.iter().zip(trees.iter_mut()) {

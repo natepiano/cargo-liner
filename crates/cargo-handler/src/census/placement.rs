@@ -13,7 +13,6 @@ use super::CodexThreadId;
 use super::HierarchyEdge;
 use super::HierarchyRole;
 use super::Machine;
-#[cfg(test)]
 use super::SessionIdentity;
 #[cfg(test)]
 use super::account::AccountLabels;
@@ -181,6 +180,12 @@ impl<'a> DispatchPairing<'a> {
         let matches = match (&dispatch.identity, worker) {
             (WorkerIdentity::CodexThread(id), DispatchWorker::Thread(thread)) => {
                 thread.is_thread(id)
+            },
+            (WorkerIdentity::CodexThread(id), DispatchWorker::Session { row, .. }) => {
+                matches!(
+                    row.session_id,
+                    SessionIdentity::Codex(_) | SessionIdentity::Astra(_)
+                ) && row.session_id.ids().any(|session| session == id)
             },
             (WorkerIdentity::ClaudeSession(id), DispatchWorker::Session { row, .. }) => {
                 row.session_id.ids().any(|session| session == id)
