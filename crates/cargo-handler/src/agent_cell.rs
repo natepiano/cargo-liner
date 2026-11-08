@@ -42,10 +42,12 @@ use crate::census::Agent;
 use crate::census::AgentActivity;
 use crate::census::AgentPlacement;
 use crate::census::AgentRow;
+use crate::census::AstraSessionMembership;
 use crate::census::ChildKind;
 use crate::census::ChildRow;
 use crate::census::CodexThreadId;
 use crate::census::HierarchyRole;
+use crate::census::PaneWork;
 use crate::census::Placement;
 use crate::census::RoleFallback;
 use crate::census::RoleLabel;
@@ -1670,6 +1672,21 @@ impl TreeLine<'_> {
 
     /// Resolve a shell's clock once so text and ink cannot disagree.
     fn status(&self, now: u64) -> ResolvedStatus {
+        if matches!(
+            self.subject,
+            LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession
+        ) && let AstraSessionMembership::Member(member) = self.row.session_id.astra_membership()
+        {
+            let text = match member.work() {
+                PaneWork::Idle => "idle",
+                PaneWork::Busy => summary::status_text(self.row),
+                PaneWork::Unknown => "unknown",
+            };
+            return ResolvedStatus {
+                text: text.to_owned(),
+                role: summary::status_role(self.row),
+            };
+        }
         let (text, role) = match self.subject {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession => (
                 summary::status_text(self.row).to_owned(),

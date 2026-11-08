@@ -14,6 +14,8 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
+#[cfg(test)]
+use serde_json::Error;
 
 use super::Account;
 use super::Agent;
@@ -24,6 +26,7 @@ use super::ChildRow;
 use super::CodexThreadId;
 use super::HierarchyEdges;
 use super::HierarchyNotice;
+use super::HierarchyRole;
 use super::HierarchySource;
 use super::ProvenCodexThread;
 use super::ServiceTier;
@@ -33,6 +36,8 @@ use super::StaffRowNames;
 use super::Timer;
 use super::WorkIdentity;
 use super::account::AccountLabels;
+use super::hierarchy::AstraMembership;
+use super::hierarchy::AstraRole;
 use super::hierarchy::HierarchyAnswer;
 use super::hierarchy::HierarchyError;
 use super::hierarchy::StaffFileReader;
@@ -353,6 +358,8 @@ pub(super) struct ProbeAgentRow {
     #[serde(default)]
     codex_session:   Option<ProvenCodexThread>,
     #[serde(default)]
+    astra_member:    Option<AstraMembership>,
+    #[serde(default)]
     service_tier:    super::ServiceTier,
     #[serde(default)]
     account:         Account,
@@ -376,18 +383,23 @@ pub(super) struct ProbeAgentRow {
 
 impl From<ProbeAgentRow> for AgentRow {
     fn from(row: ProbeAgentRow) -> Self {
+        let identity = row.codex_session.map_or_else(
+            || {
+                row.session_id
+                    .map_or(SessionIdentity::Unrecorded, SessionIdentity::from)
+            },
+            SessionIdentity::Codex,
+        );
+        let identity = match row.astra_member {
+            Some(member) => identity.with_astra(member),
+            None => identity,
+        };
         Self {
             model:           row.model,
             effort:          row.effort,
             agent:           row.agent,
             role_fallback:   row.role_fallback,
-            session_id:      row.codex_session.map_or_else(
-                || {
-                    row.session_id
-                        .map_or(SessionIdentity::Unrecorded, SessionIdentity::from)
-                },
-                SessionIdentity::Codex,
-            ),
+            session_id:      identity,
             service_tier:    row.service_tier,
             account:         row.account,
             name:            row.name,
@@ -419,6 +431,8 @@ struct ProbeReport {
     /// Optional for compatibility with older schema-3 probes.
     #[serde(default)]
     edges:            HierarchyEdges,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    astra_edges:      Vec<AstraHierarchyEdge>,
     /// A failed command must not erase the receiver's last successful links.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     hierarchy_failed: bool,
@@ -441,12 +455,28 @@ impl ProbeReport {
     /// Separate visible agents from carriers at the outgoing wire boundary.
     fn from_answer(machine: String, rows: Vec<AgentRow>, edges: HierarchyEdges) -> Self {
         let (rows, thread_hosts) = rows.into_iter().partition(AgentRow::is_visible);
+        let mut edges = edges;
+        let mut astra_edges = Vec::new();
+        for edge in &mut edges.0 {
+            let role = match edge.role {
+                HierarchyRole::AstraDesigner => AstraRole::Designer,
+                HierarchyRole::AstraReviewer => AstraRole::Reviewer,
+                _ => continue,
+            };
+            astra_edges.push(AstraHierarchyEdge {
+                manager: edge.manager.clone(),
+                member: edge.member.clone(),
+                role,
+            });
+            edge.role = HierarchyRole::Worker;
+        }
         Self {
             schema: PROBE_SCHEMA,
 
             machine,
             rows,
             edges,
+            astra_edges,
             thread_hosts,
             hierarchy_failed: false,
             hierarchy_notice: HierarchyNotice::Clear,
@@ -454,7 +484,17 @@ impl ProbeReport {
     }
 
     /// Restore transport-only identity before handing an answer to the census.
-    fn into_answer(self) -> (Vec<AgentRow>, HierarchyAnswer) {
+    fn into_answer(mut self) -> (Vec<AgentRow>, HierarchyAnswer) {
+        for astra in self.astra_edges {
+            if let Some(edge) = self
+                .edges
+                .0
+                .iter_mut()
+                .find(|edge| edge.manager == astra.manager && edge.member == astra.member)
+            {
+                edge.role = astra.role.hierarchy();
+            }
+        }
         let rows: Vec<AgentRow> = self
             .rows
             .into_iter()
@@ -562,6 +602,14 @@ pub(super) fn parse_answer(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyAns
         .map_err(|_| UNREADABLE_PROBE_REASON.to_string())
 }
 
+/// Older receivers read a plain worker edge and ignore this role extension.
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct AstraHierarchyEdge {
+    manager: String,
+    member:  String,
+    role:    AstraRole,
+}
+
 #[cfg(test)]
 #[path = "probe/hierarchy_transport_tests.rs"]
 mod hierarchy_transport_tests;
@@ -641,6 +689,7 @@ mod tests {
             machine:          "mac".to_string(),
             thread_hosts:     Vec::new(),
             edges:            HierarchyEdges::default(),
+            astra_edges:      Vec::new(),
             rows:             vec![codex_report_row(), claude_report_row(), worker()],
         }
     }
@@ -1001,3 +1050,11 @@ mod tests {
 #[cfg(test)]
 #[path = "probe_role_tests.rs"]
 mod role_tests;
+
+#[cfg(test)]
+pub(super) fn encode_astra_test_report(
+    rows: Vec<AgentRow>,
+    edges: HierarchyEdges,
+) -> Result<Vec<u8>, Error> {
+    serde_json::to_vec(&ProbeReport::from_answer("fixture".to_owned(), rows, edges))
+}

@@ -97,6 +97,11 @@ pub(crate) use painted_surface::PaintedSurface;
 use painted_surface::PaintedSurfaceContent;
 pub(crate) use painted_surface::cell_clicked;
 
+#[cfg(test)]
+use crate::census::AgentRow;
+#[cfg(test)]
+use crate::census::HierarchyEdges;
+
 /// Draw one frame: the grid fills the body above the status line, and
 /// toasts are drawn inside the grid's outer frame. The favorites modal
 /// and any framework overlay float above both.
@@ -2365,3 +2370,9 @@ mod drawn_frame_tests;
 
 #[cfg(test)]
 mod layout_stability_tests;
+
+/// Draw the complete frame for census placement tests, including tile titles.
+#[cfg(test)]
+pub(crate) fn astra_frame_for_test(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Buffer {
+    selection_tests::complete_astra_frame(rows, edges)
+}

@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Astra designer and Astra reviewer sessions show under their staff manager with separate role words, colors, and work states.
+
 - Agent tiles show each conversation's model and reasoning effort in separate columns.
 
 - The census retains each conversation's model and reasoning effort for local and probe rows.

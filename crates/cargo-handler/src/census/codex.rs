@@ -23,7 +23,7 @@ use rusqlite::OptionalExtension;
 use rusqlite::Row;
 use rusqlite::params;
 
-use super::ProvenCodexThread;
+use super::AstraSessionMembership;
 use super::SessionIdentity;
 use super::account::ConfigHome;
 use super::account::Program;
@@ -347,6 +347,7 @@ fn versioned_database(codex_dir: &Path, prefix: &str) -> Option<PathBuf> {
 pub(super) enum ThreadRequester {
     PaneWorkers,
     AppServer,
+    Astra,
 }
 
 /// `LiveThreadRows` holds one scan's account answers and pane rollout paths.
@@ -423,9 +424,8 @@ impl OpenThreadRows {
                 .iter()
                 .find(|row| row.pid == process.pid)
                 .and_then(|row| match &row.session_id {
-                    SessionIdentity::Codex(proof) => match proof {
-                        ProvenCodexThread::ResumeArgument(id)
-                        | ProvenCodexThread::OpenStaffRollout(id) => Some(id.as_str()),
+                    SessionIdentity::Codex(_) | SessionIdentity::Astra(_) => {
+                        row.session_id.ids().next()
                     },
                     _ => None,
                 })
@@ -460,21 +460,39 @@ impl OpenThreadRows {
         server_requests: &HashMap<PathBuf, Vec<String>>,
     ) -> LiveThreadRows {
         let mut panes = Self::pane_worker_requests(processes, rows, home);
-        let homes = Self::live_homes(processes, home);
+        let mut astra: HashMap<PathBuf, Vec<(u32, String)>> = HashMap::new();
+        for row in rows {
+            if let AstraSessionMembership::Member(member) = row.session_id.astra_membership() {
+                astra
+                    .entry(member.home().to_owned())
+                    .or_default()
+                    .push((row.pid, member.session().to_owned()));
+                for requests in panes.values_mut() {
+                    requests.retain(|(pid, _)| *pid != row.pid);
+                }
+            }
+        }
+        let homes: HashSet<_> = Self::live_homes(processes, home)
+            .into_iter()
+            .chain(astra.keys().cloned())
+            .collect();
         self.retain_homes(homes.iter());
         let mut live = LiveThreadRows::default();
         for account in homes {
             let requested = panes.remove(&account).unwrap_or_default();
             let pane_ids: Vec<_> = requested.iter().map(|(_, id)| id.clone()).collect();
             let server_ids = server_requests.get(&account).map_or(&[][..], Vec::as_slice);
+            let astra_requested = astra.remove(&account).unwrap_or_default();
+            let astra_ids: Vec<_> = astra_requested.iter().map(|(_, id)| id.clone()).collect();
             let rows = self.read_requests(
                 &account,
                 [
                     (ThreadRequester::PaneWorkers, pane_ids.as_slice()),
                     (ThreadRequester::AppServer, server_ids),
+                    (ThreadRequester::Astra, astra_ids.as_slice()),
                 ],
             );
-            for (pid, id) in requested {
+            for (pid, id) in requested.into_iter().chain(astra_requested) {
                 if let Some(thread) = rows.get(&id) {
                     live.panes.insert(pid, thread.rollout.clone());
                 }

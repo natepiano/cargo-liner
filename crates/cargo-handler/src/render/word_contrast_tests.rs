@@ -8,6 +8,7 @@ use ratatui::layout::Position;
 use tui_pane::TerminalApp;
 use tui_pane::TileView;
 
+use super::selection_tests;
 use super::word_click_tests;
 use super::word_click_tests::Renderer;
 use super::word_click_tests::TestResult;
@@ -1941,4 +1942,144 @@ fn reset_steps_keep_readable_hues_on_plain_and_selected_matches_in_high_contrast
 fn reset_steps_keep_readable_hues_on_plain_and_selected_matches_in_high_contrast_light()
 -> TestResult {
     check_reset_steps("High Contrast Light")
+}
+
+#[derive(Clone, Copy)]
+enum AstraWordRole {
+    Designer,
+    Reviewer,
+}
+
+impl AstraWordRole {
+    const fn words(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Designer => ("designer-session", "designer"),
+            Self::Reviewer => ("reviewer-session", "reviewer"),
+        }
+    }
+}
+
+fn check_astra_word_matches(name: &str, role: AstraWordRole) -> TestResult {
+    let builtin = theme::builtins()
+        .into_iter()
+        .find(|variant| variant.id.as_str() == name)
+        .ok_or("theme")?;
+    let theme_reset = ResetThemeFixture::with_theme(builtin.theme);
+    tui_pane::set_transparent_background(false);
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("footer.conf");
+    std::fs::write(
+        &path,
+        include_str!("../footer_colors/fixtures/statusline_astra.conf"),
+    )?;
+    let mut failures = Vec::new();
+    for tint in [false, true] {
+        tui_pane::set_focused_pane_tint(tint);
+        let mut app = selection_tests::astra_application();
+        app.footer_colors = crate::footer_colors::FooterColorFile::fixture(path.clone());
+        app.footer_colors.refresh();
+        let mut renderer = Renderer::new(&mut app, 180, 60)?;
+        let initial = renderer.paint(&mut app)?;
+        {
+            let (label, word) = role.words();
+            let at = word_click_tests::locate(&initial, label)?;
+            let role_word = word_click_tests::locate(&initial, &format!("astra {word}"))?;
+            for ground in [
+                MatchGround::Base,
+                MatchGround::SelectedFocused,
+                MatchGround::SelectedUnfocused,
+            ] {
+                app.word_highlight.clear();
+                app.click(word_click_tests::locate(&initial, "astra-focus-away")?);
+                if !matches!(ground, MatchGround::Base) {
+                    app.click(at);
+                }
+                if matches!(ground, MatchGround::SelectedUnfocused) {
+                    app.click(word_click_tests::locate(&initial, "build-for-50")?);
+                }
+                let before = renderer.paint(&mut app)?;
+                let x = role_word.x + 6;
+                let selection = before[(x, role_word.y)].bg;
+                match ground {
+                    MatchGround::Base => {
+                        assert_ne!(selection, tui_pane::active_focus_color());
+                        assert_ne!(selection, tui_pane::remembered_focus_color());
+                    },
+                    MatchGround::SelectedFocused => {
+                        assert_eq!(selection, tui_pane::active_focus_color());
+                    },
+                    MatchGround::SelectedUnfocused => {
+                        assert_eq!(selection, tui_pane::remembered_focus_color());
+                    },
+                }
+                let WordHit::Word(token) = HighlightWord::from_token(word) else {
+                    return Err("Astra role token".into());
+                };
+                app.word_highlight = WordHighlight::Word(token);
+                let buffer = renderer.paint(&mut app)?;
+                let cell = &buffer[(x, role_word.y)];
+                let plain_match = word_click_tests::match_background()?;
+                let grounds = theme::WordMatchGrounds::new(plain_match);
+                let expected = match ground {
+                    MatchGround::Base => plain_match,
+                    _ => grounds.background(grounds.surface(selection)),
+                };
+                assert_eq!(
+                    cell.bg, expected,
+                    "{name} {word} {ground:?}: the match must paint its ground"
+                );
+                assert_ne!(
+                    cell.bg, selection,
+                    "the match must change the previous ground"
+                );
+                let ratio = glyph_contrast(cell.fg, cell.bg)?;
+                if ratio < 4.5 {
+                    failures.push(format!(
+                        "{name} {word} tint={tint} {ground:?} ratio={ratio:.9}"
+                    ));
+                }
+                assert_ne!(cell.symbol(), " ", "matched role glyph");
+            }
+        }
+    }
+    drop(theme_reset);
+    assert!(failures.is_empty(), "Astra match contrast: {failures:?}");
+    Ok(())
+}
+
+#[test]
+fn astra_word_matches_keep_coverage_in_default_dark() -> TestResult {
+    check_astra_word_matches("Default Dark", AstraWordRole::Designer)
+}
+#[test]
+fn astra_word_matches_keep_coverage_in_default_light() -> TestResult {
+    check_astra_word_matches("Default Light", AstraWordRole::Designer)
+}
+#[test]
+fn astra_word_matches_keep_coverage_in_high_contrast_dark() -> TestResult {
+    check_astra_word_matches("High Contrast Dark", AstraWordRole::Designer)
+}
+#[test]
+fn astra_word_matches_keep_coverage_in_high_contrast_light() -> TestResult {
+    check_astra_word_matches("High Contrast Light", AstraWordRole::Designer)
+}
+
+#[test]
+fn astra_reviewer_word_matches_keep_coverage_in_default_dark() -> TestResult {
+    check_astra_word_matches("Default Dark", AstraWordRole::Reviewer)
+}
+
+#[test]
+fn astra_reviewer_word_matches_keep_coverage_in_default_light() -> TestResult {
+    check_astra_word_matches("Default Light", AstraWordRole::Reviewer)
+}
+
+#[test]
+fn astra_reviewer_word_matches_keep_coverage_in_high_contrast_dark() -> TestResult {
+    check_astra_word_matches("High Contrast Dark", AstraWordRole::Reviewer)
+}
+
+#[test]
+fn astra_reviewer_word_matches_keep_coverage_in_high_contrast_light() -> TestResult {
+    check_astra_word_matches("High Contrast Light", AstraWordRole::Reviewer)
 }

@@ -781,7 +781,7 @@ enum FullPaletteRows {
 }
 
 fn palette_rows(family: FullPaletteRows) -> (Vec<AgentRow>, Vec<(String, String)>) {
-    let footer = include_str!("../footer_colors/fixtures/statusline.conf");
+    let footer = include_str!("../footer_colors/fixtures/statusline_astra.conf");
     let assignments: Vec<_> = footer
         .lines()
         .filter_map(|line| {
@@ -824,8 +824,14 @@ fn palette_rows(family: FullPaletteRows) -> (Vec<AgentRow>, Vec<(String, String)
                             targets.push((label, "unit".to_owned()));
                             continue;
                         },
-                        "astra-designer" => SubagentRole::Agent,
-                        "astra-reviewer" => SubagentRole::Reviewer,
+                        "astra-designer" | "astra-reviewer" => {
+                            rows.push(serde_json::from_value(serde_json::json!({
+                                "agent":"codex", "pid":pid, "session_id":format!("palette-{word}"),
+                                "name":label, "started":pid, "directory":"/fixture", "children":[]
+                            })).expect("Astra session"));
+                            targets.push((label, word.replace('-', " ")));
+                            continue;
+                        },
                         other => panic!("unmapped fixture role {other}"),
                     };
                 let label = format!("{label}-{word}");
@@ -912,7 +918,7 @@ fn check_full_default_dark_palette(family: FullPaletteRows, tint: bool, active: 
     let path = directory.path().join("footer.conf");
     std::fs::write(
         &path,
-        include_str!("../footer_colors/fixtures/statusline.conf"),
+        include_str!("../footer_colors/fixtures/statusline_astra.conf"),
     )
     .expect("committed palette");
     let mut app = App::new_for_test().expect("palette application");
@@ -924,7 +930,9 @@ fn check_full_default_dark_palette(family: FullPaletteRows, tint: bool, active: 
     let (rows, targets) = palette_rows(family);
     let hierarchy = match family {
         FullPaletteRows::Roles => serde_json::from_value::<HierarchyEdges>(serde_json::json!([
-            {"manager":"palette-owner", "member":"palette-unit", "role":"unit"}
+            {"manager":"palette-owner", "member":"palette-unit", "role":"unit"},
+            {"manager":"palette-owner", "member":"palette-astra-designer", "role":"astra-designer"},
+            {"manager":"palette-owner", "member":"palette-astra-reviewer", "role":"astra-reviewer"}
         ]))
         .expect("unit director hierarchy"),
         FullPaletteRows::Accounts | FullPaletteRows::Sessions => HierarchyEdges::default(),

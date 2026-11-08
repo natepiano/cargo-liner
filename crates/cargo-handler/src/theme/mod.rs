@@ -25,6 +25,7 @@ pub(crate) use word_match::WordMatchLimit;
 #[cfg(test)]
 mod files_tests;
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
 use ratatui::style::Color;
 use ratatui::style::Style;
@@ -326,6 +327,35 @@ impl RolePalette {
     }
 }
 
+/// The bundled theme files own the Astra role shades.
+fn astra_roles(mut roles: BTreeMap<String, StyleSpec>, name: &str) -> BTreeMap<String, StyleSpec> {
+    static SHADES: LazyLock<BTreeMap<String, BTreeMap<String, StyleSpec>>> = LazyLock::new(|| {
+        [
+            include_str!("../../themes/default_dark.toml"),
+            include_str!("../../themes/default_light.toml"),
+            include_str!("../../themes/high_contrast.toml"),
+        ]
+        .into_iter()
+        .filter_map(|text| files::parse_family(text).ok())
+        .flat_map(|family| family.variants)
+        .map(|variant| {
+            (
+                variant.name,
+                variant
+                    .roles
+                    .into_iter()
+                    .filter(|(key, _)| matches!(key.as_str(), "mauve" | "astra_reviewer"))
+                    .collect(),
+            )
+        })
+        .collect()
+    });
+    if let Some(shades) = SHADES.get(name) {
+        roles.extend(shades.clone());
+    }
+    roles
+}
+
 /// [`default_dark`]'s roles, and the value a variant without a role
 /// falls back to.
 const DEFAULT_DARK_ROLES: RolePalette = RolePalette {
@@ -488,7 +518,7 @@ fn default_dark() -> Theme {
             mid:  StyleSpec::from_color(Color::Rgb(255, 255, 255)),
             high: StyleSpec::from_color(Color::Rgb(255, 100, 100)),
         },
-        roles:       DEFAULT_DARK_ROLES.map(),
+        roles:       astra_roles(DEFAULT_DARK_ROLES.map(), DEFAULT_DARK_THEME),
     }
 }
 
@@ -537,7 +567,7 @@ fn default_light() -> Theme {
             mid:  StyleSpec::from_color(Color::Rgb(90, 90, 90)),
             high: StyleSpec::from_color(Color::Rgb(200, 0, 0)),
         },
-        roles:       DEFAULT_LIGHT_ROLES.map(),
+        roles:       astra_roles(DEFAULT_LIGHT_ROLES.map(), DEFAULT_LIGHT_THEME),
     }
 }
 
@@ -590,7 +620,7 @@ fn high_contrast_dark() -> Theme {
             mid:  StyleSpec::from_color(Color::White),
             high: StyleSpec::bold(Color::LightRed),
         },
-        roles:       HIGH_CONTRAST_DARK_ROLES.map(),
+        roles:       astra_roles(HIGH_CONTRAST_DARK_ROLES.map(), DEFAULT_HC_DARK_THEME),
     }
 }
 
@@ -642,7 +672,7 @@ fn high_contrast_light() -> Theme {
             mid:  StyleSpec::from_color(Color::Black),
             high: StyleSpec::bold(Color::Rgb(180, 0, 0)),
         },
-        roles:       HIGH_CONTRAST_LIGHT_ROLES.map(),
+        roles:       astra_roles(HIGH_CONTRAST_LIGHT_ROLES.map(), DEFAULT_HC_LIGHT_THEME),
     }
 }
 
