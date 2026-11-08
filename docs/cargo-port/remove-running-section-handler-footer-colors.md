@@ -1226,7 +1226,7 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: a framed capture from a cargo-handler the writer started, showing a session row that says `compacting` during a compaction of a session the writer started. The checkpoint carries `Change-Review: a session that compacts its conversation says compacting, not thinking | in cargo-handler, find a session while it compacts: its row says compacting until the compaction ends`.
 
-### Phase 73 — The unmatched-ink test paints both frames at one time  · status: todo
+### Phase 73 — The unmatched-ink test paints both frames at one time  · status: done
 
 **Depends on:** Phase 21 (`render/word_contrast_tests.rs`).
 

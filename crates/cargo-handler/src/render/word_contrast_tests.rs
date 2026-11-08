@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use ratatui::buffer::Cell;
 use ratatui::layout::Position;
@@ -24,6 +25,9 @@ use crate::word_highlight::WordHighlight;
 use crate::word_highlight::WordHit;
 
 const MINIMUM_CONTRAST: f64 = 4.5;
+// The `palette_application` sessions set `started` to 100; at `BEFORE_AGE_STEP`, their age is four
+// minutes.
+const BEFORE_AGE_STEP: u64 = 399;
 const DEFAULT_DARK_FOCUSED_SELECTION: Color = Color::Rgb(86, 86, 86);
 const DEFAULT_DARK_FOCUSED_MATCH_CAP: Color = Color::Rgb(101, 101, 101);
 // The CIEDE2000 distance retains a floor of three for every theme.
@@ -470,8 +474,12 @@ fn single_word_frames(name: &str, word: &str) -> TestResult<MatchedInkFrames> {
     let result = (|| {
         let directory = tempfile::tempdir()?;
         let mut app = palette_application(&directory.path().join("statusline.conf"))?;
-        let mut renderer = word_click_tests::Renderer::new(&mut app, WIDTH, HEIGHT)?;
+        let mut renderer = Renderer::with_fixed_time(&mut app, WIDTH, HEIGHT, BEFORE_AGE_STEP)?;
         let before = renderer.paint(&mut app)?;
+        app.started = app
+            .started
+            .checked_sub(Duration::from_secs(1))
+            .ok_or("the fixture start must support a one-second uptime step")?;
         let WordHit::Word(token) = HighlightWord::from_token(word) else {
             return Err("the fixture word must be nonempty".into());
         };

@@ -74,14 +74,34 @@ pub(super) fn application() -> TestResult<App> {
     Ok(app)
 }
 
+enum FramePaint {
+    Application,
+    FixedTime(u64),
+}
+
 pub(super) struct Renderer {
     terminal: Terminal<TestBackend>,
+    paint:    FramePaint,
 }
 
 impl Renderer {
     pub(super) fn new(app: &mut App, width: u16, height: u16) -> TestResult<Self> {
+        Self::with_paint(app, width, height, FramePaint::Application)
+    }
+
+    pub(super) fn with_fixed_time(
+        app: &mut App,
+        width: u16,
+        height: u16,
+        now: u64,
+    ) -> TestResult<Self> {
+        Self::with_paint(app, width, height, FramePaint::FixedTime(now))
+    }
+
+    fn with_paint(app: &mut App, width: u16, height: u16, paint: FramePaint) -> TestResult<Self> {
         let mut renderer = Self {
             terminal: Terminal::new(TestBackend::new(width, height))?,
+            paint,
         };
         renderer.paint(app)?;
         if app.tiles.has_pending_motion_for_test() {
@@ -93,7 +113,12 @@ impl Renderer {
 
     pub(super) fn paint(&mut self, app: &mut App) -> TestResult<Buffer> {
         let keymap = app.keymap();
-        self.terminal.draw(|frame| app.draw(frame, &keymap))?;
+        match self.paint {
+            FramePaint::Application => self.terminal.draw(|frame| app.draw(frame, &keymap))?,
+            FramePaint::FixedTime(now) => self
+                .terminal
+                .draw(|frame| draw_at_for_test(frame, app, &keymap, now))?,
+        };
         Ok(self.terminal.backend().buffer().clone())
     }
 }
