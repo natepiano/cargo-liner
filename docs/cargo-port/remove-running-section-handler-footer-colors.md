@@ -1048,7 +1048,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Depends on:** Phase 17, Phase 16, Phase 18, Phase 26, Phase 29, Phase 20, Phase 67
 
-**Waits on:** the staff producer. sdlc agents phase 15b adds the read contract below; the showrunner sends the `~/.claude` main hash when it lands. The read call is `~/.claude/scripts/lib/py ~/.claude/scripts/production/worker.py list --json`. Each pane worker row keeps `name`, `id`, `current_session`, `state`, `role` and `activity`, and adds three fields computed at read time and never stored: `work` (`"idle"` | `"busy"` | `"unknown"`, from the one herdr busy rule), `account` (the label of the account the worker opens on; for Codex rows, the workers role account) and `home` (the absolute path of that account's home as a string; `CODEX_HOME` for Codex). `role` is the staff worker role, for example `"astra-designer"` or `"astra-reviewer"`. A worker with no staff backend entry has `"account": {"state": "AccountUnavailable", "reason": "..."}` and no `home` key. Final form from sdlc agents 15b (902339c74). Before dispatch, read one live row to confirm these forms. Reuse Phase 67's Codex session identity and placement path for Astra rows; add no second one.
+**Read contract:** sdlc agents phase 15b is on `~/.claude` main at c7a105320 (showrunner, 2026-11-07). The read call is `~/.claude/scripts/lib/py ~/.claude/scripts/production/worker.py list --json`. Each pane worker row keeps `name`, `id`, `current_session`, `state`, `role` and `activity`, and adds three fields computed at read time and never stored: `work` (`"idle"` | `"busy"` | `"unknown"`, from the one herdr busy rule), `account` (the label of the account the worker opens on; for Codex rows, the workers role account) and `home` (the absolute path of that account's home as a string; `CODEX_HOME` for Codex). `role` is the staff worker role, for example `"astra-designer"` or `"astra-reviewer"`. A worker with no staff backend entry has `"account": {"state": "AccountUnavailable", "reason": "..."}` and no `home` key. Final form from sdlc agents 15b (902339c74). Before dispatch, read one live row to confirm these forms. Reuse Phase 67's Codex session identity and placement path for Astra rows; add no second one.
 
 #### Work Order
 
@@ -1915,7 +1915,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - A dependency of the marker-cell work on the click-mapping work: packaging only; a shared-geometry constraint replaces it.
 - New acceptance checks for the model and effort columns, worker-role and marker-cell work: no check is added without the user.
 
-### Phase 49a — The census reads each agent's model and effort  · status: todo
+### Phase 49a — The census reads each agent's model and effort  · status: done
 
 **Depends on:** Phase 40, Phase 41, Phase 47
 
@@ -1980,9 +1980,11 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 3. Red-first tests, each under 1 s: a tile with a Claude and a Codex row shows `opus`/`sol` and their efforts; a tile of shells drops both columns; a narrow tile drops effort, then model, before the core columns. Sparse values: a tile where model and effort are recorded on few rows gives their space to session names, in local fitting and in shared-column fitting. Update fixture text the suite names.
 4. Header-press tests in `render/drawn_frame_tests.rs`, each under 1 s: a press on the drawn `model` or `effort` header sorts by that column after the rows' model or effort changed between draw and press, and during motion.
 5. CHANGELOG: one line under Added.
+6. Bound the Codex thread cache (Phase 49a closure review). `OpenThreadRows::read` (`census/codex.rs` ≈440) adds each requested id to its home's set and drops ids only when the home is pruned. One live Codex process keeps the home, so worker turnover grows the set, and each database revision queries every id ever seen. Keep one requested set per caller (pane workers, app server); each call replaces its own set. Query on a database revision change, or when the current union is not covered by the last answer; each query covers only the current union. Red-first test, under 1 s: rotate worker ids over unchanged scans with one live process; the next revision query names only the live ids, and `pane_and_server_requests_share_one_unchanged_account_cache` stays green.
 
 **Files:**
 - `crates/cargo-handler/src/agent_cell.rs` — the columns
+- `crates/cargo-handler/src/census/codex.rs` — the thread cache bound (spec 6)
 - `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs` — tests
 - `crates/cargo-handler/src/render/drawn_frame_tests.rs` — header-press tests
 - `crates/cargo-handler/CHANGELOG.md`
@@ -2026,7 +2028,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 **Files:**
 - `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the gradient test
 - `crates/cargo-handler/src/agent_cell/tests/design_ink_tests.rs` — the busy ink and tree contrast tests
-- `crates/cargo-handler/src/render/selected_ink_tests.rs` — the five selected-row ink tests
+- `crates/cargo-handler/src/render/selected_ink_tests.rs` — the five selected-row ink tests, and `unselected_rows_keep_main_inks_in_high_contrast_light` and `…_dark` (1.505 s and 1.522 s on natedev in a full-suite run, 2026-11-07). Bring the whole module under 1 s.
 - `crates/cargo-handler/src/render/pinned_accounts_tests.rs` — the pinned accounts test
 - `crates/cargo-handler/src/census/codex_session_tests.rs` — the Codex tier test
 - `crates/cargo-handler/src/app.rs` — the overlay wheel test

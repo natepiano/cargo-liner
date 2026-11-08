@@ -41,8 +41,12 @@ use notify::RecommendedWatcher;
 use notify::RecursiveMode;
 use notify::Watcher;
 use serde::Deserialize;
+use serde_json::Value;
 
 use super::AgentActivity;
+use super::hierarchy::FileRevision;
+use super::model;
+use super::model::ConversationModel;
 use crate::constants::ASSISTANT_LINE;
 use crate::constants::BASH_TOOL;
 use crate::constants::BASH_TOOL_MARKER;
@@ -126,6 +130,8 @@ pub(super) enum RecordKind {
     Codex,
     #[serde(rename = "session_meta")]
     Session,
+    #[serde(rename = "turn_context")]
+    Context,
     #[default]
     #[serde(other)]
     Other,
@@ -1072,6 +1078,171 @@ impl SubagentReads {
     }
 }
 
+/// `TranscriptModels` retains each conversation's own model and effort between revisions.
+#[derive(Debug, Default)]
+pub(super) struct TranscriptModels {
+    records:       HashMap<PathBuf, TranscriptModelRead>,
+    #[cfg(test)]
+    content_reads: usize,
+    #[cfg(test)]
+    bytes_read:    u64,
+}
+
+#[derive(Debug)]
+struct TranscriptModelRead {
+    revision:  FileRevision,
+    cursor:    JsonlCursor,
+    inference: ConversationModel,
+}
+
+/// `RecordChange` distinguishes appended bytes from a different file generation.
+pub(super) enum RecordChange {
+    Unchanged,
+    Appended,
+    Replaced,
+}
+
+pub(super) fn record_change(previous: &FileRevision, current: &FileRevision) -> RecordChange {
+    if previous == current {
+        return RecordChange::Unchanged;
+    }
+    if let (FileRevision::Present { size: before, .. }, FileRevision::Present { size: after, .. }) =
+        (previous, current)
+        && after > before
+    {
+        #[cfg(unix)]
+        if let (
+            FileRevision::Present {
+                device: left_device,
+                inode: left_inode,
+                ..
+            },
+            FileRevision::Present {
+                device: right_device,
+                inode: right_inode,
+                ..
+            },
+        ) = (previous, current)
+            && (left_device != right_device || left_inode != right_inode)
+        {
+            return RecordChange::Replaced;
+        }
+        return RecordChange::Appended;
+    }
+    RecordChange::Replaced
+}
+
+/// `ConversationFormat` defines the metadata shape and its initial read windows.
+#[derive(Clone, Copy)]
+enum ConversationFormat {
+    Claude,
+    Codex,
+}
+
+impl ConversationFormat {
+    fn take(self, inference: &mut ConversationModel, value: &Value) {
+        match self {
+            Self::Claude => inference.take_claude(value),
+            Self::Codex => inference.take_codex(value),
+        }
+    }
+
+    /// `read_head` reads early Codex context without searching the intervening history.
+    fn read_head(self, path: &Path) -> ReadBatch {
+        if matches!(self, Self::Claude) {
+            return ReadBatch::default();
+        }
+        let Ok(file) = File::open(path) else {
+            return ReadBatch::default();
+        };
+        if !file
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() > TRANSCRIPT_TAIL_START)
+        {
+            return ReadBatch::default();
+        }
+        let mut bytes = Vec::new();
+        let Ok(bytes_read) = file.take(TRANSCRIPT_TAIL_START).read_to_end(&mut bytes) else {
+            return ReadBatch::default();
+        };
+        ReadBatch {
+            lines:      RecordBoundary::Whole
+                .complete(&bytes)
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .map(<[u8]>::to_vec)
+                .collect(),
+            bytes_read: bytes_read as u64,
+        }
+    }
+}
+
+impl TranscriptModels {
+    pub(super) fn read(&mut self, path: &Path) -> ConversationModel {
+        self.read_record(path, ConversationFormat::Claude)
+    }
+
+    pub(super) fn read_codex(&mut self, path: &Path) -> ConversationModel {
+        self.read_record(path, ConversationFormat::Codex)
+    }
+
+    fn read_record(&mut self, path: &Path, format: ConversationFormat) -> ConversationModel {
+        let revision = fs::metadata(path).map_or(FileRevision::Missing, |metadata| {
+            FileRevision::of(&metadata)
+        });
+        let record = self
+            .records
+            .entry(path.to_owned())
+            .or_insert_with(|| TranscriptModelRead {
+                revision:  FileRevision::Missing,
+                cursor:    JsonlCursor::NeverRead,
+                inference: ConversationModel::default(),
+            });
+        match record_change(&record.revision, &revision) {
+            RecordChange::Unchanged => return record.inference.clone(),
+            RecordChange::Replaced => {
+                record.cursor = JsonlCursor::NeverRead;
+                record.inference = ConversationModel::default();
+            },
+            RecordChange::Appended => {},
+        }
+        record.revision = revision;
+        if record.revision == FileRevision::Missing {
+            return record.inference.clone();
+        }
+        #[cfg(test)]
+        {
+            self.content_reads += 1;
+        }
+        let head = if matches!(record.cursor, JsonlCursor::NeverRead) {
+            format.read_head(path)
+        } else {
+            ReadBatch::default()
+        };
+        // `JsonlCursor` reads one bounded tail initially and only appended bytes later.
+        let tail = record
+            .cursor
+            .read_until(path, TRANSCRIPT_TAIL_START, |_| true);
+        #[cfg(test)]
+        {
+            self.bytes_read += head.bytes_read + tail.bytes_read;
+        }
+        for line in head.lines.into_iter().chain(tail.lines) {
+            if let Ok(value) = model::record_metadata(&line) {
+                format.take(&mut record.inference, &value);
+            }
+        }
+        record.inference.clone()
+    }
+
+    pub(super) fn retain(&mut self, paths: &HashSet<PathBuf>) {
+        self.records.retain(|path, _| paths.contains(path));
+    }
+
+    #[cfg(test)]
+    pub(super) const fn content_reads(&self) -> usize { self.content_reads }
+}
+
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
@@ -1086,6 +1257,182 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
+
+    #[test]
+    fn claude_model_and_effort_come_from_its_own_transcript() {
+        let directory = TempDir::new().expect("transcript directory");
+        let path = directory.path().join("session.jsonl");
+        write_lines(
+            &path,
+            &[json!({"type":"assistant", "message":{
+                "model":"claude-opus-4-6", "effort":"max"
+            }})
+            .to_string()],
+        );
+        let read = TranscriptModels::default().read(&path);
+        assert_eq!(read.model, ModelName::Opus);
+        assert_eq!(read.effort, ReasoningEffort::Max);
+    }
+
+    #[test]
+    fn unchanged_claude_metadata_does_not_read_the_file_again() {
+        let directory = TempDir::new().expect("transcript directory");
+        let path = directory.path().join("session.jsonl");
+        write_lines(
+            &path,
+            &[json!({"type":"assistant", "message":{
+                "model":"claude-opus-4-6", "effort":"high"
+            }})
+            .to_string()],
+        );
+        let mut reads = TranscriptModels::default();
+        reads.read(&path);
+        assert_eq!(reads.content_reads, 1);
+        reads.read(&path);
+        assert_eq!(reads.content_reads, 1);
+    }
+
+    #[test]
+    fn a_large_claude_transcript_without_effort_reads_only_its_tail_and_appends() {
+        let directory = TempDir::new().expect("transcript directory");
+        let path = directory.path().join("session.jsonl");
+        let padding = "x".repeat(4 * 1024 * 1024);
+        let body = json!({"type":"user", "message":{"content":padding}});
+        let model = json!({"type":"assistant", "message":{"model":"claude-opus-4-6"}});
+        write_lines(&path, &[body.to_string(), model.to_string()]);
+        let mut reads = TranscriptModels::default();
+        let initial = reads.read(&path);
+        assert_eq!(initial.model, ModelName::Opus);
+        assert_eq!(initial.effort, ReasoningEffort::Unrecorded);
+        assert!(
+            reads.bytes_read <= TRANSCRIPT_TAIL_START,
+            "a missing effort must not expand the tail: {} bytes",
+            reads.bytes_read
+        );
+        let before = reads.bytes_read;
+        reads.read(&path);
+        assert_eq!(reads.bytes_read, before, "unchanged records read no bytes");
+        let append = format!(
+            "{}\n",
+            json!({"type":"system", "model":"claude-sonnet-4-5", "effort":"low"})
+        );
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("transcript");
+        file.write_all(append.as_bytes()).expect("append settings");
+        let changed = reads.read(&path);
+        assert_eq!(changed.model, ModelName::Sonnet);
+        assert_eq!(changed.effort, ReasoningEffort::Low);
+        assert_eq!(
+            reads.bytes_read - before,
+            append.len() as u64,
+            "an append reads only its new bytes"
+        );
+    }
+
+    #[test]
+    fn a_large_codex_rollout_without_effort_reads_bounded_metadata() {
+        let directory = TempDir::new().expect("rollout directory");
+        let path = directory.path().join("rollout.jsonl");
+        let context = json!({"type":"turn_context", "payload":{"model":"gpt-6.1-sol"}});
+        let padding =
+            json!({"type":"response_item", "payload":{"text":"x".repeat(4 * 1024 * 1024)}});
+        write_lines(
+            &path,
+            &[
+                context.to_string(),
+                padding.to_string(),
+                context.to_string(),
+            ],
+        );
+        let mut reads = TranscriptModels::default();
+        let initial = reads.read_codex(&path);
+        assert_eq!(initial.model, ModelName::Sol);
+        assert_eq!(initial.effort, ReasoningEffort::Unrecorded);
+        assert!(
+            reads.bytes_read <= 2 * TRANSCRIPT_TAIL_START,
+            "a missing effort must not scan the rollout: {} bytes",
+            reads.bytes_read
+        );
+        let before = reads.bytes_read;
+        let append = format!(
+            "{}\n",
+            json!({"type":"turn_context", "payload":{"model":"gpt-6.1-astra", "effort":"high"}})
+        );
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("rollout");
+        file.write_all(append.as_bytes()).expect("append context");
+        let changed = reads.read_codex(&path);
+        assert_eq!(changed.model, ModelName::Astra);
+        assert_eq!(changed.effort, ReasoningEffort::High);
+        assert_eq!(
+            reads.bytes_read - before,
+            append.len() as u64,
+            "a rollout append reads only its new bytes"
+        );
+    }
+
+    #[test]
+    fn appended_claude_settings_replace_the_recorded_values() {
+        let directory = TempDir::new().expect("transcript directory");
+        let path = directory.path().join("session.jsonl");
+        write_lines(
+            &path,
+            &[json!({"type":"assistant", "message":{
+                "model":"claude-opus-4-6", "effort":"high"
+            }})
+            .to_string()],
+        );
+        let mut reads = TranscriptModels::default();
+        reads.read(&path);
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("transcript");
+        writeln!(
+            file,
+            "{}",
+            json!({"type":"system", "subtype":"settings", "message":"settings applied",
+            "model":"claude-sonnet-4-5", "effortLevel":"low"})
+        )
+        .expect("settings append");
+        let changed = reads.read(&path);
+        assert_eq!(changed.model, ModelName::Sonnet);
+        assert_eq!(changed.effort, ReasoningEffort::Low);
+        assert_eq!(reads.content_reads, 2);
+    }
+
+    #[test]
+    fn replaced_claude_transcripts_discard_the_previous_metadata() {
+        let directory = TempDir::new().expect("transcript directory");
+        let path = directory.path().join("session.jsonl");
+        write_lines(
+            &path,
+            &[json!({"type":"assistant", "message":{
+                "model":"claude-opus-4-6", "effort":"high"
+            }})
+            .to_string()],
+        );
+        let mut reads = TranscriptModels::default();
+        reads.read(&path);
+        let replacement = directory.path().join("replacement.jsonl");
+        write_lines(
+            &replacement,
+            &[json!({"type":"assistant", "message":{
+                "model":"claude-haiku-4-5"
+            }})
+            .to_string()],
+        );
+        fs::rename(replacement, &path).expect("transcript replacement");
+        let changed = reads.read(&path);
+        assert_eq!(changed.model, ModelName::Haiku);
+        assert_eq!(changed.effort, ReasoningEffort::Unrecorded);
+    }
 
     /// An RFC 3339 time `ms` milliseconds after the unix epoch.
     fn stamp(ms: u64) -> String {
