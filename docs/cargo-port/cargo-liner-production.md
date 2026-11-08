@@ -24,7 +24,7 @@
 | Unit | Plan | Worktree | Branch | Port | Owns |
 | --- | --- | --- | --- | --- | --- |
 | tile-unit | docs/cargo-port/remove-running-section-tile-fixes.md | /home/natepiano/rust/cargo-liner-tile | remove-running-section-tile | — | crates/tui_pane, crates/cargo-tile, crates/cargo-handler, docs/cargo-tile |
-| handler-unit | docs/cargo-port/remove-running-section-handler-footer-colors.md | /home/natepiano/rust/cargo-liner-handler | remove-running-section-handler | — | crates/cargo-handler/, crates/tui_pane/ |
+| handler-unit | docs/cargo-port/remove-running-section-handler-footer-colors.md | /home/natepiano/rust/cargo-liner-handler | cargo-liner-handler | — | crates/cargo-handler/, crates/tui_pane/ |
 | port-unit | docs/cargo-port/cargo-liner-port.md | /home/natepiano/rust/cargo-liner-port | cargo-liner-port | — | crates/cargo-port/, crates/cargo-mend/, docs/cargo-port/cargo-liner-port.md, docs/cargo-port/as-built/ |
 
 ## Hub files
