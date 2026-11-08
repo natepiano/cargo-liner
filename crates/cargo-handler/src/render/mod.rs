@@ -2356,3 +2356,6 @@ mod word_contrast_tests;
 #[cfg(test)]
 #[path = "drawn_frame_tests.rs"]
 mod drawn_frame_tests;
+
+#[cfg(test)]
+mod layout_stability_tests;

@@ -123,10 +123,11 @@ pub struct TileDemand<Id> {
 pub struct TileDemands<Id> {
     /// Rows the summary cell would draw given all the room it wants.
     pub summary:       usize,
-    /// Columns the summary's widest line takes, inside the cell's
-    /// borders. Read only under [`TileGrowth::widen_summary`], where the
-    /// summary widens across columns until it holds this many; zero
-    /// asks for no more than its own column.
+    /// Preferred content width of the summary under [`TileGrowth::widen_summary`].
+    /// Zero requests only its own column.
+    /// Measured layouts retain the selected allocation after a preferred width change
+    /// when every cached candidate still requests the same rows.
+    /// Changed row requests, terminal geometry or tile membership select a new allocation.
     pub summary_width: u16,
     /// Every group that gets a cell, in cell order.
     pub groups:        Vec<TileDemand<Id>>,
@@ -1245,6 +1246,22 @@ enum DemandSync {
     CurrentRender,
 }
 
+/// Whether the current measurement changes the requested rows or tile identities.
+enum RowDemandChange {
+    Unchanged,
+    Changed,
+}
+
+impl RowDemandChange {
+    fn between<Id: PartialEq>(previous: &TileDemands<Id>, current: &TileDemands<Id>) -> Self {
+        if previous.summary == current.summary && previous.groups == current.groups {
+            Self::Unchanged
+        } else {
+            Self::Changed
+        }
+    }
+}
+
 /// Which view of the grid the last laid-out area can show readably.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum GridDisplay {
@@ -1257,14 +1274,9 @@ pub(super) enum GridDisplay {
 /// What one arrangement is drawn at: the rows every cell is holding
 /// and which of them has the focus ring.
 ///
-/// A cell holds the rows it grew into rather than the rows it is using.
-/// Its contents shrinking hands nothing back, because nothing else is
-/// asking for the room; the moment something is -- any cell asking for
-/// more than it holds, or a cell joining or leaving the grid -- every
-/// cell drops back to what it is actually showing and the columns are
-/// divided again from there. That is the whole of the stickiness, and
-/// it lives here rather than in [`shares`] so the division itself stays
-/// a pure function of what it is handed.
+/// `DemandSync::Independent` retains `HeldCellLayout::rows` until another cell needs room.
+/// `DemandSync::CurrentRender` with `RowDemandChange::Changed` replaces those row demands before
+/// layout. `HeldCellLayout` owns this policy so [`shares`] stays a pure function of its input.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct HeldCellLayout {
     /// Row demands each cell holds, in cell order and the summary's first.
@@ -1309,10 +1321,19 @@ enum CandidateDepthSelection<Id> {
 }
 
 /// `LayoutDemandMeasurement` pairs candidate content `widths` with the provider's `demands`.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq)]
 struct LayoutDemandMeasurement<Id> {
     widths:  Vec<(TileContent<Id>, u16)>,
     demands: TileDemands<Id>,
+}
+
+impl<Id: PartialEq> PartialEq for LayoutDemandMeasurement<Id> {
+    fn eq(&self, other: &Self) -> bool {
+        // LayoutDemandMeasurement equality compares row requests at each measured width.
+        self.widths == other.widths
+            && self.demands.summary == other.demands.summary
+            && self.demands.groups == other.demands.groups
+    }
 }
 
 /// `LayoutSelectionInputs` records `area`, `target`, `growth`, `rules` and candidate `measurements`
@@ -1324,6 +1345,51 @@ struct LayoutSelectionInputs<Id> {
     growth:       TileGrowth,
     rules:        EndpointLayoutRules,
     measurements: Vec<LayoutDemandMeasurement<Id>>,
+}
+
+/// `CandidateMeasurementFreshness` names the observations available for a new search.
+enum CandidateMeasurementFreshness {
+    CurrentWidth,
+    AllCachedWidths,
+}
+
+impl<Id: Clone + Eq> LayoutSelectionInputs<Id> {
+    /// `refresh_measurements` validates cached rows after an uncertain preferred width change.
+    fn refresh_measurements(
+        &mut self,
+        previous: &Self,
+        measure: &mut impl FnMut(&[(TileContent<Id>, u16)]) -> TileDemands<Id>,
+    ) -> CandidateMeasurementFreshness {
+        let observation = self.measurements.remove(0);
+        let freshness = if self.area == previous.area
+            && self.target == previous.target
+            && self.growth == previous.growth
+            && self.rules == previous.rules
+            && !previous.measurements.iter().any(|measured| {
+                measured.widths == observation.widths
+                    && measured.demands.summary_width == observation.demands.summary_width
+            }) {
+            CandidateMeasurementFreshness::AllCachedWidths
+        } else {
+            CandidateMeasurementFreshness::CurrentWidth
+        };
+        self.measurements.clone_from(&previous.measurements);
+        for measured in &mut self.measurements {
+            if measured.widths == observation.widths {
+                measured.demands.clone_from(&observation.demands);
+            } else if matches!(freshness, CandidateMeasurementFreshness::AllCachedWidths) {
+                measured.demands = measure(&measured.widths);
+            }
+        }
+        if !self
+            .measurements
+            .iter()
+            .any(|measured| measured.widths == observation.widths)
+        {
+            self.measurements.push(observation);
+        }
+        freshness
+    }
 }
 
 /// `LayoutSelection` holds the `selected` destination measurements and the `inputs` that permit
@@ -2402,28 +2468,20 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             DemandSync::CurrentRender,
             |grid, target| {
                 let mut inputs = grid.selection_inputs(target, &widths, &initial);
-                if let SelectedLayoutPlan::Selected(previous) = &plan {
-                    let observation = inputs.measurements.remove(0);
-                    inputs
-                        .measurements
-                        .clone_from(&previous.inputs.measurements);
-                    if let Some(measured) = inputs
-                        .measurements
-                        .iter_mut()
-                        .find(|measured| measured.widths == widths)
-                    {
-                        *measured = observation;
-                    } else {
-                        inputs.measurements.push(observation);
-                    }
+                let mut freshness = CandidateMeasurementFreshness::CurrentWidth;
+                if let SelectedLayoutPlan::Selected(previous) = &mut plan {
+                    freshness = inputs.refresh_measurements(&previous.inputs, &mut measure);
                     if previous.inputs == inputs {
+                        previous.inputs = inputs;
                         return previous.selected.clone();
                     }
                 }
-                inputs.measurements = vec![LayoutDemandMeasurement {
-                    widths:  widths.clone(),
-                    demands: initial.clone(),
-                }];
+                if matches!(freshness, CandidateMeasurementFreshness::CurrentWidth) {
+                    inputs.measurements = vec![LayoutDemandMeasurement {
+                        widths:  widths.clone(),
+                        demands: initial.clone(),
+                    }];
+                }
                 let mut selected =
                     grid.search_destination(target, initial.summary_width, &mut |candidate| {
                         if let Some(measured) = inputs
@@ -2615,6 +2673,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         demand_sync: DemandSync,
         select: impl FnOnce(&Self, &[Slot<Id>]) -> SelectedLayoutMeasurements<Id>,
     ) -> SelectedLayoutMeasurements<Id> {
+        let row_change = RowDemandChange::between(&self.demands, demands);
         self.replace_demands(demands);
         self.set_layout(self.area, growth);
         if demand_sync == DemandSync::CurrentRender {
@@ -2709,13 +2768,14 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             }
             return selected;
         }
-        let settled = self.settled_held();
+        let settled = self.reconciled_held(demand_sync, row_change);
         if steps.is_empty()
             && wanted_depth == self.target_depth()
             && matches!(self.motion, GridMotion::Settled)
             && settled.needs_motion_from(&self.held)
         {
-            steps.push(self.slots.clone());
+            self.queue_row_resize(settled);
+            return selected;
         } else if steps.is_empty()
             && wanted_depth == self.target_depth()
             && matches!(self.motion, GridMotion::Settled)
@@ -2727,6 +2787,30 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         }
         self.queue_with_depth(steps, wanted_depth, DestinationDepthStatus::Resolved);
         selected
+    }
+
+    /// Changed render rows release retained height before the grid divides its columns.
+    fn reconciled_held(&self, sync: DemandSync, change: RowDemandChange) -> HeldCellLayout {
+        match (sync, change) {
+            (DemandSync::CurrentRender, RowDemandChange::Changed) => HeldCellLayout {
+                rows:          cell_wants(&self.demands, &self.slots, &self.settings),
+                focused:       self.focused_cell(),
+                summary_span:  self.wanted_span(),
+                summary_depth: self.depth,
+            },
+            _ => self.settled_held(),
+        }
+    }
+
+    /// Queue a resize from the drawn source, then install its measured destination.
+    fn queue_row_resize(&mut self, destination: HeldCellLayout) {
+        self.queue_with_depth(
+            vec![self.slots.clone()],
+            destination.summary_depth,
+            DestinationDepthStatus::Resolved,
+        );
+        self.held = destination;
+        self.layout_admission.take();
     }
 
     /// Which of `live` the grid can actually give a cell to: the ones
@@ -7013,6 +7097,7 @@ fn travel_progress(elapsed: Duration, millis: u64) -> u32 {
 )]
 mod tests {
     use std::cell::Cell;
+    use std::collections::BTreeSet;
     use std::ops::RangeInclusive;
 
     use ratatui::buffer::Buffer;
@@ -8647,6 +8732,121 @@ mod tests {
             cells.measurements.borrow().len(),
             2,
             "an unchanged draw measures only the two displays"
+        );
+    }
+
+    #[derive(Clone, Copy)]
+    enum SummaryLineArrangement {
+        Stacked,
+        Inline,
+    }
+
+    struct ReflowingSummaryCells {
+        arrangement: Cell<SummaryLineArrangement>,
+    }
+
+    impl ReflowingSummaryCells {
+        fn content_rows(&self, content: &TileContent<u32>, width: u16) -> usize {
+            match (content, self.arrangement.get()) {
+                (TileContent::Summary, SummaryLineArrangement::Stacked)
+                    if width < NARROW_TREE_WIDTH =>
+                {
+                    30
+                },
+                (TileContent::Summary, _) => 5,
+                (TileContent::Group(_), _) => 1,
+                (TileContent::Empty(_), _) => 0,
+            }
+        }
+    }
+
+    impl crate::TileCells<u32> for ReflowingSummaryCells {
+        fn summary_title(&self) -> &'static str { "accounts" }
+
+        fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            let width = widths
+                .iter()
+                .find_map(|(content, width)| (*content == TileContent::Summary).then_some(*width))
+                .unwrap_or_default();
+            TileDemands {
+                summary:       self.content_rows(&TileContent::Summary, width),
+                summary_width: match self.arrangement.get() {
+                    SummaryLineArrangement::Stacked => SUMMARY_PREFERRED_WIDTH,
+                    SummaryLineArrangement::Inline => SUMMARY_PREFERRED_WIDTH / 2,
+                },
+                groups:        (1..=5).map(|id| TileDemand { id, rows: 1 }).collect(),
+            }
+        }
+
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            u16::try_from(self.content_rows(content, area.width))
+                .unwrap_or(u16::MAX)
+                .min(area.height)
+        }
+
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, area: Rect, _: Color) {
+            for row in 0..crate::TileCells::rows_drawn(self, content, area) {
+                buffer.set_string(
+                    area.x,
+                    area.y + row,
+                    "row",
+                    ratatui::style::Style::default(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_candidate_row_changes_reselect_a_wide_summary() {
+        let area = Rect::new(0, 0, 80, 35);
+        let growth = TileGrowth {
+            widen_summary: true,
+            ..redistribute(4)
+        };
+        let mut grid = TileGrid::<u32>::new();
+        grid.set_min_tile_width(33);
+        grid.set_summary_row_allocation(SummaryRowAllocation::BeforeTiles);
+        let cells = ReflowingSummaryCells {
+            arrangement: Cell::new(SummaryLineArrangement::Stacked),
+        };
+        draw_view_frame(&mut grid, &cells, area, growth);
+        grid.settle_for_test();
+        draw_view_frame(&mut grid, &cells, area, growth);
+        let before = grid.placements(area, growth);
+        let columns = before
+            .iter()
+            .filter(|piece| matches!(piece.content, TileContent::Group(_)))
+            .map(|piece| piece.frame.rect().x)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            columns.len(),
+            2,
+            "the draw must probe a narrow two-column candidate"
+        );
+        let wide = [(TileContent::Summary, SUMMARY_PREFERRED_WIDTH)];
+        let before_rows = crate::TileCells::demands(&cells, &wide).summary;
+        cells.arrangement.set(SummaryLineArrangement::Inline);
+        assert_eq!(
+            crate::TileCells::demands(&cells, &wide).summary,
+            before_rows,
+            "the current wide summary requests the same rows"
+        );
+        draw_view_frame(&mut grid, &cells, area, growth);
+        grid.settle_for_test();
+        draw_view_frame(&mut grid, &cells, area, growth);
+        let after = grid.placements(area, growth);
+        let summary_width = |placements: &[TilePlacement<u32>]| {
+            placements
+                .iter()
+                .find(|piece| piece.content == TileContent::Summary)
+                .expect("the summary remains visible")
+                .frame
+                .inner()
+                .width
+        };
+        assert!(
+            summary_width(&after) < summary_width(&before),
+            "the narrow candidate now fits and must replace the wide allocation: before={before:?}, after={after:?}"
         );
     }
 

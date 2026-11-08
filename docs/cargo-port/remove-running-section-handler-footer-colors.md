@@ -1146,68 +1146,40 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** linking a staff worker by working directory and start time (herdr-unit, 2026-11-07).
 
-### Phase 67a — An unknown Codex switch keeps the resume proof  · status: todo
+### Phase 67a — An unknown Codex switch keeps the resume proof  · status: done
 
-**Depends on:** Phase 67
+#### As-built
 
-#### Work Order
-
-**Goal:** a Codex pane worker started with a switch that cargo-handler does not know still shows under its unit director.
-
-**Source:** Phase 67 closure review: `codex --dangerously-bypass-hook-trust resume <uuid>` loses command-line proof. Moved out of Phase 67 under the landing rule; the architect review moved it out of parked Phase 21.
-
-**Constraints from prior phases:**
-- `codex::resume_request` (`census/codex.rs`) walks the arguments after the program. It skips each `CODEX_VALUE_OPTIONS` option with its value, skips `CODEX_SWITCHES`, and requires a full UUID after `resume`. A value is never read as the subcommand (test `a_resume_directory_argument_does_not_prove_a_staff_thread`, `census/pane_worker_placement_tests.rs`).
-
-**Spec:**
-1. Remove `CODEX_SWITCHES`. Skip every argument that starts with `-` and is not in `CODEX_VALUE_OPTIONS`; a `--name=value` argument is one argument.
-2. Keep the value-option rule: a value option's value never takes the subcommand position.
-3. Red-first test: `codex --dangerously-bypass-hook-trust resume 01a18dbb-7e8f-7641-b3dd-bb2071ab9d7a` with a matching staff row and no held rollout proves the thread. The existing value-option tests still pass.
-4. The tree holds an uncommitted assertion in `assert_managed_worker` (`census/pane_worker_placement_tests.rs` ≈210): the role column shows `worker` apart from the name. Keep it; it lands with this phase.
+A Codex pane worker started with a switch that cargo-handler does not know still shows under its unit director.
+- `codex::resume_request` skips every argument that starts with `-` and is not in `CODEX_VALUE_OPTIONS`; a `--name=value` argument is one argument. `resume --last` matches before the switch arm.
+- `CODEX_VALUE_OPTIONS` lists every `<VALUE>` option of `codex --help` and `codex resume --help`, `--remote` and `--remote-auth-token-env` included, so a value never takes the subcommand position.
 
 **Files:**
-- `crates/cargo-handler/src/census/codex.rs` — `resume_request`
-- `crates/cargo-handler/src/census/pane_worker_placement_tests.rs` — the new case
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/codex.rs` — `CODEX_VALUE_OPTIONS`, `resume_request`
+- `crates/cargo-handler/src/census/pane_worker_placement_tests.rs` — `an_unknown_codex_switch_keeps_the_resumed_worker_under_its_unit`, `remote_option_values_do_not_prove_a_staff_thread`; `assert_managed_worker` checks the role column shows `worker` apart from the name
 
-**Workers:** 1 writer.
+**Gotchas:** A Codex value option missing from `CODEX_VALUE_OPTIONS` lets its value take the subcommand position; add each new `<VALUE>` option from `codex --help`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean; no test takes a second. Change-Review: none — live herdr workers put `resume` first, so no visible row changes.
+**Ruled out:** A fixed list of known switches: a new Codex switch drops the resume proof.
 
-### Phase 68 — Tiles keep their columns when a summary cell changes width  · status: todo
+### Phase 68 — Tiles keep their columns when a summary cell changes width  · status: done
 
-**Depends on:** Phase 67
+#### As-built
 
-#### Work Order
-
-**Goal:** the tile grid keeps its column count when the text width of a summary cell changes; the layout changes only when the terminal size or the set and rows of the tiles change.
-
-**Source:** the showrunner, 2026-11-07. Change review C217 ("Tiles keep their places when the accounts table wraps", Phase 65, merge 99b87113) was returned after a live check failed:
-1. Check: installed cargo-handler at 80x45, one capture each 2 s for 150 s.
-2. Result: the tiles switch between two columns and one column 4 times in 150 s. Each switch follows a width change of a summary status cell: cargo-liner `waiting` (two columns) to `clippy (mac)` (one column), and back. The accounts table kept its 9 rows and did not wrap.
-3. Frames: `/home/natepiano/rust/repro/cargo-liner-C217-c217/f05.txt` (two columns), `f06.txt` (one column), `f08.txt` (one column), `f09.txt` (two columns). In `f06.txt` the status column is wider and the directory column narrower; the summary keeps the same row count.
-
-**Constraints from prior phases:**
-- Phase 65: `TileGrid::sync_measured_demands` (`crates/tui_pane/src/tiles/grid.rs` ≈2391) runs the candidate search when `LayoutSelectionInputs` change; equal inputs reuse `LayoutSelection` with exactly 2 `cells.demands` calls per draw. Keep that reuse and the narrow-width demand-count tests (200:7, 80:4, 50:2, 40:2, then exactly 2) and `grid_at_height_70_keeps_all_work_rows_and_accounts`.
-- `CellView::requested_at_width` (`agent_cell.rs`) requests a tile's rows at each width; `TreePresentation::HeightCompressed` applies only at allocation.
-
-**Spec:**
-1. First reproduce the switch in a test that drives the real draw path: the frame-5 state at 80x45, then the same state with the `clippy (mac)` status, then back. The test fails before the fix. Name the input that changes the column choice, and quote it in the summary.
-2. Fix the cause where it lives: a change in a cell's text width that does not change any tile's requested rows at the candidate widths does not change the column count. Do not add a hold timer, a hysteresis count or a special case for the summary tile.
-3. A real change still reselects: a tile that gains or loses rows, a tile added or removed, and a terminal resize.
-4. Tests, each red before its fix: the status-width switch above keeps the column count over the full back-and-forth; each case in item 3 still changes the layout when its rows need it; the Phase 65 demand-count tests stay green.
-5. CHANGELOG: one line.
+The tile grid keeps its column count when the text width of a summary cell changes. The layout changes only when the terminal size, the set of tiles or their requested rows change.
+- `TreeMeasurement::minimum_tile_width` (`agent_cell.rs`) reserves the status header width, not the widest status value. The guide, header, role, gap, indent and frame terms are unchanged.
+- The grid reuses `LayoutSelection` only when no tile's requested rows change at the cached candidate widths. `LayoutDemandMeasurement` equality compares widths and requested rows and ignores `summary_width`. A preferred summary width not yet seen at the current widths measures every cached candidate width again (`LayoutSelectionInputs::refresh_measurements`, `CandidateMeasurementFreshness::{CurrentWidth, AllCachedWidths}`).
+- `RowDemandChange::{Unchanged, Changed}` compares summary and group rows. Under `DemandSync::CurrentRender`, `Changed` replaces `HeldCellLayout::rows` before layout (`reconciled_held`), and `queue_row_resize` queues the resize from the drawn slots. Tiles that gain or lose rows, added or removed tiles, and a terminal resize still select a new layout.
+- Cost: equal inputs keep 2 `cells.demands` calls per draw; a new preferred summary width adds one measurement for each other cached candidate.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/render/mod.rs` — test module registration
-- `crates/cargo-handler/src/render/layout_stability_tests.rs` — new test module
+- `crates/tui_pane/src/tiles/grid.rs` — `RowDemandChange`, `CandidateMeasurementFreshness`, `refresh_measurements`, `reconciled_held`, `queue_row_resize`; test `narrow_candidate_row_changes_reselect_a_wide_summary`
+- `crates/cargo-handler/src/agent_cell.rs` — `minimum_tile_width`
+- `crates/cargo-handler/src/render/layout_stability_tests.rs` — real-draw tests at 80x45: a status back-and-forth keeps two columns; gained and lost rows, added and removed tiles, and width and height changes reselect
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — the cause and its fix, and the CHANGELOG; hub: `crates/cargo-handler/src/render/mod.rs`.
-- `test` — `render/layout_stability_tests.rs`.
+**Binds later work:** A new tile column adds no value-width term to `minimum_tile_width`; a term that follows drawn text lets a text change cross a column threshold with equal rows. `render/layout_stability_tests.rs` stays green.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test tui_pane` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: cargo-handler at 80x45, started with my own process, captured each 2 s for 150 s while a summary status changes width, keeps one column count in every frame. The checkpoint carries `Change-Review: cargo-handler tiles keep their columns when a session's status text changes width | open cargo-handler at 80x45 while a session moves between waiting and a longer status, and watch the tiles stay in place`.
+**Ruled out:** A role floor independent of the role text: the measured role widths stay in the floor so role words read whole (`narrow_width_tests.rs` `narrow_growth_envelope_contains_end_top_and_cursor_windows`; showrunner ruling).
 
 ### Phase 41 — Renamed Codex sessions show in cargo-handler  · status: done
 
@@ -1997,7 +1969,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 **Constraints from prior phases:**
 - Two width paths: local fitting uses `ColumnDrop::ORDER` (`agent_cell.rs` ≈584); tiles that share a screen column use `GroupFitStep::ORDER` (≈1048). Both drop effort before model; test both.
 - A click on the `model` or `effort` header sorts by the drawn value through `TreeLine::compare` (≈1507), `Unrecorded` included.
-- `TreeColumn` (`agent_cell.rs` ≈381) is `Session, Type, Role, Status, Account, Branch, Directory, Age`; `alignment` (≈397) and the header text (≈411) are per column. Phase 66 removed `TreeColumns::for_lines`. Column presence and density come from one count per tile: `TreeColumnPopulation::measure` (≈511), `TreeColumnPopulation::density` (≈532, `ColumnDensity::{Sparse, Dense}`) and `PermittedTreeColumns::from_population` (≈559). A `Sparse` column drops when the full table does not fit, so it never takes room from session names; `MeasuredTreeGroup::fit_tiles` (≈1066) applies each tile's own density in shared fitting. Model and effort use the same population; add no second presence scan. `TreeMeasurement::minimum_tile_width` (≈941) reserves `session_guide_width + 1`. Phase 27 keeps the core columns on narrow tiles; Phase 43 changes the age text in the same file.
+- `TreeColumn` (`agent_cell.rs` ≈381) is `Session, Type, Role, Status, Account, Branch, Directory, Age`; `alignment` (≈397) and the header text (≈411) are per column. Phase 66 removed `TreeColumns::for_lines`. Column presence and density come from one count per tile: `TreeColumnPopulation::measure` (≈511), `TreeColumnPopulation::density` (≈532, `ColumnDensity::{Sparse, Dense}`) and `PermittedTreeColumns::from_population` (≈559). A `Sparse` column drops when the full table does not fit, so it never takes room from session names; `MeasuredTreeGroup::fit_tiles` (≈1066) applies each tile's own density in shared fitting. Model and effort use the same population; add no second presence scan. `TreeMeasurement::minimum_tile_width` (≈944) reserves `session_guide_width + 1`. Since Phase 68 it reserves the status header width, not the widest status value, so a text change cannot cross a column threshold while rows stay equal. Model and effort add no value-width term to that floor; `render/layout_stability_tests.rs` stays green. Phase 27 keeps the core columns on narrow tiles; Phase 43 changes the age text in the same file.
 - Phase 49a gives each row `ModelName` and `ReasoningEffort`, both with an `Unrecorded` case.
 - Phase 9: a header press maps through the spans that were painted, not spans rebuilt at press time. `Cells::record_painted_surface` (`render/mod.rs` ≈693) saves `PaintedSurfaceContent::Tree { key, spans, default }` per painted allocation, and `tree_pressed` (`render/painted_surface.rs` ≈100) reads them. New columns reach presses only through those saved spans. Header-press regressions live in `render/drawn_frame_tests.rs`.
 - Phase 65: a tile requests its rows through `CellView::requested_at_width` (`agent_cell.rs` ≈2393), which keeps requested tree rows apart from height compression. The grid reuses its selected layout while its measurement inputs stay equal (`crates/tui_pane/src/tiles/grid.rs` ≈2385). New columns change demand only through that path. `crates/cargo-handler/src/render/narrow_width_tests.rs` (≈265: first-frame demand calls 200:7, 80:4, 50:2, 40:2, then exactly 2 on each later frame, and arrival with no second motion) stays green with no assertion changed.
@@ -2061,10 +2033,11 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - `crates/cargo-handler/src/agent_cell/tests/sort_tests.rs` — the tree sort test
 - `crates/cargo-handler/src/census/incremental_read_tests.rs` — the incremental Codex tier test
 - `crates/cargo-handler/src/render/word_click_tests.rs` — `visible_unicode_tokens_resolve_from_every_terminal_cell` (1.011 s on natedev, 2026-11-07)
-- `crates/cargo-handler/src/render/word_contrast_tests.rs` — four `matched_inks_keep_glyph_contrast_*_account_words` tests (1.186–1.249 s on natedev, 2026-11-07)
+- `crates/cargo-handler/src/render/word_contrast_tests.rs` — every `matched_inks_keep_glyph_contrast_in_*` test: 17 ran over 1 s on natedev in a busy full-suite run (1.052–2.374 s, port run log `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/mesh_runs/20261107T190655-3982080-ab7a.log`, 2026-11-07). Bring the whole module under 1 s, not only the named cases.
+- `crates/cargo-handler/src/render/narrow_width_tests.rs` — `account_refresh_keeps_the_destination_through_animation_frames` (≈230; 1.123 s on natedev in a full-suite run, 2026-11-07, run log `/tmp/claude/unit/21496649-0876-4315-8701-05f8943b788f/mesh_runs/20261107T200337-2934130-37da.log`)
 
 **Workers:** 2 writers.
-- `palette` — the gradient, design-ink, selected-ink, pinned accounts and tree sort test files, `app.rs`, `render/word_click_tests.rs` and `render/word_contrast_tests.rs`.
+- `palette` — the gradient, design-ink, selected-ink, pinned accounts and tree sort test files, `app.rs`, `render/word_click_tests.rs`, `render/word_contrast_tests.rs` and `render/narrow_width_tests.rs`.
 - `census` — `census/codex_session_tests.rs` with both Codex tests, and `census/incremental_read_tests.rs`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean with no test over one second, on the Mac and in a full-suite run on natedev; lint clean. Change-Review: none (test time only).

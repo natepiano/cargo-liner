@@ -940,13 +940,13 @@ impl TreeMeasurement {
         allocated
     }
 
-    /// Session lead, role, status, gaps, content indent and frame use the same readings as fitting.
+    /// The column floor reserves guides, headers and roles; status values use the fitted columns.
     pub(crate) fn minimum_tile_width(&self) -> u16 {
         self.metrics
             .session_header_width()
             .max(self.metrics.session_guide_width.saturating_add(1))
             .saturating_add(self.role_widths.full.max(self.role_widths.compressed))
-            .saturating_add(self.status_widths.full.max(self.status_widths.compressed))
+            .saturating_add(self.status_header)
             .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(2))
             .saturating_add(summary::cell_width(SECTION_HEADER_INDENT).saturating_mul(2))
             .saturating_add(u16::try_from(tui_pane::BLOCK_BORDER_WIDTH).unwrap_or(u16::MAX))
