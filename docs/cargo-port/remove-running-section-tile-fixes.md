@@ -1958,6 +1958,32 @@ Other cargo-berth files need director routing.
 
 **Acceptance gate:** the berth package suite on natedev and the Mac, `--no-cache`, every test under 1 s; lint. After the merge and the berth install, Phases 31 and 43i claim their files again.
 
+### Phase 57 — Two cargo-berth tests pass on the Mac  · status: todo
+
+**Depends on:** Phase 56 (same writer and the same cargo-berth files). The Phase 30m merge does not wait on this phase.
+
+The showrunner assigned this phase on 2026-11-08: a berth fault goes to the unit it blocks. The Phase 30m round 2 Mac workspace gate (run `20261108T100328-2152148-9d81`) failed two cargo-berth tests that Phase 30m does not touch.
+
+#### Work Order
+
+**Goal:** both tests pass on the Mac in a full workspace run, each under 1 s, by a fix of the cause in the code.
+
+**Spec:**
+1. `pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (`tests/hooks.rs:743`) failed its elapsed-time assertion at `tests/hooks.rs:798` (0.991 s). The hook answered "another cargo-berth operation still holds the ledger lock". Find the wait that takes the time, quote its line, and fix it there.
+2. `explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open` (`tests/ledger.rs:2527`) panicked at `tests/ledger.rs:2547` (2.412 s): the ledger read failed on a git `packed-refs.lock` of age 0.218 s, so the diagnostic named no process holder. Find what holds that lock in the fixture or in the product, quote its line, and fix it there.
+3. Reproduce each fault red first on the Mac, with the method that shows it (for example, a filtered run under the same parallel load). Quote the failing line.
+4. Do not loosen an assertion. Keep every existing assertion.
+
+**Files:**
+- `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/ledger.rs` — the two tests and their fixtures.
+- `crates/cargo-berth-test-support/` — shared fixtures.
+
+The product file of each cause needs director routing.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** the cargo-berth package suite on natedev and on the Mac, `--no-cache`, and one Mac workspace run, with both tests green and every test under 1 s; lint.
+
 ### Phase 31 — Ended cells leave whole  · status: todo
 
 **Depends on:** Phase 35m (both change `render.rs` and `render/command_cache.rs`).
