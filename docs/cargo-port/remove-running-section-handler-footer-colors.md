@@ -1226,35 +1226,50 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: a framed capture from a cargo-handler the writer started, showing a session row that says `compacting` during a compaction of a session the writer started. The checkpoint carries `Change-Review: a session that compacts its conversation says compacting, not thinking | in cargo-handler, find a session while it compacts: its row says compacting until the compaction ends`.
 
-### Phase 73 — The unmatched-ink test paints both frames at one time  · status: done
+### Phase 74 — The model-read transcript test finishes in under a second  · status: todo
 
-**Depends on:** Phase 21 (`render/word_contrast_tests.rs`).
+**Depends on:** none. `census/transcript.rs` is outside every open phase.
 
 #### Work Order
 
-**Goal:** `render::word_contrast_tests::unmatched_text_keeps_its_ink_*` gives the same result on every run, under any load.
+**Goal:** `census::transcript::tests::a_large_codex_rollout_without_effort_reads_bounded_metadata` takes well under 1 s on every run, with its asserts unchanged.
 
-**Source:** the showrunner, 2026-11-08: the test failed in tile's natedev gate on main b92742058 with left 5, right 4.
+**Source:** the showrunner, 2026-11-08: "add-on 1 is current. Add it as a new handler phase after 72. A test at 1 s or more is a defect, so it ranks with the fix work."
 
 **Constraints:**
-- Director check, 2026-11-08: the four tests pass alone on b92742058, max 0.183 s.
-- `check_unmatched_ink` asserts `after.symbol() == before.symbol()` on each unmatched cell. `single_word_frames` paints `before` and `after` in two calls, and the frame reads the live clock. A digit that counts time (an age or a reset time) can step between the two paints, so `5` becomes `4`.
-- Fix the cause: both paints read one fixed time. Do not drop the symbol assert and do not skip digit cells.
+- The test took 1.064 s in the Phase 73 repair copy gate (1e143f42).
+- It writes a padding line of `4 * 1024 * 1024` bytes (`census/transcript.rs` ≈1342). The assert bound is `2 * TRANSCRIPT_TAIL_START` (`constants.rs` ≈322, 64 KiB), so the padding needs only to be larger than that bound.
+- Keep every assert and the test's meaning: a missing effort must not scan the rollout. Do not drop the append half of the test.
 - No new check of your own design.
 
 **Spec:**
-1. Find the clock read that puts a time digit in the fixture frame. Name its file and line in the summary.
-2. Make the fixture frames read one fixed time, through the clock input the app already has where one exists.
-3. A test that moves the fixture clock across a step between the two paints fails before the fix and passes after it.
-4. All tests stay under 1 s.
+1. Derive the padding length from `TRANSCRIPT_TAIL_START`, large enough that a full scan exceeds the `2 * TRANSCRIPT_TAIL_START` bound.
+2. Show that the test still fails when the read scans the whole rollout: state how, in the summary.
+3. The test takes under 0.1 s alone and stays under 1 s in the package gate.
 
 **Files:**
-- `crates/cargo-handler/src/render/word_contrast_tests.rs`, `crates/cargo-handler/src/render/word_click_tests.rs`
-- `crates/cargo-handler/src/render/mod.rs` — use `draw_at_for_test(frame, app, keymap, now)` (≈144) from the test helpers; keep production code unchanged. The `census::unix_now()` read in `render/painted_surface.rs` (≈110) belongs to `tree_pressed`, not to the frame.
+- `crates/cargo-handler/src/census/transcript.rs` — the test module only
 
-**Workers:** 1 writer. It owns the listed implementation, fixtures, tests and registrations.
+**Workers:** 1 writer. It owns the listed test.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Test-only change: no CHANGELOG line and no Change-Review row.
+
+### Phase 73 — The unmatched-ink test paints both frames at one time  · status: done
+
+#### As-built
+
+- `render::draw_at_for_test(frame, app, keymap, now)` paints the grid at `now` and the status line at a fixed uptime (`FIXED_UPTIME_SECS`, 0) through the private `draw_status_line_at`. The production `draw_status_line` passes `app.started.elapsed()`.
+- `word_click_tests::Renderer::with_fixed_time(app, width, height, now)` paints every frame through `draw_at_for_test` (`FramePaint::FixedTime`). `Renderer::new` keeps `App::draw` (`FramePaint::Application`).
+- `word_contrast_tests::single_word_frames` paints both frames at `BEFORE_AGE_STEP` (399) and moves `app.started` one second earlier between the paints. `check_unmatched_ink` keeps its symbol and ink asserts.
+
+**Files:**
+- `crates/cargo-handler/src/render/mod.rs` — `draw_at_for_test`, `draw_status_line`, `draw_status_line_at`
+- `crates/cargo-handler/src/render/word_click_tests.rs` — `Renderer`, `FramePaint`
+- `crates/cargo-handler/src/render/word_contrast_tests.rs` — `single_word_frames`, `check_unmatched_ink`, `BEFORE_AGE_STEP`
+
+**Gotchas:** a frame reads two clocks: `census::unix_now()` for grid ages and `app.started` for status uptime. A paired-paint test must fix both; `draw_at_for_test` does.
+
+**Ruled out:** a clock closure read on every paint (it cannot move after the fix, so a moving-clock case proves nothing); dropping the symbol assert or skipping digit cells.
 
 ### Phase 67 — Pane Codex workers show under their unit  · status: done
 
