@@ -16,7 +16,6 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use tui_pane::CellPoint;
-use tui_pane::Theme;
 
 use super::PaintedSummary;
 use super::SummaryFrame;
@@ -40,7 +39,10 @@ use crate::footer_colors;
 use crate::footer_colors::tests;
 use crate::sort::AccountsColumn;
 use crate::theme;
+use crate::theme::ResetThemeFixture;
 use crate::theme::SessionRowInk;
+
+const MINIMUM_RESET_STEP_DISTANCE: f64 = 5.0;
 
 pub(super) fn role_usage(role: AccountRole) -> AccountRoleUsage {
     AccountRoleUsage {
@@ -141,31 +143,6 @@ fn reset_color(buffer: &Buffer, label: &str) -> Color {
     color
 }
 
-/// Install handler reset roles for tests that otherwise inherit `tui_pane`'s empty role map.
-struct ResetThemeFixture {
-    previous: Arc<Theme>,
-}
-
-impl ResetThemeFixture {
-    fn install() -> Self {
-        let variant = theme::builtins()
-            .into_iter()
-            .find(|variant| variant.id.as_str() == DEFAULT_DARK_THEME)
-            .expect("default reset theme");
-        Self::with_theme(variant.theme)
-    }
-
-    fn with_theme(theme: Theme) -> Self {
-        let previous = tui_pane::theme();
-        tui_pane::set_active_theme(Arc::new(theme));
-        Self { previous }
-    }
-}
-
-impl Drop for ResetThemeFixture {
-    fn drop(&mut self) { tui_pane::set_active_theme(Arc::clone(&self.previous)); }
-}
-
 fn reset_role(key: &str) -> Color {
     tui_pane::theme()
         .roles
@@ -178,6 +155,44 @@ fn readable_rank(color: Color) -> Color {
     footer_colors::readable_status_style(ratatui::style::Style::default().fg(color))
         .fg
         .expect("readable reset ink")
+}
+
+#[test]
+fn chronological_resets_draw_three_or_four_distinct_steps_in_every_theme() {
+    for variant in theme::builtins() {
+        let theme_name = variant.id.to_string();
+        let fixture = ResetThemeFixture::with_theme(variant.theme);
+        for tint in [false, true] {
+            tui_pane::set_focused_pane_tint(tint);
+            let app = app_with_accounts(
+                [5, 1, 3, 0, 4, 2]
+                    .map(|rank| account(&format!("step-{rank}"), reset(60 + rank * 120)))
+                    .to_vec(),
+            );
+            let buffer = drawn(&app);
+            let mut steps = Vec::new();
+            for rank in 0..6 {
+                let color = reset_color(&buffer, &format!("step-{rank}"));
+                if steps.last() != Some(&color) {
+                    assert!(!steps.contains(&color), "{theme_name}: reset steps repeat");
+                    steps.push(color);
+                }
+            }
+            assert!(
+                (3..=4).contains(&steps.len()),
+                "{theme_name}, tint={tint}: drawn reset steps={steps:?}"
+            );
+            for pair in steps.windows(2) {
+                let distance = footer_colors::perceptual_distance(pair[0], pair[1]);
+                assert!(
+                    distance >= MINIMUM_RESET_STEP_DISTANCE,
+                    "{theme_name}, tint={tint}: adjacent reset steps need dE >= {MINIMUM_RESET_STEP_DISTANCE}: {pair:?}, dE={distance:.9}"
+                );
+                eprintln!("RESET_STEP {theme_name} tint={tint} inks={pair:?} dE={distance:.9}");
+            }
+        }
+        drop(fixture);
+    }
 }
 
 #[test]
@@ -247,13 +262,8 @@ fn reset_time_order_assigns_the_nearest_shade_to_the_earliest_instant() {
         let _theme = ResetThemeFixture::with_theme(variant.theme);
         let nearest = reset_role("reset_nearest");
         let farthest = reset_role("reset_farthest");
-        let expected: Vec<_> = (0..times.len())
-            .map(|rank| {
-                let alpha = u8::try_from(rank * usize::from(u8::MAX) / (times.len() - 1))
-                    .expect("evenly spaced reset shade");
-                readable_rank(tui_pane::blend_color(nearest, farthest, alpha))
-            })
-            .collect();
+        let middle = tui_pane::blend_color(nearest, farthest, 128);
+        let expected = [nearest, nearest, middle, middle, farthest, farthest].map(readable_rank);
         for order in [[5, 1, 3, 0, 4, 2], [2, 4, 0, 3, 1, 5]] {
             let app = app_with_accounts(
                 order
