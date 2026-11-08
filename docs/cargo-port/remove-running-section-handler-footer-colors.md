@@ -1203,6 +1203,7 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 - No new check of your own design.
 - The probe report crosses machines with different builds. `AgentActivity` deserialization (`census/activity.rs` ≈167) rejects an unknown `active` value, so the whole probe report fails on an older receiver. Keep the schema-3 vocabulary at the wire boundary, as `census/probe.rs` does for task and child kinds.
 - A live detached run sets the worker row's activity in `census/scan.rs` (≈860, after the transcript read). Phase 71 makes that row say `waiting` or the step name.
+- Astra rows take two more paths after the activity read. `AstraMembership::activity` (`census/hierarchy.rs` ≈1131, applied in `census/scan.rs` ≈355) can replace the activity with idle or unknown. `TreeLine::status` (`agent_cell.rs` ≈1680) picks idle or unknown from `PaneWork` on its own. Phase 71's repair changes these paths so a live run's `waiting` survives them. `compacting` must survive them in the same way.
 
 **Spec:**
 1. State the start and end signal for each family in the summary, with the file and line where cargo-handler reads it.
@@ -1211,7 +1212,7 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 4. A turn that is not a compaction keeps today's words.
 5. `compacting` wins over a live run's `waiting` or step name, because the session itself is compacting. After the compaction ends, the run's word returns.
 6. Probe wire: `active` stays `thinking` for a compacting row, and a defaulted compaction extension field carries the compaction. An older receiver shows `thinking`; a current receiver shows `compacting`.
-7. Tests under 1 s from captured fixtures: a Claude compaction and a Codex compaction each draw `compacting` while open and leave it at the end; an ordinary turn start still draws `thinking`; a compaction during a live run draws `compacting`; a compacting probe row decodes as `thinking` without the extension and as `compacting` with it. Each red before its fix.
+7. Tests under 1 s from captured fixtures: a Claude compaction and a Codex compaction each draw `compacting` while open and leave it at the end; an ordinary turn start still draws `thinking`; a compaction during a live run draws `compacting`; an Astra row that compacts draws `compacting`; a compacting probe row decodes as `thinking` without the extension and as `compacting` with it. Each red before its fix.
 8. CHANGELOG: one Added line in cargo-handler.
 
 **Files:**
@@ -1220,6 +1221,7 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 - `crates/cargo-handler/src/census/codex.rs`, `crates/cargo-handler/src/census/tier.rs` — only where the start signal is read; name the file in the summary before its edit
 - `crates/cargo-handler/src/census/probe.rs` — the compaction extension field and its compatibility tests
 - `crates/cargo-handler/src/census/scan.rs` — the run-activity precedence, after the Phase 71 checkpoint
+- `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/agent_cell.rs` — the Astra status paths, after the Phase 71 checkpoint
 - `crates/cargo-handler/CHANGELOG.md` — after Phases 21, 69, 70 and 71
 
 **Workers:** 1 writer. It owns the listed implementation, fixtures, tests and registrations.
@@ -1228,31 +1230,15 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 
 ### Phase 74 — The model-read transcript test finishes in under a second  · status: done
 
-**Depends on:** none. `census/transcript.rs` is outside every open phase.
+#### As-built
 
-#### Work Order
-
-**Goal:** `census::transcript::tests::a_large_codex_rollout_without_effort_reads_bounded_metadata` takes well under 1 s on every run, with its asserts unchanged.
-
-**Source:** the showrunner, 2026-11-08: "add-on 1 is current. Add it as a new handler phase after 72. A test at 1 s or more is a defect, so it ranks with the fix work."
-
-**Constraints:**
-- The test took 1.064 s in the Phase 73 repair copy gate (1e143f42).
-- It writes a padding line of `4 * 1024 * 1024` bytes (`census/transcript.rs` ≈1342). The assert bound is `2 * TRANSCRIPT_TAIL_START` (`constants.rs` ≈322, 64 KiB), so the padding needs only to be larger than that bound.
-- Keep every assert and the test's meaning: a missing effort must not scan the rollout. Do not drop the append half of the test.
-- No new check of your own design.
-
-**Spec:**
-1. Derive the padding length from `TRANSCRIPT_TAIL_START`, large enough that a full scan exceeds the `2 * TRANSCRIPT_TAIL_START` bound.
-2. Show that the test still fails when the read scans the whole rollout: state how, in the summary.
-3. The test takes under 0.1 s alone and stays under 1 s in the package gate.
+- `census::transcript::tests::a_large_codex_rollout_without_effort_reads_bounded_metadata` pads the rollout with `3 * TRANSCRIPT_TAIL_START` bytes (192 KiB), not 4 MiB. The test runs in 0.008 s.
+- The assert bound stays `2 * TRANSCRIPT_TAIL_START` (128 KiB). A full scan reads more than the bound, so the test still fails on a full scan. Every assert and the append half are unchanged.
 
 **Files:**
 - `crates/cargo-handler/src/census/transcript.rs` — the test module only
 
-**Workers:** 1 writer. It owns the listed test.
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Test-only change: no CHANGELOG line and no Change-Review row.
+**Gotchas:** a padding size taken from `TRANSCRIPT_TAIL_START` must stay larger than the assert bound. Below `2 * TRANSCRIPT_TAIL_START`, a full scan passes the test.
 
 ### Phase 73 — The unmatched-ink test paints both frames at one time  · status: done
 
@@ -1556,35 +1542,22 @@ Every session age in the summary and in every tile reads `d:hh:mm` with only the
 
 ### Phase 60a — A Codex session that uses a detached daemon shows its own name  · status: done
 
-**Depends on:** Phase 60. Runs first, before Phases 61, 58, 55 and 56 (showrunner, 2026-11-02).
+#### As-built
 
-#### Work Order
+- A Codex window gets a thread name only from proof on its own connection: a confirmed thread start or resume, or an in-process shell snapshot record (`ConfirmedSelection::snapshot`, `census/codex.rs`) from the window's own pid that names the same thread. A window with no such proof shows its pid, never a name from its start time or its command line.
+- A window on its own app-server (`codex --no-daemon`) is named and follows `/resume`. A window on the shared detached daemon has no proof on its own connection, so it shows its pid. Phase 60b then gives it the herdr pane name.
+- The log reader yields only pid → thread id. The codex_sqlite stage resolves the ids in one by-id query. `link` (`census/codex.rs`) returns `Option<&CodexThread>` and runs once per scan. Shared-daemon ownership is decided at link time from raw per-pid records.
+- The socket reader (`census/codex/socket.rs`) was removed, with its cache and constants. No unsafe code remains. A window links to its daemon only through the daemon parent relation.
+- The /simplify items removed `LogOwnership`, `SharedDaemon`, `CodexLogEvidence::Unread` and the test wrappers `agent_rows` and `codex_startup_threads`.
 
-**Goal:** morty, and every interactive Codex session that uses a detached managed daemon, shows its thread name in its tile and in the summary. The Phase 60 log reader also becomes simpler.
+**Files:**
+- `crates/cargo-handler/src/census/codex.rs` — the log reader, `link`, `ConfirmedSelection`
+- `crates/cargo-handler/src/census/{classify.rs, scan.rs, tier.rs, tree.rs}` — one link map per scan
+- `crates/cargo-handler/src/census/codex_session_tests.rs`, `crates/cargo-handler/src/census/scan/codex_home_tests.rs` — the launch-form and shared-daemon tests
 
-**Source:** the user, 2026-11-01: "once again a new run of cargo handler does not show the morty session - a continuing bug". The user, 2026-11-02, on the seven /simplify items: "okay i want you to add these things - they all sound proper to me".
+**Gotchas:** a start-time or argv match is not proof. Two windows on one daemon can match the same thread, so either row could show the wrong name.
 
-**Cause, found in the Phase 60 live check:** morty runs as pid 3190832, argv `codex resume`, `CODEX_HOME=~/.codex2`. Its managed daemon is pid 817986 under `systemd --user` (pid 2047), not a child of the TUI. The Phase 60 reader looks only at the TUI and its app-server children, so it finds no record for morty.
-
-**Spec:**
-1. State model first, in this section, for showrunner review before code: each state of a process-to-thread link, the one record that holds it, and every path that creates or changes it. Two records never hold the same fact.
-2. Part 1, the seven /simplify items, with no change to any name shown:
-   1. The log reader yields only pid → thread id. The existing codex_sqlite stage resolves those ids with the argv ids in one by-id query. Remove the reader's own thread connection, layout, name cache and retry list.
-   2. Ownership is a process property: keep raw records per pid, and decide shared-daemon ownership at link time. Remove `LogOwnership`, the unseen/pending split and the rewrite loop. One `app_server_children` helper replaces the two child filters.
-   3. Resolve links once per scan and pass one map to classify, names and tiers. `link` returns `Option<&CodexThread>`. Remove `SharedDaemon` and the link source names that nothing reads.
-   4. Remove the test-only `CodexLogEvidence::Unread` and the `#[cfg(test)]` wrappers `agent_rows` and `codex_startup_threads`.
-   5. Return early when the account directory stamp is unchanged. Use one `read_dir` pass, `FileRevision::of`, and one shared `FileIdentity::read`. Merge the open and reopen functions.
-   6. No transaction around the single steady SELECT. Remove the duplicate log read timing.
-   7. Tests use the shared fixture helpers. Merge the two client-exits-stays-ambiguous tests.
-3. Part 2: link a TUI to the thread of a detached daemon it is connected to. Find the evidence from a capture of morty's real process tree and its daemon connection (for example the TUI's unix socket peer). Do not use an invented layout. When the evidence cannot name one client, leave the row unnamed: never show a wrong name.
-4. Tests under 1 s: keep the five launch-form tests of Phase 60 with their asserted names. Add the detached-daemon form as the sixth, built from the capture.
-5. CHANGELOG: one Fixed line in cargo-handler.
-
-**Files:** `crates/cargo-handler/src/census/{codex.rs, classify.rs, scan.rs, codex_session_tests.rs}`, `crates/cargo-handler/CHANGELOG.md`.
-
-**Workers:** 1 writer.
-
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: with two TUIs on one daemon, a `/resume` cannot retain an old name or show another TUI's name. An unresolved TUI shows its pid. The notice states the result. The socket stage stays under 1 ms. The idle CPU is not higher than Phase 60's. The checkpoint adds a Change-Review line.
+**Ruled out:** the unix socket peer reader. It needed unsafe code and a socket stage on every scan, and the showrunner removed it.
 
 ### Phase 60b — A Codex window with no proven thread shows its herdr name  · status: done
 
