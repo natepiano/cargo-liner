@@ -1176,38 +1176,22 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 68 — Tiles keep their columns when a summary cell changes width  · status: done
 
-**Depends on:** Phase 67
+#### As-built
 
-#### Work Order
-
-**Goal:** the tile grid keeps its column count when the text width of a summary cell changes; the layout changes only when the terminal size or the set and rows of the tiles change.
-
-**Source:** the showrunner, 2026-11-07. Change review C217 ("Tiles keep their places when the accounts table wraps", Phase 65, merge 99b87113) was returned after a live check failed:
-1. Check: installed cargo-handler at 80x45, one capture each 2 s for 150 s.
-2. Result: the tiles switch between two columns and one column 4 times in 150 s. Each switch follows a width change of a summary status cell: cargo-liner `waiting` (two columns) to `clippy (mac)` (one column), and back. The accounts table kept its 9 rows and did not wrap.
-3. Frames: `/home/natepiano/rust/repro/cargo-liner-C217-c217/f05.txt` (two columns), `f06.txt` (one column), `f08.txt` (one column), `f09.txt` (two columns). In `f06.txt` the status column is wider and the directory column narrower; the summary keeps the same row count.
-
-**Constraints from prior phases:**
-- Phase 65: `TileGrid::sync_measured_demands` (`crates/tui_pane/src/tiles/grid.rs` ≈2391) runs the candidate search when `LayoutSelectionInputs` change; equal inputs reuse `LayoutSelection` with exactly 2 `cells.demands` calls per draw. Keep that reuse and the narrow-width demand-count tests (200:7, 80:4, 50:2, 40:2, then exactly 2) and `grid_at_height_70_keeps_all_work_rows_and_accounts`.
-- `CellView::requested_at_width` (`agent_cell.rs`) requests a tile's rows at each width; `TreePresentation::HeightCompressed` applies only at allocation.
-
-**Spec:**
-1. First reproduce the switch in a test that drives the real draw path: the frame-5 state at 80x45, then the same state with the `clippy (mac)` status, then back. The test fails before the fix. Name the input that changes the column choice, and quote it in the summary.
-2. Fix the cause where it lives: a change in a cell's text width that does not change any tile's requested rows at the candidate widths does not change the column count. Do not add a hold timer, a hysteresis count or a special case for the summary tile.
-3. A real change still reselects: a tile that gains or loses rows, a tile added or removed, and a terminal resize.
-4. Tests, each red before its fix: the status-width switch above keeps the column count over the full back-and-forth; each case in item 3 still changes the layout when its rows need it; the Phase 65 demand-count tests stay green.
-5. CHANGELOG: one line.
+The tile grid keeps its column count when the text width of a summary cell changes. The layout changes only when the terminal size, the set of tiles or their requested rows change.
+- `TreeMeasurement::minimum_tile_width` (`agent_cell.rs`) reserves the status header width, not the widest status value. The guide, header, role, gap, indent and frame terms are unchanged.
+- The grid reuses `LayoutSelection` only when no tile's requested rows change at the cached candidate widths. `LayoutDemandMeasurement` equality compares widths and requested rows and ignores `summary_width`. A preferred summary width not yet seen at the current widths measures every cached candidate width again (`LayoutSelectionInputs::refresh_measurements`, `CandidateMeasurementFreshness::{CurrentWidth, AllCachedWidths}`).
+- `RowDemandChange::{Unchanged, Changed}` compares summary and group rows. Under `DemandSync::CurrentRender`, `Changed` replaces `HeldCellLayout::rows` before layout (`reconciled_held`), and `queue_row_resize` queues the resize from the drawn slots. Tiles that gain or lose rows, added or removed tiles, and a terminal resize still select a new layout.
+- Cost: equal inputs keep 2 `cells.demands` calls per draw; a new preferred summary width adds one measurement for each other cached candidate.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/summary/mod.rs`, `crates/cargo-handler/CHANGELOG.md`
-- `crates/cargo-handler/src/render/mod.rs` — test module registration
-- `crates/cargo-handler/src/render/layout_stability_tests.rs` — new test module
+- `crates/tui_pane/src/tiles/grid.rs` — `RowDemandChange`, `CandidateMeasurementFreshness`, `refresh_measurements`, `reconciled_held`, `queue_row_resize`; test `narrow_candidate_row_changes_reselect_a_wide_summary`
+- `crates/cargo-handler/src/agent_cell.rs` — `minimum_tile_width`
+- `crates/cargo-handler/src/render/layout_stability_tests.rs` — real-draw tests at 80x45: a status back-and-forth keeps two columns; gained and lost rows, added and removed tiles, and width and height changes reselect
 
-**Workers:** 1 writer + 1 tester.
-- `impl` — the cause and its fix, and the CHANGELOG; hub: `crates/cargo-handler/src/render/mod.rs`.
-- `test` — `render/layout_stability_tests.rs`.
+**Binds later work:** A new tile column adds no value-width term to `minimum_tile_width`; a term that follows drawn text lets a text change cross a column threshold with equal rows. `render/layout_stability_tests.rs` stays green.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler`, `bash ~/.claude/scripts/direct/verify.sh test tui_pane` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: cargo-handler at 80x45, started with my own process, captured each 2 s for 150 s while a summary status changes width, keeps one column count in every frame. The checkpoint carries `Change-Review: cargo-handler tiles keep their columns when a session's status text changes width | open cargo-handler at 80x45 while a session moves between waiting and a longer status, and watch the tiles stay in place`.
+**Ruled out:** A role floor independent of the role text: the measured role widths stay in the floor so role words read whole (`narrow_width_tests.rs` `narrow_growth_envelope_contains_end_top_and_cursor_windows`; showrunner ruling).
 
 ### Phase 41 — Renamed Codex sessions show in cargo-handler  · status: done
 
@@ -1997,7 +1981,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 **Constraints from prior phases:**
 - Two width paths: local fitting uses `ColumnDrop::ORDER` (`agent_cell.rs` ≈584); tiles that share a screen column use `GroupFitStep::ORDER` (≈1048). Both drop effort before model; test both.
 - A click on the `model` or `effort` header sorts by the drawn value through `TreeLine::compare` (≈1507), `Unrecorded` included.
-- `TreeColumn` (`agent_cell.rs` ≈381) is `Session, Type, Role, Status, Account, Branch, Directory, Age`; `alignment` (≈397) and the header text (≈411) are per column. Phase 66 removed `TreeColumns::for_lines`. Column presence and density come from one count per tile: `TreeColumnPopulation::measure` (≈511), `TreeColumnPopulation::density` (≈532, `ColumnDensity::{Sparse, Dense}`) and `PermittedTreeColumns::from_population` (≈559). A `Sparse` column drops when the full table does not fit, so it never takes room from session names; `MeasuredTreeGroup::fit_tiles` (≈1066) applies each tile's own density in shared fitting. Model and effort use the same population; add no second presence scan. `TreeMeasurement::minimum_tile_width` (≈941) reserves `session_guide_width + 1`. Phase 27 keeps the core columns on narrow tiles; Phase 43 changes the age text in the same file.
+- `TreeColumn` (`agent_cell.rs` ≈381) is `Session, Type, Role, Status, Account, Branch, Directory, Age`; `alignment` (≈397) and the header text (≈411) are per column. Phase 66 removed `TreeColumns::for_lines`. Column presence and density come from one count per tile: `TreeColumnPopulation::measure` (≈511), `TreeColumnPopulation::density` (≈532, `ColumnDensity::{Sparse, Dense}`) and `PermittedTreeColumns::from_population` (≈559). A `Sparse` column drops when the full table does not fit, so it never takes room from session names; `MeasuredTreeGroup::fit_tiles` (≈1066) applies each tile's own density in shared fitting. Model and effort use the same population; add no second presence scan. `TreeMeasurement::minimum_tile_width` (≈944) reserves `session_guide_width + 1`. Since Phase 68 it reserves the status header width, not the widest status value, so a text change cannot cross a column threshold while rows stay equal. Model and effort add no value-width term to that floor; `render/layout_stability_tests.rs` stays green. Phase 27 keeps the core columns on narrow tiles; Phase 43 changes the age text in the same file.
 - Phase 49a gives each row `ModelName` and `ReasoningEffort`, both with an `Unrecorded` case.
 - Phase 9: a header press maps through the spans that were painted, not spans rebuilt at press time. `Cells::record_painted_surface` (`render/mod.rs` ≈693) saves `PaintedSurfaceContent::Tree { key, spans, default }` per painted allocation, and `tree_pressed` (`render/painted_surface.rs` ≈100) reads them. New columns reach presses only through those saved spans. Header-press regressions live in `render/drawn_frame_tests.rs`.
 - Phase 65: a tile requests its rows through `CellView::requested_at_width` (`agent_cell.rs` ≈2393), which keeps requested tree rows apart from height compression. The grid reuses its selected layout while its measurement inputs stay equal (`crates/tui_pane/src/tiles/grid.rs` ≈2385). New columns change demand only through that path. `crates/cargo-handler/src/render/narrow_width_tests.rs` (≈265: first-frame demand calls 200:7, 80:4, 50:2, 40:2, then exactly 2 on each later frame, and arrival with no second motion) stays green with no assertion changed.
