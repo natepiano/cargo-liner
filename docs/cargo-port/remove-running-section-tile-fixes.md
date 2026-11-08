@@ -1376,7 +1376,7 @@ Port of the approved capture shim cost work (one process per call apart from car
 
 - The `_capture_parent` change belongs to Phase 43d. This phase does not make it.
 
-### Phase 35m — Summary arguments on main  · status: todo
+### Phase 35m — Summary arguments on main  · status: done
 **Depends on:** none.
 
 
@@ -1392,6 +1392,7 @@ Port of the approved capture shim cost work (one process per call apart from car
 - `crates/cargo-tile/src/render.rs`
 - `crates/cargo-tile/src/render/command_cache.rs`
 - `crates/cargo-tile/src/progress/capture_read.rs`
+- `crates/cargo-tile/src/census/command_text.rs` — review finding F002 (director, 2026-11-07): the summary form reads the parsed command words, so `CommandText` exposes its named words once.
 
 **Workers:** 1 writer — `impl`, every file above.
 
@@ -1644,6 +1645,7 @@ Showrunner, 2026-11-07, from the Phase 43e gate fed9d76a: nextest marks `cli_lif
 7. The Phase 43h pairs (1c9501c) marked `caller_descriptors_reach_captured_cargo` leaky on the Mac (0.395 s). Find its owner as in item 4, and fix it by its cause.
 8. The showrunner routes two natedev times here (2026-11-07, port run 20261107T190249, log `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/mesh_runs/20261107T190249-3435117-3bbc.log`): `shim_registration::installed::publication_after_final_confirmation_survives_delayed_unlinks` took 1.154 s and `shim_registration::installed::same_pid_and_calendar_second_receive_different_generations` took 1.471 s. A multi-second test is a defect, not a load flake. Measure each test's stages, then fix the cause so neither takes 1 s or more. Keep every assertion.
 9. Phase 43f's final gate (copy e3ea0a6, director, 2026-11-07) timed `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` at 1.891 s on natedev and 1.037 s and 0.651 s on the Mac. Phase 43h had it below 1 s. Measure its stages, then fix the cause so it stays below 1 s. Keep the stopped-compiler counter order, the strict counter bound and every readiness wait.
+10. Phase 35m's gate (copy 081f7f74, director, 2026-11-07) timed two more reader scenarios at 1 s or more: `reader_keeps_one_direct_row_for_quiet_json` took 1.019 s on the Mac, and `reader_excludes_a_live_command_without_sweeping_its_capture` took 1.185 s on natedev. Phase 35m does not touch the reader. Measure each scenario's stages, then fix the cause so both stay below 1 s. Keep every assertion and every readiness wait.
 
 **Files:**
 - `crates/cargo-tile/tests/cli_lifecycle.rs`
@@ -1651,7 +1653,7 @@ Showrunner, 2026-11-07, from the Phase 43e gate fed9d76a: nextest marks `cli_lif
 - `crates/cargo-tile/src/shim_registration/` — only if step 1 shows the product leaves the child.
 - `crates/cargo-tile/src/app_global_action.rs` — its test module, for item 4; product code only if the product leaves the handle.
 - `crates/cargo-tile/src/shim_registration/installed.rs` — item 8's two tests and their fixtures.
-- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` and `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — item 9's cache-server scenario.
+- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` and `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — item 9's cache-server scenario and item 10's `quiet-json-long` and `excluded` scenarios.
 - `crates/cargo-tile/tests/shim_modes.rs` — its interrupt test, for item 5, and `caller_descriptors_reach_captured_cargo`, for item 7; the shim product code only if the shim returns early.
 
 **Workers:** 1 writer — `test`: the lifecycle tests, the leak investigations, the interrupt regression, the startup timing, and their approved helper or product repairs.
@@ -1918,7 +1920,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 ### Phase 31 — Ended cells leave whole  · status: todo
 
-**Depends on:** none (Phase 28 was dropped, 2026-10-29).
+**Depends on:** Phase 35m (both change `render.rs` and `render/command_cache.rs`).
 
 #### Work Order
 
@@ -1927,6 +1929,8 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 **Spec:**
 
 1. **An ended cell leaves whole.** Each frame of an ended cell's leave paints its header, its rows and its foot, or paints nothing. Test, red first: a fixture under 1 s in which an ended cell shrinks in mid-column, checked in the rendered buffer frame by frame. The fixture also covers the frame with no rows: the roster has dropped the group while the grid still draws its closing cell (main 1fdee462: empty bordered box with `content rows: 0` in 38 of 107 frames, from 3 ms to 550 ms; `frame_draw_group` returns without rows).
+
+2. **The tile motion tests run under 1 s under load** (showrunner, 2026-11-07). Port's Mac run (six nextest threads, log `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/mesh_runs/20261107T193135-3235537-9756.log`) timed seven `tui_pane` tile tests at 1.0 to 1.7 s; an earlier full run on the same code had a maximum of 0.645 s. In `tiles/draw.rs`: `every_frame_of_a_key_keeps_the_motion_rules` (1.712 s), `a_content_change_mid_motion_leaves_no_blank_row` (1.674 s), `a_cell_arriving_at_a_column_foot_leaves_no_line_before_its_first_row` (1.628 s), `startup_cells_leave_no_line_before_their_first_row` (1.383 s), `a_content_change_keeps_the_motion_clock_with_a_key_waiting` (1.200 s), `sliding_pieces_leave_no_band_row_on_the_screen_ground` (1.015 s). In `tiles/grid.rs`: `a_sliding_arrival_shows_its_nearest_content_row_with_its_first_visible_row` (1.180 s). A test near 1 s under load is a defect. Measure each test's stages, then cut the cost so each stays under 1 s in a loaded Mac full suite. Keep every assertion and every checked frame.
 
 **Landing rule:** Phase 24's landing rule, unchanged. At most 3 repair rounds.
 
