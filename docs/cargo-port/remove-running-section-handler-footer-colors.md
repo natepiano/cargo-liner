@@ -1230,6 +1230,39 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: a framed capture from a cargo-handler the writer started, showing a pane worker row that says `waiting` during a detached run that is not a `verify.sh` run, and a worker that had no row now has its row. The checkpoint carries `Change-Review: a Codex pane worker shows waiting during every detached run, and a worker with a live run always has its row | during a unit's detached package check, find its worker row in cargo-handler: it says waiting, with no separate running dispatch row beside it`.
 
+### Phase 72 — A compacting session says compacting  · status: todo
+
+**Depends on:** Phase 71 (`census/activity.rs`). `crates/cargo-handler/CHANGELOG.md` waits for Phases 21, 69, 70 and 71.
+
+#### Work Order
+
+**Goal:** while a Claude or Codex session compacts its conversation, its row says `compacting`, not `thinking`. Every other case that says `thinking` today stays as it is.
+
+**Source:** the user, relayed by the showrunner, 2026-11-08: "add to the cargo handler - if we're compacting it would be good for the status to say that instead of "thinking" which is what i believe it says right now", and "if there are other conditoins for thinking that is fine - compacting is a special case".
+
+**Constraints:**
+- Today `ActivityRead::take_codex` and `ActivityRead::take_claude` (`census/activity.rs` ≈203 and ≈224) set `Activity::Thinking` at a turn start and leave it until a tool call or the turn end. A compaction is a turn with no tool call, so it draws as `thinking`.
+- Both transcripts write the compaction record only at its end. Claude writes a `system` line with `subtype: "compact_boundary"` and `compactMetadata` (`trigger`, `durationMs`, `precomputed`). Codex writes a top-level `"type": "compacted"` line. Director check, 2026-11-08: a Codex rollout showed `task_started` at 05:05:56 and `compacted` at 05:07:41, 1 m 45 s drawn as `thinking`, with no `user_message` between them.
+- Find a signal that is present while the compaction runs, for each family, on real sessions, and state it before you change code. Leads: the Codex app-server context-compaction item events, and the Claude `PreCompact` hook. A compaction that starts and ends between two scans needs no `compacting` frame.
+- Read only. Never type into, signal or stop a session that you did not start. Copy the transcript lines you need into fixtures.
+- No new check of your own design.
+
+**Spec:**
+1. State the start and end signal for each family in the summary, with the file and line where cargo-handler reads it.
+2. Add `Activity::Compacting`, with the status word `compacting` and the busy color of `thinking`.
+3. A row says `compacting` from the start signal to the end signal. After the end, the row follows the next transcript line as today.
+4. A turn that is not a compaction keeps today's words.
+5. Tests under 1 s from captured fixtures: a Claude compaction and a Codex compaction each draw `compacting` while open and leave it at the end; an ordinary turn start still draws `thinking`. Each red before its fix.
+6. CHANGELOG: one Added line in cargo-handler.
+
+**Files:**
+- `crates/cargo-handler/src/census/activity.rs`, `crates/cargo-handler/src/census/activity_regression_tests.rs`
+- `crates/cargo-handler/src/census/fixtures/` — new compaction fixtures
+- `crates/cargo-handler/src/census/codex.rs`, `crates/cargo-handler/src/census/tier.rs` — only where the start signal is read; name the file in the summary before its edit
+- `crates/cargo-handler/CHANGELOG.md` — after Phases 21, 69, 70 and 71
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: a framed capture from a cargo-handler the writer started, showing a session row that says `compacting` during a compaction of a session the writer started. The checkpoint carries `Change-Review: a session that compacts its conversation says compacting, not thinking | in cargo-handler, find a session while it compacts: its row says compacting until the compaction ends`.
+
 ### Phase 67 — Pane Codex workers show under their unit  · status: done
 
 #### As-built
