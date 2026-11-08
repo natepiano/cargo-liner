@@ -207,6 +207,12 @@ fn assert_managed_worker(tiles: &[DrawnTile], worker: &str, unit: &str) {
         line.split_whitespace().any(|word| word == "worker"),
         "worker role: {line}"
     );
+    assert!(
+        line.replace(worker, "")
+            .split_whitespace()
+            .any(|word| word == "worker"),
+        "the role column must show worker separately from the name: {line}"
+    );
     assert!(line.contains('─'), "worker must have a tree rail: {line}");
     assert!(
         !tiles
@@ -250,11 +256,52 @@ fn a_resume_directory_argument_does_not_prove_a_staff_thread() {
 }
 
 #[test]
+fn remote_option_values_do_not_prove_a_staff_thread() {
+    for option in ["--remote-auth-token-env", "--remote"] {
+        let fixture = Fixture::new();
+        let (rows, edges) = fixture.scan(vec![
+            fixture.process(40, &["codex", option, "resume", FIRST_THREAD]),
+        ]);
+        let worker = rows
+            .iter()
+            .find(|row| row.pid == 40)
+            .expect("live Codex worker");
+        assert_eq!(worker.session_id, SessionIdentity::Unrecorded, "{option}");
+        let name = worker.name.clone();
+        assert!(
+            drawn_tiles(rows, edges)
+                .iter()
+                .any(|tile| matches!(tile, DrawnTile::Unassigned(text) if text.contains(&name))),
+            "{option} must leave the worker unassigned"
+        );
+    }
+}
+
+#[test]
 fn resumed_pane_worker_uses_command_line_proof_without_a_thread_database() {
     let fixture = Fixture::new();
     let (rows, edges) = fixture.scan(vec![
         fixture.process(40, &["codex", "resume", FIRST_THREAD]),
     ]);
+    assert_managed_worker(
+        &drawn_tiles(rows, edges),
+        "first staff worker",
+        "first staff unit",
+    );
+}
+
+#[test]
+fn an_unknown_codex_switch_keeps_the_resumed_worker_under_its_unit() {
+    let fixture = Fixture::new();
+    let (rows, edges) = fixture.scan(vec![fixture.process(
+        40,
+        &[
+            "codex",
+            "--dangerously-bypass-hook-trust",
+            "resume",
+            FIRST_THREAD,
+        ],
+    )]);
     assert_managed_worker(
         &drawn_tiles(rows, edges),
         "first staff worker",

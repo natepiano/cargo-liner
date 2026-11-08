@@ -1146,7 +1146,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** linking a staff worker by working directory and start time (herdr-unit, 2026-11-07).
 
-### Phase 67a — An unknown Codex switch keeps the resume proof  · status: todo
+### Phase 67a — An unknown Codex switch keeps the resume proof  · status: done
 
 **Depends on:** Phase 67
 
@@ -2046,9 +2046,10 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - `crates/cargo-handler/src/census/incremental_read_tests.rs` — the incremental Codex tier test
 - `crates/cargo-handler/src/render/word_click_tests.rs` — `visible_unicode_tokens_resolve_from_every_terminal_cell` (1.011 s on natedev, 2026-11-07)
 - `crates/cargo-handler/src/render/word_contrast_tests.rs` — every `matched_inks_keep_glyph_contrast_in_*` test: 17 ran over 1 s on natedev in a busy full-suite run (1.052–2.374 s, port run log `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/mesh_runs/20261107T190655-3982080-ab7a.log`, 2026-11-07). Bring the whole module under 1 s, not only the named cases.
+- `crates/cargo-handler/src/render/narrow_width_tests.rs` — `account_refresh_keeps_the_destination_through_animation_frames` (≈230; 1.123 s on natedev in a full-suite run, 2026-11-07, run log `/tmp/claude/unit/21496649-0876-4315-8701-05f8943b788f/mesh_runs/20261107T200337-2934130-37da.log`)
 
 **Workers:** 2 writers.
-- `palette` — the gradient, design-ink, selected-ink, pinned accounts and tree sort test files, `app.rs`, `render/word_click_tests.rs` and `render/word_contrast_tests.rs`.
+- `palette` — the gradient, design-ink, selected-ink, pinned accounts and tree sort test files, `app.rs`, `render/word_click_tests.rs`, `render/word_contrast_tests.rs` and `render/narrow_width_tests.rs`.
 - `census` — `census/codex_session_tests.rs` with both Codex tests, and `census/incremental_read_tests.rs`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean with no test over one second, on the Mac and in a full-suite run on natedev; lint clean. Change-Review: none (test time only).

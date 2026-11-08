@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Codex remote option values cannot supply resume proof for staff placement.
+
+- Unknown Codex switches preserve resume proof when the census places workers under their staff manager.
+
 - Tiles keep their columns when status text changes without changing requested rows, and reselect when candidate row counts change.
 
 - Codex workers in herdr panes show under their staff manager when their command line or open rollout proves their thread.

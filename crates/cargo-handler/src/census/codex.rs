@@ -74,6 +74,8 @@ const CODEX_VALUE_OPTIONS: &[&str] = &[
     "--config",
     "--enable",
     "--disable",
+    "--remote",
+    "--remote-auth-token-env",
     "-i",
     "--image",
     "-m",
@@ -88,20 +90,6 @@ const CODEX_VALUE_OPTIONS: &[&str] = &[
     "-C",
     "--cd",
     "--add-dir",
-];
-
-/// Codex flags that do not consume the next argument.
-const CODEX_SWITCHES: &[&str] = &[
-    "--no-daemon",
-    "--oss",
-    "--full-auto",
-    "--dangerously-bypass-approvals-and-sandbox",
-    "--no-alt-screen",
-    "--search",
-    "-h",
-    "--help",
-    "-V",
-    "--version",
 ];
 
 /// Separator positions in a complete UUID.
@@ -126,16 +114,12 @@ pub(super) fn resume_request(process: &ProcessEntry) -> ResumeRequest<'_> {
             }
             continue;
         }
-        if CODEX_SWITCHES.contains(&argument)
-            || (argument.starts_with("--") && argument.contains('='))
-        {
-            continue;
-        }
         match (position, argument) {
-            (ResumePosition::Command, CODEX_RESUME_SUBCOMMAND) => position = ResumePosition::Thread,
             (ResumePosition::Thread, CODEX_RESUME_LAST_ARGUMENT) => {
                 return ResumeRequest::LastThread;
             },
+            (_, switch) if switch.starts_with('-') => {},
+            (ResumePosition::Command, CODEX_RESUME_SUBCOMMAND) => position = ResumePosition::Thread,
             (ResumePosition::Thread, id)
                 if id.len() == UUID_TEXT_LENGTH
                     && id.bytes().enumerate().all(|(index, byte)| {
