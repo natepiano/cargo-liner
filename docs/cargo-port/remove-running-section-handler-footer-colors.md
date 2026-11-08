@@ -1182,7 +1182,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 6. CHANGELOG: one Changed line in cargo-handler, and one Added line in tui_pane.
 
 **Files:**
-- `crates/tui_pane/src/expansion.rs`, `crates/tui_pane/src/lib.rs`, `crates/tui_pane/CHANGELOG.md`
+- `crates/tui_pane/src/expansion.rs`, `crates/tui_pane/src/lib.rs`
+- `crates/tui_pane/CHANGELOG.md` — after the overlap answer on cargo-liner-port's outstanding reservation; the director adds the line
 - `crates/cargo-handler/src/interaction.rs`
 - `crates/cargo-handler/src/expansion.rs`, `crates/cargo-handler/src/expansion_tests.rs`
 - `crates/cargo-handler/src/render/painted_surface.rs`, `crates/cargo-handler/src/render/pinned_accounts_tests.rs`
@@ -1190,6 +1191,44 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/cargo-handler/CHANGELOG.md` — after Phases 21 and 69
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: two framed shots of a cargo-handler the writer started, before and after a press on the body of a closed row away from its marker, with the row open in the second shot. The checkpoint carries `Change-Review: cargo-handler opens or closes a row on a click anywhere on that row, as the cargo-port project list does | in cargo-handler, click the text of a row that shows ▶ or ▼, away from the marker, and see it open or close`.
+
+### Phase 71 — A detached run joins its pane worker's row  · status: todo
+
+**Depends on:** none; runs beside Phases 21, 69 and 70. `census/scan.rs` and `crates/cargo-handler/CHANGELOG.md` wait for the Phase 21 checkpoint.
+
+#### Work Order
+
+**Goal:** while a worker's detached run is live, that worker's row says `waiting` (or the run's step name), whatever the command. A worker with a live run always has a row. The run never draws as a separate dispatch row beside its worker.
+
+**Source:** the user, relayed by the showrunner, 2026-11-08: "i don't see it", the verdict on C218 (Phase 62h, merged 63277286). This is the second return of the change; C201 was the first.
+
+**Constraints:**
+- Evidence, the tile unit at about 11:52 EST (session `/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e`):
+  1. Worker `impl` showed `idle` while mesh_runs supervisor pid 994014 ran `bash .../phases/30m/repair3_package_checks.sh` (label "Phase 30m repair 3 package checks"). The record `mesh_runs/20261108T115054-992260-70a7.json` has `"worker": "impl"`, `"staff_id": "01a1b9c6-4b1b-79c0-ad78-920ac1efe28a"`, `"session_dir"` and `"director_dir"`.
+  2. The detached runs drew as separate dispatch rows ("Dispatch 30m repair...", "Rerun the Phase 56...") that said `running`.
+  3. Worker `test` had a live run since 02:34 EST (pid 1572988, `python3 .../phases/43i/observe_then_gate.py`) and had no row.
+- The tile unit uses pane workers (herdr), not only mesh workers. Phase 62h tests covered mesh workers. Find the cause on the real records and processes first, and state it before you change code.
+- Leads: `RunRecord::session` and `VerificationProcesses::worker_runs` (`census/activity.rs` ≈461 and ≈705) join a record to a worker through the staff roster by the record's worker name; Phase 42's `DispatchPairing` (`census/placement.rs`) decides which shells fold into a worker row.
+- Read only. Never signal or type into the tile unit's processes or panes. Copy the records you need into a fixture.
+- No new check of your own design. The tests check the three evidence cases.
+
+**Spec:**
+1. State the cause of each evidence case in the summary, with the file and line.
+2. Fix the join so that a live run record that names a pane worker sets that worker's row to `waiting` or the step name.
+3. A live run's supervisor and command processes fold into the worker row, not into a separate dispatch row.
+4. A worker with a live run and no other visible process still has its row.
+5. Tests under 1 s from captured fixtures of the tile records and process rows: cases 1, 2 and 3 above, each red before the fix.
+6. CHANGELOG: one Fixed line in cargo-handler.
+
+**Files:**
+- `crates/cargo-handler/src/census/activity.rs`, `crates/cargo-handler/src/census/activity_regression_tests.rs`
+- `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/tree.rs`
+- `crates/cargo-handler/src/census/worker_dispatch/mod.rs`, `crates/cargo-handler/src/census/worker_dispatch/sessions.rs`, `crates/cargo-handler/src/census/worker_dispatch/tests.rs`
+- `crates/cargo-handler/src/census/fixtures/` — new pane-worker run fixtures
+- `crates/cargo-handler/src/census/scan.rs` — after the Phase 21 checkpoint
+- `crates/cargo-handler/CHANGELOG.md` — after Phases 21, 69 and 70
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: a framed capture from a cargo-handler the writer started, showing a pane worker row that says `waiting` during a detached run that is not a `verify.sh` run, and a worker that had no row now has its row. The checkpoint carries `Change-Review: a Codex pane worker shows waiting during every detached run, and a worker with a live run always has its row | during a unit's detached package check, find its worker row in cargo-handler: it says waiting, with no separate running dispatch row beside it`.
 
 ### Phase 67 — Pane Codex workers show under their unit  · status: done
 
