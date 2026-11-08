@@ -1338,8 +1338,10 @@ mod tests {
         let directory = TempDir::new().expect("rollout directory");
         let path = directory.path().join("rollout.jsonl");
         let context = json!({"type":"turn_context", "payload":{"model":"gpt-6.1-sol"}});
+        let padding_length =
+            usize::try_from(3 * TRANSCRIPT_TAIL_START).expect("padding length fits");
         let padding =
-            json!({"type":"response_item", "payload":{"text":"x".repeat(4 * 1024 * 1024)}});
+            json!({"type":"response_item", "payload":{"text":"x".repeat(padding_length)}});
         write_lines(
             &path,
             &[
