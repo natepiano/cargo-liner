@@ -1957,7 +1957,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Gotchas:** a new requester joins the single `read_scan` call. A second read per scan queries departed ids after a revision change, and reads twice on a cold scan.
 
-### Phase 49b — Agent tiles show model and effort columns  · status: todo
+### Phase 49b — Agent tiles show model and effort columns  · status: done
 
 **Depends on:** Phase 49a, Phase 43, Phase 66
 
@@ -1986,6 +1986,9 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - `crates/cargo-handler/src/agent_cell.rs` — the columns
 - `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs` — tests
 - `crates/cargo-handler/src/render/drawn_frame_tests.rs` — header-press tests
+- `crates/cargo-handler/src/agent_cell/tests/sort_tests.rs` — the exhaustive `TreeColumn` match (≈440) gains `Model` and `Effort` arms
+- `crates/cargo-handler/src/census/model.rs` — borrowed display text for `ModelName` and `ReasoningEffort`
+- `crates/cargo-handler/src/constants.rs` — `TREE_MODEL_HEADER` and `TREE_EFFORT_HEADER` beside the other tree headers
 - `crates/cargo-handler/CHANGELOG.md`
 
 **Workers:** 1 writer (`impl`).

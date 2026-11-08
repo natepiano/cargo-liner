@@ -39,7 +39,8 @@ const MODEL_NAMES: &[(&str, ModelName)] = &[
 
 impl ModelName {
     pub(super) const fn is_unrecorded(&self) -> bool { matches!(self, Self::Unrecorded) }
-    fn short(&self) -> &str {
+    /// `ModelName::display_text` borrows the tile label and leaves unrecorded models blank.
+    pub(crate) fn display_text(&self) -> &str {
         match self {
             Self::Unrecorded => "",
             Self::Other(name) => &name.0,
@@ -79,7 +80,7 @@ impl From<ModelName> for String {
     fn from(model: ModelName) -> Self {
         match model {
             ModelName::Unrecorded => "unrecorded".to_owned(),
-            model => model.short().to_owned(),
+            model => model.display_text().to_owned(),
         }
     }
 }
@@ -99,6 +100,18 @@ pub(crate) enum ReasoningEffort {
 }
 
 impl ReasoningEffort {
+    /// `ReasoningEffort::display_text` borrows the tile label and leaves unrecorded effort blank.
+    pub(crate) const fn display_text(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+            Self::Unrecorded => "",
+        }
+    }
+
     pub(super) fn is_unrecorded(effort: impl std::borrow::Borrow<Self>) -> bool {
         matches!(effort.borrow(), Self::Unrecorded)
     }
@@ -613,14 +626,17 @@ mod tests {
             ("gpt-6.1-astra", "astra"),
             ("openai/gpt-6.1-sol", "sol"),
         ] {
-            assert_eq!(ModelName::from(id).short(), short, "{id}");
+            assert_eq!(ModelName::from(id).display_text(), short, "{id}");
         }
     }
 
     #[test]
     fn unknown_model_ids_keep_the_last_word_without_version_digits() {
-        assert_eq!(ModelName::from("vendor/new-comet-3.2").short(), "comet");
-        assert_eq!(ModelName::from("vendor/nebula2").short(), "nebula");
+        assert_eq!(
+            ModelName::from("vendor/new-comet-3.2").display_text(),
+            "comet"
+        );
+        assert_eq!(ModelName::from("vendor/nebula2").display_text(), "nebula");
     }
 
     #[test]
@@ -633,6 +649,7 @@ mod tests {
             ("max", ReasoningEffort::Max),
         ] {
             assert_eq!(ReasoningEffort::from(word), effort);
+            assert_eq!(ReasoningEffort::from(word).display_text(), word);
         }
     }
 }

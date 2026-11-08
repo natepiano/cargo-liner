@@ -13,6 +13,8 @@ use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::ChildKind;
 use crate::census::HierarchyEdges;
+use crate::census::model::ModelName;
+use crate::census::model::ReasoningEffort;
 use crate::census::scan::ScanStage;
 use crate::census::transcript::SubagentRole;
 use crate::interaction::RowIdentity;
@@ -63,6 +65,120 @@ fn group_header(app: &App, buffer: &Buffer, text: &str) -> TestResult<Position> 
                 })
         })
         .ok_or_else(|| format!("missing group header {text}").into())
+}
+
+fn model_rows() -> TestResult<Vec<AgentRow>> {
+    let mut owners = rows()?;
+    owners[0].model = ModelName::Opus;
+    owners[0].effort = ReasoningEffort::Max;
+    for child in &mut owners[0].children {
+        child.depth = 0;
+        child.kind = ChildKind::Subagent(SubagentRole::Reviewer);
+        child.model = ModelName::Sol;
+        child.effort = ReasoningEffort::XHigh;
+    }
+    let mut blank = owners[0].children[0].clone();
+    blank.pid = Some(13);
+    blank.name = "blank-work".into();
+    blank.model = ModelName::Unrecorded;
+    blank.effort = ReasoningEffort::Unrecorded;
+    owners[0].children.push(blank);
+    Ok(owners)
+}
+
+#[test]
+fn drawn_model_header_sorts_changed_values_and_blanks() -> TestResult {
+    assert_changed_metadata_sort("model", TreeColumn::Model)
+}
+
+#[test]
+fn drawn_effort_header_sorts_changed_values_and_blanks() -> TestResult {
+    assert_changed_metadata_sort("effort", TreeColumn::Effort)
+}
+
+fn assert_changed_metadata_sort(header: &str, column: TreeColumn) -> TestResult {
+    let mut app = App::new_for_test()?;
+    let mut owners = model_rows()?;
+    owners[0].children[0].model = ModelName::Haiku;
+    owners[0].children[0].effort = ReasoningEffort::High;
+    owners[0].children[1].model = ModelName::Sol;
+    owners[0].children[1].effort = ReasoningEffort::Low;
+    install(&mut app, owners.clone());
+    let before = paint(&mut app, 260)?;
+    assert!(
+        group_header(&app, &before, "first-work")?.y
+            < group_header(&app, &before, "nested-work")?.y
+    );
+    let point = group_header(&app, &before, header)?;
+    owners[0].children[0].model = ModelName::Sol;
+    owners[0].children[0].effort = ReasoningEffort::Low;
+    owners[0].children[1].model = ModelName::Haiku;
+    owners[0].children[1].effort = ReasoningEffort::High;
+    install(&mut app, owners);
+    app.click(point);
+    assert!(app.tree_sorts.values().any(|sort| sort.column == column));
+    let after = paint(&mut app, 260)?;
+    let blank = group_header(&app, &after, "blank-work")?;
+    let first = group_header(&app, &after, "first-work")?;
+    let second = group_header(&app, &after, "nested-work")?;
+    assert!(
+        blank.y < second.y && second.y < first.y,
+        "{header}: {blank:?}, {first:?}, {second:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn drawn_model_and_effort_headers_survive_removed_values() -> TestResult {
+    for (header, column) in [("model", "Model"), ("effort", "Effort")] {
+        let mut app = App::new_for_test()?;
+        let mut owners = model_rows()?;
+        install(&mut app, owners.clone());
+        let before = paint(&mut app, 260)?;
+        let point = group_header(&app, &before, header)?;
+        owners[0].model = ModelName::Unrecorded;
+        owners[0].effort = ReasoningEffort::Unrecorded;
+        for child in &mut owners[0].children {
+            child.model = ModelName::Unrecorded;
+            child.effort = ReasoningEffort::Unrecorded;
+        }
+        install(&mut app, owners);
+        app.click(point);
+        assert!(
+            app.tree_sorts
+                .values()
+                .any(|sort| format!("{:?}", sort.column) == column)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn moving_model_and_effort_headers_use_the_painted_spans() -> TestResult {
+    for (header, column) in [("model", "Model"), ("effort", "Effort")] {
+        let mut app = App::new_for_test()?;
+        let mut owners = model_rows()?;
+        let mut other = word_click_tests::session(20, "second-owner", "second-work")?;
+        other.children[0].pid = Some(21);
+        owners.push(other);
+        install(&mut app, owners);
+        let area = Rect::new(0, 0, 300, 60);
+        body(&mut app, area)?;
+        app.tiles.settle_for_test();
+        body(&mut app, area)?;
+        app.tiles
+            .apply(TileAction::Add, app.loaded_config.config.tiles.growth());
+        app.tiles.hold_motion_at_half_for_test();
+        let moving = body(&mut app, area)?;
+        assert!(app.tiles.has_pending_motion_for_test());
+        app.click(group_header(&app, &moving, header)?);
+        assert!(
+            app.tree_sorts
+                .values()
+                .any(|sort| format!("{:?}", sort.column) == column)
+        );
+    }
+    Ok(())
 }
 
 #[test]
