@@ -1598,7 +1598,7 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 
 **Ruled out:** copying product installation logic into the lifecycle fixture; a wider CPU assertion bound.
 
-### Phase 43f — The Mac census reads executable names through libproc  · status: todo
+### Phase 43f — The Mac census reads executable names through libproc  · status: done
 
 **Depends on:** Phase 43h
 
@@ -1613,13 +1613,19 @@ Showrunner, 2026-11-07, on Phase 43b: keep sysinfo now and measure again after P
 2. Find whether `libproc::proc_pid::name(pid)` gives what exec detection needs in place of the sysinfo executable refresh (`process_discovery_refresh_kind` at `census/scan.rs:1478`, with `with_exe(UpdateKind::Always)` at line 1484).
 3. If it does: on the Mac, read the name through `libproc` and remove the sysinfo executable refresh from discovery. Keep Linux as it is.
 4. If no safe crate gives the cut: change no code. Report the measured cost of the executable refresh to the director, who brings it to the showrunner.
-5. Phase 43h routes two reader-test times here (findings F002 and F004; director, 2026-11-07). At 43h head 1c9501c on the Mac, `reader_excludes_a_live_command_without_sweeping_its_capture` took 1.002-1.185 s. Its second scan took 0.446 s, and 0.301 s of that is the refresh sample `self.refresh.sample(now, self.pace)` at `census/scan.rs:1396`. `reader_keeps_one_direct_row_for_quiet_json` took 1.062 s in one gate suite. Measure that refresh sample in the excluded reader before and after the step 3 cut. If a reader test still reaches 1 s, report the stage to the director; do not change test code in this phase.
+5. Phase 43h routes two reader-test times here (findings F002 and F004; director, 2026-11-07). At 43h head 1c9501c on the Mac, `reader_excludes_a_live_command_without_sweeping_its_capture` took 1.002-1.185 s. Its second scan took 0.446 s, and 0.301 s of that is the refresh sample `self.refresh.sample(now, self.pace)` at `census/scan.rs:1396`. `reader_keeps_one_direct_row_for_quiet_json` took 1.062 s in one gate suite. Measure that refresh sample in the excluded reader before and after the step 3 cut. If a reader test still reaches 1 s after the cut, find its stage and fix it so neither test takes 1 s or more (showrunner, 2026-11-07). Keep every assertion and named wait.
+6. Showrunner ruling, 2026-11-07 (option a): step 2 found that `proc_name` reports `bash` for a `cargo` symlink to bash, where the current read gives `cargo`, so the name cannot replace the executable spelling. On the Mac, read `proc_name` each scan as a change mark. Read the executable spelling only for a new pid or a changed `proc_name`. Keep Linux as it is.
+7. Add a test: a changed `proc_name` makes the scan read the spelling again, and an unchanged one does not.
+8. The 3-pair gate decides. A gain inside the spread is no gain: then revert the cut and close this phase with no code change.
+9. The as-built notes name the known gap with the bash example: an exec from one image into a symlink with the same `proc_name` keeps the old spelling.
 
 **Files:**
 - `crates/cargo-tile/src/census/scan.rs`
 - `crates/cargo-tile/Cargo.toml`
+- `Cargo.toml` and `Cargo.lock` — the `libproc` workspace dependency only.
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` and `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — Spec 5 only, when a test stage outside the census holds a reader test at 1 s or more.
 
-**Workers:** 1 writer — `impl`, the census scan and the crate manifest.
+**Workers:** 1 writer — `impl`, the census scan, the crate manifest and the two reader-test files.
 
 **Constraints from prior phases:** No `unsafe` block, no new `#[allow]` or `#[expect]`. Keep sysinfo for every other process read. Phase 43b holds: each scan prepares one `Census` and one CPU topology, and `InvocationLifetimeReads::apply` adds Mac lifetime evidence to that census. A CPU claim needs 3 or more Mac pairs; a cut inside the spread does not land. No test takes a second.
 
@@ -1643,12 +1649,16 @@ Showrunner, 2026-11-07, from the Phase 43e gate fed9d76a: nextest marks `cli_lif
 5. The Phase 43e round 6 natedev suite (a4fef59a, load 37-44) failed `shim_modes::tests::interrupt_to_the_process_group_lets_cargo_finish_first` at `crates/cargo-tile/tests/shim_modes.rs:1195` ("the shim returned before cargo finished stopping"). Phase 30m's suite failed it the same way under load. Find the race between the shim's return and cargo's stop, and fix its cause. Keep the assertion.
 6. Phase 43h routes `uninstall_waits_on_a_locked_temporary_orphan_before_classifying_it` here (finding F001; director, 2026-11-07). At 43h head 1c9501c it took 1.097 s on the Mac in one of six suites. Its locked child command took 0.821 s: 0.391 s before CLI entry (`main.rs:36`) and 0.423 s in ten product lock retries (`SHIM_LOCK_RETRY_ATTEMPTS` with `SHIM_LOCK_RETRY_DELAY`, `hook.rs:840`). The startup interval includes scheduling, and its mechanism is not known: measure its cause before you change code. Then cut the CLI startup cost. Keep the locked-uninstall assertions. A change to the product retry budget is a showrunner decision: report it to the director with the measured times.
 7. The Phase 43h pairs (1c9501c) marked `caller_descriptors_reach_captured_cargo` leaky on the Mac (0.395 s). Find its owner as in item 4, and fix it by its cause.
+8. The showrunner routes two natedev times here (2026-11-07, port run 20261107T190249, log `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/mesh_runs/20261107T190249-3435117-3bbc.log`): `shim_registration::installed::publication_after_final_confirmation_survives_delayed_unlinks` took 1.154 s and `shim_registration::installed::same_pid_and_calendar_second_receive_different_generations` took 1.471 s. A multi-second test is a defect, not a load flake. Measure each test's stages, then fix the cause so neither takes 1 s or more. Keep every assertion.
+9. Phase 43f's final gate (copy e3ea0a6, director, 2026-11-07) timed `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` at 1.891 s on natedev and 1.037 s and 0.651 s on the Mac. Phase 43h had it below 1 s. Measure its stages, then fix the cause so it stays below 1 s. Keep the stopped-compiler counter order, the strict counter bound and every readiness wait.
 
 **Files:**
 - `crates/cargo-tile/tests/cli_lifecycle.rs`
 - `crates/cargo-tile/src/main.rs` and `crates/cargo-tile/src/cli.rs` — item 6's measured startup cause, and item 2 when step 1 shows the product leaves the child; other product files need director routing.
 - `crates/cargo-tile/src/shim_registration/` — only if step 1 shows the product leaves the child.
 - `crates/cargo-tile/src/app_global_action.rs` — its test module, for item 4; product code only if the product leaves the handle.
+- `crates/cargo-tile/src/shim_registration/installed.rs` — item 8's two tests and their fixtures.
+- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` and `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — item 9's cache-server scenario.
 - `crates/cargo-tile/tests/shim_modes.rs` — its interrupt test, for item 5, and `caller_descriptors_reach_captured_cargo`, for item 7; the shim product code only if the shim returns early.
 
 **Workers:** 1 writer — `test`: the lifecycle tests, the leak investigations, the interrupt regression, the startup timing, and their approved helper or product repairs.
