@@ -1377,33 +1377,21 @@ Port of the approved capture shim cost work (one process per call apart from car
 - The `_capture_parent` change belongs to Phase 43d. This phase does not make it.
 
 ### Phase 35m — Summary arguments on main  · status: done
-**Depends on:** none.
 
+#### As-built
 
-**Sort (2026-11-06):** the ANSI handling (B) stays: it fixes wrong header text. The summary-arguments rule (A) stays. The user asked for it on 2026-10-29 (phases/35/implementation_prompt.md).
-
-#### Work Order
-
-**Goal:** a summary command shows its arguments only when the whole command fits one line, and nextest header text has its ANSI codes handled.
-
-**Spec:** port the summary-arguments rule and the nextest header ANSI handling onto main. The full text is in `/tmp/claude/delegate/03f9b80e-dbe5-47c6-b29e-a7e6587ab721/phases/35m/implementation_prompt.md`.
+- A summary command shows its arguments only when the whole command fits one line in the command column. Otherwise it shows the program, subcommand and toolchain-selector words (`cargo nextest run`) in the same word colors, and wraps only when those words do not fit. Command cells always show every argument.
+- The rule holds in both argument views (`h` on or off). The user, 2026-10-29: "the arguments are an extravagance in the summary if the column is too narrow … we can drop them unless they can fit on one line - the cells have extra space to show them and we can look there when they don't fit in summary".
+- `CommandText::named_words()` holds the words kept without arguments; `named()` and `CommandForm::WithoutArguments` read it. `UnchangedCommandInputs::measured_widths()` is the one width measure for `widths` and `for_row`, so retained widths and text stay reusable across resource updates.
+- `nextest_header_text` strips SGR codes from nextest header lines before they are measured and counted; other escape bytes stay. A colored starting header reports testing before the first result.
 
 **Files:**
-- `crates/cargo-tile/src/render.rs`
-- `crates/cargo-tile/src/render/command_cache.rs`
-- `crates/cargo-tile/src/progress/capture_read.rs`
-- `crates/cargo-tile/src/census/command_text.rs` — review finding F002 (director, 2026-11-07): the summary form reads the parsed command words, so `CommandText` exposes its named words once.
+- `crates/cargo-tile/src/census/command_text.rs` — `named_words()`, `named()`.
+- `crates/cargo-tile/src/render/command_cache.rs` — `CommandForm::WithoutArguments`, `UnchangedCommandInputs::measured_widths()`.
+- `crates/cargo-tile/src/render.rs` — summary wiring and the summary command tests, the `ExpandedCell` header and End tests included.
+- `crates/cargo-tile/src/progress/capture_read.rs` — `nextest_header_text`, `last_test_start`.
 
-**Workers:** 1 writer — `impl`, every file above.
-
-**Constraints from prior phases:** The summary rule changes retained command text, so route it through command preparation. Keep the widths and text reusable across resource updates.
-
-**Forward edits from Phase 46 (director, 2026-11-07):**
-- `ExpandedCell` (`render.rs:599`) prepares full content, pins the painted column header, and keeps the header out of the shown range. Summary changes use the expanded width and keep every scrollable row. Extend the header and End tests to the rows this phase adds or changes, with an exact shown range.
-
-**Forward edits from Phase 46 (director, 2026-11-07):**
-- The external prompt's tree (655c7948) and its worker names are obsolete. Dispatch from the current branch checkpoint with the current workers.
-- `InvocationOwners` (`roster/invocation_owners.rs:19`) stays the one invocation identity owner across transport changes. Add no second identity path.
+**Ruled out:** keeping summary arguments when `h` is on (they wrap a narrow summary; the cells show them).
 
 ### Phase 36m — Directory header rule on main  · status: done
 
@@ -1661,6 +1649,35 @@ Showrunner, 2026-11-07, from the Phase 43e gate fed9d76a: nextest marks `cli_lif
 **Constraints from prior phases:** Complete nested-command readiness checks before `release_reader()`. Limit Mac native-shell symlinks to `excluded` and `quiet-json-long`; keep the copied shell for `cpu-cache-server`. The Mac census still uses `with_exe(UpdateKind::Always)`; Phase 43f supplies no product CPU reduction. No assertion is weakened. No test takes 1 s or more. Phase 43e's copy staging of the reader executable stays. Keep `fixture.cli(&["install"])` in `uninstall_waits_on_a_locked_temporary_orphan_before_classifying_it`: do not copy product installation logic into the fixture. Keep the product lock retry budget unless the showrunner approves a change.
 
 **Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with no leaky test in `cli_lifecycle` and no leaky `control_s_saves_a_favorite`, the interrupt regression passing with its cargo-finished assertion, no leaky `caller_descriptors_reach_captured_cargo`, and no test at 1 s or more; the named cause is in the summary.
+
+### Phase 43i — Intermittent test faults get their owners, and two more slow tests go under 1 s  · status: todo
+
+**Depends on:** Phase 43g
+
+Phase 43g (director, 2026-11-07) could not find three intermittent faults: none recurred in its four final suites. Its review findings F006, F007 and F008 move here. Its final gate (run 20261107T203938, natedev load 66-73) also timed two tests outside its Work Order at 1 s or more.
+
+#### Work Order
+
+**Goal:** each named fault has its owner or cause on record and is fixed by that cause, and no named test takes 1 s or more.
+
+**Spec:**
+1. `reader_keeps_parent_family_across_its_only_childs_source_switch` (`shim_registration/reader_scenarios.rs:359`) took 1.029 s on natedev in the 43g gate and 1.900 s on the Mac in the Phase 35m gate. Measure its stages, then fix the cause. Keep every assertion and readiness wait.
+2. `shared_capture::staged_executable_installs_toolchains_and_cleans_up` (`shim_registration/shared_capture.rs:111`) took 1.634 s on natedev in the 43g gate. Measure its stages, then fix the cause. Keep every assertion.
+3. Leak owners (43g F006; items 1, 4 and 7 of Phase 43g): nextest marked `install_prints_a_completed_toolchain_before_a_later_lock_finishes`, `control_s_saves_a_favorite` and `caller_descriptors_reach_captured_cargo` leaky on the Mac in earlier gates. Run the Mac suite with Phase 43g's process observer (`phases/43g/baseline_stages.md` names it) until one of them leaks again, at most six suites. Record the owner's pid, command and parent, then fix it by its cause. If none leaks in six suites, report the six results and change no code.
+4. Interrupt race (43g F007; Phase 43g item 5): `interrupt_to_the_process_group_lets_cargo_finish_first` failed "the shim returned before cargo finished stopping" twice on natedev under load 37-44. Run it alone under comparable natedev load until it fails, at most 200 runs. Record the order of the shim's return and cargo's stop, then fix the cause. If it does not fail, report the counts and change no code. Keep the cargo-finished assertion.
+5. CLI startup (43g F008; Phase 43g item 6): on the Mac a test's CLI spent 0.387 s before `main.rs:36`, in a dyld wait that the sampler itself can cause. Measure the startup with a method that does not attach to the process (for example, the parent's spawn time against the first line of `main`), then cut the cost. Keep the product lock retry budget unless the showrunner approves a change.
+
+**Files:**
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`, `reader_scenario_cases.py` and `fixture_events.py` — item 1.
+- `crates/cargo-tile/src/shim_registration/shared_capture.rs` — item 2.
+- `crates/cargo-tile/tests/cli_lifecycle.rs`, `crates/cargo-tile/tests/shim_modes.rs`, `crates/cargo-tile/src/app_global_action.rs` — items 3 and 4 (in `app_global_action.rs`, only its test module).
+- `crates/cargo-tile/src/main.rs` and `crates/cargo-tile/src/cli.rs` — item 5's measured cause. Other product files need director routing.
+
+**Workers:** 1 writer — `test`.
+
+**Constraints from prior phases:** the Phase 43g constraints hold. No assertion is weakened. No test takes 1 s or more. Add no cleanup without ownership evidence.
+
+**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with items 1 and 2 below 1 s; items 3-5 each have a recorded owner or cause with its fix, or the run counts that show no recurrence.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
@@ -2003,7 +2020,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 **Workers:** 1 writer — `impl`, every file above.
 
-**Constraints from prior phases:** Phase 23's parsed command words, the argument setting and the `…` rule hold; this phase adds a layout, not a second reader. `InvocationContinuity` owns the invocation record; this phase changes only what the parsed command reads. The `tui_pane` key-hint change is additive, and no existing `tui_pane` public signature changes. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds. Route parsed-command and `CommandView` changes through preparation. Keep unchanged command widths and text reusable across resource updates. Keep hint toggles outside cell paintings.
+**Constraints from prior phases:** Phase 35m: a summary command shows its arguments only when the whole command fits one line in the command column, also with `h` on (showrunner ruling from the user's 2026-10-29 words); otherwise it shows `CommandText::named()` words (`census/command_text.rs`) through `CommandForm::WithoutArguments` (`render/command_cache.rs`). Command cells show every argument. Item 2's `rustc <crate>` row follows this rule in the summary. The summary height evidence in this Work Order (5 of 12 at 160x49) is from before Phase 35m; measure it again before the fix. Phase 23's parsed command words, the argument setting and the `…` rule hold; this phase adds a layout, not a second reader. `InvocationContinuity` owns the invocation record; this phase changes only what the parsed command reads. The `tui_pane` key-hint change is additive, and no existing `tui_pane` public signature changes. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds. Route parsed-command and `CommandView` changes through preparation. Keep unchanged command widths and text reusable across resource updates. Keep hint toggles outside cell paintings.
 
 **Forward edits from Phase 46 (director, 2026-11-07):**
 - `ExpandedCell` (`render.rs:599`) prepares full content, pins the painted column header, and keeps the header out of the shown range. Summary changes use the expanded width and keep every scrollable row. Extend the header and End tests to the rows this phase adds or changes, with an exact shown range.
