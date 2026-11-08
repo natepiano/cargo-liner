@@ -1147,43 +1147,30 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 
 ### Phase 71 — A detached run joins its pane worker's row  · status: done
 
-**Depends on:** none; runs beside Phases 21, 69 and 70. `census/scan.rs` and `crates/cargo-handler/CHANGELOG.md` wait for the Phase 21 checkpoint.
+#### As-built
 
-#### Work Order
-
-**Goal:** while a worker's detached run is live, that worker's row says `waiting` (or the run's step name), whatever the command. A worker with a live run always has a row. The run never draws as a separate dispatch row beside its worker.
-
-**Source:** the user, relayed by the showrunner, 2026-11-08: "i don't see it", the verdict on C218 (Phase 62h, merged 63277286). This is the second return of the change; C201 was the first.
-
-**Constraints:**
-- Evidence, the tile unit at about 11:52 EST (session `/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e`):
-  1. Worker `impl` showed `idle` while mesh_runs supervisor pid 994014 ran `bash .../phases/30m/repair3_package_checks.sh` (label "Phase 30m repair 3 package checks"). The record `mesh_runs/20261108T115054-992260-70a7.json` has `"worker": "impl"`, `"staff_id": "01a1b9c6-4b1b-79c0-ad78-920ac1efe28a"`, `"session_dir"` and `"director_dir"`.
-  2. The detached runs drew as separate dispatch rows ("Dispatch 30m repair...", "Rerun the Phase 56...") that said `running`.
-  3. Worker `test` had a live run since 02:34 EST (pid 1572988, `python3 .../phases/43i/observe_then_gate.py`) and had no row.
-- The tile unit uses pane workers (herdr), not only mesh workers. Phase 62h tests covered mesh workers. Find the cause on the real records and processes first, and state it before you change code.
-- Leads: `RunRecord::session` and `VerificationProcesses::worker_runs` (`census/activity.rs` ≈461 and ≈705) join a record to a worker through the staff roster by the record's worker name; Phase 42's `DispatchPairing` (`census/placement.rs`) decides which shells fold into a worker row.
-- Read only. Never signal or type into the tile unit's processes or panes. Copy the records you need into a fixture.
-- No new check of your own design. The tests check the three evidence cases.
-
-**Spec:**
-1. State the cause of each evidence case in the summary, with the file and line.
-2. Fix the join so that a live run record that names a pane worker sets that worker's row to `waiting` or the step name.
-3. A live run's supervisor and command processes fold into the worker row, not into a separate dispatch row.
-4. A worker with a live run and no other visible process still has its row.
-5. Tests under 1 s from captured fixtures of the tile records and process rows: cases 1, 2 and 3 above, each red before the fix.
-6. CHANGELOG: one Fixed line in cargo-handler.
+- A live detached run record joins its worker through `RunWorkerReference::{Identified, NamedSeat}` (`census/activity.rs`). `LiveWorkerRun::worker` resolves `RunWorkerIdentity::{Session, NamedSeat, Unrecorded}`: a seat name joins the one staff edge with that name under the run's director.
+- `run_directors` (`census/scan.rs`) takes a run's director from the unit's recorded owner in `progress_history_state.json` (`UnitDirectorSource::{Staff, Session, Unrecorded}` in `census/worker_dispatch/sessions.rs`: `owner_staff_id`, else `main_agent.session_id`), cached by file revision, then from the roster. `read_worker_runs` accepts non-Claude rows as directors.
+- While a run is live, its worker row says `waiting` or the run's step name, whatever the command. The run's supervisor and command processes fold into that row; no separate dispatch row draws. A worker whose only process is a live run keeps its row.
+- Astra rows: `AstraMembership` carries `AstraRunActivity::{Inactive, Live(Activity)}`. `AstraMembership::activity` and `TreeLine::status` (`agent_cell.rs`) put a live run's activity before the pane's idle or unknown state.
+- Each scan resolves a worker identity once and walks each process subtree once (`VerificationProcesses::live_runs`, cached `descendant_indices`).
+- Tests: `captured_tile_test_worker_keeps_a_row_with_only_its_live_run` and `captured_tile_astra_pane_keeps_its_live_run_status` run on the captured tile records and process rows.
 
 **Files:**
-- `crates/cargo-handler/src/census/activity.rs`, `crates/cargo-handler/src/census/activity_regression_tests.rs`
-- `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/tree.rs`
-- `crates/cargo-handler/src/census/worker_dispatch/mod.rs`, `crates/cargo-handler/src/census/worker_dispatch/sessions.rs`, `crates/cargo-handler/src/census/worker_dispatch/tests.rs`
-- `crates/cargo-handler/src/census/fixtures/` — new pane-worker run fixtures
-- `crates/cargo-handler/src/census/scan.rs` — after the Phase 21 checkpoint
-- `crates/cargo-handler/CHANGELOG.md` — after Phases 21, 69 and 70
+- `crates/cargo-handler/src/census/activity.rs` — run record join and worker identity
+- `crates/cargo-handler/src/census/scan.rs` — run directors, resolved worker runs, run activities
+- `crates/cargo-handler/src/census/worker_dispatch/sessions.rs` — recorded unit owner
+- `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/agent_cell.rs` — Astra live-run status
+- `crates/cargo-handler/src/census/placement.rs`, `crates/cargo-handler/src/census/tree.rs` — run processes fold into the worker row
+- `crates/cargo-handler/src/census/fixtures/pane_detached_tile.json`, `.md` — captured tile records, processes and their provenance
 
-**Workers:** 1 writer. It owns the listed implementation, fixtures, tests and registrations.
+**Binds later work:**
+- A live run's activity wins over the transcript activity in three places: the worker row write in `census/scan.rs`, `AstraMembership::activity`, and `TreeLine::status`. Compaction status must change all three.
+- `astra_member.run` serializes the run's `Activity` on the probe wire; an unknown value fails an older receiver.
+- The recorded-owner director source and the named-seat join find a herdr unit's workers with no `mesh_roster.json`; roster removal keeps both.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: a framed capture from a cargo-handler the writer started, showing a pane worker row that says `waiting` during a detached run that is not a `verify.sh` run, and a worker that had no row now has its row. The checkpoint carries `Change-Review: a Codex pane worker shows waiting during every detached run, and a worker with a live run always has its row | during a unit's detached package check, find its worker row in cargo-handler: it says waiting, with no separate running dispatch row beside it`.
+**Gotchas:**
+- A herdr unit has no `mesh_roster.json` and no director file; its run record names the worker by seat name only.
 
 ### Phase 72 — A compacting session says compacting  · status: todo
 
@@ -1202,8 +1189,12 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 - Read only. Never type into, signal or stop a session that you did not start. Copy the transcript lines you need into fixtures.
 - No new check of your own design.
 - The probe report crosses machines with different builds. `AgentActivity` deserialization (`census/activity.rs` ≈167) rejects an unknown `active` value, so the whole probe report fails on an older receiver. Keep the schema-3 vocabulary at the wire boundary, as `census/probe.rs` does for task and child kinds.
-- A live detached run sets the worker row's activity in `census/scan.rs` (≈860, after the transcript read). Phase 71 makes that row say `waiting` or the step name.
-- Astra rows take two more paths after the activity read. `AstraMembership::activity` (`census/hierarchy.rs` ≈1131, applied in `census/scan.rs` ≈355) can replace the activity with idle or unknown. `TreeLine::status` (`agent_cell.rs` ≈1680) picks idle or unknown from `PaneWork` on its own. Phase 71's repair changes these paths so a live run's `waiting` survives them. `compacting` must survive them in the same way.
+- Constraints from Phase 71: a live detached run overwrites the transcript activity of its worker row in `census/scan.rs` ≈959–972, after the transcript read and the verification read. Three places put the run first:
+  1. `census/scan.rs` ≈967 sets `row.activity` to the run's activity, and ≈970 calls `AstraMembership::with_run_activity`.
+  2. `AstraMembership::activity` (`census/hierarchy.rs` ≈1161, applied in `census/scan.rs` ≈2672) returns `AstraRunActivity::Live` before it reads `PaneWork`.
+  3. `TreeLine::status` (`agent_cell.rs` ≈1680) draws `summary::status_text` when `has_live_run()` holds, and otherwise idle or unknown from `PaneWork`.
+  Spec 5 changes all three so `compacting` wins while the session compacts.
+- `AstraRunActivity::Live` (`census/hierarchy.rs` ≈1087) serializes the run's `Activity` in `astra_member.run` on the probe wire. Keep the run's own activity there; never store `Compacting` in it. A Phase 71 receiver rejects an unknown value in that field.
 
 **Spec:**
 1. State the start and end signal for each family in the summary, with the file and line where cargo-handler reads it.
@@ -1211,7 +1202,7 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 3. A row says `compacting` from the start signal to the end signal. After the end, the row follows the next transcript line as today.
 4. A turn that is not a compaction keeps today's words.
 5. `compacting` wins over a live run's `waiting` or step name, because the session itself is compacting. After the compaction ends, the run's word returns.
-6. Probe wire: `active` stays `thinking` for a compacting row, and a defaulted compaction extension field carries the compaction. An older receiver shows `thinking`; a current receiver shows `compacting`.
+6. Probe wire: `active` stays `thinking` for a compacting row, and a defaulted compaction extension field carries the compaction. `astra_member.run` keeps the live run's own activity. An older receiver shows `thinking`; a current receiver shows `compacting`.
 7. Tests under 1 s from captured fixtures: a Claude compaction and a Codex compaction each draw `compacting` while open and leave it at the end; an ordinary turn start still draws `thinking`; a compaction during a live run draws `compacting`; an Astra row that compacts draws `compacting`; a compacting probe row decodes as `thinking` without the extension and as `compacting` with it. Each red before its fix.
 8. CHANGELOG: one Added line in cargo-handler.
 
@@ -1902,15 +1893,17 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 **Source:** the showrunner, 2026-11-04, from the user's words "anything handler needs to do to support the staff file should be done so we can retire any mechanism scripts that are legacy".
 
 **Constraints from prior phases:**
-- Phase 67: placement accepts Codex managers (`census/placement.rs` ≈261), but `read_worker_runs` (`census/scan.rs` ≈747) still limits directors to Claude. Reuse the Phase 67 pane placement, add a detached-run regression under a Codex director, and keep the Phase 67 pane-worker tests in `census/pane_worker_placement_tests.rs` when worker-role publication changes.
+- Phase 67: placement accepts Codex managers (`census/placement.rs` ≈261). Since Phase 71, `read_worker_runs` (`census/scan.rs` ≈1015) also accepts non-Claude rows as directors. Reuse the Phase 67 pane placement, add a detached-run regression under a Codex director, and keep the Phase 67 pane-worker tests in `census/pane_worker_placement_tests.rs` when worker-role publication changes.
 - Phase 42: `DispatchPairing` (`census/placement.rs` ≈159) joins a shell to its exact worker in one final tile through `DispatchPairing::join` (≈171), and `resolve_dispatches` (≈300) builds it. Its fixture is `census/fixtures/dispatch_pairing.json`. Its tests are in `census/worker_dispatch/tests.rs`, `agent_cell/tests/tree_tests.rs`, `census/scan/activity_scan_tests.rs` and `census/hierarchy_file_tests.rs`. Spec 2 changes the identities and keeps this behavior.
 - Phase 21: Astra worker membership comes from checked staff rows (`AstraMembership` in `census/hierarchy.rs`, `SessionIdentity::with_astra` in `census/scan.rs`). Keep it and its tests in `census/astra_role_tests.rs` when worker-role publication changes.
-- Phase 71: a live run record that names a pane worker sets that worker's row to `waiting` or the step name, and folds the run's processes into that row. Keep its captured pane-run regressions in `census/activity_regression_tests.rs` and `census/worker_dispatch/tests.rs` green.
+- Phase 71: a live run record that names a pane worker sets that worker's row to `waiting` or the step name, and folds the run's processes into that row. Keep its captured pane-run regressions in `census/activity_regression_tests.rs` and `census/worker_dispatch/tests.rs` green, the `impl`-finishes-first case of `census/fixtures/pane_detached_tile.json` included. Two Phase 71 paths find a worker with no roster:
+  1. `run_directors` (`census/scan.rs` ≈220) takes a run's director from the unit's recorded owner in `progress_history_state.json` (`UnitDirectorSource` in `census/worker_dispatch/sessions.rs` ≈32, read ≈168), before the roster.
+  2. `LiveWorkerRun::worker` (`census/activity.rs` ≈755) joins a record's seat name to the one staff edge under that director, and falls back to `RunWorkerIdentity::NamedSeat`.
 - Phase 64: `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈414). `scan_staged` stays nonblocking.
 
 **Spec:**
 1. Read the announced 3n worker role through the existing schema-2 `StaffFileReader`. Extend `StaffFields`, `StaffRoster` and the shared `StaffSnapshot`; add no second reader. Reuse the checked staff ID, current session and parent session that the staff reader retains. Derive the unit from that validated parent identity. Replace `HierarchyEdges::with_worker_roles` with the staff role result in each of its callers: scheduler publication (`census/schedule.rs` ≈675) and the probe report (`census/probe.rs` ≈427, in `scan_configured` since Phase 66). Use named results for unavailable membership, a root member and a managed member when extending the identity lookups. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
-2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing in `census/worker_dispatch/options.rs` and `DispatchDirectory::{Recorded, FromChild}`. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
+2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep the Phase 71 recorded-owner director source and the named-seat join when the roster reads go. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing in `census/worker_dispatch/options.rs` and `DispatchDirectory::{Recorded, FromChild}`. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
 3. Remove the `role_map_cache.json` read in `census/command_inputs.rs`.
 4. Keep `mesh_runs` and `WorkerReference::{Staff, LegacyThread}` semantics. Resolve staff IDs again when the staff snapshot changes, even when run files do not change. Preserve live-supervisor record-path checks, finite start times and discovered run directories. A recognized command supplies only the step name; every other live run shows `waiting`. Keep one row per current thread, waiting or gate-step activity, independent director activity and completion removal. Keep legacy `director` fallback where legacy identity still needs it. A script name inside `bash -c` gives no step name.
 5. Tests under 1 s: staff role and unit; a worker without a role; unavailable membership; no roster file on disk. Migrate the detached-run fixtures to staff-only membership. Keep their assertions for no launcher or open thread, staff handoff, a restarted director, one worker row, verification activity and completion removal.
