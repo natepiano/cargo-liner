@@ -11,6 +11,7 @@ use tui_pane::Viewport;
 
 use super::data;
 use super::data::TargetEntry;
+use super::render;
 use crate::project::Visibility;
 use crate::tui::hit_test::HoverTarget;
 use crate::tui::panes::PaneId;
@@ -63,6 +64,12 @@ impl TargetsPane {
             row_rects:     Vec::new(),
             drawn_targets: Vec::new(),
         }
+    }
+
+    pub(in crate::tui) fn preferred_width(&self) -> u16 {
+        self.content
+            .as_ref()
+            .map_or_else(super::minimum_width, render::preferred_width)
     }
 
     pub const fn content(&self) -> Option<&TargetsData> { self.content.as_ref() }

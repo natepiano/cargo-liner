@@ -43,6 +43,9 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 
+- Cut pane titles keep a blank cell before the corner or joint.
+- Status lines keep whole hint groups by default. `StatusLine::with_individual_note_hints` enables individual hint fitting and a three-cell gap before notes. With this policy, narrow rows drop whole hints from the right. Rows without notes keep whole hint groups.
+
 - Pane titles use their trailing padding cell before they cut text.
 - Progress rows keep whole labels and reduce bars or counts first.
 - Toasts keep a blank cell before the close button. Opening cards keep their first sentence together when space permits.

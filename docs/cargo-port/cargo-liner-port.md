@@ -654,7 +654,76 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: no `No description` row while the description loads or after a failed fetch, the three description states, and no page count change or row move when a placeholder goes away; the `Structure` divider column before and after the crates.io data, with a long version and `Unreachable`; the CPU / GPU page count in the bottom border; no Pull Requests count while the pull requests load or when the fetch is unavailable, and the last known count on stale data. 80- and 160-column live captures in colour and under NO_COLOR, before and after the data, judged by the design check. The checkpoint carries a `Change-Review:` line.
 
-### Phase 4n — Targets, cut titles and the footer read clean in narrow windows  · status: todo
+### Phase 4p — cargo-port memory stays bounded over days  · status: todo
+
+**Depends on:** none. It runs before Phase 4o (user, 2026-11-08: top priority).
+
+#### Work Order
+
+**Goal:** a cargo-port process that runs for days keeps its memory bounded. Resident plus swap memory does not grow with uptime, refreshes, watcher events or CI polls.
+
+**Source:** user, 2026-11-08, via accounts-unit and the showrunner: "tell cargo-liner it needs to prioritize fixing the cargo-port memory leak". On natedev one `cargo-port port` process (pid 3539446, now gone) ran for 1 day 19 hours and held 8.8 GB in swap and about 190 MB resident; swap was 36 of 38 GB in use. It ran the build from before `~/.cargo/bin/cargo-port` was replaced on 2026-11-07 21:18 EST, so the leak can be in that build, the current build, or both.
+
+**Decision:** showrunner, 2026-11-08: this phase is the unit's top priority, before Phases 4n and 4o.
+
+**Constraints:**
+- Never stop or signal a cargo-port process the worker did not start. Take the pid from the worker's own launch chain, never from `pgrep` by name.
+- Measure the current build. Sample `VmRSS` and `VmSwap` from `/proc/<pid>/status` over time.
+- Fix the cause where it lives. A cap that hides growth in a structure that should not grow is not a fix.
+- No test takes a second.
+
+**Spec:**
+1. **Measure the growth.** Launch the current build in a terminal the worker owns, with the user's real config read-only or a scratch config that scans `~/rust`. Drive the events a long run sees (watcher events from file changes in a scratch project, refreshes, CI and GitHub polls, CPU samples) at a fast rate. Record memory at fixed times. Name the event kind whose count tracks the growth.
+2. **Find the cause.** Find the structure that grows without a bound: for example a cache keyed by a value that never repeats, a history buffer, a watcher or subscription list, a channel with no reader, or a task handle list. Check `crates/cargo-port/src/watcher/`, `crates/cargo-port/src/scan/`, `crates/cargo-port/src/tui/app/async_tasks/`, `crates/cargo-port/src/tui/state/`, `crates/cargo-port/src/http/`, `crates/cargo-port/src/ci.rs` and `crates/cargo-port/src/lint/` first.
+3. **Fix it.** Remove the growth at its cause: drop entries when their owner goes, keep one entry per key, or bound a history by its use.
+4. **Hold the bound.** Add a test that drives the growing event many times and asserts the structure's size stays at its bound. Then measure the fixed build again with the Spec 1 driver and show memory flat over the same time.
+
+**Files:**
+- `crates/cargo-port/src/` — the cause, its fix and its test; the exact files come from Spec 2
+- `crates/cargo-port/CHANGELOG.md` — the fix entry
+
+**Workers:** 1 writer: Specs 1-4, the test and the changelog.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. A bound test fails before the fix. Two memory measures of the same driven run, before and after the fix, with times, `VmRSS` and `VmSwap`. The checkpoint carries a `Change-Review:` line.
+
+### Phase 4q — The project list uses the shared row click toggle  · status: todo
+
+**Depends on:** Phase 4p (both edit `crates/cargo-port/src/`), and the handler unit's shared row click toggle in `tui_pane` on main (the showrunner sends its hash).
+
+#### Work Order
+
+**Goal:** the cargo-port project list toggles expand and collapse through the shared `tui_pane` row click toggle, and cargo-port's own copy is gone. The behavior does not change: a click anywhere on an expandable row toggles it.
+
+**Source:** user, 2026-11-08, via the showrunner: row click-to-toggle for expand and collapse is shared through `tui_pane`. Today cargo-port and cargo-handler each have their own copy. The handler unit builds the shared piece and moves cargo-handler onto it first.
+
+**Decision:** showrunner, 2026-11-08: add this phase after Phase 4p. It starts when the handler unit's `tui_pane` piece is on main.
+
+**Constraints:**
+- Change no behavior and no look. A left click on any expandable project row selects it and toggles it; a focus-only click (`ClickMode::FocusOnly`) does not toggle.
+- Use the shared piece as main has it. A change it needs goes to the handler unit through the showrunner, not into a cargo-port copy.
+- Delete cargo-port's own toggle path; leave no duplicate.
+
+**Spec:**
+1. **Merge main.** Merge main with the handler unit's `tui_pane` piece and read its API.
+2. **Move the project list onto it.** `tui/interaction.rs::handle_click` (≈line 35) sets the cursor and calls `toggle_selected_project_expansion` (≈line 25), which calls `ProjectList::toggle_expand_for_row` (`tui/project_list/list.rs:2295`). Route the click through the shared piece. Keep `ProjectList` as the owner of the expansion state.
+3. **Delete the copy.** Remove the cargo-port click toggle code the shared piece replaces.
+4. **Tests.** Keep `expandable_project_row_click_toggles_children` (`tui/app/mod.rs:5423`) and `row_body_click_selects_clicked_project` green with no assertion change. Add a test that a focus-only click on an expandable row does not toggle it.
+
+**Files:**
+- `crates/cargo-port/src/tui/interaction.rs` and `crates/cargo-port/src/tui/input/dispatch.rs` — Spec 2
+- `crates/cargo-port/src/tui/project_list/` — Specs 2 and 3
+- `crates/cargo-port/src/tui/app/mod.rs` — Spec 4 tests
+- `crates/cargo-port/CHANGELOG.md`
+
+**Workers:** 1 writer: Specs 1-4 and the changelog.
+
+**State:** none. The expansion state stays in `ProjectList`.
+
+**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. The click tests pass with no assertion change. No cargo-port click toggle code is left beside the shared piece. The checkpoint carries a `Change-Review:` line.
+
+### Phase 4n — Targets, cut titles and the footer read clean in narrow windows  · status: done
 
 **Depends on:** Phase 4l (both edit `crates/cargo-port/src/tui/panes/targets/` and `crates/tui_pane/src/pane/frame.rs`). No file overlaps Phase 4m, so this phase runs beside it.
 
@@ -698,19 +767,22 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 ### Phase 4o — Cut values and dim text read clean in narrow panes  · status: todo
 
-**Depends on:** Phase 4m (both edit `crates/cargo-port/src/tui/panes/package/`, `crates/cargo-port/src/tui/panes/git/`, `crates/cargo-port/src/tui/render/mod.rs` and `crates/cargo-port/CHANGELOG.md`) and Phase 4n (both edit `crates/tui_pane/CHANGELOG.md`, and Spec 5 records Phase 4n's Targets change)
+**Depends on:** Phase 4m (both edit `crates/cargo-port/src/tui/panes/package/`, `crates/cargo-port/src/tui/panes/git/`, `crates/cargo-port/src/tui/render/mod.rs` and `crates/cargo-port/CHANGELOG.md`) and Phase 4n (both edit `crates/tui_pane/CHANGELOG.md`, and Spec 5 records Phase 4n's Targets change), and Phase 4p (it runs first, and both edit `crates/cargo-port/src/` and `crates/cargo-port/CHANGELOG.md`)
 
 #### Work Order
 
-**Goal:** at 80 and 95 columns a cut value has no space before its ellipsis, the Tracked header reads whole, the Worktree Group CI row keeps one row, and dim value text meets the contrast floor.
+**Goal:** at 80 and 95 columns a cut value has no space before its ellipsis, the Tracked header reads whole, the Worktree Group CI row keeps one row, and dim value text meets the contrast floor. The Projects pane keeps its width when Sync data arrives, a loading row adds no Git page, and the unreachable on-branch-rows CI state is gone.
 
-**Source:** Phase 4l final design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4l/live/shots_4l_4/`, 2026-11-07, and the follow-ups recorded in Phases 4j-4l. Each look is older than Phase 4l.
+**Source:** Phase 4l final design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4l/live/shots_4l_4/`, 2026-11-07, the Phase 4m and 4n design check of `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/phases/4m/live/shots_4mn_2/`, and the follow-ups recorded in Phases 4j-4m. Each look is older than Phase 4m.
+- `ci80-nocolor-0-early-a` to `-early-b` and `quota80` `loading-a` to `-b`: when Sync data arrives, the Projects inner width grows from 44 to 45 and Git shrinks from 15 to 14. `toast160` a to b line 4: `/tmp/claud…` becomes `/tmp/clau…`. `ci95` early-a to -b line 5: `cargo-li…` becomes `cargo-l…`.
+- `quota80` loading `git-2_of_2` (9 s) to `git-2_of_3` (10 s): the Git page count grows when a `loading pull requests` row appears.
+- `CiEmptyState::BranchScopedOnly` (`ci/data.rs:11`, title ` CI runs — on branch rows `) is unreachable since ac53f443c: worktree members show the CI runs of the owning checkout.
 - `ci80-*-2-measured-git-*`, `quota80-*-1-loading-git-*`, CI runs rows: a cut keeps a space before the ellipsis (`cargo tools …`, `↑5 ahead of …`, `phase …`).
 - `long95-*-1-expanded`: the Git Worktrees `Tracked` header draws `Track…` while Branch is one cell wider than its header.
 - `long80-*`, `pair80-*`: the Worktree Group `CI` label is alone on its row, and `No CI` is on the next row outside the value column.
 - `No CI` and `—` value text: contrast 4.16:1 on #1e1e1e, under the 4.5:1 floor.
 
-**Decision:** showrunner, 2026-11-07: see Phase 4n. These looks share files with Phase 4m, so this phase runs after it.
+**Decision:** showrunner, 2026-11-07: see Phase 4n. These looks share files with Phase 4m, so this phase runs after it. Showrunner, 2026-11-07: Specs 6-8 are accepted add-ons.
 
 **Constraints:**
 - Change no other look.
@@ -718,29 +790,34 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 - Colours come from the theme, not from code.
 
 **Spec:**
-1. **No space before the ellipsis.** `render::truncate_with_ellipsis` (`crates/cargo-port/src/tui/render/mod.rs:748`) and its callers in `panes/support.rs`, `git/render.rs` and `ci/render.rs` trim trailing spaces before they add `…` (`cargo tools…`, `↑5 ahead of…`, `phase…`).
+1. **No space before the ellipsis.** `render::truncate_with_ellipsis` (`crates/cargo-port/src/tui/render/mod.rs:755`) and its callers in `panes/support.rs`, `git/render.rs` and `ci/render.rs` trim trailing spaces before they add `…` (`cargo tools…`, `↑5 ahead of…`, `phase…`).
 2. **The Tracked header.** In the Git Worktrees table at 95 columns, `Tracked` draws whole when Branch has a spare cell: `fit_sync_trio` (`git/render.rs`) takes a header cell from the wider column first.
 3. **The Worktree Group CI row.** At 80 columns, `CI` and `No CI` share one row in the value column, as other Package rows do.
-4. **Dim value contrast.** `ci_display_style` (`package/render.rs`) draws `No CI`, `No CI runs` and `unpublished branch` with `inactive_border_color()` (Rgb 140,140,140 in `crates/tui_pane/src/theme/fallback.rs:92`). Give dim value text a theme colour with at least 4.5:1 contrast on the pane background; borders keep `inactive_border`.
+4. **Dim value contrast.** `ci_display_style` (`package/render.rs:1737`) draws `No CI`, `No CI runs` and `unpublished branch`, and `lint_display_style` (`package/render.rs:1689`) draws the lint `—`, both with `inactive_border_color()`. cargo-port registers its own palettes in `crates/cargo-port/src/themes/builtins.rs`; `crates/tui_pane/src/theme/fallback.rs` is only the fallback. Give dim value text a theme colour role with at least 4.5:1 contrast on the pane background in every registered cargo-port theme; borders keep `inactive_border`. Test the contrast for each registered theme.
 5. **Changelog.** Add the cargo-port entry for Phase 4n Spec 1 (Targets width and Source cut) beside this phase's entries.
+6. **The Projects width holds when Sync data arrives.** `ColumnDef::seed_width` (`tui/columns/project.rs:94`) reserves four cells for `Sync`, and `format_sync` (`pane_data/formatting.rs`) gives five for a common value, so the pane grows one cell when the data comes. Reserve the width of a one-digit ahead and behind value before the data arrives, so the Projects/Git divider does not move. A wider value may grow the column once. Test with the real pane layout (`panes/layout.rs`, `panes/widths.rs`), including a value wider than the reserve, and keep the 160-column Targets width rule.
+7. **A loading row adds no Git page.** `ProjectPrData::Unfetched` maps to `PullRequestSectionState::HiddenConfirmedEmpty` (`pane_data/git_data.rs:635`), so the pull request block (`git/render.rs::pull_request_block_height`) grows from zero to three rows when `Loading` comes. An unfetched list is not a confirmed empty list. A project whose pull requests will be fetched draws the loading block from the first frame. A project with no fetch (no GitHub remote) is `HiddenConfirmedEmpty` from the first frame. A finished fetch (`Loaded`, `Stale`, `Unavailable`, or confirmed empty) changes the block height at most once.
+8. **Remove the on-branch-rows CI state.** Remove `CiEmptyState::BranchScopedOnly`, its title, its check in `ci/data.rs::build_ci_data` (≈line 100) and its row in the `ci/render.rs` margin title tests (≈line 1386).
 
 **Constraints from prior phases:**
 - Keep the Phase 4l rules: every Package and Workspace row keeps one right-margin cell (`support::field_value_lines`, `package/constants.rs::PATH_VALUE_RESERVE`) and one blank cell before the `Structure` divider; section titles cut the count before the label; at 80 columns all four Worktrees and Remotes columns stay; a short Tracked value draws whole.
-- Keep the Phase 4m description states and Structure width.
+- Keep the Phase 4m description states (`DescriptionState::{Pending, Known, KnownEmpty}`), the git probe's `RepositoryProbe::NoRepository` result and the Structure width. A Package title cut to fit keeps one blank cell before its corner; a whole label that fills the inner width may touch the corner (`package/render.rs::fit_package_title`).
+- Keep the Phase 4n rules: `panes/layout.rs` reserves the preferred Targets width before Projects grows; Source shrinks before a target name; a cut pane title keeps one blank cell before its corner or joint (`GridLines::write_overlay`); footer hints drop from the right at whole hint boundaries and keep a gap of at least 3 cells before a note (`tui_pane/src/bar/status_line.rs`).
 - New drawing tests set `ColorMode` explicitly. Name each test for the behavior it pins.
 
 **Files:**
 - `crates/cargo-port/src/tui/render/mod.rs`, `crates/cargo-port/src/tui/panes/support.rs` and `crates/cargo-port/src/tui/panes/ci/` — Spec 1 and its tests
-- `crates/cargo-port/src/tui/panes/git/` — Specs 1 and 2
+- `crates/cargo-port/src/tui/panes/git/` and `crates/cargo-port/src/tui/panes/pane_data/git_data.rs` — Specs 1, 2 and 7
 - `crates/cargo-port/src/tui/panes/package/` — Specs 3 and 4
-- `crates/tui_pane/src/theme/` — Spec 4's dim value colour
+- `crates/cargo-port/src/tui/columns/project.rs`, `crates/cargo-port/src/tui/panes/project_list/`, `crates/cargo-port/src/tui/panes/layout.rs` and `crates/cargo-port/src/tui/panes/widths.rs` — Spec 6 and its tests
+- `crates/tui_pane/src/theme/` and `crates/cargo-port/src/themes/` — Spec 4's dim value colour
 - `crates/cargo-port/CHANGELOG.md` and `crates/tui_pane/CHANGELOG.md`
 
-**Workers:** 1 writer: Specs 1-5, their tests and both changelogs.
+**Workers:** 1 writer: Specs 1-8, their tests and both changelogs.
 
-**State:** none.
+**State:** the pull request section state (`PullRequestSectionState`, `pane_data/git_data.rs:245`). An unfetched list that will be fetched draws as `Loading` from the first frame; a project with no fetch is `HiddenConfirmedEmpty`. Test pending to loading to each of empty, loaded and unavailable.
 
-**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: no space before `…` in Git values and CI commits; `Tracked` whole at 95; `CI` and `No CI` on one row at 80; dim value contrast at least 4.5:1. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: no space before `…` in Git values and CI commits; `Tracked` whole at 95; `CI` and `No CI` on one row at 80; dim value contrast at least 4.5:1; the Projects width the same before and after Sync data; the Git page count the same before and after a `loading pull requests` row; no `on branch rows` title. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 
