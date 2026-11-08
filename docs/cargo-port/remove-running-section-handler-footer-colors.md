@@ -1226,7 +1226,7 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: a framed capture from a cargo-handler the writer started, showing a session row that says `compacting` during a compaction of a session the writer started. The checkpoint carries `Change-Review: a session that compacts its conversation says compacting, not thinking | in cargo-handler, find a session while it compacts: its row says compacting until the compaction ends`.
 
-### Phase 74 — The model-read transcript test finishes in under a second  · status: todo
+### Phase 74 — The model-read transcript test finishes in under a second  · status: done
 
 **Depends on:** none. `census/transcript.rs` is outside every open phase.
 
