@@ -1174,7 +1174,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean; no test takes a second. Change-Review: none — live herdr workers put `resume` first, so no visible row changes.
 
-### Phase 68 — Tiles keep their columns when a summary cell changes width  · status: todo
+### Phase 68 — Tiles keep their columns when a summary cell changes width  · status: done
 
 **Depends on:** Phase 67
 
@@ -2061,7 +2061,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - `crates/cargo-handler/src/agent_cell/tests/sort_tests.rs` — the tree sort test
 - `crates/cargo-handler/src/census/incremental_read_tests.rs` — the incremental Codex tier test
 - `crates/cargo-handler/src/render/word_click_tests.rs` — `visible_unicode_tokens_resolve_from_every_terminal_cell` (1.011 s on natedev, 2026-11-07)
-- `crates/cargo-handler/src/render/word_contrast_tests.rs` — four `matched_inks_keep_glyph_contrast_*_account_words` tests (1.186–1.249 s on natedev, 2026-11-07)
+- `crates/cargo-handler/src/render/word_contrast_tests.rs` — every `matched_inks_keep_glyph_contrast_in_*` test: 17 ran over 1 s on natedev in a busy full-suite run (1.052–2.374 s, port run log `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/mesh_runs/20261107T190655-3982080-ab7a.log`, 2026-11-07). Bring the whole module under 1 s, not only the named cases.
 
 **Workers:** 2 writers.
 - `palette` — the gradient, design-ink, selected-ink, pinned accounts and tree sort test files, `app.rs`, `render/word_click_tests.rs` and `render/word_contrast_tests.rs`.
