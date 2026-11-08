@@ -1927,6 +1927,37 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - At merge, the showrunner installs cargo-tile on both machines.
 - Change-review line: none (no visible change), or the faster cargo call if a test can show it.
 
+### Phase 56 — A checkpoint release frees only its own phase's reservation  · status: todo
+
+**Depends on:** none. Phases 31 and 43i join the tile worktree only after this phase merges and berth is installed.
+
+The showrunner assigned this phase on 2026-11-08; the user said to fix berth defect k now, as a unit phase with a Codex writer. Report and evidence: `~/.claude/state/berth-fix/inbox/20261108T152729Z-cargo-liner/` (`report.md`, `ledger-snapshot.tar.gz`, `resolution.md`).
+
+Today a checkpoint release also releases each sibling reservation in the same `reservation_shares` group, as `released_after_checkpoint`. The siblings did not checkpoint. Three cases: the 43g shrink (40bb8be2) released Phase 31's `01a1b9c0-03fe-7771-bb2a-264f9d6b2497` and Phase 43i's `01a1b9c9-3c43-7c10-b4ea-9d3301f2b5a8`; the 35m shrink (a833d5504) released Phase 31's `01a1b90d`; a later release freed 43g's `01a1b891`.
+
+#### Work Order
+
+**Goal:** a checkpoint release frees only the reservation of the phase that checkpointed. Sibling reservations in the same `reservation_shares` group stay active.
+
+**Spec:**
+1. Red first. Add a `cargo-berth-test-support` fixture case: two phases' reservations in one share group; one checkpoints and releases; the other stays `active` on the board, with its claims. Run it red on the current code and record the red output. It takes under 1 s.
+2. Find the path that reaches the siblings (start at `ReservationShares { reservation_ids }` in `reservation/merge_extent.rs`, the release in `verb/release.rs`, and `reconcile.rs`, the other user of shares). Quote the line that releases a sibling.
+3. Fix it there. The share group may still inform the merge extent of the released reservation; it must not change a sibling's lifecycle.
+4. Keep every existing berth assertion. Add the new case as a row of an existing release test where one covers this behavior.
+5. Replay the ledger snapshot from the report: after the fix, the 43g release leaves `01a1b9c0-...-264f9d6b2497` and `01a1b9c9-...` active, or the replay shows why it cannot.
+
+**Files:**
+- `crates/cargo-berth/src/verb/release.rs`, `crates/cargo-berth/src/reservation/merge_extent.rs`, `crates/cargo-berth/src/reservation/record.rs`, `crates/cargo-berth/src/reconcile.rs` — the release path and the share group.
+- `crates/cargo-berth-test-support/` — the red fixture.
+
+Other cargo-berth files need director routing.
+
+**Out of scope:** the second defect in the report (an `Active` phase record with no repair verb) is in `~/.claude`; the showrunner routes it to sdlc.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** the berth package suite on natedev and the Mac, `--no-cache`, every test under 1 s; lint. After the merge and the berth install, Phases 31 and 43i claim their files again.
+
 ### Phase 31 — Ended cells leave whole  · status: todo
 
 **Depends on:** Phase 35m (both change `render.rs` and `render/command_cache.rs`).
