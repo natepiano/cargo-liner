@@ -285,6 +285,7 @@ fn query_threads_by_id(path: &Path, ids: &[String]) -> rusqlite::Result<OpenThre
         }
     }
     Ok(OpenThreadAccount {
+        requesters: HashMap::new(),
         revision,
         requested: ids.iter().cloned().collect(),
         rows: threads,
@@ -341,23 +342,41 @@ fn versioned_database(codex_dir: &Path, prefix: &str) -> Option<PathBuf> {
         .map(|(_, path)| path)
 }
 
-/// App-server thread names retained while the account database files stay equal.
+/// `ThreadRequester` identifies the owner of a complete thread-id request set.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) enum ThreadRequester {
+    PaneWorkers,
+    AppServer,
+}
+
+/// `LiveThreadRows` holds one scan's account answers and pane rollout paths.
+#[derive(Debug, Default)]
+pub(super) struct LiveThreadRows {
+    pub(super) accounts: HashMap<PathBuf, HashMap<String, CodexThread>>,
+    pub(super) panes:    HashMap<u32, PathBuf>,
+}
+
+/// `OpenThreadRows` retains database answers for each live account's current requesters.
 #[derive(Debug, Default)]
 pub(super) struct OpenThreadRows {
     homes:                     HashMap<PathBuf, OpenThreadAccount>,
     #[cfg(test)]
     pub(super) database_reads: usize,
+    #[cfg(test)]
+    pub(super) queried_ids:    Vec<HashSet<String>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct OpenThreadAccount {
-    revision:  ThreadDatabaseRevision,
-    requested: HashSet<String>,
-    rows:      HashMap<String, CodexThread>,
+    requesters: HashMap<ThreadRequester, HashSet<String>>,
+    revision:   ThreadDatabaseRevision,
+    requested:  HashSet<String>,
+    rows:       HashMap<String, CodexThread>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Default, Eq, PartialEq)]
 enum ThreadDatabaseRevision {
+    #[default]
     Missing,
     Present {
         path:     PathBuf,
@@ -390,13 +409,11 @@ impl ThreadDatabaseRevision {
 }
 
 impl OpenThreadRows {
-    /// `process_rollouts` resolves proven ids only within each process's account home.
-    pub(super) fn process_rollouts(
-        &mut self,
+    fn pane_worker_requests(
         processes: &[ProcessEntry],
         rows: &[super::AgentRow],
         home: Option<&Path>,
-    ) -> HashMap<u32, PathBuf> {
+    ) -> HashMap<PathBuf, Vec<(u32, String)>> {
         let mut requests: HashMap<PathBuf, Vec<(u32, String)>> = HashMap::new();
         for process in processes
             .iter()
@@ -423,10 +440,67 @@ impl OpenThreadRows {
                     .push((process.pid, id.to_owned()));
             }
         }
+        requests
+    }
+
+    fn live_homes(processes: &[ProcessEntry], home: Option<&Path>) -> HashSet<PathBuf> {
+        processes
+            .iter()
+            .filter(|process| process.is_codex())
+            .filter_map(|process| session_home(process, home))
+            .collect()
+    }
+
+    /// `read_scan` gathers all requester sets before reading each live account once.
+    pub(super) fn read_scan(
+        &mut self,
+        processes: &[ProcessEntry],
+        rows: &[super::AgentRow],
+        home: Option<&Path>,
+        server_requests: &HashMap<PathBuf, Vec<String>>,
+    ) -> LiveThreadRows {
+        let mut panes = Self::pane_worker_requests(processes, rows, home);
+        let homes = Self::live_homes(processes, home);
+        self.retain_homes(homes.iter());
+        let mut live = LiveThreadRows::default();
+        for account in homes {
+            let requested = panes.remove(&account).unwrap_or_default();
+            let pane_ids: Vec<_> = requested.iter().map(|(_, id)| id.clone()).collect();
+            let server_ids = server_requests.get(&account).map_or(&[][..], Vec::as_slice);
+            let rows = self.read_requests(
+                &account,
+                [
+                    (ThreadRequester::PaneWorkers, pane_ids.as_slice()),
+                    (ThreadRequester::AppServer, server_ids),
+                ],
+            );
+            for (pid, id) in requested {
+                if let Some(thread) = rows.get(&id) {
+                    live.panes.insert(pid, thread.rollout.clone());
+                }
+            }
+            live.accounts.insert(account, rows.clone());
+        }
+        live
+    }
+
+    /// `process_rollouts` supplies one requester's updates for the existing cache tests.
+    #[cfg(test)]
+    pub(super) fn process_rollouts(
+        &mut self,
+        processes: &[ProcessEntry],
+        rows: &[super::AgentRow],
+        home: Option<&Path>,
+    ) -> HashMap<u32, PathBuf> {
+        let mut requests = Self::pane_worker_requests(processes, rows, home);
+        let live_homes = Self::live_homes(processes, home);
+        self.retain_homes(live_homes.iter());
         let mut paths = HashMap::new();
-        for (account, requested) in requests {
+        for account in live_homes {
+            let requested = requests.remove(&account).unwrap_or_default();
             let ids: Vec<_> = requested.iter().map(|(_, id)| id.clone()).collect();
-            let threads = self.read(&account, &ids);
+            let threads =
+                self.read_requests(&account, [(ThreadRequester::PaneWorkers, ids.as_slice())]);
             for (pid, id) in requested {
                 if let Some(thread) = threads.get(&id) {
                     paths.insert(pid, thread.rollout.clone());
@@ -436,25 +510,33 @@ impl OpenThreadRows {
         paths
     }
 
-    /// `OpenThreadRows::read` retains every requested id until its account home expires.
-    pub(super) fn read(
+    /// `read_requests` replaces supplied request sets before querying their current union.
+    pub(super) fn read_requests<'a>(
         &mut self,
         codex_home: &Path,
-        ids: &[String],
+        requests: impl IntoIterator<Item = (ThreadRequester, &'a [String])>,
     ) -> &HashMap<String, CodexThread> {
         let revision = ThreadDatabaseRevision::read(codex_home);
-        let mut requested: HashSet<_> = ids.iter().cloned().collect();
-        if self.homes.get(codex_home).is_none_or(|cached| {
-            cached.revision != revision || !requested.is_subset(&cached.requested)
-        }) {
+        let cached = self.homes.entry(codex_home.to_owned()).or_default();
+        for (requester, ids) in requests {
+            cached
+                .requesters
+                .insert(requester, ids.iter().cloned().collect());
+        }
+        let requested: HashSet<_> = cached.requesters.values().flatten().cloned().collect();
+        cached.requested.retain(|id| requested.contains(id));
+        cached.rows.retain(|id, _| requested.contains(id));
+        if requested.is_empty() {
+            cached.revision = revision;
+            return &cached.rows;
+        }
+        if cached.revision != revision || !requested.is_subset(&cached.requested) {
+            let ids: Vec<_> = requested.iter().cloned().collect();
             #[cfg(test)]
             {
                 self.database_reads += 1;
+                self.queried_ids.push(ids.iter().cloned().collect());
             }
-            if let Some(cached) = self.homes.get(codex_home) {
-                requested.extend(cached.requested.iter().cloned());
-            }
-            let ids: Vec<_> = requested.iter().cloned().collect();
             let answer = match &revision {
                 ThreadDatabaseRevision::Missing => None,
                 ThreadDatabaseRevision::Present { path, .. } => {
@@ -464,11 +546,23 @@ impl OpenThreadRows {
             .unwrap_or(OpenThreadAccount {
                 revision,
                 requested,
-                rows: HashMap::new(),
+                ..OpenThreadAccount::default()
             });
-            self.homes.insert(codex_home.to_owned(), answer);
+            cached.revision = answer.revision;
+            cached.requested = answer.requested;
+            cached.rows = answer.rows;
         }
-        &self.homes[codex_home].rows
+        &cached.rows
+    }
+
+    /// `read` preserves the app-server request used by the existing cache assertions.
+    #[cfg(test)]
+    pub(super) fn read(
+        &mut self,
+        codex_home: &Path,
+        ids: &[String],
+    ) -> &HashMap<String, CodexThread> {
+        self.read_requests(codex_home, [(ThreadRequester::AppServer, ids)])
     }
 
     pub(super) fn retain_homes<'h>(&mut self, homes: impl Iterator<Item = &'h PathBuf>) {
@@ -1134,6 +1228,13 @@ mod tests {
 
     use super::*;
 
+    const LIVE_REQUEST_IDS: [&str; 4] = [
+        "01a18dbb-7e8f-7641-b3dd-bb2071ab9d70",
+        "01a18dbb-7e8f-7641-b3dd-bb2071ab9d71",
+        "01a18dbb-7e8f-7641-b3dd-bb2071ab9d72",
+        "01a18dbb-7e8f-7641-b3dd-bb2071ab9d73",
+    ];
+
     #[test]
     fn a_log_database_change_reuses_the_selected_account_files() {
         let directory = TempDir::new().expect("account directory");
@@ -1453,6 +1554,136 @@ mod tests {
             )
             .expect("the fixture table should create");
         assert!(rows.read(changed.path(), &ids).is_empty());
+    }
+
+    fn live_request_account() -> (TempDir, ProcessEntry) {
+        let directory = TempDir::new().expect("request account");
+        let stored: Vec<_> = LIVE_REQUEST_IDS
+            .iter()
+            .map(|id| StoredThread {
+                id,
+                originator: CODEX_LEGACY_TUI_ORIGINATOR,
+                thread: thread(directory.path(), 1500, Some(id), ""),
+            })
+            .collect();
+        write_database(directory.path(), "state_6.sqlite", &stored);
+        let process = ProcessEntry {
+            pid:         40,
+            parent:      Some(1),
+            name:        "codex".into(),
+            arguments:   vec!["codex".into(), "resume".into(), LIVE_REQUEST_IDS[1].into()],
+            started:     1,
+            directory:   None,
+            claude_pid:  None,
+            config_home: ConfigHome::Named(directory.path().into()),
+        };
+        (directory, process)
+    }
+
+    fn revise_request_account(home: &Path) {
+        Connection::open(home.join("state_6.sqlite")).expect("request database")
+            .execute("UPDATE threads SET name='current server', created_at_ms=created_at_ms+1 WHERE id=?1", params![LIVE_REQUEST_IDS[0]])
+            .expect("database revision");
+    }
+
+    #[test]
+    fn thread_cache_discards_rotated_pane_requests_before_a_revision_query() {
+        let (directory, mut pane) = live_request_account();
+        let app = [LIVE_REQUEST_IDS[0].to_owned()];
+        let mut cache = OpenThreadRows::default();
+        cache.read_requests(
+            directory.path(),
+            [(ThreadRequester::AppServer, app.as_slice())],
+        );
+        for id in &LIVE_REQUEST_IDS[1..] {
+            pane.arguments[2] = (*id).into();
+            let paths = cache.process_rollouts(std::slice::from_ref(&pane), &[], None);
+            assert_eq!(
+                paths.get(&40),
+                Some(&thread(directory.path(), 1500, Some(id), "").rollout)
+            );
+        }
+        revise_request_account(directory.path());
+        let rows = cache.read_requests(
+            directory.path(),
+            [(ThreadRequester::AppServer, app.as_slice())],
+        );
+        assert_eq!(
+            rows.get(LIVE_REQUEST_IDS[0]).expect("current server").name,
+            SessionName::from(Some("current server".into()))
+        );
+        assert_eq!(
+            cache.queried_ids.last(),
+            Some(&HashSet::from([
+                LIVE_REQUEST_IDS[0].to_owned(),
+                LIVE_REQUEST_IDS[3].to_owned()
+            ])),
+            "a revision query contains only the live pane and server ids"
+        );
+    }
+
+    #[test]
+    fn thread_cache_clears_a_requester_that_has_left() {
+        let (directory, pane) = live_request_account();
+        let app = [LIVE_REQUEST_IDS[0].to_owned()];
+        let mut cache = OpenThreadRows::default();
+        cache.process_rollouts(std::slice::from_ref(&pane), &[], None);
+        cache.read_requests(
+            directory.path(),
+            [(ThreadRequester::AppServer, app.as_slice())],
+        );
+        let mut server = pane.clone();
+        server.pid = 50;
+        server.arguments = vec!["codex".into(), "app-server".into()];
+        cache.process_rollouts(std::slice::from_ref(&server), &[], None);
+        revise_request_account(directory.path());
+        cache.read_requests(
+            directory.path(),
+            [(ThreadRequester::AppServer, app.as_slice())],
+        );
+        assert_eq!(
+            cache.queried_ids.last(),
+            Some(&HashSet::from([app[0].clone()])),
+            "a live server does not retain departed pane requests"
+        );
+        cache.process_rollouts(std::slice::from_ref(&pane), &[], None);
+        cache.read_requests(
+            directory.path(),
+            [(ThreadRequester::AppServer, [].as_slice())],
+        );
+        revise_request_account(directory.path());
+        cache.process_rollouts(std::slice::from_ref(&pane), &[], None);
+        assert_eq!(
+            cache.queried_ids.last(),
+            Some(&HashSet::from([LIVE_REQUEST_IDS[1].to_owned()])),
+            "an empty server request does not retain departed server ids"
+        );
+    }
+
+    #[test]
+    fn thread_cache_reads_a_complete_scan_once() {
+        let (directory, pane) = live_request_account();
+        let panes = [pane.arguments[2].clone()];
+        let app = [LIVE_REQUEST_IDS[0].to_owned()];
+        let mut cache = OpenThreadRows::default();
+        for scan in 0..4 {
+            let rows = cache.read_requests(
+                directory.path(),
+                [
+                    (ThreadRequester::PaneWorkers, panes.as_slice()),
+                    (ThreadRequester::AppServer, app.as_slice()),
+                ],
+            );
+            assert_eq!(rows.len(), 2);
+            assert_eq!(
+                rows.get(&panes[0]).expect("live pane").name,
+                SessionName::from(Some(panes[0].clone()))
+            );
+            assert_eq!(
+                cache.database_reads, 1,
+                "complete unchanged scan {scan} uses one retained database answer"
+            );
+        }
     }
 
     #[test]

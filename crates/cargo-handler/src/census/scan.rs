@@ -481,13 +481,8 @@ impl LocalScanner {
             .map(|home| PacerHistory::read(&home.join(CODEX_PACER_STATE)))
             .unwrap_or_default();
         let service_tiers = startup_log::startup_stage("codex_service_tiers", || {
-            self.codex_tiers(processes, &pacer)
+            self.attach_codex_tiers(processes, &pacer, rows)
         });
-        for row in rows.iter_mut() {
-            if let Some(tier) = service_tiers.get(&row.pid) {
-                row.service_tier = *tier;
-            }
-        }
         let transcripts = startup_log::startup_stage("transcript_discovery", || {
             home.map(|home| home.join(CLAUDE_DIRNAME).join(PROJECTS_DIRNAME))
                 .map(|projects| self.find_transcripts(&projects, processes, sessions))
@@ -504,9 +499,10 @@ impl LocalScanner {
         let shell_calls = startup_log::startup_stage("transcript_shell_calls", || {
             self.find_shell_calls(processes, &transcripts, &subagents, now)
         });
-        let threads = startup_log::startup_stage("codex_app_server_threads", || {
-            app_server_threads(
+        let codex = startup_log::startup_stage("codex_app_server_threads", || {
+            codex_threads(
                 processes,
+                rows,
                 &mut self.rollouts,
                 &mut self.open_thread_rows,
                 &pacer,
@@ -515,7 +511,8 @@ impl LocalScanner {
             )
         });
         self.attach_codex_sessions(processes, home, rows);
-        let models = self.read_process_models(processes, &transcripts, rows, home);
+        let models = self.read_process_models(processes, &transcripts, rows, home, codex.panes);
+        let threads = codex.app_servers;
         self.rollouts.forget_unread();
         let dispatches = startup_log::startup_stage("worker_dispatches", || {
             worker_dispatches(processes, &mut self.worker_names, &mut self.worker_commands)
@@ -584,14 +581,12 @@ impl LocalScanner {
         transcripts: &HashMap<u32, PathBuf>,
         rows: &[AgentRow],
         home: Option<&Path>,
+        mut paths: HashMap<u32, PathBuf>,
     ) -> HashMap<u32, ConversationModel> {
         let mut models: HashMap<_, _> = transcripts
             .iter()
             .map(|(pid, path)| (*pid, self.transcript_models.read(path)))
             .collect();
-        let mut paths = self
-            .open_thread_rows
-            .process_rollouts(processes, rows, home);
         for process in processes
             .iter()
             .filter(|process| process.is_codex() && !process.is_app_server())
@@ -1017,6 +1012,22 @@ impl LocalScanner {
         self.worker_names.retain_sessions(&sessions);
         self.subagent_reads
             .retain_sessions(&transcripts.values().cloned().collect());
+    }
+
+    /// `attach_codex_tiers` attaches each process's requested tier to its row.
+    fn attach_codex_tiers(
+        &mut self,
+        processes: &[ProcessEntry],
+        pacer: &PacerHistory,
+        rows: &mut [AgentRow],
+    ) -> HashMap<u32, ServiceTier> {
+        let tiers = self.codex_tiers(processes, pacer);
+        for row in rows {
+            if let Some(tier) = tiers.get(&row.pid) {
+                row.service_tier = *tier;
+            }
+        }
+        tiers
     }
 
     /// The tier each Codex among `processes` that is not an app server
@@ -1564,21 +1575,22 @@ fn attach_pane_codex_identities(
     }
 }
 
-/// The threads each Codex app server in `processes` holds open, by its
-/// pid, named from each server's own account database, each with the
-/// tier its rollout in `rollouts` or `pacer` names. Only Linux lists a
-/// process's open files, so elsewhere there are none.
-fn app_server_threads(
+/// `CodexThreads` holds one scan's app-server children and pane rollout paths.
+struct CodexThreads {
+    app_servers: HashMap<u32, Vec<ThreadEntry>>,
+    panes:       HashMap<u32, PathBuf>,
+}
+
+/// `codex_threads` gathers both requester sets before reading their account answers.
+fn codex_threads(
     processes: &[ProcessEntry],
+    rows: &[AgentRow],
     rollouts: &mut Rollouts,
     thread_rows: &mut OpenThreadRows,
     pacer: &PacerHistory,
     home: Option<&Path>,
     account_labels: &AccountLabels,
-) -> HashMap<u32, Vec<ThreadEntry>> {
-    if !cfg!(target_os = "linux") {
-        return HashMap::new();
-    }
+) -> CodexThreads {
     let mut by_home: HashMap<PathBuf, Vec<String>> = HashMap::new();
     let held: Vec<_> = processes
         .iter()
@@ -1594,33 +1606,26 @@ fn app_server_threads(
         })
         .filter(|(_, _, ids)| !ids.is_empty())
         .collect();
-    let live_homes: HashSet<_> = processes
-        .iter()
-        .filter(|process| process.is_codex())
-        .filter_map(|process| codex::session_home(process, home))
-        .collect();
-    thread_rows.retain_homes(live_homes.iter());
-    let named: HashMap<_, _> = by_home
+    let live = thread_rows.read_scan(processes, rows, home, &by_home);
+    let app_servers = held
         .into_iter()
-        .map(|(codex_home, ids)| {
-            let rows = thread_rows.read(&codex_home, &ids).clone();
-            (codex_home, rows)
-        })
-        .collect();
-    held.into_iter()
         .map(|(process, codex_home, ids)| {
             let threads = ids
                 .into_iter()
                 .map(|(id, rollout)| {
-                    let (name, started) = named[&codex_home].get(&id).map_or_else(
-                        || (WORKER_LABEL.to_owned(), process.started),
-                        |thread| {
-                            (
-                                thread.label().unwrap_or_else(|| WORKER_LABEL.to_owned()),
-                                thread.created_ms / 1_000,
-                            )
-                        },
-                    );
+                    let (name, started) = live
+                        .accounts
+                        .get(&codex_home)
+                        .and_then(|rows| rows.get(&id))
+                        .map_or_else(
+                            || (WORKER_LABEL.to_owned(), process.started),
+                            |thread| {
+                                (
+                                    thread.label().unwrap_or_else(|| WORKER_LABEL.to_owned()),
+                                    thread.created_ms / 1_000,
+                                )
+                            },
+                        );
                     let read = rollouts.read(&rollout);
                     rollouts.read_model(&rollout);
                     let service_tier = tier::requested(Some(read.clone()), &[], pacer, started);
@@ -1636,7 +1641,33 @@ fn app_server_threads(
                 .collect();
             (process.pid, threads)
         })
-        .collect()
+        .collect();
+    CodexThreads {
+        app_servers,
+        panes: live.panes,
+    }
+}
+
+/// `app_server_threads` preserves the existing account-isolation test interface.
+#[cfg(all(test, target_os = "linux"))]
+fn app_server_threads(
+    processes: &[ProcessEntry],
+    rollouts: &mut Rollouts,
+    thread_rows: &mut OpenThreadRows,
+    pacer: &PacerHistory,
+    home: Option<&Path>,
+    account_labels: &AccountLabels,
+) -> HashMap<u32, Vec<ThreadEntry>> {
+    codex_threads(
+        processes,
+        &[],
+        rollouts,
+        thread_rows,
+        pacer,
+        home,
+        account_labels,
+    )
+    .app_servers
 }
 
 /// Every session record in `directory` that parses. The directory holds
@@ -2406,12 +2437,142 @@ mod tests {
 
     use super::*;
     use crate::census::Account;
+    use crate::census::HierarchySource;
     use crate::census::RoleFallback;
     use crate::census::SessionIdentity;
     use crate::census::StaffRowNames;
     use crate::census::herdr::HerdrNames;
     use crate::census::model::ModelName;
     use crate::census::model::ReasoningEffort;
+
+    const SCAN_REQUEST_IDS: [&str; 3] = [
+        "01a18dbb-7e8f-7641-b3dd-bb2071ab9d80",
+        "01a18dbb-7e8f-7641-b3dd-bb2071ab9d81",
+        "01a18dbb-7e8f-7641-b3dd-bb2071ab9d82",
+    ];
+
+    struct LiveThreadScanFixture {
+        home: TempDir,
+    }
+
+    impl LiveThreadScanFixture {
+        fn new() -> Self {
+            let home = TempDir::new().expect("scan home");
+            let sessions = home.path().join(".codex/sessions");
+            fs::create_dir_all(&sessions).expect("rollout directory");
+            let database = rusqlite::Connection::open(home.path().join(".codex/state_6.sqlite"))
+                .expect("scan database");
+            database.execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY, cwd TEXT,
+                created_at_ms INTEGER, name TEXT, first_user_message TEXT, rollout_path TEXT, originator TEXT)")
+                .expect("thread schema");
+            for id in SCAN_REQUEST_IDS {
+                let path = sessions.join(format!("rollout-{id}.jsonl"));
+                fs::write(&path, format!("{}\n{}\n{}\n{}\n",
+                    json!({"type":"session_meta","payload":{"id":id,"cwd":"/work/fixture","timestamp":"2026-11-07T00:00:00Z"}}),
+                    json!({"type":"response_item","payload":{"role":"user","content":[{"text":"work"}]}}),
+                    json!({"type":"turn_context","payload":{"model":"gpt-6.1-sol","effort":"high"}}),
+                    json!({"type":"event_msg","payload":{"type":"task_started"}})))
+                    .expect("rollout records");
+                database.execute("INSERT INTO threads VALUES(?1,'/work/fixture',100000,?1,'work',?2,'codex-tui')",
+                    rusqlite::params![id,path.to_string_lossy()]).expect("thread row");
+            }
+            fs::write(
+                home.path().join("staff.json"),
+                json!({"schema":2,"rows":[]}).to_string(),
+            )
+            .expect("isolated staff file");
+            Self { home }
+        }
+
+        fn process(&self, pid: u32, arguments: &[&str]) -> ProcessEntry {
+            ProcessEntry {
+                pid,
+                parent: Some(1),
+                name: "codex".into(),
+                arguments: arguments.iter().map(|word| (*word).to_owned()).collect(),
+                started: 100,
+                directory: Some("/work/fixture".into()),
+                claude_pid: None,
+                config_home: ConfigHome::Named(self.home.path().join(".codex")),
+            }
+        }
+
+        fn scanner(&self) -> LocalScanner {
+            LocalScanner::new(AccountLabels::default()).with_staff_file(
+                crate::census::StaffFileSetting::new(HierarchySource::File(
+                    self.home
+                        .path()
+                        .join("staff.json")
+                        .to_string_lossy()
+                        .into_owned(),
+                )),
+                StaffFileReader::default(),
+            )
+        }
+
+        fn revise(&self) {
+            rusqlite::Connection::open(self.home.path().join(".codex/state_6.sqlite"))
+                .expect("scan database")
+                .execute("UPDATE threads SET created_at_ms=created_at_ms+1", [])
+                .expect("new database revision");
+        }
+    }
+
+    #[test]
+    fn a_scan_revision_query_excludes_a_pane_that_closed_before_the_scan() {
+        let fixture = LiveThreadScanFixture::new();
+        let closed = fixture.process(40, &["codex", "resume", SCAN_REQUEST_IDS[0]]);
+        let live = fixture.process(41, &["codex", "resume", SCAN_REQUEST_IDS[1]]);
+        let mut scanner = fixture.scanner();
+        scanner.scan_details_for_test(&[closed, live.clone()], &[], fixture.home.path());
+        let reads = scanner.open_thread_rows.database_reads;
+        let queries = scanner.open_thread_rows.queried_ids.len();
+        fixture.revise();
+        let rows = scanner.scan_details_for_test(&[live], &[], fixture.home.path());
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.pid == 41)
+                .expect("live pane")
+                .model,
+            ModelName::Sol
+        );
+        assert_eq!(scanner.open_thread_rows.database_reads - reads, 1);
+        assert_eq!(
+            &scanner.open_thread_rows.queried_ids[queries..],
+            &[HashSet::from([SCAN_REQUEST_IDS[1].to_owned()])],
+            "the first query in the production scan excludes the departed pane"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_cold_scan_queries_pane_and_app_server_requests_together() {
+        let fixture = LiveThreadScanFixture::new();
+        let held = fs::File::open(
+            fixture
+                .home
+                .path()
+                .join(".codex/sessions")
+                .join(format!("rollout-{}.jsonl", SCAN_REQUEST_IDS[2])),
+        )
+        .expect("held app-server rollout");
+        let pane = fixture.process(41, &["codex", "resume", SCAN_REQUEST_IDS[1]]);
+        let server = fixture.process(std::process::id(), &["codex", "app-server"]);
+        let mut scanner = fixture.scanner();
+        scanner.scan_details_for_test(&[pane, server], &[], fixture.home.path());
+        assert_eq!(
+            scanner.open_thread_rows.database_reads, 1,
+            "a cold production scan reads one complete account answer"
+        );
+        assert_eq!(
+            scanner.open_thread_rows.queried_ids.as_slice(),
+            &[HashSet::from([
+                SCAN_REQUEST_IDS[1].to_owned(),
+                SCAN_REQUEST_IDS[2].to_owned()
+            ])]
+        );
+        drop(held);
+    }
 
     #[test]
     fn idle_verification_arguments_are_checked_once_per_process() {
