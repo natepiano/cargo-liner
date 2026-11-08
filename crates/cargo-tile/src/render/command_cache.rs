@@ -21,6 +21,7 @@ use super::Rc;
 use super::RowInk;
 use super::TABLE_CONTINUATION_CLEARANCE;
 use super::TABLE_HEADERS;
+use super::TableKind;
 use super::TableRowEnd;
 use super::TableSeparators;
 use super::Text;
@@ -74,6 +75,8 @@ pub(super) struct CachedProcessRow {
     pub(super) columns:           Vec<usize>,
     pub(super) ground:            Color,
     pub(super) parent_visibility: ParentVisibility,
+    pub(super) kind:              TableKind,
+    pub(super) command_form:      CommandForm,
 }
 
 /// Prepared text is shared until a table plan changes one cell's reading or ink.
@@ -117,6 +120,7 @@ impl CachedProcessRow {
             && self.columns == layout.columns
             && self.ground == layout.ground
             && self.parent_visibility == parent_visibility
+            && self.kind == layout.kind
     }
 }
 
@@ -124,6 +128,29 @@ impl CachedProcessRow {
 #[derive(Default)]
 pub(super) struct PreparedCommandCells {
     by_invocation: HashMap<(InvocationId, u32), UnchangedCommandInputs>,
+}
+
+/// `PreparedCommandCell` keeps `form` and its wrapped `text` in one preparation.
+#[derive(Clone)]
+pub(super) struct PreparedCommandCell {
+    pub(super) form: CommandForm,
+    pub(super) text: Rc<Text<'static>>,
+}
+
+/// `CommandForm` selects the full command or its named words for a summary row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CommandForm {
+    Full,
+    WithoutArguments,
+}
+
+impl CommandForm {
+    const fn for_width(kind: TableKind, selected: u16, width: u16) -> Self {
+        match kind {
+            TableKind::Summary if selected > width => Self::WithoutArguments,
+            TableKind::Summary | TableKind::Command => Self::Full,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,9 +211,10 @@ impl From<&TrackedRow> for CommandRowInk {
 }
 
 struct WrappedCommandCell {
-    width:  u16,
-    ground: Color,
-    text:   Rc<Text<'static>>,
+    width:    u16,
+    ground:   Color,
+    kind:     TableKind,
+    prepared: PreparedCommandCell,
 }
 
 impl PreparedCommandCells {
@@ -213,37 +241,41 @@ impl PreparedCommandCells {
     }
 
     pub(super) fn widths(&mut self, row: &TrackedRow, view: &CommandView) -> MeasuredCommandWidths {
-        let source = self.inputs(row, view);
-        *source.widths.get_or_init(|| {
-            MeasuredCommandWidths::new(&source.source.process.command, &source.view)
-        })
+        self.inputs(row, view).measured_widths()
     }
 
     pub(super) fn for_row(
         &mut self,
         row: &TrackedRow,
         layout: &CellTableLayout,
-    ) -> Rc<Text<'static>> {
+    ) -> PreparedCommandCell {
         let source = self.inputs(row, &layout.view);
+        let width = source.measured_widths().selected;
         let ink = CommandRowInk::from(row);
         if let CommandPaintPreparation::Prepared(painted) = &mut source.painting
             && painted.ink == ink
             && std::sync::Arc::ptr_eq(&painted.theme, &layout.theme)
         {
-            return painted.for_row(row, layout);
+            return painted.for_row(row, layout, width);
         }
         let mut painting = UnchangedCommandInk {
             ink,
             theme: std::sync::Arc::clone(&layout.theme),
             wrapped: Vec::new(),
         };
-        let text = painting.for_row(row, layout);
+        let text = painting.for_row(row, layout, width);
         source.painting = CommandPaintPreparation::Prepared(painting);
         text
     }
 }
 
 impl UnchangedCommandInputs {
+    fn measured_widths(&self) -> MeasuredCommandWidths {
+        *self
+            .widths
+            .get_or_init(|| MeasuredCommandWidths::new(&self.source.process.command, &self.view))
+    }
+
     fn new(row: &TrackedRow, view: &CommandView) -> Self {
         Self {
             source:   row.snapshot(),
@@ -255,22 +287,30 @@ impl UnchangedCommandInputs {
 }
 
 impl UnchangedCommandInk {
-    fn for_row(&mut self, row: &TrackedRow, layout: &CellTableLayout) -> Rc<Text<'static>> {
+    fn for_row(
+        &mut self,
+        row: &TrackedRow,
+        layout: &CellTableLayout,
+        selected: u16,
+    ) -> PreparedCommandCell {
         let width = layout.column_width(COMMAND_COLUMN);
-        if let Some(wrapped) = self
-            .wrapped
-            .iter()
-            .find(|wrapped| wrapped.width == width && wrapped.ground == layout.ground)
-        {
-            return Rc::clone(&wrapped.text);
+        if let Some(wrapped) = self.wrapped.iter().find(|wrapped| {
+            wrapped.width == width && wrapped.ground == layout.ground && wrapped.kind == layout.kind
+        }) {
+            return wrapped.prepared.clone();
         }
-        let text = Rc::new(wrap_command_cell(row, layout, width));
+        let form = CommandForm::for_width(layout.kind, selected, width);
+        let prepared = PreparedCommandCell {
+            form,
+            text: Rc::new(wrap_command_cell(row, layout, width, form)),
+        };
         self.wrapped.push(WrappedCommandCell {
             width,
             ground: layout.ground,
-            text: Rc::clone(&text),
+            kind: layout.kind,
+            prepared: prepared.clone(),
         });
-        text
+        prepared
     }
 }
 

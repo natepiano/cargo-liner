@@ -1,5 +1,8 @@
 //! Current activity and counters read from captured output.
 
+use std::borrow::Cow;
+use std::num::NonZeroUsize;
+
 use super::Progress;
 use super::capture_diagnostic::CaptureFailure;
 use crate::constants::BAR_GLYPH_FIRST;
@@ -199,6 +202,7 @@ fn still_waiting(tail: &str) -> bool {
 /// on screen where it stopped, so the last redraw of a finished build
 /// reads no differently from the last redraw of a running one.
 fn last_counter(tail: &str) -> TailCounter {
+    let started = last_test_start(tail);
     for (index, lead) in tail.rmatch_indices(UNIT_COUNTER_LEAD) {
         let after = index.saturating_add(lead.len());
         let Some(text) = tail.get(after..) else {
@@ -207,6 +211,11 @@ fn last_counter(tail: &str) -> TailCounter {
         let ParsedCounter::Recognized { counter, progress } = counter_at(text) else {
             continue;
         };
+        if let TailCounter::Recognized { at, .. } = started
+            && at > index
+        {
+            return started;
+        }
         return TailCounter::Recognized {
             at:    index,
             state: RunState::Working {
@@ -215,7 +224,80 @@ fn last_counter(tail: &str) -> TailCounter {
             },
         };
     }
+    started
+}
+
+/// `last_test_start` reads a nextest header's total before the first test result.
+fn last_test_start(tail: &str) -> TailCounter {
+    let mut at = tail.len();
+    for line in tail.split_inclusive(['\n', '\r']).rev() {
+        at -= line.len();
+        let text = nextest_header_text(line);
+        let line = text.trim();
+        let header = line.split_once(" (").map_or(line, |(header, _)| header);
+        let mut fields = header.split_ascii_whitespace();
+        let (
+            Some("Starting"),
+            Some(total),
+            Some("test" | "tests"),
+            Some("across"),
+            Some(binaries),
+            Some("binary" | "binaries"),
+            None,
+        ) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        )
+        else {
+            continue;
+        };
+        let Ok(total) = total.parse::<NonZeroUsize>() else {
+            continue;
+        };
+        if binaries.parse::<NonZeroUsize>().is_err() {
+            continue;
+        }
+        return TailCounter::Recognized {
+            at,
+            state: RunState::Working {
+                phase:    Phase::Testing,
+                progress: Progress {
+                    done:  0,
+                    total: total.get(),
+                },
+            },
+        };
+    }
     TailCounter::Unrecognized
+}
+
+/// `nextest_header_text` removes SGR codes and preserves all other bytes, including incomplete
+/// escapes.
+fn nextest_header_text(line: &str) -> Cow<'_, str> {
+    if !line.contains("\x1b[") {
+        return Cow::Borrowed(line);
+    }
+    let mut text = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(escape) = rest.find("\x1b[") {
+        text.push_str(&rest[..escape]);
+        rest = &rest[escape + 2..];
+        let parameters = rest.trim_start_matches(|character: char| {
+            character.is_ascii_digit() || character == ';' || character == ':'
+        });
+        if let Some(after) = parameters.strip_prefix('m') {
+            rest = after;
+        } else {
+            text.push_str("\x1b[");
+        }
+    }
+    text.push_str(rest);
+    Cow::Owned(text)
 }
 
 /// Which of the two counters a reading came off, which is half of
@@ -615,5 +697,56 @@ mod tests {
             counter_at(&format!("1/{overflow}:")),
             ParsedCounter::Unrecognized
         );
+    }
+
+    #[test]
+    fn a_colored_nextest_starting_header_reports_testing_before_the_first_result() {
+        let start = "    \x1b[1;32mStarting\x1b[0m \x1b[1m24\x1b[0m tests across \
+                     \x1b[1m3\x1b[0m binaries (5012 tests skipped)\n";
+        let tail = format!("{CAPTURED_REDRAW}\n{CAPTURED_FINISHED}{start}");
+        assert_eq!(
+            CaptureRead::from(Ok(tail)),
+            CaptureRead::Progress(testing(0, 24))
+        );
+    }
+
+    #[test]
+    fn nextest_header_text_preserves_non_sgr_and_incomplete_escape_bytes() {
+        for (input, expected) in [
+            ("before\x1b[2Kafter", "before\x1b[2Kafter"),
+            ("before\x1b[1;", "before\x1b[1;"),
+            ("before\x1b", "before\x1b"),
+            (
+                "\x1b[1;32m界面\x1b[0m \x1b[38:5:42m試験\x1b[0m",
+                "界面 試験",
+            ),
+        ] {
+            assert_eq!(nextest_header_text(input).as_bytes(), expected.as_bytes());
+        }
+    }
+
+    #[test]
+    fn nextest_headers_keep_raw_positions_between_counters_and_finished_markers() {
+        let start = "    \x1b[32mStarting\x1b[0m 24 tests across 3 binaries\n";
+        assert_eq!(
+            parse_state(&format!("{CAPTURED_TEST_REDRAW}{start}")),
+            CurrentProgress::Active(testing(0, 24))
+        );
+        assert_eq!(
+            parse_state(&format!("{start}{CAPTURED_TEST_REDRAW}")),
+            CurrentProgress::Active(testing(12, 24))
+        );
+        assert_eq!(
+            parse_state(&format!("{start}{CAPTURED_FINISHED}")),
+            CurrentProgress::RetiredCounter
+        );
+        for invalid in [
+            "Starting 0 tests across 1 binary",
+            "Starting 2 tests across 0 binaries",
+            "output: Starting 2 tests across 1 binary",
+            "Starting 2 tests across 1 binary extra",
+        ] {
+            assert_eq!(parse_state(invalid), CurrentProgress::Unrecognized);
+        }
     }
 }
