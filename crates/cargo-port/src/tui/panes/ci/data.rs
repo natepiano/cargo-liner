@@ -23,13 +23,13 @@ impl CiEmptyState {
     pub fn title(&self) -> String {
         match self {
             Self::Unreadable => format!(" CI runs — {GIT_UNREADABLE_LABEL} "),
-            Self::BranchScopedOnly => " CI runs — shown on branch/worktree rows ".to_string(),
+            Self::BranchScopedOnly => " CI runs — on branch rows ".to_string(),
             Self::Fetching | Self::Loading => " CI runs — loading… ".to_string(),
             Self::NoRuns => " No CI runs ".to_string(),
             Self::NoRunsForBranch(branch) => format!(" No CI runs for branch {branch} "),
             Self::NoWorkflowConfigured => " No CI workflow configured ".to_string(),
-            Self::NotGitRepo => " CI runs — not a git repository ".to_string(),
-            Self::RequiresGithubRemote => " CI runs — requires a GitHub origin remote ".to_string(),
+            Self::NotGitRepo => " CI runs — not a git repo ".to_string(),
+            Self::RequiresGithubRemote => " CI runs — no GitHub remote ".to_string(),
         }
     }
 }

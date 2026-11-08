@@ -38,6 +38,7 @@ use super::HierarchyEdges;
 use super::HierarchyRole;
 use super::HierarchySource;
 use super::RoleFallback;
+#[cfg(test)]
 use super::SessionIdentity;
 use super::worker_dispatch::WorkerDispatch;
 use super::worker_dispatch::WorkerIdentity;
@@ -123,10 +124,10 @@ impl HierarchyEdges {
     pub(super) fn with_worker_roles(mut self, rows: &[AgentRow]) -> Self {
         let mut roles = BTreeMap::new();
         for row in rows {
-            if let SessionIdentity::Claude(session) = &row.session_id
+            if let Some(session) = row.session_id.ids().next()
                 && let RoleFallback::Worker(role) = row.role_fallback
             {
-                roles.insert(session.as_str(), role);
+                roles.insert(session, role);
             }
             for child in &row.children {
                 if let WorkerDispatch::Worker(dispatch) = &child.dispatch
@@ -155,7 +156,7 @@ impl HierarchySnapshot {
     pub(crate) fn matched(mut self, rows: &[AgentRow]) -> Self {
         if self.notice == HierarchyNotice::Clear && !self.edges.0.iter().any(|edge| {
             rows.iter().any(|row| {
-                matches!(&row.session_id, SessionIdentity::Claude(id) if id == &edge.member || id == &edge.manager)
+                row.session_id.ids().any(|id| id == edge.member || id == edge.manager)
                 || row.children.iter().any(|child| matches!(&child.thread_id, CodexThreadId::Recorded(id) if id == &edge.member))
             })
         }) {
@@ -605,7 +606,24 @@ pub(super) enum StaffName<'a> {
     Unlisted,
 }
 
+/// `StaffSessionMembership` names whether a session belongs to this staff snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StaffSessionMembership {
+    Listed,
+    Unlisted,
+}
+
 impl StaffRoster {
+    /// `StaffRoster` admits only sessions listed in this scan's staff snapshot.
+    pub(super) fn session_membership(&self, id: &str) -> StaffSessionMembership {
+        self.members
+            .values()
+            .find(|member| member.session == id)
+            .map_or(StaffSessionMembership::Unlisted, |_| {
+                StaffSessionMembership::Listed
+            })
+    }
+
     pub(super) fn name(&self, session: &str) -> StaffName<'_> {
         self.names
             .get(session)
@@ -789,11 +807,7 @@ impl HierarchyRefreshScope {
 
     /// A row carries one session and any threads whose placement follows it.
     pub(super) fn placement_ids(row: &AgentRow) -> impl Iterator<Item = &str> {
-        let session = match &row.session_id {
-            SessionIdentity::Claude(id) => Some(id.as_str()),
-            SessionIdentity::Unrecorded => None,
-        };
-        session.into_iter().chain(
+        row.session_id.ids().chain(
             row.children
                 .iter()
                 .filter_map(|child| match &child.thread_id {
@@ -870,18 +884,15 @@ impl HierarchyCache {
         };
         let edges = self.success.edges();
         rows.iter()
-            .filter_map(|row| match &row.session_id {
-                SessionIdentity::Claude(id)
-                    if !checked.0.contains(id)
-                        && !edges
-                            .0
-                            .iter()
-                            .any(|edge| &edge.manager == id || &edge.member == id) =>
-                {
-                    Some(id.clone())
-                },
-                _ => None,
+            .flat_map(|row| row.session_id.ids())
+            .filter(|id| {
+                !checked.0.contains(*id)
+                    && !edges
+                        .0
+                        .iter()
+                        .any(|edge| edge.manager == *id || edge.member == *id)
             })
+            .map(str::to_owned)
             .collect()
     }
 

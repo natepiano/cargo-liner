@@ -126,9 +126,10 @@ fn a_startup_percent_row_uses_the_space_its_hidden_detail_leaves() -> anyhow::Re
         let text: String = (card.left() + 1..card.right() - 1)
             .map(|x| buffer[(x, card.top() + 1)].symbol())
             .collect();
-        assert!(text.contains("Cargo meta…"), "{mode:?}: {text}");
+        assert!(text.contains("Cargo metadata"), "{mode:?}: {text}");
         assert!(text.ends_with("100% "), "{mode:?}: {text}");
-        assert!(text.contains("▓▓▓▓▓▓▓▓"), "{mode:?}: {text}");
+        assert!(text.contains('▓'), "{mode:?}: {text}");
+        assert!(!text.contains("▓▓▓▓▓▓▓▓"), "{mode:?}: {text}");
     }
     Ok(())
 }
@@ -193,7 +194,8 @@ fn closing_startup_rows_fit_each_resized_frame() -> anyhow::Result<()> {
                 .map(|x| buffer[(x, y)].symbol())
                 .collect();
             assert!(text.contains("100%"), "{mode:?}: {text}");
-            assert!(text.contains("▓▓▓▓▓▓▓▓"), "{mode:?}: {text}");
+            assert!(text.contains('▓'), "{mode:?}: {text}");
+            assert!(!text.contains("▓▓▓▓▓▓▓▓"), "{mode:?}: {text}");
         }
         let view = app
             .framework
@@ -245,7 +247,8 @@ fn startup_rows_keep_their_bar_percent_and_page_count_at_eighty_columns() -> any
                 .map(|x| buffer[(x, y)].symbol())
                 .collect();
             assert!(text.contains("100%"), "{mode:?}: {text}");
-            assert!(text.contains("▓▓▓▓▓▓▓▓"), "{mode:?}: {text}");
+            assert!(text.contains('▓'), "{mode:?}: {text}");
+            assert!(!text.contains("▓▓▓▓▓▓▓▓"), "{mode:?}: {text}");
             shown += 1usize;
         }
         let body = app.framework.toasts.active_views(std::time::Instant::now());

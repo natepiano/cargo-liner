@@ -2,7 +2,6 @@
 
 #![expect(clippy::expect_used, reason = "fixture files and rows must exist")]
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::fs::FileTimes;
 use std::path::Path;
@@ -14,12 +13,10 @@ use serde_json::Value;
 
 use super::*;
 use crate::census::Agent;
+use crate::census::ProvenCodexThread;
 use crate::census::RoleFallback;
 use crate::census::StaffRowNames;
 use crate::census::classify;
-use crate::census::classify::CodexSessionLink;
-use crate::census::codex::CodexThread;
-use crate::census::codex_names::SessionName;
 use crate::census::worker_dispatch::ParsedDispatch;
 use crate::census::worker_dispatch::WorkerRoster;
 
@@ -100,7 +97,7 @@ fn a_missing_staff_file_preserves_live_names_without_an_error() {
     let reader = StaffFileReader::default();
     let roster = reader.roster(&source);
     let mut rows = vec![row(1, "claude-live", "herdr name")];
-    classify::attach_staff_names(&mut rows, &roster, &HashMap::new());
+    classify::attach_staff_names(&mut rows, &roster);
     assert_eq!(roster.names, BTreeMap::new());
     assert_eq!(rows[0].name, "herdr name");
     assert_eq!(rows[0].staff_names, StaffRowNames::default());
@@ -217,28 +214,16 @@ fn staff_names_join_live_claude_and_proven_codex_without_adding_dead_rows() {
         row(2, "", "thread name"),
     ];
     rows[1].agent = Agent::Codex;
-    rows[1].session_id = SessionIdentity::Unrecorded;
-    let thread = CodexThread {
-        account_home: Path::new("/fixture/.codex").into(),
-        cwd:          "/fixture".into(),
-        created_ms:   1,
-        name:         SessionName::Named("thread name".into()),
-        first_prompt: String::new(),
-        rollout:      format!("/fixture/rollout-{THREAD}.jsonl").into(),
-    };
-    let links = HashMap::from([(2, CodexSessionLink::Named(thread))]);
-    classify::attach_staff_names(&mut rows, &roster, &links);
+    rows[1].session_id = SessionIdentity::Codex(ProvenCodexThread::ResumeArgument(THREAD.into()));
+    classify::attach_staff_names(&mut rows, &roster);
     assert_eq!(
         rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
         ["staff boss", "staff worker"]
     );
     assert_eq!(rows.len(), 2, "dead staff rows must not create census rows");
     rows[1].name = "herdr name".into();
-    classify::attach_staff_names(
-        &mut rows,
-        &roster,
-        &HashMap::from([(2, CodexSessionLink::HerdrName("herdr name".into()))]),
-    );
+    rows[1].session_id = SessionIdentity::Unrecorded;
+    classify::attach_staff_names(&mut rows, &roster);
     assert_eq!(
         rows[1].name, "herdr name",
         "an unproven thread must not receive a staff name"
@@ -253,7 +238,7 @@ fn staff_name_precedes_thread_herdr_and_pid_fallback_names() {
             row(1, "claude-live", fallback),
             row(2, "unlisted", fallback),
         ];
-        classify::attach_staff_names(&mut rows, &staff, &HashMap::new());
+        classify::attach_staff_names(&mut rows, &staff);
         assert_eq!(rows[0].name, "staff boss");
         assert_eq!(
             rows[1].name, fallback,

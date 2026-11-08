@@ -380,6 +380,17 @@ fn build_ci_widths(
 
     let mut resolved: Vec<u16> = (0..spec_len).map(|i| column_widths.get(i)).collect();
     widen_ci_header_columns(&mut resolved, cols, inner_width);
+    if let Some(slack) = ci_width_slack(&resolved, inner_width) {
+        let title_width = ci_runs
+            .iter()
+            .map(|run| run.commit_title.as_deref().unwrap_or("").width() + 1)
+            .max()
+            .unwrap_or(0);
+        let grow_by = title_width
+            .saturating_sub(usize::from(resolved[0]))
+            .min(slack);
+        resolved[0] = resolved[0].saturating_add(u16::try_from(grow_by).unwrap_or(u16::MAX));
+    }
     let mut used = 0;
     resolved
         .into_iter()
@@ -712,7 +723,8 @@ pub fn render_ci_pane_body(
         ..PaneFrameChrome::default()
     };
 
-    let inner = tui_pane::frame_inner(area);
+    let mut inner = tui_pane::frame_inner(area);
+    inner.width = inner.width.saturating_sub(1);
     {
         let viewport = &mut pane.viewport;
         viewport.set_len(ci_data.runs.len());
@@ -751,9 +763,17 @@ pub fn render_ci_pane_body(
 
     let header = layout.header(&cols);
 
+    let spacing = u16::from(
+        !(matches!(layout, CiTableLayout::BranchSummary(_))
+            && widths
+                .iter()
+                .filter_map(|width| constraint_width(Some(width)))
+                .sum::<usize>()
+                == usize::from(inner.width)),
+    );
     let table = Table::new(rows, widths.iter().copied())
         .header(header)
-        .column_spacing(1)
+        .column_spacing(spacing)
         .row_highlight_style(Style::default());
 
     let mut table_state = TableState::default().with_selected(Some(pane.viewport.pos()));
@@ -909,14 +929,11 @@ fn ci_widths_for_mode(
         ]);
     }
     if all || data.mode_label.as_deref() == Some("branch") {
-        if width
-            < label_width("Commit")
-                .saturating_add(status)
-                .saturating_add(1)
-        {
+        if width < label_width("Commit").saturating_add(status) {
             return CiTableLayout::StatusSummary(vec![Constraint::Length(status)]);
         }
-        let commit = width.saturating_sub(status + 1);
+        let spacing = u16::from(width > label_width("Commit").saturating_add(status));
+        let commit = width.saturating_sub(status + spacing);
         return CiTableLayout::BranchSummary(vec![
             Constraint::Length(commit),
             Constraint::Length(status),
@@ -1347,5 +1364,134 @@ mod tests {
                 ],
             ),
         ]
+    }
+}
+
+#[cfg(test)]
+mod margin_title_tests {
+    use anyhow::Context;
+    use tui_pane::ColorMode;
+
+    use crate::tui::panes::CiData;
+    use crate::tui::panes::CiEmptyState;
+    use crate::tui::panes::PaneId;
+    use crate::tui::test_support;
+
+    #[test]
+    fn empty_ci_titles_keep_the_fixed_words_at_narrow_window_widths() -> anyhow::Result<()> {
+        for (window, pane_width) in [(80, 34), (95, 41)] {
+            let mut app = test_support::project_app();
+            app.framework.color_mode = ColorMode::Colored;
+            for (state, expected) in [
+                (CiEmptyState::BranchScopedOnly, "CI runs — on branch rows"),
+                (CiEmptyState::Fetching, "CI runs — loading…"),
+                (CiEmptyState::Loading, "CI runs — loading…"),
+                (CiEmptyState::NoRuns, "No CI runs"),
+                (
+                    CiEmptyState::NoWorkflowConfigured,
+                    "No CI workflow configured",
+                ),
+                (CiEmptyState::NotGitRepo, "CI runs — not a git repo"),
+                (
+                    CiEmptyState::RequiresGithubRemote,
+                    "CI runs — no GitHub remote",
+                ),
+                (CiEmptyState::Unreadable, "CI runs — unreadable"),
+                (
+                    CiEmptyState::NoRunsForBranch("verify_a_very_long_branch_name".to_string()),
+                    "No CI runs for branch",
+                ),
+            ] {
+                let branch = matches!(state, CiEmptyState::NoRunsForBranch(_));
+                app.ci.set_content(CiData {
+                    runs:           Vec::new(),
+                    mode_label:     None,
+                    current_branch: None,
+                    empty_state:    state,
+                });
+                let buffer = test_support::draw_pane_in_window(
+                    &mut app,
+                    PaneId::CiRuns,
+                    window,
+                    pane_width,
+                )?;
+                let title = test_support::rows(&buffer)
+                    .into_iter()
+                    .next()
+                    .context("CI title")?;
+                assert!(title.contains(expected), "{window}: {title}");
+                if branch {
+                    assert!(title.contains('…'), "{title}");
+                }
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    fn ci_run_totals_keep_a_blank_cell_before_the_border() -> anyhow::Result<()> {
+        for (window, pane_width) in [(80, 34), (95, 41)] {
+            let mut app = test_support::project_app();
+            app.framework.color_mode = ColorMode::Colored;
+            app.ci.set_content(CiData {
+                runs:           vec![crate::ci::CiRun {
+                    run_id:          1,
+                    created_at:      "2026-04-01T21:00:00-04:00".to_string(),
+                    branch:          "main".to_string(),
+                    url:             "https://example.com/run/1".to_string(),
+                    ci_status:       crate::ci::CiStatus::Passed,
+                    jobs:            Vec::new(),
+                    wall_clock_secs: Some(1155),
+                    commit_title:    Some("A long commit title that needs to fit".to_string()),
+                    updated_at:      None,
+                    fetched:         crate::ci::FetchStatus::Fetched,
+                }],
+                mode_label:     Some("branch".to_string()),
+                current_branch: None,
+                empty_state:    CiEmptyState::NoRuns,
+            });
+            let buffer =
+                test_support::draw_pane_in_window(&mut app, PaneId::CiRuns, window, pane_width)?;
+            let total = test_support::position(&buffer, "Total")?;
+            test_support::position(&buffer, "19m 15s")?;
+            for y in total.1..=total.1 + 1 {
+                assert_eq!(
+                    buffer[(pane_width - 2, y)].symbol(),
+                    " ",
+                    "{window}: {:?}",
+                    test_support::rows(&buffer)
+                );
+                assert_eq!(buffer[(pane_width - 1, y)].symbol(), "│");
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    fn wide_ci_commit_uses_the_space_before_the_single_margin_cell() -> anyhow::Result<()> {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        app.ci.set_content(CiData {
+            runs:           vec![crate::ci::CiRun {
+                run_id:          1,
+                created_at:      "2026-04-01T21:00:00-04:00".to_string(),
+                branch:          "main".to_string(),
+                url:             "https://example.com/run/1".to_string(),
+                ci_status:       crate::ci::CiStatus::Passed,
+                jobs:            Vec::new(),
+                wall_clock_secs: Some(5),
+                commit_title:    Some("A long commit title that needs more space ".repeat(4)),
+                updated_at:      None,
+                fetched:         crate::ci::FetchStatus::Fetched,
+            }],
+            mode_label:     Some("branch".to_string()),
+            current_branch: None,
+            empty_state:    CiEmptyState::NoRuns,
+        });
+        let buffer = test_support::draw_pane_in_window(&mut app, PaneId::CiRuns, 160, 95)?;
+        let total = test_support::position(&buffer, "Total")?;
+        assert_eq!(total.0 + 5, 93, "{:?}", test_support::rows(&buffer));
+        assert_eq!(buffer[(93, total.1)].symbol(), " ");
+        let rows = test_support::rows(&buffer);
+        assert!(rows[usize::from(total.1 + 1)].contains('…'), "{rows:?}");
+        Ok(())
     }
 }
