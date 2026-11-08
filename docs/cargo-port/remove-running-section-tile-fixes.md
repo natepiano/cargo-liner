@@ -2038,6 +2038,13 @@ The diagnosis found that none of the four earlier causes came back. The new shar
 
 **Landing rule:** Phase 24's landing rule, unchanged. At most 3 repair rounds; the count restarts with the redesign (showrunner, 2026-11-08).
 
+**Round 4, the last (showrunner, 2026-11-08):** the redesign capture said LAND no (`phases/31/diagnose5_report.md`). Closing-model faults fell to 0 (main 5104) and blank boxes to 22 (main 1058). One more round fixes two causes:
+
+1. A new cell is admitted only while its command is Live. A Closing group that never had a cell does not take a slot (t40: seven jobs got a first cell after their work ended).
+2. Admission counts reclaimable blank rows in live cells and closing spans, at O(C+W) and only when its inputs change (longest free wait t40 9.9 s against 2.45 s).
+
+The next paired capture measures rule a against the approved closing model, and reports CPU as total reader CPU and time-weighted visible cells. Per-cell CPU is reported but does not decide landing. The free-wait measure stays as it is. If any live count is still worse, the showrunner decides land or park. No further round.
+
 **First attempt (2026-11-07 to 11-08, copy head 9b85b0e, not landed):** it gated a closing cell's content all or nothing (`draw.rs:623`, `draw.rs:798`, `render.rs:1707`) while the grid still shrank its geometry. The paired capture found empty bordered boxes in 2387 frames against the base's 45. Keep its cost cuts: `draw_clipped` scratch reuse and the `GridLines::render` cut (`pane/frame.rs`), and the motion tests that run each key once.
 
 **Files:**
