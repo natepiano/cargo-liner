@@ -1347,7 +1347,7 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 
 **Workers:** 2 writers — `impl`: census modules, imports, visibility and their tests; `grid`: `tui_pane` tile modules, settings, exports and their tests. Follow active edits to the files this phase moves.
 
-**Constraints from prior phases:** Phase 28's Constraints hold, on its landed checkpoint. A move changes no code: only module paths, `use` lines and visibility that the new module paths need. No `tui_pane` public signature changes. No new `#[allow]` or `#[expect]`; no test takes a second. Keep `linux_process_stat.rs` as the Linux stat parser when splitting census code. Phase 43b added `InvocationLifetimeReads` (`census/scan.rs` ~1034), whose `apply` adds Mac lifetime evidence to the one `Census` of a scan, and the test counters `CENSUS_PREPARATIONS` and `TOPOLOGY_PREPARATIONS`; a split keeps one `Census` and one CPU topology per scan, and keeps `one_scan_prepares_one_census_and_one_topology` green.
+**Constraints from prior phases:** Phase 28 does not land. Use the current branch checkpoint at dispatch. A move changes no code: only module paths, `use` lines and visibility that the new module paths need. No `tui_pane` public signature changes. No new `#[allow]` or `#[expect]`; no test takes a second. Keep `linux_process_stat.rs` as the Linux stat parser when splitting census code. Phase 43b added `InvocationLifetimeReads` (`census/scan.rs` ~1034), whose `apply` adds Mac lifetime evidence to the one `Census` of a scan, and the test counters `CENSUS_PREPARATIONS` and `TOPOLOGY_PREPARATIONS`; a split keeps one `Census` and one CPU topology per scan, and keeps `one_scan_prepares_one_census_and_one_topology` green.
 
 **Acceptance gate:**
 - `verify.sh lint` and `verify.sh test` for `tui_pane`, `cargo-tile`, `cargo-handler` and `cargo-port`, green, with no test changed by items 1 and 2.
@@ -1359,8 +1359,12 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 Port of the session's CPU fix 1 (one retained System refreshed in place, Active/Idle pace, 2 s idle discovery, exec name refresh) onto main 655c7948 after the phase 28 ruling. Work order: the session's phases/32m/implementation_prompt.md.
 
 ### Phase 30m — Capture shim cost on main  · status: todo
+**Depends on:** Phase 43g (both change `shim_registration/` and the install lifecycle tests).
 
-Port of the approved capture shim cost work (one process per call apart from cargo and tee, boot receipt, shim v4) onto main. Work order: phases/30m/implementation_prompt.md.
+
+Port of the approved capture shim cost work (one process per call apart from cargo and tee, boot receipt, shim v4) onto main. Work order: `/tmp/claude/delegate/03f9b80e-dbe5-47c6-b29e-a7e6587ab721/phases/30m/implementation_prompt.md`.
+
+**Workers:** 1 writer — `impl`, all authorized capture, installation, census transport and regression-test files in the external work order.
 
 **Protocol words (Phase 44, director 2026-10-30):** the native capture entry and the shim script name the entry program and its `--capture-shim` / `--capture-shim-passthrough` flags only through the constants.rs items Phase 44 adds (no second copy); a test checks that the script uses the same words.
 
@@ -1372,31 +1376,22 @@ Port of the approved capture shim cost work (one process per call apart from car
 
 - The `_capture_parent` change belongs to Phase 43d. This phase does not make it.
 
-### Phase 35m — Summary arguments on main  · status: todo
+### Phase 35m — Summary arguments on main  · status: done
 
-**Sort (2026-11-06):** the ANSI handling (B) stays: it fixes wrong header text. The summary-arguments rule (A) stays. The user asked for it on 2026-10-29 (phases/35/implementation_prompt.md).
+#### As-built
 
-#### Work Order
-
-**Goal:** a summary command shows its arguments only when the whole command fits one line, and nextest header text has its ANSI codes handled.
-
-**Spec:** port the summary-arguments rule and the nextest header ANSI handling onto main. The full text is in `/tmp/claude/delegate/03f9b80e-dbe5-47c6-b29e-a7e6587ab721/phases/35m/implementation_prompt.md`.
+- A summary command shows its arguments only when the whole command fits one line in the command column. Otherwise it shows the program, subcommand and toolchain-selector words (`cargo nextest run`) in the same word colors, and wraps only when those words do not fit. Command cells always show every argument.
+- The rule holds in both argument views (`h` on or off). The user, 2026-10-29: "the arguments are an extravagance in the summary if the column is too narrow … we can drop them unless they can fit on one line - the cells have extra space to show them and we can look there when they don't fit in summary".
+- `CommandText::named_words()` holds the words kept without arguments; `named()` and `CommandForm::WithoutArguments` read it. `UnchangedCommandInputs::measured_widths()` is the one width measure for `widths` and `for_row`, so retained widths and text stay reusable across resource updates.
+- `nextest_header_text` strips SGR codes from nextest header lines before they are measured and counted; other escape bytes stay. A colored starting header reports testing before the first result.
 
 **Files:**
-- `crates/cargo-tile/src/render.rs`
-- `crates/cargo-tile/src/render/command_cache.rs`
-- `crates/cargo-tile/src/progress/capture_read.rs`
+- `crates/cargo-tile/src/census/command_text.rs` — `named_words()`, `named()`.
+- `crates/cargo-tile/src/render/command_cache.rs` — `CommandForm::WithoutArguments`, `UnchangedCommandInputs::measured_widths()`.
+- `crates/cargo-tile/src/render.rs` — summary wiring and the summary command tests, the `ExpandedCell` header and End tests included.
+- `crates/cargo-tile/src/progress/capture_read.rs` — `nextest_header_text`, `last_test_start`.
 
-**Workers:** 1 writer — `impl`, every file above.
-
-**Constraints from prior phases:** The summary rule changes retained command text, so route it through command preparation. Keep the widths and text reusable across resource updates.
-
-**Forward edits from Phase 46 (director, 2026-11-07):**
-- `ExpandedCell` (`render.rs:599`) prepares full content, pins the painted column header, and keeps the header out of the shown range. Summary changes use the expanded width and keep every scrollable row. Extend the header and End tests to the rows this phase adds or changes, with an exact shown range.
-
-**Forward edits from Phase 46 (director, 2026-11-07):**
-- The external prompt's tree (655c7948) and its worker names are obsolete. Dispatch from the current branch checkpoint with the current workers.
-- `InvocationOwners` (`roster/invocation_owners.rs:19`) stays the one invocation identity owner across transport changes. Add no second identity path.
+**Ruled out:** keeping summary arguments when `h` is on (they wrap a narrow summary; the cells show them).
 
 ### Phase 36m — Directory header rule on main  · status: done
 
@@ -1598,32 +1593,25 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 
 **Ruled out:** copying product installation logic into the lifecycle fixture; a wider CPU assertion bound.
 
-### Phase 43f — The Mac census reads executable names through libproc  · status: todo
+### Phase 43f — The Mac census reads executable names through libproc  · status: done
 
-**Depends on:** Phase 43h
+#### As-built
 
-#### Work Order
-
-Showrunner, 2026-11-07, on Phase 43b: keep sysinfo now and measure again after Phase 43e. Add no unsafe FFI module. Check `libproc::proc_pid::name(pid)`, a safe wrapper over `proc_name` on macOS. Phase 43b's Mac profile: the sysinfo refresh takes 75.5 % of census CPU, and its executable fallback (`get_exe_and_name_backup`, then `proc_pidpath`) takes 4.98 %. The executable refresh also causes argument reads. Removing the executable refresh alone breaks fresh exec detection. `cargo-handler` already reads current names through `libproc` 0.14.11 (`crates/cargo-handler/Cargo.toml:46-47`).
-
-**Goal:** the Mac census reads executable names with less CPU, by more than the spread of 3 Mac pairs.
-
-**Spec:**
-1. Measure Mac census CPU on the Phase 43e tree: 3 release pairs, by the Phase 43b method (census CPU-s/min, same workload).
-2. Find whether `libproc::proc_pid::name(pid)` gives what exec detection needs in place of the sysinfo executable refresh (`process_discovery_refresh_kind` at `census/scan.rs:1478`, with `with_exe(UpdateKind::Always)` at line 1484).
-3. If it does: on the Mac, read the name through `libproc` and remove the sysinfo executable refresh from discovery. Keep Linux as it is.
-4. If no safe crate gives the cut: change no code. Report the measured cost of the executable refresh to the director, who brings it to the showrunner.
-5. Phase 43h routes two reader-test times here (findings F002 and F004; director, 2026-11-07). At 43h head 1c9501c on the Mac, `reader_excludes_a_live_command_without_sweeping_its_capture` took 1.002-1.185 s. Its second scan took 0.446 s, and 0.301 s of that is the refresh sample `self.refresh.sample(now, self.pace)` at `census/scan.rs:1396`. `reader_keeps_one_direct_row_for_quiet_json` took 1.062 s in one gate suite. Measure that refresh sample in the excluded reader before and after the step 3 cut. If a reader test still reaches 1 s, report the stage to the director; do not change test code in this phase.
+- `prepare_fixture()` uses `/bin/bash` symlinks for the Mac `excluded` and `quiet-json-long` scenarios.
+- Other scenarios retain copied shells, with codesigning on the Mac.
+- Existing nested-command readiness checks complete before `release_reader()` starts the first scan.
+- The excluded and quiet-JSON Mac tests take 0.407–0.993 s and 0.301–0.542 s in the recorded suites.
+- The Mac census retains sysinfo executable refreshes through `with_exe(UpdateKind::Always)`.
+- The recorded gate passes 1199 Linux tests and 1215 Mac tests twice.
 
 **Files:**
-- `crates/cargo-tile/src/census/scan.rs`
-- `crates/cargo-tile/Cargo.toml`
+- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — scenario shell selection and readiness before reader release.
 
-**Workers:** 1 writer — `impl`, the census scan and the crate manifest.
+**Binds later work:** “The install lifecycle test leaves no process behind on the Mac” preserves these fixture constraints.
 
-**Constraints from prior phases:** No `unsafe` block, no new `#[allow]` or `#[expect]`. Keep sysinfo for every other process read. Phase 43b holds: each scan prepares one `Census` and one CPU topology, and `InvocationLifetimeReads::apply` adds Mac lifetime evidence to that census. A CPU claim needs 3 or more Mac pairs; a cut inside the spread does not land. No test takes a second.
+**Gotchas:** The cache-server fixture requires the copied shell for its named `sccache` and `rustc` hard links.
 
-**Acceptance gate:** 3 valid Mac release pairs before and after on the same workload, with the median cut beyond the spread; the exec tests (`metadata_exec_child`, `exec_into_cargo_establishes_cpu_without_losing_ancestry`) pass; the suite passes on the Mac and on natedev; two Mac full suites, `--no-cache`, with no reader test at 1 s or more (Spec 5).
+**Ruled out:** `proc_name` as executable spelling; a change-mark cache without a CPU gain beyond measurement spread.
 
 ### Phase 43g — The install lifecycle test leaves no process behind on the Mac  · status: todo
 
@@ -1643,19 +1631,53 @@ Showrunner, 2026-11-07, from the Phase 43e gate fed9d76a: nextest marks `cli_lif
 5. The Phase 43e round 6 natedev suite (a4fef59a, load 37-44) failed `shim_modes::tests::interrupt_to_the_process_group_lets_cargo_finish_first` at `crates/cargo-tile/tests/shim_modes.rs:1195` ("the shim returned before cargo finished stopping"). Phase 30m's suite failed it the same way under load. Find the race between the shim's return and cargo's stop, and fix its cause. Keep the assertion.
 6. Phase 43h routes `uninstall_waits_on_a_locked_temporary_orphan_before_classifying_it` here (finding F001; director, 2026-11-07). At 43h head 1c9501c it took 1.097 s on the Mac in one of six suites. Its locked child command took 0.821 s: 0.391 s before CLI entry (`main.rs:36`) and 0.423 s in ten product lock retries (`SHIM_LOCK_RETRY_ATTEMPTS` with `SHIM_LOCK_RETRY_DELAY`, `hook.rs:840`). The startup interval includes scheduling, and its mechanism is not known: measure its cause before you change code. Then cut the CLI startup cost. Keep the locked-uninstall assertions. A change to the product retry budget is a showrunner decision: report it to the director with the measured times.
 7. The Phase 43h pairs (1c9501c) marked `caller_descriptors_reach_captured_cargo` leaky on the Mac (0.395 s). Find its owner as in item 4, and fix it by its cause.
+8. The showrunner routes two natedev times here (2026-11-07, port run 20261107T190249, log `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/mesh_runs/20261107T190249-3435117-3bbc.log`): `shim_registration::installed::publication_after_final_confirmation_survives_delayed_unlinks` took 1.154 s and `shim_registration::installed::same_pid_and_calendar_second_receive_different_generations` took 1.471 s. A multi-second test is a defect, not a load flake. Measure each test's stages, then fix the cause so neither takes 1 s or more. Keep every assertion.
+9. Phase 43f's final gate (copy e3ea0a6, director, 2026-11-07) timed `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` at 1.891 s on natedev and 1.037 s and 0.651 s on the Mac. Phase 43h had it below 1 s. Measure its stages, then fix the cause so it stays below 1 s. Keep the stopped-compiler counter order, the strict counter bound and every readiness wait.
+10. Phase 35m's gate (copy 081f7f74, director, 2026-11-07) timed two more reader scenarios at 1 s or more: `reader_keeps_one_direct_row_for_quiet_json` took 1.019 s on the Mac, and `reader_excludes_a_live_command_without_sweeping_its_capture` took 1.185 s on natedev. Phase 35m does not touch the reader. Measure each scenario's stages, then fix the cause so both stay below 1 s. Keep every assertion and every readiness wait.
 
 **Files:**
 - `crates/cargo-tile/tests/cli_lifecycle.rs`
 - `crates/cargo-tile/src/main.rs` and `crates/cargo-tile/src/cli.rs` — item 6's measured startup cause, and item 2 when step 1 shows the product leaves the child; other product files need director routing.
 - `crates/cargo-tile/src/shim_registration/` — only if step 1 shows the product leaves the child.
 - `crates/cargo-tile/src/app_global_action.rs` — its test module, for item 4; product code only if the product leaves the handle.
+- `crates/cargo-tile/src/shim_registration/installed.rs` — item 8's two tests and their fixtures.
+- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` and `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — item 9's cache-server scenario and item 10's `quiet-json-long` and `excluded` scenarios.
 - `crates/cargo-tile/tests/shim_modes.rs` — its interrupt test, for item 5, and `caller_descriptors_reach_captured_cargo`, for item 7; the shim product code only if the shim returns early.
 
 **Workers:** 1 writer — `test`: the lifecycle tests, the leak investigations, the interrupt regression, the startup timing, and their approved helper or product repairs.
 
-**Constraints from prior phases:** No assertion is weakened. No test takes 1 s or more. Phase 43e's copy staging of the reader executable stays. Keep `fixture.cli(&["install"])` in `uninstall_waits_on_a_locked_temporary_orphan_before_classifying_it`: do not copy product installation logic into the fixture. Keep the product lock retry budget unless the showrunner approves a change.
+**Constraints from prior phases:** Complete nested-command readiness checks before `release_reader()`. Limit Mac native-shell symlinks to `excluded` and `quiet-json-long`; keep the copied shell for `cpu-cache-server`. The Mac census still uses `with_exe(UpdateKind::Always)`; Phase 43f supplies no product CPU reduction. No assertion is weakened. No test takes 1 s or more. Phase 43e's copy staging of the reader executable stays. Keep `fixture.cli(&["install"])` in `uninstall_waits_on_a_locked_temporary_orphan_before_classifying_it`: do not copy product installation logic into the fixture. Keep the product lock retry budget unless the showrunner approves a change.
 
 **Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with no leaky test in `cli_lifecycle` and no leaky `control_s_saves_a_favorite`, the interrupt regression passing with its cargo-finished assertion, no leaky `caller_descriptors_reach_captured_cargo`, and no test at 1 s or more; the named cause is in the summary.
+
+### Phase 43i — Intermittent test faults get their owners, and two more slow tests go under 1 s  · status: todo
+
+**Depends on:** Phase 43g
+
+Phase 43g (director, 2026-11-07) could not find three intermittent faults: none recurred in its four final suites. Its review findings F006, F007 and F008 move here. Its final gate (run 20261107T203938, natedev load 66-73) also timed two tests outside its Work Order at 1 s or more.
+
+#### Work Order
+
+**Goal:** each named fault has its owner or cause on record and is fixed by that cause, and no named test takes 1 s or more.
+
+**Spec:**
+1. `reader_keeps_parent_family_across_its_only_childs_source_switch` (`shim_registration/reader_scenarios.rs:359`) took 1.029 s on natedev in the 43g gate and 1.900 s on the Mac in the Phase 35m gate. Measure its stages, then fix the cause. Keep every assertion and readiness wait.
+2. `shared_capture::staged_executable_installs_toolchains_and_cleans_up` (`shim_registration/shared_capture.rs:111`) took 1.634 s on natedev in the 43g gate. Measure its stages, then fix the cause. Keep every assertion.
+3. Leak owners (43g F006; items 1, 4 and 7 of Phase 43g): nextest marked `install_prints_a_completed_toolchain_before_a_later_lock_finishes`, `control_s_saves_a_favorite` and `caller_descriptors_reach_captured_cargo` leaky on the Mac in earlier gates. Run the Mac suite with Phase 43g's process observer (`phases/43g/baseline_stages.md` names it) until one of them leaks again, at most six suites. Record the owner's pid, command and parent, then fix it by its cause. If none leaks in six suites, report the six results and change no code.
+4. Interrupt race (43g F007; Phase 43g item 5): `interrupt_to_the_process_group_lets_cargo_finish_first` failed "the shim returned before cargo finished stopping" twice on natedev under load 37-44. Run it alone under comparable natedev load until it fails, at most 200 runs. Record the order of the shim's return and cargo's stop, then fix the cause. If it does not fail, report the counts and change no code. Keep the cargo-finished assertion.
+5. CLI startup (43g F008; Phase 43g item 6): on the Mac a test's CLI spent 0.387 s before `main.rs:36`, in a dyld wait that the sampler itself can cause. Measure the startup with a method that does not attach to the process (for example, the parent's spawn time against the first line of `main`), then cut the cost. Keep the product lock retry budget unless the showrunner approves a change.
+
+**Files:**
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`, `reader_scenario_cases.py` and `fixture_events.py` — item 1.
+- `crates/cargo-tile/src/shim_registration/shared_capture.rs` — item 2.
+- `crates/cargo-tile/tests/cli_lifecycle.rs`, `crates/cargo-tile/tests/shim_modes.rs`, `crates/cargo-tile/src/app_global_action.rs` — items 3 and 4 (in `app_global_action.rs`, only its test module).
+- `crates/cargo-tile/src/main.rs` and `crates/cargo-tile/src/cli.rs` — item 5's measured cause. Other product files need director routing.
+
+**Workers:** 1 writer — `test`.
+
+**Constraints from prior phases:** the Phase 43g constraints hold. No assertion is weakened. No test takes 1 s or more. Add no cleanup without ownership evidence.
+
+**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with items 1 and 2 below 1 s; items 3-5 each have a recorded owner or cause with its fix, or the run counts that show no recurrence.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 
@@ -1690,6 +1712,8 @@ Showrunner request (2026-10-29): the installed reader (main 043dc8c6, phase 32m'
 User report (2026-10-29, via the showrunner): a new cell's text fades in from black and then goes away so fast that it cannot be read. The first frame of a new cell's text is drawn near its final color, not near the ground. Exact-color test red on main first. Work order: phases/38/implementation_prompt.md.
 
 ### Phase 39 — The mem value counts every compile's memory  · status: todo
+**Depends on:** Phase 30m (`census/scan.rs`) and Phase 35m (the rendering baseline required by Spec 6).
+
 
 User (2026-10-29, via builds and the showrunner): "yes cargo-tile should strive to be more accurate for us". Showrunner Work Order: cargo-tile's mem value counts a compile's memory in every case. Today `detached_compilers` (census/scan.rs ~2668-2707) drops a rustc under sccache in four cases, and never counts the sccache server.
 
@@ -1913,7 +1937,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 ### Phase 31 — Ended cells leave whole  · status: todo
 
-**Depends on:** none (Phase 28 was dropped, 2026-10-29).
+**Depends on:** Phase 35m (both change `render.rs` and `render/command_cache.rs`).
 
 #### Work Order
 
@@ -1922,6 +1946,8 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 **Spec:**
 
 1. **An ended cell leaves whole.** Each frame of an ended cell's leave paints its header, its rows and its foot, or paints nothing. Test, red first: a fixture under 1 s in which an ended cell shrinks in mid-column, checked in the rendered buffer frame by frame. The fixture also covers the frame with no rows: the roster has dropped the group while the grid still draws its closing cell (main 1fdee462: empty bordered box with `content rows: 0` in 38 of 107 frames, from 3 ms to 550 ms; `frame_draw_group` returns without rows).
+
+2. **The tile motion tests run under 1 s under load** (showrunner, 2026-11-07). Port's Mac run (six nextest threads, log `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/mesh_runs/20261107T193135-3235537-9756.log`) timed seven `tui_pane` tile tests at 1.0 to 1.7 s; an earlier full run on the same code had a maximum of 0.645 s. In `tiles/draw.rs`: `every_frame_of_a_key_keeps_the_motion_rules` (1.712 s), `a_content_change_mid_motion_leaves_no_blank_row` (1.674 s), `a_cell_arriving_at_a_column_foot_leaves_no_line_before_its_first_row` (1.628 s), `startup_cells_leave_no_line_before_their_first_row` (1.383 s), `a_content_change_keeps_the_motion_clock_with_a_key_waiting` (1.200 s), `sliding_pieces_leave_no_band_row_on_the_screen_ground` (1.015 s). In `tiles/grid.rs`: `a_sliding_arrival_shows_its_nearest_content_row_with_its_first_visible_row` (1.180 s). A test near 1 s under load is a defect. Measure each test's stages, then cut the cost so each stays under 1 s in a loaded Mac full suite. Keep every assertion and every checked frame.
 
 **Landing rule:** Phase 24's landing rule, unchanged. At most 3 repair rounds.
 
@@ -1994,7 +2020,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 **Workers:** 1 writer — `impl`, every file above.
 
-**Constraints from prior phases:** Phase 23's parsed command words, the argument setting and the `…` rule hold; this phase adds a layout, not a second reader. `InvocationContinuity` owns the invocation record; this phase changes only what the parsed command reads. The `tui_pane` key-hint change is additive, and no existing `tui_pane` public signature changes. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds. Route parsed-command and `CommandView` changes through preparation. Keep unchanged command widths and text reusable across resource updates. Keep hint toggles outside cell paintings.
+**Constraints from prior phases:** Phase 35m: a summary command shows its arguments only when the whole command fits one line in the command column, also with `h` on (showrunner ruling from the user's 2026-10-29 words); otherwise it shows `CommandText::named()` words (`census/command_text.rs`) through `CommandForm::WithoutArguments` (`render/command_cache.rs`). Command cells show every argument. Item 2's `rustc <crate>` row follows this rule in the summary. The summary height evidence in this Work Order (5 of 12 at 160x49) is from before Phase 35m; measure it again before the fix. Phase 23's parsed command words, the argument setting and the `…` rule hold; this phase adds a layout, not a second reader. `InvocationContinuity` owns the invocation record; this phase changes only what the parsed command reads. The `tui_pane` key-hint change is additive, and no existing `tui_pane` public signature changes. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds. Route parsed-command and `CommandView` changes through preparation. Keep unchanged command widths and text reusable across resource updates. Keep hint toggles outside cell paintings.
 
 **Forward edits from Phase 46 (director, 2026-11-07):**
 - `ExpandedCell` (`render.rs:599`) prepares full content, pins the painted column header, and keeps the header out of the shown range. Summary changes use the expanded width and keep every scrollable row. Extend the header and End tests to the rows this phase adds or changes, with an exact shown range.
@@ -2016,7 +2042,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 
 ### Phase 33 — A nextest run shows its tests, and CPU counts only what each process adds  · status: todo
 
-**Depends on:** Phase 20, Phase 21, Phase 23, Phase 32
+**Depends on:** Phase 20, Phase 21, Phase 23, Phase 32, Phase 43g
 
 #### Work Order
 
@@ -2079,10 +2105,10 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - `crates/cargo-tile/CHANGELOG.md` — one Fixed line each for items 1, 2 and 6; `crates/tui_pane/CHANGELOG.md` — one Added line for item 7.
 
 **Workers:** 2 writers
-- `impl` — items 1, 2, 3 and 6, item 5's CPU-oracle checks, cargo-tile source, README, the cargo-tile changelog and their tests. Phase 43h closed general fixture shortening, and Phases 43f and 43g own its three remaining slow Mac tests. Items 4 and 5 are measured again at this phase's gate; only a timing regression this phase causes is repaired here.
+- `impl` — items 1, 2, 3 and 6, item 5's CPU-oracle checks, cargo-tile source, README, the cargo-tile changelog and their tests. Phase 43g owns existing slow-test defects, including the cache-server reader. Items 4 and 5 measure current timings; this phase repairs only timing regressions caused by its changes.
 - `status` — item 7: `tui_pane` status rendering, the CPU sampler, the framework, runner deadlines, the `tui_pane` changelog and their tests.
 
-**Constraints from prior phases:** Phase 20's rules hold: each reading is drawn once, beside its own row, and a row's reading is derived from `InvocationResourceUse` values (Phase 20 item 15). Phase 43b: each scan prepares one `Census` and one CPU topology, and on the Mac `InvocationLifetimeReads::apply` patches CPU and lifetimes on that one census; item 2's accounting reads that census and adds no second one. Phase 17 shortened reader tests by overlapping the test scaffolding with the real reader's startup; the measured floor then was the reader's own startup (release to first complete frame 0.51 s, to the CPU rows 0.44 s more). Phase 26 later stopped the Mac reader's startup scan of the build artifact folder, so that floor is old evidence: measure it again. Phase 27's CPU check holds as item 5 defines it; items 4 and 5 change no CPU assertion, and item 2 changes only the oracle's retention branch. Phase 27's test-only recorder (`census/cpu_observation.rs` and its `#[cfg(test)]` hooks in `census/scan.rs`, `census/invocation_cpu_accounting.rs`, `terminal.rs` and `app.rs`) stays; item 2's accounting change keeps `cpu_observation::work` before accounting consumes the counters. Phase 21: `TrackedGroup::without_hidden_descendants` (`crates/cargo-tile/src/roster.rs` ~256) re-sums a lead's subtree after a hidden nested subtree leaves, through `scan::subtree_resource_totals` (`pub(crate)`, `census/scan.rs` ~2754), which sums each row's own `resource_use`; item 2's accounting change lands in each row's own `resource_use`, so the census and the roster re-sum agree. `CommandText::subcommand` (`census/command_text.rs` ~338) reads the retained subcommand from parsed `CommandWord` values, whose option arity comes from Phase 23's one table `COMMAND_VALUED_OPTIONS` (`constants.rs` ~509, each entry tagged `ValuedOptionScope::{Global, Cargo, RustcLint}`), and `CommandText::is_hidden` reads it; Phase 24 (carrying Phase 22 item 11, landed by Phase 28) makes the free argv `subcommand` that `commands.excluded` uses and the shim's rendered skip list read the `Global` scope of that same table. Item 6's repair keeps `is_hidden` answering `nextest` for the bare `cargo-nextest nextest run` spelling as for `cargo nextest run`. Phases 21 to 32 run before this phase (Phase 28 lands the Phase 22, 24 and 25 work). Phase 34 starts after Phase 33; one writer owns shared source and documentation at a time. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. No new `#[allow]` or `#[expect]`; no test takes a second. Keep capture-progress changes in `RosterRevision`. Keep status CPU and uptime deadlines outside table-preparation inputs. Preserve the accepted-scan stamp on each drawn frame. Phase 43h ("Mac reader tests stay under 1 s under load") keeps the compiler stopped until two later scan records complete, then reads the independent kernel CPU counter; keep that order, the strict counter bound and the `SIGCONT` cleanup. Keep nested-command readiness checks after the reader barrier release, with every readiness assertion. General fixture shortening closed with Phase 43h; Phases 43f and 43g own its remaining measured costs. This phase repairs only timing regressions caused by its own changes; the final suite measurement belongs to "Slow tests start first".
+**Constraints from prior phases:** Phase 20's rules hold: each reading is drawn once, beside its own row, and a row's reading is derived from `InvocationResourceUse` values (Phase 20 item 15). Phase 43b: each scan prepares one `Census` and one CPU topology, and on the Mac `InvocationLifetimeReads::apply` patches CPU and lifetimes on that one census; item 2's accounting reads that census and adds no second one. Phase 17 shortened reader tests by overlapping the test scaffolding with the real reader's startup; the measured floor then was the reader's own startup (release to first complete frame 0.51 s, to the CPU rows 0.44 s more). Phase 26 later stopped the Mac reader's startup scan of the build artifact folder, so that floor is old evidence: measure it again. Phase 27's CPU check holds as item 5 defines it; items 4 and 5 change no CPU assertion, and item 2 changes only the oracle's retention branch. Phase 27's test-only recorder (`census/cpu_observation.rs` and its `#[cfg(test)]` hooks in `census/scan.rs`, `census/invocation_cpu_accounting.rs`, `terminal.rs` and `app.rs`) stays; item 2's accounting change keeps `cpu_observation::work` before accounting consumes the counters. Phase 21: `TrackedGroup::without_hidden_descendants` (`crates/cargo-tile/src/roster.rs` ~256) re-sums a lead's subtree after a hidden nested subtree leaves, through `scan::subtree_resource_totals` (`pub(crate)`, `census/scan.rs` ~2754), which sums each row's own `resource_use`; item 2's accounting change lands in each row's own `resource_use`, so the census and the roster re-sum agree. `CommandText::subcommand` (`census/command_text.rs` ~338) reads the retained subcommand from parsed `CommandWord` values, whose option arity comes from Phase 23's one table `COMMAND_VALUED_OPTIONS` (`constants.rs` ~509, each entry tagged `ValuedOptionScope::{Global, Cargo, RustcLint}`), and `CommandText::is_hidden` reads it; The required rule makes the free argv `subcommand` that `commands.excluded` uses and the shim's rendered skip list read the `Global` scope of that same table. Item 6's repair keeps `is_hidden` answering `nextest` for the bare `cargo-nextest nextest run` spelling as for `cargo nextest run`. The dependencies name completed prerequisites. Phases 22, 24, 25 and 28 do not land. Phase 34 starts after Phase 33; one writer owns shared source and documentation at a time. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. No new `#[allow]` or `#[expect]`; no test takes a second. Keep capture-progress changes in `RosterRevision`. Keep status CPU and uptime deadlines outside table-preparation inputs. Preserve the accepted-scan stamp on each drawn frame. Phase 43h ("Mac reader tests stay under 1 s under load") keeps the compiler stopped until two later scan records complete, then reads the independent kernel CPU counter; keep that order, the strict counter bound and the `SIGCONT` cleanup. Complete nested-command readiness checks before the reader barrier release, with every readiness assertion. General fixture shortening closed with Phase 43h; Phases 43f and 43g own its remaining measured costs. This phase repairs only timing regressions caused by its own changes; the final suite measurement belongs to "Slow tests start first".
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, `... lint cargo-port` and `... lint tui_pane` once, then `... test cargo-tile` and `... test cargo-port` green; items 1 and 2's tests red before their fix and green after; item 7's cadence tests green; no test takes a second or more.

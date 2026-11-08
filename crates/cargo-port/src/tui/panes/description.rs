@@ -38,6 +38,34 @@ const SHORT_DESCRIPTION_ROWS: u16 = 2;
 const DESCRIPTION_INSET: u16 = 1;
 const DESCRIPTION_MARGIN_COUNT: u16 = 2;
 const SHORT_NO_DESCRIPTION: &str = "No description";
+
+/// The known state of a package or repository description.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum DescriptionState {
+    #[default]
+    Pending,
+    Known(String),
+    KnownEmpty,
+}
+
+impl From<Option<String>> for DescriptionState {
+    fn from(text: Option<String>) -> Self {
+        match text {
+            Some(text) if !text.trim().is_empty() => Self::Known(text),
+            Some(_) | None => Self::KnownEmpty,
+        }
+    }
+}
+
+impl DescriptionState {
+    pub fn as_deref(&self) -> Option<&str> {
+        match self {
+            Self::Known(text) => Some(text),
+            Self::Pending | Self::KnownEmpty => None,
+        }
+    }
+}
+
 const fn empty_description_text(width: usize) -> &'static str {
     if NO_DESCRIPTION_AVAILABLE.len() <= width {
         NO_DESCRIPTION_AVAILABLE
@@ -110,28 +138,36 @@ pub(in crate::tui) struct DescriptionBlock {
 }
 
 impl DescriptionBlock {
-    /// Build the description block for a pane sitting in `outer_area`.
-    /// `empty_behavior` decides what renders when the source text is
-    /// empty (Package shows a placeholder; Git renders nothing).
+    /// Build the description block for a pane in `outer_area`.
+    /// Pending descriptions add no rows.
+    /// `empty_behavior` controls known-empty descriptions: Package shows a placeholder, and Git
+    /// renders nothing.
     pub(in crate::tui) fn for_pane(
-        text: Option<&str>,
+        description: &DescriptionState,
         outer_area: Rect,
         empty_behavior: EmptyDescriptionBehavior,
     ) -> Self {
         let inner_width = outer_area.width.saturating_sub(2);
         let inner_height = outer_area.height.saturating_sub(2);
-        let trimmed = text.map(str::trim).filter(|s| !s.is_empty());
+        let trimmed = description
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         let padding = DESCRIPTION_INSET.min(inner_width);
         let column_width = inner_width.saturating_sub(padding * DESCRIPTION_MARGIN_COUNT);
         let content_state = DescriptionContentState::from_trimmed(trimmed);
 
         let (body, style) = match (trimmed, empty_behavior) {
             (Some(real), _) => (Some(real), Style::default()),
-            (None, EmptyDescriptionBehavior::ShowPlaceholder) => (
-                Some(empty_description_text(usize::from(column_width))),
-                Style::default().fg(label_color()),
-            ),
-            (None, EmptyDescriptionBehavior::RenderNothing) => (None, Style::default()),
+            (None, EmptyDescriptionBehavior::ShowPlaceholder)
+                if matches!(description, DescriptionState::KnownEmpty) =>
+            {
+                (
+                    Some(empty_description_text(usize::from(column_width))),
+                    Style::default().fg(label_color()),
+                )
+            },
+            (None, _) => (None, Style::default()),
         };
 
         let rows = match body {
@@ -160,12 +196,17 @@ impl DescriptionBlock {
     /// when *both* panes have real content do they align their bottoms.
     pub(in crate::tui) fn natural_sync_height(&self) -> u16 {
         if self.content_state.has_real_content() {
-            u16::try_from(self.rows.len())
-                .unwrap_or(u16::MAX)
-                .min(self.inner_height_cap)
+            self.natural_height()
         } else {
             0
         }
+    }
+
+    /// Count every visible description row, including a known-empty message.
+    pub(in crate::tui) fn natural_height(&self) -> u16 {
+        u16::try_from(self.rows.len())
+            .unwrap_or(u16::MAX)
+            .min(self.inner_height_cap)
     }
 
     /// Render into `project_inner` with `max_height` as the hard cap
@@ -284,7 +325,7 @@ mod tests {
     #[test]
     fn block_uses_muted_placeholder_when_missing() {
         let block = DescriptionBlock::for_pane(
-            None,
+            &super::DescriptionState::KnownEmpty,
             description_area(80, 3),
             EmptyDescriptionBehavior::ShowPlaceholder,
         );
@@ -296,7 +337,7 @@ mod tests {
     #[test]
     fn empty_behavior_render_empty_produces_no_rows() {
         let block = DescriptionBlock::for_pane(
-            None,
+            &super::DescriptionState::KnownEmpty,
             description_area(80, 3),
             EmptyDescriptionBehavior::RenderNothing,
         );
@@ -308,7 +349,7 @@ mod tests {
     #[test]
     fn renders_real_description_with_default_style() {
         let block = DescriptionBlock::for_pane(
-            Some("Real package description"),
+            &super::DescriptionState::Known("Real package description".to_string()),
             description_area(80, 3),
             EmptyDescriptionBehavior::ShowPlaceholder,
         );
@@ -320,7 +361,7 @@ mod tests {
     #[test]
     fn wraps_overflowing_text_into_rows() {
         let block = DescriptionBlock::for_pane(
-            Some("one two three four five six seven eight"),
+            &super::DescriptionState::Known("one two three four five six seven eight".to_string()),
             description_area(13, 5),
             EmptyDescriptionBehavior::ShowPlaceholder,
         );

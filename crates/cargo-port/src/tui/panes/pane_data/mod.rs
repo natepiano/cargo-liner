@@ -80,6 +80,7 @@ use tui_pane::CopyLabel;
 use tui_pane::CopyPayload;
 use tui_pane::CopySelectionResult;
 
+pub(super) use self::constants::CRATES_IO_LABELS;
 pub(super) use self::constants::CRATES_IO_UNREACHABLE;
 #[cfg(test)]
 pub(in crate::tui) use self::constants::HEAD_UNREADABLE_LABEL;

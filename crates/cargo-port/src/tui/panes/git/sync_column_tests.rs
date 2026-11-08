@@ -9,6 +9,7 @@ use crate::project::AheadBehind;
 use crate::project::Comparison;
 use crate::project::TrackedRef;
 use crate::tui::panes;
+use crate::tui::panes::DescriptionState;
 use crate::tui::panes::GitData;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::pane_data::RemoteRow;
@@ -213,6 +214,7 @@ fn worktrees_keep_all_columns_and_share_sync_columns_with_remotes() -> anyhow::R
         });
         let name = "proof_crate_with_a_very_long_checkout_name";
         app.panes.git.set_content(GitData {
+            description: DescriptionState::KnownEmpty,
             worktrees: vec![WorktreeInfo {
                 name:         name.to_string(),
                 path:         "/tmp/proof_crate".to_string(),
@@ -284,6 +286,7 @@ fn compact_worktree_tables_keep_both_blank_margins() -> anyhow::Result<()> {
         let mut app = test_support::project_app();
         app.framework.color_mode = ColorMode::Colored;
         app.panes.git.set_content(GitData {
+            description: DescriptionState::KnownEmpty,
             worktrees: ["first_checkout", "second_checkout"]
                 .map(|name| WorktreeInfo {
                     name:         name.to_string(),
@@ -320,6 +323,7 @@ fn compact_worktree_wide_branch_keeps_all_four_columns_and_whole_sync() -> anyho
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         worktrees: vec![WorktreeInfo {
             name:         "proof_crate".to_string(),
             path:         "/tmp/proof_crate".to_string(),
@@ -358,6 +362,7 @@ fn long_branches_give_short_tracked_values_space_in_both_tables() -> anyhow::Res
         let mut app = test_support::project_app();
         app.framework.color_mode = ColorMode::Colored;
         app.panes.git.set_content(GitData {
+            description: DescriptionState::KnownEmpty,
             worktrees: vec![WorktreeInfo {
                 name:         "proof_crate".to_string(),
                 path:         "/tmp/proof_crate".to_string(),

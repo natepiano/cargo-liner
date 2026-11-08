@@ -206,6 +206,7 @@ pub(super) const fn record_background_msg_kind(
         },
         BackgroundMsg::CheckoutInfo { .. }
         | BackgroundMsg::RepoInfo { .. }
+        | BackgroundMsg::NoRepository { .. }
         | BackgroundMsg::GitFirstCommit { .. } => {
             stats.git_info_msgs += 1;
         },

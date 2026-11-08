@@ -25,6 +25,7 @@ use crate::sccache::SccacheSummary;
 use crate::sccache::StatsResult;
 use crate::tui::app::App;
 use crate::tui::panes;
+use crate::tui::panes::DescriptionState;
 use crate::tui::panes::GitCheckout;
 use crate::tui::panes::GitData;
 use crate::tui::panes::GitProbe;
@@ -412,7 +413,7 @@ fn short_git_description_keeps_five_rows_and_aligned_dividers() -> anyhow::Resul
         .content()
         .context("Package content")?
         .clone();
-    package.description = Some(description.to_string());
+    package.description = DescriptionState::Known(description.to_string());
     app.panes.package.set_content(package);
     let mut git = app.panes.git.content().context("Git content")?.clone();
     let quota = QuotaObservation::Observed(RateLimitQuota {
@@ -423,7 +424,7 @@ fn short_git_description_keeps_five_rows_and_aligned_dividers() -> anyhow::Resul
     });
     git.rate_limit_core = quota;
     git.rate_limit_graphql = quota;
-    git.description = Some(description.to_string());
+    git.description = DescriptionState::Known(description.to_string());
     app.panes.git.set_content(git);
     app.set_focus_to_pane(PaneId::Git);
     app.panes.git.viewport.home();
@@ -501,6 +502,7 @@ fn targets_keep_the_cursor_across_full_frames() -> anyhow::Result<()> {
 fn narrow_layout_keeps_git_values_and_hides_unreadable_panes() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         checkout: GitCheckout::Branch {
             name:     "fleet".to_string(),
             relation: HeadRelation::AwaitingRepoProbe,
@@ -600,6 +602,7 @@ fn no_lint_runs_appears_once() -> anyhow::Result<()> {
 fn narrow_workspace_shows_path_and_disk_values() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         title: "Workspace".to_string(),
         name: PROJECT.to_string(),
         path: "/tmp/workspace".to_string(),
@@ -625,7 +628,9 @@ fn narrow_workspace_shows_path_and_disk_values() -> anyhow::Result<()> {
 fn a_git_description_does_not_share_the_frame_with_no_description() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.git.set_content(GitData {
-        description: Some("A collection of useful development tools".to_string()),
+        description: DescriptionState::Known(
+            "A collection of useful development tools".to_string(),
+        ),
         ..GitData::default()
     });
     let buffer = test_support::draw_ui(&mut app, WIDTH)?;
@@ -704,13 +709,14 @@ fn popup_keeps_the_status_row_and_a_toast() -> anyhow::Result<()> {
 fn narrow_workspace_focus_selects_a_drawn_field() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         title: "Workspace".to_string(),
         path: "/tmp/workspace".to_string(),
         disk: DiskMeasurement::TotalOnly(73),
         ..PackageData::default()
     });
     app.panes.git.set_content(GitData {
-        description: Some("A fleet of useful tools".to_string()),
+        description: DescriptionState::Known("A fleet of useful tools".to_string()),
         ..GitData::default()
     });
     app.set_focus_to_pane(PaneId::Package);
@@ -731,11 +737,11 @@ fn narrow_workspace_focus_selects_a_drawn_field() -> anyhow::Result<()> {
 }
 
 #[test]
-fn a_cpu_pane_too_short_for_bars_keeps_the_body_page_mark() -> anyhow::Result<()> {
+fn a_cpu_pane_too_short_for_bars_keeps_the_page_mark_in_its_border() -> anyhow::Result<()> {
     let mut app = test_support::sampled_cpu_app(64);
-    let buffer = test_support::draw_pane_at_size(&mut app, PaneId::Cpu, 24, 11)?;
+    let buffer = test_support::draw_pane_at_size(&mut app, PaneId::Cpu, 24, 10)?;
     let (_, y) = test_support::position(&buffer, "▼")?;
-    assert!(y > 0 && y < buffer.area.bottom() - 1);
+    assert_eq!(y, buffer.area.bottom() - 1);
     assert!(
         !test_support::rows(&buffer)
             .iter()
@@ -754,6 +760,7 @@ fn app_with_narrow_detail_fields() -> App {
         .cached_fit_widths
         .observe(crate::tui::columns::COL_NAME, 100);
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         path: "/tmp/long-package-path".to_string(),
         disk: DiskMeasurement::Measured {
             total:  26_521_488_179,
@@ -766,6 +773,7 @@ fn app_with_narrow_detail_fields() -> App {
         ..PackageData::default()
     });
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         checkout: GitCheckout::Branch {
             name:     "master".to_string(),
             relation: HeadRelation::Default,
@@ -898,7 +906,7 @@ fn draw_short_ui(app: &mut App) -> anyhow::Result<Buffer> {
 fn one_line_git_fields_keep_whole_labels_and_shortened_values() -> anyhow::Result<()> {
     let mut app = app_with_narrow_detail_fields();
     let mut data = app.panes.git.content().context("Git content")?.clone();
-    data.description = Some("a fleet of cargo tools for projects, tests, builds, caches, worktrees and continuous integration".to_string());
+    data.description = DescriptionState::Known("a fleet of cargo tools for projects, tests, builds, caches, worktrees and continuous integration".to_string());
     data.checkout = GitCheckout::Branch {
         name:     "cargo-liner-port".to_string(),
         relation: HeadRelation::Feature,
@@ -995,6 +1003,7 @@ fn app_with_paged_worktrees(root: &Path) -> anyhow::Result<App> {
     app.project_list
         .set_project_storage(&paths, ProjectStorage::Available(4 << 30));
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         title: "Project".to_string(),
         name: "proof_crate".to_string(),
         path: root.display().to_string(),

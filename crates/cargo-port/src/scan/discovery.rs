@@ -94,6 +94,8 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     // in batches by repository root.
     if repo_presence.is_in_repo() {
         emit_git_info(sender, &abs);
+    } else {
+        let _ = sender.send(BackgroundMsg::NoRepository { path: abs.clone() });
     }
 
     // `project::get_submodules` reads `submodules` up front (local, fast: .gitmodules +

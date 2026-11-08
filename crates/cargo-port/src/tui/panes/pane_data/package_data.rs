@@ -25,6 +25,7 @@ use super::Workspace;
 use crate::project::DiskMeasurement;
 use crate::project::PinnedCommit;
 use crate::project::ProjectFields;
+use crate::tui::panes::DescriptionState;
 use crate::tui::state::CiDisplay;
 use crate::tui::state::LintDisplay;
 
@@ -197,7 +198,7 @@ pub struct PackageData {
     pub path:                     String,
     /// Version or pin state, formatted by the renderer.
     pub version:                  PackageVersion,
-    pub description:              Option<String>,
+    pub description:              DescriptionState,
     /// crates.io section of the stats column — `version` (latest stable,
     /// or the newest prerelease when there is no stable), an optional
     /// prerelease row (`rc` / `beta` / `alpha`) when a newer prerelease
@@ -413,13 +414,15 @@ pub(super) fn package_nearest_selectable_row(rows: &[PackageRow], pos: usize) ->
 }
 
 /// Resolve (version, description) for the detail pane from the
-/// authoritative metadata. Returns `(None, None)` pre-metadata; the
-/// renderer maps the absent version to its placeholder.
+/// authoritative metadata. Before metadata arrives, the description stays pending.
+/// The renderer maps the absent version to its placeholder.
 pub(super) fn version_and_description(
     pkg: Option<&PackageRecord>,
-) -> (Option<String>, Option<String>) {
+) -> (Option<String>, DescriptionState) {
     let version = pkg.map(|p| p.version.to_string());
-    let description = pkg.and_then(|p| p.description.clone());
+    let description = pkg.map_or(DescriptionState::Pending, |p| {
+        DescriptionState::from(p.description.clone())
+    });
     (version, description)
 }
 
@@ -509,6 +512,7 @@ mod package_row_tests {
     use super::*;
     use crate::project::DiskMeasurement;
     use crate::project::ProjectType;
+    use crate::tui::panes::DescriptionState;
     use crate::tui::state::CiDisplay;
     use crate::tui::state::LintDisplay;
 
@@ -525,7 +529,7 @@ mod package_row_tests {
             primary_section:          None,
             path:                     "~/demo".to_string(),
             version:                  PackageVersion::Manifest("0.1.0".to_string()),
-            description:              None,
+            description:              DescriptionState::KnownEmpty,
             crates_io_rows:           Vec::new(),
             types:                    Some(vec![ProjectType::Library]),
             disk:                     DiskMeasurement::TotalOnly(38_989_922_304),

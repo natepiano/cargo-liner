@@ -32,10 +32,14 @@ use crate::constants::GIT_UNREADABLE_LABEL;
 use crate::project::CommitDate;
 use crate::project::Comparison;
 use crate::project::FirstCommit;
+use crate::project::GitHubInfo;
 use crate::project::PinnedCommit;
+use crate::project::RemoteList;
+use crate::project::RepositoryProbe;
 use crate::project::ResolvedBranch;
 use crate::project::TrackedRef;
 use crate::project::WorktreeHealth;
+use crate::tui::panes::DescriptionState;
 use crate::tui::project_list::ProjectPathLookup::Found;
 use crate::tui::project_list::ProjectPathLookup::StaleRoute;
 use crate::tui::project_list::ProjectPathLookup::UnknownPath;
@@ -156,7 +160,7 @@ pub struct GitData {
     pub vs_local:                    GitProbe<Comparison>,
     pub local_main_branch:           GitProbe<ResolvedBranch>,
     pub stars:                       GithubStars,
-    pub description:                 Option<String>,
+    pub description:                 DescriptionState,
     pub inception:                   FirstCommit,
     pub last_commit:                 GitProbe<CommitDate>,
     pub last_fetched:                Option<String>,
@@ -477,7 +481,7 @@ pub(super) struct GitDetailFields {
     pub(super) vs_local:           GitProbe<Comparison>,
     pub(super) local_main_branch:  GitProbe<ResolvedBranch>,
     pub(super) stars:              GithubStars,
-    pub(super) description:        Option<String>,
+    pub(super) description:        DescriptionState,
     pub(super) inception:          FirstCommit,
     pub(super) last_commit:        GitProbe<CommitDate>,
     pub(super) last_fetched:       Option<String>,
@@ -486,6 +490,47 @@ pub(super) struct GitDetailFields {
     pub(super) github_status:      AvailabilityStatus,
     pub(super) pull_requests:      PullRequestSection,
     pub(super) remotes:            RemoteRows,
+}
+
+/// The repository source must resolve before an empty GitHub description is known.
+enum GithubDescriptionSource<'a> {
+    AwaitingRemotes,
+    NoGithubRemote,
+    AwaitingReply,
+    Reply(&'a GitHubInfo),
+}
+
+impl<'a> GithubDescriptionSource<'a> {
+    fn from_repository(probe: &RepositoryProbe, github: Option<&'a GitHubInfo>) -> Self {
+        match probe {
+            RepositoryProbe::Awaiting => Self::AwaitingRemotes,
+            RepositoryProbe::NoRepository => Self::NoGithubRemote,
+            RepositoryProbe::Repository(repo) => match &repo.remotes {
+                RemoteList::Unreadable => Self::AwaitingRemotes,
+                RemoteList::Listed(remotes) => {
+                    if remotes.iter().any(|remote| {
+                        remote
+                            .url
+                            .as_deref()
+                            .and_then(ci::parse_owner_repo)
+                            .is_some()
+                    }) {
+                        github.map_or(Self::AwaitingReply, Self::Reply)
+                    } else {
+                        Self::NoGithubRemote
+                    }
+                },
+            },
+        }
+    }
+
+    fn description(self) -> DescriptionState {
+        match self {
+            Self::AwaitingRemotes | Self::AwaitingReply => DescriptionState::Pending,
+            Self::NoGithubRemote => DescriptionState::KnownEmpty,
+            Self::Reply(info) => DescriptionState::from(info.description.clone()),
+        }
+    }
 }
 
 pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
@@ -523,7 +568,9 @@ pub(super) fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFi
         },
         None => GithubStars::NotGithub,
     };
-    let description = github.and_then(|g| g.description.clone());
+    let repository_probe = git_repo.map_or(&RepositoryProbe::Awaiting, |repo| &repo.repo_info);
+    let description =
+        GithubDescriptionSource::from_repository(repository_probe, github).description();
     let inception = repo_info.map_or(FirstCommit::AwaitingProbe, |repo| repo.first_commit.clone());
     let last_commit = checkout.map_or(GitProbe::Awaiting, |info| {
         GitProbe::Probed(info.last_commit.clone())
@@ -819,6 +866,7 @@ mod git_field_tests {
     use crate::project::Comparison;
     use crate::project::FirstCommit;
     use crate::project::ResolvedBranch;
+    use crate::tui::panes::DescriptionState;
     use crate::tui::panes::pane_data;
     use crate::tui::panes::pane_data::DetailField;
     use crate::tui::panes::pane_data::constants::HEAD_UNREADABLE_LABEL;
@@ -834,7 +882,7 @@ mod git_field_tests {
             vs_local:           crate::tui::panes::GitProbe::Probed(Comparison::NotCompared),
             local_main_branch:  crate::tui::panes::GitProbe::Probed(ResolvedBranch::NotFound),
             stars:              GithubStars::NotGithub,
-            description:        None,
+            description:        DescriptionState::KnownEmpty,
             inception:          FirstCommit::AwaitingProbe,
             last_commit:        crate::tui::panes::GitProbe::Probed(CommitDate::NoCommits),
             last_fetched:       None,

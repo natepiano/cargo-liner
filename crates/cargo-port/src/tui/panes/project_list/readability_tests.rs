@@ -18,6 +18,7 @@ use crate::project::LocalGitState;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::project::RepoInfo;
+use crate::project::RepositoryProbe;
 use crate::project::ResolvedBranch;
 use crate::project::RootItem;
 use crate::project::RustProject;
@@ -116,7 +117,7 @@ fn selected_status_glyphs_meet_the_contrast_floor() -> anyhow::Result<()> {
             app.project_list
                 .ensure_git_repo_for(Path::new(PROJECT_PATH))
                 .context("Git repo")?
-                .repo_info = Some(RepoInfo {
+                .repo_info = RepositoryProbe::Repository(RepoInfo {
                 local_main_branch: ResolvedBranch::Named("fleet".to_string()),
                 default_branch: ResolvedBranch::Named("fleet".to_string()),
                 ..crate::project::RepoInfo::default()
