@@ -1111,7 +1111,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the Astra-vs-reset test (spec 10)
 - `crates/cargo-handler/src/render/narrow_width_tests.rs` — width growth and compression checks with the longer Astra labels
 - `crates/cargo-handler/src/render/selected_ink_tests.rs` — hierarchy-backed Astra session rows replace the Astra subagent substitutes
-- `crates/cargo-handler/themes/default_light.toml`, `crates/cargo-handler/themes/high_contrast.toml` — the solved per-theme mauve shades
+- `crates/cargo-handler/themes/default_dark.toml`, `crates/cargo-handler/themes/default_light.toml`, `crates/cargo-handler/themes/high_contrast.toml` — the per-theme mauve and reviewer shades, kept only here
+- `crates/cargo-handler/src/census/herdr.rs`, `crates/cargo-handler/src/census/herdr_tests.rs` — the herdr read gives each worker pane's busy or idle state
 
 **Workers:** 1 writer + 1 tester.
 - `impl` — the production files (hierarchy, scanner, probe, placement, session identity, color and rendering), `theme/mod.rs`, the registrations and the CHANGELOG; owns all shared module files; hub: `crates/cargo-handler/src/census/mod.rs` and `crates/cargo-handler/src/theme/mod.rs` (shared modules).
