@@ -1148,31 +1148,19 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 67a — An unknown Codex switch keeps the resume proof  · status: done
 
-**Depends on:** Phase 67
+#### As-built
 
-#### Work Order
-
-**Goal:** a Codex pane worker started with a switch that cargo-handler does not know still shows under its unit director.
-
-**Source:** Phase 67 closure review: `codex --dangerously-bypass-hook-trust resume <uuid>` loses command-line proof. Moved out of Phase 67 under the landing rule; the architect review moved it out of parked Phase 21.
-
-**Constraints from prior phases:**
-- `codex::resume_request` (`census/codex.rs`) walks the arguments after the program. It skips each `CODEX_VALUE_OPTIONS` option with its value, skips `CODEX_SWITCHES`, and requires a full UUID after `resume`. A value is never read as the subcommand (test `a_resume_directory_argument_does_not_prove_a_staff_thread`, `census/pane_worker_placement_tests.rs`).
-
-**Spec:**
-1. Remove `CODEX_SWITCHES`. Skip every argument that starts with `-` and is not in `CODEX_VALUE_OPTIONS`; a `--name=value` argument is one argument.
-2. Keep the value-option rule: a value option's value never takes the subcommand position.
-3. Red-first test: `codex --dangerously-bypass-hook-trust resume 01a18dbb-7e8f-7641-b3dd-bb2071ab9d7a` with a matching staff row and no held rollout proves the thread. The existing value-option tests still pass.
-4. The tree holds an uncommitted assertion in `assert_managed_worker` (`census/pane_worker_placement_tests.rs` ≈210): the role column shows `worker` apart from the name. Keep it; it lands with this phase.
+A Codex pane worker started with a switch that cargo-handler does not know still shows under its unit director.
+- `codex::resume_request` skips every argument that starts with `-` and is not in `CODEX_VALUE_OPTIONS`; a `--name=value` argument is one argument. `resume --last` matches before the switch arm.
+- `CODEX_VALUE_OPTIONS` lists every `<VALUE>` option of `codex --help` and `codex resume --help`, `--remote` and `--remote-auth-token-env` included, so a value never takes the subcommand position.
 
 **Files:**
-- `crates/cargo-handler/src/census/codex.rs` — `resume_request`
-- `crates/cargo-handler/src/census/pane_worker_placement_tests.rs` — the new case
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/census/codex.rs` — `CODEX_VALUE_OPTIONS`, `resume_request`
+- `crates/cargo-handler/src/census/pane_worker_placement_tests.rs` — `an_unknown_codex_switch_keeps_the_resumed_worker_under_its_unit`, `remote_option_values_do_not_prove_a_staff_thread`; `assert_managed_worker` checks the role column shows `worker` apart from the name
 
-**Workers:** 1 writer.
+**Gotchas:** A Codex value option missing from `CODEX_VALUE_OPTIONS` lets its value take the subcommand position; add each new `<VALUE>` option from `codex --help`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean; no test takes a second. Change-Review: none — live herdr workers put `resume` first, so no visible row changes.
+**Ruled out:** A fixed list of known switches: a new Codex switch drops the resume proof.
 
 ### Phase 68 — Tiles keep their columns when a summary cell changes width  · status: done
 
