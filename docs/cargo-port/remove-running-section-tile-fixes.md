@@ -1985,6 +1985,33 @@ The product file of each cause needs director routing.
 
 **Acceptance gate:** the cargo-berth package suite on natedev and on the Mac, `--no-cache`, and one Mac workspace run, with both tests green and every test under 1 s; lint.
 
+### Phase 58 — cargo-berth tests run under a second  · status: todo
+
+**Depends on:** Phase 56 for edits to `crates/cargo-berth-test-support/`. The measurement in item 1 starts at once.
+
+The showrunner assigned this phase on 2026-11-08. The user's rule: a test that takes a second is a defect, not a load flake. Phase 56's first gate timed 444 cargo-berth tests at 1 s or more on the Mac. The Phase 30m and 43i gates saw the same cost. An earlier fix (2026-10-03, ending at `afe59f30`, with `48889b3f` and `38be8d3a`) removed four causes: managed git hooks in fixtures, repeated git spawns per run, an fsync on every write, and a fresh repository per test.
+
+#### Work Order
+
+**Goal:** every cargo-berth test runs under 1 s in the full workspace run on natedev and on the Mac.
+
+**Spec:**
+1. Measure before any edit. Count the cargo-berth tests at 1 s or more at `-j 1` and at full load, on natedev and on the Mac. Record each count and the load.
+2. For each of the four earlier causes, find whether it came back since `afe59f30`. Quote the line that brought it back.
+3. Find any new shared cause in the ten slowest tests. Quote its line.
+4. Fix each cause where it lives. Keep every assertion and every test case.
+5. Measure the same counts after the fix, with the same method.
+
+**Files:**
+- `crates/cargo-berth-test-support/` — the shared fixtures, after Phase 56 merges.
+- `crates/cargo-berth/tests/` — the integration tests, except the three files of Phase 57.
+
+A product file that a cause names needs director routing. Phase 56 and Phase 57 keep only their own failures.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** the cargo-berth package and one workspace run on natedev and on the Mac, `--no-cache`, with no cargo-berth test at 1 s or more; lint.
+
 ### Phase 31 — Ended cells leave whole  · status: todo
 
 **Depends on:** Phase 35m (both change `render.rs` and `render/command_cache.rs`).
