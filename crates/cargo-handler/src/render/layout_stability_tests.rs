@@ -226,9 +226,13 @@ fn frame_text(buffer: &Buffer) -> String {
 fn paint(app: &mut App, width: u16, height: u16) -> TestResult<DrawnLayout> {
     let mut terminal = Terminal::new(TestBackend::new(width, height))?;
     let keymap = app.keymap();
-    for _ in 0..4 {
+    // Check one unchanged frame after the initial allocation settles.
+    for sample in 0..4 {
         app.tiles.settle_for_test();
         terminal.draw(|frame| draw_at_for_test(frame, app, &keymap, NOW))?;
+        if sample > 0 && !app.tiles.has_pending_motion_for_test() {
+            break;
+        }
     }
     assert!(
         !app.tiles.has_pending_motion_for_test(),

@@ -1048,7 +1048,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Depends on:** Phase 17, Phase 16, Phase 18, Phase 26, Phase 29, Phase 20, Phase 67, Phase 49c
 
-**Read contract:** sdlc agents phase 15b is on `~/.claude` main at c7a105320 (showrunner, 2026-11-07). The read call is `~/.claude/scripts/lib/py ~/.claude/scripts/production/worker.py list --json`. Each pane worker row keeps `name`, `id`, `current_session`, `state`, `role` and `activity`, and adds three fields computed at read time and never stored: `work` (`"idle"` | `"busy"` | `"unknown"`, from the one herdr busy rule), `account` (the label of the account the worker opens on; for Codex rows, the workers role account) and `home` (the absolute path of that account's home as a string; `CODEX_HOME` for Codex). `role` is the staff worker role, for example `"astra-designer"` or `"astra-reviewer"`. A worker with no staff backend entry has `"account": {"state": "AccountUnavailable", "reason": "..."}` and no `home` key. Final form from sdlc agents 15b (902339c74). Before dispatch, read one live row to confirm these forms. Reuse Phase 67's Codex session identity and placement path for Astra rows; add no second one.
+**Read contract:** sdlc agents phase 15b is on `~/.claude` main at c7a105320 (showrunner, 2026-11-07). The caller-scoped `worker.py list --json` refuses a caller that is not a unit or showrunner (exit 2), so cargo-handler cannot use it. The read call is `~/.claude/scripts/lib/py ~/.claude/scripts/production/worker.py list --json --all` (sdlc agents phase 17, not yet on main; ETA 05:00 EST 2026-11-08): any caller, no live call, the same row fields plus `manager`. Phase 21 starts only after the showrunner names its commit. Each pane worker row keeps `name`, `id`, `current_session`, `state`, `role` and `activity`, and adds three fields computed at read time and never stored: `work` (`"idle"` | `"busy"` | `"unknown"`, from the one herdr busy rule), `account` (the label of the account the worker opens on; for Codex rows, the workers role account) and `home` (the absolute path of that account's home as a string; `CODEX_HOME` for Codex). `role` is the staff worker role, for example `"astra-designer"` or `"astra-reviewer"`. A worker with no staff backend entry has `"account": {"state": "AccountUnavailable", "reason": "..."}` and no `home` key. Final form from sdlc agents 15b (902339c74). Before dispatch, read one live row to confirm these forms. Reuse Phase 67's Codex session identity and placement path for Astra rows; add no second one.
 
 #### Work Order
 
@@ -1991,7 +1991,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of a tile with Claude and Codex rows shows both columns. The checkpoint adds a Change-Review line.
 
-### Phase 50 — Slow cargo-handler tests run under a second  · status: todo
+### Phase 50 — Slow cargo-handler tests run under a second  · status: done
 
 **Depends on:** Phase 41, Phase 43, Phase 47, Phase 48
 

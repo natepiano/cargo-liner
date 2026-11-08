@@ -84,8 +84,10 @@ impl Renderer {
             terminal: Terminal::new(TestBackend::new(width, height))?,
         };
         renderer.paint(app)?;
-        app.tiles.settle_for_test();
-        renderer.paint(app)?;
+        if app.tiles.has_pending_motion_for_test() {
+            app.tiles.settle_for_test();
+            renderer.paint(app)?;
+        }
         Ok(renderer)
     }
 
@@ -533,7 +535,8 @@ fn visible_unicode_tokens_resolve_from_every_terminal_cell() -> TestResult {
     ] {
         let mut app = application()?;
         apply_rows(&mut app, vec![session(10, "unicode-owner", name)?]);
-        let mut renderer = Renderer::new(&mut app, WIDTH, HEIGHT)?;
+        // Keep every token and cell press in a smaller frame.
+        let mut renderer = Renderer::new(&mut app, 100, 30)?;
         let before = renderer.paint(&mut app)?;
         let point = tree_word(&before, name)?;
         let mut selected = Vec::new();
