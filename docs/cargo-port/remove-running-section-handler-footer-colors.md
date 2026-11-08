@@ -1959,41 +1959,25 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 ### Phase 49b — Agent tiles show model and effort columns  · status: done
 
-**Depends on:** Phase 49a, Phase 43, Phase 66
+#### As-built
 
-#### Work Order
-
-**Goal:** agent tile rows show the model's short name and the reasoning effort in their own columns.
-
-**Source:** as Phase 49a. Unit session `phases/49/source.md`.
-
-**Constraints from prior phases:**
-- Two width paths: local fitting uses `ColumnDrop::ORDER` (`agent_cell.rs` ≈584); tiles that share a screen column use `GroupFitStep::ORDER` (≈1048). Both drop effort before model; test both.
-- A click on the `model` or `effort` header sorts by the drawn value through `TreeLine::compare` (≈1507), `Unrecorded` included.
-- `TreeColumn` (`agent_cell.rs` ≈381) is `Session, Type, Role, Status, Account, Branch, Directory, Age`; `alignment` (≈397) and the header text (≈411) are per column. Phase 66 removed `TreeColumns::for_lines`. Column presence and density come from one count per tile: `TreeColumnPopulation::measure` (≈511), `TreeColumnPopulation::density` (≈532, `ColumnDensity::{Sparse, Dense}`) and `PermittedTreeColumns::from_population` (≈559). A `Sparse` column drops when the full table does not fit, so it never takes room from session names; `MeasuredTreeGroup::fit_tiles` (≈1066) applies each tile's own density in shared fitting. Model and effort use the same population; add no second presence scan. `TreeMeasurement::minimum_tile_width` (≈944) reserves `session_guide_width + 1`. Since Phase 68 it reserves the status header width, not the widest status value, so a text change cannot cross a column threshold while rows stay equal. Model and effort add no value-width term to that floor; `render/layout_stability_tests.rs` stays green. Phase 27 keeps the core columns on narrow tiles; Phase 43 changes the age text in the same file.
-- Phase 49a gives each row `ModelName` and `ReasoningEffort`, both with an `Unrecorded` case. Effort is often `Unrecorded`: many Claude transcripts hold no effort key, and a first read takes only a 64 KiB window (Claude tail; Codex head and tail). Expect sparse effort values on real tiles.
-- Phase 9: a header press maps through the spans that were painted, not spans rebuilt at press time. `Cells::record_painted_surface` (`render/mod.rs` ≈693) saves `PaintedSurfaceContent::Tree { key, spans, default }` per painted allocation, and `tree_pressed` (`render/painted_surface.rs` ≈100) reads them. New columns reach presses only through those saved spans. Header-press regressions live in `render/drawn_frame_tests.rs`.
-- Phase 65: a tile requests its rows through `CellView::requested_at_width` (`agent_cell.rs` ≈2393), which keeps requested tree rows apart from height compression. The grid reuses its selected layout while its measurement inputs stay equal (`crates/tui_pane/src/tiles/grid.rs` ≈2385). New columns change demand only through that path. `crates/cargo-handler/src/render/narrow_width_tests.rs` (≈265: first-frame demand calls 200:7, 80:4, 50:2, 40:2, then exactly 2 on each later frame, and arrival with no second motion) stays green with no assertion changed.
-
-**Spec:**
-1. `TreeColumn::Model` (header `model`) and `TreeColumn::Effort` (header `effort`), after `Role`, left-aligned; `Unrecorded` draws nothing. Phase 66's rule applies to both columns: a column that is empty on most rows never takes room from session names.
-2. On a narrow tile the two columns drop before `Branch` and `Directory` keep their place (effort first, then model).
-3. Red-first tests, each under 1 s: a tile with a Claude and a Codex row shows `opus`/`sol` and their efforts; a tile of shells drops both columns; a narrow tile drops effort, then model, before the core columns. Sparse values: a tile where model and effort are recorded on few rows gives their space to session names, in local fitting and in shared-column fitting. Update fixture text the suite names.
-4. Header-press tests in `render/drawn_frame_tests.rs`, each under 1 s: a press on the drawn `model` or `effort` header sorts by that column after the rows' model or effort changed between draw and press, and during motion.
-5. CHANGELOG: one line under Added.
+- `TreeColumn::Model` (header `TREE_MODEL_HEADER`, "model") and `TreeColumn::Effort` (header `TREE_EFFORT_HEADER`, "effort") follow `Role`, left-aligned, in `agent_cell.rs`. Both use the shared `TreeColumnPopulation` count, so a sparse column never takes room from session names.
+- `ColumnDrop::ORDER` and `GroupFitStep::ORDER` now start with Effort, then Model, before Directory, Branch, Type, Age and Account.
+- `TreeLine::model` and `TreeLine::effort` read the conversation's own values: the row for a tile root, agent or unassigned session; the child for a managed thread or work row. Shell rows and `Unrecorded` values draw blank.
+- `ModelName::display_text` and `ReasoningEffort::display_text` (`census/model.rs`, both `pub(crate)`) return borrowed tile text; each cell allocates once.
+- A press on the drawn `model` or `effort` header sorts through the painted spans by the current values.
 
 **Files:**
-- `crates/cargo-handler/src/agent_cell.rs` — the columns
-- `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs` — tests
-- `crates/cargo-handler/src/render/drawn_frame_tests.rs` — header-press tests
-- `crates/cargo-handler/src/agent_cell/tests/sort_tests.rs` — the exhaustive `TreeColumn` match (≈440) gains `Model` and `Effort` arms
-- `crates/cargo-handler/src/census/model.rs` — borrowed display text for `ModelName` and `ReasoningEffort`
-- `crates/cargo-handler/src/constants.rs` — `TREE_MODEL_HEADER` and `TREE_EFFORT_HEADER` beside the other tree headers
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/agent_cell.rs` — columns, drop order, cell text
+- `crates/cargo-handler/src/census/model.rs` — display text
+- `crates/cargo-handler/src/constants.rs` — header constants
+- `crates/cargo-handler/src/agent_cell/tests/column_visibility_tests.rs` — values, blanks, shell rows, sparse values, both fitting paths
+- `crates/cargo-handler/src/render/drawn_frame_tests.rs` — header sorts after values change, and during motion
+- `crates/cargo-handler/src/agent_cell/tests/sort_tests.rs` — exhaustive `TreeColumn` match arms
 
-**Workers:** 1 writer (`impl`).
+**Gotchas:** earlier as-built lines that list `ColumnDrop::ORDER` or `GroupFitStep::ORDER` predate the two leading Effort and Model steps.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a shot of a tile with Claude and Codex rows shows both columns. The checkpoint adds a Change-Review line.
+**Ruled out:** an allocation-count test for the cell text — no user-visible defect, so test rule 2 allows none.
 
 ### Phase 50 — Slow cargo-handler tests run under a second  · status: done
 
