@@ -1263,6 +1263,34 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: a framed capture from a cargo-handler the writer started, showing a session row that says `compacting` during a compaction of a session the writer started. The checkpoint carries `Change-Review: a session that compacts its conversation says compacting, not thinking | in cargo-handler, find a session while it compacts: its row says compacting until the compaction ends`.
 
+### Phase 73 — The unmatched-ink test paints both frames at one time  · status: todo
+
+**Depends on:** Phase 21 (`render/word_contrast_tests.rs`).
+
+#### Work Order
+
+**Goal:** `render::word_contrast_tests::unmatched_text_keeps_its_ink_*` gives the same result on every run, under any load.
+
+**Source:** the showrunner, 2026-11-08: the test failed in tile's natedev gate on main b92742058 with left 5, right 4.
+
+**Constraints:**
+- Director check, 2026-11-08: the four tests pass alone on b92742058, max 0.183 s.
+- `check_unmatched_ink` asserts `after.symbol() == before.symbol()` on each unmatched cell. `single_word_frames` paints `before` and `after` in two calls, and the frame reads the live clock. A digit that counts time (an age or a reset time) can step between the two paints, so `5` becomes `4`.
+- Fix the cause: both paints read one fixed time. Do not drop the symbol assert and do not skip digit cells.
+- No new check of your own design.
+
+**Spec:**
+1. Find the clock read that puts a time digit in the fixture frame. Name its file and line in the summary.
+2. Make the fixture frames read one fixed time, through the clock input the app already has where one exists.
+3. A test that moves the fixture clock across a step between the two paints fails before the fix and passes after it.
+4. All tests stay under 1 s.
+
+**Files:**
+- `crates/cargo-handler/src/render/word_contrast_tests.rs`, `crates/cargo-handler/src/render/word_click_tests.rs`
+- `crates/cargo-handler/src/render/painted_surface.rs` — it reads `census::unix_now()` at line 110 for the frame; edit it only when no test file can set the time, and say so in the summary before the edit
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Test-only change: no CHANGELOG line and no Change-Review row.
+
 ### Phase 67 — Pane Codex workers show under their unit  · status: done
 
 #### As-built
