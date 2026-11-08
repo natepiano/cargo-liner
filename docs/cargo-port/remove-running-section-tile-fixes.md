@@ -1958,7 +1958,7 @@ Other cargo-berth files need director routing.
 
 **Acceptance gate:** the berth package suite on natedev and the Mac, `--no-cache`, every test under 1 s; lint. After the merge and the berth install, Phases 31 and 43i claim their files again.
 
-### Phase 57 — Two cargo-berth tests pass on the Mac  · status: todo
+### Phase 57 — Three cargo-berth lock tests pass under load  · status: todo
 
 **Depends on:** Phase 56 (same writer and the same cargo-berth files). The Phase 30m merge does not wait on this phase.
 
@@ -1966,16 +1966,17 @@ The showrunner assigned this phase on 2026-11-08: a berth fault goes to the unit
 
 #### Work Order
 
-**Goal:** both tests pass on the Mac in a full workspace run, each under 1 s, by a fix of the cause in the code.
+**Goal:** the three tests pass on natedev and the Mac in a full workspace run, each under 1 s, by a fix of the cause in the code.
 
 **Spec:**
 1. `pre_tool_use_reports_reconcile_contention_as_busy_without_naming_a_holder` (`tests/hooks.rs:743`) failed its elapsed-time assertion at `tests/hooks.rs:798` (0.991 s). The hook answered "another cargo-berth operation still holds the ledger lock". Find the wait that takes the time, quote its line, and fix it there.
 2. `explicit_retention_lock_diagnostic_identifies_a_process_holding_it_open` (`tests/ledger.rs:2527`) panicked at `tests/ledger.rs:2547` (2.412 s): the ledger read failed on a git `packed-refs.lock` of age 0.218 s, so the diagnostic named no process holder. Find what holds that lock in the fixture or in the product, quote its line, and fix it there.
-3. Reproduce each fault red first on the Mac, with the method that shows it (for example, a filtered run under the same parallel load). Quote the failing line.
-4. Do not loosen an assertion. Keep every existing assertion.
+3. `a_session_checks_its_held_path_without_waiting_for_the_mutation_lock` (`tests/lifecycle.rs:1493`) failed on natedev in the Phase 43i workspace gate (run `20261108T120132-2136765-d16a`, 1.264 s): "the shortened lock deadline must keep the proof under one second: 505.003612ms". Find the wait that takes the time, quote its line, and fix it there.
+4. Reproduce each fault red first on the machine that showed it, with the method that shows it (for example, a filtered run under the same parallel load). Quote the failing line.
+5. Do not loosen an assertion. Keep every existing assertion.
 
 **Files:**
-- `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/ledger.rs` — the two tests and their fixtures.
+- `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/lifecycle.rs` — the three tests and their fixtures.
 - `crates/cargo-berth-test-support/` — shared fixtures.
 
 The product file of each cause needs director routing.
