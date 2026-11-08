@@ -3,6 +3,7 @@
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -125,6 +126,18 @@ impl InstalledShim {
         )
     }
 
+    /// Let `InstalledShim` use native `tools/ln` while retaining both live log observations.
+    fn repeat_in_same_shell(&self) {
+        fs::write(self.path("observations/repeat"), b"").expect("repeat in one shell");
+        for invocation in ["first", "second"] {
+            fs::create_dir(self.path(&format!("observations/{invocation}")))
+                .expect("create the repeated invocation's observations");
+        }
+        let publication = self.path("tools/ln");
+        fs::remove_file(&publication).expect("remove the unused publication observer");
+        symlink(&self.utilities.ln, publication).expect("retain native exclusive publication");
+    }
+
     /// Run with an independently recorded shim pid and a restrictive caller umask.
     fn run(&self, arguments: &[&str]) -> Output {
         self.command(arguments)
@@ -190,7 +203,6 @@ if [ -f "$SHIM_TEST_OBSERVATIONS/seed-predecessor" ]; then
 fi
 if [ -f "$SHIM_TEST_OBSERVATIONS/repeat" ]; then
     for invocation in first second; do
-        mkdir "$SHIM_TEST_OBSERVATIONS/$invocation"
         printf '%s' "$$" > "$SHIM_TEST_OBSERVATIONS/$invocation/shim-pid"
         (
             SHIM_TEST_OBSERVATIONS=$SHIM_TEST_OBSERVATIONS/$invocation
@@ -366,7 +378,7 @@ fi
 if [ -d "$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids" ]; then
     cp -R "$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids" "$observations/pids"
 fi
-if [ -d "$SHIM_TEST_ACCOUNT_DIRECTORY/state" ]; then
+if [ -d "$SHIM_TEST_ACCOUNT_DIRECTORY/state" ] && [ ! -f "$observations/../repeat" ]; then
     ls -A "$SHIM_TEST_ACCOUNT_DIRECTORY/state" > "$observations/state-entries"
 fi
 printf 'cargo stdout\n'
@@ -1037,7 +1049,7 @@ fn native_birth_verification_rejects_another_process() {
 #[test]
 fn same_pid_and_calendar_second_receive_different_generations() {
     let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
-    fs::write(fixture.path("observations/repeat"), b"").expect("repeat in one shell");
+    fixture.repeat_in_same_shell();
     let output = fixture.run(&["build"]);
     assert_eq!(output.status.code(), Some(37), "{output:?}");
     assert_eq!(output.stdout, b"cargo stdout\ncargo stdout\n");
@@ -1073,7 +1085,7 @@ fn same_pid_and_calendar_second_receive_different_generations() {
 #[test]
 fn publication_after_final_confirmation_survives_delayed_unlinks() {
     let fixture = InstalledShim::new(NativeBirthVerification::Unnecessary);
-    fs::write(fixture.path("observations/repeat"), b"").expect("repeat in one shell");
+    fixture.repeat_in_same_shell();
     let output = fixture
         .command(&["build"])
         .env(
