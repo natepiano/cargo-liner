@@ -65,8 +65,8 @@ pub(super) fn application() -> TestResult<App> {
             br#"{
         "accounts":[{"label":"claude1","tool":"claude","roles":["showrunners","units"],
         "weekly_left_percent":50,"use_credits":false,"read_ok":true,
-        "role_counts":[{"busy":1,"shell":2,"idle":3,"total":6},
-        {"busy":4,"shell":5,"idle":6,"total":15}]}],"problems":[]
+        "role_counts":[{"busy":1,"idle":3,"paused":2,"exited":0,"total":6},
+        {"busy":4,"idle":6,"paused":5,"exited":0,"total":15}]}],"problems":[]
     }"#,
         )
         .map_err(|error| error.to_string())?,

@@ -526,77 +526,107 @@ fn pinned_accounts_named_states_distinguish_empty_cells_rows_and_retired_content
 
 #[test]
 fn pinned_accounts_keep_header_and_continuation_targets_after_a_reading_changes() {
-    let mut app = fixture();
-    let complete = paint(&mut app, 60, 64);
-    select_first(&mut app, &complete);
-    paint(&mut app, 60, 16);
-    accounts_grid_tests::account_key(&mut app, KeyCode::End);
-    let end = paint(&mut app, 60, 16);
-    let header = accounts_grid_tests::locate(&end, "left");
-    let account = accounts_grid_tests::locate(&end, "account-4");
-    app.accounts.table = AccountsTable::NotConfigured;
-    app.click(Position::new(header.column, header.row));
-    assert_eq!(
-        app.accounts_sort,
-        AccountsSort::Sorted(crate::sort::ColumnSort {
-            column:    AccountsColumn::WeeklyLeft,
-            direction: crate::sort::SortDirection::Ascending,
-        })
-    );
-    app.click(Position::new(account.column, account.row + 1));
-    assert_eq!(
-        selected(&app),
-        TileSelection::Row(RowIdentity::SummaryAccount {
-            account: "account-4".into(),
-        })
-    );
+    for width in [60, 64] {
+        let mut app = fixture();
+        let complete = paint(&mut app, width, 64);
+        select_first(&mut app, &complete);
+        paint(&mut app, width, 16);
+        accounts_grid_tests::account_key(&mut app, KeyCode::End);
+        let end = paint(&mut app, width, 16);
+        let account = accounts_grid_tests::locate(&end, "account-4");
+        if width == 60 {
+            assert_eq!(
+                headers(&complete)
+                    .iter()
+                    .map(|line| line.trim())
+                    .collect::<Vec<_>>(),
+                ["accounts"]
+            );
+            assert!(
+                lines(&end).iter().any(|line| line.contains("busy ")),
+                "narrow accounts draw stacked count facts"
+            );
+            app.accounts.table = AccountsTable::NotConfigured;
+            assert_eq!(app.accounts_sort, AccountsSort::SourceOrder);
+        } else {
+            let header = accounts_grid_tests::locate(&end, "left");
+            app.accounts.table = AccountsTable::NotConfigured;
+            app.click(Position::new(header.column, header.row));
+            assert_eq!(
+                app.accounts_sort,
+                AccountsSort::Sorted(crate::sort::ColumnSort {
+                    column:    AccountsColumn::WeeklyLeft,
+                    direction: crate::sort::SortDirection::Ascending,
+                })
+            );
+        }
+        app.click(Position::new(account.column, account.row + 1));
+        assert_eq!(
+            selected(&app),
+            TileSelection::Row(RowIdentity::SummaryAccount {
+                account: "account-4".into(),
+            })
+        );
+    }
 }
 
 #[test]
 fn moving_pinned_accounts_keep_their_header_and_continuation_targets() {
-    let mut app = fixture();
-    app.loaded_config.config.tiles.view = TileView::Cells;
-    app.loaded_config.config.tiles.widen_summary = false;
-    app.loaded_config.config.tiles.initial_rows =
-        serde_json::from_value(serde_json::json!(4)).expect("four rows");
-    let before = paint(&mut app, 60, 48);
-    select_first(&mut app, &before);
-    accounts_grid_tests::account_key(&mut app, KeyCode::End);
-    paint(&mut app, 60, 48);
-    app.tiles
-        .apply(TileAction::Add, app.loaded_config.config.tiles.growth());
-    app.tiles.hold_motion_at_half_for_test();
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 48))
-        .expect("moving terminal");
-    terminal
-        .draw(|frame| {
-            draw_panes_at(
-                frame,
-                &mut app,
-                Rect::new(0, 0, 60, 48),
-                TileGridContents::Shown,
-                NOW,
+    for (width, height) in [(60, 128), (84, 48)] {
+        let mut app = fixture();
+        app.loaded_config.config.tiles.view = TileView::Cells;
+        app.loaded_config.config.tiles.widen_summary = false;
+        app.loaded_config.config.tiles.initial_rows =
+            serde_json::from_value(serde_json::json!(4)).expect("four rows");
+        let before = paint(&mut app, width, height);
+        select_first(&mut app, &before);
+        accounts_grid_tests::account_key(&mut app, KeyCode::End);
+        paint(&mut app, width, height);
+        app.tiles
+            .apply(TileAction::Add, app.loaded_config.config.tiles.growth());
+        app.tiles.hold_motion_at_half_for_test();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                .expect("moving terminal");
+        terminal
+            .draw(|frame| {
+                draw_panes_at(
+                    frame,
+                    &mut app,
+                    Rect::new(0, 0, width, height),
+                    TileGridContents::Shown,
+                    NOW,
+                );
+            })
+            .expect("moving accounts frame");
+        assert!(app.tiles.has_pending_motion_for_test());
+        let buffer = terminal.backend().buffer();
+        let account = accounts_grid_tests::locate(buffer, "account-4");
+        if width == 60 {
+            assert!(
+                lines(buffer).iter().any(|line| line.contains("busy ")),
+                "narrow accounts draw stacked count facts"
             );
-        })
-        .expect("moving accounts frame");
-    assert!(app.tiles.has_pending_motion_for_test());
-    let buffer = terminal.backend().buffer();
-    let header = accounts_grid_tests::locate(buffer, "left");
-    let account = accounts_grid_tests::locate(buffer, "account-4");
-    app.accounts.table = AccountsTable::NotConfigured;
-    app.click(Position::new(header.column, header.row));
-    assert_eq!(
-        app.accounts_sort,
-        AccountsSort::Sorted(crate::sort::ColumnSort {
-            column:    AccountsColumn::WeeklyLeft,
-            direction: crate::sort::SortDirection::Ascending,
-        })
-    );
-    app.click(Position::new(account.column, account.row + 1));
-    assert_eq!(
-        selected(&app),
-        TileSelection::Row(RowIdentity::SummaryAccount {
-            account: "account-4".into(),
-        })
-    );
+            app.accounts.table = AccountsTable::NotConfigured;
+            assert_eq!(app.accounts_sort, AccountsSort::SourceOrder);
+        } else {
+            let header = accounts_grid_tests::locate(buffer, "left");
+            app.accounts.table = AccountsTable::NotConfigured;
+            app.click(Position::new(header.column, header.row));
+            assert_eq!(
+                app.accounts_sort,
+                AccountsSort::Sorted(crate::sort::ColumnSort {
+                    column:    AccountsColumn::WeeklyLeft,
+                    direction: crate::sort::SortDirection::Ascending,
+                })
+            );
+        }
+        app.click(Position::new(account.column, account.row + 1));
+        assert_eq!(
+            selected(&app),
+            TileSelection::Row(RowIdentity::SummaryAccount {
+                account: "account-4".into(),
+            })
+        );
+    }
 }

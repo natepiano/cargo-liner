@@ -130,8 +130,9 @@ fn compare_accounts(
             _ => Ordering::Equal,
         },
         AccountsColumn::Busy
-        | AccountsColumn::Shell
         | AccountsColumn::Idle
+        | AccountsColumn::Paused
+        | AccountsColumn::Exited
         | AccountsColumn::Total => compare_readings(
             &account_count(left, sort.column),
             &account_count(right, sort.column),
@@ -147,15 +148,16 @@ fn summed_counts<'a>(
 ) -> Reading<RoleSessionCounts> {
     roles
         .filter_map(|role| match &role.counts {
-            Reading::Known(counts) => Some(counts.clone()),
+            Reading::Known(counts) => Some(counts),
             Reading::Unavailable => None,
         })
         .try_fold(
             RoleSessionCounts {
-                busy:  0,
-                shell: Reading::Unavailable,
-                idle:  0,
-                total: 0,
+                busy:   0,
+                idle:   0,
+                paused: 0,
+                exited: 0,
+                total:  0,
             },
             RoleSessionCounts::checked_add,
         )
@@ -167,22 +169,26 @@ fn account_count(account: &AccountUsage, column: AccountsColumn) -> Reading<u64>
     count_value(&summed_counts(account.roles.iter()), column)
 }
 
-fn role_count(role: &AccountRoleUsage, column: AccountsColumn) -> Reading<u64> {
+const fn role_count(role: &AccountRoleUsage, column: AccountsColumn) -> Reading<u64> {
     count_value(&role.counts, column)
 }
 
-fn count_value(counts: &Reading<RoleSessionCounts>, column: AccountsColumn) -> Reading<u64> {
+const fn count_value(counts: &Reading<RoleSessionCounts>, column: AccountsColumn) -> Reading<u64> {
     match column {
         AccountsColumn::Busy => match counts {
             Reading::Known(counts) => Reading::Known(counts.busy),
             Reading::Unavailable => Reading::Unavailable,
         },
-        AccountsColumn::Shell => match counts {
-            Reading::Known(counts) => counts.shell.clone(),
-            Reading::Unavailable => Reading::Unavailable,
-        },
         AccountsColumn::Idle => match counts {
             Reading::Known(counts) => Reading::Known(counts.idle),
+            Reading::Unavailable => Reading::Unavailable,
+        },
+        AccountsColumn::Paused => match counts {
+            Reading::Known(counts) => Reading::Known(counts.paused),
+            Reading::Unavailable => Reading::Unavailable,
+        },
+        AccountsColumn::Exited => match counts {
+            Reading::Known(counts) => Reading::Known(counts.exited),
             Reading::Unavailable => Reading::Unavailable,
         },
         AccountsColumn::Total => match counts {
@@ -432,14 +438,15 @@ fn values(row: &AccountUsage, now: u64) -> [String; AccountsColumn::ALL.len()] {
     })
 }
 
-/// Sum known role counts without inventing a shell reading.
+/// `total_values` sums the five counts from recorded roles.
 fn total_values(reading: &AccountsReading) -> [String; AccountsColumn::ALL.len()] {
     let counts = summed_counts(reading.accounts.iter().flat_map(|account| &account.roles));
     AccountsColumn::ALL.map(|column| match column {
         AccountsColumn::Account => "total".to_owned(),
         AccountsColumn::Busy
-        | AccountsColumn::Shell
         | AccountsColumn::Idle
+        | AccountsColumn::Paused
+        | AccountsColumn::Exited
         | AccountsColumn::Total => match count_value(&counts, column) {
             Reading::Known(count) => count.to_string(),
             Reading::Unavailable => String::new(),
@@ -512,8 +519,9 @@ const fn on_first_line(column: AccountsColumn) -> bool {
         | AccountsColumn::Roles
         | AccountsColumn::WeeklyLeft
         | AccountsColumn::Busy
-        | AccountsColumn::Shell
         | AccountsColumn::Idle
+        | AccountsColumn::Paused
+        | AccountsColumn::Exited
         | AccountsColumn::Total => true,
         AccountsColumn::Resets | AccountsColumn::Credits | AccountsColumn::Enabled => false,
     }
