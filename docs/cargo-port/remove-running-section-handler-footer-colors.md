@@ -2045,7 +2045,7 @@ No code change. The stray `~/.claudeN: mcpServers: - brp` text (user report, 202
 
 **Gotchas:** reopen only on a fresh shot of the text; the writer was outside cargo-handler's children or is gone.
 
-### Phase 53 — Reset times step plainly from soonest to latest  · status: todo
+### Phase 53 — Reset times step plainly from soonest to latest  · status: done
 
 **Depends on:** Phase 52
 
