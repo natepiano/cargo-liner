@@ -1677,10 +1677,14 @@ impl TreeLine<'_> {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession
         ) && let AstraSessionMembership::Member(member) = self.row.session_id.astra_membership()
         {
-            let text = match member.work() {
-                PaneWork::Idle => "idle",
-                PaneWork::Busy => summary::status_text(self.row),
-                PaneWork::Unknown => "unknown",
+            let text = if member.has_live_run() {
+                summary::status_text(self.row)
+            } else {
+                match member.work() {
+                    PaneWork::Idle => "idle",
+                    PaneWork::Busy => summary::status_text(self.row),
+                    PaneWork::Unknown => "unknown",
+                }
             };
             return ResolvedStatus {
                 text: text.to_owned(),

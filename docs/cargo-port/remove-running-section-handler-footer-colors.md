@@ -1145,7 +1145,7 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: two framed shots of a cargo-handler the writer started, before and after a press on the body of a closed row away from its marker, with the row open in the second shot. The checkpoint carries `Change-Review: cargo-handler opens or closes a row on a click anywhere on that row, as the cargo-port project list does | in cargo-handler, click the text of a row that shows ▶ or ▼, away from the marker, and see it open or close`.
 
-### Phase 71 — A detached run joins its pane worker's row  · status: todo
+### Phase 71 — A detached run joins its pane worker's row  · status: done
 
 **Depends on:** none; runs beside Phases 21, 69 and 70. `census/scan.rs` and `crates/cargo-handler/CHANGELOG.md` wait for the Phase 21 checkpoint.
 

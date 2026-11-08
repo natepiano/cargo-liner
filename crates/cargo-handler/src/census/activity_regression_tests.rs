@@ -18,9 +18,244 @@ use notify::RecursiveMode;
 use notify::event::ModifyKind;
 
 use super::*;
+use crate::census::AgentRow;
 use crate::census::account::ConfigHome;
+use crate::render;
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+/// The captured pane either exists or has only its detached supervisor left.
+#[derive(Clone, Copy)]
+enum PaneProcessPresence {
+    Visible,
+    Absent,
+}
+
+#[derive(serde::Deserialize)]
+struct PaneRunProcessRecord {
+    pid:       u32,
+    parent:    u32,
+    name:      String,
+    arguments: Vec<String>,
+    started:   u64,
+    directory: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CapturedImplRun {
+    Live,
+    Finished,
+}
+
+#[derive(Clone, Copy)]
+enum CapturedPane {
+    Codex,
+    Astra(&'static str),
+}
+
+fn write_captured_tile_runs(
+    captured: &Value,
+    directory: &Path,
+    implementation: CapturedImplRun,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let runs = directory.join("mesh_runs");
+    fs::create_dir(&runs)?;
+    for mut run in serde_json::from_value::<Vec<Value>>(captured["runs"].clone())? {
+        run["status"] = serde_json::json!(if run["worker"] == "impl"
+            && matches!(implementation, CapturedImplRun::Finished)
+        {
+            "finished"
+        } else {
+            "running"
+        });
+        run["session_dir"] = serde_json::json!(directory);
+        run["director_dir"] = serde_json::json!(directory);
+        let id = run["run_id"].as_str().ok_or("captured run id")?;
+        fs::write(runs.join(format!("{id}.json")), serde_json::to_vec(&run)?)?;
+    }
+    Ok(runs)
+}
+
+fn pane_run_processes(
+    captured: &Value,
+    pane: PaneProcessPresence,
+    directory: &Path,
+    runs: &Path,
+) -> Result<Vec<ProcessEntry>, Box<dyn Error>> {
+    let pane_pid: u32 = serde_json::from_value(captured["pane_pid"].clone())?;
+    let mut processes = Vec::new();
+    for mut process in
+        serde_json::from_value::<Vec<PaneRunProcessRecord>>(captured["processes"].clone())?
+    {
+        if process.pid == pane_pid {
+            if matches!(pane, PaneProcessPresence::Absent) {
+                continue;
+            }
+            process.arguments = vec![
+                "codex".into(),
+                "resume".into(),
+                captured["pane_session"]
+                    .as_str()
+                    .ok_or("captured pane session")?
+                    .into(),
+            ];
+        }
+        if let Some(argument) = process.arguments.last_mut()
+            && let Some(name) = Path::new(argument).file_name()
+            && name.to_string_lossy().ends_with(".json")
+        {
+            *argument = runs.join(name).to_string_lossy().into_owned();
+        }
+        processes.push(ProcessEntry {
+            pid:         process.pid,
+            parent:      Some(process.parent),
+            name:        process.name,
+            arguments:   process.arguments,
+            started:     process.started,
+            directory:   process.directory,
+            claude_pid:  None,
+            config_home: ConfigHome::Named(directory.join(".codex")),
+        });
+    }
+    Ok(processes)
+}
+
+fn captured_tile_run_rows(
+    pane: PaneProcessPresence,
+    implementation: CapturedImplRun,
+    kind: CapturedPane,
+) -> Result<Vec<AgentRow>, Box<dyn Error>> {
+    use crate::census::HierarchySource;
+    use crate::census::StaffFileSetting;
+    use crate::census::account::AccountLabels;
+    use crate::census::classify::SessionRecord;
+    use crate::census::hierarchy::StaffFileReader;
+    use crate::census::scan::LocalScanner;
+
+    let mut captured: Value =
+        serde_json::from_str(include_str!("fixtures/pane_detached_tile.json"))?;
+    let root = Path::new(crate::constants::SESSION_ROOTS[0]);
+    fs::create_dir_all(root)?;
+    let directory = tempfile::Builder::new()
+        .prefix("pane-run-")
+        .tempdir_in(root)?;
+    let runs = write_captured_tile_runs(&captured, directory.path(), implementation)?;
+    fs::write(
+        directory.path().join("progress_history_state.json"),
+        serde_json::to_vec(&captured["unit_owner"])?,
+    )?;
+    if matches!(kind, CapturedPane::Astra(_)) {
+        captured["staff"]["rows"][0]["role"] = serde_json::json!("astra-designer");
+        captured["staff"]["rows"][0]["home"] = serde_json::json!(directory.path().join(".codex"));
+    }
+    let staff_path = directory.path().join("staff.json");
+    fs::write(&staff_path, serde_json::to_vec(&captured["staff"])?)?;
+    let processes = pane_run_processes(&captured, pane, directory.path(), &runs)?;
+    let sessions: Vec<SessionRecord> = serde_json::from_value(serde_json::json!([{
+        "pid":captured["director_pid"], "sessionId":captured["director_session"], "name":"tile"
+    }]))?;
+    let mut scanner = LocalScanner::new(AccountLabels::default()).with_staff_file(
+        StaffFileSetting::new(HierarchySource::File(
+            staff_path.to_string_lossy().into_owned(),
+        )),
+        StaffFileReader::default(),
+    );
+    if let CapturedPane::Astra(status) = kind {
+        let snapshot = serde_json::json!({"snapshot":{"tabs":[],"panes":[{
+            "pane_id":captured["pane_pid"].to_string(), "tab_id":"workers", "terminal_id":"captured-pane", "revision":1,"agent_status":status
+        }]}});
+        scanner.set_herdr_for_test(crate::census::herdr::HerdrNames::from_snapshot_for_test(
+            &processes, &snapshot,
+        ));
+    }
+    Ok(scanner.scan_details_for_test(&processes, &sessions, directory.path()))
+}
+
+#[test]
+fn captured_tile_impl_pane_joins_its_detached_package_run() -> TestResult {
+    let rows = captured_tile_run_rows(
+        PaneProcessPresence::Visible,
+        CapturedImplRun::Live,
+        CapturedPane::Codex,
+    )?;
+    let worker = rows
+        .iter()
+        .find(|row| {
+            row.session_id
+                .ids()
+                .any(|id| id == "01a1b9c6-4b1b-79c0-ad78-920ac1efe28a")
+        })
+        .ok_or("the captured impl pane has its own row")?;
+    assert_eq!(
+        worker.activity.text(),
+        "waiting",
+        "the captured package wrapper belongs to impl"
+    );
+    Ok(())
+}
+
+#[test]
+fn captured_tile_test_worker_keeps_a_row_with_only_its_live_run() -> TestResult {
+    for implementation in [CapturedImplRun::Live, CapturedImplRun::Finished] {
+        let rows = captured_tile_run_rows(
+            PaneProcessPresence::Absent,
+            implementation,
+            CapturedPane::Codex,
+        )?;
+        let worker = rows.iter().flat_map(|row| &row.children)
+        .find(|child| child.name == "test" || matches!(&child.dispatch,
+            crate::census::worker_dispatch::WorkerDispatch::Worker(worker) if worker.seat() == "test"))
+        .ok_or("the captured test worker with a live run must retain its row")?;
+        assert_eq!(worker.activity.text(), "waiting");
+    }
+    Ok(())
+}
+
+#[test]
+fn captured_tile_astra_pane_keeps_its_live_run_status() -> TestResult {
+    use crate::census::HierarchyEdge;
+    use crate::census::HierarchyEdges;
+    use crate::census::HierarchyRole;
+    for (status, without_run) in [
+        ("idle", "idle"),
+        ("unknown", "unknown"),
+        ("working", "thinking"),
+    ] {
+        for implementation in [CapturedImplRun::Live, CapturedImplRun::Finished] {
+            let rows = captured_tile_run_rows(
+                PaneProcessPresence::Visible,
+                implementation,
+                CapturedPane::Astra(status),
+            )?;
+            let edges = HierarchyEdges(vec![HierarchyEdge {
+                manager: "da82452f-3640-4dec-b6c5-0c783d77e79f".into(),
+                member:  "01a1b9c6-4b1b-79c0-ad78-920ac1efe28a".into(),
+                role:    HierarchyRole::AstraDesigner,
+            }]);
+            let buffer = render::astra_frame_for_test(rows, edges);
+            let line = buffer
+                .content
+                .chunks(220)
+                .map(|cells| {
+                    cells
+                        .iter()
+                        .map(ratatui::buffer::Cell::symbol)
+                        .collect::<String>()
+                })
+                .find(|line| line.contains("impl") && line.contains("astra designer"))
+                .ok_or("the Astra pane worker must draw its status")?;
+            let expected = match implementation {
+                CapturedImplRun::Live => "waiting",
+                CapturedImplRun::Finished => without_run,
+            };
+            assert!(
+                line.split_whitespace().any(|word| word == expected),
+                "{status}, {implementation:?}: {line}"
+            );
+        }
+    }
+    Ok(())
+}
 
 #[cfg(target_os = "linux")]
 #[test]
