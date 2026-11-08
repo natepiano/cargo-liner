@@ -228,6 +228,8 @@ fn failed_accounts_keep_the_first_selected_destination() {
 
 #[test]
 fn account_refresh_keeps_the_destination_through_animation_frames() {
+    // Every width uses the same unchanged destination data.
+    let source = fixture(6);
     for (width, search_calls, pending_motion) in
         [(200, 7, true), (80, 4, true), (50, 2, true), (40, 2, true)]
     {
@@ -239,7 +241,6 @@ fn account_refresh_keeps_the_destination_through_animation_frames() {
         paint(&mut app, width, 70);
         app.tiles.settle_for_test();
         app.tiles.set_instant_motion_for_test();
-        let source = fixture(6);
         let area = Rect::new(0, 0, width, 70);
         let growth = app.loaded_config.config.tiles.growth();
         for frame in 0..32 {

@@ -26,6 +26,8 @@ use crate::theme::Role;
 use crate::theme::SessionHue;
 
 const CLOCK: u64 = 1_000_000;
+// All fixture words fit without the unused columns of a 200-cell frame.
+const WIDTH: u16 = 100;
 
 fn position(buffer: &Buffer, label: &str) -> Position {
     for y in 0..buffer.area.height {
@@ -48,15 +50,17 @@ fn frame(app: &mut App, now: u64) -> Buffer {
         app,
         crossterm::event::KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE),
     );
-    let mut terminal = Terminal::new(TestBackend::new(200, 48)).expect("test terminal");
+    let mut terminal = Terminal::new(TestBackend::new(WIDTH, 48)).expect("test terminal");
     let keymap = app.keymap();
     terminal
         .draw(|frame| draw_at_for_test(frame, app, &keymap, now))
         .expect("first frame");
-    app.tiles.settle_for_test();
-    terminal
-        .draw(|frame| draw_at_for_test(frame, app, &keymap, now))
-        .expect("settled frame");
+    if app.tiles.has_pending_motion_for_test() {
+        app.tiles.settle_for_test();
+        terminal
+            .draw(|frame| draw_at_for_test(frame, app, &keymap, now))
+            .expect("settled frame");
+    }
     terminal.backend().buffer().clone()
 }
 
@@ -68,11 +72,13 @@ struct SelectedRowRenderer {
 impl SelectedRowRenderer {
     fn new(app: &mut App, height: u16) -> Self {
         let mut renderer = Self {
-            terminal: Terminal::new(TestBackend::new(200, height)).expect("selection terminal"),
+            terminal: Terminal::new(TestBackend::new(WIDTH, height)).expect("selection terminal"),
         };
         renderer.paint(app, CLOCK);
-        app.tiles.settle_for_test();
-        renderer.paint(app, CLOCK);
+        if app.tiles.has_pending_motion_for_test() {
+            app.tiles.settle_for_test();
+            renderer.paint(app, CLOCK);
+        }
         renderer
     }
 

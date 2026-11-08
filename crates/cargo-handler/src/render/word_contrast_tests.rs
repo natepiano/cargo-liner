@@ -27,7 +27,8 @@ const LOW_CAPACITY_FOCUSED_SELECTION: Color = Color::Rgb(112, 112, 112);
 const LOW_CAPACITY_UNFOCUSED_SELECTION: Color = Color::Rgb(113, 113, 113);
 const DARK_CUSTOM_FOCUS_GROUND: Color = Color::Rgb(100, 100, 100);
 const LIGHT_CUSTOM_FOCUS_GROUND: Color = Color::Rgb(180, 180, 180);
-const WIDTH: u16 = 200;
+// This width keeps every fixture word visible without unused columns.
+const WIDTH: u16 = 100;
 const HEIGHT: u16 = 70;
 const FOOTER: &str = "role.showrunner=purple\nrole.unit-director=yellow\naccount.claude1=brown\naccount.claude2=magenta\naccount.claude3=blue\naccount.claude4=orange\naccount.codex1=pink\naccount.codex2=teal\n";
 const ACCOUNTS: [&str; 6] = [
@@ -248,6 +249,20 @@ fn assert_matched_ink(before: &Cell, after: &Cell, word: &str, point: Position) 
     Ok(())
 }
 
+/// Resolve each matching token once before inspecting its glyph cells.
+fn matching_word_cells(app: &App, buffer: &Buffer, word: &str) -> TestResult<Vec<Position>> {
+    let width = u16::try_from(unicode_width::UnicodeWidthStr::width(word))?;
+    let mut cells = Vec::new();
+    for start in word_click_tests::positions(buffer, word) {
+        if matches!(app.painted_words.hit(start), WordHit::Word(painted) if painted.text() == word)
+        {
+            let end = start.x.saturating_add(width).min(buffer.area.right());
+            cells.extend((start.x..end).map(|x| Position::new(x, start.y)));
+        }
+    }
+    Ok(cells)
+}
+
 fn measure_matches(
     app: &mut App,
     renderer: &mut Renderer,
@@ -267,13 +282,9 @@ fn measure_matches(
     let mut count = 0;
     let mut minimum = f64::INFINITY;
     let mut selected_grounds = Vec::new();
-    for point in after.area.positions() {
+    for point in matching_word_cells(app, &after, word)? {
         let cell = &after[(point.x, point.y)];
-        if cell.symbol().chars().any(char::is_alphanumeric)
-            && word.contains(cell.symbol())
-            && let WordHit::Word(painted) = app.painted_words.hit(point)
-            && painted.text() == word
-        {
+        if cell.symbol().chars().any(char::is_alphanumeric) && word.contains(cell.symbol()) {
             let unmatched = &before[(point.x, point.y)];
             if unmatched.bg == tui_pane::active_focus_color()
                 || unmatched.bg == tui_pane::remembered_focus_color()
@@ -634,7 +645,7 @@ fn matched_inks_keep_glyph_contrast_in_default_dark_selected_focused_account_wor
 }
 
 #[test]
-fn matched_inks_keep_glyph_contrast_in_default_dark_selected_unfocused() -> TestResult {
+fn matched_inks_keep_glyph_contrast_in_default_dark_selected_unfocused_table_words() -> TestResult {
     check_theme(
         "Default Dark",
         PaneTint::Disabled,

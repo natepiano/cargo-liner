@@ -293,10 +293,13 @@ pub(super) fn paint_accounts_viewport(app: &mut App, width: u16, height: u16) ->
     terminal
         .draw(|frame| draw_at_for_test(frame, app, &keymap, NOW))
         .expect("initial frame");
-    app.tiles.settle_for_test();
-    terminal
-        .draw(|frame| draw_at_for_test(frame, app, &keymap, NOW))
-        .expect("settled frame");
+    // Only an active layout transition needs a second frame.
+    if app.tiles.has_pending_motion_for_test() {
+        app.tiles.settle_for_test();
+        terminal
+            .draw(|frame| draw_at_for_test(frame, app, &keymap, NOW))
+            .expect("settled frame");
+    }
     let summaries = app.tiles.painted_summary_frames();
     assert_eq!(summaries.len(), 1, "one summary surface");
     let inner = app
