@@ -2048,9 +2048,10 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - `crates/cargo-handler/src/render/word_click_tests.rs` — `visible_unicode_tokens_resolve_from_every_terminal_cell` (1.011 s on natedev, 2026-11-07)
 - `crates/cargo-handler/src/render/word_contrast_tests.rs` — every `matched_inks_keep_glyph_contrast_in_*` test: 17 ran over 1 s on natedev in a busy full-suite run (1.052–2.374 s, port run log `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/mesh_runs/20261107T190655-3982080-ab7a.log`, 2026-11-07). Bring the whole module under 1 s, not only the named cases.
 - `crates/cargo-handler/src/render/narrow_width_tests.rs` — `account_refresh_keeps_the_destination_through_animation_frames` (≈230; 1.123 s on natedev in a full-suite run, 2026-11-07, run log `/tmp/claude/unit/21496649-0876-4315-8701-05f8943b788f/mesh_runs/20261107T200337-2934130-37da.log`)
+- `crates/cargo-handler/src/render/accounts_grid_tests.rs` — `stacked_account_fact_clicks_select_the_account` (1.267 s on natedev in a full-suite run, 2026-11-07)
 
 **Workers:** 2 writers.
-- `palette` — the gradient, design-ink, selected-ink, pinned accounts and tree sort test files, `app.rs`, `render/word_click_tests.rs`, `render/word_contrast_tests.rs` and `render/narrow_width_tests.rs`.
+- `palette` — the gradient, design-ink, selected-ink, pinned accounts and tree sort test files, `app.rs`, `render/word_click_tests.rs`, `render/word_contrast_tests.rs`, `render/narrow_width_tests.rs` and `render/accounts_grid_tests.rs`.
 - `census` — `census/codex_session_tests.rs` with both Codex tests, and `census/incremental_read_tests.rs`.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` clean with no test over one second, on the Mac and in a full-suite run on natedev; lint clean. Change-Review: none (test time only).
@@ -2089,35 +2090,16 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Spec 2 holds only with a reproduction of the extra session identity or of stale cells across consecutive frames. Equality of the drawn line count and the readout count is not the rule. Live: both shots; captures taken after Phase 56 turn the readout on with its key. The checkpoint adds a Change-Review line when code changes.
 
-### Phase 52 — No child stderr reaches the terminal  · status: todo
+### Phase 52 — No child stderr reaches the terminal  · status: done
 
-**Depends on:** Phase 47
+#### As-built
 
-#### Work Order
+No code change. The stray `~/.claudeN: mcpServers: - brp` text (user report, 2026-10-29) does not reproduce, and no cargo-handler child can write it:
 
-**Goal:** no command that cargo-handler starts can write to the terminal it draws on.
+- Every child that cargo-handler starts has stderr null or piped: the accounts read (`hierarchy::run_output`, `census/hierarchy.rs` ≈334, null since 2026-10-16), the ssh probe (`census/remote.rs` ≈156), `ps` and the scan helpers (`census/scan.rs`), and the desktop helpers (`tui_pane` `desktop_subprocess.rs`). Only the external editor and shell launchers inherit the terminal, by design.
+- `accounts.py status --stored --json` writes no stderr on natedev or the Mac (checked 2026-11-07); it folds the `mcpServers` advisory into its JSON `problems`.
 
-**Source:** user, 2026-10-29 (image 7): raw lines `~/.claudeN: mcpServers: - brp` (N = 1..4) appear at column 0 under the summary accounts table, over the tile border. The accounts script writes an MCP-server note to its stderr. The process and output path that put it on the terminal are not yet known.
-
-**Constraints from prior phases:**
-- `read_accounts` (`census/accounts.rs` ≈259) calls `hierarchy::run_output` (`census/hierarchy.rs` ≈512), which already sets null stdin, null stderr and piped stdout. `census/command_inputs.rs` caches commands and spawns none.
-- Phase 64: `census::schedule::spawn` takes the configured `herdr_read_timeout`, and `local_scanner` passes it to the scanner (`terminal.rs` ≈81, `census/schedule.rs` ≈694). A scheduler change keeps this argument.
-- Phase 66: `cargo-handler probe` writes a refused configuration value to its own stderr through `print_to` (`census/probe.rs` ≈432), and stdout stays one JSON report. That diagnostic is the probe's, not a child's: keep it, and keep `refused_probe_config_reports_the_same_error_without_changing_json` green.
-
-**Spec:**
-1. Reproduce the stray text first. Identify the process that wrote it and the output path that took it to the terminal, and write both in the summary.
-2. Fix that path at its cause.
-3. Make one owner build every child command (stdin, stdout and stderr set there, stderr piped or null, never inherited) only if the diagnosis shows that this is needed.
-4. Red-first test: the diagnosed writer leaves the drawn buffer and the terminal unchanged. Under 1 s.
-5. CHANGELOG: one Fixed line.
-
-**Files:**
-- `crates/cargo-handler/src/census/command_inputs.rs`, `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/census/schedule.rs`, `crates/cargo-handler/src/census/hierarchy.rs` — the diagnosed output path and, if needed, the child command owner (the writer names any other file in a blocked post)
-- `crates/cargo-handler/CHANGELOG.md`
-
-**Workers:** 1 writer.
-
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: a shot of the summary with no stray text under the accounts table. The checkpoint adds a Change-Review line.
+**Gotchas:** reopen only on a fresh shot of the text; the writer was outside cargo-handler's children or is gone.
 
 ### Phase 53 — Reset times step plainly from soonest to latest  · status: todo
 
