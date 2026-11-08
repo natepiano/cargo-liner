@@ -1939,7 +1939,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 **Ruled out:** searching back from the tail until both model and effort appear (unbounded on records with no effort key).
 
-### Phase 49c — The Codex thread cache holds only live requests  · status: todo
+### Phase 49c — The Codex thread cache holds only live requests  · status: done
 
 **Depends on:** Phase 49a
 
@@ -2049,6 +2049,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 - `crates/cargo-handler/src/render/word_contrast_tests.rs` — every `matched_inks_keep_glyph_contrast_in_*` test: 17 ran over 1 s on natedev in a busy full-suite run (1.052–2.374 s, port run log `/tmp/claude/unit/a531f8d0-5a0c-483d-aa99-3738f735f9a7/mesh_runs/20261107T190655-3982080-ab7a.log`, 2026-11-07). Bring the whole module under 1 s, not only the named cases.
 - `crates/cargo-handler/src/render/narrow_width_tests.rs` — `account_refresh_keeps_the_destination_through_animation_frames` (≈230; 1.123 s on natedev in a full-suite run, 2026-11-07, run log `/tmp/claude/unit/21496649-0876-4315-8701-05f8943b788f/mesh_runs/20261107T200337-2934130-37da.log`)
 - `crates/cargo-handler/src/render/accounts_grid_tests.rs` — `stacked_account_fact_clicks_select_the_account` (1.267 s on natedev in a full-suite run, 2026-11-07)
+- `crates/cargo-handler/src/render/layout_stability_tests.rs` — `terminal_width_and_height_changes_reselect_the_layout` (1.222 s on the Mac in a full-suite run, 2026-11-08), and every other cargo-handler test file or test helper with a test at 1 s or more in a full-suite run (22 on the Mac, 2026-11-08); files a running phase owns stay with that phase
 
 **Workers:** 2 writers.
 - `palette` — the gradient, design-ink, selected-ink, pinned accounts and tree sort test files, `app.rs`, `render/word_click_tests.rs`, `render/word_contrast_tests.rs`, `render/narrow_width_tests.rs` and `render/accounts_grid_tests.rs`.
@@ -2115,7 +2116,7 @@ No code change. The stray `~/.claudeN: mcpServers: - brp` text (user report, 202
 - C113 (merge 1bc31a60): reset times never red; dark ramp light green → sea green, light ramp violet → dark indigo. `reset_colors` (`summary/accounts.rs` ≈145).
 - Red stays for a failed reading's dot.
 - C115 kept the darkest violet off session name colors on light themes.
-- `summary/accounts_gradient_tests.rs` is also in Phase 50's **Files** (its slow gradient test); they run one after the other, never together.
+- `summary/accounts_gradient_tests.rs` and `render/word_contrast_tests.rs` are also in Phase 50's **Files**. Showrunner ruling 2026-11-07: Phase 53 runs beside Phase 50 in the same worktree and claims both files `--after` Phase 50's reservation. Edit only Phase 53's own tests and lines in them; keep Phase 50's changes. The phase that lands second merges main and keeps both sets of tests. Phase 50 brings `render/word_contrast_tests.rs` under 1 s as a whole module, so each test that Phase 53 adds there must keep the module under 1 s.
 - `theme::ResetRank::color` (`crates/cargo-handler/src/theme/mod.rs` ≈128) is the one reset source. Today it blends the `reset_nearest` to the `reset_farthest` theme role at rank/(n-1) in plain sRGB (`tui_pane::blend_color`); the rank comes from `reset_colors` (`summary/accounts.rs` ≈145). The stepped colours replace that blend in this one owner. Do not add a second reset source. The readability correction (`footer_colors::readable_status_style`) applies after it.
 - Measured on the C71 shot (Default Dark, 6 accounts): neighbouring reset colours step only dE 2.3–2.7, and the ramp ends are about dE 12 apart in every theme. `accounts_gradient_tests.rs` holds the C113 floors (`check_rendered_reset_ramp` ≈389), the ends floor (≈501) and the chroma and plain-text floors (≈532), and its formula tests (≈185, ≈232, ≈266) follow the sRGB blend. C115 is `SessionResetFloor` (`render/role_title_tests.rs` ≈715); dark is `DarkNotMeasured`.
 - The reset colour work of Phase 35 (C71) moved here on 2026-10-30.
