@@ -2047,39 +2047,21 @@ No code change. The stray `~/.claudeN: mcpServers: - brp` text (user report, 202
 
 ### Phase 53 — Reset times step plainly from soonest to latest  · status: done
 
-**Depends on:** Phase 52
+#### As-built
 
-#### Work Order
-
-**Goal:** the color of an account's reset time tells at a glance which account resets soonest, in dark and light themes.
-
-**Source:** change review C113 returned (user, 2026-10-29): "the colors are what you say they are but the color gradient is so subtle in the terminal that i don't get the affrodance value". C115 folds into C113 (user): one judgement. Showrunner ruling: plainly different ends and steps (3 or 4 distinct hues or lightness steps, soonest the strongest), each step readable on its ground in both themes, still no red; no reset color matches any session name color. Unit session `phases/53/source.md`.
-
-**Constraints from prior phases:**
-- C113 (merge 1bc31a60): reset times never red; dark ramp light green → sea green, light ramp violet → dark indigo. `reset_colors` (`summary/accounts.rs` ≈145).
-- Red stays for a failed reading's dot.
-- C115 kept the darkest violet off session name colors on light themes.
-- `summary/accounts_gradient_tests.rs` and `render/word_contrast_tests.rs` are also in Phase 50's **Files**. Showrunner ruling 2026-11-07: Phase 53 runs beside Phase 50 in the same worktree and claims both files `--after` Phase 50's reservation. Edit only Phase 53's own tests and lines in them; keep Phase 50's changes. The phase that lands second merges main and keeps both sets of tests. Phase 50 brings `render/word_contrast_tests.rs` under 1 s as a whole module, so each test that Phase 53 adds there must keep the module under 1 s.
-- `theme::ResetRank::color` (`crates/cargo-handler/src/theme/mod.rs` ≈128) is the one reset source. Today it blends the `reset_nearest` to the `reset_farthest` theme role at rank/(n-1) in plain sRGB (`tui_pane::blend_color`); the rank comes from `reset_colors` (`summary/accounts.rs` ≈145). The stepped colours replace that blend in this one owner. Do not add a second reset source. The readability correction (`footer_colors::readable_status_style`) applies after it.
-- Measured on the C71 shot (Default Dark, 6 accounts): neighbouring reset colours step only dE 2.3–2.7, and the ramp ends are about dE 12 apart in every theme. `accounts_gradient_tests.rs` holds the C113 floors (`check_rendered_reset_ramp` ≈389), the ends floor (≈501) and the chroma and plain-text floors (≈532), and its formula tests (≈185, ≈232, ≈266) follow the sRGB blend. C115 is `SessionResetFloor` (`render/role_title_tests.rs` ≈715); dark is `DarkNotMeasured`.
-- The reset colour work of Phase 35 (C71) moved here on 2026-10-30.
-
-**Spec:**
-1. A stepped ramp of 3 or 4 distinct steps per theme, soonest the strongest, each step meeting text contrast on its ground; no red; no step equal to a session name color. It applies in all four themes.
-2. Tests: step order by reset time, distinct steps, contrast on ground, no step equals a session color, no red. Measure each step on the drawn ink, after `readable_status_style`, with the pane tint on and off and on the selected row. Also measure each step under a word highlight, on the plain and the selected word-match grounds: `MatchInk::resolve` (`word_highlight.rs` ≈233) can change a reset ink there. Use the independent contrast measure of `render/word_contrast_tests.rs`; an ink with enough contrast stays exact, and a changed ink keeps its hue. Run each check in all four themes. The formula tests follow the stepped colours. Each under 1 s.
-3. CHANGELOG: one Changed line.
+- `theme::ResetRank::color` is the one reset source. It maps each reset rank to one of three steps: the first quarter of ranks takes `reset_nearest`, the last quarter takes `reset_farthest`, and the middle takes their sRGB midpoint (`tui_pane::blend_color` at 128). A single reset takes `reset_nearest`; the endpoints stay exact. `footer_colors::readable_status_style` corrects the drawn ink after it.
+- No reset step is red, and no step matches a session name color, in all four themes.
+- `ResetThemeFixture` (the `theme` test module, re-exported under `cfg(test)`) installs a theme and restores theme, transparency and tint on `Drop`. `SessionHue::ALL` is `pub(crate)`.
+- The `matched_inks_keep_glyph_contrast_*` tests reuse the plain baseline unless selection or motion changed it, measure each distinct word once, and draw later words from a copy of the painted baseline through `PaintedWords::apply_with_inks`.
 
 **Files:**
-- `crates/cargo-handler/src/theme/mod.rs` — `ResetRank::color`, the one reset source
-- `crates/cargo-handler/themes/` — the reset roles of each built-in theme
-- `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — the ramp and its tests
-- `crates/cargo-handler/src/render/word_contrast_tests.rs` — the reset steps on the word-match grounds (its fixture has no reset times today, ≈64 in `render/word_click_tests.rs`)
-- `crates/cargo-handler/src/render/role_title_tests.rs` — `SessionResetFloor` for the stepped colours
-- `crates/cargo-handler/CHANGELOG.md`
+- `crates/cargo-handler/src/theme/mod.rs` — `ResetRank::color`, `ResetThemeFixture`
+- `crates/cargo-handler/src/summary/accounts_gradient_tests.rs` — step order, distinct steps (`MINIMUM_RESET_STEP_DISTANCE` = 5.0 CIEDE2000), contrast, no red, no session color
+- `crates/cargo-handler/src/render/word_contrast_tests.rs` — each step on the plain and selected word-match grounds, with the pane tint on and off, in four themes
 
-**Workers:** 1 writer.
+**Gotchas:** the one-second rule is per test in the full suite, not per module. The word-contrast family exceeds it when each case redraws its baseline for every word.
 
-**Acceptance gate:** `verify.sh test cargo-handler` and `verify.sh lint cargo-handler` clean; no test takes a second. Live: captures in a dark and a light theme. The checkpoint adds ONE Change-Review line covering C113 and C115: the ramp reads at a glance, no red, no reset color matches a session color, dark and light themes.
+**Ruled out:** a test that the fixture restores settings on unwind — a fixture defect shows the user no wrong result.
 
 ### Phase 59 — Shift-left and shift-right move the tile focus  · status: done
 
