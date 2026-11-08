@@ -22,6 +22,7 @@ use super::SummaryFrame;
 use crate::agent_cell;
 use crate::app::App;
 use crate::census::AgentPlacement;
+use crate::census::HierarchyRole;
 use crate::census::accounts::AccountReadStatus;
 use crate::census::accounts::AccountRole;
 use crate::census::accounts::AccountRoleUsage;
@@ -615,4 +616,59 @@ fn check_reset_chroma(theme_name: &str) {
     tui_pane::set_active_theme(previous);
     tui_pane::set_focused_pane_tint(tinted);
     assert!(failures.is_empty(), "reset visibility: {failures:#?}");
+}
+
+fn check_astra_reset_shades(theme_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let theme_reset = ResetThemeFixture::install();
+    let colors = footer_colors::FooterColors::parse(include_str!(
+        "../footer_colors/fixtures/statusline_astra.conf"
+    ));
+    let mut failures = Vec::new();
+    for variant in theme::builtins()
+        .into_iter()
+        .filter(|variant| variant.id.as_str() == theme_name)
+    {
+        let name = variant.id.as_str().to_owned();
+        tui_pane::set_active_theme(Arc::new(variant.theme));
+        tui_pane::set_transparent_background(false);
+        for tint in [false, true] {
+            tui_pane::set_focused_pane_tint(tint);
+            let buffer = draw_reset_ranks();
+            let positions = reset_rank_positions(&buffer);
+            let reset_right = locate(&buffer, "resets").column + 6;
+            for role in [HierarchyRole::AstraDesigner, HierarchyRole::AstraReviewer] {
+                let role_ink = colors
+                    .hierarchy_role(role)
+                    .style(ratatui::style::Style::default())
+                    .fg
+                    .ok_or("Astra management ink")?;
+                let mut minimum = f64::INFINITY;
+                for at in positions.values() {
+                    minimum = minimum.min(footer_colors::perceptual_distance(
+                        role_ink,
+                        buffer[(reset_right - 1, at.row)].fg,
+                    ));
+                }
+                eprintln!("ASTRA_RESET {name} tint={tint} {role:?}: {minimum:.6}");
+                if minimum < 15.0 {
+                    failures.push(format!("{name} tint={tint} {role:?}: {minimum:.6}"));
+                }
+            }
+        }
+    }
+    drop(theme_reset);
+    assert!(failures.is_empty(), "Astra/reset distances: {failures:?}");
+    Ok(())
+}
+
+#[test]
+fn astra_role_inks_stay_distinct_from_default_light_reset_shades()
+-> Result<(), Box<dyn std::error::Error>> {
+    check_astra_reset_shades("Default Light")
+}
+
+#[test]
+fn astra_role_inks_stay_distinct_from_high_contrast_light_reset_shades()
+-> Result<(), Box<dyn std::error::Error>> {
+    check_astra_reset_shades("High Contrast Light")
 }

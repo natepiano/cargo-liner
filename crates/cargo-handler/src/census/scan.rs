@@ -46,6 +46,7 @@ use sysinfo::UpdateKind;
 use super::Agent;
 use super::AgentActivity;
 use super::AgentRow;
+use super::AstraSessionMembership;
 use super::ChildKind;
 use super::ChildRow;
 use super::CodexThreadId;
@@ -70,12 +71,16 @@ use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 use super::codex;
 use super::codex::CodexLogs;
+use super::codex::CodexThread;
 use super::codex::OpenThreadRows;
+use super::codex::ResumeRequest;
 use super::codex_names::SessionName;
 use super::codex_names::SessionNames;
 use super::desktop;
 use super::desktop::TmuxLayout;
 use super::desktop::WindowEntry;
+use super::herdr::HerdrNames;
+use super::hierarchy::AstraWorkerMembership;
 use super::hierarchy::StaffFileReader;
 #[cfg(test)]
 use super::hierarchy::StaffRoster;
@@ -175,7 +180,7 @@ pub(super) struct LocalScanner {
     open_thread_rows:    OpenThreadRows,
     /// Each Codex account log advances from its retained row id.
     codex_logs:          CodexLogs,
-    herdr:               super::herdr::HerdrNames,
+    herdr:               HerdrNames,
     codex_links:         HashMap<u32, CodexSessionLink>,
     staff:               super::hierarchy::StaffDiscovery,
     codex_start_window:  CodexStartWindow,
@@ -330,7 +335,15 @@ impl LocalScanner {
                 &self.account_labels,
             )
         });
+        include_astra_processes(
+            &mut rows,
+            processes,
+            home,
+            &staff.roster,
+            &self.account_labels,
+        );
         attach_pane_codex_identities(&mut rows, processes, home, &staff.roster);
+        attach_astra_memberships(&mut rows, &staff.roster, processes, home, &self.herdr);
         if matches!(self.publication, LocalPublication::FirstAnswerPending) {
             self.attach_codex_names(&mut rows);
             classify::attach_staff_names(&mut rows, &staff.roster);
@@ -339,6 +352,7 @@ impl LocalScanner {
         startup_log::startup_stage("details", || read_details(self, &mut rows));
         self.attach_codex_names(&mut rows);
         classify::attach_staff_names(&mut rows, &staff.roster);
+        apply_astra_work(&mut rows, &self.herdr);
         publish(ScanStage::Completed, rows, &staff);
         self.publication = LocalPublication::CompletedAnswerPublished;
         staff
@@ -372,9 +386,9 @@ impl LocalScanner {
             open_thread_rows: OpenThreadRows::default(),
             codex_logs: codex::CodexLogs::default(),
             #[cfg(not(test))]
-            herdr: super::herdr::HerdrNames::default(),
+            herdr: HerdrNames::default(),
             #[cfg(test)]
-            herdr: super::herdr::HerdrNames::isolated(),
+            herdr: HerdrNames::isolated(),
             codex_links: HashMap::new(),
             staff: super::hierarchy::StaffDiscovery::Disabled,
             codex_start_window: crate::config::CodexStartWindow::default(),
@@ -437,6 +451,7 @@ impl LocalScanner {
         let mut rows = Vec::new();
         let snapshot = self.scan_staged(|_, answer, _| rows = answer);
         self.herdr.finish_initial(&mut self.codex_links, deadline);
+        apply_astra_work(&mut rows, &self.herdr);
         self.attach_codex_names(&mut rows);
         classify::attach_staff_names(&mut rows, &snapshot.roster);
         (rows, snapshot)
@@ -510,6 +525,7 @@ impl LocalScanner {
                 &self.account_labels,
             )
         });
+        self.attach_astra_threads(rows, &codex.accounts, &pacer);
         self.attach_codex_sessions(processes, home, rows);
         let models = self.read_process_models(processes, &transcripts, rows, home, codex.panes);
         let threads = codex.app_servers;
@@ -604,7 +620,12 @@ impl LocalScanner {
             let proven = rows
                 .iter()
                 .find(|row| row.pid == process.pid)
-                .filter(|row| matches!(row.session_id, SessionIdentity::Codex(_)));
+                .filter(|row| {
+                    matches!(
+                        row.session_id,
+                        SessionIdentity::Codex(_) | SessionIdentity::Astra(_)
+                    )
+                });
             if let Some(row) = proven {
                 for (id, path) in open_rollouts(process, home) {
                     if row.session_id.ids().any(|proven| proven == id) {
@@ -1579,6 +1600,7 @@ fn attach_pane_codex_identities(
 struct CodexThreads {
     app_servers: HashMap<u32, Vec<ThreadEntry>>,
     panes:       HashMap<u32, PathBuf>,
+    accounts:    HashMap<PathBuf, HashMap<String, CodexThread>>,
 }
 
 /// `codex_threads` gathers both requester sets before reading their account answers.
@@ -1645,6 +1667,7 @@ fn codex_threads(
     CodexThreads {
         app_servers,
         panes: live.panes,
+        accounts: live.accounts,
     }
 }
 
@@ -2415,6 +2438,114 @@ fn detailed_pids(
             .map(Process::pid),
     );
     detailed.into_iter().collect()
+}
+
+/// `attach_astra_memberships` adds `AstraMembership` through `SessionIdentity::with_astra`.
+fn attach_astra_memberships(
+    rows: &mut [AgentRow],
+    staff: &super::hierarchy::StaffRoster,
+    processes: &[ProcessEntry],
+    home: Option<&Path>,
+    herdr: &HerdrNames,
+) {
+    for row in rows {
+        let member = row
+            .session_id
+            .ids()
+            .next()
+            .map(|id| staff.astra_membership(id));
+        if let Some(AstraWorkerMembership::Member(member)) = member
+            && processes
+                .iter()
+                .find(|process| process.pid == row.pid)
+                .and_then(|process| codex::session_home(process, home))
+                .is_some_and(|account| account == member.home())
+        {
+            row.session_id = std::mem::take(&mut row.session_id)
+                .with_astra(member.with_work(herdr.work(row.pid, row.process_started)));
+        }
+    }
+}
+
+fn apply_astra_work(rows: &mut [AgentRow], herdr: &HerdrNames) {
+    for row in rows {
+        if let AstraSessionMembership::Member(member) = row.session_id.astra_membership() {
+            let member = member
+                .clone()
+                .with_work(herdr.work(row.pid, row.process_started));
+            row.activity = member.activity(row.activity);
+            row.session_id = std::mem::take(&mut row.session_id).with_astra(member);
+        }
+    }
+}
+
+/// A live Astra process remains a session even beneath another agent process.
+fn include_astra_processes(
+    rows: &mut Vec<AgentRow>,
+    processes: &[ProcessEntry],
+    home: Option<&Path>,
+    staff: &super::hierarchy::StaffRoster,
+    labels: &AccountLabels,
+) {
+    for process in processes
+        .iter()
+        .filter(|process| process.is_codex() && !process.is_app_server())
+    {
+        if rows.iter().any(|row| row.pid == process.pid) {
+            continue;
+        }
+        let ids: Vec<_> = match codex::resume_request(process) {
+            ResumeRequest::NamedId(id) => vec![id.to_owned()],
+            _ => open_rollouts(process, home)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect(),
+        };
+        let matched = ids.iter().any(|id| {
+            matches!(
+                staff.session_membership(id),
+                super::hierarchy::StaffSessionMembership::Listed
+            )
+        });
+        if matched {
+            rows.extend(classify::agent_rows_with_threads(
+                std::slice::from_ref(process),
+                &[],
+                &HashMap::new(),
+                home,
+                labels,
+            ));
+        }
+    }
+}
+
+impl LocalScanner {
+    /// The first explicit lookup supplies the thread link and its requested fast mark.
+    fn attach_astra_threads(
+        &mut self,
+        rows: &mut [AgentRow],
+        accounts: &HashMap<PathBuf, HashMap<String, CodexThread>>,
+        pacer: &PacerHistory,
+    ) {
+        for row in rows {
+            let AstraSessionMembership::Member(member) = row.session_id.astra_membership() else {
+                continue;
+            };
+            let Some(thread) = accounts
+                .get(member.home())
+                .and_then(|threads| threads.get(member.session()))
+            else {
+                continue;
+            };
+            self.codex_links
+                .insert(row.pid, CodexSessionLink::Named(thread.clone()));
+            let read = self.rollouts.read(&thread.rollout);
+            let tier = tier::requested(Some(read), &[], pacer, row.started);
+            if tier != ServiceTier::Unrecorded {
+                row.service_tier = tier;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3561,5 +3692,36 @@ mod process_cache_tests {
         );
         assert!(rows.iter().any(|row| row.pid == std::process::id()));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl LocalScanner {
+    pub(super) fn set_herdr_for_test(&mut self, herdr: HerdrNames) { self.herdr = herdr; }
+
+    pub(super) fn scan_astra_for_test(
+        &mut self,
+        processes: &[ProcessEntry],
+        sessions: &[SessionRecord],
+        home: &Path,
+    ) -> (Vec<AgentRow>, super::HierarchyEdges) {
+        self.desktop_source = DesktopSource::Windows(Vec::new());
+        let mut rows = Vec::new();
+        let snapshot = self.scan_with_staff(
+            processes,
+            sessions,
+            Some(home),
+            |_, answer, _| rows = answer,
+            |scanner, rows| scanner.attach_details(processes, sessions, Some(home), rows),
+        );
+        let edges = snapshot.publication().edges.with_worker_roles(&rows);
+        (rows, edges)
+    }
+}
+
+#[cfg(test)]
+impl LocalScanner {
+    pub(super) const fn astra_database_reads_for_test(&self) -> usize {
+        self.open_thread_rows.database_reads
     }
 }

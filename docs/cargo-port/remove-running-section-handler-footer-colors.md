@@ -1044,7 +1044,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Ruled out:** a separate painted-word record (the retained frame already holds the cells); a press that waits for the next frame (it read census changes made after the draw); changing any foreground color to fit the match ground.
 
-### Phase 21 — Astra designer and Astra reviewer roles  · status: todo
+### Phase 21 — Astra designer and Astra reviewer roles  · status: done
 
 **Depends on:** Phase 17, Phase 16, Phase 18, Phase 26, Phase 29, Phase 20, Phase 67, Phase 49c
 

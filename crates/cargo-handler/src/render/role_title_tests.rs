@@ -29,9 +29,7 @@ use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
 use crate::census::scan::ScanStage;
 use crate::footer_colors;
-use crate::footer_colors::FooterColor;
 use crate::footer_colors::FooterRole;
-use crate::footer_colors::FooterTint;
 use crate::footer_colors::tests;
 use crate::sort::SortDirection;
 use crate::sort::SummaryColumn;
@@ -182,15 +180,19 @@ fn account_grid(colors: &FooterColors, boss_visible: bool, labels: &[&str]) -> B
     buffer
 }
 
-#[test]
-fn role_words_keep_readable_coverage_on_the_ground_composed_by_the_tile_grid() {
+fn check_role_words_on_tile_grounds(theme_name: &str) {
     let previous = tui_pane::theme();
     let transparent = tui_pane::transparent_background();
     let tinted = tui_pane::focused_pane_tint_enabled();
-    let colors = FooterColors::parse(include_str!("../footer_colors/fixtures/statusline.conf"));
+    let colors = FooterColors::parse(include_str!(
+        "../footer_colors/fixtures/statusline_astra.conf"
+    ));
     let mut failures = Vec::new();
     tui_pane::set_transparent_background(false);
-    for variant in theme::builtins() {
+    for variant in theme::builtins()
+        .into_iter()
+        .filter(|variant| variant.id.as_str() == theme_name)
+    {
         let name = variant.id.as_str();
         tui_pane::set_active_theme(Arc::new(variant.theme));
         for tint in [false, true] {
@@ -257,11 +259,33 @@ fn role_words_keep_readable_coverage_on_the_ground_composed_by_the_tile_grid() {
 }
 
 #[test]
+fn role_words_keep_readable_coverage_on_the_ground_composed_by_the_tile_grid() {
+    check_role_words_on_tile_grounds("Default Dark");
+}
+
+#[test]
+fn role_words_keep_readable_coverage_on_default_light_tile_grounds() {
+    check_role_words_on_tile_grounds("Default Light");
+}
+
+#[test]
+fn role_words_keep_readable_coverage_on_high_contrast_dark_tile_grounds() {
+    check_role_words_on_tile_grounds("High Contrast Dark");
+}
+
+#[test]
+fn role_words_keep_readable_coverage_on_high_contrast_light_tile_grounds() {
+    check_role_words_on_tile_grounds("High Contrast Light");
+}
+
+#[test]
 fn dark_title_accent_stays_distinct_and_readable_in_the_composed_grid() {
     let previous = tui_pane::theme();
     let transparent = tui_pane::transparent_background();
     let tinted = tui_pane::focused_pane_tint_enabled();
-    let colors = FooterColors::parse(include_str!("../footer_colors/fixtures/statusline.conf"));
+    let colors = FooterColors::parse(include_str!(
+        "../footer_colors/fixtures/statusline_astra.conf"
+    ));
     let mut failures = Vec::new();
     tui_pane::set_transparent_background(false);
     for variant in theme::builtins()
@@ -297,10 +321,13 @@ fn dark_title_accent_stays_distinct_and_readable_in_the_composed_grid() {
                     let entries = [
                         ("showrunner", colors.role(FooterRole::Showrunner)),
                         ("unit", colors.role(FooterRole::UnitDirector)),
-                        ("astra-designer", FooterTint::Footer(FooterColor::Pink)),
+                        (
+                            "astra-designer",
+                            colors.hierarchy_role(HierarchyRole::AstraDesigner),
+                        ),
                         (
                             "astra-reviewer",
-                            FooterTint::Footer(FooterColor::BrightGreen),
+                            colors.hierarchy_role(HierarchyRole::AstraReviewer),
                         ),
                         ("claude1", colors.account("claude1")),
                         ("claude2", colors.account("claude2")),
@@ -390,7 +417,9 @@ fn account_words_keep_readable_coverage_in_the_composed_grid() {
     let previous = tui_pane::theme();
     let transparent = tui_pane::transparent_background();
     let tinted = tui_pane::focused_pane_tint_enabled();
-    let colors = FooterColors::parse(include_str!("../footer_colors/fixtures/statusline.conf"));
+    let colors = FooterColors::parse(include_str!(
+        "../footer_colors/fixtures/statusline_astra.conf"
+    ));
     let labels = [
         "claude1", "claude2", "claude3", "claude4", "codex1", "codex2",
     ];
@@ -457,7 +486,9 @@ fn light_title_accent_stays_distinct_from_session_role_and_account_inks() {
     let previous = tui_pane::theme();
     let transparent = tui_pane::transparent_background();
     let tinted = tui_pane::focused_pane_tint_enabled();
-    let colors = FooterColors::parse(include_str!("../footer_colors/fixtures/statusline.conf"));
+    let colors = FooterColors::parse(include_str!(
+        "../footer_colors/fixtures/statusline_astra.conf"
+    ));
     let mut failures = Vec::new();
     tui_pane::set_transparent_background(false);
     for variant in theme::builtins()
@@ -969,7 +1000,7 @@ fn check_session_palette(variant_name: &str) {
     let previous = tui_pane::theme();
     let transparent = tui_pane::transparent_background();
     let tinted = tui_pane::focused_pane_tint_enabled();
-    let fixture = include_str!("../footer_colors/fixtures/statusline.conf");
+    let fixture = include_str!("../footer_colors/fixtures/statusline_astra.conf");
     let colors = FooterColors::parse(fixture);
     let rows:Vec<AgentRow>=(0..5).map(|ordinal|serde_json::from_value(serde_json::json!({
         "agent":"claude","name":format!("session-hue-{ordinal}"),"pid":10+ordinal,"started":10,"directory":"/fixture",
@@ -1082,7 +1113,9 @@ fn dark_session_palette_api_keeps_current_floors_on_each_pane_ground() {
     let previous = tui_pane::theme();
     let tinted = tui_pane::focused_pane_tint_enabled();
     let transparent = tui_pane::transparent_background();
-    let colors = FooterColors::parse(include_str!("../footer_colors/fixtures/statusline.conf"));
+    let colors = FooterColors::parse(include_str!(
+        "../footer_colors/fixtures/statusline_astra.conf"
+    ));
     let mut failures = Vec::new();
     tui_pane::set_transparent_background(false);
     for variant in theme::builtins() {
@@ -1136,7 +1169,9 @@ fn dark_session_palette_api_keeps_current_floors_on_each_pane_ground() {
 fn root_session_colours_ignore_subtree_sizes_and_match_titles_after_both_sorts() {
     let previous = tui_pane::theme();
     let state = roots_with_different_subtree_sizes();
-    let colors = FooterColors::parse(include_str!("../footer_colors/fixtures/statusline.conf"));
+    let colors = FooterColors::parse(include_str!(
+        "../footer_colors/fixtures/statusline_astra.conf"
+    ));
     let mut failures = Vec::new();
     for variant in theme::builtins() {
         let theme_name = variant.id.as_str().to_owned();

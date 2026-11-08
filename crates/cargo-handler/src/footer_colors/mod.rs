@@ -44,6 +44,8 @@ pub(crate) enum FooterColor {
     BrightBlack,
     BrightRed,
     BrightGreen,
+    /// The Astra reviewer keeps its statusline color and uses its own theme shade.
+    AstraReviewerGreen,
     BrightYellow,
     BrightBlue,
     BrightMagenta,
@@ -52,6 +54,7 @@ pub(crate) enum FooterColor {
     Orange,
     Purple,
     Pink,
+    Mauve,
     Teal,
     Brown,
 }
@@ -215,6 +218,7 @@ impl FromStr for FooterColor {
             "orange" => Self::Orange,
             "purple" => Self::Purple,
             "pink" => Self::Pink,
+            "mauve" => Self::Mauve,
             "teal" => Self::Teal,
             "brown" => Self::Brown,
             _ => return Err(UnknownFooterColor),
@@ -235,7 +239,7 @@ impl From<FooterColor> for Color {
             FooterColor::White => Self::Gray,
             FooterColor::BrightBlack => Self::DarkGray,
             FooterColor::BrightRed => Self::LightRed,
-            FooterColor::BrightGreen => Self::LightGreen,
+            FooterColor::BrightGreen | FooterColor::AstraReviewerGreen => Self::LightGreen,
             FooterColor::BrightYellow => Self::LightYellow,
             FooterColor::BrightBlue => Self::LightBlue,
             FooterColor::BrightMagenta => Self::LightMagenta,
@@ -244,6 +248,7 @@ impl From<FooterColor> for Color {
             FooterColor::Orange => Self::Indexed(208),
             FooterColor::Purple => Self::Indexed(141),
             FooterColor::Pink => Self::Indexed(211),
+            FooterColor::Mauve => Self::Indexed(139),
             FooterColor::Teal => Self::Indexed(30),
             FooterColor::Brown => Self::Indexed(137),
         }
@@ -255,6 +260,8 @@ impl From<FooterColor> for Color {
 pub(crate) enum FooterRole {
     Showrunner,
     UnitDirector,
+    AstraDesigner,
+    AstraReviewer,
 }
 
 /// Whether the footer supplies a foreground or leaves the theme's style intact.
@@ -361,7 +368,7 @@ impl ReadablePalette {
 }
 
 impl FooterColor {
-    const ALL: [Self; 21] = [
+    const ALL: [Self; 23] = [
         Self::Black,
         Self::Red,
         Self::Green,
@@ -373,6 +380,7 @@ impl FooterColor {
         Self::BrightBlack,
         Self::BrightRed,
         Self::BrightGreen,
+        Self::AstraReviewerGreen,
         Self::BrightYellow,
         Self::BrightBlue,
         Self::BrightMagenta,
@@ -381,6 +389,7 @@ impl FooterColor {
         Self::Orange,
         Self::Purple,
         Self::Pink,
+        Self::Mauve,
         Self::Teal,
         Self::Brown,
     ];
@@ -468,6 +477,13 @@ impl InkPurpose {
                 constants::ACCOUNT_BLUE_SEED
             },
             (Self::Account, FooterColor::Teal) => constants::ACCOUNT_TEAL_SEED,
+            (Self::Management, FooterColor::AstraReviewerGreen) => tui_pane::role_color(
+                "astra_reviewer",
+                tui_pane::StyleSpec::from_color(color.into()),
+            ),
+            (Self::Management, FooterColor::Mauve) => {
+                tui_pane::role_color("mauve", tui_pane::StyleSpec::from_color(color.into()))
+            },
             (Self::Account | Self::Management, _) => color.into(),
         }
     }
@@ -925,6 +941,8 @@ impl FooterColors {
             let role = match key.trim() {
                 "role.showrunner" => FooterRole::Showrunner,
                 "role.unit-director" => FooterRole::UnitDirector,
+                "role.astra-designer" => FooterRole::AstraDesigner,
+                "role.astra-reviewer" => FooterRole::AstraReviewer,
                 key => {
                     if let Some(account) = key.strip_prefix(ACCOUNT_KEY_PREFIX) {
                         match color {
@@ -941,6 +959,12 @@ impl FooterColors {
             };
             match color {
                 Ok(color) => {
+                    let color = match (role, color) {
+                        (FooterRole::AstraReviewer, FooterColor::BrightGreen) => {
+                            FooterColor::AstraReviewerGreen
+                        },
+                        (_, color) => color,
+                    };
                     colors.roles.insert(role, color);
                 },
                 Err(_) => {
@@ -964,6 +988,8 @@ impl FooterColors {
         match role {
             HierarchyRole::Showrunner => self.role(FooterRole::Showrunner),
             HierarchyRole::Unit => self.role(FooterRole::UnitDirector),
+            HierarchyRole::AstraDesigner => self.role(FooterRole::AstraDesigner),
+            HierarchyRole::AstraReviewer => self.role(FooterRole::AstraReviewer),
             HierarchyRole::Impl
             | HierarchyRole::Test
             | HierarchyRole::Review
