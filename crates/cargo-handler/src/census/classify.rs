@@ -55,6 +55,8 @@ use super::codex::ResumeRequest;
 use super::codex::ThreadRows;
 use super::hierarchy::StaffName;
 use super::hierarchy::StaffRoster;
+use super::model::ModelName;
+use super::model::ReasoningEffort;
 use super::tmux;
 use super::transcript::BashCall;
 use crate::config::CodexStartWindow;
@@ -432,6 +434,8 @@ fn claude_row(
     }
     let directory = session.cwd.as_deref().or(process.directory.as_deref());
     Some(AgentRow {
+        model:           ModelName::Unrecorded,
+        effort:          ReasoningEffort::Unrecorded,
         staff_names:     StaffRowNames::default(),
         agent:           Agent::Claude,
         role_fallback:   crate::census::RoleFallback::None,
@@ -461,6 +465,8 @@ fn desktop_app_row(
     account_labels: &AccountLabels,
 ) -> AgentRow {
     AgentRow {
+        model:           ModelName::Unrecorded,
+        effort:          ReasoningEffort::Unrecorded,
         staff_names:     StaffRowNames::default(),
         agent:           Agent::Claude,
         role_fallback:   crate::census::RoleFallback::None,
@@ -521,6 +527,8 @@ fn codex_row(
         format!("pid {}", process.pid)
     };
     Some(AgentRow {
+        model: ModelName::Unrecorded,
+        effort: ReasoningEffort::Unrecorded,
         staff_names: StaffRowNames::default(),
         agent,
         role_fallback: crate::census::RoleFallback::None,

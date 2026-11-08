@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The census retains each conversation's model and reasoning effort for local and probe rows.
+
 - Click a word to highlight matching words across tile content and titles. Esc or a repeated word click clears the highlight.
 
 - Click a row marker to toggle its children. Use digits 0 to 9 to set the focused tile depth.

@@ -3484,6 +3484,8 @@ mod tests {
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
     use crate::census::WorkIdentity;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
     use crate::census::scan::ScanStage;
     use crate::census::transcript::SubagentRole;
     use crate::census::worker_dispatch::WorkerDispatch;
@@ -3545,6 +3547,8 @@ mod tests {
     /// seconds before [`NOW`] and opened by `launched_by`.
     fn agent(pid: u32, name: &str, age: u64, launched_by: Option<u32>) -> AgentRow {
         AgentRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             staff_names: StaffRowNames::default(),
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
@@ -3568,6 +3572,8 @@ mod tests {
     /// seconds before [`NOW`].
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, age: u64) -> ChildRow {
         ChildRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             worker_task: WorkerTask::Unrecorded,
             dispatch: WorkerDispatch::Plain,
             activity: AgentActivity::Idle,

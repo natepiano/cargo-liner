@@ -16,6 +16,8 @@ use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
 use crate::census::StaffRowNames;
 use crate::census::accounts::AccountsTable;
+use crate::census::model::ModelName;
+use crate::census::model::ReasoningEffort;
 use crate::footer_colors::FooterColors;
 use crate::sort::AccountsSort;
 
@@ -36,6 +38,8 @@ fn row(
     directory: &str,
 ) -> AgentRow {
     AgentRow {
+        model: ModelName::Unrecorded,
+        effort: ReasoningEffort::Unrecorded,
         staff_names: StaffRowNames::default(),
         role_fallback: RoleFallback::None,
         session_id: SessionIdentity::Unrecorded,

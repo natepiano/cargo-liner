@@ -469,6 +469,8 @@ mod tests {
     use crate::census::accounts::AccountsFailure;
     use crate::census::accounts::AccountsReading;
     use crate::census::accounts::AccountsTable;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
     use crate::sort::TreeSort;
     use crate::tiles::TileKey;
 
@@ -1071,6 +1073,8 @@ mod tests {
         let mut ticker = Ticker::new(receiver, appearance_receiver);
         let now = Instant::now();
         let row = AgentRow {
+            model:           ModelName::Unrecorded,
+            effort:          ReasoningEffort::Unrecorded,
             staff_names:     StaffRowNames::default(),
             agent:           Agent::Claude,
             role_fallback:   RoleFallback::None,

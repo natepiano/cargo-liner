@@ -46,10 +46,13 @@ use sysinfo::UpdateKind;
 use super::Agent;
 use super::AgentActivity;
 use super::AgentRow;
+use super::ChildKind;
+use super::ChildRow;
 use super::CodexThreadId;
 use super::ProvenCodexThread;
 use super::ServiceTier;
 use super::SessionIdentity;
+use super::WorkIdentity;
 use super::account;
 use super::account::AccountLabels;
 use super::account::ConfigHome;
@@ -77,13 +80,16 @@ use super::hierarchy::StaffFileReader;
 #[cfg(test)]
 use super::hierarchy::StaffRoster;
 use super::hierarchy::StaffSnapshot;
+use super::model::ConversationModel;
 use super::tier;
 use super::tier::PacerHistory;
 use super::tier::Rollouts;
+use super::tier::ThreadRollout;
 use super::transcript;
 use super::transcript::BashCall;
 use super::transcript::Subagent;
 use super::transcript::SubagentReads;
+use super::transcript::TranscriptModels;
 use super::tree;
 use super::tree::RunThread;
 use super::tree::ShellCall;
@@ -175,6 +181,7 @@ pub(super) struct LocalScanner {
     codex_start_window:  CodexStartWindow,
     herdr_probe_wait:    HerdrProbeWait,
     transcript_activity: HashMap<PathBuf, TranscriptRead>,
+    transcript_models:   TranscriptModels,
     subagent_activity:   HashMap<PathBuf, TranscriptRead>,
     subagent_reads:      SubagentReads,
     worker_names:        WorkerNames,
@@ -245,6 +252,25 @@ pub(crate) enum ScanStage {
 }
 
 impl LocalScanner {
+    #[cfg(test)]
+    pub(super) fn scan_details_for_test(
+        &mut self,
+        processes: &[ProcessEntry],
+        sessions: &[SessionRecord],
+        home: &Path,
+    ) -> Vec<AgentRow> {
+        self.desktop_source = DesktopSource::Windows(Vec::new());
+        let mut answer = Vec::new();
+        self.scan_stages(
+            processes,
+            sessions,
+            Some(home),
+            |rows| answer = rows,
+            |scanner, rows| scanner.attach_details(processes, sessions, Some(home), rows),
+        );
+        answer
+    }
+
     /// Adapt existing row-only fixtures to the staged scan implementation.
     #[cfg(test)]
     pub(super) fn scan_stages(
@@ -354,6 +380,7 @@ impl LocalScanner {
             codex_start_window: crate::config::CodexStartWindow::default(),
             herdr_probe_wait: HerdrProbeWait::default(),
             transcript_activity: HashMap::new(),
+            transcript_models: super::transcript::TranscriptModels::default(),
             subagent_activity: HashMap::new(),
             subagent_reads: SubagentReads::default(),
             worker_names: WorkerNames::default(),
@@ -488,6 +515,7 @@ impl LocalScanner {
             )
         });
         self.attach_codex_sessions(processes, home, rows);
+        let models = self.read_process_models(processes, &transcripts, rows, home);
         self.rollouts.forget_unread();
         let dispatches = startup_log::startup_stage("worker_dispatches", || {
             worker_dispatches(processes, &mut self.worker_names, &mut self.worker_commands)
@@ -499,7 +527,9 @@ impl LocalScanner {
                 let CodexThreadId::Recorded(id) = &thread.thread_id else {
                     return None;
                 };
-                let read = self.rollouts.thread(id)?;
+                let ThreadRollout::Retained(read) = self.rollouts.thread(id) else {
+                    return None;
+                };
                 match self.worker_names.resolve(
                     id,
                     read.first_prompt.text(),
@@ -532,6 +562,7 @@ impl LocalScanner {
         let run_made = startup_log::startup_stage("attach_children", || {
             tree::attach_children(rows, processes, &sources)
         });
+        self.attach_row_models(rows, &models, &sources.subagents, &transcripts);
         startup_log::startup_stage("transcript_activity_and_worker_names", || {
             self.attach_activity_with_runs(
                 processes,
@@ -544,6 +575,126 @@ impl LocalScanner {
         });
         startup_log::startup_stage("attach_desktops", || self.attach_desktops(processes, rows));
         startup_log::startup_stage("attach_branches", || branch::attach_branches(rows, home));
+    }
+
+    /// `read_process_models` reads each process's own conversation without inheriting host values.
+    fn read_process_models(
+        &mut self,
+        processes: &[ProcessEntry],
+        transcripts: &HashMap<u32, PathBuf>,
+        rows: &[AgentRow],
+        home: Option<&Path>,
+    ) -> HashMap<u32, ConversationModel> {
+        let mut models: HashMap<_, _> = transcripts
+            .iter()
+            .map(|(pid, path)| (*pid, self.transcript_models.read(path)))
+            .collect();
+        let mut paths = self
+            .open_thread_rows
+            .process_rollouts(processes, rows, home);
+        for process in processes
+            .iter()
+            .filter(|process| process.is_codex() && !process.is_app_server())
+        {
+            if let Some(thread) = self
+                .codex_links
+                .get(&process.pid)
+                .and_then(CodexSessionLink::thread)
+            {
+                paths.insert(process.pid, thread.rollout.clone());
+            }
+            if paths.contains_key(&process.pid) {
+                continue;
+            }
+            let proven = rows
+                .iter()
+                .find(|row| row.pid == process.pid)
+                .filter(|row| matches!(row.session_id, SessionIdentity::Codex(_)));
+            if let Some(row) = proven {
+                for (id, path) in open_rollouts(process, home) {
+                    if row.session_id.ids().any(|proven| proven == id) {
+                        paths.insert(process.pid, path);
+                        break;
+                    }
+                }
+            }
+        }
+        for (pid, path) in paths {
+            models.insert(pid, self.rollouts.read_model(&path));
+        }
+        models
+    }
+
+    /// `attach_row_models` maps only a row's own process, transcript or proven rollout.
+    fn attach_row_models(
+        &mut self,
+        rows: &mut [AgentRow],
+        processes: &HashMap<u32, ConversationModel>,
+        subagents: &HashMap<u32, Vec<Subagent>>,
+        transcripts: &HashMap<u32, PathBuf>,
+    ) {
+        let mut paths: HashSet<_> = transcripts.values().cloned().collect();
+        let mut agents = HashMap::new();
+        for (owner, children) in subagents {
+            for child in children {
+                paths.insert(child.transcript.clone());
+                agents.insert(
+                    (*owner, child.id.as_str()),
+                    self.transcript_models.read(&child.transcript),
+                );
+            }
+        }
+        for row in rows {
+            let own = processes.get(&row.pid).cloned().unwrap_or_default();
+            row.model = own.model;
+            row.effort = own.effort;
+            self.attach_child_models(&mut row.children, row.pid, processes, &agents);
+        }
+        self.transcript_models.retain(&paths);
+    }
+
+    /// `attach_child_models` follows flattened child subtrees with their owning Claude pid.
+    fn attach_child_models(
+        &self,
+        mut children: &mut [ChildRow],
+        owner: u32,
+        processes: &HashMap<u32, ConversationModel>,
+        subagents: &HashMap<(u32, &str), ConversationModel>,
+    ) {
+        while let Some((child, following)) = children.split_first_mut() {
+            let end = following
+                .iter()
+                .position(|next| next.depth <= child.depth)
+                .unwrap_or(following.len());
+            let (descendants, siblings) = following.split_at_mut(end);
+            let own = match (&child.kind, &child.thread_id, &child.work_id) {
+                (ChildKind::Shell(_), _, _) => ConversationModel::default(),
+                (_, CodexThreadId::Recorded(id), _) => match self.rollouts.thread(id) {
+                    ThreadRollout::Retained(read) => read.inference.clone(),
+                    ThreadRollout::NotRetained => ConversationModel::default(),
+                },
+                (ChildKind::Subagent(_), _, WorkIdentity::Recorded(id)) => subagents
+                    .get(&(owner, id.as_str()))
+                    .cloned()
+                    .unwrap_or_default(),
+                _ => child
+                    .pid
+                    .and_then(|pid| processes.get(&pid))
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+            child.model = own.model;
+            child.effort = own.effort;
+            let descendant_owner = match &child.kind {
+                ChildKind::Session(Agent::Claude)
+                | ChildKind::UnderShell(Agent::Claude)
+                | ChildKind::Direct(Agent::Claude)
+                | ChildKind::Detached(Agent::Claude) => child.pid.unwrap_or(owner),
+                _ => owner,
+            };
+            self.attach_child_models(descendants, descendant_owner, processes, subagents);
+            children = siblings;
+        }
     }
 
     /// Read the active subagents and their transcript activity.
@@ -702,7 +853,7 @@ impl LocalScanner {
                 };
                 let run = runs.get(id).unwrap_or(&WorkerRun::Inactive);
                 let read = self.rollouts.thread(id);
-                if let Some(read) = read {
+                if let ThreadRollout::Retained(read) = read {
                     let prompt = read.first_prompt.text();
                     let resolved =
                         self.worker_names
@@ -776,7 +927,7 @@ impl LocalScanner {
             )
             .collect();
         for id in ids {
-            if let Some(read) = self.rollouts.thread(id) {
+            if let ThreadRollout::Retained(read) = self.rollouts.thread(id) {
                 for directory in
                     self.worker_names
                         .directories(id, read.first_prompt.text(), &self.session_roots)
@@ -803,10 +954,11 @@ impl LocalScanner {
                     worktree,
                 }) = activities.get(id)
                 {
-                    let short = self
-                        .rollouts
-                        .thread(id)
-                        .and_then(|read| read.worktree.seat_prefix())
+                    let prefix = match self.rollouts.thread(id) {
+                        ThreadRollout::Retained(read) => read.worktree.seat_prefix(),
+                        ThreadRollout::NotRetained => None,
+                    };
+                    let short = prefix
                         .or_else(|| worktree.seat_prefix())
                         .and_then(|prefix| seat.strip_prefix(&format!("{prefix}-")))
                         .unwrap_or(seat);
@@ -1442,7 +1594,12 @@ fn app_server_threads(
         })
         .filter(|(_, _, ids)| !ids.is_empty())
         .collect();
-    thread_rows.retain_homes(by_home.keys());
+    let live_homes: HashSet<_> = processes
+        .iter()
+        .filter(|process| process.is_codex())
+        .filter_map(|process| codex::session_home(process, home))
+        .collect();
+    thread_rows.retain_homes(live_homes.iter());
     let named: HashMap<_, _> = by_home
         .into_iter()
         .map(|(codex_home, ids)| {
@@ -1465,6 +1622,7 @@ fn app_server_threads(
                         },
                     );
                     let read = rollouts.read(&rollout);
+                    rollouts.read_model(&rollout);
                     let service_tier = tier::requested(Some(read.clone()), &[], pacer, started);
                     ThreadEntry {
                         activity: read.activity(),
@@ -2252,6 +2410,8 @@ mod tests {
     use crate::census::SessionIdentity;
     use crate::census::StaffRowNames;
     use crate::census::herdr::HerdrNames;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
 
     #[test]
     fn idle_verification_arguments_are_checked_once_per_process() {
@@ -2533,6 +2693,7 @@ mod tests {
             codex_start_window:  crate::config::CodexStartWindow::default(),
             herdr_probe_wait:    HerdrProbeWait::default(),
             transcript_activity: HashMap::new(),
+            transcript_models:   super::transcript::TranscriptModels::default(),
             subagent_activity:   HashMap::new(),
             subagent_reads:      SubagentReads::default(),
             worker_names:        WorkerNames::default(),
@@ -2627,6 +2788,8 @@ mod tests {
     /// A Claude Code row.
     fn claude_row(pid: u32, name: &str, started: u64) -> AgentRow {
         AgentRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             staff_names: StaffRowNames::default(),
             agent: Agent::Claude,
             role_fallback: RoleFallback::None,
