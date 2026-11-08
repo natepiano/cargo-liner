@@ -1122,37 +1122,23 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 ### Phase 69 — Accounts view counts match the accounts board  · status: done
 
-**Depends on:** none; runs beside Phase 21, after it on `crates/cargo-handler/CHANGELOG.md`.
+#### As-built
 
-#### Work Order
-
-**Goal:** cargo-handler's accounts view shows the same role counts as the accounts board: busy, idle, paused, exited and total, with no shell column.
-
-**Source:** the user, relayed by accounts-unit and the showrunner, 2026-11-08: cargo-handler's accounts view must match the accounts board (unit-board, since `~/.claude` 4c41f70b8).
-
-**Constraints:**
-- The source is `accounts.py status --json --stored`. Each role count is `{"busy": N, "idle": N, "paused": N, "exited": N, "total": N}`. Exited units and showrunners count on their selected role account. Checked live 2026-11-08: the stored answer has no `shell` key, so today the shell column shows no reading and busy plus idle is less than total.
-- Field questions go to accounts-unit, through the director.
-- Keep the stored-account read off the frame thread (`census/accounts.rs` ≈320).
-- `theme/mod.rs` `Shell` is the session-row shell state. It is not the accounts column. Do not change it.
-
-**Spec:**
-1. `RoleSessionCounts` (`census/accounts.rs` ≈58) carries `busy`, `idle`, `paused`, `exited` and `total`, all required `u64`. Remove `shell` and its `Reading`. `checked_add` sums all five.
-2. `RoleCountsWire` (≈160) requires the five keys and accepts no `shell`. A row with a missing key is rejected at the wire boundary as the current code rejects a missing `busy`.
-3. `AccountsColumn` (`sort.rs` ≈173): remove `Shell`; add `Paused` and `Exited` after `Idle`, in the board's order: busy, idle, paused, exited, total. Headers `paused` and `exited`. Sorting, the total row and column fitting cover the new columns.
-4. No sort migration: `AccountsSort` is never saved (director check, 2026-11-08), so removing `Shell` changes no saved state.
-5. Tests under 1 s: the wire shape with all five keys; a missing key rejected; the total row sums paused and exited; sorting by each new column; the header order. Update the existing fixtures to the new shape.
-6. CHANGELOG: one Changed line in cargo-handler.
+- The accounts view shows busy, idle, paused, exited and total for each account and role, in the accounts board's order, with no shell column. The source is `accounts.py status --json --stored`, read off the frame thread.
+- `RoleSessionCounts` (`census/accounts.rs`) carries the five counts as required `u64`. `checked_add(&self, &Self) -> Result<Self, RoleCountOverflow>` sums them; `From<Result<RoleSessionCounts, RoleCountOverflow>> for Reading<RoleSessionCounts>` turns an overflow into no reading, and `summed_counts` (`summary/accounts.rs`) folds with it.
+- `RoleCountsWire` requires the five keys and accepts other new keys. A `shell` key is rejected through `RetiredShellAbsent`, whose `Deserialize` always errors.
+- `AccountsColumn` (`sort.rs`) has `Paused` and `Exited` after `Idle`; sorting, the total row and column fitting cover them.
 
 **Files:**
-- `crates/cargo-handler/src/census/accounts.rs`, `crates/cargo-handler/src/census/accounts_wire_tests.rs`
-- `crates/cargo-handler/src/sort.rs`
-- `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`
-- `crates/cargo-handler/src/footer_colors/account_seed_tests.rs` — fixture shape only
-- `crates/cargo-handler/src/render/layout_stability_tests.rs`, `crates/cargo-handler/src/render/accounts_grid_tests.rs`, `crates/cargo-handler/src/render/word_click_tests.rs` — fixture shape only
-- `crates/cargo-handler/CHANGELOG.md` — after Phase 21
+- `crates/cargo-handler/src/census/accounts.rs` — wire and domain role counts
+- `crates/cargo-handler/src/sort.rs` — `AccountsColumn`
+- `crates/cargo-handler/src/summary/accounts.rs` — accounts table, total row, `summed_counts`
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a framed shot of the accounts view next to the accounts board, read from the same stored answer, with equal counts for each account and role. The checkpoint carries `Change-Review: cargo-handler's accounts view shows busy, idle, paused, exited and total like the accounts board | open the accounts view beside the accounts board and compare the counts for each role`.
+**Gotchas:**
+- A whole one-line summary needs 90 columns; narrower terminals use the stacked layout. Tests keep the 80, 56 and 60 column cases beside the 90, 64 and 84 column cases.
+- `theme/mod.rs` `Shell` is the session-row shell state, not an accounts column.
+
+**Ruled out:** a saved-sort migration — `AccountsSort` is never saved.
 
 ### Phase 70 — A click anywhere on an expandable row opens or closes it  · status: todo
 
@@ -1190,6 +1176,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/cargo-handler/src/render/painted_surface.rs`, `crates/cargo-handler/src/render/pinned_accounts_tests.rs`
 - `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs` — after the Phase 21 checkpoint
 - `crates/cargo-handler/CHANGELOG.md` — after Phases 21 and 69
+
+**Workers:** 1 writer. It owns the listed implementation, fixtures, tests and registrations.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: two framed shots of a cargo-handler the writer started, before and after a press on the body of a closed row away from its marker, with the row open in the second shot. The checkpoint carries `Change-Review: cargo-handler opens or closes a row on a click anywhere on that row, as the cargo-port project list does | in cargo-handler, click the text of a row that shows ▶ or ▼, away from the marker, and see it open or close`.
 
@@ -1229,6 +1217,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/cargo-handler/src/census/scan.rs` — after the Phase 21 checkpoint
 - `crates/cargo-handler/CHANGELOG.md` — after Phases 21, 69 and 70
 
+**Workers:** 1 writer. It owns the listed implementation, fixtures, tests and registrations.
+
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: a framed capture from a cargo-handler the writer started, showing a pane worker row that says `waiting` during a detached run that is not a `verify.sh` run, and a worker that had no row now has its row. The checkpoint carries `Change-Review: a Codex pane worker shows waiting during every detached run, and a worker with a live run always has its row | during a unit's detached package check, find its worker row in cargo-handler: it says waiting, with no separate running dispatch row beside it`.
 
 ### Phase 72 — A compacting session says compacting  · status: todo
@@ -1247,20 +1237,28 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - Find a signal that is present while the compaction runs, for each family, on real sessions, and state it before you change code. Leads: the Codex app-server context-compaction item events, and the Claude `PreCompact` hook. A compaction that starts and ends between two scans needs no `compacting` frame.
 - Read only. Never type into, signal or stop a session that you did not start. Copy the transcript lines you need into fixtures.
 - No new check of your own design.
+- The probe report crosses machines with different builds. `AgentActivity` deserialization (`census/activity.rs` ≈167) rejects an unknown `active` value, so the whole probe report fails on an older receiver. Keep the schema-3 vocabulary at the wire boundary, as `census/probe.rs` does for task and child kinds.
+- A live detached run sets the worker row's activity in `census/scan.rs` (≈860, after the transcript read). Phase 71 makes that row say `waiting` or the step name.
 
 **Spec:**
 1. State the start and end signal for each family in the summary, with the file and line where cargo-handler reads it.
 2. Add `Activity::Compacting`, with the status word `compacting` and the busy color of `thinking`.
 3. A row says `compacting` from the start signal to the end signal. After the end, the row follows the next transcript line as today.
 4. A turn that is not a compaction keeps today's words.
-5. Tests under 1 s from captured fixtures: a Claude compaction and a Codex compaction each draw `compacting` while open and leave it at the end; an ordinary turn start still draws `thinking`. Each red before its fix.
-6. CHANGELOG: one Added line in cargo-handler.
+5. `compacting` wins over a live run's `waiting` or step name, because the session itself is compacting. After the compaction ends, the run's word returns.
+6. Probe wire: `active` stays `thinking` for a compacting row, and a defaulted compaction extension field carries the compaction. An older receiver shows `thinking`; a current receiver shows `compacting`.
+7. Tests under 1 s from captured fixtures: a Claude compaction and a Codex compaction each draw `compacting` while open and leave it at the end; an ordinary turn start still draws `thinking`; a compaction during a live run draws `compacting`; a compacting probe row decodes as `thinking` without the extension and as `compacting` with it. Each red before its fix.
+8. CHANGELOG: one Added line in cargo-handler.
 
 **Files:**
 - `crates/cargo-handler/src/census/activity.rs`, `crates/cargo-handler/src/census/activity_regression_tests.rs`
 - `crates/cargo-handler/src/census/fixtures/` — new compaction fixtures
 - `crates/cargo-handler/src/census/codex.rs`, `crates/cargo-handler/src/census/tier.rs` — only where the start signal is read; name the file in the summary before its edit
+- `crates/cargo-handler/src/census/probe.rs` — the compaction extension field and its compatibility tests
+- `crates/cargo-handler/src/census/scan.rs` — the run-activity precedence, after the Phase 71 checkpoint
 - `crates/cargo-handler/CHANGELOG.md` — after Phases 21, 69, 70 and 71
+
+**Workers:** 1 writer. It owns the listed implementation, fixtures, tests and registrations.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: a framed capture from a cargo-handler the writer started, showing a session row that says `compacting` during a compaction of a session the writer started. The checkpoint carries `Change-Review: a session that compacts its conversation says compacting, not thinking | in cargo-handler, find a session while it compacts: its row says compacting until the compaction ends`.
 
@@ -1288,7 +1286,9 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 
 **Files:**
 - `crates/cargo-handler/src/render/word_contrast_tests.rs`, `crates/cargo-handler/src/render/word_click_tests.rs`
-- `crates/cargo-handler/src/render/painted_surface.rs` — it reads `census::unix_now()` at line 110 for the frame; edit it only when no test file can set the time, and say so in the summary before the edit
+- `crates/cargo-handler/src/render/mod.rs` — use `draw_at_for_test(frame, app, keymap, now)` (≈144) from the test helpers; keep production code unchanged. The `census::unix_now()` read in `render/painted_surface.rs` (≈110) belongs to `tree_pressed`, not to the frame.
+
+**Workers:** 1 writer. It owns the listed implementation, fixtures, tests and registrations.
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Test-only change: no CHANGELOG line and no Change-Review row.
 
@@ -1941,7 +1941,7 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 ### Phase 57e — Worker roles come from the staff file  · status: todo
 
-**Depends on:** Phase 42, Phase 57c, Phase 62 and Phase 67; models 3n on `~/.claude` main supplies each worker's staff role.
+**Depends on:** Phase 42, Phase 57c, Phase 62, Phase 67, Phase 21, Phase 71 and Phase 72 (`census/activity.rs`); models 3n on `~/.claude` main supplies each worker's staff role.
 
 #### Work Order
 
@@ -1952,6 +1952,8 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 **Constraints from prior phases:**
 - Phase 67: placement accepts Codex managers (`census/placement.rs` ≈261), but `read_worker_runs` (`census/scan.rs` ≈747) still limits directors to Claude. Reuse the Phase 67 pane placement, add a detached-run regression under a Codex director, and keep the Phase 67 pane-worker tests in `census/pane_worker_placement_tests.rs` when worker-role publication changes.
 - Phase 42: `DispatchPairing` (`census/placement.rs` ≈159) joins a shell to its exact worker in one final tile through `DispatchPairing::join` (≈171), and `resolve_dispatches` (≈300) builds it. Its fixture is `census/fixtures/dispatch_pairing.json`. Its tests are in `census/worker_dispatch/tests.rs`, `agent_cell/tests/tree_tests.rs`, `census/scan/activity_scan_tests.rs` and `census/hierarchy_file_tests.rs`. Spec 2 changes the identities and keeps this behavior.
+- Phase 21: Astra worker membership comes from checked staff rows (`AstraMembership` in `census/hierarchy.rs`, `SessionIdentity::with_astra` in `census/scan.rs`). Keep it and its tests in `census/astra_role_tests.rs` when worker-role publication changes.
+- Phase 71: a live run record that names a pane worker sets that worker's row to `waiting` or the step name, and folds the run's processes into that row. Keep its captured pane-run regressions in `census/activity_regression_tests.rs` and `census/worker_dispatch/tests.rs` green.
 - Phase 64: `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈414). `scan_staged` stays nonblocking.
 
 **Spec:**
