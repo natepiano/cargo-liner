@@ -1139,8 +1139,8 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 1. `RoleSessionCounts` (`census/accounts.rs` ≈58) carries `busy`, `idle`, `paused`, `exited` and `total`, all required `u64`. Remove `shell` and its `Reading`. `checked_add` sums all five.
 2. `RoleCountsWire` (≈160) requires the five keys and accepts no `shell`. A row with a missing key is rejected at the wire boundary as the current code rejects a missing `busy`.
 3. `AccountsColumn` (`sort.rs` ≈173): remove `Shell`; add `Paused` and `Exited` after `Idle`, in the board's order: busy, idle, paused, exited, total. Headers `paused` and `exited`. Sorting, the total row and column fitting cover the new columns.
-4. A saved sort that names the old shell column loads as the default sort. It does not fail the load.
-5. Tests under 1 s: the wire shape with all five keys; a missing key rejected; the total row sums paused and exited; sorting by each new column; the header order; an old saved shell sort. Update the existing fixtures to the new shape.
+4. No sort migration: `AccountsSort` is never saved (director check, 2026-11-08), so removing `Shell` changes no saved state.
+5. Tests under 1 s: the wire shape with all five keys; a missing key rejected; the total row sums paused and exited; sorting by each new column; the header order. Update the existing fixtures to the new shape.
 6. CHANGELOG: one Changed line in cargo-handler.
 
 **Files:**
@@ -1148,9 +1148,48 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - `crates/cargo-handler/src/sort.rs`
 - `crates/cargo-handler/src/summary/accounts.rs`, `crates/cargo-handler/src/summary/accounts_tests.rs`, `crates/cargo-handler/src/summary/accounts_header_sort_tests.rs`
 - `crates/cargo-handler/src/footer_colors/account_seed_tests.rs` — fixture shape only
+- `crates/cargo-handler/src/render/layout_stability_tests.rs`, `crates/cargo-handler/src/render/accounts_grid_tests.rs`, `crates/cargo-handler/src/render/word_click_tests.rs` — fixture shape only
 - `crates/cargo-handler/CHANGELOG.md` — after Phase 21
 
 **Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live: a framed shot of the accounts view next to the accounts board, read from the same stored answer, with equal counts for each account and role. The checkpoint carries `Change-Review: cargo-handler's accounts view shows busy, idle, paused, exited and total like the accounts board | open the accounts view beside the accounts board and compare the counts for each role`.
+
+### Phase 70 — A click anywhere on an expandable row opens or closes it  · status: todo
+
+**Depends on:** none; runs beside Phases 21 and 69. `agent_cell.rs`, `render/mod.rs` and `crates/cargo-handler/CHANGELOG.md` wait for the Phase 21 checkpoint.
+
+#### Work Order
+
+**Goal:** a left press anywhere on an expandable row opens or closes it, in cargo-handler as in the cargo-port project list today. One shared rule in tui_pane decides it.
+
+**Source:** the user, relayed by the showrunner, 2026-11-08: "when will handler deliver mouse clicking on expand/collapse - sharing that code with cargo port i would expect because that already works in the cargo port project list - sharing through tui_pane of course?"
+
+**Constraints:**
+- Phase 63 opens a row only on a press on its `▶`/`▼` marker cells (`MarkerCells`, `interaction.rs` ≈297). The cargo-port project list toggles on a press anywhere on the row (`cargo-port/src/tui/interaction.rs` ≈25 and ≈44, through `ProjectList::toggle_expand_for_row`).
+- Each app keeps its own row hit test: which row is under the pointer. The shared piece is the rule after it: a press on a row toggles that row when the row is a branch, and does nothing more for a leaf.
+- Both apps already implement `tui_pane::ExpansionTree` (`cargo-handler/src/expansion.rs` ≈251, `cargo-port/src/tui/project_list/list.rs` ≈1543). Build the shared rule on that trait, beside `ExpansionModel::collapse_row`.
+- Keep the tui_pane API small: one method on `ExpansionModel` and at most one new public result type. No new trait.
+- Do not edit any cargo-port file. The port unit moves cargo-port onto the shared rule after its Phase 4p.
+- A terminal focus-gain never toggles a row. cargo-port's `ClickMode::FocusOnly` is the model.
+- A press still selects the row, as now. One press resolves once.
+- Do not edit `agent_cell.rs` or `render/mod.rs` until the director says the Phase 21 checkpoint is in. Phase 21 owns both now.
+
+**Spec:**
+1. tui_pane: add the shared row-press rule to `ExpansionModel` in `crates/tui_pane/src/expansion.rs`. It takes the tree and the pressed row. A branch row toggles and the result names the new state. A leaf row changes nothing and the result says so. Unit tests in tui_pane cover a branch that opens, a branch that closes, a leaf, and a branch open by the depth rule.
+2. cargo-handler: a left press on any line of an expandable row toggles that row through the shared rule. Delete `MarkerCells`, the marker clip (`SurfaceSelection::clip_markers`) and the marker columns (`agent_cell::tree_marker_columns`), when nothing else reads them. The `▶`/`▼` glyphs stay drawn.
+3. cargo-handler: `RowClick` keeps one resolution per press. A press on a leaf selects it. A press outside the rows misses.
+4. Tests under 1 s: a press on the body of a branch row toggles it; a press on a continuation line of a wrapped branch row toggles it; a press on a leaf only selects; a second press closes it again. Replace the marker-cell tests.
+5. Report the exact call the port unit uses in cargo-port, in the shape `ProjectList` already has: the method, its arguments and the result it matches.
+6. CHANGELOG: one Changed line in cargo-handler, and one Added line in tui_pane.
+
+**Files:**
+- `crates/tui_pane/src/expansion.rs`, `crates/tui_pane/src/lib.rs`, `crates/tui_pane/CHANGELOG.md`
+- `crates/cargo-handler/src/interaction.rs`
+- `crates/cargo-handler/src/expansion.rs`, `crates/cargo-handler/src/expansion_tests.rs`
+- `crates/cargo-handler/src/render/painted_surface.rs`, `crates/cargo-handler/src/render/pinned_accounts_tests.rs`
+- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs` — after the Phase 21 checkpoint
+- `crates/cargo-handler/CHANGELOG.md` — after Phases 21 and 69
+
+**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: two framed shots of a cargo-handler the writer started, before and after a press on the body of a closed row away from its marker, with the row open in the second shot. The checkpoint carries `Change-Review: cargo-handler opens or closes a row on a click anywhere on that row, as the cargo-port project list does | in cargo-handler, click the text of a row that shows ▶ or ▼, away from the marker, and see it open or close`.
 
 ### Phase 67 — Pane Codex workers show under their unit  · status: done
 
