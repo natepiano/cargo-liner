@@ -160,6 +160,13 @@ pub enum ScanIndicator {
     Hidden,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum HintFit {
+    #[default]
+    WholeGroups,
+    IndividualHints,
+}
+
 /// Dynamic status-line data supplied by the embedding app.
 pub struct StatusLine<'a, A: Action> {
     /// Seconds to show in the framework-owned uptime segment.
@@ -171,6 +178,7 @@ pub struct StatusLine<'a, A: Action> {
     pub notes:          &'a [StatusLineNote],
     /// Ordered global slots for the right side of the status line.
     pub globals:        &'a [StatusLineGlobal<A>],
+    hint_fit:           HintFit,
 }
 
 struct StatusLineItems {
@@ -180,6 +188,7 @@ struct StatusLineItems {
     notes:      Vec<Vec<Span<'static>>>,
     globals:    Vec<Span<'static>>,
     with_hints: Vec<Span<'static>>,
+    hint_fit:   HintFit,
 }
 
 impl<'a, A: Action> StatusLine<'a, A> {
@@ -196,7 +205,18 @@ impl<'a, A: Action> StatusLine<'a, A> {
             scan_indicator,
             notes,
             globals,
+            hint_fit: HintFit::WholeGroups,
         }
+    }
+
+    /// Fit whole hints individually when this row has notes.
+    ///
+    /// Remove hints from the right and keep three blank cells before notes.
+    /// Rows without notes keep complete hint groups.
+    #[must_use]
+    pub const fn with_individual_note_hints(mut self) -> Self {
+        self.hint_fit = HintFit::IndividualHints;
+        self
     }
 }
 
@@ -262,6 +282,7 @@ pub fn render<Ctx, G>(
         notes: note_items,
         globals: global_spans,
         with_hints,
+        hint_fit: status.hint_fit,
     };
     render_sections(frame, area, palette, items);
 }
@@ -359,7 +380,11 @@ fn render_sections(
     palette: &BarPalette,
     mut items: StatusLineItems,
 ) {
-    let has_notes = !items.notes.is_empty();
+    let hint_fit = if items.notes.is_empty() {
+        HintFit::WholeGroups
+    } else {
+        items.hint_fit
+    };
     let total_width = area.width as usize;
     let right_spans = fitted_right_spans(total_width, &mut items);
     let right_width = right_spans.iter().map(Span::width).sum::<usize>();
@@ -368,7 +393,7 @@ fn render_sections(
     } else {
         total_width.saturating_sub(right_width + 1)
     };
-    let right_gap = if has_notes {
+    let right_gap = if hint_fit == HintFit::IndividualHints {
         let leading_blank = right_spans
             .iter()
             .flat_map(|span| span.content.chars())
@@ -383,7 +408,7 @@ fn render_sections(
     } else {
         right_start.saturating_sub(right_gap)
     };
-    let left_spans = fitted_left_spans(left_room, &mut items);
+    let left_spans = fitted_left_spans(left_room, &mut items, hint_fit);
     let left_width = left_spans.iter().map(Span::width).sum::<usize>();
 
     if !left_spans.is_empty() {
@@ -397,19 +422,16 @@ fn render_sections(
     }
 
     if !items.center.is_empty() {
-        // Right boundary the center text may not cross. Without a right
-        // region, use the full bar width. With notes, reserve the three-cell
-        // gap. Otherwise, stop where the right region starts. Its keys must
-        // not paint over center labels.
-        let right_boundary = if has_notes && !right_spans.is_empty() {
+        // Reserve the note gap when the caller selects individual hints.
+        let right_boundary = if hint_fit == HintFit::IndividualHints && !right_spans.is_empty() {
             right_start.saturating_sub(right_gap)
         } else {
             right_start
         };
-        // Start at the natural centre, shifted left when the right side
-        // needs the room. The left item sets the earliest possible start;
-        // without a whole interval between both sides, the centre stays off.
-        fit_hint_prefix(&mut items.center, right_boundary.saturating_sub(left_width));
+        // Other rows keep the complete hint group.
+        if hint_fit == HintFit::IndividualHints {
+            fit_hint_prefix(&mut items.center, right_boundary.saturating_sub(left_width));
+        }
         let center_width = items.center.iter().map(Span::width).sum::<usize>();
         let centered = total_width.saturating_sub(center_width) / 2;
         let shifted = centered.min(right_boundary.saturating_sub(center_width));
@@ -443,12 +465,21 @@ fn render_sections(
 }
 
 /// Left-side items that fit before the right-side region.
-fn fitted_left_spans(room: usize, items: &mut StatusLineItems) -> Vec<Span<'static>> {
+fn fitted_left_spans(
+    room: usize,
+    items: &mut StatusLineItems,
+    hint_fit: HintFit,
+) -> Vec<Span<'static>> {
     let uptime_width = items.uptime.iter().map(Span::width).sum::<usize>();
     if uptime_width > room {
         return Vec::new();
     }
-    fit_hint_prefix(&mut items.navigation, room.saturating_sub(uptime_width));
+    let navigation_room = room.saturating_sub(uptime_width);
+    if hint_fit == HintFit::IndividualHints {
+        fit_hint_prefix(&mut items.navigation, navigation_room);
+    } else if items.navigation.iter().map(Span::width).sum::<usize>() > navigation_room {
+        return std::mem::take(&mut items.uptime);
+    }
     std::mem::take(&mut items.uptime)
         .into_iter()
         .chain(std::mem::take(&mut items.navigation))
@@ -552,6 +583,7 @@ mod tests {
                 notes,
                 globals,
                 with_hints: Vec::new(),
+                hint_fit: HintFit::WholeGroups,
             };
             render_sections(
                 frame,

@@ -858,7 +858,8 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         },
         &notes,
         &globals,
-    );
+    )
+    .with_individual_note_hints();
     render_framework_status_line::<App, AppGlobalAction>(
         frame,
         area,
