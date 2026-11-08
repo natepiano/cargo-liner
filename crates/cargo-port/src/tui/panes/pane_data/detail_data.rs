@@ -21,6 +21,12 @@ use super::TargetsData;
 use super::VendoredPackage;
 use super::Visibility;
 use super::Workspace;
+use super::constants::CRATES_IO_ALPHA_LABEL;
+use super::constants::CRATES_IO_BETA_LABEL;
+use super::constants::CRATES_IO_DOWNLOADS_LABEL;
+use super::constants::CRATES_IO_PRE_LABEL;
+use super::constants::CRATES_IO_RC_LABEL;
+use super::constants::CRATES_IO_VERSION_LABEL;
 use super::git;
 use super::git_data;
 use super::git_data::GitData;
@@ -42,6 +48,7 @@ use crate::project::DiskMeasurement;
 use crate::project::ProjectFields;
 use crate::scan;
 use crate::tui::panes::DescriptionBlock;
+use crate::tui::panes::DescriptionState;
 use crate::tui::panes::targets;
 use crate::tui::project_list::ProjectPathLookup::Found;
 use crate::tui::project_list::ProjectPathLookup::StaleRoute;
@@ -127,24 +134,40 @@ fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_
         git::git_lower_content_height(&data.git, git_data::git_fields_from_data(&data.git).len());
 
     let package_desc = description_natural_rows(
-        data.package.description.as_deref(),
+        &data.package.description,
         package_width,
-        EmptyDescriptionBehavior::ShowPlaceholder,
+        if matches!(
+            data.git.description,
+            crate::tui::panes::DescriptionState::KnownEmpty
+        ) {
+            EmptyDescriptionBehavior::ShowPlaceholder
+        } else {
+            EmptyDescriptionBehavior::RenderNothing
+        },
     );
     let git_desc = description_natural_rows(
-        data.git.description.as_deref(),
+        &data.git.description,
         git_width,
         EmptyDescriptionBehavior::RenderNothing,
     );
-    // Both panes sync their description blocks to the taller of the two, so a
-    // pane with the shorter description still reserves the shared height.
-    let synced_desc = package_desc.max(git_desc);
+    // Only real text sets a shared height. Unknown and empty descriptions keep their own height.
+    let synced_desc = if matches!(
+        data.package.description,
+        crate::tui::panes::DescriptionState::Known(_)
+    ) && matches!(
+        data.git.description,
+        crate::tui::panes::DescriptionState::Known(_)
+    ) {
+        package_desc.max(git_desc)
+    } else {
+        0
+    };
 
     // Both panes compute their rendered height via the same helpers the
     // render path feeds to each viewport, so the measured row height and the
     // per-pane scroll pager agree on what renders. The Package About section
-    // always renders (a placeholder when the crate has no description); the Git
-    // About section renders only when the repo has a description of its own.
+    // renders text or a known-empty message. Unknown descriptions add no rows.
+    // The Git About section renders only the repository's real description.
     let error_height = scan::cargo_metadata_roots_for_item(item)
         .iter()
         .map(|root| {
@@ -157,8 +180,9 @@ fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_
         .max()
         .unwrap_or(0);
     let package_total =
-        package::package_content_height(synced_desc, package_lower).saturating_add(error_height);
-    let git_total = git::git_content_height(synced_desc, git_desc > 0, git_lower);
+        package::package_content_height(package_desc.max(synced_desc), package_lower)
+            .saturating_add(error_height);
+    let git_total = git::git_content_height(git_desc.max(synced_desc), git_desc > 0, git_lower);
 
     u16::try_from(package_total.max(git_total)).unwrap_or(u16::MAX)
 }
@@ -168,7 +192,7 @@ fn project_top_inner_height(app: &App, item: &RootItem, package_width: u16, git_
 /// the measured height matches what renders; a tall synthetic area lifts the
 /// height cap so the full wrapped text is counted.
 fn description_natural_rows(
-    text: Option<&str>,
+    text: &DescriptionState,
     pane_width: u16,
     behavior: super::EmptyDescriptionBehavior,
 ) -> usize {
@@ -178,7 +202,7 @@ fn description_natural_rows(
         width:  pane_width,
         height: u16::MAX,
     };
-    usize::from(DescriptionBlock::for_pane(text, area, behavior).natural_sync_height())
+    usize::from(DescriptionBlock::for_pane(text, area, behavior).natural_height())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -313,7 +337,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             primary_section:          None,
             path:                     display_path,
             version:                  PackageVersion::Submodule(submodule.commit.clone()),
-            description:              submodule.url.clone(),
+            description:              DescriptionState::from(submodule.url.clone()),
             crates_io_rows:           Vec::new(),
             types:                    None,
             disk:                     submodule.project_info.disk,
@@ -454,7 +478,7 @@ fn build_pane_data_non_rust(
     let mut counts = StructureCounts::default();
     counts.add_non_rust(nr);
 
-    build_pane_data_common(
+    let mut data = build_pane_data_common(
         app,
         PaneDataSource {
             abs_path,
@@ -469,7 +493,9 @@ fn build_pane_data_non_rust(
             fallback_type: None,
             title: "Project".to_string(),
         },
-    )
+    );
+    data.package.description = DescriptionState::KnownEmpty;
+    data
 }
 
 pub(super) struct PaneDataSource<'a> {
@@ -549,7 +575,7 @@ pub(super) struct ManifestFields {
     homepage:    Option<String>,
     repository:  Option<String>,
     version:     Option<String>,
-    description: Option<String>,
+    description: DescriptionState,
 }
 
 fn manifest_fields_from(package_record: Option<&PackageRecord>) -> ManifestFields {
@@ -794,6 +820,7 @@ pub(super) fn collect_metadata_fields(
     cargo: Option<&Cargo>,
     fallback_type: Option<ProjectType>,
 ) -> MetadataFields {
+    let is_workspace = matches!(fallback_type, Some(ProjectType::Workspace));
     // `None` for non-Rust projects (no cargo). For Rust projects the
     // resolved target kinds, falling back to the project's own
     // identity (e.g. `Workspace`) when metadata has not yet supplied
@@ -811,7 +838,19 @@ pub(super) fn collect_metadata_fields(
     let t_meta = std::time::Instant::now();
     let package_record = lookup_package_record(app, abs_path_owned);
     let metadata_ms = tui_pane::perf_log_ms(t_meta.elapsed().as_millis());
-    let manifest = manifest_fields_from(package_record.as_ref());
+    let mut manifest = manifest_fields_from(package_record.as_ref());
+    if matches!(
+        manifest.description,
+        crate::tui::panes::DescriptionState::Pending
+    ) && is_workspace
+        && app
+            .scan
+            .metadata_store_handle()
+            .lock()
+            .is_ok_and(|store| store.get(abs_path_owned).is_some())
+    {
+        manifest.description = DescriptionState::KnownEmpty;
+    }
 
     let t_out_of_tree = std::time::Instant::now();
     let out_of_tree_target_bytes =
@@ -831,13 +870,18 @@ pub(super) fn collect_metadata_fields(
 pub(super) fn build_crates_io_rows(section: &CratesIoSection) -> Vec<(&'static str, String)> {
     match section {
         CratesIoSection::NotPublishable | CratesIoSection::AwaitingRelease => Vec::new(),
-        CratesIoSection::Unreachable => vec![("Version", CRATES_IO_UNREACHABLE.to_string())],
+        CratesIoSection::Unreachable => {
+            vec![(CRATES_IO_VERSION_LABEL, CRATES_IO_UNREACHABLE.to_string())]
+        },
         CratesIoSection::Released(release) => {
-            let mut rows = vec![("Version", release.version.clone())];
+            let mut rows = vec![(CRATES_IO_VERSION_LABEL, release.version.clone())];
             if let Some(prerelease) = &release.prerelease {
                 rows.push((prerelease_label(prerelease), prerelease.clone()));
             }
-            rows.push(("Downloads", tui_pane::format_number(release.downloads)));
+            rows.push((
+                CRATES_IO_DOWNLOADS_LABEL,
+                tui_pane::format_number(release.downloads),
+            ));
             rows
         },
     }
@@ -853,10 +897,10 @@ pub(super) fn prerelease_label(prerelease: &str) -> &'static str {
         .next()
         .unwrap_or_default();
     match token {
-        "rc" => "rc",
-        "beta" => "beta",
-        "alpha" => "alpha",
-        _ => "pre",
+        CRATES_IO_RC_LABEL => CRATES_IO_RC_LABEL,
+        CRATES_IO_BETA_LABEL => CRATES_IO_BETA_LABEL,
+        CRATES_IO_ALPHA_LABEL => CRATES_IO_ALPHA_LABEL,
+        _ => CRATES_IO_PRE_LABEL,
     }
 }
 

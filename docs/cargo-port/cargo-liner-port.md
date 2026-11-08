@@ -606,7 +606,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Ruled out:** cutting target names before Source; right-aligned Package values.
 
-### Phase 4m — Panes keep their layout while data loads  · status: todo
+### Phase 4m — Panes keep their layout while data loads  · status: done
 
 **Depends on:** Phase 4l (both edit `crates/cargo-port/src/tui/panes/package/` and `crates/cargo-port/src/tui/panes/git/`)
 
@@ -677,7 +677,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 **Spec:**
 1. **Targets width and Source cut.** `panes/layout.rs` gives Targets `targets::minimum_width()` (`targets/render.rs:370`). Give Targets the width for its longest target name plus Source and Kind when the window has room, at 95 and 160 columns. When the names still do not fit, Source shrinks to a two-cell floor (one letter and `…`) for every source kind before any target name is cut; this replaces the six-cell floor in `targets/render.rs::compute_layout`, which drops Source below six cells. The Source header cuts the same way (`S…`).
 2. **One blank cell after a cut pane title.** `GridLines::write_overlay` (`crates/tui_pane/src/pane/frame.rs:855`) fits the title. A cut title keeps one blank cell before the corner or a column joint (`Workspace - c… ┐`, `cargo-liner-… ─┬`), as an uncut title does.
-3. **The footer gap.** `crates/tui_pane/src/bar/status_line.rs` lays out the key hints and the notes; `cargo_port_status_line_notes` (`crates/cargo-port/src/tui/render/mod.rs:838`) gives the disk cache note and does not change. Keep a fixed 3-cell gap between the last key hint and a note, the same as the gap between hints. When the row is too narrow, drop key hints from the right before the gap gets smaller. The gap does not change when the note text changes width.
+3. **The footer gap.** `crates/tui_pane/src/bar/status_line.rs` lays out the key hints and the notes; `cargo_port_status_line_notes` (`crates/cargo-port/src/tui/render/mod.rs:838`) gives the disk cache note and does not change. Keep a gap of at least 3 cells between the last key hint and a note, the same as the gap between hints: `render_sections` puts the hint boundary 3 cells before the note (1 cell today). Hints keep their place: left hints stay after Uptime, and centered hints stay centered unless that leaves less than 3 cells, when they shift left to exactly 3 cells. When the row is too narrow, drop key hints from the right before the gap gets smaller. A wider gap stays as it is (the cargo-handler footer keeps its look).
 4. **The on-branch-rows shot (unit director).** The live script adds a scene that shows `CI runs — on branch rows`. This is a shot, not a look change.
 
 **Constraints from prior phases:**

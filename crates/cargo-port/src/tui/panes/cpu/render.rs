@@ -277,16 +277,8 @@ fn metric_line(label: &str, percent: u8, color: Color, width: u16) -> Line<'stat
 /// The CPU pane's box tree: a pinned aggregate row, the scrolling cores band
 /// (the one `Fill` box), the System/User/Idle breakdown (a rule above it), and
 /// the GPU row (a rule above it). Rebuilt each frame from the live core count.
-fn cpu_region(core_count: usize, gpu_rows: GpuRows, inner_height: u16) -> Region {
-    let pinned_rows = CPU_PINNED_HEAD_ROWS + CPU_BREAKDOWN_ROWS + gpu_rows.count() + 2;
-    let band_height = usize::from(inner_height).saturating_sub(pinned_rows);
+fn cpu_region(core_count: usize, gpu_rows: GpuRows) -> Region {
     let cores = Region::rows(core_count, Size::Fill);
-    // Reserve the page mark before the bars when the cores do not fit.
-    let cores = if core_count > band_height && band_height > 0 {
-        cores.footer()
-    } else {
-        cores
-    };
     Region::stack(vec![
         Region::rows(CPU_PINNED_HEAD_ROWS, Size::Fixed),
         cores,
@@ -311,7 +303,6 @@ struct CpuPanelLayout {
     gpu_divider:    Rect,
     gpu:            Rect,
     gpu_rows:       GpuRows,
-    cores_footer:   Rect,
     band_offset:    usize,
 }
 
@@ -325,11 +316,8 @@ impl CpuPanelLayout {
     ) -> Self {
         // `cpu_region(...).place` applies `prior_offset` only to region 1, the core band;
         // the pinned regions never scroll.
-        let placed = cpu_region(core_count, gpu_rows, inner.height).place(
-            inner,
-            cursor_pos,
-            &[0, prior_offset, 0, 0],
-        );
+        let placed =
+            cpu_region(core_count, gpu_rows).place(inner, cursor_pos, &[0, prior_offset, 0, 0]);
         let head = placed[0].content;
         let head_row = |offset: u16| Rect {
             y: head.y.saturating_add(offset),
@@ -354,7 +342,6 @@ impl CpuPanelLayout {
             gpu_divider: placed[3].chrome,
             gpu: placed[3].content,
             gpu_rows,
-            cores_footer: placed[1].footer,
             band_offset: placed[1].scroll_offset,
         }
     }
@@ -756,7 +743,13 @@ pub(super) fn render_cpu_sample_phase(
         color_mode: mode,
     };
     render_cpu_metric_rows(frame, &selection, &mut row_rects, cpu_cfg, usage, &layout);
-    render_cores_affordance(frame, &layout, cursor_pos);
+    if let Some(label) = tui_pane::overflow_affordance_label(
+        area,
+        cores_overflow(&layout, cursor_pos),
+        Style::default().fg(label_color()),
+    ) {
+        chrome.labels.push(label);
+    }
     sync_cpu_pane_state(&mut pane.viewport, inner, &layout);
     pane.set_row_rects(row_rects);
 }
@@ -775,38 +768,19 @@ fn render_cpu_status(
     );
 }
 
-/// Draw the page mark in the body when the cores do not fit.
-/// Draw only an arrow when the mark leaves no room for a bar.
-fn render_cores_affordance(frame: &mut Frame, layout: &CpuPanelLayout, cursor_pos: usize) {
-    let band_visible = layout.band_visible();
-    if band_visible == 0 {
-        if layout.cores_footer.height > 0 && layout.core_count > 0 {
-            frame.render_widget(
-                Paragraph::new(" ▼").style(Style::default().fg(label_color())),
-                layout.cores_footer,
-            );
-        }
-        return;
-    }
-    // `band_cursor` maps `cursor_pos` in [CPU_PINNED_HEAD_ROWS, CPU_PINNED_HEAD_ROWS +
-    // layout.core_count) to its core, otherwise falling back to `layout.band_offset` for the pager
-    // anchor.
+/// Keep the core cursor as the pager anchor when it is inside the core band.
+/// Use the band offset when the cursor is on a pinned row.
+fn cores_overflow(layout: &CpuPanelLayout, cursor_pos: usize) -> ViewportOverflow {
     let band_cursor = cursor_pos
         .checked_sub(CPU_PINNED_HEAD_ROWS)
         .filter(|local| *local < layout.core_count)
         .unwrap_or(layout.band_offset);
-    let overflow = ViewportOverflow::new(
+    ViewportOverflow::new(
         layout.core_count,
         layout.band_offset,
-        band_visible,
+        layout.band_visible().max(1),
         band_cursor,
-    );
-    if let Some(label) = overflow.label() {
-        frame.render_widget(
-            Paragraph::new(format!(" {label}")).style(Style::default().fg(label_color())),
-            layout.cores_footer,
-        );
-    }
+    )
 }
 
 #[cfg(test)]
@@ -827,7 +801,7 @@ mod tests {
     use crate::tui::panes::constants::CPU_CONTENT_WIDTH;
 
     // The metrics GPU section pins 11 rows on macOS, 8 elsewhere. At height
-    // 14 the remaining band reserves one pager row, leaving 2 or 5 core rows.
+    // 14 the remaining band has 3 or 6 core rows. The pager uses the bottom border.
     /// Build a core row with the default config, supplying the macOS-only
     /// cluster argument as unmapped so the bar assertions stay platform-neutral.
     fn bar_line_for_test(core_number: usize, number_width: usize, percent: u8) -> Line<'static> {
@@ -848,8 +822,7 @@ mod tests {
             width:  20,
             height: inner_height,
         };
-        cpu_region(15, GpuRows::Metrics, inner.height).place(inner, cursor, &[0, prior, 0, 0])[1]
-            .scroll_offset
+        cpu_region(15, GpuRows::Metrics).place(inner, cursor, &[0, prior, 0, 0])[1].scroll_offset
     }
 
     #[test]
@@ -898,9 +871,9 @@ mod tests {
         // `cores_offset(14, 14, 0)` places logical cursor 14 (core-band row 12) on the last full
         // page.
         #[cfg(target_os = "macos")]
-        assert_eq!(cores_offset(14, 14, 0), 11);
+        assert_eq!(cores_offset(14, 14, 0), 10);
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(cores_offset(14, 14, 0), 8);
+        assert_eq!(cores_offset(14, 14, 0), 7);
     }
 
     #[test]
@@ -915,9 +888,9 @@ mod tests {
         // `cores_offset(14, 17, 20)` keeps the prior offset for breakdown cursor 17 outside the
         // band, clamped to its last page (15 minus visible core rows).
         #[cfg(target_os = "macos")]
-        assert_eq!(cores_offset(14, 17, 20), 13);
+        assert_eq!(cores_offset(14, 17, 20), 12);
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(cores_offset(14, 17, 20), 10);
+        assert_eq!(cores_offset(14, 17, 20), 9);
     }
 
     #[test]

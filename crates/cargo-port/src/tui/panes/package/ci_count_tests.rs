@@ -10,6 +10,7 @@ use crate::project::ProjectCiInfo;
 use crate::project::RepoInfo;
 use crate::project::WorkflowPresence;
 use crate::tui::panes;
+use crate::tui::panes::DescriptionState;
 use crate::tui::panes::DetailField;
 use crate::tui::panes::PackageData;
 use crate::tui::panes::PackageRow;
@@ -30,6 +31,7 @@ fn ci_counts_keep_labels_and_distinct_github_states_at_narrow_window_widths() ->
             let mut app = test_support::project_app();
             app.framework.color_mode = ColorMode::Colored;
             app.panes.package.set_content(PackageData {
+                description: DescriptionState::KnownEmpty,
                 ci_display: CiDisplay::Runs {
                     ci_status:    Some(CiStatus::Failed),
                     local:        9,
@@ -57,6 +59,7 @@ fn ci_keeps_the_local_label_when_the_column_has_no_next_row() -> anyhow::Result<
         let mut app = test_support::project_app();
         app.framework.color_mode = ColorMode::Colored;
         app.panes.package.set_content(PackageData {
+            description: DescriptionState::KnownEmpty,
             ci_display: CiDisplay::Runs {
                 ci_status:    Some(CiStatus::Failed),
                 local:        9,
@@ -126,6 +129,7 @@ fn known_zero_ci_draws_the_empty_message_while_loading_keeps_both_counts() -> an
                 false,
             );
             app.panes.package.set_content(PackageData {
+                description: DescriptionState::KnownEmpty,
                 ci_display: display,
                 ..PackageData::default()
             });
@@ -156,6 +160,7 @@ fn github_count_moves_left_to_keep_the_margin_at_the_exact_boundary() -> anyhow:
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         ci_display: CiDisplay::Runs {
             ci_status:    Some(CiStatus::Failed),
             local:        9,

@@ -45,6 +45,7 @@ pub(super) use cpu::cpu_required_pane_height;
 pub(super) use data::DetailCacheKey;
 pub(super) use data::DetailCacheState;
 pub(super) use description::DescriptionBlock;
+pub(super) use description::DescriptionState;
 pub(super) use description::EmptyDescriptionBehavior;
 pub(super) use description::SyncedDescriptionHeight;
 pub(super) use description::sync_floor;

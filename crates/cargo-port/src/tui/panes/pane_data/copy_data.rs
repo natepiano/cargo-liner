@@ -214,6 +214,7 @@ mod tests {
     use crate::project::FirstCommit;
     use crate::project::ProjectType;
     use crate::project::ResolvedBranch;
+    use crate::tui::panes::DescriptionState;
     use crate::tui::panes::GitProbe;
     use crate::tui::panes::GithubStars;
     use crate::tui::panes::PackageVersion;
@@ -251,7 +252,7 @@ mod tests {
             primary_section:          None,
             path:                     "~/demo".to_string(),
             version:                  PackageVersion::Manifest("0.1.0".to_string()),
-            description:              None,
+            description:              DescriptionState::KnownEmpty,
             crates_io_rows:           Vec::new(),
             types:                    Some(vec![ProjectType::Library]),
             disk:                     DiskMeasurement::TotalOnly(38_989_922_304),
@@ -278,7 +279,7 @@ mod tests {
             vs_local:           GitProbe::Probed(Comparison::NotCompared),
             local_main_branch:  GitProbe::Probed(ResolvedBranch::NotFound),
             stars:              GithubStars::NotGithub,
-            description:        None,
+            description:        DescriptionState::KnownEmpty,
             inception:          FirstCommit::AwaitingProbe,
             last_commit:        GitProbe::Probed(CommitDate::NoCommits),
             last_fetched:       None,

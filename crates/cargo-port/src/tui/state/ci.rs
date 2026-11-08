@@ -392,6 +392,7 @@ mod tests {
     use ratatui::buffer::Buffer;
 
     use super::*;
+    use crate::project::RepositoryProbe;
 
     fn assert_ci_count_rows(
         buffer: &Buffer,
@@ -451,7 +452,7 @@ mod tests {
             entry
                 .git_repo
                 .get_or_insert_with(Default::default)
-                .repo_info = Some(RepoInfo {
+                .repo_info = RepositoryProbe::Repository(RepoInfo {
                 workflows: WorkflowPresence::Present,
                 ..RepoInfo::default()
             });

@@ -144,6 +144,7 @@ impl App {
             BackgroundMsg::CiRuns { .. }
             | BackgroundMsg::CheckoutInfo { .. }
             | BackgroundMsg::RepoInfo { .. }
+            | BackgroundMsg::NoRepository { .. }
             | BackgroundMsg::Submodules { .. }
             | BackgroundMsg::LintStatus { .. }
             | BackgroundMsg::LintStartupStatus { .. }
@@ -217,6 +218,9 @@ impl App {
             },
             BackgroundMsg::RepoInfo { path, info } => {
                 self.handle_repo_info(path.as_path(), info);
+            },
+            BackgroundMsg::NoRepository { path } => {
+                self.handle_no_repository(path.as_path());
             },
             BackgroundMsg::GitFirstCommit { path, first_commit } => {
                 self.handle_git_first_commit(path.as_path(), first_commit);

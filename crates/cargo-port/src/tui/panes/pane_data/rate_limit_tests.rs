@@ -24,6 +24,7 @@ use crate::project::Package;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::tui::app_render_state::OverlayRenderInputs;
+use crate::tui::panes::DescriptionState;
 use crate::tui::panes::GitData;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::SyncedDescriptionHeight;
@@ -172,6 +173,7 @@ fn narrow_quota_values_stay_beside_their_labels() -> anyhow::Result<()> {
         reset_at: Some(u64::MAX),
     };
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         github_status: AvailabilityStatus::Reachable,
         rate_limit_core: QuotaObservation::Observed(quota(4848)),
         rate_limit_graphql: QuotaObservation::Observed(quota(4902)),
@@ -222,6 +224,7 @@ fn expired_quota_keeps_the_counts_without_a_reset_countdown() -> anyhow::Result<
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         github_status: AvailabilityStatus::Reachable,
         rate_limit_core: QuotaObservation::Observed(RateLimitQuota {
             used:      371,
@@ -247,6 +250,7 @@ fn quota_keeps_its_limit_in_a_ninety_five_column_screen() -> anyhow::Result<()> 
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         github_status: AvailabilityStatus::Reachable,
         rate_limit_core: QuotaObservation::Observed(RateLimitQuota {
             used:      261,
@@ -280,6 +284,7 @@ fn unreachable_quota_rows_draw_only_cached_values() -> anyhow::Result<()> {
         }),
     ] {
         let data = GitData {
+            description: DescriptionState::KnownEmpty,
             github_status: AvailabilityStatus::Unreachable,
             rate_limit_core: cached,
             rate_limit_graphql: cached,
