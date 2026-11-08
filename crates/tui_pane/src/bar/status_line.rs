@@ -16,6 +16,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
 use super::BarPalette;
+use super::constants::STATUS_NOTE_MIN_GAP;
 use super::render as render_bar_regions;
 use super::support;
 use crate::Action;
@@ -358,8 +359,8 @@ fn render_sections(
     palette: &BarPalette,
     mut items: StatusLineItems,
 ) {
+    let has_notes = !items.notes.is_empty();
     let total_width = area.width as usize;
-    let center_width = items.center.iter().map(Span::width).sum::<usize>();
     let right_spans = fitted_right_spans(total_width, &mut items);
     let right_width = right_spans.iter().map(Span::width).sum::<usize>();
     let right_start = if right_spans.is_empty() {
@@ -367,10 +368,20 @@ fn render_sections(
     } else {
         total_width.saturating_sub(right_width + 1)
     };
+    let right_gap = if has_notes {
+        let leading_blank = right_spans
+            .iter()
+            .flat_map(|span| span.content.chars())
+            .take_while(|character| character.is_whitespace())
+            .count();
+        STATUS_NOTE_MIN_GAP.saturating_sub(leading_blank)
+    } else {
+        1
+    };
     let left_room = if right_spans.is_empty() {
         total_width
     } else {
-        right_start.saturating_sub(1)
+        right_start.saturating_sub(right_gap)
     };
     let left_spans = fitted_left_spans(left_room, &mut items);
     let left_width = left_spans.iter().map(Span::width).sum::<usize>();
@@ -387,17 +398,23 @@ fn render_sections(
 
     if !items.center.is_empty() {
         // Right boundary the center text may not cross. Without a right
-        // region it's the full bar width; with one, it's the column the
-        // right region starts at — so the right region's keys never
-        // paint over center labels.
-        let right_boundary = right_start;
+        // region, use the full bar width. With notes, reserve the three-cell
+        // gap. Otherwise, stop where the right region starts. Its keys must
+        // not paint over center labels.
+        let right_boundary = if has_notes && !right_spans.is_empty() {
+            right_start.saturating_sub(right_gap)
+        } else {
+            right_start
+        };
         // Start at the natural centre, shifted left when the right side
         // needs the room. The left item sets the earliest possible start;
         // without a whole interval between both sides, the centre stays off.
+        fit_hint_prefix(&mut items.center, right_boundary.saturating_sub(left_width));
+        let center_width = items.center.iter().map(Span::width).sum::<usize>();
         let centered = total_width.saturating_sub(center_width) / 2;
         let shifted = centered.min(right_boundary.saturating_sub(center_width));
         let center_start = shifted.max(left_width);
-        if center_start.saturating_add(center_width) <= right_boundary {
+        if center_width > 0 && center_start.saturating_add(center_width) <= right_boundary {
             let center_area = Rect {
                 x:      area.x + u16::try_from(center_start).unwrap_or(u16::MAX),
                 y:      area.y,
@@ -428,17 +445,28 @@ fn render_sections(
 /// Left-side items that fit before the right-side region.
 fn fitted_left_spans(room: usize, items: &mut StatusLineItems) -> Vec<Span<'static>> {
     let uptime_width = items.uptime.iter().map(Span::width).sum::<usize>();
-    let navigation_width = items.navigation.iter().map(Span::width).sum::<usize>();
-    if uptime_width.saturating_add(navigation_width) <= room {
-        return std::mem::take(&mut items.uptime)
-            .into_iter()
-            .chain(std::mem::take(&mut items.navigation))
-            .collect();
+    if uptime_width > room {
+        return Vec::new();
     }
-    if uptime_width <= room {
-        return std::mem::take(&mut items.uptime);
+    fit_hint_prefix(&mut items.navigation, room.saturating_sub(uptime_width));
+    std::mem::take(&mut items.uptime)
+        .into_iter()
+        .chain(std::mem::take(&mut items.navigation))
+        .collect()
+}
+
+/// Remove whole hints from the right until their spans fit.
+fn fit_hint_prefix(spans: &mut Vec<Span<'static>>, room: usize) {
+    while spans.iter().map(Span::width).sum::<usize>() > room {
+        if let Some(separator) = spans
+            .iter()
+            .rposition(|span| span.content == super::constants::SEPARATOR)
+        {
+            spans.truncate(separator);
+        } else {
+            spans.clear();
+        }
     }
-    Vec::new()
 }
 
 /// Right-side items that fit with the trailing status-line cell retained.
@@ -668,3 +696,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "status_line_gap_tests.rs"]
+mod gap_tests;

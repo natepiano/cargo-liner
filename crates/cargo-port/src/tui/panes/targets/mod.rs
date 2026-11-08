@@ -12,6 +12,8 @@ mod readability_tests;
 mod render;
 
 #[cfg(test)]
+mod width_tests;
+#[cfg(test)]
 mod worktree_source_tests;
 
 pub use data::BuildMode;

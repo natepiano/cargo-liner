@@ -52,7 +52,7 @@ fn ci_placeholder_marks_its_cut_text() -> anyhow::Result<()> {
     let buffer = test_support::draw_pane(&mut app, PaneId::CiRuns, 18)?;
     let text = test_support::rows(&buffer).join("\n");
     assert!(
-        text.contains("No CI workflow configured") || text.contains("No CI workflow…"),
+        text.contains("No CI workflow configured") || text.contains("No CI workflo… "),
         "{text}"
     );
     Ok(())

@@ -43,6 +43,9 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 
+- Cut pane titles keep a blank cell before the corner or joint.
+- Status-line notes keep at least three blank cells after key hints. Centered hints move left only when the gap needs space. Narrow rows drop whole hints from the right, one at a time.
+
 - Pane titles use their trailing padding cell before they cut text.
 - Progress rows keep whole labels and reduce bars or counts first.
 - Toasts keep a blank cell before the close button. Opening cards keep their first sentence together when space permits.

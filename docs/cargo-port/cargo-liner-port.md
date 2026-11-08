@@ -656,7 +656,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 ### Phase 4p — cargo-port memory stays bounded over days  · status: todo
 
-**Depends on:** none. It runs before the Phase 4n checkpoint and Phase 4o (user, 2026-11-08: top priority).
+**Depends on:** none. It runs before Phase 4o (user, 2026-11-08: top priority).
 
 #### Work Order
 
@@ -688,7 +688,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. A bound test fails before the fix. Two memory measures of the same driven run, before and after the fix, with times, `VmRSS` and `VmSwap`. The checkpoint carries a `Change-Review:` line.
 
-### Phase 4n — Targets, cut titles and the footer read clean in narrow windows  · status: todo
+### Phase 4n — Targets, cut titles and the footer read clean in narrow windows  · status: done
 
 **Depends on:** Phase 4l (both edit `crates/cargo-port/src/tui/panes/targets/` and `crates/tui_pane/src/pane/frame.rs`). No file overlaps Phase 4m, so this phase runs beside it.
 

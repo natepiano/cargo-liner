@@ -128,6 +128,7 @@ pub(in crate::tui) fn resolve_layout(
     core_count: usize,
     bottom_row: BottomRow,
     top_required_inner: u16,
+    targets_preferred_width: u16,
 ) -> ResolvedPaneLayout<PaneId> {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -144,6 +145,7 @@ pub(in crate::tui) fn resolve_layout(
                 area.width,
                 left_width,
                 minimum_left_width,
+                targets_preferred_width,
             )),
             Constraint::Min(0),
         ])
@@ -154,20 +156,32 @@ pub(in crate::tui) fn resolve_layout(
         .into_iter()
         .map(|placement| ResolvedPane {
             pane: placement.pane,
-            area: resolve_pane_area(rows.as_ref(), cols.as_ref(), placement.pane, bottom_row),
+            area: resolve_pane_area(
+                rows.as_ref(),
+                cols.as_ref(),
+                placement.pane,
+                bottom_row,
+                targets_preferred_width,
+            ),
         })
         .collect();
 
     ResolvedPaneLayout::new(panes)
 }
 
-fn resolve_pane_area(rows: &[Rect], cols: &[Rect], pane: PaneId, bottom_row: BottomRow) -> Rect {
+fn resolve_pane_area(
+    rows: &[Rect],
+    cols: &[Rect],
+    pane: PaneId,
+    bottom_row: BottomRow,
+    targets_preferred_width: u16,
+) -> Rect {
     let project_col = cols[0];
     let right_col = cols[1];
     let top_right_area = Rect::new(right_col.x, rows[0].y, right_col.width, rows[0].height);
     let middle_right_area = Rect::new(right_col.x, rows[1].y, right_col.width, rows[1].height);
     let top_right = top_pane_areas(top_right_area);
-    let middle_panes = middle_pane_constraints(middle_right_area.width);
+    let middle_panes = middle_pane_constraints(middle_right_area.width, targets_preferred_width);
     let middle_areas =
         Layout::horizontal(middle_panes.iter().map(|(_, size)| *size)).split(middle_right_area);
     let middle_area = |id| {
@@ -204,7 +218,7 @@ fn resolve_pane_area(rows: &[Rect], cols: &[Rect], pane: PaneId, bottom_row: Bot
     }
 }
 
-fn middle_pane_constraints(width: u16) -> Vec<(PaneId, Constraint)> {
+fn middle_pane_constraints(width: u16, targets_preferred_width: u16) -> Vec<(PaneId, Constraint)> {
     let targets_min = targets::minimum_width();
     let cpu_width = cpu_column_width();
     let show_targets = width >= targets_min;
@@ -221,7 +235,16 @@ fn middle_pane_constraints(width: u16) -> Vec<(PaneId, Constraint)> {
         middle_panes.push((PaneId::Cpu, Constraint::Length(cpu_width)));
     }
     if show_targets {
-        middle_panes.push((PaneId::Targets, Constraint::Min(targets_min)));
+        middle_panes.push((
+            PaneId::Targets,
+            Constraint::Min(
+                targets_preferred_width.max(targets_min).min(
+                    width
+                        .saturating_sub(if show_cpu { cpu_width } else { 0 })
+                        .saturating_sub(if show_languages { language_min } else { 0 }),
+                ),
+            ),
+        ));
     }
     middle_panes
 }
@@ -271,12 +294,28 @@ fn tiled_row_constraints(
     }
 }
 
-fn project_column_width(window_width: u16, left_width: u16, minimum_left_width: u16) -> u16 {
-    left_width
+fn project_column_width(
+    window_width: u16,
+    left_width: u16,
+    minimum_left_width: u16,
+    targets_preferred_width: u16,
+) -> u16 {
+    let natural = left_width
         .min((window_width / 2).max(minimum_left_width))
         .min(crate::tui::columns::ProjectListWidths::pane_width_limit(
             window_width,
-        ))
+        ));
+    let preferred_middle = targets_preferred_width
+        .max(targets::minimum_width())
+        .saturating_add(cpu_column_width())
+        .saturating_add(lang::minimum_width());
+    if targets_preferred_width > targets::minimum_width()
+        && window_width >= minimum_left_width.saturating_add(preferred_middle)
+    {
+        natural.min(window_width.saturating_sub(preferred_middle))
+    } else {
+        natural
+    }
 }
 
 const fn cpu_column_width() -> u16 { CPU_PANE_WIDTH }
@@ -290,6 +329,7 @@ pub(in crate::tui) fn top_pane_widths(
     area: Rect,
     left_width: u16,
     minimum_left_width: u16,
+    targets_preferred_width: u16,
 ) -> (u16, u16) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -298,6 +338,7 @@ pub(in crate::tui) fn top_pane_widths(
                 area.width,
                 left_width,
                 minimum_left_width,
+                targets_preferred_width,
             )),
             Constraint::Min(0),
         ])
@@ -425,6 +466,7 @@ mod tests {
             12,
             BottomRow::Diagnostics,
             20,
+            super::targets::minimum_width(),
         );
         let package = layout.area(PaneId::Package);
         let git = layout.area(PaneId::Git);
@@ -454,6 +496,7 @@ mod tests {
             12,
             BottomRow::Diagnostics,
             100,
+            super::targets::minimum_width(),
         );
 
         assert_eq!(
@@ -474,6 +517,7 @@ mod tests {
             12,
             BottomRow::Diagnostics,
             top_inner,
+            super::targets::minimum_width(),
         );
 
         assert_eq!(
@@ -494,6 +538,7 @@ mod tests {
             12,
             BottomRow::Diagnostics,
             100,
+            super::targets::minimum_width(),
         );
         let short_resolved_pane_layout = resolve_layout(
             Rect::new(0, 0, 120, 40),
@@ -502,6 +547,7 @@ mod tests {
             12,
             BottomRow::Diagnostics,
             4,
+            super::targets::minimum_width(),
         );
 
         assert!(short_resolved_pane_layout.area(PaneId::Cpu).height > cpu_floor);

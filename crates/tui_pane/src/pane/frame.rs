@@ -875,7 +875,8 @@ impl GridLines {
             }
         }
         if matches!(overlay.style, OverlayStyle::Title(_)) && text.width() > row.width.into() {
-            let text_width = row.width.saturating_sub(1);
+            let padding = u16::from(row.width > 1);
+            let text_width = row.width.saturating_sub(1 + padding);
             let mut visible_width = 0;
             let mut elision_style = style;
             for grapheme in text.styled_graphemes(style) {
@@ -904,6 +905,16 @@ impl GridLines {
                 },
                 buffer,
             );
+            if padding > 0 {
+                Line::from(Span::styled(" ", elision_style)).render(
+                    Rect {
+                        x: row.right().saturating_sub(1),
+                        width: 1,
+                        ..row
+                    },
+                    buffer,
+                );
+            }
             return;
         }
         text.render(row, buffer);
@@ -1171,6 +1182,38 @@ mod tests {
     }
 
     #[test]
+    fn cut_titles_keep_a_blank_cell_before_corners_and_joints() {
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            for shared in [false, true] {
+                let area = Rect::new(0, 0, 32, 4);
+                let pane = Rect::new(0, 0, 16, 4);
+                let mut grid = GridLines::new(area);
+                grid.add_titled(PaneFrame::new(pane), "Workspace - cargo-liner-port ");
+                if shared {
+                    grid.add(PaneFrame::new(Rect::new(15, 0, 17, 4)));
+                }
+                let mut buffer = Buffer::empty(area);
+                grid.render(
+                    &mut buffer,
+                    PaneChrome {
+                        color_mode: mode,
+                        ..chrome()
+                    },
+                    PaneBorders::Shared,
+                );
+                mode.clear_colors(&mut buffer);
+                let title: String = (1..15).map(|x| buffer[(x, 0)].symbol()).collect();
+                assert!(
+                    title.ends_with("… "),
+                    "{mode:?}, shared={shared}: {title:?}"
+                );
+                assert!(title.starts_with("Workspace"), "{title:?}");
+                assert_eq!(buffer[(15, 0)].symbol(), if shared { "┬" } else { "┐" });
+            }
+        }
+    }
+
+    #[test]
     fn one_pane_draws_a_plain_box() {
         assert_eq!(
             boxed(Rect::new(0, 0, 4, 3), &[Rect::new(0, 0, 4, 3)]),
@@ -1412,7 +1455,7 @@ mod tests {
     #[test]
     fn a_title_stops_inside_the_corner() {
         let area = Rect::new(0, 0, 6, 3);
-        assert_eq!(titled(area, PaneFrame::new(area), " Targets ")[0], "┌ Ta…┐");
+        assert_eq!(titled(area, PaneFrame::new(area), " Targets ")[0], "┌ T… ┐");
     }
 
     /// The mark itself is the useful part when that is all the border
@@ -1466,7 +1509,7 @@ mod tests {
     #[test]
     fn title_segments_keep_their_styles_and_focus_weight_when_clipped() {
         for focused in [false, true] {
-            for (width, expected) in [(16, "┌alpha · unit──┐"), (11, "┌alpha · …┐")]
+            for (width, expected) in [(16, "┌alpha · unit──┐"), (11, "┌alpha ·… ┐")]
             {
                 let area = Rect::new(0, 0, width, 3);
                 let chrome = PaneChrome {
@@ -1550,7 +1593,7 @@ mod tests {
             let mut buffer = Buffer::empty(area);
             grid.render(&mut buffer, chrome, PaneBorders::Shared);
 
-            let elision = &buffer[(width - 2, 0)];
+            let elision = &buffer[(width - if width > 3 { 3 } else { 2 }, 0)];
             assert_eq!(elision.symbol(), ELISION);
             assert_eq!(elision.fg, expected);
             assert!(elision.modifier.contains(Modifier::BOLD));
@@ -1573,7 +1616,7 @@ mod tests {
         grid.render(&mut buffer, chrome(), PaneBorders::Shared);
 
         assert_eq!(rows(&buffer, area)[0], "            ");
-        assert_eq!(rows(&buffer, area)[2], "┌unit · te…┐");
+        assert_eq!(rows(&buffer, area)[2], "┌unit · t… ┐");
         assert_eq!(buffer[(1, 2)].fg, Color::Blue);
         assert_eq!(buffer[(7, 2)].fg, Color::Yellow);
         assert!(!rows(&buffer, area)[4].contains("unit"));
