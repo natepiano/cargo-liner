@@ -1077,7 +1077,7 @@ Unit director's calls: `session` (an agent with no role) takes `role.unassigned`
 - The wire and lease token `review` stays accepted. Session rows and seat rows still draw "review"; only subagent rows draw "reviewer" (Phase 35).
 - Phase 35: `render/narrow_width_tests.rs` uses Showrunner/Impl fixtures at width 80, with source height 70 and enlarged height 140, and asserts the wider restored window (≈853). Preserve these assertions. Test the longer Astra labels through hierarchy rows: restored viewports, End/Home/cursor positions, whole-core and below-core compression, and the first enlarged frame.
 - Phase 35: the selected-palette helper in `render/selected_ink_tests.rs` (≈810) maps the Astra labels to `Agent` and `Reviewer` subagents, so those rows measure plain ink. Replace these substitutes with hierarchy-backed Astra session rows that use the Astra color fixture.
-- `OpenThreadRows::read` in `census/codex.rs` accepts explicit thread IDs through `CODEX_THREAD_BY_ID_QUERY`, regardless of originator. `codex::read_threads_by_id` no longer exists. Use the named Astra Codex home. Phase 49c keys requested ids by `ThreadRequester` per home (pane workers, app server); add `ThreadRequester::Astra` and pass its full set each scan, empty included. Preserve per-home caching and invalidation by database and WAL revision. Test an unchanged scan (no second read) and a WAL change (one new read). Keep startup queries restricted as before. Reuse `SessionNames`, home matching, resume handling and the no-dispatch regression.
+- `OpenThreadRows::read_requests` in `census/codex.rs` accepts explicit thread IDs per `ThreadRequester` through `CODEX_THREAD_BY_ID_QUERY`, regardless of originator; `OpenThreadRows::read` is a test-only adapter. `codex::read_threads_by_id` no longer exists. Use the named Astra Codex home. Phase 49c keys requested ids by `ThreadRequester` per home (pane workers, app server). Each scan calls `OpenThreadRows::read_scan` once (`scan.rs` ≈1609): it gathers every requester's full set, prunes live homes once, reads each home once, and returns `LiveThreadRows`. Add `ThreadRequester::Astra` and pass its full set, empty included, into that same `read_scan` call; never add a second read per scan. An Astra-only home must also count as live there. Preserve per-home caching and invalidation by database and WAL revision. Test an unchanged scan (no second read) and a WAL change (one new read). Keep startup queries restricted as before. Reuse `SessionNames`, home matching, resume handling and the no-dispatch regression.
 - The scanner captures one `StaffSnapshot` before classification. Its source and `Arc<StaffRoster>` supply names and links for that scan. Preserve this consistency when adding Astra membership. Keep database and rollout reads outside the scheduler thread and the publication lock. App-server discovery uses Linux file descriptors under the sessions directory.
 - Phase 64: `census::schedule::spawn` takes the configured `herdr_read_timeout`, and `local_scanner` passes it to the scanner (`terminal.rs` ≈81, `census/schedule.rs` ≈694). Keep this argument. `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈414). `scan_staged` stays nonblocking.
 - The staff reader has no reviewer-pool state or lease requirement. Astra busy/idle state is a semantic type converted from `work` (`idle`, `busy`, `unknown`), with a distinct variant when the call fails or times out. A live Astra session must remain visible between turns without a pool file.
@@ -1941,33 +1941,20 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 
 ### Phase 49c — The Codex thread cache holds only live requests  · status: done
 
-**Depends on:** Phase 49a
+#### As-built
 
-#### Work Order
-
-**Goal:** the Codex thread-id cache in `OpenThreadRows` holds only the ids its callers ask for now, so its database query stays the size of the live worker set.
-
-**Source:** Phase 49a closure review and architect review (handler unit session).
-
-**Constraints from prior phases:**
-- `OpenThreadRows::read` (`census/codex.rs` ≈440) adds each requested id to its home's `requested` set and drops ids only when `retain_homes` prunes the home. One live Codex process keeps the home, so worker turnover grows the set, and each database revision queries every id ever seen.
-- Two callers share the cache per account home: `OpenThreadRows::process_rollouts` (`codex.rs` ≈394, pane workers) and `app_server_threads` (`scan.rs` ≈1580–1606, app-server threads). Both skip a home with no requests (`codex.rs` ≈427, `scan.rs` ≈1603), so a replace-on-call rule alone never clears a caller that left.
-- Keep per-home caching and invalidation by database and WAL revision (`ThreadDatabaseRevision`). `pane_and_server_requests_share_one_unchanged_account_cache` (`codex.rs` ≈1459) stays green with no assertion changed.
-- Phase 21 adds a third caller (Astra threads, `codex_exec`). The requester type must take a third variant with no other change.
-
-**Spec:**
-1. A closed enum names each caller: `ThreadRequester::{PaneWorkers, AppServer}`. Each home keeps one requested-id set per requester. Each scan gives every requester its full set for every live home, an empty set included, so a requester that left clears its ids.
-2. Query a home's database when its revision changed, or when the union of its current sets is not covered by the last answer. Each query names only that union.
-3. Red-first tests, each under 1 s: (a) rotate pane-worker ids across unchanged scans while one process stays live; after the next revision change the query names only the live ids; (b) a requester whose set goes empty no longer keeps its ids; (c) an unchanged scan with both requesters reads the database once.
-4. CHANGELOG: no line (no visible change).
+- `ThreadRequester::{PaneWorkers, AppServer}` (`census/codex.rs`) names the owner of a complete thread-id request set. `OpenThreadRows` keeps one set per requester per account home.
+- `OpenThreadRows::read_scan` runs once per scan. It gathers every requester's full set (empty included), prunes the live homes once, reads each live home once, and returns `LiveThreadRows` (pane rollout paths and rows per home).
+- `OpenThreadRows::read_requests` replaces the supplied sets, drops rows that no requester holds, and queries only the union of live ids. An empty union runs no query. A query reruns only on a database or WAL revision change or a new id.
+- `app_server_threads` (`census/scan.rs`) builds a server set for every live Codex home, empty included, and calls `read_scan`. A departed pane or server id leaves the cache at the next scan.
+- `OpenThreadRows::read` and `process_rollouts` are test-only adapters for the existing cache tests.
+- Idle CPU: no measured change (median −0.020 CPU-s/min over 3 pairs, spread 0.160).
 
 **Files:**
-- `crates/cargo-handler/src/census/codex.rs` — `ThreadRequester`, the per-requester sets, tests
-- `crates/cargo-handler/src/census/scan.rs` — both call sites pass their requester and empty sets
+- `crates/cargo-handler/src/census/codex.rs` — `ThreadRequester`, `read_scan`, `read_requests`, request-set tests
+- `crates/cargo-handler/src/census/scan.rs` — one `read_scan` call per scan, scan-order tests
 
-**Workers:** 1 writer (`impl`).
-
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. CPU: idle CPU over 3 or more release pairs shows no added cost over the spread. The checkpoint carries `Change-Review: none — the census cache change has no visible effect`.
+**Gotchas:** a new requester joins the single `read_scan` call. A second read per scan queries departed ids after a revision change, and reads twice on a cold scan.
 
 ### Phase 49b — Agent tiles show model and effort columns  · status: todo
 
