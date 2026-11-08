@@ -891,9 +891,9 @@ fn narrow_growth_reports_fixture_counts() {
     for (count, width, expected_groups, expected_summary_rows) in [
         (6, 200, 6, 28),
         (6, 80, 6, 28),
-        (6, 50, 6, 29),
-        (6, 40, 6, 29),
-        (20, 34, 2, 43),
+        (6, 50, 6, 30),
+        (6, 40, 6, 30),
+        (20, 34, 2, 44),
     ] {
         let mut app = fixture(count);
         paint(&mut app, width, 50);
