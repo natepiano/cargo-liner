@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tiles keep their columns when status text changes without changing requested rows, and reselect when candidate row counts change.
+
 - Codex workers in herdr panes show under their staff manager when their command line or open rollout proves their thread.
 
 - Clicks use the headers and rows from the last painted frame, including during tile motion and repeated input.
