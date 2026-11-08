@@ -381,6 +381,7 @@ mod git_detail_field_tests {
     use crate::project::FirstCommit;
     use crate::project::GitStatus;
     use crate::project::ResolvedBranch;
+    use crate::tui::panes::DescriptionState;
     use crate::tui::panes::GithubStars;
     use crate::tui::panes::pane_data::GitData;
     use crate::tui::panes::pane_data::PullRequestSection;
@@ -397,7 +398,7 @@ mod git_detail_field_tests {
             vs_local:           crate::tui::panes::GitProbe::Probed(Comparison::NotCompared),
             local_main_branch:  crate::tui::panes::GitProbe::Probed(ResolvedBranch::NotFound),
             stars:              GithubStars::NotGithub,
-            description:        None,
+            description:        DescriptionState::KnownEmpty,
             inception:          FirstCommit::AwaitingProbe,
             last_commit:        crate::tui::panes::GitProbe::Probed(CommitDate::NoCommits),
             last_fetched:       None,

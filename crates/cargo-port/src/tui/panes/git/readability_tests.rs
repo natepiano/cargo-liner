@@ -16,6 +16,7 @@ use crate::project::FirstCommit;
 use crate::project::GitStatus;
 use crate::project::TrackedRef;
 use crate::tui::panes;
+use crate::tui::panes::DescriptionState;
 use crate::tui::panes::DetailField;
 use crate::tui::panes::GitCheckout;
 use crate::tui::panes::GitData;
@@ -32,10 +33,63 @@ use crate::tui::state::AvailabilityStatus;
 use crate::tui::test_support;
 
 #[test]
+fn pull_request_titles_show_only_known_counts_and_keep_stale_counts() -> anyhow::Result<()> {
+    for (window, width) in [(80, 34), (160, 50)] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        for state in [
+            PullRequestSectionState::Loading,
+            PullRequestSectionState::Unavailable,
+            PullRequestSectionState::Loaded,
+            PullRequestSectionState::Stale,
+        ] {
+            let known = matches!(
+                state,
+                PullRequestSectionState::Loaded | PullRequestSectionState::Stale
+            );
+            app.panes.git.set_content(GitData {
+                checkout: GitCheckout::Branch {
+                    name:     "main".to_string(),
+                    relation: HeadRelation::Default,
+                },
+                pull_requests: PullRequestSection {
+                    state,
+                    rows: if known {
+                        vec![crate::tui::panes::PullRequestRow {
+                            number:      7,
+                            title:       "Keep the known count".to_string(),
+                            url:         "https://github.com/acme/repo/pull/7".to_string(),
+                            state_label: "open",
+                            polling:     crate::tui::panes::PullRequestPolling::Idle,
+                            branch:      "topic".to_string(),
+                            base:        "main".to_string(),
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    ..PullRequestSection::default()
+                },
+                ..GitData::default()
+            });
+            let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Git, window, width)?;
+            let rows = test_support::rows(&buffer);
+            let title = rows
+                .iter()
+                .find(|row| row.contains("Pull Requests"))
+                .context("Pull Requests title")?;
+            assert!(!title.contains("(0)"), "{state:?}: {rows:?}");
+            assert_eq!(title.contains("(1)"), known, "{state:?}: {rows:?}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn cut_worktree_and_remote_values_end_with_an_ellipsis() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         worktrees: ["verify-run-long", "sdlc-merge-long"]
             .into_iter()
             .map(|branch| WorktreeInfo {
@@ -92,6 +146,7 @@ fn cut_worktree_and_remote_values_end_with_an_ellipsis() -> anyhow::Result<()> {
 fn git_selected_field_fills_the_whole_row() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         checkout: GitCheckout::Branch {
             name:     "fleet".to_string(),
             relation: HeadRelation::AwaitingRepoProbe,
@@ -114,6 +169,7 @@ fn git_selected_field_fills_the_whole_row() -> anyhow::Result<()> {
 fn git_rate_rows_keep_the_remaining_count_when_the_quota_does_not_fit() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         rate_limit_core: QuotaObservation::Observed(RateLimitQuota {
             used:      4770,
             limit:     5000,
@@ -134,6 +190,7 @@ fn git_rate_rows_keep_the_remaining_count_when_the_quota_does_not_fit() -> anyho
 fn git_reset_countdown_has_readable_contrast() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         github_status: AvailabilityStatus::Reachable,
         rate_limit_core: QuotaObservation::Observed(RateLimitQuota {
             used:      4770,
@@ -161,6 +218,7 @@ fn selected_git_countdown_keeps_selection_ink_on_both_fills() -> anyhow::Result<
         for focus in [PaneFocusState::Active, PaneFocusState::Remembered] {
             let mut app = test_support::project_app();
             app.panes.git.set_content(GitData {
+                description: DescriptionState::KnownEmpty,
                 github_status: AvailabilityStatus::Reachable,
                 rate_limit_core: QuotaObservation::Observed(RateLimitQuota {
                     used:      30,
@@ -203,6 +261,7 @@ fn narrow_git_fields_keep_labels_values_and_dates() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         checkout: GitCheckout::Branch {
             name:     "master".to_string(),
             relation: HeadRelation::Default,
@@ -243,6 +302,7 @@ fn wrapped_git_values_share_selection_and_row_hits() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         status: Some(GitStatus::Clean),
         ..GitData::default()
     });
@@ -282,6 +342,7 @@ fn narrow_worktree_table_keeps_its_title_and_branch_with_a_remote() -> anyhow::R
             push_annotation: None,
         };
         let data = GitData {
+            description: DescriptionState::KnownEmpty,
             worktrees: ["master", "verify-long", "sdlc-merge"]
                 .into_iter()
                 .map(|branch| WorktreeInfo {
@@ -336,6 +397,7 @@ fn wrapped_worktree_error_continuation_selects_its_field() -> anyhow::Result<()>
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         checkout: GitCheckout::Broken,
         status: Some(GitStatus::Clean),
         ..GitData::default()
@@ -371,6 +433,7 @@ fn worktree_branches_keep_an_ellipsis_at_medium_widths() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         worktrees: ["verify-run-place", "sdlc-merge-gate"]
             .into_iter()
             .map(|branch| WorktreeInfo {
@@ -414,6 +477,7 @@ fn remote_track_cuts_before_the_right_margin() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         remotes: RemoteRows::Listed(vec![RemoteRow {
             name:            "origin".to_string(),
             icon:            "👯",
@@ -448,6 +512,7 @@ fn narrow_worktree_divider_keeps_its_count() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.git.set_content(GitData {
+        description: DescriptionState::KnownEmpty,
         worktrees: (0..3)
             .map(|i| WorktreeInfo {
                 name:         format!("tree-{i}"),
@@ -477,6 +542,7 @@ fn narrow_git_fields_keep_ahead_behind_whole_and_loading_has_an_ellipsis() -> an
         let mut app = test_support::project_app();
         app.framework.color_mode = ColorMode::Colored;
         app.panes.git.set_content(GitData {
+            description: DescriptionState::KnownEmpty,
             vs_local: GitProbe::Probed(Comparison::Counted(AheadBehind {
                 ahead:  123,
                 behind: 456,

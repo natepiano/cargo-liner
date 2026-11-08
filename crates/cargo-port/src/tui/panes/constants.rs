@@ -259,8 +259,6 @@ pub(super) const CRATES_IO_TITLE: &str = "crates.io";
 pub(super) const DESCRIPTION_BOX: usize = 0;
 /// Leaf index of the metadata column in the package tree.
 pub(super) const METADATA_BOX: usize = 1;
-/// Floor on the metadata column's width when the stats column is present.
-pub(super) const MIN_METADATA_WIDTH: u16 = 20;
 /// Floor on the stats-column label field, so a project with only short
 /// labels keeps the same column width. The widest default Structure labels
 /// (`proc-macro` / `submodules`) are 10 wide.

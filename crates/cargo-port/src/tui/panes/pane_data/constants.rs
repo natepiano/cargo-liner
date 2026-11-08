@@ -23,3 +23,20 @@ pub(super) const TESTS_UNIT_LABEL: &str = "unit";
 /// — the title already says "crates.io", so the cell only needs to say
 /// the service is unreachable.
 pub(in crate::tui::panes) const CRATES_IO_UNREACHABLE: &str = "unreachable";
+
+pub(super) const CRATES_IO_VERSION_LABEL: &str = "Version";
+pub(super) const CRATES_IO_DOWNLOADS_LABEL: &str = "Downloads";
+pub(super) const CRATES_IO_ALPHA_LABEL: &str = "alpha";
+pub(super) const CRATES_IO_BETA_LABEL: &str = "beta";
+pub(super) const CRATES_IO_RC_LABEL: &str = "rc";
+pub(super) const CRATES_IO_PRE_LABEL: &str = "pre";
+
+/// Measure every release label before the release data arrives.
+pub(in crate::tui::panes) const CRATES_IO_LABELS: [&str; 6] = [
+    CRATES_IO_VERSION_LABEL,
+    CRATES_IO_DOWNLOADS_LABEL,
+    CRATES_IO_ALPHA_LABEL,
+    CRATES_IO_BETA_LABEL,
+    CRATES_IO_RC_LABEL,
+    CRATES_IO_PRE_LABEL,
+];

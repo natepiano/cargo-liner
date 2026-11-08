@@ -21,6 +21,7 @@ use crate::project::RustProject;
 use crate::sccache::StatsResult;
 use crate::tui::app::App;
 use crate::tui::app_render_state::OverlayRenderInputs;
+use crate::tui::panes::DescriptionState;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::RunTargetKind;
 use crate::tui::panes::SyncedDescriptionHeight;
@@ -73,6 +74,14 @@ pub(in crate::tui) fn project_app() -> App {
         .record_success(&crate::project::AbsolutePath::from(PROJECT_PATH));
     app.ensure_visible_rows_cached();
     app.ensure_detail_cached();
+    if let Some(mut data) = app.panes.package.content().cloned() {
+        data.description = DescriptionState::KnownEmpty;
+        app.panes.package.set_content(data);
+    }
+    if let Some(mut data) = app.panes.git.content().cloned() {
+        data.description = DescriptionState::KnownEmpty;
+        app.panes.git.set_content(data);
+    }
     app
 }
 

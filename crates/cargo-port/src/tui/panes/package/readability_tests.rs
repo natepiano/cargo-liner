@@ -15,6 +15,7 @@ use crate::project::RootItem;
 use crate::project::Visibility;
 use crate::scan::BackgroundMsg;
 use crate::tui::panes;
+use crate::tui::panes::DescriptionState;
 use crate::tui::panes::GitCheckout;
 use crate::tui::panes::GitData;
 use crate::tui::panes::HeadRelation;
@@ -31,6 +32,78 @@ use crate::tui::state::LintDisplay;
 use crate::tui::test_support;
 use crate::tui::test_support::PROJECT;
 use crate::tui::test_support::PROJECT_PATH;
+
+#[test]
+fn cut_workspace_description_pane_title_keeps_a_blank_cell_before_the_corner() -> anyhow::Result<()>
+{
+    let mut app = test_support::project_app();
+    app.panes.package.set_content(PackageData {
+        title: "Workspace".to_string(),
+        name: "package-with-a-long-name".to_string(),
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Package, 80, 17)?;
+    let rows = test_support::rows(&buffer);
+    assert!(rows[0].trim_end().ends_with("… ┐"), "{rows:?}");
+    Ok(())
+}
+
+#[test]
+fn label_only_worktree_group_title_keeps_a_blank_cell_before_the_corner() -> anyhow::Result<()> {
+    let mut app = test_support::project_app();
+    app.panes.package.set_content(PackageData {
+        title: "Worktree Group".to_string(),
+        name: "package-with-a-long-name".to_string(),
+        ..PackageData::default()
+    });
+    let buffer = test_support::draw_pane_in_window(&mut app, PaneId::Package, 80, 18)?;
+    let rows = test_support::rows(&buffer);
+    assert!(rows[0].trim_end().ends_with("Worktree Group ┐"), "{rows:?}");
+    Ok(())
+}
+
+#[test]
+fn crates_io_values_keep_the_structure_divider_and_path_width() -> anyhow::Result<()> {
+    for (window, width) in [(80, 50), (160, 80)] {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        let data = PackageData {
+            description: DescriptionState::KnownEmpty,
+            path: "/workspace/a-long-package-path/with-the-same-visible-prefix".to_string(),
+            stats_rows: vec![("members", 8)],
+            test_rows: vec![("unit", 12)],
+            ..PackageData::default()
+        };
+        app.panes.package.set_content(data.clone());
+        let before = test_support::draw_pane_in_window(&mut app, PaneId::Package, window, width)?;
+        let structure = test_support::position(&before, "Structure")?;
+        let path_row = test_support::position(&before, "Path")?.1;
+        for (value, cut_value) in [
+            ("123456789.123456789", "1234567…"),
+            ("Unreachable", "Unreach…"),
+        ] {
+            app.panes.package.set_content(PackageData {
+                crates_io_rows: vec![
+                    ("Version", value.to_string()),
+                    ("Downloads", "12.3K".to_string()),
+                ],
+                ..data.clone()
+            });
+            let after =
+                test_support::draw_pane_in_window(&mut app, PaneId::Package, window, width)?;
+            assert_eq!(structure.0, test_support::position(&after, "Structure")?.0);
+            for x in 0..structure.0 {
+                assert_eq!(
+                    before[(x, path_row)].symbol(),
+                    after[(x, path_row)].symbol()
+                );
+            }
+            let value = test_support::position(&after, cut_value)?;
+            assert_eq!(after[(value.0 + 8, value.1)].symbol(), " ");
+        }
+    }
+    Ok(())
+}
 
 #[test]
 fn deleted_non_rust_details_keep_the_project_fields() -> anyhow::Result<()> {
@@ -68,6 +141,7 @@ fn deleted_non_rust_details_keep_the_project_fields() -> anyhow::Result<()> {
 fn narrow_package_disk_values_share_one_column() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         disk: DiskMeasurement::Measured {
             total:  73,
             target: 0,
@@ -86,6 +160,7 @@ fn narrow_package_disk_values_share_one_column() -> anyhow::Result<()> {
 fn package_values_end_with_an_ellipsis_when_they_do_not_fit() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         path: "/workspace/a-long-project-path/with-a-visible-end".to_string(),
         ..crate::tui::panes::PackageData::default()
     });
@@ -128,6 +203,7 @@ fn deleted_package_details_name_the_state_and_clear_disk_breakdown() -> anyhow::
 fn structure_uses_the_same_binary_word_as_package() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         types: Some(vec![crate::project::ProjectType::Binary]),
         stats_rows: vec![(crate::tui::constants::TARGET_KIND_BIN_LABEL, 1)],
         ..crate::tui::panes::PackageData::default()
@@ -147,6 +223,7 @@ fn structure_uses_the_same_binary_word_as_package() -> anyhow::Result<()> {
 fn package_group_sections_use_sentence_case() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         worktree_group_summary: Some(WorktreeGroupSummary {
             worktrees: 1,
             deleted:   0,
@@ -187,6 +264,7 @@ fn empty_description_is_one_marked_row() -> anyhow::Result<()> {
 fn compact_target_disk_value_stays_on_its_label_row() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         disk: DiskMeasurement::Measured {
             total:  73,
             target: 0,
@@ -239,7 +317,7 @@ fn selected_descriptions_use_one_text_color_and_fill_each_row() -> anyhow::Resul
                 let mut app = test_support::project_app();
                 if pane == PaneId::Git {
                     app.panes.git.set_content(GitData {
-                        description: Some(
+                        description: DescriptionState::Known(
                             "A fleet of tools with a long description for several rows".to_string(),
                         ),
                         ..crate::tui::panes::GitData::default()
@@ -287,6 +365,7 @@ fn selected_descriptions_use_one_text_color_and_fill_each_row() -> anyhow::Resul
 fn narrow_package_structure_follows_path_and_disk() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         path: "/tmp/workspace".to_string(),
         disk: DiskMeasurement::TotalOnly(73),
         types: Some(vec![crate::project::ProjectType::Binary]),
@@ -334,6 +413,7 @@ fn package_keeps_statistics_and_release_values_at_forty_columns() -> anyhow::Res
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         title: "Package".to_string(),
         name: "alpha".to_string(),
         path: "/tmp/alpha".to_string(),
@@ -367,6 +447,7 @@ fn package_keeps_statistics_and_release_values_at_forty_columns() -> anyhow::Res
 fn narrow_package_has_one_column_and_keeps_whole_disk_values() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         title: "Workspace".to_string(),
         disk: DiskMeasurement::TotalOnly(25_662_849_843),
         types: Some(vec![crate::project::ProjectType::Binary]),
@@ -391,10 +472,11 @@ fn narrow_package_has_one_column_and_keeps_whole_disk_values() -> anyhow::Result
 fn package_without_description_titles_the_structure_column() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.git.set_content(GitData {
-        description: Some("The repository description".to_string()),
+        description: DescriptionState::Known("The repository description".to_string()),
         ..GitData::default()
     });
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         stats_rows: vec![(crate::tui::constants::TARGET_KIND_BIN_LABEL, 1)],
         ..PackageData::default()
     });
@@ -406,6 +488,7 @@ fn package_without_description_titles_the_structure_column() -> anyhow::Result<(
     assert!(title > divider);
     assert_eq!(buffer[(divider, 1)].symbol(), "│");
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         title: "Workspace".to_string(),
         name: "cargo-liner-port".to_string(),
         stats_rows: vec![(crate::tui::constants::TARGET_KIND_BIN_LABEL, 1)],
@@ -429,6 +512,7 @@ fn package_without_description_titles_the_structure_column() -> anyhow::Result<(
 fn package_section_rules_join_the_right_border() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         crates_io_rows: vec![("Version", "1.2.3".to_string())],
         ..PackageData::default()
     });
@@ -443,6 +527,7 @@ fn narrow_package_fields_keep_values_and_wrap_section_words() -> anyhow::Result<
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         types: Some(vec![crate::project::ProjectType::Binary]),
         version: PackageVersion::Manifest("0.1.0".to_string()),
         package_presence: PackagePresence::Present,
@@ -488,6 +573,7 @@ fn wrapped_package_values_share_selection_and_row_hits() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         types: Some(vec![crate::project::ProjectType::Binary]),
         ..PackageData::default()
     });
@@ -523,6 +609,7 @@ fn narrow_package_keeps_both_ci_counts_and_whole_empty_messages() -> anyhow::Res
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         ci_display: CiDisplay::Runs {
             ci_status:    Some(CiStatus::Failed),
             local:        7,
@@ -543,7 +630,10 @@ fn narrow_package_keeps_both_ci_counts_and_whole_empty_messages() -> anyhow::Res
         "{text}"
     );
     assert!(!text.contains("No description …"), "{text}");
-    app.panes.package.set_content(PackageData::default());
+    app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
+        ..PackageData::default()
+    });
     let empty = test_support::draw_pane(&mut app, PaneId::Package, 17)?;
     let rows = test_support::rows(&empty);
     assert!(
@@ -573,7 +663,7 @@ fn deleted_metadata_keeps_its_style_and_accurate_description() -> anyhow::Result
         version: PackageVersion::Manifest("0.1.0".to_string()),
         edition: Some("2024".to_string()),
         package_presence: PackagePresence::Present,
-        description: Some("A retained description".to_string()),
+        description: DescriptionState::Known("A retained description".to_string()),
         ..PackageData::default()
     };
     app.panes.package.set_content(data.clone());
@@ -592,7 +682,7 @@ fn deleted_metadata_keeps_its_style_and_accurate_description() -> anyhow::Result
             .join("\n")
             .contains("No description")
     );
-    deleted.description = None;
+    deleted.description = DescriptionState::KnownEmpty;
     app.panes.package.set_content(deleted);
     let empty = test_support::draw_pane(&mut app, PaneId::Package, 80)?;
     test_support::position(&empty, "No description")?;
@@ -601,6 +691,7 @@ fn deleted_metadata_keeps_its_style_and_accurate_description() -> anyhow::Result
 
 fn workspace_data() -> PackageData {
     PackageData {
+        description: DescriptionState::KnownEmpty,
         title: "Workspace".to_string(),
         path: "/tmp/workspace".to_string(),
         types: Some(vec![crate::project::ProjectType::Workspace]),
@@ -723,6 +814,7 @@ fn disk_parts_keep_their_rows_before_measurement() -> anyhow::Result<()> {
         },
     ] {
         app.panes.package.set_content(PackageData {
+            description: DescriptionState::KnownEmpty,
             disk,
             ..PackageData::default()
         });
@@ -746,7 +838,10 @@ fn disk_parts_keep_their_rows_before_measurement() -> anyhow::Result<()> {
 fn empty_description_keeps_its_inset_without_a_cut_word() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
-    app.panes.package.set_content(PackageData::default());
+    app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
+        ..PackageData::default()
+    });
     for width in [17, 15, 20, 8, 5] {
         let buffer = test_support::draw_pane(&mut app, PaneId::Package, width)?;
         let mut text = String::new();
@@ -775,6 +870,7 @@ fn narrow_test_counts_cut_the_label_before_the_count() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         test_rows: vec![("integration", 1273)],
         ..PackageData::default()
     });
@@ -792,6 +888,7 @@ fn workspace_ci_counts_stay_whole_in_two_columns() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         title: "Workspace".to_string(),
         stats_rows: vec![("members", 8)],
         ci_display: CiDisplay::Runs {
@@ -856,6 +953,7 @@ fn workspace_ci_uses_counts_when_the_metadata_column_is_short() -> anyhow::Resul
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         title: "Workspace".to_string(),
         stats_rows: vec![("members", 8), ("lib", 3), ("binary", 5)],
         ci_display: CiDisplay::Runs {
@@ -942,6 +1040,7 @@ fn narrow_statistics_pages_repeat_headings_and_align_labeled_counts() -> anyhow:
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         title: "Workspace".to_string(),
         stats_rows: vec![("members", 8), ("lib", 3), ("binary", 5)],
         test_rows: vec![
@@ -1025,6 +1124,7 @@ fn narrow_package_titles_keep_the_label_and_worktree_count_on_one_row() -> anyho
         let mut app = test_support::project_app();
         app.framework.color_mode = ColorMode::Colored;
         app.panes.package.set_content(PackageData {
+            description: DescriptionState::KnownEmpty,
             title: "Worktree Group".to_string(),
             name: "proof_crate_with_a_long_name".to_string(),
             worktree_group_summary: Some(WorktreeGroupSummary {
@@ -1056,10 +1156,11 @@ fn package_values_keep_a_blank_cell_before_borders_and_structure() -> anyhow::Re
                     name:     "a_branch_with_a_long_name_that_wraps".to_string(),
                     relation: HeadRelation::Default,
                 },
-                description: Some("Shared description".to_string()),
+                description: DescriptionState::Known("Shared description".to_string()),
                 ..GitData::default()
             });
             app.panes.package.set_content(PackageData {
+                description: DescriptionState::KnownEmpty,
                 title: title.to_string(),
                 name: "proof_crate_with_a_long_name".to_string(),
                 path: "/tmp/a_long_workspace_path/with_a_long_package_name".to_string(),
@@ -1109,6 +1210,7 @@ fn worktree_counts_share_the_label_row_and_lint_keeps_its_column() -> anyhow::Re
         let mut app = test_support::project_app();
         app.framework.color_mode = ColorMode::Colored;
         app.panes.package.set_content(PackageData {
+            description: DescriptionState::KnownEmpty,
             lint_display: LintDisplay::NoRuns,
             disk: DiskMeasurement::Measured {
                 total:  bytes,
@@ -1146,6 +1248,7 @@ fn target_disk_zero_shares_its_label_row_and_the_disk_start_column() -> anyhow::
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         disk: DiskMeasurement::Measured {
             total:  73,
             target: 0,
@@ -1169,6 +1272,7 @@ fn disk_children_keep_one_indent_and_the_shared_value_column() -> anyhow::Result
         let mut app = test_support::project_app();
         app.framework.color_mode = ColorMode::Colored;
         app.panes.package.set_content(PackageData {
+            description: DescriptionState::KnownEmpty,
             disk: DiskMeasurement::Measured {
                 total:  73,
                 target: 0,
@@ -1210,6 +1314,7 @@ fn workspace_disk_children_keep_the_normal_indent_when_values_wrap() -> anyhow::
         let target_bytes = 25_622_060_237;
         let other_bytes = 40_789_606;
         app.panes.package.set_content(PackageData {
+            description: DescriptionState::KnownEmpty,
             disk: DiskMeasurement::Measured {
                 total:  target_bytes + other_bytes,
                 target: target_bytes,
@@ -1255,6 +1360,7 @@ fn worktree_group_heading_wraps_before_the_margin_cell() -> anyhow::Result<()> {
     let mut app = test_support::project_app();
     app.framework.color_mode = ColorMode::Colored;
     app.panes.package.set_content(PackageData {
+        description: DescriptionState::KnownEmpty,
         worktree_group_summary: Some(WorktreeGroupSummary {
             worktrees: 3,
             deleted:   0,

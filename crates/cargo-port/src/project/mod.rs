@@ -38,6 +38,7 @@ pub(crate) use cargo::from_git_dir;
 pub(crate) use cargo::manifest_targets;
 pub(crate) use entry::GitRepo;
 pub(crate) use entry::ProjectEntry;
+pub(crate) use entry::RepositoryProbe;
 pub(crate) use fields::ProjectFields;
 pub(crate) use git::AheadBehind;
 // `git` re-exports repository, checkout and discovery APIs used by project consumers.

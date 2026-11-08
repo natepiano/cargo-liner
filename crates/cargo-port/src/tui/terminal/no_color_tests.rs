@@ -11,6 +11,7 @@ use tui_pane::PaneFocusState;
 use crate::project::RootItem;
 use crate::project::Visibility;
 use crate::sccache::StatsResult;
+use crate::tui::panes::DescriptionState;
 use crate::tui::panes::GitData;
 use crate::tui::panes::PaneId;
 use crate::tui::render;
@@ -295,10 +296,21 @@ fn selected_description_reverses_every_inner_cell_without_color() -> anyhow::Res
         app.ensure_visible_rows_cached();
         app.ensure_detail_cached();
         if pane == PaneId::Package {
+            let mut package = app
+                .panes
+                .package
+                .content()
+                .cloned()
+                .context("Package content")?;
+            package.description = DescriptionState::KnownEmpty;
+            app.panes.package.set_content(package);
+            let mut git = app.panes.git.content().cloned().context("Git content")?;
+            git.description = DescriptionState::KnownEmpty;
+            app.panes.git.set_content(git);
             app.panes.package.focus.pane_focus_state = PaneFocusState::Active;
         } else {
             app.panes.git.set_content(GitData {
-                description: Some(
+                description: DescriptionState::Known(
                     "A fleet of tools with a description that spans several rows".to_string(),
                 ),
                 ..crate::tui::panes::GitData::default()

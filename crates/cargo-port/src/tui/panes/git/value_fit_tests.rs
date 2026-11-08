@@ -14,6 +14,7 @@ use super::GitPane;
 use super::render::SPLIT_ROW_MIN_INNER_WIDTH;
 use crate::constants::IN_SYNC;
 use crate::http::RateLimitQuota;
+use crate::tui::panes::DescriptionState;
 use crate::tui::panes::EmptyDescriptionBehavior;
 use crate::tui::panes::GitCheckout;
 use crate::tui::panes::GitData;
@@ -36,6 +37,7 @@ const DESCRIPTION: &str = "a fleet of cargo tools";
 fn git_values_at_80_columns_keep_letters_or_shorten_at_the_end() -> anyhow::Result<()> {
     for pane_width in [40, 20] {
         let data = GitData {
+            description: DescriptionState::KnownEmpty,
             checkout: GitCheckout::Branch {
                 name:     BRANCH.to_string(),
                 relation: HeadRelation::AwaitingRepoProbe,
@@ -69,7 +71,7 @@ fn git_values_at_80_columns_keep_letters_or_shorten_at_the_end() -> anyhow::Resu
 fn git_description_at_80_columns_keeps_the_middle_of_fleet() -> anyhow::Result<()> {
     for pane_width in [9, 10, 20] {
         let data = GitData {
-            description: Some(DESCRIPTION.to_string()),
+            description: DescriptionState::Known(DESCRIPTION.to_string()),
             ..GitData::default()
         };
         let rows = render_git_value(data, pane_width)?;
@@ -108,6 +110,7 @@ fn assert_rate_labels_only(outer_width: u16, expected: [&str; 2]) -> anyhow::Res
         QuotaObservation::Observed(quota),
     ] {
         let data = GitData {
+            description: DescriptionState::KnownEmpty,
             rate_limit_core: quota,
             rate_limit_graphql: quota,
             ..GitData::default()
@@ -154,6 +157,7 @@ fn git_at_split_width_restores_end_shortened_value() -> anyhow::Result<()> {
 
 fn branch_data() -> GitData {
     GitData {
+        description: DescriptionState::KnownEmpty,
         checkout: GitCheckout::Branch {
             name:     BRANCH.to_string(),
             relation: HeadRelation::AwaitingRepoProbe,
@@ -233,13 +237,13 @@ fn partial_redraw_anchors_the_cursor_after_variation_selector_glyphs() -> anyhow
         lang::language_icon("makefile"),
     ] {
         app.panes.git.set_content(GitData {
-            description: Some("ab fleet 18.7".to_string()),
+            description: DescriptionState::Known("ab fleet 18.7".to_string()),
             ..GitData::default()
         });
         terminal.draw(|frame| render::ui(frame, &mut app))?;
         let previous = terminal.backend().buffer().clone();
         app.panes.git.set_content(GitData {
-            description: Some(format!("{glyph} fleet 18.7")),
+            description: DescriptionState::Known(format!("{glyph} fleet 18.7")),
             ..GitData::default()
         });
         terminal.draw(|frame| render::ui(frame, &mut app))?;
@@ -283,6 +287,7 @@ fn compact_git_rows_distinguish_rate_labels_and_keep_values() -> anyhow::Result<
     });
     let rows = render_git_value(
         GitData {
+            description: DescriptionState::KnownEmpty,
             rate_limit_core: quota,
             rate_limit_graphql: quota,
             ..GitData::default()

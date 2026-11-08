@@ -42,6 +42,7 @@ use crate::project::PullRequestCompleteness;
 use crate::project::TrackedRef;
 use crate::tui::panes;
 use crate::tui::panes::DescriptionBlock;
+use crate::tui::panes::DescriptionState;
 use crate::tui::panes::DetailField;
 use crate::tui::panes::EmptyDescriptionBehavior;
 use crate::tui::panes::GitData;
@@ -381,7 +382,16 @@ fn append_pull_requests_section(
         Some(Section::PullRequest(i)) => Some(i),
         _ => None,
     };
-    let mut title = section_title_text("Pull Requests", section.rows.len(), cursor);
+    let mut title = match section.state {
+        PullRequestSectionState::Loading | PullRequestSectionState::Unavailable => {
+            "Pull Requests".to_string()
+        },
+        PullRequestSectionState::Loaded
+        | PullRequestSectionState::Stale
+        | PullRequestSectionState::HiddenConfirmedEmpty => {
+            section_title_text("Pull Requests", section.rows.len(), cursor)
+        },
+    };
     if matches!(
         section.completeness,
         Some(PullRequestCompleteness::Truncated { .. })
@@ -1556,7 +1566,7 @@ pub(super) fn render_git_pane_body(
     let about_layout = render_git_about_section(
         frame,
         &GitAboutCtx {
-            description: git_data.description.as_deref(),
+            description: &git_data.description,
             flat_fields: &flat_fields,
             data: &git_data,
             outer_area: area,
@@ -1625,7 +1635,7 @@ fn empty_git_chrome(title: impl Into<String>) -> PaneFrameChrome {
 /// Inputs for [`render_git_about_section`]. Grouped into a struct
 /// so the function stays under the argument-count threshold.
 struct GitAboutCtx<'a> {
-    description:               Option<&'a str>,
+    description:               &'a DescriptionState,
     flat_fields:               &'a [DetailField],
     data:                      &'a GitData,
     outer_area:                Rect,

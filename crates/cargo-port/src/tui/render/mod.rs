@@ -65,6 +65,7 @@ use super::integration::AppGlobalAction;
 use super::interaction;
 use super::overlays::PopupFrame;
 use super::panes;
+use super::panes::DescriptionState;
 use super::panes::EmptyDescriptionBehavior;
 use super::panes::OutputPaneVisibility;
 use super::panes::PaneId;
@@ -120,7 +121,7 @@ fn sync_description_floor(
         app.panes
             .package
             .content()
-            .and_then(|d| d.description.as_deref()),
+            .map_or(&DescriptionState::Pending, |d| &d.description),
         tiled.area(PaneId::Package),
         empty_package_description,
     );
@@ -128,7 +129,7 @@ fn sync_description_floor(
         app.panes
             .git
             .content()
-            .and_then(|d| d.description.as_deref()),
+            .map_or(&DescriptionState::Pending, |d| &d.description),
         tiled.area(PaneId::Git),
         EmptyDescriptionBehavior::RenderNothing,
     );
