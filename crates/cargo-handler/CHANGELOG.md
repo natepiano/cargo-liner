@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Agent tiles show each conversation's model and reasoning effort in separate columns.
+
 - The census retains each conversation's model and reasoning effort for local and probe rows.
 
 - Click a word to highlight matching words across tile content and titles. Esc or a repeated word click clears the highlight.

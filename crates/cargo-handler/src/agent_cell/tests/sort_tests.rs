@@ -442,7 +442,10 @@ fn nested_work_sorts_its_own_siblings_and_keeps_each_subtree_together() {
                 TreeColumn::Session | TreeColumn::Account | TreeColumn::Age => {
                     direction == SortDirection::Ascending
                 },
-                TreeColumn::Type
+                // Both values are blank, so both directions keep the census order.
+                TreeColumn::Model
+                | TreeColumn::Effort
+                | TreeColumn::Type
                 | TreeColumn::Role
                 | TreeColumn::Branch
                 | TreeColumn::Directory => false,
