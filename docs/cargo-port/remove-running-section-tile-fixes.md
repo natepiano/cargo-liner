@@ -1613,7 +1613,7 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 
 **Ruled out:** `proc_name` as executable spelling; a change-mark cache without a CPU gain beyond measurement spread.
 
-### Phase 43g — The install lifecycle test leaves no process behind on the Mac  · status: todo
+### Phase 43g — The install lifecycle test leaves no process behind on the Mac  · status: done
 
 **Depends on:** Phase 43f
 
@@ -1656,11 +1656,14 @@ Showrunner, 2026-11-07, from the Phase 43e gate fed9d76a: nextest marks `cli_lif
 
 Phase 43g (director, 2026-11-07) could not find three intermittent faults: none recurred in its four final suites. Its review findings F006, F007 and F008 move here. Its final gate (run 20261107T203938, natedev load 66-73) also timed two tests outside its Work Order at 1 s or more.
 
+Phase 43g used its 3 repair rounds on its findings F004 and F005 (two reader scenario tests at 1 s or more) and landed by the showrunner's ruling (A, 2026-11-08) under the user's 3-round cap rule: head 4cccc49 against main 4729a19b5 in the same hour had 1, 6 and 6 tests at 1 s or more against main's 4, 18 and 12. F004 and F005 move here as the first item, owner tile, due at this phase's checkpoint.
+
 #### Work Order
 
 **Goal:** each named fault has its owner or cause on record and is fixed by that cause, and no named test takes 1 s or more.
 
 **Spec:**
+0. **43g F004 and F005, first.** `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` took 1.082 s on natedev (load 68) and `reader_excludes_a_live_command_without_sweeping_its_capture` took 1.049 s and 1.190 s on the Mac (load 7-17) in the 43g round 3 suites (`phases/43g/fix3_summary.md`). Diagnose on the current code before any cut: split native scan, rendering and scheduling time. The 43g round 2 stage times (Mac scan gap 865 ms, CPU baselines 671 ms, required frame 1173 ms) are observations from reverted code, not a proven cause. Do not add the kernel-worker and frame-observer durations; they overlap. Keep the nested commands' `CARGOTILE_NESTED` from the product shim, the 250 ms span of CPU readings, the three sustained readings and the stopped-compiler checks. Do not change the product scan pace. The 43g attempts (rounds 1-3) are in `phases/43g/fix1_summary.md`, `fix2_summary.md` and `fix3_summary.md`.
 1. `reader_keeps_parent_family_across_its_only_childs_source_switch` (`shim_registration/reader_scenarios.rs:359`) took 1.029 s on natedev in the 43g gate and 1.900 s on the Mac in the Phase 35m gate. Measure its stages, then fix the cause. Keep every assertion and readiness wait.
 2. `shared_capture::staged_executable_installs_toolchains_and_cleans_up` (`shim_registration/shared_capture.rs:111`) took 1.634 s on natedev in the 43g gate. Measure its stages, then fix the cause. Keep every assertion.
 3. Leak owners (43g F006; items 1, 4 and 7 of Phase 43g): nextest marked `install_prints_a_completed_toolchain_before_a_later_lock_finishes`, `control_s_saves_a_favorite` and `caller_descriptors_reach_captured_cargo` leaky on the Mac in earlier gates. Run the Mac suite with Phase 43g's process observer (`phases/43g/baseline_stages.md` names it) until one of them leaks again, at most six suites. Record the owner's pid, command and parent, then fix it by its cause. If none leaks in six suites, report the six results and change no code.
@@ -1668,7 +1671,7 @@ Phase 43g (director, 2026-11-07) could not find three intermittent faults: none 
 5. CLI startup (43g F008; Phase 43g item 6): on the Mac a test's CLI spent 0.387 s before `main.rs:36`, in a dyld wait that the sampler itself can cause. Measure the startup with a method that does not attach to the process (for example, the parent's spawn time against the first line of `main`), then cut the cost. Keep the product lock retry budget unless the showrunner approves a change.
 
 **Files:**
-- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`, `reader_scenario_cases.py` and `fixture_events.py` — item 1.
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`, `reader_scenario_cases.py` and `fixture_events.py` — items 0 and 1.
 - `crates/cargo-tile/src/shim_registration/shared_capture.rs` — item 2.
 - `crates/cargo-tile/tests/cli_lifecycle.rs`, `crates/cargo-tile/tests/shim_modes.rs`, `crates/cargo-tile/src/app_global_action.rs` — items 3 and 4 (in `app_global_action.rs`, only its test module).
 - `crates/cargo-tile/src/main.rs` and `crates/cargo-tile/src/cli.rs` — item 5's measured cause. Other product files need director routing.
@@ -1677,7 +1680,7 @@ Phase 43g (director, 2026-11-07) could not find three intermittent faults: none 
 
 **Constraints from prior phases:** the Phase 43g constraints hold. No assertion is weakened. No test takes 1 s or more. Add no cleanup without ownership evidence.
 
-**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with items 1 and 2 below 1 s; items 3-5 each have a recorded owner or cause with its fix, or the run counts that show no recurrence.
+**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with each run of the item 0 tests and items 1 and 2 below 1 s; items 3-5 each have a recorded owner or cause with its fix, or the run counts that show no recurrence.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 

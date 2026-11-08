@@ -404,15 +404,15 @@ def wait_for_files(predicate: Callable[[], object], description: str, *,
     with named_wait(description):
         if predicate():
             return
-        while time.monotonic() < deadline:
-            # Subscribe before checking. A write between the check and wait stays queued.
-            changes = FixtureChanges(root)
-            try:
+        changes = FixtureChanges(root)
+        try:
+            while time.monotonic() < deadline:
                 if predicate():
                     return
                 changes.wait(max(0.0, deadline - time.monotonic()))
-            finally:
-                changes.close()
+                changes.refresh()
+        finally:
+            changes.close()
         raise AssertionError(description)
 
 class WriterNotification:
