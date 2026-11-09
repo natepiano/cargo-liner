@@ -62,6 +62,7 @@ use super::table_grid_for_whole_commands;
 #[cfg(test)]
 use super::tests;
 use super::text_default;
+use crate::census::invocation_cpu_accounting::CompileMemoryShares;
 use crate::roster::Roster;
 
 /// Retained table preparation, with its complete source identity.
@@ -194,6 +195,7 @@ pub(super) enum SummaryFootPreparation {
     Unprepared,
     Prepared {
         memory:          SummaryMemoryTotal,
+        memory_shares:   CompileMemoryShares,
         free_disk_space: SummaryDiskSpace,
         theme:           Arc<Theme>,
         foot:            Rc<SummaryFoot>,
@@ -211,11 +213,13 @@ impl SummaryFootPreparation {
         let theme = tui_pane::theme();
         if let Self::Prepared {
             memory: previous_memory,
+            memory_shares: previous_shares,
             free_disk_space: previous_disk,
             theme: previous_theme,
             foot,
         } = self
             && *previous_memory == memory
+            && *previous_shares == roster.memory_shares()
             && *previous_disk == free_disk_space
             && Arc::ptr_eq(previous_theme, &theme)
         {
@@ -247,6 +251,7 @@ impl SummaryFootPreparation {
         let foot = Rc::new(foot);
         *self = Self::Prepared {
             memory,
+            memory_shares: roster.memory_shares(),
             free_disk_space,
             theme,
             foot: Rc::clone(&foot),
@@ -654,7 +659,10 @@ impl PreparedCellRows {
         match content {
             TileContent::Summary => {
                 let rows = summary_rows(roster);
-                Self::Summary(PreparedSummaryRows::new(&rows, width, &grids.summary.0))
+                let mut summary = PreparedSummaryRows::new(&rows, width, &grids.summary.0);
+                summary.memory_rows =
+                    u16::try_from(super::summary_memory_rows(roster).count()).unwrap_or(u16::MAX);
+                Self::Summary(summary)
             },
             TileContent::Group(id) => {
                 let Some(group) = roster.groups().iter().find(|group| &group.id == id) else {
@@ -1023,8 +1031,9 @@ impl TableHeightUse {
 
 /// Summary row heights change only when a newly visible row owns a state slot.
 pub(super) struct PreparedSummaryRows {
-    layouts:    Vec<SummaryRowsAtHeight>,
-    separation: DirectorySeparation,
+    memory_rows: u16,
+    layouts:     Vec<SummaryRowsAtHeight>,
+    separation:  DirectorySeparation,
 }
 
 /// The first allocation height that uses these summary command widths.
@@ -1075,6 +1084,7 @@ impl PreparedSummaryRows {
             }
         }
         Self {
+            memory_rows: 0,
             layouts,
             separation: grid.separation,
         }
@@ -1084,21 +1094,34 @@ impl PreparedSummaryRows {
         self.layouts
             .last()
             .map_or(0, |layout| layout.rows.exact_rows())
+            .saturating_add(usize::from(self.memory_rows))
     }
 
     fn at(&self, height: u16) -> GroupRowUse {
-        self.layouts
+        let table_rows = self.demand().saturating_sub(usize::from(self.memory_rows));
+        let table_height = u16::try_from(table_rows).unwrap_or(u16::MAX);
+        let available = if self.memory_rows == 0 {
+            height
+        } else {
+            height.min(table_height)
+        };
+        let mut rows = self
+            .layouts
             .iter()
             .rev()
-            .find(|layout| layout.height <= height)
+            .find(|layout| layout.height <= available)
             .map_or(
                 GroupRowUse {
                     drawn:                  0,
                     kept:                   0,
                     separator_rows_yielded: 0,
                 },
-                |layout| layout.rows.at(height, self.separation),
-            )
+                |layout| layout.rows.at(available, self.separation),
+            );
+        let memory = height.saturating_sub(table_height).min(self.memory_rows);
+        rows.drawn = rows.drawn.saturating_add(memory);
+        rows.kept = rows.kept.saturating_add(memory);
+        rows
     }
 }
 

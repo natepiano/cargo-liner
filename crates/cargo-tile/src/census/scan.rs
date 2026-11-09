@@ -65,9 +65,13 @@ use super::direct_capture::DirectCapture;
 use super::direct_capture::NearestRegistration;
 use super::direct_capture::SelectedProof;
 use super::invocation_cpu_accounting;
+use super::invocation_cpu_accounting::CacheCommand;
 use super::invocation_cpu_accounting::CensusCadence;
+use super::invocation_cpu_accounting::CompileMemoryShares;
 use super::invocation_cpu_accounting::CompileOwner;
+use super::invocation_cpu_accounting::CompileRequestKey;
 use super::invocation_cpu_accounting::CompilerCreditRetention;
+use super::invocation_cpu_accounting::CompilerRequest;
 use super::invocation_cpu_accounting::CpuAssignment;
 use super::invocation_cpu_accounting::CpuBaseline;
 use super::invocation_cpu_accounting::InvocationCpuAccounting;
@@ -75,6 +79,7 @@ use super::invocation_cpu_accounting::InvocationCpuContributions;
 use super::invocation_cpu_accounting::InvocationMeasurements;
 use super::invocation_cpu_accounting::Measurement;
 use super::invocation_cpu_accounting::MeasurementAbsence;
+use super::invocation_cpu_accounting::MemoryReport;
 use super::process_identity;
 use super::process_identity::CaptureMembership;
 use super::process_identity::DispatchedProcess;
@@ -1470,6 +1475,7 @@ impl ScanWorker {
         Scan {
             #[cfg(test)]
             cpu_scan_publication: attributed.cpu_scan_publication,
+            memory_shares: attributed.memory_shares,
             sccache: census.sccache(),
             free_disk_space: FreeDiskSpace::read(Path::new(".")),
             groups,
@@ -1533,7 +1539,7 @@ impl<T> From<Option<T>> for ProcessField<T> {
 
 /// A PID can disappear between discovery and the detailed OS refresh.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DetailPresence {
+pub(super) enum DetailPresence {
     Observed,
     Absent,
 }
@@ -1557,7 +1563,7 @@ pub(crate) struct ProcessObservation<'scan> {
     pub(super) native_cpu:  Cell<Measurement<Duration>>,
     pub(super) started:     u64,
     pub(super) elapsed:     u64,
-    details:                DetailPresence,
+    pub(super) details:     DetailPresence,
 }
 
 #[cfg(any(not(target_os = "linux"), test))]
@@ -1795,6 +1801,48 @@ impl PreparedCpuTopology {
         }
         chain
     }
+}
+
+/// Cache processes that carry requests or own shared resident memory.
+struct CacheMemoryRoles {
+    servers:  HashSet<Pid>,
+    requests: HashMap<CompileRequestKey, Vec<Pid>>,
+}
+
+/// The evidence that assigns one detached compile's resident memory.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompileMemoryOwner {
+    /// Exactly one matching client names this requesting cargo.
+    Requesting(Pid),
+    /// No client matches, but one cargo owns the output directory.
+    ByTargetDirectory(Pid),
+    /// The bytes remain visible without a cargo assignment.
+    Unattributed(UnattributedCause),
+}
+
+/// Why detached compiler memory cannot enter a cargo bucket.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UnattributedCause {
+    /// More than one cargo owns the output directory.
+    SharedTargetDirectory,
+    /// No live cargo supplies a target directory.
+    NoTargetDirectory,
+    /// The compiler does not supply an output directory.
+    NoOutDir,
+    /// The compiler or matching client has no account observation.
+    NoUid,
+    /// No request or matching output directory names a live cargo.
+    NoRequest,
+    /// More than one client carries the same compile request.
+    SharedRequest,
+}
+
+/// One scan's disjoint cargo buckets and compiler memory shares.
+pub(super) struct CompileMemorySample {
+    /// Each row-holding cargo keeps its own resident memory bucket.
+    pub(super) cargo:  HashMap<Pid, Measurement<u64>>,
+    /// The summary publishes these bytes beside the cargo buckets.
+    pub(super) shares: CompileMemoryShares,
 }
 
 /// What phase one learned: the parent links, the cargo processes, and the
@@ -2107,7 +2155,9 @@ impl Census {
     }
 
     /// Classify every process the last refresh saw.
-    fn take<'scan>(records: impl IntoIterator<Item = &'scan ProcessObservation<'scan>>) -> Self {
+    pub(super) fn take<'scan>(
+        records: impl IntoIterator<Item = &'scan ProcessObservation<'scan>>,
+    ) -> Self {
         #[cfg(test)]
         tests::CENSUS_PREPARATIONS.with(|count| count.set(count.get() + 1));
         let records = records.into_iter();
@@ -2303,8 +2353,9 @@ impl Census {
             .iter()
             .filter_map(|pid| self.identities.get(pid).cloned())
             .collect();
-        let memory_sampled: HashMap<_, _> = self
-            .attribute_memory(&smoothing.detached)
+        let memory_sample = self.memory_sample(system);
+        let memory_sampled: HashMap<_, _> = memory_sample
+            .cargo
             .into_iter()
             .filter_map(|(pid, memory)| {
                 self.identities
@@ -2312,7 +2363,15 @@ impl Census {
                     .map(|identity| (identity.clone(), memory))
             })
             .collect();
-        let memory_report = smoothing.memory_report(now);
+        let memory_report = if memory_sample.shares == smoothing.reported_memory_shares {
+            smoothing.memory_report(now)
+        } else {
+            // A share transfer publishes every bucket from the same scan.
+            MemoryReport::Replace
+        };
+        if memory_report == MemoryReport::Replace {
+            smoothing.reported_memory_shares = memory_sample.shares;
+        }
         let reported = smoothing.settle(&sampled, &identities, now);
         let reported_memory = smoothing.report_memory(&memory_sampled, &identities, memory_report);
         InvocationMeasurements {
@@ -2322,6 +2381,7 @@ impl Census {
                 &self.identities,
                 now,
             ),
+            memory_shares:                     smoothing.reported_memory_shares,
             compilers:                         self.attribute_compilers(),
             cpu:                               self
                 .cargo
@@ -2415,29 +2475,180 @@ impl Census {
             .collect()
     }
 
-    /// Resident bytes per row-holding cargo: its own process and every process assigned to it.
-    fn attribute_memory(&self, detached: &HashMap<Pid, Pid>) -> HashMap<Pid, Measurement<u64>> {
-        let mut buckets = HashMap::<Pid, u64>::new();
-        for (&pid, &bytes) in &self.memory {
-            let owner = match self.cpu_assignment(pid, detached) {
-                CpuAssignment::Direct(owner) | CpuAssignment::Detached { owner, .. } => owner,
-                CpuAssignment::Unassigned => continue,
-            };
-            let bucket = buckets.entry(owner).or_default();
-            *bucket = bucket.saturating_add(bytes);
-        }
-        self.cargo
+    /// Assign each process once from the fields already collected for this scan.
+    pub(super) fn memory_sample(&self, system: &ProcessObservations<'_>) -> CompileMemorySample {
+        let cargos: HashSet<_> = self.live_cargo().collect();
+        let CacheMemoryRoles { servers, requests } = self.cache_memory_roles(system);
+        let targets: HashMap<_, _> = cargos
             .iter()
-            .map(|&pid| {
-                let memory = match self.memory.get(&pid) {
-                    Some(&bytes) if bytes > 0 => {
-                        Measurement::Reading(buckets.get(&pid).copied().unwrap_or_default())
-                    },
-                    _ => Measurement::Unavailable(MeasurementAbsence::ReadFailed),
-                };
-                (pid, memory)
+            .filter_map(|&cargo| {
+                let process = system.process(cargo)?;
+                let target = invocation_cpu_accounting::cargo_target_directory(process).ok()?;
+                Some((cargo, target))
             })
-            .collect()
+            .collect();
+        let mut compiles = HashMap::new();
+        for &(pid, driver) in &self.compilers {
+            if driver != RUSTC_BINARY {
+                continue;
+            }
+            let boundary = self
+                .cpu_ancestry(pid)
+                .iter()
+                .find(|ancestor| servers.contains(ancestor) || cargos.contains(ancestor));
+            if boundary.is_some_and(|ancestor| cargos.contains(ancestor)) {
+                continue;
+            }
+            let owner = self.compile_memory_owner(pid, system, &requests, &targets);
+            compiles.insert(pid, owner);
+        }
+        let mut buckets = HashMap::<Pid, u64>::new();
+        let mut shares = CompileMemoryShares::default();
+        for (&pid, &bytes) in &self.memory {
+            if servers.contains(&pid) {
+                shares.shared_compiler_cache = shares.shared_compiler_cache.saturating_add(bytes);
+                continue;
+            }
+            let owner = self.cpu_ancestry(pid).iter().find_map(|ancestor| {
+                compiles.get(ancestor).copied().or_else(|| {
+                    if servers.contains(ancestor) {
+                        Some(CompileMemoryOwner::Unattributed(
+                            UnattributedCause::NoRequest,
+                        ))
+                    } else {
+                        cargos
+                            .contains(ancestor)
+                            .then_some(CompileMemoryOwner::Requesting(*ancestor))
+                    }
+                })
+            });
+            match owner {
+                Some(
+                    CompileMemoryOwner::Requesting(owner)
+                    | CompileMemoryOwner::ByTargetDirectory(owner),
+                ) => {
+                    if self.cargo.contains(&owner) {
+                        let bucket = buckets.entry(owner).or_default();
+                        *bucket = bucket.saturating_add(bytes);
+                    }
+                },
+                Some(CompileMemoryOwner::Unattributed(_)) => {
+                    shares.unattributed = shares.unattributed.saturating_add(bytes);
+                },
+                None => {},
+            }
+        }
+        CompileMemorySample {
+            cargo: self
+                .cargo
+                .iter()
+                .map(|&pid| {
+                    let memory = match self.memory.get(&pid) {
+                        Some(&bytes) if bytes > 0 => {
+                            Measurement::Reading(buckets.get(&pid).copied().unwrap_or_default())
+                        },
+                        _ => Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+                    };
+                    (pid, memory)
+                })
+                .collect(),
+            shares,
+        }
+    }
+
+    /// `cache_memory_roles` indexes requests and discovery servers without another process read.
+    fn cache_memory_roles(&self, system: &ProcessObservations<'_>) -> CacheMemoryRoles {
+        let mut servers = HashSet::new();
+        let mut requests: HashMap<CompileRequestKey, Vec<Pid>> = HashMap::new();
+        for &(pid, driver) in &self.compilers {
+            if driver != SCCACHE_BINARY {
+                continue;
+            }
+            let Some(process) = system.records.get(&pid) else {
+                continue;
+            };
+            if matches!(process.argv, ProcessField::Unavailable) {
+                // Discovery retains the cache server without another process read.
+                if self.cpu_owners(pid).next().is_none() {
+                    servers.insert(pid);
+                }
+                continue;
+            }
+            match invocation_cpu_accounting::cache_command(process.cmd()) {
+                CacheCommand::CompileRequest(arguments) => {
+                    requests
+                        .entry(CompileRequestKey::new(arguments))
+                        .or_default()
+                        .push(pid);
+                },
+                CacheCommand::Server => {
+                    servers.insert(pid);
+                },
+                CacheCommand::Administration => {},
+            }
+        }
+        CacheMemoryRoles { servers, requests }
+    }
+
+    /// A matching request takes precedence over output-directory evidence.
+    fn compile_memory_owner(
+        &self,
+        pid: Pid,
+        system: &ProcessObservations<'_>,
+        requests: &HashMap<CompileRequestKey, Vec<Pid>>,
+        targets: &HashMap<Pid, PathBuf>,
+    ) -> CompileMemoryOwner {
+        let Some(process) = system.process(pid) else {
+            return CompileMemoryOwner::Unattributed(UnattributedCause::NoRequest);
+        };
+        if process.uid == ProcessField::Unavailable {
+            return CompileMemoryOwner::Unattributed(UnattributedCause::NoUid);
+        }
+        let arguments = process.cmd().get(1..).unwrap_or_default();
+        let matching = CompilerRequest::new(arguments).matching_clients(requests);
+        if !matching.is_empty() {
+            let mut owners = Vec::new();
+            for &client in &matching {
+                let Some(client_process) = system.process(client) else {
+                    continue;
+                };
+                if client_process.uid == ProcessField::Unavailable {
+                    return CompileMemoryOwner::Unattributed(UnattributedCause::NoUid);
+                }
+                if client_process.uid == process.uid {
+                    owners.push(client);
+                }
+            }
+            return match owners.as_slice() {
+                [client] => self.cpu_owners(*client).next().map_or(
+                    CompileMemoryOwner::Unattributed(UnattributedCause::NoRequest),
+                    CompileMemoryOwner::Requesting,
+                ),
+                [] => CompileMemoryOwner::Unattributed(UnattributedCause::NoRequest),
+                [_, _, ..] => CompileMemoryOwner::Unattributed(UnattributedCause::SharedRequest),
+            };
+        }
+        let Ok(directory) =
+            invocation_cpu_accounting::process_argument_path(process, RUSTC_OUT_DIR_FLAG)
+        else {
+            return CompileMemoryOwner::Unattributed(UnattributedCause::NoOutDir);
+        };
+        if targets.is_empty() {
+            return CompileMemoryOwner::Unattributed(UnattributedCause::NoTargetDirectory);
+        }
+        let owners = targets.iter().filter_map(|(&owner, target)| {
+            system
+                .process(owner)
+                .filter(|cargo| cargo.uid == process.uid && directory.starts_with(target))
+                .map(|_| owner)
+        });
+        match invocation_cpu_accounting::compile_owner(owners) {
+            CompileOwner::Unique(owner) => CompileMemoryOwner::ByTargetDirectory(owner),
+            CompileOwner::Ambiguous => {
+                CompileMemoryOwner::Unattributed(UnattributedCause::SharedTargetDirectory)
+            },
+            CompileOwner::Unknown => CompileMemoryOwner::Unattributed(UnattributedCause::NoRequest),
+        }
     }
 
     /// Row eligibility never removes a live invocation from CPU ownership.
@@ -4257,14 +4468,6 @@ impl CensusSequence {
         )
     }
 
-    /// Resident bytes per cargo when `detached` names each compiler root's owner.
-    pub(super) fn attribute_memory(
-        records: &ProcessObservations<'_>,
-        detached: &HashMap<Pid, Pid>,
-    ) -> HashMap<Pid, Measurement<u64>> {
-        Census::take(records.records.values()).attribute_memory(detached)
-    }
-
     fn sample_attributed(
         &mut self,
         records: &ProcessObservations<'_>,
@@ -4277,11 +4480,13 @@ impl CensusSequence {
         census.identities = self.smoothing.identities.observe(&census.lifetimes);
         census.registration_rows.clone_from(&self.registration_rows);
         census.prepare(records, capture, excluded);
+        let memory = census.memory_sample(records);
         let attributed = InvocationMeasurements {
             cpu_scan_publication: CpuScanPublication::Unobserved,
+            memory_shares: memory.shares,
             compilers: census.attribute_compilers(),
             cpu,
-            memory: census.attribute_memory(&HashMap::new()),
+            memory: memory.cargo,
         };
         census.groups(records, &attributed, home, capture)
     }
@@ -4340,6 +4545,7 @@ impl CensusSequence {
                 cpu_scan_publication: CpuScanPublication::Unobserved,
                 cpu:                  HashMap::new(),
                 memory:               HashMap::new(),
+                memory_shares:        CompileMemoryShares::default(),
                 compilers:            HashMap::new(),
             },
             ScannerHome::Known(Path::new("/writer")),
@@ -4365,6 +4571,44 @@ pub(crate) mod tests {
     }
 
     use crate::roster::Roster;
+
+    #[test]
+    fn excluded_cargo_and_its_compilers_stay_out_of_memory_shares() {
+        let build = ["cargo", "build"].map(OsString::from);
+        let check = ["cargo", "check"].map(OsString::from);
+        let compiler = ["rustc", "--crate-name", "application"].map(OsString::from);
+        let request = [vec![OsString::from("sccache")], compiler.to_vec()].concat();
+        let server = ["sccache", "--start-server"].map(OsString::from);
+        let input = [
+            (100, "cargo", build.as_slice(), 0, 10),
+            (200, "cargo", check.as_slice(), 0, 20),
+            (201, "sccache", request.as_slice(), 200, 2),
+            (202, "rustc", compiler.as_slice(), 200, 30),
+            (500, "sccache", server.as_slice(), 0, 0),
+            (501, "rustc", compiler.as_slice(), 500, 40),
+        ];
+        let records =
+            ProcessObservations::new(input.into_iter().map(|(pid, name, argv, parent, memory)| {
+                let mut process = ProcessObservation::cargo(pid, argv);
+                process.name = ProcessField::Observed(OsStr::new(name));
+                process.parent = if parent == 0 {
+                    ProcessField::Unavailable
+                } else {
+                    ProcessField::Observed(Pid::from_u32(parent))
+                };
+                process.memory = memory;
+                process
+            }));
+        let mut census = Census::take(records.records.values());
+        census.prepare(&records, &Capture::default(), &["check".to_owned()]);
+        let sample = census.memory_sample(&records);
+        assert_eq!(
+            sample.cargo,
+            HashMap::from([(Pid::from_u32(100), Measurement::Reading(10))])
+        );
+        assert_eq!(sample.shares, CompileMemoryShares::default());
+    }
+
     #[derive(Clone, Copy)]
     pub(crate) enum FixtureExecution {
         OriginOnly,
@@ -4700,6 +4944,7 @@ pub(crate) mod tests {
     fn no_measurements() -> InvocationMeasurements {
         InvocationMeasurements {
             cpu_scan_publication: CpuScanPublication::Unobserved,
+            memory_shares:        CompileMemoryShares::default(),
             compilers:            HashMap::new(),
             cpu:                  HashMap::new(),
             memory:               HashMap::new(),
