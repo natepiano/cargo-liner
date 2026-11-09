@@ -1328,30 +1328,53 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 
 ### Phase 29 — Move-only splits  · status: todo
 
-**Depends on:** none (Phase 28 was dropped, 2026-10-29).
+**Depends on:** none. Phase 28 was dropped, 2026-10-29. The `census/scan.rs` split moved to Phase 29a, after Phase 39 (director, 2026-11-09: both change `census/scan.rs`; items 2 and 3 run beside Phase 39).
 
 #### Work Order
 
-**Goal:** Three large files are split into submodules by type cluster, and the moved code does not change (showrunner approved, 2026-10-27). Each move keeps the code the same, thus the review examines only module paths and imports.
+**Goal:** Two large `tui_pane` files are split into submodules by type cluster, and the moved code does not change (showrunner approved, 2026-10-27). Each move keeps the code the same, thus the review examines only module paths and imports.
 
 **Spec:**
 
-1. **`census/scan.rs` is split by type cluster** (style item 2). Move the production code of `crates/cargo-tile/src/census/scan.rs` into `census/` submodules, one submodule for each type cluster.
+1. Moved to Phase 29a.
 2. **`tiles/grid.rs` and `tiles/draw.rs` are split by type cluster** (style item 46). Move the code of `crates/tui_pane/src/tiles/grid.rs` and `crates/tui_pane/src/tiles/draw.rs` into submodules, one submodule for each type cluster. Handler phase 27 is merged (main 3f00dce9). Claim the berth reservation for these files `--after` the handler's reservation for them. Handler phase 36 adds a small `FootReadout` hook in `draw.rs`, and it claims the file before this phase.
 3. **`TileSettings::min_tile_height` is a `NonZeroU16`** (tile-unit add-on, 2026-10-27). Keep the value as a `NonZeroU16`: the private field and the default. The public setter does not change. This removes the last `NonZeroU16` fallback from style item 17. Other reservations hold `crates/tui_pane/src/tiles/settings.rs`: claim it `--after` them. This item is not a move, thus the review examines its code.
 
 **Files:**
-- `crates/cargo-tile/src/census/` — item 1: `scan.rs`, `mod.rs` and the new submodules.
 - `crates/tui_pane/src/tiles/` — item 2: `grid.rs`, `draw.rs`, `mod.rs` and the new submodules.
 - `crates/tui_pane/src/tiles/settings.rs` — item 3.
 
-**Workers:** 2 writers — `impl`: census modules, imports, visibility and their tests; `grid`: `tui_pane` tile modules, settings, exports and their tests. Follow active edits to the files this phase moves.
+**Workers:** 1 writer — `speed` (the retained Phase 58 writer; no new worker opens, showrunner 2026-11-08): `tui_pane` tile modules, settings, exports and their tests. Follow active edits to the files this phase moves.
 
-**Constraints from prior phases:** Phase 28 does not land. Use the current branch checkpoint at dispatch. A move changes no code: only module paths, `use` lines and visibility that the new module paths need. No `tui_pane` public signature changes. No new `#[allow]` or `#[expect]`; no test takes a second. Keep `linux_process_stat.rs` as the Linux stat parser when splitting census code. Phase 43b added `InvocationLifetimeReads` (`census/scan.rs` ~1034), whose `apply` adds Mac lifetime evidence to the one `Census` of a scan, and the test counters `CENSUS_PREPARATIONS` and `TOPOLOGY_PREPARATIONS`; a split keeps one `Census` and one CPU topology per scan, and keeps `one_scan_prepares_one_census_and_one_topology` green.
+**Constraints from prior phases:** Phase 28 does not land. Use the current branch checkpoint at dispatch. A move changes no code: only module paths, `use` lines and visibility that the new module paths need. No `tui_pane` public signature changes. No new `#[allow]` or `#[expect]`; no test takes a second.
 
 **Acceptance gate:**
-- `verify.sh lint` and `verify.sh test` for `tui_pane`, `cargo-tile`, `cargo-handler` and `cargo-port`, green, with no test changed by items 1 and 2.
-- The review of items 1 and 2 finds no change apart from module paths and imports.
+- `verify.sh lint` and `verify.sh test` for `tui_pane`, `cargo-tile`, `cargo-handler` and `cargo-port`, green, with no test changed by item 2.
+- The review of item 2 finds no change apart from module paths and imports.
+- Change-review line: none (no visible change).
+
+### Phase 29a — The census scan file splits by type cluster  · status: todo
+
+**Depends on:** Phase 39 (both change `census/scan.rs`).
+
+#### Work Order
+
+**Goal:** `census/scan.rs` is split into submodules by type cluster, and the moved code does not change (showrunner approved, 2026-10-27). The review examines only module paths and imports.
+
+**Spec:**
+
+1. **`census/scan.rs` is split by type cluster** (style item 2). Move the production code of `crates/cargo-tile/src/census/scan.rs` into `census/` submodules, one submodule for each type cluster.
+
+**Files:**
+- `crates/cargo-tile/src/census/` — `scan.rs`, `mod.rs` and the new submodules.
+
+**Workers:** 1 writer — `impl`: census modules, imports, visibility and their tests.
+
+**Constraints from prior phases:** Use the current branch checkpoint at dispatch, which holds Phase 39. A move changes no code: only module paths, `use` lines and visibility that the new module paths need. No new `#[allow]` or `#[expect]`; no test takes a second. Keep `linux_process_stat.rs` as the Linux stat parser. Phase 43b added `InvocationLifetimeReads`, whose `apply` adds Mac lifetime evidence to the one `Census` of a scan, and the test counters `CENSUS_PREPARATIONS` and `TOPOLOGY_PREPARATIONS`; a split keeps one `Census` and one CPU topology per scan, and keeps `one_scan_prepares_one_census_and_one_topology` green. Keep the Phase 43i deadline sleep in `ScanWorker::scan` (`NextRefresh::deadline`).
+
+**Acceptance gate:**
+- `verify.sh lint` and `verify.sh test cargo-tile`, green, with no test changed.
+- The review finds no change apart from module paths and imports.
 - Change-review line: none (no visible change).
 
 ### Phase 32m — CPU fix 1 on main  · status: done
@@ -1945,7 +1968,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - At merge, the showrunner installs cargo-tile on both machines.
 - Change-review line: none (no visible change), or the faster cargo call if a test can show it.
 
-### Phase 56 — A checkpoint release frees only its own phase's reservation  · status: todo
+### Phase 56 — A checkpoint release frees only its own phase's reservation  · status: done
 
 **Depends on:** none. Phases 31 and 43i join the tile worktree only after this phase merges and berth is installed.
 
@@ -2238,7 +2261,7 @@ Tests stay under 1 s each. The Phase 24 landing rule and the Phase 27 CPU check 
 
 **Sort (2026-11-06):** the `run` ink lift in item 5 is dropped (user, 2026-11-06: 'i don't want these style changes i didn't ask for'). All other items fix a wrong label, lost rows or draw time, and stay.
 
-**Depends on:** Phase 23, Phase 31
+**Depends on:** Phase 23, Phase 39 (both change `render.rs` and `render/frame_preparation.rs`), Phase 29 (it splits `tiles/draw.rs` and `tiles/grid.rs`, which item 5 edits). Phase 31 is parked; this phase uses no Phase 31 behavior and does not wait for it (director, 2026-11-09). A Phase 31 restart rebases on this phase.
 
 #### Work Order
 

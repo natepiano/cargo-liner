@@ -143,6 +143,25 @@ pub(crate) enum ReservationProtection<'scopes> {
 }
 
 impl MergeExtent {
+    /// Return `MergeExtentKey.reservation_group` from the last successful `MergeExtent`
+    /// observation.
+    pub(crate) const fn holder_coverage(&self) -> &HolderMergeExtentCoverage {
+        match self {
+            Self::Empty { key }
+            | Self::Protected { key, .. }
+            | Self::Unavailable {
+                retained_evidence:
+                    RetainedMergeEvidence::Empty { key } | RetainedMergeEvidence::Protected { key, .. },
+                ..
+            } => &key.reservation_group,
+            Self::NotDerived { .. }
+            | Self::Unavailable {
+                retained_evidence: RetainedMergeEvidence::NotDerived { .. },
+                ..
+            } => &HolderMergeExtentCoverage::FullHolder,
+        }
+    }
+
     /// Normalize a successfully derived surface, admitting an ordinary empty answer.
     pub(crate) fn derived(key: MergeExtentKey, scopes: Vec<ReservationScope>) -> Self {
         match ReservationScopeSet::try_from(scopes) {

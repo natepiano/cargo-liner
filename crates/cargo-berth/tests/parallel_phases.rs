@@ -580,6 +580,9 @@ fn assert_departed_sibling_paths_remain_protected(retarget: bool) {
 
 #[test]
 fn parallel_phases_release_in_one_call_after_their_own_work_is_clean_and_merged() {
+    #[path = "../../cargo-berth-test-support/fixtures/active_phase_claim.rs"]
+    mod active_phase_claim;
+
     let repository = initialized_repository();
     let trunk = repository.path();
     let unit_directory = tempfile::tempdir().expect("unit worktree directory");
@@ -587,6 +590,9 @@ fn parallel_phases_release_in_one_call_after_their_own_work_is_clean_and_merged(
     GIT.add_worktree_without_hooks(trunk, unit, "unit", "main");
     let first = open_phase(unit, "file:a.rs", "dir-sid.phase-1");
     let second = open_phase(unit, "file:b.rs", "dir-sid.phase-2");
+    let active =
+        active_phase_claim::append_active_phase_claim(&trunk.join(JOURNAL_PATH), &second, "c.rs")
+            .expect("the active phase claim should append");
     fs::write(unit.join("a.rs"), "// first phase work\n").expect("first phase file");
     fs::write(unit.join("b.rs"), "// second phase work\n").expect("second phase file");
     GIT.run(unit, ["add", "a.rs"]);
@@ -649,7 +655,13 @@ fn parallel_phases_release_in_one_call_after_their_own_work_is_clean_and_merged(
     );
     let board = phase_board(unit);
     let pending = reservation_row(&board, &second);
-    assert_eq!(pending["lifecycle"]["stage"], "outstanding", "{board}");
+    active_phase_claim::assert_phase_claims(
+        &board,
+        &[
+            (&second, "outstanding", "b.rs"),
+            (&active, "active", "c.rs"),
+        ],
+    );
     assert_eq!(
         pending["merge_extent"]["scopes"],
         serde_json::json!([{"kind": "file", "path": "b.rs"}]),
