@@ -1228,10 +1228,7 @@ pub(super) fn render_git_pane_body(
 
     let flat_fields = panes::git_fields_from_data(&git_data);
     let description = panes::git_has_description_row(&git_data);
-    let description_rows = match description {
-        GitDescription::Present => 1,
-        GitDescription::Absent => 0,
-    };
+    let description_rows = description.row_count();
     let total_rows = description_rows
         + flat_fields.len()
         + git_data.pull_requests.rows.len()
@@ -1459,6 +1456,15 @@ pub(in crate::tui::panes) fn git_lower_content_height(
 pub(in crate::tui) enum GitDescription {
     Present,
     Absent,
+}
+
+impl GitDescription {
+    pub(in crate::tui::panes) const fn row_count(self) -> usize {
+        match self {
+            Self::Present => 1,
+            Self::Absent => 0,
+        }
+    }
 }
 
 /// Total vertical rows the Git pane's content occupies. When the repo has a

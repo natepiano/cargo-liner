@@ -425,10 +425,7 @@ pub fn git_has_description_row(data: &GitData) -> GitDescription {
 }
 
 pub fn git_row_at(data: &GitData, pos: usize) -> Option<GitRow<'_>> {
-    let description_rows = match git_has_description_row(data) {
-        GitDescription::Present => 1,
-        GitDescription::Absent => 0,
-    };
+    let description_rows = git_has_description_row(data).row_count();
     if description_rows > 0 && pos == 0 {
         return data.description.as_deref().map(GitRow::Description);
     }
