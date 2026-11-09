@@ -803,12 +803,15 @@ impl NextRefresh {
         }
     }
 
-    fn start(&mut self, now: Instant, pace: RefreshPace) -> Result<(), RefreshNotDue> {
-        let permitted = match pace {
+    const fn deadline(&self, pace: RefreshPace) -> Instant {
+        match pace {
             RefreshPace::Active => self.active,
             RefreshPace::Idle => self.idle,
-        };
-        if now < permitted {
+        }
+    }
+
+    fn start(&mut self, now: Instant, pace: RefreshPace) -> Result<(), RefreshNotDue> {
+        if now < self.deadline(pace) {
             return Err(RefreshNotDue);
         }
         self.active = now + self.poll;
@@ -1398,7 +1401,12 @@ impl ScanWorker {
                 ScanInput::Fresh(fresh) => return self.scan_discovery(fresh, capture, now),
                 ScanInput::AwaitingRefresh => {},
             }
-            thread::sleep(self.cadence.poll / 2);
+            let deadline = self
+                .refresh
+                .next
+                .deadline(self.pace)
+                .min(now + self.cadence.poll);
+            thread::sleep(deadline.saturating_duration_since(Instant::now()));
         }
     }
 

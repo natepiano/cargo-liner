@@ -1638,7 +1638,7 @@ Showrunner, 2026-11-02 (rule: no multi-second tests). Ten Mac cargo-tile tests t
 
 **Ruled out:** overlapping the serial scenario waits by setting `CARGOTILE_NESTED` in the fixture and timing from an earlier native origin; it lets the reading span fall to 100 ms and hides a broken product export.
 
-### Phase 43i — Intermittent test faults get their owners, and two more slow tests go under 1 s  · status: todo
+### Phase 43i — Intermittent test faults get their owners, and two more slow tests go under 1 s  · status: done
 
 **Depends on:** Phase 43g
 
@@ -1676,7 +1676,7 @@ Phase 43g used its 3 repair rounds on its findings F004 and F005 (two reader sce
 
 **Depends on:** Phase 43i
 
-Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). Its round 3 head had 0, 1 and 1 cargo-tile tests at 1 s or more (natedev, Mac, Mac). The same-hour base had 0 and 3 (natedev, Mac). Its finding F001 stays open and moves here, owner tile, due at this phase's checkpoint.
+Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). Its round 3 head had 0, 1 and 1 cargo-tile tests at 1 s or more (natedev, Mac, Mac). The same-hour base had 0 and 5 (natedev, Mac; `phases/43i/base_compare.txt`, Mac suite 1; Mac suite 2 was cancelled). Its finding F001 stays open and moves here, owner tile, due at this phase's checkpoint.
 
 #### Work Order
 
@@ -1686,7 +1686,13 @@ Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). It
 1. The test took 1.707 s and 1.160 s in the two 43i round 3 Mac suites (load 13-19), and 0.413 s on natedev (`phases/43i/fix3_summary.md`). Its stage split (`phases/43i/fix3_stages.md`) names two costs outside the 43i files:
    - Native capture exec call to constructor: 238 ms.
    - Native fixture preparation: 168 ms, on the path `hook::fixture_runner` → `native_fixture::executable` → `setup_reader.py native-fixture`. `native_fixture.rs:31` reads the receipt; its cold branch starts `setup_reader.py` at line 38, which strips and signs the fixture on a cache miss (`setup_reader.py:87`).
-2. Measure both costs again on the current code, with a method that does not attach to the process. Then fix the larger one at its cause. Cut the other if it is still a cause.
+2. Measure first. The 43i probe does not isolate either cost: it logs before its constructor timestamp and injects a library (Astra review, `/tmp/claude/astra/20261109T072032Z-2693821/review.md`).
+   - Compare launches with and without the probe, at the same executable and load. Take monotonic timestamps before any log write. Time first and repeated launches apart.
+   - Split preparation into receipt hit, artifact cache hit, lock wait, strip and sign. Later preparations in the same file took 0.380 ms and 0.166 ms, so 168 ms may be a first-use cost only.
+   - Record the full source-switch timeline in loaded suites, with an empty and a populated fixture cache.
+   Then fix the largest measured cost at its cause.
+5. If preparation moves to suite setup, give setup the product executable path (`CARGO_BIN_EXE_cargo-tile`), not the `unit_tests` executable it receives now (`setup_reader.py:118`). Publish the prepared path to Rust atomically, keep the source identity checks, and keep the direct-run fallback. Preload the final signed artifact with a harmless call such as `--version`. Report setup time apart from test time.
+6. `reader_scenario_cases.py:178` copies and signs the named shell for each source-switch fixture. If the timeline shows this cost, prepare the shell once. Keep its executable name, the carrier's process identity, guardian ownership and readiness waits. Preload the artifact the test runs; a later copy makes a new inode.
 3. Keep every assertion and readiness wait. Keep the product `CARGOTILE_NESTED`, the 250 ms span of CPU readings, the three sustained readings and the stopped-compiler checks. Do not change the product scan pace.
 4. `progress::capture::tests::unknown_staging_inspections_leave_allowance_for_ended_pairs_across_roots` took 1.009 s on the Mac in a 43i round 2 suite. Its largest stage starts at `progress/capture.rs:2088` (`phases/43i/fix3_stages.md`). Measure it again; if it is at 1 s or more in a gate suite, fix its cause.
 
@@ -1694,13 +1700,14 @@ Phase 43i landed at its 3-round cap by the count rule (director, 2026-11-09). It
 - `crates/cargo-tile/src/hook.rs` — only `fixture_runner` and the native capture entry's startup.
 - `crates/cargo-tile/src/shim_registration/native_fixture.rs` and `crates/cargo-tile/src/shim_registration/setup_reader.py` — the fixture preparation path.
 - `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — the test.
+- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — item 6, the named-shell preparation.
 - `crates/cargo-tile/src/progress/capture.rs` — item 4, test module only.
 
 **Workers:** 1 writer — `test`.
 
 **Constraints from prior phases:** the Phase 43i constraints hold. Phase 40 replaced the sh/tee stderr mirror with a native pump thread in `hook.rs`; keep it.
 
-**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with each run of the item 1 and item 4 tests below 1 s; lint.
+**Acceptance gate:** two Mac full suites and one natedev full suite, `--no-cache`, with each run of the item 1 and item 4 tests and of `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.147 s in 43i round 3) below 1 s; lint.
 
 ### Phase 43 — The reader uses less CPU under load  · status: folded into Phase 43a
 

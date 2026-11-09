@@ -1025,7 +1025,8 @@ fn account_child_has_account_environment_and_only_machine_report_lines() {
     assert_report_flag_is_hidden(&account, "install");
 }
 
-/// Record the real child's environment and machine output before forwarding both streams.
+/// Let `observe-account` record the real child's credentials and environment.
+/// Forward both output streams without a Python process.
 fn observe_account_child(directory: &Path) -> PathBuf {
     let observer = directory.join("observe-account");
     let binary = cargo_tile()
@@ -1035,24 +1036,16 @@ fn observe_account_child(directory: &Path) -> PathBuf {
     fs::write(
         &observer,
         format!(
-            r#"#!/bin/sh
-exec python3 -S - '{binary}' "$@" <<'PY'
-import os
-from pathlib import Path
-import subprocess
-import sys
-
-home = Path(os.environ['HOME'])
-(home / 'child-uid').write_text(str(os.geteuid()) + '\n')
-(home / 'child-gid').write_text(str(os.getegid()) + '\n')
-(home / 'child-arguments').write_text(''.join(argument + '\n' for argument in sys.argv[2:]) or '\n')
-(home / 'child-environment').write_text(os.environ['HOME'] + '\n' + os.environ['RUSTUP_HOME'] + '\n')
-with (home / 'child-output').open('wb') as output, (home / 'child-error').open('wb') as error:
-    child = subprocess.run(sys.argv[1:], stdout=output, stderr=error)
-sys.stdout.buffer.write((home / 'child-output').read_bytes())
-sys.stderr.buffer.write((home / 'child-error').read_bytes())
-sys.exit(child.returncode if child.returncode >= 0 else 128 - child.returncode)
-PY
+            r#"#!/bin/bash
+printf '%s\n' "$EUID" > "$HOME/child-uid"
+/usr/bin/id -g > "$HOME/child-gid"
+printf '%s\n' "$@" > "$HOME/child-arguments"
+printf '%s\n%s\n' "$HOME" "$RUSTUP_HOME" > "$HOME/child-environment"
+'{binary}' "$@" > "$HOME/child-output" 2> "$HOME/child-error"
+child_status=$?
+cat "$HOME/child-output"
+cat "$HOME/child-error" >&2
+exit "$child_status"
 "#
         ),
     )
