@@ -26,6 +26,7 @@ use crate::BLOCK_BORDER_WIDTH;
 use crate::BarRegion;
 use crate::BarSlot;
 use crate::GlobalShortcutRow;
+use crate::HintToggleState;
 use crate::Keymap;
 use crate::Mode;
 use crate::OverlayAction;
@@ -37,6 +38,7 @@ use crate::SECTION_HEADER_INDENT;
 use crate::SECTION_ITEM_INDENT;
 use crate::Viewport;
 use crate::ViewportOverflow;
+use crate::bar::HintValue;
 use crate::label_color;
 use crate::layout;
 use crate::render_overflow_affordance;
@@ -50,13 +52,20 @@ struct RenderInputs {
     content_width:  u16,
 }
 
+/// Toggle descriptions change only when the app changes the toggle values.
+struct ShortcutToggleDescription {
+    action: &'static str,
+    label:  String,
+}
+
 /// Framework-owned selectable global-shortcuts overlay.
 pub struct GlobalShortcutsPane {
-    line_targets: Vec<Option<usize>>,
-    viewport:     Viewport,
+    line_targets:        Vec<Option<usize>>,
+    toggle_descriptions: Vec<ShortcutToggleDescription>,
+    viewport:            Viewport,
     /// Render-time focus snapshot stamped by the embedding crate's
     /// overlay dispatcher right before render.
-    pub focus:    RenderFocus,
+    pub focus:           RenderFocus,
 }
 
 impl GlobalShortcutsPane {
@@ -64,10 +73,25 @@ impl GlobalShortcutsPane {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            line_targets: Vec::new(),
-            viewport:     Viewport::new(),
-            focus:        RenderFocus::inactive(),
+            line_targets:        Vec::new(),
+            toggle_descriptions: Vec::new(),
+            viewport:            Viewport::new(),
+            focus:               RenderFocus::inactive(),
         }
+    }
+
+    /// Replace the app's toggle values without changing keymap bindings.
+    pub fn set_toggle_hints<A: Action>(&mut self, hints: &[crate::StatusLineGlobal<A>]) {
+        self.toggle_descriptions.clear();
+        self.toggle_descriptions.extend(
+            hints
+                .iter()
+                .filter(|hint| matches!(hint.hint_value(), HintValue::Toggle(HintToggleState::On)))
+                .map(|hint| ShortcutToggleDescription {
+                    action: hint.action_key(),
+                    label:  format!("{} {}", hint.label(), hint.toggle_label()),
+                }),
+        );
     }
 
     /// Borrow the framework-owned viewport state.
@@ -138,7 +162,27 @@ impl GlobalShortcutsPane {
     {
         let rows = keymap.global_shortcut_rows();
         self.viewport.set_len(rows.len());
-        let inputs = render_inputs(&rows, &self.viewport, self.focus.pane_focus_state, mode);
+        let mut inputs = render_inputs(&rows, &self.viewport, self.focus.pane_focus_state, mode);
+        for (line, target) in inputs.lines.iter_mut().zip(&inputs.line_targets) {
+            if let Some(index) = target
+                && let Some(toggle) = self
+                    .toggle_descriptions
+                    .iter()
+                    .find(|toggle| toggle.action == rows[*index].action)
+                && let Some(description) = line.spans.first_mut()
+                && let Some(prefix) = description
+                    .content
+                    .split_once(rows[*index].description)
+                    .map(|parts| parts.0)
+            {
+                description.content = format!(
+                    "{prefix}{:<width$}",
+                    toggle.label,
+                    width = SHORTCUT_DESCRIPTION_WIDTH
+                )
+                .into();
+            }
+        }
         let width = inputs.content_width.min(area.width.saturating_sub(4));
         let line_count = inputs.lines.len();
         let height = popup_height(line_count, area.height);
