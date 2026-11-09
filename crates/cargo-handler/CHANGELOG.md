@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Show `compacting` while Claude or Codex compacts a conversation, including during detached runs.
+
 - Astra designer and Astra reviewer sessions show under their staff manager with separate role words, colors, and work states.
 
 - Agent tiles show each conversation's model and reasoning effort in separate columns.

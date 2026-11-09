@@ -1151,7 +1151,7 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 **Gotchas:**
 - A herdr unit has no `mesh_roster.json` and no director file; its run record names the worker by seat name only.
 
-### Phase 72 — A compacting session says compacting  · status: todo
+### Phase 72 — A compacting session says compacting  · status: done
 
 **Depends on:** Phase 71 (`census/activity.rs`). `crates/cargo-handler/CHANGELOG.md` waits for Phases 21, 69, 70 and 71.
 

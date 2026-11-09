@@ -30,6 +30,7 @@ use super::account::Program;
 use super::classify;
 use super::classify::ProcessEntry;
 use super::codex_names::SessionName;
+use super::compaction_markers::CompactionTranscript;
 use super::hierarchy::FileRevision;
 use super::model::ConversationModel;
 use super::transcript::TranscriptModels;
@@ -348,6 +349,90 @@ pub(super) enum ThreadRequester {
     PaneWorkers,
     AppServer,
     Astra,
+    Compaction,
+}
+
+/// `CompactionThreads` finds native completion files for workers without a pane.
+#[derive(Debug)]
+pub(super) struct CompactionThreads {
+    home_revision: FileRevision,
+    home_accounts: HashSet<PathBuf>,
+    rows:          OpenThreadRows,
+    paths:         HashMap<String, PathBuf>,
+}
+
+impl Default for CompactionThreads {
+    fn default() -> Self {
+        Self {
+            home_revision: FileRevision::Missing,
+            home_accounts: HashSet::new(),
+            rows:          OpenThreadRows::default(),
+            paths:         HashMap::new(),
+        }
+    }
+}
+
+impl CompactionThreads {
+    fn refresh_home_accounts(&mut self, home: &Path) {
+        let revision = fs::metadata(home).map_or(FileRevision::Missing, |metadata| {
+            FileRevision::of(&metadata)
+        });
+        if revision == self.home_revision {
+            return;
+        }
+        self.home_revision = revision;
+        self.home_accounts = fs::read_dir(home)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(CODEX_DIRNAME)
+            })
+            .map(|entry| entry.path())
+            .collect();
+        self.home_accounts.insert(home.join(CODEX_DIRNAME));
+    }
+
+    /// Read account rows only when their database revision or requested ids change.
+    pub(super) fn refresh(
+        &mut self,
+        processes: &[ProcessEntry],
+        home: Option<&Path>,
+        ids: &[String],
+    ) {
+        self.paths.clear();
+        if ids.is_empty() {
+            self.rows.retain_homes(std::iter::empty());
+            return;
+        }
+        let mut homes = OpenThreadRows::live_homes(processes, home);
+        if let Some(home) = home {
+            self.refresh_home_accounts(home);
+            homes.extend(self.home_accounts.iter().cloned());
+        }
+        self.rows.retain_homes(homes.iter());
+        for account in homes {
+            for (id, thread) in self
+                .rows
+                .read_requests(&account, [(ThreadRequester::Compaction, ids)])
+            {
+                self.paths
+                    .entry(id.clone())
+                    .or_insert_with(|| thread.rollout.clone());
+            }
+        }
+    }
+
+    pub(super) fn transcript(&self, id: &str) -> CompactionTranscript<'_> {
+        self.paths
+            .get(id)
+            .map_or(CompactionTranscript::Unavailable, |path| {
+                CompactionTranscript::File(path)
+            })
+    }
 }
 
 /// `LiveThreadRows` holds one scan's account answers and pane rollout paths.
