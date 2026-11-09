@@ -32,7 +32,6 @@ use super::tree_state;
 use crate::config;
 use crate::http::HttpClient;
 use crate::project::AbsolutePath;
-use crate::project::RootItem;
 use crate::project::WorkspaceMetadataStore;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -190,6 +189,7 @@ pub fn run() -> ExitCode {
     );
     let scan_dirs = scan::resolve_include_dirs(&cargo_port_config.tui.include_dirs);
     let metadata_store = Arc::new(Mutex::new(WorkspaceMetadataStore::new()));
+    let source_measurements = Arc::new(crate::scan::SourceMeasurements::default());
     let (background_tx, background_rx) = scan::spawn_streaming_scan(
         scan_dirs,
         &cargo_port_config.tui.inline_dirs,
@@ -197,12 +197,12 @@ pub fn run() -> ExitCode {
         ExcludeDirs::from(cargo_port_config.tui.exclude_dirs.as_slice()),
         http_client.clone(),
         Arc::clone(&metadata_store),
+        Arc::clone(&source_measurements),
     );
     let appearance_tx = background_tx.clone();
     tui_pane::spawn_appearance_poller(rt.handle(), move |appearance| {
         let _ = appearance_tx.send(BackgroundMsg::AppearanceChanged(appearance));
     });
-    let projects: Vec<RootItem> = Vec::new();
 
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -226,7 +226,7 @@ pub fn run() -> ExitCode {
     };
 
     let mut app = match App::new(
-        &projects,
+        &[],
         background_tx,
         background_rx,
         startup_settings,
@@ -234,6 +234,7 @@ pub fn run() -> ExitCode {
             http_client,
             scan_started_at,
             metadata_store,
+            source_measurements,
         ),
         tui_pane::ColorMode::from_environment(),
     ) {

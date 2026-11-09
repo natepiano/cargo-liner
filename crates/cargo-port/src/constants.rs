@@ -1,5 +1,10 @@
 use std::time::Duration;
 
+/// Two arenas kept the driven process near 200 MiB while the default count retained more freed
+/// pages.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub(crate) const GNU_MALLOC_ARENA_LIMIT: libc::c_int = 2;
+
 // ── Shared icons ─────────────────────────────────────────────────────
 
 pub(crate) const CI_PASSED: &str = "🟢";
@@ -83,6 +88,8 @@ pub(crate) const SCAN_DISK_CONCURRENCY: usize = 6;
 /// milliseconds per invocation on typical workspaces — so a small cap is
 /// enough to preserve fairness with other enrichment tasks.
 pub(crate) const SCAN_METADATA_CONCURRENCY: usize = 4;
+pub(crate) const SCAN_DISCOVERY_CONCURRENCY: usize = 1;
+pub(crate) const SCAN_WATCHER_CONCURRENCY: usize = 1;
 /// Free space at or above which the projects' volume is considered roomy —
 /// the Available row renders in the theme's success color.
 pub(crate) const STORAGE_HEADROOM_AMPLE_BYTES: u64 = 100 * BYTES_PER_GIB;

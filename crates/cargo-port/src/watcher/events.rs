@@ -56,10 +56,9 @@ pub(super) fn route_folder_event(
         // An ancestor removal must retire every tracked child, not just the first
         // project-level directory selected by the discovery walk-up.
         if !path.exists() {
-            for root in state.projects.keys().filter(|root| root.starts_with(path)) {
-                state.discovered.remove(root);
+            for root in state.retire_projects_under(path) {
                 let _ = background_tx.send(BackgroundMsg::DiskUsage {
-                    path:  root.clone(),
+                    path:  root,
                     bytes: 0,
                 });
             }
@@ -137,6 +136,16 @@ pub(super) fn process_notify_events(
     sinks: &WatcherBackgroundSinks<'_>,
     state: &mut WatcherLoopState,
 ) {
+    for path in notify_events.iter().flat_map(|event| &event.paths) {
+        if !path.exists() {
+            for root in state.retire_projects_under(path) {
+                let _ = sinks.background_tx.send(BackgroundMsg::DiskUsage {
+                    path:  root,
+                    bytes: 0,
+                });
+            }
+        }
+    }
     let notify_count = notify_events.len();
     if watch_drain.registration_progress.is_completed() {
         tracing::trace!(

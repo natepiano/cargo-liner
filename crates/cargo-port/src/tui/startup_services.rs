@@ -284,14 +284,14 @@ impl StartupServices {
         if self.allows(StartupEffectKind::Watcher) {
             self.record_real(StartupEffectKind::Watcher);
             WatcherHandle::active(watcher::spawn_watcher(WatcherSpawn {
-                watch_roots:    startup.watch_roots,
-                background_tx:  startup.background_tx,
-                ci_run_count:   startup.ci_run_count,
-                non_rust:       startup.non_rust,
-                exclude_dirs:   startup.exclude_dirs,
-                client:         startup.client,
-                lint_runtime:   startup.lint_runtime,
-                metadata_store: startup.metadata_store,
+                watch_roots:         startup.watch_roots,
+                background_tx:       startup.background_tx,
+                source_measurements: startup.source_measurements,
+                non_rust:            startup.non_rust,
+                exclude_dirs:        startup.exclude_dirs,
+                client:              startup.client,
+                lint_runtime:        startup.lint_runtime,
+                metadata_store:      startup.metadata_store,
             }))
         } else {
             self.record_suppressed(StartupEffectKind::Watcher);
@@ -321,6 +321,7 @@ impl StartupServices {
             startup.exclude_dirs,
             startup.client,
             startup.metadata_store,
+            startup.source_measurements,
         );
         StreamingScanStart {
             sender,
@@ -581,10 +582,11 @@ impl WatcherHandle {
 
 #[derive(Clone)]
 pub(super) struct StartupEnvironment {
-    pub(super) http_client:      HttpClient,
-    pub(super) scan_started_at:  Instant,
-    pub(super) metadata_store:   Arc<Mutex<WorkspaceMetadataStore>>,
-    pub(super) startup_services: StartupServices,
+    pub(super) source_measurements: Arc<SourceMeasurements>,
+    pub(super) http_client:         HttpClient,
+    pub(super) scan_started_at:     Instant,
+    pub(super) metadata_store:      Arc<Mutex<WorkspaceMetadataStore>>,
+    pub(super) startup_services:    StartupServices,
 }
 
 impl StartupEnvironment {
@@ -592,17 +594,19 @@ impl StartupEnvironment {
         http_client: HttpClient,
         scan_started_at: Instant,
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+        source_measurements: Arc<SourceMeasurements>,
     ) -> Self {
         Self {
             http_client,
             scan_started_at,
             metadata_store,
             startup_services: StartupServices::new(StartupProfile::production()),
+            source_measurements,
         }
     }
 
     #[cfg(test)]
-    pub(super) const fn with_services(
+    pub(super) fn with_services(
         http_client: HttpClient,
         scan_started_at: Instant,
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
@@ -613,28 +617,30 @@ impl StartupEnvironment {
             scan_started_at,
             metadata_store,
             startup_services,
+            source_measurements: Arc::default(),
         }
     }
 }
 
 pub(super) struct WatcherStartup<'a> {
-    pub(super) watch_roots:    &'a [AbsolutePath],
-    pub(super) background_tx:  Sender<BackgroundMsg>,
-    pub(super) ci_run_count:   u32,
-    pub(super) non_rust:       NonRustInclusion,
-    pub(super) exclude_dirs:   ExcludeDirs,
-    pub(super) client:         HttpClient,
-    pub(super) lint_runtime:   Option<RuntimeHandle>,
-    pub(super) metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+    pub(super) watch_roots:         &'a [AbsolutePath],
+    pub(super) background_tx:       Sender<BackgroundMsg>,
+    pub(super) source_measurements: Arc<SourceMeasurements>,
+    pub(super) non_rust:            NonRustInclusion,
+    pub(super) exclude_dirs:        ExcludeDirs,
+    pub(super) client:              HttpClient,
+    pub(super) lint_runtime:        Option<RuntimeHandle>,
+    pub(super) metadata_store:      Arc<Mutex<WorkspaceMetadataStore>>,
 }
 
 pub(super) struct StreamingScanStartup<'a> {
-    pub(super) scan_dirs:      Vec<AbsolutePath>,
-    pub(super) inline_dirs:    &'a [String],
-    pub(super) exclude_dirs:   ExcludeDirs,
-    pub(super) non_rust:       NonRustInclusion,
-    pub(super) client:         HttpClient,
-    pub(super) metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+    pub(super) source_measurements: Arc<SourceMeasurements>,
+    pub(super) scan_dirs:           Vec<AbsolutePath>,
+    pub(super) inline_dirs:         &'a [String],
+    pub(super) exclude_dirs:        ExcludeDirs,
+    pub(super) non_rust:            NonRustInclusion,
+    pub(super) client:              HttpClient,
+    pub(super) metadata_store:      Arc<Mutex<WorkspaceMetadataStore>>,
 }
 
 pub(super) struct StreamingScanStart {
@@ -782,6 +788,7 @@ enum StartupEffectKind {
 use std::path::PathBuf;
 
 use crate::config::CargoPortConfigurationPathResolution;
+use crate::scan::SourceMeasurements;
 
 fn probe_service_with_quota(
     client: &HttpClient,
