@@ -2048,6 +2048,39 @@ A product change in `crates/cargo-berth/src/` (for example `src/git/child.rs`) n
 
 **Acceptance gate:** on the final source revision, the cargo-berth package run and one workspace run on natedev and on the Mac, `--no-cache`, at normal concurrency, with no cargo-berth test at 1 s or more; lint. Report the package and workspace counts apart. Report the setup duration and the complete-suite duration beside each count, with cold-cache and warm-cache runs apart.
 
+### Phase 59 — A reader scenario stops its processes and removes its folder on every exit path  · status: todo
+
+**Depends on:** none. It runs ahead of Phases 32 and 58b (showrunner, 2026-11-09). It shares `reader_scenario_cases.py` with Phase 43j; berth settles that order.
+
+#### Work Order
+
+**Goal:** When a reader scenario ends, by a pass, a failure, a timeout or a kill, no process that it started stays alive and its temporary folder is gone. User rule, 2026-11-09: a process removes the folders it makes, and the same holds for the processes it starts.
+
+**Evidence:** On the Mac, a process group stayed alive for 3 d 21 h and its folder stayed too (52 MB; natedev stopped the group and removed the folder at the user's request).
+- Pid 58772, ppid 1, session leader: `sh .../T/.tmpEfFiRo/bin/cargo build probe-first-.tmpEfFiRo`.
+- Its children were `cargo-tile-real build` and `tee -a .../capture/501/run-20261105-163421-...log`.
+- It started on 2026-11-05 at 16:34. Phase 51's guardian reached main on 2026-11-05 at 15:33. The Mac run may have used a checkout from before that merge.
+
+**Spec:**
+
+1. Find the exit path that left this group. First establish whether the 16:34 run had the guardian. Then find each way that a writer group outlives its scenario with the guardian in place, for example when the guardian itself dies. Write the result in the phase report.
+2. Every process group that a scenario starts ends when the scenario ends, on all four exit paths. This covers writers and cache servers. A scenario or test process killed with SIGKILL runs no cleanup of its own, so the fix sits where the processes start, as Phase 51's guardian does. Add no sweep and no name-based search.
+3. The scenario's `tempfile::tempdir` folder is removed on all four exit paths, after its processes end. A killed owner cannot remove it, so a process that outlives the owner removes it. Use the mechanism of item 2 for this.
+4. A normal end keeps its release order and its time.
+
+**Tests:** One test for each exit path: pass, failed assertion, deadline timeout and SIGKILL of the scenario. Each one proves two facts: no process of the group is alive, and the folder does not exist. Each test fails without the fix and takes less than 1 s. Keep `reader_scenario_sigkill_ends_its_waiting_writer_group` as it is.
+
+**Files:**
+- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py`
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`
+
+**Workers:** 1 writer.
+
+**Acceptance gate:**
+- `verify.sh lint cargo-tile` and `verify.sh test cargo-tile` green on natedev and the Mac, with no new test at 1 s or more.
+- After the Mac pass, no process from a scenario folder stays on the Mac, and no scenario folder stays in its `TMPDIR`.
+- Change-review line: none (test support only).
+
 ### Phase 58b — cargo-berth tests stay under a second when they run together  · status: todo
 
 **Depends on:** Phase 57 merged, and Phase 58a checkpointed.
