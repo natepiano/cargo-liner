@@ -2,6 +2,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::OnceLock;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -18,7 +19,7 @@ use super::constants::RUSTUP_COMMAND;
 use super::constants::VERSION_ARGUMENT;
 
 /// The formatter available for function length protection.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Formatter {
     Nightly,
     Path,
@@ -33,10 +34,15 @@ pub(super) enum FormatterProbe {
 
 impl Formatter {
     pub(super) fn detect() -> Self {
-        Self::from_probes(
-            probe(RUSTUP_COMMAND, NIGHTLY_RUSTFMT_ARGUMENTS),
-            probe(RUSTFMT_COMMAND, &[]),
-        )
+        static DETECTED: OnceLock<Formatter> = OnceLock::new();
+        DETECTED
+            .get_or_init(|| {
+                Self::from_probes(
+                    probe(RUSTUP_COMMAND, NIGHTLY_RUSTFMT_ARGUMENTS),
+                    probe(RUSTFMT_COMMAND, &[]),
+                )
+            })
+            .clone()
     }
 
     /// Select a formatter from probe results without consulting the host.

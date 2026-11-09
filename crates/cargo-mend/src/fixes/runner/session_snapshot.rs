@@ -10,13 +10,12 @@ use crate::fixes::imports::ValidatedFixSet;
 
 /// The text every file carried before `--fix` first wrote to it, keyed by path.
 ///
-/// `MendRunner::apply` runs once per convergence pass (`main` loops it up to
-/// `FIX_CONVERGENCE_MAX_PASSES` times), but a rollback answers for the whole
-/// invocation: a pass that validated and left its edits on disk is still part
-/// of what `RollbackStatus::Restored` promises the user. A per-pass snapshot
-/// restores only to the previous pass's output and leaves earlier edits behind.
-/// `MendRunner` therefore owns one `SessionSnapshot` across every pass and
-/// records into it before each pass writes.
+/// `MendRunner::apply` runs once per convergence pass.
+/// Ordinary planning uses `FIX_CONVERGENCE_MAX_PASSES`.
+/// Individual chain checks permit an additional pass for each validated or refused link.
+/// A fatal rollback restores the tree from the start of the invocation.
+/// `MendRunner` retains this snapshot across every pass and records each file before its first
+/// write.
 pub(super) struct SessionSnapshot {
     originals: BTreeMap<PathBuf, String>,
 }

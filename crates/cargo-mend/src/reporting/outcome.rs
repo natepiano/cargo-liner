@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -204,7 +205,9 @@ pub(crate) enum MendFailure {
 
 #[derive(Debug)]
 pub(crate) enum CompilerFailureCause {
-    CargoCheck,
+    CargoCheck {
+        error_files: BTreeSet<PathBuf>,
+    },
     /// Automatic recovery could not supply compatible analysis for the selected
     /// units. An empty or partial report must never print as a clean crate.
     NoAnalysisProduced,
@@ -253,7 +256,7 @@ impl Display for MendFailure {
 impl Display for AnalysisFailure {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match &self.cause {
-            CompilerFailureCause::CargoCheck => {
+            CompilerFailureCause::CargoCheck { .. } => {
                 write!(
                     f,
                     "compiler failed while validating this crate\n\nmend: did not run due to compiler errors"
@@ -279,7 +282,7 @@ impl Display for FixValidationFailure {
             AppliedFixes::Compiler => "compiler",
         };
         let source = match &self.cause {
-            CompilerFailureCause::CargoCheck => {
+            CompilerFailureCause::CargoCheck { .. } => {
                 format!("compiler failed after applying {applied_fixes} fixes")
             },
             CompilerFailureCause::NoAnalysisProduced => {
@@ -646,6 +649,8 @@ impl PubUseNotice {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use anyhow::anyhow;
 
     use super::AnalysisFailure;
@@ -771,7 +776,9 @@ mod tests {
     #[test]
     fn analysis_failure_message_uses_typed_collection_wording() {
         let analysis_failure = AnalysisFailure {
-            cause: CompilerFailureCause::CargoCheck,
+            cause: CompilerFailureCause::CargoCheck {
+                error_files: BTreeSet::new(),
+            },
         };
         assert_eq!(
             analysis_failure.to_string(),

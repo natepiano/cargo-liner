@@ -11,10 +11,12 @@
 //! - `crate_files` — the files of one crate root and the module path of each.
 
 mod ancestor;
+mod chain;
 mod crate_files;
 mod local_use;
 mod owner_edit;
 mod scan;
 
+pub(super) use chain::ForwardingChains;
 pub(super) use scan::SubtreeReexportScan;
 pub(super) use scan::scan_selection;
