@@ -146,6 +146,78 @@ you need to create a new unit to handle all cargo port enhancements it should be
 
 **As-built:** a forwarded compiler diagnostic goes through the one owner of the progress line in `crates/cargo-mend/src/compiler/build/progress.rs` (`write_forwarded_output`): erase the line, print the block, add a newline only when the block lacks one, redraw (checkpoint 32316514). The counter runs to the end of the pass, and an unterminated last diagnostic survives the redraw and the cleanup. Live proof: a real cargo-tile mend cell read 85% after the forwarded warning.
 
+### Phase 2k — workspace lint passes on the cargo-berth reanchoring test  · status: done
+
+**As-built:** the last checks of `side_branch_creation_during_stopped_apply_rebase_preserves_checkpoint_capture` (`crates/cargo-berth/tests/support/reanchoring.rs`) moved into `assert_reanchored_checkpoint_is_outstanding`, with every assert and step in the same order and no `allow` or `expect`, so workspace clippy's `too_many_lines` passes again after mend's autofix 46570b43 (checkpoint 806cbc5c). Lifecycle tests 145/145 pass.
+
+### Phase 2l — mend runs in a project that pins a different Rust release  · status: done
+
+**Depends on:** none (runs beside Phase 2n; the file sets do not overlap)
+
+#### Work Order
+
+**Goal:** `cargo mend` and `cargo mend --fix` work in a project whose `rust-toolchain.toml` pins a Rust release other than the one mend was built with. Today the installed mend (built on stable 1.99.1) fails with E0514 in Hana, which pins 1.99.0.
+
+**Source:** the user, through the showrunner, 2026-11-01: "yes you need to fix mend for sure". The showrunner reproduced it in a scratch crate pinned to 1.99.0 with a path dependency outside the workspace. With `RUSTUP_TOOLCHAIN=stable` the same crate passes.
+
+**Cause:** mend runs `cargo check` with itself as `RUSTC_WORKSPACE_WRAPPER` (`run_cargo_check`, `crates/cargo-mend/src/compiler/build/execute.rs` ≈268). Workspace members compile in mend's driver, which links the rustc libraries of the toolchain that built mend. Dependencies compile with the project's rustc. Crate metadata records the exact rustc that wrote it, so the driver refuses each dependency that another release wrote (E0514). The doc comment on `run_cargo_check` already names this case.
+
+**Design:** each cargo command whose compiles go through mend's driver uses one compiler: the rustc of the toolchain that built mend. That is the toolchain whose `librustc_driver` mend loads (`MEND_BUILD_SYSROOT` from `build.rs`; the run path points at the same folder). Set Cargo's `RUSTC` to `<build sysroot>/bin/rustc`, so the choice does not depend on rustup or on a channel name. One owner makes this choice once per run and applies it to each such command (the check, the build that validates applied fixes, and any other driver build). No call site sets it by hand. Commands that do not run the driver (for example `cargo fix` for compiler fixes) keep the project's rustc.
+- Same release: Cargo's fingerprint keys on the rustc version, not its path, so today's artifacts stay and nothing rebuilds.
+- Different release: Cargo keeps a second set of dependency artifacts in the same target folder under their own hashes. The README and CHANGELOG name this cost.
+- No rustc in the build sysroot: mend stops with an error that names the folder, not a compiler crash.
+
+**Constraints:**
+- The fix is in mend. Do not change Hana, `verify.sh` or any project's toolchain file. Reinstalling mend on 1.99.0 is ruled out.
+- Do not edit or build in any Hana worktree.
+- No toolchain name or version in code; the sysroot comes from the build.
+- The `run_cargo_check` doc comment and the README toolchain section (≈139–149) state the new behavior. This phase owns the mend CHANGELOG; Phase 2n adds its own line at its checkpoint.
+- No test takes a second. Ruling (unit director, 2026-11-02): a cli or diagnostics test that runs real cargo builds has a floor near 2 s, like the other mend fix tests (2–4 s). Such a test runs mend once and adds no wait.
+
+**Spec:**
+1. A unit test of the owner: each driver command it configures gets `RUSTC` set to the build sysroot's rustc, and a command that does not run the driver is unchanged.
+2. A CLI test in `tests/cli_smoke.rs`: the project's rustc is not mend's (for example, a `RUSTC` in the caller's environment that refuses to run), and `cargo mend` still passes on a fixture with a path dependency outside its workspace.
+3. Live proof on natedev, in a scratch crate outside the repo (made with `scratch.py`) pinned to 1.99.0 with a path dependency outside its workspace: the dev mend passes where the installed mend fails with E0514.
+
+**Files:** `crates/cargo-mend/src/compiler/build/`, `crates/cargo-mend/src/compiler/constants.rs`, `crates/cargo-mend/README.md`, `crates/cargo-mend/CHANGELOG.md`, `crates/cargo-mend/tests/cli_smoke.rs`.
+
+**Workers:** 1 writer (impl3) owns the code, the tests and the live proof.
+
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean on a gate tree; no test takes a second; the live proof of spec 3. The checkpoint adds a Change-Review line.
+
+### Phase 2n — mend --fix keeps the imports of a module mounted with #[path]  · status: todo
+
+**Depends on:** none (runs beside Phase 2l; the file sets do not overlap)
+
+#### Work Order
+
+**Goal:** `cargo mend --fix` keeps a working import in a file mounted with `#[path = "…"]`, and the crate builds after the fix with nothing rolled back.
+
+**Source:** the user, through the showrunner, 2026-11-01. In `~/rust/hana_catalyst-hana-migration`, `RUSTUP_TOOLCHAIN=stable verify.sh lint hana_diegetic` stopped with "compiler failed after applying mend fixes; changes were rolled back". All 51 errors (E0432/E0433) are in files mounted with `#[path = "../tests/…"]`. Two examples:
+- `crates/hana_mimesis_tools/tests/camera_publication/mod.rs`, mounted from `src/camera_source.rs` as `pub(crate) mod phase68_tests`. Its `use crate::propagation::phase68_tests::support;` names a `mod support;` inside another `#[path]` module. After the fix, `support::` does not resolve.
+- `crates/hana/tests/jack_controls/modulation_mode.rs`, mounted from `crates/hana/src/tool/` with `#[path = "../../tests/…"]`. Its `use crate::test_support::slider_reset;` is lost, and `slider_reset::` does not resolve.
+
+Log: `/tmp/claude/unit/195cf00e-903b-4aa4-8515-c9b261497d9c/mesh_runs/20261101T071026-445133-d66c.log`.
+
+**Cause:** the fault is older than Phases 2h and 2i. `function_imports.rs` asks `support::leaf_is_module` whether an import names a module. That check walked the physical folders and did not follow `#[path]`, so a module import in a `#[path]` file looked like a function import. The scan then reported it as `PreferModuleImport`, and the fix rewrote it. The repair makes `leaf_is_module` use `rust_syntax::ModuleMap`.
+
+**Constraints:**
+- Do not edit or build in any Hana worktree. The Hana files are read-only evidence.
+- The repair goes where the defect is. If the module path of a `#[path]` file is wrong, fix it in `ModuleMap`. Do not filter fixes after planning.
+- An import mend cannot place with certainty stays as written; the fix is declined and reported once as skipped.
+- Phase 2l owns the mend CHANGELOG. Put this phase's line in the summary; the unit director adds it at the checkpoint.
+- No test takes a second. Ruling (unit director, 2026-11-02): a cli or diagnostics test that runs real cargo builds has a floor near 2 s, like the other mend fix tests (2–4 s). Such a test runs mend once and adds no wait.
+
+**Spec:**
+1. A fixture in `tests/diagnostics/import_fixes.rs` with both Hana shapes: a `#[path = "../tests/…/mod.rs"]` module with its own `mod support;`, imported from a second `#[path]` module; and a `#[path = "../../tests/….rs"]` module mounted from a nested source folder that imports `crate::test_support::<module>` and calls through it. `cargo mend --fix` leaves both imports, the crate builds, and nothing rolls back. The fixture fails on today's code first.
+2. A unit test at the level where the defect lives (`ModuleImports` or `ModuleMap`) that pins the module path of a `#[path]` file and of a module it declares.
+
+**Files:** `crates/cargo-mend/src/fixes/imports/`, `crates/cargo-mend/src/fixes/prefer_module_import/`, `crates/cargo-mend/src/fixes/imports_at_top/`, `crates/cargo-mend/src/rust_syntax/`, `crates/cargo-mend/tests/diagnostics/import_fixes.rs`.
+
+**Workers:** 1 writer (impl4) owns the code and the tests.
+
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean on a gate tree; no test takes a second; the spec 1 fixture fails before the repair and passes after it. The checkpoint adds a Change-Review line.
+
 ### Phase 3 — cargo-port draws a frame only when something changed  · status: todo
 
 **Depends on:** Phase 2b
