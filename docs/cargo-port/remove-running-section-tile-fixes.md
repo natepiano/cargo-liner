@@ -1789,24 +1789,19 @@ User (2026-10-29, via builds and the showrunner): "yes cargo-tile should strive 
 
 ### Phase 40 — Capture falls back to plain cargo when its stderr mirror cannot run  · status: done
 
-**Depends on:** Phase 30m
+#### As-built
 
-#### Work Order
-
-**Goal:** when the capture stderr mirror cannot run, cargo runs plain with its own arguments, streams and status.
-
-From phase 30m review 3 (routed at repair round 4). When `sh` runs but `tee` is missing or fails, the capture mirror signals ready before `exec tee` (hook.rs, `ReadyCaptureMirror::start`), so cargo starts with a stderr pipe nobody reads: cargo loses its stderr bytes and can get SIGPIPE. Main's shim had the same defect (`exec tee` in `run_captured`, cargo-capture-shim.sh), so phase 30m did not cause it. Since Phase 30m (354ba054) the shim script starts no mirror: the native capture entry starts `sh -c 'printf r; exec tee'` in `ReadyCaptureMirror::start` (`hook.rs`), and the defect is there.
-
-**Spec:** replace the shell/tee mirror with a native stderr pump made by a fallible constructor before cargo spawns. If the constructor fails: close what it opened, remove the capture publication, and exec the original cargo with its own arguments, streams and status. Keep helper diagnostics private until the capture commits. The guarantee is bounded: an exec acknowledgement followed by EOF is uncertain, and cargo never runs twice. (Astra review, phase 30m F001.)
-
-**Workers:** 1 writer — `impl`: the pump, the shim fallback, and the `shim_modes` regression tests.
-
-**Acceptance gate:** a regression with `sh` present and `tee` absent gives exact cargo status, stdout, stderr and arguments, and leaves no capture artifacts; red on main first, under 1 s; the per-call process count does not grow.
+- The native capture entry copies cargo's stderr through `NativeStderrPump` in `hook.rs`, a thread named `cargo-stderr`. It writes each read to the live log and to the caller's stderr. A failed log file or caller stderr does not close cargo's pipe; the other output still receives the bytes.
+- `NativeStderrPump::start` is a fallible constructor that runs before cargo spawns. If it fails, the capture closes what it opened, removes its publication and execs the original cargo with its own arguments, streams and status. Cargo never runs twice.
+- No `sh` or `tee` process runs for capture. A captured call starts two processes.
 
 **Files:**
-- `crates/cargo-tile/src/hook.rs`
-- `crates/cargo-tile/src/cargo-capture-shim.sh` — only if the fallback needs a script change; the mirror is in `hook.rs` since Phase 30m.
-- `crates/cargo-tile/tests/shim_modes.rs`
+- `crates/cargo-tile/src/hook.rs` — `NativeStderrPump` and the fallback to plain cargo.
+- `crates/cargo-tile/src/constants.rs` — `CAPTURE_STDERR_PUMP_BUFFER_BYTES` (8192).
+- `crates/cargo-tile/tests/shim_modes.rs` — rows with `sh` present and `tee` absent (native capture runs) and with a descriptor limit (the pump fails and cargo runs plain, with no capture artifacts).
+- `crates/cargo-tile/src/shim_registration/installed.rs` — the live log handshake test expects status 37 with the live marker while cargo runs.
+
+**Gotchas:** an exec acknowledgement followed by EOF is uncertain; the fallback never retries cargo.
 
 ### Phase 42 — A delayed cell decides its entry on the frame its text first shows  · status: done (merged c1efe2543)
 
