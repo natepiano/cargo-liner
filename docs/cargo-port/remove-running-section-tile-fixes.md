@@ -2048,6 +2048,32 @@ A product change in `crates/cargo-berth/src/` (for example `src/git/child.rs`) n
 
 **Acceptance gate:** on the final source revision, the cargo-berth package run and one workspace run on natedev and on the Mac, `--no-cache`, at normal concurrency, with no cargo-berth test at 1 s or more; lint. Report the package and workspace counts apart. Report the setup duration and the complete-suite duration beside each count, with cold-cache and warm-cache runs apart.
 
+### Phase 58b — cargo-berth tests stay under a second when they run together  · status: todo
+
+**Depends on:** Phase 57 merged, and Phase 58a checkpointed.
+
+Phase 58a landed its fixture repairs with its goal open. Its gate passed on both machines. Tests at 1 s or more: natedev package 188 (load 47), Mac package 416 and Mac workspace 574 (loads 10 to 18). The Mac tests that took 1 to 3.5 s alone took 10 to 14 s under normal concurrency. One Git read costs the same direct and through the shared child runtime, and pipe collection after exit is negligible. The measurement report is `after-report.md` of the Phase 58a run.
+
+#### Work Order
+
+**Goal:** every cargo-berth test runs under 1 s in the full workspace run on natedev and on the Mac. A test of 1 s or more under load is a test defect. Fix the cost per test. Do not raise a limit, and do not call it a load flake.
+
+**Spec:**
+1. **Find the cause first.** Read the attempts log for Phase 43c: Mac test processes stall 1.9 to 4 s in full runs and take 0.01 s alone. This can be the same cause. Measure what a concurrent test waits on, and quote the line that takes the time.
+2. **Fix the cost per test:** fewer Git processes and shared fixtures. Keep the Phase 58a rules: no recorded result replaces a live rebase, proof rotation or witness-loss command.
+3. **Cover the four Phase 57 files:** `board.rs`, `hooks.rs`, `ledger.rs` and `lifecycle.rs`.
+4. Keep every assertion and every test case. Split a test only with a map from each new test to the original assertions and live transitions.
+5. Measure the same counts after the fix, on the final source revision, with the same method as Phase 58a.
+
+**Files:**
+- `crates/cargo-berth/tests/` and `crates/cargo-berth/tests/support/`.
+- `crates/cargo-berth-test-support/`.
+- A product change in `crates/cargo-berth/src/` needs director routing with the measurement that picks it.
+
+**Workers:** 1 writer.
+
+**Acceptance gate:** on the final source revision, the cargo-berth package run and one workspace run on natedev and on the Mac, `--no-cache`, with every cargo-berth test under 1 s; lint.
+
 ### Phase 31 — Ended cells leave whole  · status: parked
 
 **Depends on:** Phase 35m (both change `render.rs` and `render/command_cache.rs`).
