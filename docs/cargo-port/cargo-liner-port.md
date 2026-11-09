@@ -806,6 +806,39 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; `reexport_chain_collapses_in_one_run` under 1 s in the full suite, and no other test at a second or more. The fallback row fails without the fallback. The checkpoint carries a `Change-Review:` line.
 
+### Phase 4u — The cfg(test) re-export test runs under a second  · status: todo
+
+**Depends on:** Phase 4t (both edit `crates/cargo-mend/`). It runs right after 4t. It may run beside 4q and 4s, which edit only `crates/cargo-port/`, when berth fences its files (showrunner, 2026-11-09).
+
+#### Work Order
+
+**Goal:** `fix_compiler_does_not_remove_reexport_used_only_by_cfg_test_code` takes under 1 s alone and in the full `verify.sh test cargo-mend` suite.
+
+**Source:** Phase 4t, 2026-11-09. The test (`crates/cargo-mend/tests/diagnostics/narrow_pub_crate.rs:1147`) takes 1.818 s alone (run `20261109T100445-2101576-30f9`) and 4.407 s in the full suite (run `20261109T100344-1891821-0129`). It runs `cargo mend --fix-compiler`, which chains `cargo fix` after the mend checks.
+
+**Decision:** showrunner, 2026-11-09: a multi-second test is a defect; add this phase.
+
+**Constraints:**
+- Find the cost first. If the cost is in cargo-mend, fix it there, so every mend user saves the same CPU.
+- Keep the test's proof: the `pub use` used only by `#[cfg(test)]` code survives `--fix-compiler`, and the test target still compiles.
+- No test takes a second in the full suite.
+
+**Spec:**
+1. **Measure.** Count the `cargo check`, `cargo fix` and `cargo metadata` runs of the test, with the time of each. Quote the source lines that start each run.
+2. **Cut the cost.** Remove repeated or unneeded runs in cargo-mend. Change the fixture shape only when the runs are all needed, and report that as an `Assertion-Change:` line.
+3. **Changelog.** Add an entry to `crates/cargo-mend/CHANGELOG.md` when mend's behavior or cost changes.
+
+**Files:**
+- `crates/cargo-mend/src/` — the runs that `--fix-compiler` starts
+- `crates/cargo-mend/tests/diagnostics/narrow_pub_crate.rs` — the test
+- `crates/cargo-mend/CHANGELOG.md`
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; the test under 1 s alone and in the full suite, and no other test at a second or more. The checkpoint carries a `Change-Review:` line.
+
 ### Phase 4s — Remaining cut and contrast defects read clean  · status: todo
 
 **Depends on:** Phase 4r and Phase 4q (it runs after both; it edits `crates/cargo-port/src/` and `crates/cargo-port/CHANGELOG.md`, as 4q does).
