@@ -14,11 +14,8 @@ use serde_json::Value;
 use super::*;
 use crate::census::Agent;
 use crate::census::ProvenCodexThread;
-use crate::census::RoleFallback;
 use crate::census::StaffRowNames;
 use crate::census::classify;
-use crate::census::worker_dispatch::ParsedDispatch;
-use crate::census::worker_dispatch::WorkerRoster;
 
 const THREAD: &str = "01a18dbb-7e8f-7641-b3dd-bb2071ab9d7a";
 
@@ -45,6 +42,70 @@ fn staff_identity_resolves_the_current_session_and_manager() {
     };
     assert_eq!(missing.session(&roster), None);
     assert_eq!(missing.parent_session(&roster), None);
+}
+
+#[test]
+fn staff_roles_and_units_come_from_the_checked_member() -> Result<(), &'static str> {
+    for (role, expected) in [
+        (Value::Null, StaffWorkerRole::Unknown),
+        (serde_json::json!("future"), StaffWorkerRole::Unknown),
+        (serde_json::json!(12), StaffWorkerRole::Unknown),
+        (
+            serde_json::json!("impl"),
+            StaffWorkerRole::Known(WorkerRole::Impl),
+        ),
+        (
+            serde_json::json!("test"),
+            StaffWorkerRole::Known(WorkerRole::Test),
+        ),
+        (
+            serde_json::json!("review"),
+            StaffWorkerRole::Known(WorkerRole::Review),
+        ),
+        (
+            serde_json::json!("fix"),
+            StaffWorkerRole::Known(WorkerRole::Fix),
+        ),
+        (
+            serde_json::json!("astra-designer"),
+            StaffWorkerRole::Known(WorkerRole::AstraDesigner),
+        ),
+        (
+            serde_json::json!("astra-reviewer"),
+            StaffWorkerRole::Known(WorkerRole::AstraReviewer),
+        ),
+    ] {
+        let mut value: Value = serde_json::from_slice(&document()).expect("staff fixture");
+        value["rows"][2]["role"] = role;
+        let roster = StaffRoster::parse(&serde_json::to_vec(&value).expect("staff document"))
+            .expect("checked roles");
+        let StaffMemberLookup::Managed { member, manager } = roster.member(THREAD) else {
+            return Err("a worker must retain its manager");
+        };
+        assert_eq!(member.id, "worker");
+        assert_eq!(member.session, THREAD);
+        assert_eq!(member.role, expected);
+        assert_eq!(manager, "unit-live");
+        assert_eq!(
+            roster
+                .edges
+                .0
+                .iter()
+                .find(|edge| edge.member == THREAD)
+                .expect("worker edge")
+                .role,
+            expected.hierarchy()
+        );
+        assert!(matches!(
+            roster.member("claude-live"),
+            StaffMemberLookup::Root(_)
+        ));
+        assert!(matches!(
+            roster.member("unlisted"),
+            StaffMemberLookup::Unavailable
+        ));
+    }
+    Ok(())
 }
 
 fn document() -> Vec<u8> {
@@ -248,55 +309,15 @@ fn staff_name_precedes_thread_herdr_and_pid_fallback_names() {
 }
 
 #[test]
-fn staff_worker_roles_use_the_existing_roster_dispatch() {
-    let directory = tempfile::tempdir().expect("mesh directory");
-    fs::write(
-        directory.path().join("mesh_roster.json"),
-        serde_json::json!({"fixture-impl":{
-            "thread_id": THREAD, "launcher_pid":701, "role":"review"
-        }})
-        .to_string(),
-    )
-    .expect("mesh roster");
-    let command = format!(
-        "bash ~/.claude/scripts/delegate/implement.sh --to fixture-impl '{}' /fixture /fixture/prompt.md impl 'inspect code' impl 'implementation' 0 impl",
-        directory.path().display()
-    );
-    let parsed = ParsedDispatch::parse(&command).expect("dispatch command");
-    let roster = WorkerRoster::read(
-        parsed
-            .session_directory()
-            .expect("recorded session directory"),
-    );
-    let mut owner: AgentRow =
-        serde_json::from_str(include_str!("fixtures/restarted_unit_codex.json"))
-            .expect("worker carrier");
-    owner.children[0].dispatch = parsed.resolve(&roster, 701);
-    let mut claude = row(2, "unit-live", "Claude worker");
-    claude.role_fallback = RoleFallback::Worker(HierarchyRole::Test);
-    let edges = HierarchyEdges(vec![
-        HierarchyEdge {
-            manager: "boss".into(),
-            member:  THREAD.into(),
-            role:    HierarchyRole::Worker,
-        },
-        HierarchyEdge {
-            manager: "boss".into(),
-            member:  "unit-live".into(),
-            role:    HierarchyRole::Worker,
-        },
-        HierarchyEdge {
-            manager: "boss".into(),
-            member:  "unlisted".into(),
-            role:    HierarchyRole::Worker,
-        },
-        HierarchyEdge {
-            manager: "boss".into(),
-            member:  THREAD.into(),
-            role:    HierarchyRole::Unit,
-        },
-    ])
-    .with_worker_roles(&[owner, claude]);
+fn staff_worker_roles_use_the_checked_staff_snapshot() {
+    let roster = StaffRoster::parse(&serde_json::to_vec(&serde_json::json!({"schema":2,"rows":[
+        {"id":"boss","kind":"showrunner","name":"boss","parent":null,"current_session":"boss"},
+        {"id":"a-review","kind":"worker","name":"fixture-impl","parent":"boss","current_session":THREAD,"role":"review"},
+        {"id":"b-test","kind":"worker","name":"Claude worker","parent":"boss","current_session":"unit-live","role":"test"},
+        {"id":"c-unknown","kind":"worker","name":"unlisted","parent":"boss","current_session":"unlisted"},
+        {"id":"d-unit","kind":"unit","name":"unit","parent":"boss","current_session":"nonworker","role":"fix"}
+    ]})).expect("staff role document")).expect("checked staff roles");
+    let edges = roster.edges;
     assert_eq!(
         edges.0.iter().map(|edge| edge.role).collect::<Vec<_>>(),
         [
@@ -305,7 +326,7 @@ fn staff_worker_roles_use_the_existing_roster_dispatch() {
             HierarchyRole::Worker,
             HierarchyRole::Unit
         ],
-        "the roster role must replace only a generic worker kind"
+        "staff roles apply to worker rows while unit rows retain their kind"
     );
 }
 

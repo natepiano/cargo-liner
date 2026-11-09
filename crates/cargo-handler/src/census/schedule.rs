@@ -664,10 +664,6 @@ impl LocalPublications {
         hierarchy: HierarchySnapshot,
         stage: ScanStage,
     ) -> Result<(), SendError<CensusUpdate>> {
-        let hierarchy = HierarchySnapshot {
-            edges:  hierarchy.edges.with_worker_roles(&rows),
-            notice: hierarchy.notice,
-        };
         startup_log::startup_local_answer(&rows);
         self.sender.send(CensusUpdate::Local {
             rows,

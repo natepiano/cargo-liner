@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 use rusqlite::Connection;
 use rusqlite::params;
 use serde::Deserialize;
+use serde_json::Value;
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -49,9 +50,9 @@ impl Fixture {
                 {"id":"second-unit", "kind":"unit", "name":"second staff unit",
                  "parent":"boss", "current_session":"second-unit-session"},
                 {"id":"first-worker", "kind":"worker", "name":"first staff worker",
-                 "parent":"first-unit", "current_session":FIRST_THREAD},
+                 "parent":"first-unit", "current_session":FIRST_THREAD, "role":null},
                 {"id":"second-worker", "kind":"worker", "name":"second staff worker",
-                 "parent":"second-unit", "current_session":SECOND_THREAD}
+                 "parent":"second-unit", "current_session":SECOND_THREAD, "role":null}
             ]}))
             .expect("staff JSON"),
         )
@@ -125,11 +126,7 @@ impl Fixture {
             reader:  StaffFileReader::default(),
         }
         .snapshot();
-        let edges = snapshot
-            .publication()
-            .matched(&rows)
-            .edges
-            .with_worker_roles(&rows);
+        let edges = snapshot.publication().matched(&rows).edges;
         (rows, edges)
     }
 }
@@ -427,15 +424,14 @@ fn a_pane_codex_identity_matches_staff_when_no_claude_row_is_present() {
 #[test]
 fn a_pane_codex_identity_preserves_its_specific_worker_role() {
     let fixture = Fixture::new();
-    let (mut rows, edges) = fixture.scan(vec![
+    let path = fixture.root.path().join("staff.json");
+    let mut staff: Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("staff document")).expect("staff JSON");
+    staff["rows"][3]["role"] = serde_json::json!("test");
+    std::fs::write(&path, staff.to_string()).expect("staff worker role");
+    let (rows, edges) = fixture.scan(vec![
         fixture.process(40, &["codex", "resume", FIRST_THREAD]),
     ]);
-    let worker = rows
-        .iter_mut()
-        .find(|row| row.pid == 40)
-        .expect("live Codex worker");
-    worker.role_fallback = RoleFallback::Worker(HierarchyRole::Test);
-    let edges = edges.with_worker_roles(&rows);
     let edge = edges
         .0
         .iter()
