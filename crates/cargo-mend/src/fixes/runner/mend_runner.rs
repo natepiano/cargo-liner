@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use super::chain::ChainValidation;
 use super::function_length::FunctionLengthPlan;
 use super::session_snapshot::SessionSnapshot;
 use crate::compiler;
@@ -36,6 +37,7 @@ pub(super) enum NextAnalysis {
 }
 
 pub(crate) struct MendRunner<'a> {
+    pub(super) chain_validation: ChainValidation,
     pub(super) wrapper:          RunWrapper,
     pub(super) next_analysis:    NextAnalysis,
     pub(super) toolchain_probes: &'a ToolchainProbes,
@@ -61,6 +63,7 @@ impl<'a> MendRunner<'a> {
         wrapper: RunWrapper,
     ) -> Self {
         Self {
+            chain_validation: ChainValidation::Batch,
             wrapper,
             next_analysis: NextAnalysis::Required,
             toolchain_probes,

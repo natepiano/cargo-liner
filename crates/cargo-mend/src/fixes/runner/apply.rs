@@ -1,9 +1,8 @@
 use super::MendRunner;
 use super::RunPlan;
+use super::chain::WrittenPass;
 use super::mend_runner::NextAnalysis;
 use crate::compiler::BuildOutputMode;
-use crate::config::FixKind;
-use crate::fixes::imports;
 use crate::fixes::imports::FixSetPresence;
 use crate::reporting::AppliedFixCounts;
 use crate::reporting::AppliedFixes;
@@ -58,21 +57,15 @@ impl MendRunner<'_> {
         // `self.session_snapshot.record` runs before the write, into a snapshot the runner keeps
         // for the whole invocation: an earlier pass's edits are already on disk and
         // a rollback owes the user the tree they started with.
-        self.session_snapshot
-            .record(fixes)
-            .map_err(MendFailure::Unexpected)?;
-        let applied_fix_counts = imports::apply_fixes(fixes).map_err(MendFailure::Unexpected)?;
         let validation_output_mode = if self.output_format == OutputFormat::Json {
             BuildOutputMode::Json
         } else {
             BuildOutputMode::Validation
         };
-        let validation = self
-            .build_selection(validation_output_mode)
-            .and_then(|checked| {
-                let pub_use = planned.operation_mode.fixes.selection(FixKind::PubUse);
-                self.scan_fixes(planned.operation_mode.clone(), checked, pub_use)
-            });
+        let WrittenPass {
+            counts: applied_fix_counts,
+            validation,
+        } = self.write_chain_or_single(&planned, validation_output_mode)?;
         match validation {
             Ok(validation) => {
                 let check_duration = plan_check_duration + validation.check_duration;

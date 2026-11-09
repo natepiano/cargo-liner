@@ -772,39 +772,68 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Gotchas:** the `for_paths` unit test row for a self-module import (`use crate::a::b;` inside `a::b`) expects `None`.
 
-### Phase 4t — mend --fix collapses a re-export chain with fewer checks  · status: todo
+### Phase 4t — mend --fix collapses a re-export chain with fewer checks  · status: done
 
-**Depends on:** Phase 4r (both edit `crates/cargo-mend/`). It runs next after 4r, before 4q and 4s (showrunner, 2026-11-09: CPU work ranks first).
+#### As-built
+
+`cargo mend --fix` plans re-export chain links whose edits do not depend on a check result in one pass, and validates them with one `cargo check`. A chain costs 3 checks (5 before), the one-failed-link fallback costs 3 (4 before), and a run uses one `cargo metadata` and no rustfmt process.
+
+- `ChainValidation::{Batch, PrunedBatch, IndividualLinks}` (`fixes/runner/chain.rs`) selects the validation path for one fix run.
+- `StepAttribution::{SingleBinding, SharedBindings}` is set per planning pass. A failed batch prunes the links that compiler error files locate. A located `SharedBindings` step goes to `IndividualLinks`, and its pass limit is dynamic.
+- `compiler/build/stderr.rs` reads `ErrorLocations` from cargo's rendered stderr and returns `error_files` on the build outcome.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/runner/chain.rs` — chain validation paths and pruning
+- `crates/cargo-mend/src/fixes/subtree_reexport/chain.rs` — chain link planning
+- `crates/cargo-mend/src/compiler/build/stderr.rs` — error file locations
+- `crates/cargo-mend/tests/diagnostics/pub_use_outside_subtree_fixes.rs` — `fix_chain_with_check_budget`, `failed_chain_link_keeps_the_other_validated_fixes`, `failed_chain_link_keeps_an_independent_chain`
+
+**Gotchas:** `--message-format=json-render-diagnostics` makes cargo emit no compiler-message on stdout, so diagnostics come from stderr only.
+
+**Ruled out:** named eligibility states for `public_use` and `use_path`, which are private syntax-match helpers where `None` means no match.
+
+### Phase 4u — Every cargo-mend test runs under a second  · status: todo
+
+**Depends on:** Phase 4t (both edit `crates/cargo-mend/`). It runs right after 4t. It may run beside 4q, which edits `crates/cargo-port/`, and beside 4s, which edits `crates/cargo-port/` and `crates/tui_pane/`, when berth fences its files (showrunner, 2026-11-09).
 
 #### Work Order
 
-**Goal:** `reexport_chain_collapses_in_one_run` takes under 1 s in the full `verify.sh test cargo-mend` suite, because `cargo mend --fix` runs fewer `cargo check` commands for a re-export chain. Every mend user saves the same CPU.
+**Goal:** every test in the full `verify.sh test cargo-mend` suite takes under 1 s, and the 4t chain and fallback tests take under 1 s alone.
 
-**Source:** Phase 4r review, 2026-11-09. The test (`crates/cargo-mend/tests/diagnostics/pub_use_outside_subtree_fixes.rs:814`) takes 0.678 s alone and 2.7-3.1 s in the full suite (runs `20261109T084559-2901945-e55e`, `20261109T084630-2944665-b824`). Phase 4r cut four of five `cargo metadata` runs (`ReexportMountInventory::collect`, `subtree_reexport/scan.rs`). The rest is five real `cargo check` runs, one per chain link: 0.2015, 0.1426, 0.1259, 0.1205 and 0.1265 s under `strace`. `runner/apply.rs:73` calls `build_selection(validation_output_mode)` after each edit, and `main.rs:217` starts each convergence pass.
+**Source:** Phase 4t, 2026-11-09. Full-suite run `20261109T102754-1307842-587d` lists these slow tests:
+- `fix_rollback::failed_later_pass_restores_the_edits_earlier_passes_left_on_disk`: 11.808 s.
+- `narrow_pub_crate::fix_compiler_does_not_remove_reexport_used_only_by_cfg_test_code` (`crates/cargo-mend/tests/diagnostics/narrow_pub_crate.rs:1147`): 1.818 s alone (run `20261109T100445-2101576-30f9`) and 4.407 s in the full suite (run `20261109T100344-1891821-0129`). It runs `cargo mend --fix-compiler`, which chains `cargo fix` after the mend checks.
+- The 4t chain and fallback tests: 3.360 s and 2.537 s in that run. In run `20261109T104104-3137201-85a5` they took 5.393 s and 4.007 s, and their cargo child processes took only 1.637 s and 1.461 s. Measure where the rest goes before you attribute it to load.
+- The 4t chain and fallback tests alone, median of 3 at the end of 4t: 1.743 s and 2.303 s, at a natedev load average of 66-94. In the fallback's median run, real cargo took 1.057 s, other child-command time including launchers took 1.046 s (cause not measured), mend outside its children took 0.134 s, and the test took 0.047 s. The record is run `20261109T105429-565962-1a66`.
 
-**Decision:** showrunner, 2026-11-09: land 4r without this work; run this phase next.
+**Decision:** showrunner, 2026-11-09: a multi-second test is a defect, never load. This phase is not done until the full-suite list of tests at 1 s or more is empty.
 
 **Constraints:**
-- Fix the cost in cargo-mend. Keep every fix mend applies today, and the final sources of the chain.
-- A fix mend cannot validate stays declined or rolled back, as today.
-- No test takes a second in the full suite.
+- Find the cost of each slow test first. If the cost is in cargo-mend, fix it there, so every mend user saves the same CPU.
+- Keep each test's proof. For example, the `pub use` used only by `#[cfg(test)]` code survives `--fix-compiler`, and the test target still compiles.
+
+**Constraints from prior phases:**
+- `failed_chain_link_keeps_an_independent_chain` took 4.677 s in the last full suite (run `20261109T112518-1166146-ee88`). It is in this phase's scope. It proves that a failed link does not lose an independent chain's fix.
+- Keep `runner/chain.rs`'s validation paths: `ChainValidation::{Batch, PrunedBatch, IndividualLinks}`. A located `StepAttribution::SharedBindings` step goes to `IndividualLinks`, and its pass limit stays dynamic.
+- Keep the 4t budgets: chain 3 `cargo check` runs, fallback 3, one `cargo metadata`, no rustfmt process. Keep the retry messages, the declined-fix reports and the source assertions.
 
 **Spec:**
-1. **Measure.** Count the `cargo check` and `cargo metadata` runs of the chain test, with the time of each. Quote the source lines that start each run.
-2. **Validate a chain with fewer checks.** Plan the chain links whose edits do not depend on a check result in one pass, and validate them with one check. A failed batch check falls back to the current one-link-at-a-time path, so no fix is lost.
-3. **Tests.** Lower the check budget in `fix_chain_with_check_budget` to the new count. Add a row where one link fails validation, so the fallback keeps the other fixes.
-4. **Changelog.** Add the entry to `crates/cargo-mend/CHANGELOG.md`.
+1. **Measure.** List every cargo-mend test at 1 s or more in the full suite. For each, count the `cargo check`, `cargo fix` and `cargo metadata` runs, with the time of each. Quote the source lines that start each run.
+2. **Cut the cost.** Start with `fix_rollback` (11.8 s) and `narrow_pub_crate` (4.4 s). Remove repeated or unneeded runs in cargo-mend. Change a fixture shape only when the runs are all needed, and report that as an `Assertion-Change:` line.
+3. **Launcher time.** Measure the 1.046 s of child-command time outside real cargo in the fallback test. Remove it if it is cost in cargo-mend or the test. If it is cost of the measurement, say so with the proof.
+4. **Recheck.** Run the full suite again, and run the 4t chain and fallback tests alone 3 times each. Repeat steps 1-3 until no test takes 1 s or more in the full suite, and both 4t tests have an alone median under 1 s.
+5. **Changelog.** Add an entry to `crates/cargo-mend/CHANGELOG.md` when mend's behavior or cost changes.
 
 **Files:**
-- `crates/cargo-mend/src/fixes/` and `crates/cargo-mend/src/main.rs` — fix planning and validation
-- `crates/cargo-mend/tests/diagnostics/` — the chain tests
+- `crates/cargo-mend/src/` — the runs that the slow tests start
+- `crates/cargo-mend/tests/` — the slow tests
 - `crates/cargo-mend/CHANGELOG.md`
 
 **Workers:** 1 writer.
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean; `reexport_chain_collapses_in_one_run` under 1 s in the full suite, and no other test at a second or more. The fallback row fails without the fallback. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-mend` and `verify.sh lint cargo-mend` clean, no test at 1 s or more in the full suite, and the 4t chain and fallback tests have an alone median under 1 s. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 4s — Remaining cut and contrast defects read clean  · status: todo
 
@@ -842,7 +871,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **Constraints from prior phases:**
 - Keep the Phase 4o rules: no space or ` ·` before `…` (`render::truncate_with_ellipsis`); the five-cell Main reserve (`MAIN_COMPARISON_VALUE_RESERVE`); the `Projects` header on the name start cell; a cut name keeps one letter; Git labels keep both margins when they fit; `Tracked` whole at 95 (Git pane 23 cells); dim value contrast is measured on focused and unfocused pane backgrounds.
-- Keep the Phase 4l, 4m and 4n rules listed under Phase 4o.
+- Keep these rules from Phases 4l, 4m and 4n: a loading Git section draws no count; the Structure width reserve keeps the right-margin cell and the blank cell before the divider; the Package and Git readability tests stay green; the description states, `RepositoryProbe::NoRepository`, the fixed Structure width and the cut-title rule stay as built; the Targets preferred width, the cut-title gap and the opt-in footer fit stay as built. Targets Source values shrink before a target name is cut; Spec 2 changes only the `Source` header.
 - Keep the Phase 4p memory bounds and their tests green.
 - New drawing tests set `ColorMode` explicitly and build one App per test. Name each test for the behavior it pins.
 
@@ -859,7 +888,7 @@ Under `NO_COLOR=1` in a real terminal, the focused title is bold and the selecte
 
 **State:** none.
 
-**Acceptance gate:** `verify.sh test cargo-port` and `verify.sh lint cargo-port` clean; no test takes a second. Drawn tests check: `Source` whole at 95 while a name is cut; no cut inside a number; footer contrast at least 4.5:1 in every theme; every Package `—` in the dim value colour; no ` - …` title; rate values stacked when they do not fit. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check. The checkpoint carries a `Change-Review:` line.
+**Acceptance gate:** `verify.sh test cargo-port`, `verify.sh test tui_pane` and `verify.sh lint cargo-port` clean (lint covers the whole workspace); no test takes a second. Drawn tests check: `Source` whole at 95 while a name is cut; no cut inside a number; footer contrast at least 4.5:1 in every theme; every Package `—` in the dim value colour; no ` - …` title; rate values stacked when they do not fit. 80- and 95-column live captures in colour and under NO_COLOR, judged by the design check. The checkpoint carries a `Change-Review:` line.
 
 ### Phase 5 — A CPU sample costs only the CPU pane  · status: dropped (user, 2026-11-06: "4 is not an issue that i care about")
 

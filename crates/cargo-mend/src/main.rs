@@ -37,7 +37,6 @@ use config::FixApplication;
 use config::OperationMode;
 use config::WarningPolicy;
 use constants::BUILD_INFO_UNKNOWN;
-use fixes::FIX_CONVERGENCE_MAX_PASSES;
 use fixes::MendRunner;
 use reporting::BuildOutcome;
 use reporting::CARGO_TERM_COLOR_ALWAYS;
@@ -197,7 +196,7 @@ fn run() -> Result<ExitCode, MendFailure> {
                 CompilerFixExecution::Skip => Duration::ZERO,
             };
 
-            if passes >= FIX_CONVERGENCE_MAX_PASSES {
+            if passes >= runner.fix_pass_limit() {
                 break;
             }
 

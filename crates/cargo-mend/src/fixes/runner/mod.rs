@@ -1,4 +1,5 @@
 mod apply;
+mod chain;
 mod combine;
 mod execute;
 mod function_length;

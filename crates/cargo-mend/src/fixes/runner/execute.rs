@@ -88,7 +88,7 @@ impl MendRunner<'_> {
         &self,
         build_output_mode: BuildOutputMode,
     ) -> Result<CheckedSelection, MendFailure> {
-        let mut selection_result = compiler::run_selection(
+        let result = compiler::run_selection(
             self.selection,
             self.cargo_plan,
             self.loaded_config,
@@ -97,8 +97,15 @@ impl MendRunner<'_> {
             self.toolchain_probes,
             &self.wrapper,
         )?;
-        // Create `ParsedSources` after `compiler::run_selection` because `cargo fix`
-        // may rewrite files during that check.
+        self.scan_checked_sources(result)
+    }
+
+    /// A restored proposal has the same compiler facts as the preceding checked tree.
+    pub(super) fn scan_checked_sources(
+        &self,
+        mut result: SelectionResult,
+    ) -> Result<CheckedSelection, MendFailure> {
+        // Read syntax from the checked tree, including a restored proposal.
         let sources = ParsedSources::for_selection(self.selection);
         let diagnostics_config = &self.loaded_config.diagnostics_config;
         let enabled = |codes: &[DiagnosticCode]| {
@@ -144,7 +151,7 @@ impl MendRunner<'_> {
                 DiagnosticStatus::Disabled => None,
             },
         };
-        let report = &mut selection_result.report;
+        let report = &mut result.report;
         let scan_findings = [
             syntax_scans
                 .prefer_module_import
@@ -174,7 +181,7 @@ impl MendRunner<'_> {
         });
         report.refresh_summary();
         Ok(CheckedSelection {
-            result: selection_result,
+            result,
             scans: syntax_scans,
             sources,
         })

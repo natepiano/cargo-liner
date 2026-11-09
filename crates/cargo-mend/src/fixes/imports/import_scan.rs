@@ -12,6 +12,7 @@ use anyhow::bail;
 use crate::reporting::AppliedFixCounts;
 use crate::reporting::Finding;
 use crate::reporting::FixKind;
+use crate::rust_syntax::ParsedSources;
 
 pub(in crate::fixes) struct ImportScan {
     pub findings: Vec<Finding>,
@@ -99,6 +100,14 @@ impl ValidatedFixSet {
 
     /// Use the write path for previews, so both paths apply equal byte ranges.
     pub(in crate::fixes) fn rewritten_files(&self) -> Result<RewrittenFiles> {
+        self.rewritten_sources(&crate::rust_syntax::ParsedSources::default())
+    }
+
+    /// Compose a later chain link against the preceding proposed source text.
+    pub(in crate::fixes) fn rewritten_sources(
+        &self,
+        sources: &ParsedSources,
+    ) -> Result<RewrittenFiles> {
         let mut by_file: BTreeMap<&Path, Vec<&TaggedFix>> = BTreeMap::new();
         for tagged in self.tagged() {
             by_file.entry(&tagged.fix.path).or_default().push(tagged);
@@ -107,8 +116,11 @@ impl ValidatedFixSet {
         let files = by_file
             .into_iter()
             .map(|(path, mut fixes)| {
-                let mut text = fs::read_to_string(path)
-                    .with_context(|| format!("failed to read {}", path.display()))?;
+                let mut text = sources
+                    .source(path)
+                    .with_context(|| format!("failed to read {}", path.display()))?
+                    .text()
+                    .to_string();
                 // Apply later edits first to keep earlier byte offsets valid.
                 // For equal starts, apply the wider replacement before the insertion.
                 fixes.sort_by_key(|tagged| Reverse((tagged.fix.start, tagged.fix.end)));
