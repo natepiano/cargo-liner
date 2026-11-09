@@ -1,6 +1,78 @@
 use crate::support::*;
 
 #[test]
+fn fix_keeps_tile_root_exports_and_self_module_imports() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
+    let grid = "use crate::tiles::grid;\npub struct TileDemand(pub usize);\npub enum TileContent { Group(TileDemand) }\n\
+                pub fn demand() -> TileDemand { grid::TileDemand(7) }\n\
+                #[cfg(test)] mod tests { use crate::TileDemand; #[test] fn demand_is_public() { let demand = TileDemand(3); assert_eq!(demand.0, 3); } }\n";
+    let root = batch.add_member("tile_self_import", &[
+        ("Cargo.toml", "[package]\nname = \"tile_self_import\"\nversion = \"0.1.0\"\nedition = \"2024\"\nautolib = false\n[[test]]\nname = \"tile_imports\"\npath = \"src/lib.rs\"\n"),
+        ("src/lib.rs", "mod tiles;\npub use tiles::TileContent;\npub use tiles::TileDemand;\npub fn run() -> usize { tiles::run() }\n"),
+        ("src/tiles/mod.rs", "mod grid;\nmod host;\npub use grid::TileContent;\npub use grid::TileDemand;\npub use host::run;\n"),
+        ("src/tiles/grid.rs", grid),
+        ("src/tiles/host.rs", "use crate::TileContent;\nuse crate::TileDemand;\npub fn run() -> usize { let demand: TileDemand = super::grid::demand(); match TileContent::Group(demand) { TileContent::Group(demand) => demand.0 } }\n#[cfg(test)] #[path = \"host_tests.rs\"] mod tests;\n"),
+        ("src/tiles/host_tests.rs", "use crate::TileContent;\nuse crate::TileDemand;\n#[test] fn content_is_public() { let content = TileContent::Group(TileDemand(5)); let TileContent::Group(demand) = content; assert_eq!(demand.0, 5); }\n"),
+    ]);
+    let sources = [
+        "lib.rs",
+        "tiles/mod.rs",
+        "tiles/grid.rs",
+        "tiles/host.rs",
+        "tiles/host_tests.rs",
+    ]
+    .map(|file| root.join("src").join(file));
+    let fixed = batch
+        .command()
+        .args(["--all-targets", "--fix"])
+        .output()
+        .expect("fix tile imports");
+    let stderr = String::from_utf8_lossy(&fixed.stderr);
+    let diagnostics = strip_ansi(&format!(
+        "{}\n{stderr}",
+        String::from_utf8_lossy(&fixed.stdout)
+    ));
+    assert!(
+        !diagnostics.contains("consider using: `use ;`"),
+        "an import must name a path: {diagnostics}"
+    );
+    assert!(
+        fixed.status.success(),
+        "{}\n{stderr}",
+        String::from_utf8_lossy(&fixed.stdout)
+    );
+    assert!(!stderr.contains("rolled back"), "{stderr}");
+    let after = sources
+        .iter()
+        .map(|path| fs::read_to_string(path).expect("read fixed source"))
+        .collect::<Vec<_>>();
+    let root_exports = fs::read_to_string(root.join("src/lib.rs")).expect("read root exports");
+    assert!(
+        root_exports.contains("pub use tiles::TileContent;"),
+        "{root_exports}"
+    );
+    assert!(
+        root_exports.contains("pub use tiles::TileDemand;"),
+        "{root_exports}"
+    );
+    let second = batch
+        .command()
+        .args(["--all-targets", "--fix"])
+        .output()
+        .expect("repeat tile fixes");
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let repeated = sources
+        .iter()
+        .map(|path| fs::read_to_string(path).expect("read repeated source"))
+        .collect::<Vec<_>>();
+    assert_eq!(repeated, after, "the second fix must preserve all sources");
+}
+
+#[test]
 fn fix_imports_keep_modules_declared_in_path_mounted_test_files() {
     let mut batch = DiagnosticBatch::new(
         "[diagnostics]\nsuspicious_pub = false\nunused_pub = false\nnarrow_to_pub_crate = false\npub_use_outside_subtree = false\n[visibility]\npub_in_path = \"permitted\"\n",
