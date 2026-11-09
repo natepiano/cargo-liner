@@ -35,6 +35,10 @@ pub trait Globals<Ctx: AppContext>: 'static {
     /// slice in order, emitting one slot per variant.
     fn render_order() -> &'static [Self::Actions];
 
+    /// Current toggle values for the shortcut viewer.
+    #[must_use]
+    fn toggle_hints(_: &Ctx) -> Vec<crate::StatusLineGlobal<Self::Actions>> { Vec::new() }
+
     /// Default keybindings.
     fn defaults() -> Bindings<Self::Actions>;
 
