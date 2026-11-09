@@ -1662,7 +1662,9 @@ impl TreeLine<'_> {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession
         ) && let AstraSessionMembership::Member(member) = self.row.session_id.astra_membership()
         {
-            let text = if member.has_live_run() {
+            let text = if self.row.activity == AgentActivity::Active(Activity::Compacting)
+                || member.has_live_run()
+            {
                 summary::status_text(self.row)
             } else {
                 match member.work() {

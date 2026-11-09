@@ -24,6 +24,247 @@ use crate::render;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+fn captured_compaction_marker(family: &str) -> Result<Value, Box<dyn Error>> {
+    let captured: Value = serde_json::from_str(include_str!("fixtures/compaction_signals.json"))?;
+    Ok(captured[family].clone())
+}
+
+fn write_compaction_database(
+    account: &Path,
+    id: &str,
+    home: &Path,
+    transcript: &Path,
+) -> TestResult {
+    let database = rusqlite::Connection::open(account.join("state_5.sqlite"))?;
+    database.pragma_update(None, "synchronous", "OFF")?;
+    database.execute(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT NOT NULL,
+        title TEXT NOT NULL, originator TEXT, created_at_ms INTEGER, name TEXT,
+        first_user_message TEXT NOT NULL DEFAULT '', rollout_path TEXT NOT NULL)",
+        [],
+    )?;
+    database.execute(
+        "INSERT INTO threads VALUES (?1, ?2, 'fixture', 'codex-tui',
+        1794142990000, 'fixture-codex', 'Continue.', ?3)",
+        rusqlite::params![id, home.to_string_lossy(), transcript.to_string_lossy()],
+    )?;
+    let logs = rusqlite::Connection::open(account.join("logs_2.sqlite"))?;
+    logs.pragma_update(None, "synchronous", "OFF")?;
+    logs.execute(
+        "CREATE TABLE logs (id INTEGER PRIMARY KEY, ts INTEGER,
+        process_uuid TEXT, thread_id TEXT, feedback_log_body TEXT)",
+        [],
+    )?;
+    logs.execute("CREATE INDEX idx_logs_ts ON logs(ts)", [])?;
+    logs.execute(
+        "INSERT INTO logs VALUES (1, 1793000001, 'pid:200:fixture', ?1, ?2)",
+        rusqlite::params![
+            id,
+            format!(
+                "app_server.client_name=\"codex-tui\" app_server.connection_id=1 \
+            rpc.method=\"thread/resume\" rpc.request_id=1 rpc.transport=\"in-process\" \
+            shell_snapshot{{thread_id={id}}}: Shell snapshot successfully created:"
+            )
+        ],
+    )?;
+    Ok(())
+}
+
+fn write_compaction_transcript(
+    family: &str,
+    id: &str,
+    account: &Path,
+    home: &Path,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let transcript = if family == "claude" {
+        account.join("projects/fixture").join(format!("{id}.jsonl"))
+    } else {
+        account
+            .join("sessions/2026/11/08")
+            .join(format!("rollout-2026-11-08T13-03-10-{id}.jsonl"))
+    };
+    fs::create_dir_all(transcript.parent().ok_or("transcript directory")?)?;
+    fs::write(
+        &transcript,
+        if family == "codex" {
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"type":"session_meta","payload":{
+            "id":id,"cwd":home,"timestamp":"2026-11-08T13:03:10Z"}}),
+                serde_json::json!({"type":"event_msg","timestamp":"2026-11-08T20:26:29Z",
+                "payload":{"type":"task_started"}})
+            )
+        } else {
+            format!(
+                "{}\n",
+                serde_json::json!({"type":"user","timestamp":"2026-11-08T21:15:52Z",
+            "message":{"content":"Continue."}})
+            )
+        },
+    )?;
+    Ok(transcript)
+}
+
+fn assert_compacting_frame(rows: Vec<AgentRow>) {
+    let buffer = render::astra_frame_for_test(rows, crate::census::HierarchyEdges::default());
+    let text: String = buffer
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert!(text.split_whitespace().any(|word| word == "compacting"));
+}
+
+fn check_deleted_marker(
+    scanner: &mut crate::census::scan::LocalScanner,
+    processes: &[ProcessEntry],
+    sessions: &[crate::census::classify::SessionRecord],
+    home: &Path,
+    marker: &Path,
+    payload: &Value,
+) -> TestResult {
+    fs::remove_file(marker)?;
+    let rows = scanner.scan_details_for_test(processes, sessions, home);
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.pid == 200)
+            .ok_or("session after marker deletion")?
+            .activity
+            .text(),
+        "thinking",
+        "{} marker deletion clears compaction",
+        payload["family"]
+    );
+    fs::write(marker, serde_json::to_vec(payload)?)?;
+    let rows = scanner.scan_details_for_test(processes, sessions, home);
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.pid == 200)
+            .ok_or("session after marker recreation")?
+            .activity
+            .text(),
+        "compacting"
+    );
+    Ok(())
+}
+
+fn check_captured_compaction(family: &str) -> TestResult {
+    use crate::census::account::AccountLabels;
+    use crate::census::classify::SessionRecord;
+    use crate::census::scan::LocalScanner;
+
+    let directory = tempfile::tempdir()?;
+    let captured = captured_compaction_marker(family)?;
+    let id = captured["marker"]["session_id"]
+        .as_str()
+        .ok_or("captured session")?;
+    let account = directory.path().join(format!(".{family}"));
+    let transcript = write_compaction_transcript(family, id, &account, directory.path())?;
+    if family == "codex" {
+        write_compaction_database(&account, id, directory.path(), &transcript)?;
+    }
+    let processes = vec![ProcessEntry {
+        pid:         200,
+        parent:      None,
+        name:        family.to_owned(),
+        arguments:   if family == "codex" {
+            vec!["codex".into(), "resume".into(), id.into()]
+        } else {
+            vec!["claude".into()]
+        },
+        started:     1_793_000_000,
+        directory:   Some(directory.path().to_path_buf()),
+        config_home: ConfigHome::Named(account),
+        claude_pid:  None,
+    }];
+    let sessions: Vec<SessionRecord> = if family == "claude" {
+        serde_json::from_value(serde_json::json!([{"pid":200,"sessionId":id,
+            "name":"fixture-claude","status":"busy","cwd":directory.path()}]))?
+    } else {
+        Vec::new()
+    };
+    let mut scanner = LocalScanner::new(AccountLabels::default());
+    let rows = scanner.scan_details_for_test(&processes, &sessions, directory.path());
+    let row = rows
+        .iter()
+        .find(|row| row.pid == 200)
+        .ok_or("ordinary session row")?;
+    assert_eq!(
+        row.activity.text(),
+        "thinking",
+        "an ordinary turn stays thinking"
+    );
+
+    let markers = directory.path().join(".local/state/compaction");
+    fs::create_dir_all(&markers)?;
+    let marker = markers.join(format!("{id}.json"));
+    for invalid in [
+        serde_json::json!({"session_id":id,"family":"other","started_at":"2026-11-08T20:26:30Z"}),
+        serde_json::json!({"session_id":"another-session","family":family,"started_at":"2026-11-08T20:26:30Z"}),
+        serde_json::json!({"session_id":id,"family":family,"started_at":"2026-11-08T20:26:30"}),
+        serde_json::json!({"session_id":id,"family":family}),
+    ] {
+        fs::write(&marker, serde_json::to_vec(&invalid)?)?;
+        let rows = scanner.scan_details_for_test(&processes, &sessions, directory.path());
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.pid == 200)
+                .ok_or("ordinary row")?
+                .activity
+                .text(),
+            "thinking"
+        );
+    }
+    fs::write(&marker, serde_json::to_vec(&captured["marker"])?)?;
+    let rows = scanner.scan_details_for_test(&processes, &sessions, directory.path());
+    let row = rows
+        .iter()
+        .find(|row| row.pid == 200)
+        .ok_or("compacting session row")?;
+    assert_eq!(row.activity.text(), "compacting", "{family} start marker");
+    assert_eq!(row.activity.color_role(), Role::Busy);
+    assert_compacting_frame(rows);
+    check_deleted_marker(
+        &mut scanner,
+        &processes,
+        &sessions,
+        directory.path(),
+        &marker,
+        &captured["marker"],
+    )?;
+
+    let mut file = fs::OpenOptions::new().append(true).open(&transcript)?;
+    writeln!(file, "{}", captured["completed"])?;
+    let rows = scanner.scan_details_for_test(&processes, &sessions, directory.path());
+    let row = rows
+        .iter()
+        .find(|row| row.pid == 200)
+        .ok_or("completed session row")?;
+    assert_eq!(
+        row.activity.text(),
+        "thinking",
+        "{family} completion expires the marker"
+    );
+    Ok(())
+}
+
+#[test]
+fn compacting_claude_marker_tracks_the_captured_boundary() -> TestResult {
+    check_captured_compaction("claude")
+}
+
+#[test]
+fn compacting_codex_marker_tracks_the_captured_completion() -> TestResult {
+    check_captured_compaction("codex")
+}
+
+#[derive(Clone, Copy)]
+enum CompactionFixture {
+    Absent,
+    Open,
+    Completed,
+}
+
 /// The captured pane either exists or has only its detached supervisor left.
 #[derive(Clone, Copy)]
 enum PaneProcessPresence {
@@ -125,6 +366,46 @@ fn captured_tile_run_rows(
     implementation: CapturedImplRun,
     kind: CapturedPane,
 ) -> Result<Vec<AgentRow>, Box<dyn Error>> {
+    captured_tile_run_rows_with_compaction(pane, implementation, kind, CompactionFixture::Absent)
+}
+
+fn write_captured_compaction(
+    captured: &Value,
+    directory: &Path,
+    compaction: CompactionFixture,
+) -> TestResult {
+    if matches!(compaction, CompactionFixture::Absent) {
+        return Ok(());
+    }
+    let signal = captured_compaction_marker("codex")?;
+    let mut marker = signal["marker"].clone();
+    marker["session_id"] = captured["pane_session"].clone();
+    let markers = directory.join(".local/state/compaction");
+    fs::create_dir_all(&markers)?;
+    let id = marker["session_id"].as_str().ok_or("pane session")?;
+    fs::write(
+        markers.join(format!("{id}.json")),
+        serde_json::to_vec(&marker)?,
+    )?;
+    if matches!(compaction, CompactionFixture::Completed) {
+        let account = directory.join(".codex");
+        let transcript = write_compaction_transcript("codex", id, &account, directory)?;
+        write_compaction_database(&account, id, directory, &transcript)?;
+        writeln!(
+            fs::OpenOptions::new().append(true).open(&transcript)?,
+            "{}",
+            signal["completed"]
+        )?;
+    }
+    Ok(())
+}
+
+fn captured_tile_run_rows_with_compaction(
+    pane: PaneProcessPresence,
+    implementation: CapturedImplRun,
+    kind: CapturedPane,
+    compaction: CompactionFixture,
+) -> Result<Vec<AgentRow>, Box<dyn Error>> {
     use crate::census::HierarchySource;
     use crate::census::StaffFileSetting;
     use crate::census::account::AccountLabels;
@@ -140,6 +421,7 @@ fn captured_tile_run_rows(
         .prefix("pane-run-")
         .tempdir_in(root)?;
     let runs = write_captured_tile_runs(&captured, directory.path(), implementation)?;
+    write_captured_compaction(&captured, directory.path(), compaction)?;
     fs::write(
         directory.path().join("progress_history_state.json"),
         serde_json::to_vec(&captured["unit_owner"])?,
@@ -160,6 +442,7 @@ fn captured_tile_run_rows(
         )),
         StaffFileReader::default(),
     );
+    scanner.use_fixture_run_events();
     if let CapturedPane::Astra(status) = kind {
         let snapshot = serde_json::json!({"snapshot":{"tabs":[],"panes":[{
             "pane_id":captured["pane_pid"].to_string(), "tab_id":"workers", "terminal_id":"captured-pane", "revision":1,"agent_status":status
@@ -253,6 +536,78 @@ fn captured_tile_astra_pane_keeps_its_live_run_status() -> TestResult {
                 "{status}, {implementation:?}: {line}"
             );
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn compacting_captured_run_and_astra_rows_keep_the_run_activity() -> TestResult {
+    for kind in [
+        CapturedPane::Codex,
+        CapturedPane::Astra("idle"),
+        CapturedPane::Astra("working"),
+    ] {
+        for implementation in [CapturedImplRun::Live, CapturedImplRun::Finished] {
+            let rows = captured_tile_run_rows_with_compaction(
+                PaneProcessPresence::Visible,
+                implementation,
+                kind,
+                CompactionFixture::Open,
+            )?;
+            let worker = rows
+                .iter()
+                .find(|row| {
+                    row.session_id
+                        .ids()
+                        .any(|id| id == "01a1b9c6-4b1b-79c0-ad78-920ac1efe28a")
+                })
+                .ok_or("compacting worker")?;
+            assert_eq!(worker.activity.text(), "compacting");
+            if matches!(kind, CapturedPane::Astra(_))
+                && matches!(implementation, CapturedImplRun::Live)
+            {
+                let wire = serde_json::to_value(worker)?;
+                assert_eq!(wire["astra_member"]["run"]["live"], "waiting");
+            }
+            if matches!(kind, CapturedPane::Astra(_)) {
+                let edges = crate::census::HierarchyEdges(vec![crate::census::HierarchyEdge {
+                    manager: "da82452f-3640-4dec-b6c5-0c783d77e79f".into(),
+                    member:  "01a1b9c6-4b1b-79c0-ad78-920ac1efe28a".into(),
+                    role:    crate::census::HierarchyRole::AstraDesigner,
+                }]);
+                let buffer = render::astra_frame_for_test(rows, edges);
+                let text: String = buffer
+                    .content
+                    .iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect();
+                assert!(text.split_whitespace().any(|word| word == "compacting"));
+            }
+        }
+    }
+    for (compaction, expected) in [
+        (CompactionFixture::Open, "compacting"),
+        (CompactionFixture::Completed, "waiting"),
+    ] {
+        let rows = captured_tile_run_rows_with_compaction(
+            PaneProcessPresence::Absent,
+            CapturedImplRun::Live,
+            CapturedPane::Codex,
+            compaction,
+        )?;
+        let worker = rows
+            .iter()
+            .flat_map(|row| &row.children)
+            .find(|child| {
+                matches!(&child.thread_id, crate::census::CodexThreadId::Recorded(id)
+                if id == "01a1b9c6-4b1b-79c0-ad78-920ac1efe28a")
+            })
+            .ok_or("run-only compacting worker")?;
+        assert_eq!(
+            worker.activity.text(),
+            expected,
+            "run-only worker after native completion"
+        );
     }
     Ok(())
 }

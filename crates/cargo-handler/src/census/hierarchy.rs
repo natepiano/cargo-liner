@@ -1151,6 +1151,9 @@ impl AstraMembership {
     }
 
     pub(super) const fn with_run_activity(mut self, observed: AgentActivity) -> Self {
+        if matches!(observed, AgentActivity::Active(Activity::Compacting)) {
+            return self;
+        }
         self.run = match observed {
             AgentActivity::Active(activity) => AstraRunActivity::Live(activity),
             AgentActivity::Idle | AgentActivity::Unreported => AstraRunActivity::Inactive,
@@ -1159,6 +1162,9 @@ impl AstraMembership {
     }
 
     pub(super) const fn activity(&self, observed: super::AgentActivity) -> super::AgentActivity {
+        if matches!(observed, AgentActivity::Active(Activity::Compacting)) {
+            return observed;
+        }
         if let AstraRunActivity::Live(activity) = self.run {
             return AgentActivity::Active(activity);
         }

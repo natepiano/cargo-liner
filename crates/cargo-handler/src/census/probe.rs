@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
+use serde::ser::SerializeStruct;
 #[cfg(test)]
 use serde_json::Error;
 
@@ -36,6 +37,7 @@ use super::StaffRowNames;
 use super::Timer;
 use super::WorkIdentity;
 use super::account::AccountLabels;
+use super::activity::Activity;
 use super::hierarchy::AstraMembership;
 use super::hierarchy::AstraRole;
 use super::hierarchy::HierarchyAnswer;
@@ -55,6 +57,50 @@ use crate::constants::BINARY_NAME;
 use crate::constants::PROBE_SCHEMA;
 use crate::constants::UNREADABLE_PROBE_REASON;
 use crate::startup_log;
+
+/// `ProbeActivity` defaults the compaction extension for schema-3 receivers.
+#[derive(Deserialize)]
+pub(super) struct ProbeActivity {
+    active:     Activity,
+    #[serde(default)]
+    compacting: bool,
+}
+
+impl From<ProbeActivity> for AgentActivity {
+    fn from(wire: ProbeActivity) -> Self {
+        Self::Active(if wire.compacting {
+            Activity::Compacting
+        } else {
+            wire.active
+        })
+    }
+}
+
+impl Serialize for AgentActivity {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Unreported => serializer.serialize_str("unreported"),
+            Self::Idle => serializer.serialize_str("idle"),
+            Self::Active(activity) => {
+                let compacting = *activity == Activity::Compacting;
+                let mut fields =
+                    serializer.serialize_struct("AgentActivity", if compacting { 2 } else { 1 })?;
+                fields.serialize_field(
+                    "active",
+                    if compacting {
+                        &Activity::Thinking
+                    } else {
+                        activity
+                    },
+                )?;
+                if compacting {
+                    fields.serialize_field("compacting", &true)?;
+                }
+                fields.end()
+            },
+        }
+    }
+}
 
 /// The schema-3 task variants understood by older receivers.
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -636,6 +682,26 @@ mod tests {
     use crate::census::WorkIdentity;
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
+
+    #[test]
+    fn compacting_probe_extension_preserves_legacy_thinking() {
+        let mut wire = serde_json::to_value(report()).expect("probe fixture");
+        wire["rows"][0]["activity"] = serde_json::json!({"active":"thinking","compacting":true});
+        let (rows, edges) = parse_report(&serde_json::to_vec(&wire).expect("probe bytes"))
+            .expect("current compacting probe");
+        assert_eq!(rows[0].activity.text(), "compacting");
+        let encoded = serde_json::to_value(ProbeReport::from_answer("fixture".into(), rows, edges))
+            .expect("outgoing compacting probe");
+        assert_eq!(encoded["rows"][0]["activity"]["active"], "thinking");
+        assert_eq!(encoded["rows"][0]["activity"]["compacting"], true);
+        wire["rows"][0]["activity"]
+            .as_object_mut()
+            .expect("activity object")
+            .remove("compacting");
+        let (legacy, _) = parse_report(&serde_json::to_vec(&wire).expect("legacy bytes"))
+            .expect("legacy thinking probe");
+        assert_eq!(legacy[0].activity.text(), "thinking");
+    }
 
     #[test]
     fn refused_probe_config_reports_the_same_error_without_changing_json() {

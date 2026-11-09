@@ -25,7 +25,10 @@ use serde_json::Value;
 use super::AgentActivity;
 use super::ServiceTier;
 use super::activity::ActivityRead;
+use super::classify::ProcessEntry;
 use super::codex::CodexModels;
+use super::codex::CompactionThreads;
+use super::compaction_markers::CompactionTranscript;
 use super::hierarchy::FileRevision;
 use super::model::ConversationModel;
 use super::transcript;
@@ -363,6 +366,7 @@ struct ThreadSettings {
 #[derive(Debug, Default)]
 pub(super) struct Rollouts {
     models:        CodexModels,
+    compactions:   CompactionThreads,
     revisions:     HashMap<PathBuf, FileRevision>,
     #[cfg(test)]
     content_reads: usize,
@@ -375,6 +379,24 @@ pub(super) struct Rollouts {
 }
 
 impl Rollouts {
+    /// `transcript` selects a retained rollout or its cached database path for native completion
+    /// reads.
+    pub(super) fn transcript(&self, id: &str) -> CompactionTranscript<'_> {
+        self.threads.get(id).map_or_else(
+            || self.compactions.transcript(id),
+            |path| CompactionTranscript::File(path),
+        )
+    }
+
+    pub(super) fn find_compaction_transcripts(
+        &mut self,
+        processes: &[ProcessEntry],
+        home: Option<&Path>,
+        ids: &[String],
+    ) {
+        self.compactions.refresh(processes, home, ids);
+    }
+
     /// `read_model` reads model settings without extending the activity search.
     pub(super) fn read_model(&mut self, path: &Path) -> ConversationModel {
         self.read(path);
