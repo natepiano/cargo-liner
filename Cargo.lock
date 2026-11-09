@@ -505,6 +505,7 @@ dependencies = [
 name = "cargo-handler"
 version = "0.1.0-dev"
 dependencies = [
+ "census-test-support",
  "chrono",
  "clap",
  "crossterm",
@@ -601,6 +602,7 @@ dependencies = [
 name = "cargo-tile"
 version = "0.2.78-dev"
 dependencies = [
+ "census-test-support",
  "chrono",
  "clap",
  "crossterm",
@@ -609,6 +611,7 @@ dependencies = [
  "ratatui",
  "rustix",
  "serde",
+ "signal-hook",
  "sysinfo",
  "tempfile",
  "toml 1.1.6+spec-1.1.0",
@@ -651,6 +654,10 @@ dependencies = [
  "libc",
  "shlex",
 ]
+
+[[package]]
+name = "census-test-support"
+version = "0.1.0-dev"
 
 [[package]]
 name = "cexpr"

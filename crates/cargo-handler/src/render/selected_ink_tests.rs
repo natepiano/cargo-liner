@@ -9,20 +9,25 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crossterm::event::KeyCode;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Position;
+use serde_json::Value;
 use tui_pane::TerminalApp;
 
 use super::*;
 use crate::census::AgentRow;
 use crate::census::CensusUpdate;
 use crate::census::HierarchyEdges;
+use crate::census::transcript::SubagentRole;
 use crate::theme;
 use crate::theme::Role;
 use crate::theme::SessionHue;
 
 const CLOCK: u64 = 1_000_000;
+// All fixture words fit without the unused columns of a 200-cell frame.
+const WIDTH: u16 = 100;
 
 fn position(buffer: &Buffer, label: &str) -> Position {
     for y in 0..buffer.area.height {
@@ -40,15 +45,22 @@ fn position(buffer: &Buffer, label: &str) -> Position {
 }
 
 fn frame(app: &mut App, now: u64) -> Buffer {
-    let mut terminal = Terminal::new(TestBackend::new(200, 48)).expect("test terminal");
+    // Read the selection frame after Esc clears the word match.
+    tui_pane::dispatch_key(
+        app,
+        crossterm::event::KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(WIDTH, 48)).expect("test terminal");
     let keymap = app.keymap();
     terminal
         .draw(|frame| draw_at_for_test(frame, app, &keymap, now))
         .expect("first frame");
-    app.tiles.settle_for_test();
-    terminal
-        .draw(|frame| draw_at_for_test(frame, app, &keymap, now))
-        .expect("settled frame");
+    if app.tiles.has_pending_motion_for_test() {
+        app.tiles.settle_for_test();
+        terminal
+            .draw(|frame| draw_at_for_test(frame, app, &keymap, now))
+            .expect("settled frame");
+    }
     terminal.backend().buffer().clone()
 }
 
@@ -60,15 +72,22 @@ struct SelectedRowRenderer {
 impl SelectedRowRenderer {
     fn new(app: &mut App, height: u16) -> Self {
         let mut renderer = Self {
-            terminal: Terminal::new(TestBackend::new(200, height)).expect("selection terminal"),
+            terminal: Terminal::new(TestBackend::new(WIDTH, height)).expect("selection terminal"),
         };
         renderer.paint(app, CLOCK);
-        app.tiles.settle_for_test();
-        renderer.paint(app, CLOCK);
+        if app.tiles.has_pending_motion_for_test() {
+            app.tiles.settle_for_test();
+            renderer.paint(app, CLOCK);
+        }
         renderer
     }
 
     fn paint(&mut self, app: &mut App, now: u64) -> Buffer {
+        // Read the selection frame after Esc clears the word match.
+        tui_pane::dispatch_key(
+            app,
+            crossterm::event::KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE),
+        );
         let keymap = app.keymap();
         self.terminal
             .draw(|frame| draw_at_for_test(frame, app, &keymap, now))
@@ -762,7 +781,7 @@ enum FullPaletteRows {
 }
 
 fn palette_rows(family: FullPaletteRows) -> (Vec<AgentRow>, Vec<(String, String)>) {
-    let footer = include_str!("../footer_colors/fixtures/statusline.conf");
+    let footer = include_str!("../footer_colors/fixtures/statusline_astra.conf");
     let assignments: Vec<_> = footer
         .lines()
         .filter_map(|line| {
@@ -788,12 +807,36 @@ fn palette_rows(family: FullPaletteRows) -> (Vec<AgentRow>, Vec<(String, String)
     };
     let mut targets = Vec::new();
     let mut rows = Vec::new();
+    let mut role_rows = Vec::new();
     for (index, word) in labels.iter().enumerate() {
         let pid = 100 + u32::try_from(index).expect("palette row");
         let label = format!("palette-row-{index:02}");
         match family {
             FullPaletteRows::Roles => {
-                targets.push((label.clone(), word.clone()));
+                let role =
+                    match word.as_str() {
+                        "showrunner" => SubagentRole::Showrunner,
+                        "unit-director" => {
+                            rows.push(serde_json::from_value(serde_json::json!({
+                            "agent":"claude", "pid":pid, "session_id":"palette-unit",
+                            "name":label, "started":pid, "directory":"/fixture", "children":[]
+                        })).expect("unit director session"));
+                            targets.push((label, "unit".to_owned()));
+                            continue;
+                        },
+                        "astra-designer" | "astra-reviewer" => {
+                            rows.push(serde_json::from_value(serde_json::json!({
+                                "agent":"codex", "pid":pid, "session_id":format!("palette-{word}"),
+                                "name":label, "started":pid, "directory":"/fixture", "children":[]
+                            })).expect("Astra session"));
+                            targets.push((label, word.replace('-', " ")));
+                            continue;
+                        },
+                        other => panic!("unmapped fixture role {other}"),
+                    };
+                let label = format!("{label}-{word}");
+                targets.push((label.clone(), role.text().to_owned()));
+                role_rows.push((label, role));
             },
             FullPaletteRows::Accounts | FullPaletteRows::Sessions => {
                 let mut value = serde_json::json!({
@@ -815,14 +858,13 @@ fn palette_rows(family: FullPaletteRows) -> (Vec<AgentRow>, Vec<(String, String)
         }
     }
     let children: Vec<_> = if matches!(family, FullPaletteRows::Roles) {
-        labels
-            .iter()
-            .zip(&targets)
+        role_rows
+            .into_iter()
             .enumerate()
-            .map(|(index, (role, (label, _)))| {
+            .map(|(index, (label, role))| {
                 serde_json::json!({
                     "kind":"subagent","name":label,"depth":0,"started":100+index,
-                    "subagent_role":crate::census::transcript::SubagentRole::from_record(role,"")
+                    "subagent_role":role
                 })
             })
             .collect()
@@ -831,10 +873,19 @@ fn palette_rows(family: FullPaletteRows) -> (Vec<AgentRow>, Vec<(String, String)
             serde_json::json!({"kind":"shell","depth":0,"pid":11,"name":"palette-focus-away","started":100}),
         ]
     };
+    (palette_owner_rows(rows, children, family), targets)
+}
+
+/// Add the owner and the separate focus target to the palette rows.
+fn palette_owner_rows(
+    mut rows: Vec<AgentRow>,
+    children: Vec<Value>,
+    family: FullPaletteRows,
+) -> Vec<AgentRow> {
     rows.push(
         serde_json::from_value(serde_json::json!({
             "agent":"claude","pid":10,"session_id":"palette-owner","name":"palette-owner",
-            "started":100,"directory":"/fixture","children":children
+            "started":100,"directory":"/fixture","children":Value::Array(children)
         }))
         .expect("palette owner"),
     );
@@ -849,7 +900,7 @@ fn palette_rows(family: FullPaletteRows) -> (Vec<AgentRow>, Vec<(String, String)
             .expect("second focus surface"),
         );
     }
-    (rows, targets)
+    rows
 }
 
 fn check_full_default_dark_palette(family: FullPaletteRows, tint: bool, active: bool) {
@@ -867,7 +918,7 @@ fn check_full_default_dark_palette(family: FullPaletteRows, tint: bool, active: 
     let path = directory.path().join("footer.conf");
     std::fs::write(
         &path,
-        include_str!("../footer_colors/fixtures/statusline.conf"),
+        include_str!("../footer_colors/fixtures/statusline_astra.conf"),
     )
     .expect("committed palette");
     let mut app = App::new_for_test().expect("palette application");
@@ -877,9 +928,18 @@ fn check_full_default_dark_palette(family: FullPaletteRows, tint: bool, active: 
     app.footer_colors = crate::footer_colors::FooterColorFile::fixture(path);
     app.footer_colors.refresh();
     let (rows, targets) = palette_rows(family);
+    let hierarchy = match family {
+        FullPaletteRows::Roles => serde_json::from_value::<HierarchyEdges>(serde_json::json!([
+            {"manager":"palette-owner", "member":"palette-unit", "role":"unit"},
+            {"manager":"palette-owner", "member":"palette-astra-designer", "role":"astra-designer"},
+            {"manager":"palette-owner", "member":"palette-astra-reviewer", "role":"astra-reviewer"}
+        ]))
+        .expect("unit director hierarchy"),
+        FullPaletteRows::Accounts | FullPaletteRows::Sessions => HierarchyEdges::default(),
+    };
     app.census.apply(CensusUpdate::Local {
         rows,
-        hierarchy: HierarchyEdges::default().into(),
+        hierarchy: hierarchy.into(),
         stage: ScanStage::Completed,
     });
     let mut renderer = SelectedRowRenderer::new(&mut app, 80);

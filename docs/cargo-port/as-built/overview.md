@@ -77,7 +77,7 @@ In every section, file paths are relative to crates/cargo-port/src unless they s
 3. Git index/HEAD/refs/ignore events → `enqueue_git_refresh` / `fire_git_updates` in `watcher/refresh.rs` → `BackgroundMsg::RepoInfo` and `CheckoutInfo` → repo handlers update project Git state. Shared Git directories combine worktree refreshes; each checkout gets its own status probe.
 4. Ordinary project events → `schedule_disk_refresh` / `fire_disk_updates` → `BackgroundMsg::DiskUsage`. Build-directory events update disk usage without scheduling ordinary Git refreshes. New or missing root candidates → `probe_new_projects` → `ProjectDiscovered`, `ProjectRefreshed`, `DiskUsageBatch` or zero-byte `DiskUsage`.
 5. `handle_disk_usage_msg` → `apply_disk_usage` in `tui/app/async_tasks/disk_handlers.rs` updates `ProjectInfo`: zero bytes plus a missing path sets `Visibility::Deleted` and unregisters lint; positive bytes restore `Visibility::Visible`. Disk caches and storage totals refresh.
-6. `Visibility::Deleted` stays in `compute_visible_rows`; project drawing strikes it through. A deleted project's row does not leave the list on a watcher event. One exception: `App::rescan` in `tui/app/async_tasks/tree.rs` clears every root (a config reload that asks for a full rescan calls it), and discovery cannot restore a missing project, so its row is gone. The user dismisses it with default `x` or its close box → `App::dismiss` in `tui/app/dismiss.rs` → `Visibility::Dismissed`, lint-cache reclamation and row-cache refresh. `Dismissed` rows are filtered out.
+6. Deleted projects "stay on the list till i either dismiss them or i rescan" (user, 2026-11-05). `Visibility::Deleted` stays in `compute_visible_rows`; project drawing strikes it through. Watcher events keep the row. Default `x` or the close box calls `App::dismiss` in `tui/app/dismiss.rs`. Dismissal sets `Visibility::Dismissed`, reclaims the lint cache, and refreshes the row cache. `Dismissed` rows do not appear. A full rescan clears the old roots and installs the discovered roots without previous deletion states. `App::rescan` in `tui/app/async_tasks/tree.rs` starts this replacement. A config reload can also request it. The rescan restores the saved selection when selectable. Otherwise, it selects the first visible row without saving that fallback.
 
 ### Async dispatch and services
 
@@ -119,6 +119,10 @@ Theme templates are `crates/cargo-port/themes/default_dark.toml`, `crates/cargo-
 
 The same root holds keymap.toml. `tui/keymap/load.rs` loads defaults, migrations and user bindings; actions, canonical keys, resolved bindings and scopes are in adjacent files. `crates/cargo-port/tests/assets/default-keymap.toml` and `crates/cargo-port/tests/assets/default-config.toml` record defaults.
 
+## Idle CPU measure
+
+Launch the binary and sample its CPU use once a second, with 100% meaning one fully used core. First wait until the startup panel shows every startup row complete and the project count stops changing, so a walk that waits on disk is not mistaken for idle. Then start each 60 s measurement window only after ten consecutive one-second samples are each below 5% of one core. If that does not happen within five minutes after startup completes, the measure fails: record it as a failure with the CPU samples, not as a result. Any work still running after that point counts against the measure, so its cost cannot make the result artificially low.
+
 ## Tests and live check
 
 Tests mostly live in inline test modules beside code. Separate files include `tui/settings_scroll_tests.rs`, `tui/panes/output/presentation_tests.rs` and `tui/render/status_bar_contrast_tests.rs`; `crates/cargo-port/tests/` holds default-file assets. `make_app` and `make_app_with_config` in `tui/test_support.rs` disable unrequested startup services and isolate files. `count_allocations` in `test_support.rs` counts allocations on the calling thread. `init_git_repo` installs real loose objects from `test_support/git_seed/` to avoid repeated Git setup commands.
@@ -130,30 +134,35 @@ bash ~/.claude/scripts/direct/verify.sh lint cargo-port
 bash ~/.claude/scripts/direct/verify.sh test cargo-port
 ```
 
-For a live check on natedev/Linux, build first (the first command below prints `binary: <path>`). The commands below create an absolute scratch XDG_CONFIG_HOME, removes an inherited configuration override, sets a scratch cache root and scans only the scratch project parent:
+For a live check on natedev/Linux, build first (the first command below prints `binary: <path>`). The whole check runs in one `TemporaryDirectory` block under `TMPDIR`, which removes the folder when cargo-port exits. The script creates an absolute scratch XDG_CONFIG_HOME, removes an inherited configuration override, sets a scratch cache root and scans only the scratch project parent:
 
 ```sh
 bash ~/.claude/scripts/direct/verify.sh build cargo-port
-port_scratch=$(mktemp -d /tmp/cargo-port-live.XXXXXX)
-mkdir -p "$port_scratch/config/cargo-port" "$port_scratch/projects/map-check/src"
-cat > "$port_scratch/projects/map-check/Cargo.toml" <<'TOML'
-[package]
-name = "map-check"
-version = "0.1.0"
-edition = "2024"
-TOML
-printf 'pub fn check() {}\n' > "$port_scratch/projects/map-check/src/lib.rs"
-cat > "$port_scratch/config/cargo-port/config.toml" <<TOML
-[tui]
-include_dirs = ["$port_scratch/projects"]
-[cache]
-root = "$port_scratch/cache"
-[lint]
-enabled = false
-TOML
-env -u CARGO_PORT_CONFIG_DIR XDG_CONFIG_HOME="$port_scratch/config" \
-  <binary path>
+python3 - <binary path> <<'PY'
+import os, pathlib, subprocess, sys, tempfile
+
+with tempfile.TemporaryDirectory(prefix="cargo-port-live.") as folder:
+    root = pathlib.Path(folder)
+    project = root / "projects" / "map-check"
+    (project / "src").mkdir(parents=True)
+    (project / "Cargo.toml").write_text(
+        '[package]\nname = "map-check"\nversion = "0.1.0"\nedition = "2024"\n'
+    )
+    (project / "src" / "lib.rs").write_text("pub fn check() {}\n")
+    config = root / "config" / "cargo-port"
+    config.mkdir(parents=True)
+    (config / "config.toml").write_text(
+        f'[tui]\ninclude_dirs = ["{root / "projects"}"]\n'
+        f'[cache]\nroot = "{root / "cache"}"\n[lint]\nenabled = false\n'
+    )
+    env = {key: value for key, value in os.environ.items() if key != "CARGO_PORT_CONFIG_DIR"}
+    env["XDG_CONFIG_HOME"] = str(root / "config")
+    with open("/dev/tty") as terminal:
+        subprocess.run([sys.argv[1]], env=env, stdin=terminal, check=False)
+PY
 ```
+
+The script reads its own text from standard input, so cargo-port takes its keys from `/dev/tty`.
 
 In a terminal, confirm map-check appears in the project list, then quit with q. Config and keymap resolve under the scratch configuration directory; saved tree state uses the scratch cache root.
 

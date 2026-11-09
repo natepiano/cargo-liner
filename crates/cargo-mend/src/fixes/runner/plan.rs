@@ -2,14 +2,19 @@ use super::CheckedSelection;
 use super::FixScans;
 use super::MendRunner;
 use super::RunPlan;
+use super::chain::ChainLinkIdentity;
+use super::function_length::FunctionLengthPlan;
 use super::mend_runner::NextAnalysis;
 use crate::compiler::BuildOutputMode;
 use crate::config::DiagnosticCode;
 use crate::config::DiagnosticStatus;
 use crate::config::FixKind;
 use crate::config::FixKindSelection;
+use crate::config::OperationIntent;
 use crate::config::OperationMode;
 use crate::fixes::field_visibility;
+use crate::fixes::imports::FixSetPresence;
+use crate::fixes::imports::ValidatedFixSet;
 use crate::fixes::narrow_pub_crate;
 use crate::fixes::pub_use_fixes;
 use crate::fixes::pub_use_fixes::PubUseFixScan;
@@ -22,6 +27,11 @@ use crate::reporting::MendFailure;
 use crate::reporting::OutputFormat;
 use crate::reporting::Report;
 use crate::rust_syntax::ParsedSources;
+
+pub(super) struct PlannedChainLinks {
+    pub(super) fixes:               ValidatedFixSet,
+    pub(super) declined_on_failure: Vec<ChainLinkIdentity>,
+}
 
 enum PassOutputPolicy {
     Json,
@@ -57,11 +67,13 @@ impl MendRunner<'_> {
         let output_mode =
             BuildOutputMode::from(PassOutputPolicy::for_pass(self.output_format, pub_use));
         let checked = match std::mem::replace(&mut self.next_analysis, NextAnalysis::Required) {
-            NextAnalysis::Required => self.build_selection(output_mode)?,
-            NextAnalysis::Validated(mut checked) => {
+            NextAnalysis::Validated(mut planned) if planned.operation_mode == operation_mode => {
                 // The previous pass already charged this validation.
-                checked.result.check_duration = std::time::Duration::ZERO;
-                *checked
+                planned.check_duration = std::time::Duration::ZERO;
+                return Ok(*planned);
+            },
+            NextAnalysis::Required | NextAnalysis::Validated(_) => {
+                self.build_selection(output_mode)?
             },
         };
         self.scan_fixes(operation_mode, checked, pub_use)
@@ -69,7 +81,7 @@ impl MendRunner<'_> {
 
     /// Runs every fixer `operation_mode` enables against the checked
     /// selection, reusing its syntax scans and the sources they read.
-    fn scan_fixes(
+    pub(super) fn scan_fixes(
         &self,
         operation_mode: OperationMode,
         checked: CheckedSelection,
@@ -151,6 +163,7 @@ impl MendRunner<'_> {
         });
         let pub_use_scan = self.scan_parent_facades(pub_use, &report, &sources)?;
         let mut planned = RunPlan {
+            function_plan: FunctionLengthPlan::default(),
             sources,
             operation_mode,
             report,
@@ -169,6 +182,20 @@ impl MendRunner<'_> {
             compiler_fixable,
         };
         planned.subtree_reexport_scan = self.scan_subtree_reexports(&planned)?;
+        self.guard_function_lengths(planned)
+    }
+
+    fn guard_function_lengths(&self, mut planned: RunPlan) -> Result<RunPlan, MendFailure> {
+        planned.function_plan = Self::combined_function_plan(
+            planned.fix_scans(),
+            &planned.sources,
+            &self.selection.package_roots,
+            &self.selection.workspace_root,
+        )?;
+        planned
+            .function_plan
+            .filter_report(&mut planned.report, &self.selection.analysis_root)
+            .map_err(MendFailure::Unexpected)?;
         Ok(planned)
     }
 
@@ -220,7 +247,7 @@ impl MendRunner<'_> {
         ) {
             FixKindSelection::Selected => subtree_reexport::scan_selection(
                 self.selection,
-                &planned.report,
+                &self.chain_validation.planning_report(&planned.report),
                 &planned.sources,
                 |subtree| {
                     let scans = FixScans {
@@ -242,6 +269,37 @@ impl MendRunner<'_> {
         }
     }
 
+    pub(super) fn plan_selected_chain_links(
+        &self,
+        planned: &RunPlan,
+    ) -> Result<PlannedChainLinks, MendFailure> {
+        let subtree = self.scan_subtree_reexports(planned)?;
+        let scans = FixScans {
+            subtree_reexports: subtree.as_ref(),
+            ..planned.function_plan.accepted_scans(planned.fix_scans())
+        }
+        .without_pub_use_overlapping_subtree_reexports();
+        let protected = Self::combined_function_plan(
+            scans,
+            &planned.sources,
+            &self.selection.package_roots,
+            &self.selection.workspace_root,
+        )?;
+        let accepted = protected.accepted_scans(scans);
+        let declined_on_failure = if accepted
+            .subtree_reexports
+            .is_some_and(|scan| scan.fixes.presence() == FixSetPresence::HasEdits)
+        {
+            self.chain_validation.next_links(&planned.report)
+        } else {
+            Vec::new()
+        };
+        Ok(PlannedChainLinks {
+            fixes: protected.fixes,
+            declined_on_failure,
+        })
+    }
+
     /// Selects `fix_kind` for this pass only when the mode requests it and at least
     /// one diagnostic it fixes is enabled.
     fn fix_selection(
@@ -250,18 +308,19 @@ impl MendRunner<'_> {
         fix_kind: FixKind,
         codes: &[DiagnosticCode],
     ) -> FixKindSelection {
-        match operation_mode.fixes.selection(fix_kind) {
-            FixKindSelection::NotSelected => FixKindSelection::NotSelected,
-            FixKindSelection::Selected => {
-                if codes.iter().any(|&code| {
-                    self.loaded_config.diagnostics_config.is_enabled(code)
-                        == DiagnosticStatus::Enabled
-                }) {
-                    FixKindSelection::Selected
-                } else {
-                    FixKindSelection::NotSelected
-                }
-            },
+        let enabled = if codes.iter().any(|&code| {
+            self.loaded_config.diagnostics_config.is_enabled(code) == DiagnosticStatus::Enabled
+        }) {
+            FixKindSelection::Selected
+        } else {
+            FixKindSelection::NotSelected
+        };
+        match (
+            operation_mode.intent,
+            operation_mode.fixes.selection(fix_kind),
+        ) {
+            (OperationIntent::ReadOnly, _) | (_, FixKindSelection::Selected) => enabled,
+            (_, FixKindSelection::NotSelected) => FixKindSelection::NotSelected,
         }
     }
 }

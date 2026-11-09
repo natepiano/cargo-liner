@@ -17,8 +17,10 @@ use ratatui::text::Span;
 use tui_pane::AttractGridPresentation;
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
-use tui_pane::CellClick;
-use tui_pane::CellPoint;
+use tui_pane::CellIndex;
+use tui_pane::CellPointer;
+use tui_pane::CellPress;
+use tui_pane::ColorMode;
 use tui_pane::FocusLocation;
 use tui_pane::Keymap;
 use tui_pane::NavAction;
@@ -45,8 +47,8 @@ use crate::agent_cell::AgentEntry;
 use crate::agent_cell::AgentTile;
 use crate::agent_cell::TreeColumn;
 use crate::agent_cell::TreeMeasurement;
-use crate::agent_cell::TreeMetrics;
 use crate::app::App;
+use crate::app::expansion::HandlerExpansion;
 use crate::census;
 use crate::census::AccountColumn;
 use crate::census::AgentPlacement;
@@ -76,12 +78,8 @@ use crate::interaction::TileSelection;
 use crate::interaction::ViewportLine;
 use crate::interaction::ViewportMapping;
 use crate::settings;
-use crate::sort;
-use crate::sort::AccountsColumn;
 use crate::sort::AccountsSort;
-use crate::sort::HeaderHit;
 use crate::sort::HeaderSpan;
-use crate::sort::SummaryColumn;
 use crate::sort::SummarySort;
 use crate::sort::TreeSort;
 use crate::summary;
@@ -92,6 +90,17 @@ use crate::theme::Role;
 use crate::tiles::TileContent;
 use crate::tiles::TileDemands;
 use crate::tiles::TileKey;
+
+mod painted_surface;
+
+pub(crate) use painted_surface::PaintedSurface;
+use painted_surface::PaintedSurfaceContent;
+pub(crate) use painted_surface::cell_clicked;
+
+#[cfg(test)]
+use crate::census::AgentRow;
+#[cfg(test)]
+use crate::census::HierarchyEdges;
 
 /// Draw one frame: the grid fills the body above the status line, and
 /// toasts are drawn inside the grid's outer frame. The favorites modal
@@ -125,18 +134,20 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     );
     draw_status_line(frame, app, keymap, status);
     tui_pane::render_toasts(frame, &mut app.framework, tui_pane::frame_inner(body));
-    app.favorites_overlay.render(frame);
+    app.favorites_overlay
+        .render(frame, app.framework.color_mode);
     tui_pane::draw_framework_overlay(frame, app, keymap, settings::rows);
 }
 
 /// Paint the production grid with one controlled frame clock.
 #[cfg(test)]
 pub(crate) fn draw_at_for_test(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>, now: u64) {
+    const FIXED_UPTIME_SECS: u64 = 0;
     let [body, status] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_LINE_HEIGHT)])
             .areas(frame.area());
     draw_panes_at(frame, app, body, TileGridContents::Shown, now);
-    draw_status_line(frame, app, keymap, status);
+    draw_status_line_at(frame, app, keymap, status, FIXED_UPTIME_SECS);
 }
 
 /// Draw the tile grid into the body above the status line.
@@ -156,6 +167,14 @@ fn draw_panes_at(
     contents: TileGridContents,
     now: u64,
 ) {
+    let focused = focused_surface(app, area);
+    let followed = match &focused {
+        SelectableSurface::EmptyCell => TileSelection::NoRows,
+        SelectableSurface::Surface(surface) => app.selections.surface(surface).map_or(
+            TileSelection::NoRows,
+            super::interaction::SurfaceSelection::selection,
+        ),
+    };
     app.tiles
         .set_summary_row_allocation(SummaryRowAllocation::BeforeTiles);
     let growth = app.loaded_config.config.tiles.growth();
@@ -168,6 +187,8 @@ fn draw_panes_at(
         &app.tree_sorts,
         app.summary_sort,
     )
+    .with_color_mode(app.framework.color_mode)
+    .with_expansion(&app.expansion)
     .with_accounts(&app.accounts.table)
     .with_accounts_sort(app.accounts_sort)
     .with_selections(app.selections.clone(), SelectableSurface::EmptyCell);
@@ -176,7 +197,7 @@ fn draw_panes_at(
     app.tiles
         .set_tile_width_floor(TileWidthFloor::CompressSingleColumn);
     app.tiles.set_view(app.loaded_config.config.tiles.view);
-    let focused = app
+    *cells.focused.borrow_mut() = app
         .tiles
         .placements(area, growth)
         .into_iter()
@@ -184,14 +205,6 @@ fn draw_panes_at(
         .map_or(SelectableSurface::EmptyCell, |placement| {
             selection_surface(&placement.content)
         });
-    let followed = match &focused {
-        SelectableSurface::EmptyCell => TileSelection::NoRows,
-        SelectableSurface::Surface(surface) => app.selections.surface(surface).map_or(
-            TileSelection::NoRows,
-            super::interaction::SurfaceSelection::selection,
-        ),
-    };
-    *cells.focused.borrow_mut() = focused.clone();
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
         &mut app.tiles,
@@ -199,45 +212,73 @@ fn draw_panes_at(
         growth,
         contents,
         &cells,
+        app.framework.color_mode,
     );
+    app.painted_words
+        .refresh(&app.word_highlight, frame.buffer_mut(), || {
+            app.tiles.pointer_regions()
+        });
+    if let Some(background) = Role::WordMatch.style().bg {
+        app.painted_words.apply_with_inks(
+            &app.word_highlight,
+            frame.buffer_mut(),
+            background,
+            &mut app.match_inks,
+        );
+    }
+    app.painted_surfaces = cells.painted_surfaces.into_inner();
     *app.painted_summary.get_mut() = cells.painted_summary.into_inner();
-    app.tree_layouts = cells.layouts.into_inner();
     app.selections = cells.selections.into_inner();
     if let TileSelection::Row(identity) = followed
-        && let RowLocation::Found(destination) = app.selections.containing(&identity)
+        && let RowLocation::Found(destination) = app.selections.containing(&focused, &identity)
         && focused != SelectableSurface::Surface(destination.clone())
-        && let Some(placement) = app
-            .tiles
-            .placements(area, growth)
-            .into_iter()
-            .find(|placement| {
-                selection_surface(&placement.content)
-                    == SelectableSurface::Surface(destination.clone())
-            })
     {
-        let rect = placement.frame.rect();
-        if let Some(index) = app.tiles.cell_at(ratatui::layout::Position::new(
-            rect.x + rect.width / 2,
-            rect.y + rect.height / 2,
-        )) {
+        let content = match destination {
+            SelectionSurface::Summary => TileContent::Summary,
+            SelectionSurface::Tile(key) => TileContent::Group(key),
+        };
+        if let CellIndex::Current(index) = app.tiles.cell_index(&content) {
             app.tiles.focus_cell(index);
         }
     }
 }
 
-/// Map a content press through the same census and header layouts as drawing.
-pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
-    match app.attract.configuration().grid_presentation() {
-        AttractGridPresentation::ReplacesGrid => return,
-        AttractGridPresentation::OverGrid => {},
+/// `focused_surface` reads logical focus without the held focus used during motion.
+fn focused_surface(app: &App, area: Rect) -> SelectableSurface {
+    let FocusLocation::Cell(focused) = app.tiles.focused_cell() else {
+        return SelectableSurface::EmptyCell;
+    };
+    app.tiles
+        .placements(area, app.loaded_config.config.tiles.growth())
+        .into_iter()
+        .find(|placement| app.tiles.cell_index(&placement.content) == CellIndex::Current(focused))
+        .map_or(SelectableSurface::EmptyCell, |placement| {
+            selection_surface(&placement.content)
+        })
+}
+
+/// `cell_pressed` resolves the word and row action from one painted press.
+pub(crate) fn cell_pressed(app: &mut App, press: CellPress<TileKey>) {
+    if matches!(
+        app.attract.configuration().grid_presentation(),
+        AttractGridPresentation::ReplacesGrid
+    ) {
+        return;
     }
-    let CellClick {
-        content,
-        area,
-        point,
-        ..
-    } = click;
-    let header_area = Rect::new(0, 0, area.width, area.height);
+    match press {
+        CellPress::Content { click, position } | CellPress::EmptyContent { click, position } => {
+            app.press_word(position);
+            cell_clicked(app, click);
+        },
+        CellPress::Title { position, .. } => {
+            app.press_word(position);
+        },
+        CellPress::Chrome | CellPress::Retired => {},
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn paint_tree_headers_for_test(app: &mut App, id: TileKey, area: Rect) {
     let cells = Cells::new(
         app.census
             .machines(&app.loaded_config.config.machines.remote),
@@ -245,94 +286,46 @@ pub(crate) fn cell_clicked(app: &mut App, click: CellClick<TileKey>) {
         app.footer_colors.colors(),
         &app.tree_sorts,
         app.summary_sort,
+    );
+    cells.draw(
+        &mut Buffer::empty(area),
+        &TileContent::Group(id),
+        area,
+        Color::Reset,
+    );
+    app.painted_surfaces = cells.painted_surfaces.into_inner();
+}
+
+#[cfg(test)]
+pub(crate) fn draw_summary_for_test(app: &mut App, area: Rect) -> Buffer {
+    let cells = Cells::new(
+        app.census.machines(&[]),
+        census::unix_now(),
+        app.footer_colors.colors(),
+        &app.tree_sorts,
+        app.summary_sort,
     )
     .with_accounts(&app.accounts.table)
     .with_accounts_sort(app.accounts_sort);
-    for tile in &cells.tiles {
-        if let Some(metrics) = app.tree_layouts.get(&tile.key()) {
-            tile.share_metrics(metrics.clone());
-        }
-    }
-    match content {
-        TileContent::Summary => match summary_header_hit(app, header_area, point) {
-            SummaryHeaderHit::Missed => {},
-            SummaryHeaderHit::AgentColumn(column) => {
-                app.summary_sort.select(column);
-                return;
-            },
-            SummaryHeaderHit::AccountColumn(column) => {
-                app.accounts_sort.select(column);
-                return;
-            },
-        },
-        TileContent::Group(ref id) => {
-            if let Some(tile) = cells.tile(id)
-                && let HeaderHit::Column(column) =
-                    sort::header_hit(&cells.header_spans(tile, header_area), point)
-            {
-                let default = tile.default_sort();
-                app.tree_sorts
-                    .entry(id.clone())
-                    .or_insert(default)
-                    .select(column);
-                return;
-            }
-        },
-        TileContent::Empty(_) => return,
-    }
-    if let SelectableSurface::Surface(surface) = selection_surface(&content)
-        && let SurfaceLookup::Current(state) = app.selections.surface_mut(&surface)
-    {
-        state.click(ratatui::layout::Position::new(
-            area.x.saturating_add(point.column),
-            area.y.saturating_add(point.row),
-        ));
-    }
+    let mut buffer = Buffer::empty(area);
+    cells.draw(&mut buffer, &TileContent::Summary, area, Color::Reset);
+    app.painted_surfaces = cells.painted_surfaces.into_inner();
+    *app.painted_summary.get_mut() = cells.painted_summary.into_inner();
+    buffer
 }
 
-/// The two independent tables share one painted summary surface.
-enum SummaryHeaderHit {
-    Missed,
-    AgentColumn(SummaryColumn),
-    AccountColumn(AccountsColumn),
+/// `TileLookup` names current and retired census tiles.
+enum TileLookup<'t, 'a> {
+    Retired,
+    Current(&'t AgentTile<'a>),
 }
 
-/// Header-only summary draws retain their layout without a selectable row surface.
-fn summary_header_hit(app: &App, area: Rect, point: CellPoint) -> SummaryHeaderHit {
-    let painted = app.painted_summary.borrow();
-    let PaintedSummary::Drawn(layout) = &*painted else {
-        return SummaryHeaderHit::Missed;
-    };
-    let source = match app.selections.surface(&SelectionSurface::Summary) {
-        SurfaceLookup::Current(state) => {
-            state.painted_mapping().source_line(usize::from(point.row))
-        },
-        SurfaceLookup::Retired => ViewportMapping::Linear {
-            offset: 0,
-            height: usize::from(area.height),
+impl<'t, 'a> TileLookup<'t, 'a> {
+    fn map_or<T>(self, retired: T, current: impl FnOnce(&'t AgentTile<'a>) -> T) -> T {
+        match self {
+            Self::Retired => retired,
+            Self::Current(tile) => current(tile),
         }
-        .source_line(usize::from(point.row)),
-    };
-    let row = match source {
-        ViewportLine::Header(row) | ViewportLine::Body(row) => row,
-        ViewportLine::Outside => return SummaryHeaderHit::Missed,
-    };
-    let point = CellPoint {
-        row: u16::try_from(row).unwrap_or(u16::MAX),
-        ..point
-    };
-    let area = Rect {
-        height: u16::try_from(layout.height()).unwrap_or(u16::MAX),
-        ..area
-    };
-    if let HeaderHit::Column(column) = sort::header_hit(&layout.header_spans(area), point) {
-        SummaryHeaderHit::AgentColumn(column)
-    } else if let HeaderHit::Column(column) =
-        sort::header_hit(&layout.accounts_header_spans(area), point)
-    {
-        SummaryHeaderHit::AccountColumn(column)
-    } else {
-        SummaryHeaderHit::Missed
     }
 }
 
@@ -363,7 +356,11 @@ pub(crate) fn navigate_selection(app: &mut App, action: NavAction) {
     }
 }
 
-pub(crate) fn cell_scrolled(app: &mut App, cell: &CellClick<TileKey>, direction: ScrollDirection) {
+pub(crate) fn cell_scrolled(
+    app: &mut App,
+    cell: &CellPointer<TileKey>,
+    direction: ScrollDirection,
+) {
     if let SelectableSurface::Surface(surface) = selection_surface(&cell.content)
         && let SurfaceLookup::Current(state) = app.selections.surface_mut(&surface)
     {
@@ -393,12 +390,13 @@ enum SummarySelectionLayout {
 
 /// The per-session summary source and the production-role or pooled tiles.
 struct Cells<'a> {
+    color_mode:        ColorMode,
     summary_layout:    RefCell<FrameSummaryLayout>,
     summary_selection: RefCell<SummarySelectionLayout>,
     painted_summary:   RefCell<PaintedSummary>,
+    painted_surfaces:  RefCell<Vec<PaintedSurface>>,
     selections:        RefCell<Selections>,
     focused:           RefCell<SelectableSurface>,
-    layouts:           RefCell<HashMap<TileKey, TreeMetrics>>,
     measurements:      RefCell<HashMap<TileKey, TreeMeasurement>>,
     /// This machine, then each configured remote.
     machines:          Vec<Machine<'a>>,
@@ -504,7 +502,7 @@ impl<'a> Cells<'a> {
                         } else {
                             PaneFocusState::Remembered
                         };
-                    let style = tui_pane::selection_style(focus);
+                    let style = tui_pane::selection_style(focus, self.color_mode);
                     let row = Rect::new(
                         area.x,
                         area.y + u16::try_from(visible).unwrap_or(u16::MAX),
@@ -540,12 +538,13 @@ impl<'a> Cells<'a> {
         let tiles = agent_cell::group_tiles(&placement, &agents, sorts, now);
         let account_column = agent_cell::account_column(&agents);
         Self {
+            color_mode: ColorMode::Colored,
             summary_layout: RefCell::new(FrameSummaryLayout::Unallocated),
             summary_selection: RefCell::new(SummarySelectionLayout::DirectDraw),
             painted_summary: RefCell::new(PaintedSummary::NotDrawn),
+            painted_surfaces: RefCell::new(Vec::new()),
             selections: RefCell::new(Selections::default()),
             focused: RefCell::new(SelectableSurface::EmptyCell),
-            layouts: RefCell::new(HashMap::new()),
             measurements: RefCell::new(HashMap::new()),
             machines,
             agents,
@@ -558,6 +557,18 @@ impl<'a> Cells<'a> {
             accounts: &AccountsTable::NotConfigured,
             accounts_sort: AccountsSort::SourceOrder,
         }
+    }
+
+    const fn with_color_mode(mut self, mode: ColorMode) -> Self {
+        self.color_mode = mode;
+        self
+    }
+
+    fn with_expansion(mut self, expansion: &HandlerExpansion) -> Self {
+        for tile in &mut self.tiles {
+            tile.apply_expansion(expansion);
+        }
+        self
     }
 
     fn with_selections(mut self, selections: Selections, focused: SelectableSurface) -> Self {
@@ -634,15 +645,15 @@ impl<'a> Cells<'a> {
                 let rows = tile
                     .row_identities()
                     .into_iter()
-                    .enumerate()
-                    .map(|(line, identity)| (identity, crate::interaction::RowSpan::single(line)))
+                    .zip(tile.row_spans())
                     .collect();
                 (SelectionSurface::Tile(tile.key()), rows)
             })
             .collect();
         rows.push((SelectionSurface::Summary, summary_rows));
         let mut selections = self.selections.borrow_mut();
-        let followed = match &*self.focused.borrow() {
+        let focused = self.focused.borrow().clone();
+        let followed = match &focused {
             SelectableSurface::EmptyCell => TileSelection::NoRows,
             SelectableSurface::Surface(surface) => selections.surface(surface).map_or(
                 TileSelection::NoRows,
@@ -654,7 +665,7 @@ impl<'a> Cells<'a> {
             state.set_pin(layout.section_pin());
         }
         if let TileSelection::Row(identity) = followed
-            && let RowLocation::Found(destination) = selections.follow_focused(&identity)
+            && let RowLocation::Found(destination) = selections.follow_focused(&focused, &identity)
         {
             *self.focused.borrow_mut() = SelectableSurface::Surface(destination);
         }
@@ -677,8 +688,58 @@ impl<'a> Cells<'a> {
     }
 
     /// The tile named by a stable session or machine-pool identity.
-    fn tile(&self, id: &TileKey) -> Option<&AgentTile<'a>> {
-        self.tiles.iter().find(|tile| tile.key() == *id)
+    fn tile(&self, id: &TileKey) -> TileLookup<'_, 'a> {
+        self.tiles
+            .iter()
+            .find(|tile| tile.key() == *id)
+            .map_or(TileLookup::Retired, TileLookup::Current)
+    }
+
+    /// `record_painted_surface` retains the headers and rows used by this source allocation.
+    fn record_painted_surface(&self, content: &TileContent, inner: Rect) {
+        if let SelectableSurface::Surface(surface) = selection_surface(content) {
+            let painted_content = match content {
+                TileContent::Group(key) => match self.tile(key) {
+                    TileLookup::Current(tile) => PaintedSurfaceContent::Tree {
+                        key:     key.clone(),
+                        spans:   self
+                            .header_spans(tile, Rect::new(0, 0, inner.width, inner.height)),
+                        default: tile.default_sort(),
+                    },
+                    TileLookup::Retired => return,
+                },
+                TileContent::Summary => {
+                    let summary = self.painted_summary.borrow();
+                    let PaintedSummary::Drawn(layout) = &*summary else {
+                        return;
+                    };
+                    let area = Rect::new(
+                        0,
+                        0,
+                        inner.width,
+                        u16::try_from(layout.height()).unwrap_or(u16::MAX),
+                    );
+                    PaintedSurfaceContent::Summary {
+                        agents:   layout.header_spans(area),
+                        accounts: layout.accounts_header_spans(area),
+                    }
+                },
+                TileContent::Empty(_) => return,
+            };
+            let rows = self.selections.borrow().surface(&surface).map_or(
+                {
+                    let mut state = crate::interaction::SurfaceSelection::default();
+                    state.set_area(inner);
+                    state
+                },
+                Clone::clone,
+            );
+            self.painted_surfaces.borrow_mut().push(PaintedSurface {
+                area: inner,
+                rows,
+                content: painted_content,
+            });
+        }
     }
 
     /// Resolve either tile's headers through its shared drawing layout.
@@ -718,7 +779,7 @@ impl TileCells<TileKey> for Cells<'_> {
         let tiles: Vec<_> = allocations
             .iter()
             .filter_map(|(content, area)| match content {
-                TileContent::Group(id) => self.tile(id).map(|tile| (tile, *area)),
+                TileContent::Group(id) => self.tile(id).map_or(None, |tile| Some((tile, *area))),
                 _ => None,
             })
             .collect();
@@ -736,11 +797,8 @@ impl TileCells<TileKey> for Cells<'_> {
                             .map(|source| source.allocated(*area, state))
                     })
             }));
-        let mut layouts = self.layouts.borrow_mut();
-        layouts.clear();
         for ((tile, _), metrics) in tiles.into_iter().zip(measurements) {
-            tile.share_metrics(metrics.clone());
-            layouts.insert(tile.key(), metrics);
+            tile.share_metrics(metrics);
         }
         let mut selections = self.selections.borrow_mut();
         for (content, area) in &allocations {
@@ -749,7 +807,7 @@ impl TileCells<TileKey> for Cells<'_> {
             {
                 match content {
                     TileContent::Group(key) => {
-                        if let Some(tile) = self.tile(key) {
+                        if let TileLookup::Current(tile) = self.tile(key) {
                             state.set_area(tile.row_area(*area, self.now, self.account_column));
                             tile.set_viewport(state.viewport());
                         }
@@ -822,6 +880,16 @@ impl TileCells<TileKey> for Cells<'_> {
     }
 
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, _: Color) {
+        if let TileContent::Group(key) = content
+            && let TileLookup::Current(tile) = self.tile(key)
+            && let SurfaceLookup::Current(state) = self
+                .selections
+                .borrow_mut()
+                .surface_mut(&SelectionSurface::Tile(key.clone()))
+        {
+            state.set_area(tile.row_area(inner, self.now, self.account_column));
+            tile.set_viewport(state.viewport());
+        }
         match content {
             TileContent::Summary => {
                 let layout = self.summary_layout(inner.width);
@@ -884,7 +952,7 @@ impl TileCells<TileKey> for Cells<'_> {
                 }
             },
             TileContent::Group(id) => match self.tile(id) {
-                Some(AgentTile::Agent(entry)) => agent_cell::draw(
+                TileLookup::Current(AgentTile::Agent(entry)) => agent_cell::draw(
                     buffer,
                     inner,
                     entry,
@@ -893,7 +961,7 @@ impl TileCells<TileKey> for Cells<'_> {
                     self.account_column,
                     self.footer_colors,
                 ),
-                Some(AgentTile::Unassigned(entry)) => agent_cell::draw_unassigned(
+                TileLookup::Current(AgentTile::Unassigned(entry)) => agent_cell::draw_unassigned(
                     buffer,
                     inner,
                     entry,
@@ -901,40 +969,43 @@ impl TileCells<TileKey> for Cells<'_> {
                     self.account_column,
                     self.footer_colors,
                 ),
-                None => {},
+                TileLookup::Retired => {},
             },
             // The grid draws an empty cell's number itself.
             TileContent::Empty(_) => {},
         }
         self.paint_selection(buffer, content, inner);
+        self.record_painted_surface(content, inner);
     }
 
     /// Session titles retain their hue; pooled titles use the theme's title color.
     fn group_title(&self, id: &TileKey) -> Option<Line<'static>> {
-        self.tile(id).map(|tile| match tile {
-            AgentTile::Unassigned(entry) => Line::from(Span::styled(
-                format!(
-                    "{AGENT_CELL_TITLE_LEAD}{}{HEADING_SEPARATOR}{}",
-                    UNASSIGNED_CELL_TITLE, entry.machine
-                ),
-                Style::default().fg(title_color()),
-            )),
-            AgentTile::Agent(entry) => Line::from(vec![
-                Span::styled(
-                    format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name),
-                    Role::Session(entry.hue).style(),
-                ),
-                Span::styled(
-                    entry.role_label.suffix(),
-                    match entry.role_label {
-                        RoleLabel::Stated(role) | RoleLabel::Inferred(role) => {
-                            self.footer_colors.hierarchy_role(role)
-                        },
-                        RoleLabel::ReviewFallback | RoleLabel::Unlabeled => FooterTint::Plain,
-                    }
-                    .style(Style::default().fg(label_color())),
-                ),
-            ]),
+        self.tile(id).map_or(None, |tile| {
+            Some(match tile {
+                AgentTile::Unassigned(entry) => Line::from(Span::styled(
+                    format!(
+                        "{AGENT_CELL_TITLE_LEAD}{}{HEADING_SEPARATOR}{}",
+                        UNASSIGNED_CELL_TITLE, entry.machine
+                    ),
+                    Style::default().fg(title_color()),
+                )),
+                AgentTile::Agent(entry) => Line::from(vec![
+                    Span::styled(
+                        format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name),
+                        Role::Session(entry.hue).style(),
+                    ),
+                    Span::styled(
+                        entry.role_label.suffix(),
+                        match entry.role_label {
+                            RoleLabel::Stated(role) | RoleLabel::Inferred(role) => {
+                                self.footer_colors.hierarchy_role(role)
+                            },
+                            RoleLabel::ReviewFallback | RoleLabel::Unlabeled => FooterTint::Plain,
+                        }
+                        .style(Style::default().fg(label_color())),
+                    ),
+                ]),
+            })
         })
     }
 }
@@ -942,6 +1013,16 @@ impl TileCells<TileKey> for Cells<'_> {
 /// The status line: the app's name and version, `attract` while the
 /// attract screen was asked for, the uptime, and the `?` shortcut.
 pub(crate) fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Rect) {
+    draw_status_line_at(frame, app, keymap, area, app.started.elapsed().as_secs());
+}
+
+fn draw_status_line_at(
+    frame: &mut Frame,
+    app: &App,
+    keymap: &Keymap<App>,
+    area: Rect,
+    uptime_secs: u64,
+) {
     let globals = [StatusLineGlobal::global_shortcuts_help()];
     let mut notes = vec![StatusLineNote {
         label: APP_NAME.to_string(),
@@ -952,12 +1033,7 @@ pub(crate) fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App
     if app.attract.asked_for() {
         notes.push(StatusLineNote::flag(ATTRACT_NOTE_LABEL));
     }
-    let status = StatusLine::new(
-        app.started.elapsed().as_secs(),
-        ScanIndicator::Hidden,
-        &notes,
-        &globals,
-    );
+    let status = StatusLine::new(uptime_secs, ScanIndicator::Hidden, &notes, &globals);
     render_status_line::<App, AppGlobalAction>(
         frame,
         area,
@@ -994,12 +1070,15 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Cell;
     use tui_pane::CellPoint;
+    use tui_pane::ColorMode;
+    use tui_pane::ExpansionAction;
     use tui_pane::FavoritesFileState;
     use tui_pane::TileView;
     use tui_pane::dispatch_key;
 
     use super::*;
     use crate::agent_cell::TreeColumn;
+    use crate::app::expansion::HandlerExpansionAction;
     use crate::census::Account;
     use crate::census::Agent;
     use crate::census::AgentActivity;
@@ -1016,8 +1095,10 @@ mod tests {
     use crate::census::RoleLabel;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::StaffRowNames;
     use crate::census::WorkIdentity;
-    use crate::census::hierarchy::ReviewerState;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
     use crate::census::transcript::SubagentRole;
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
@@ -1142,23 +1223,23 @@ fraying = "leading"
         "│ natedev · no agents                                                          │",
         "│       ┌ Settings ────────────────────────────────────────────────────┐       │",
         "│       │ Appearance:                                                  │       │",
-        "│       │ ▶ mode               < auto >                                │       │",
-        "│       │   light theme        < Default Light >                       │       │",
-        "│       │   dark theme         < Default Dark >                        │       │",
-        "│       │   transparent        < true >                                │       │",
+        "│       │ ▶ mode           < auto >                                    │       │",
+        "│       │   light theme    < Default Light >                           │       │",
+        "│       │   dark theme     < Default Dark >                            │       │",
+        "│       │   transparent    < true >                                    │       │",
         "│       │ Tiles:                                                       │       │",
-        "│       │   initial rows       < 4 >                                   │       │",
-        "│       │   fill               < redistribute >                        │       │",
-        "│       │   view               < cells >                               │       │",
-        "│       │   widen summary      < true >                                │       │",
+        "│       │   initial rows   < 4 >                                       │       │",
+        "│       │   fill           < redistribute >                            │       │",
+        "│       │   view           < cells >                                   │       │",
+        "│       │   widen summary  < true >                                    │       │",
         "│       │ Machines:                                                    │       │",
-        "│       │   remote             none                                    │       │",
+        "│       │   remote         none                                        │       │",
         "│       │ Census:                                                      │       │",
-        "│       │   hierarchy command                                          │       │",
+        "│       │   staff file     ~/.local/state/staff/staff.json             │       │",
         "│       │ Files:                                                       │       │",
-        "│       │   config             /<config>/cargo-handler/config.toml     │       │",
-        "│       │   themes             /<config>/cargo-handler/themes          │       │",
-        "│       │   keymap             /<config>/cargo-handler/keymap.toml     │       │",
+        "│       │   config         /<config>/cargo-handler/config.toml         │       │",
+        "│       │   themes         /<config>/cargo-handler/themes              │       │",
+        "│       │   keymap         /<config>/cargo-handler/keymap.toml         │       │",
         "│       └──────────────────────────────────────────────────────────────┘ 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
@@ -1167,25 +1248,25 @@ fraying = "leading"
     const KEYMAP_OVERLAY: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
         "│ natedev · no agents                                                          │",
-        "│        ┌ Keymap ────────────────────────────────────────────────────┐        │",
-        "│        │                                                            │        │",
-        "│        │ Global Navigation:                                         │        │",
-        "│        │ ▸ Next pane                                     tab        │        │",
-        "│        │   Previous pane                                 shift-tab  │        │",
-        "│        │ Global Shortcuts:                                          │        │",
-        "│        │   Add a tile                                    +          │        │",
-        "│        │   Dismiss overlay / output                      x          │        │",
-        "│        │   Focus the tile above                          shift-up   │        │",
-        "│        │   Focus the tile below                          shift-down │        │",
-        "│        │   Focus the tile to the left                    left       │        │",
-        "│        │   Focus the tile to the right                   right      │        │",
-        "│        │   Open attract favorites                        ctrl-o     │        │",
-        "│        │   Open keymap viewer                            ctrl-k     │        │",
-        "│        │   Open settings                                 s          │        │",
-        "│        │   Quit                                          q          │        │",
-        "│        │   Randomize the attract screen                  r          │        │",
-        "│        │   Remove an empty tile                          -          │        │",
-        "│        └──────────────────────────1 of 6 ▼──────────────────────────┘        │",
+        "│       ┌ Keymap ──────────────────────────────────────────────────────┐       │",
+        "│       │                                                              │       │",
+        "│       │ Global Navigation:                                           │       │",
+        "│       │ ▸ Next pane                                     tab          │       │",
+        "│       │   Previous pane                                 shift-tab    │       │",
+        "│       │ Global Shortcuts:                                            │       │",
+        "│       │   Add a tile                                    +            │       │",
+        "│       │   Clear the word highlight                      escape       │       │",
+        "│       │   Collapse all to first level                   -            │       │",
+        "│       │   Collapse the selected row                     left         │       │",
+        "│       │   Dismiss overlay / output                      x            │       │",
+        "│       │   Expand all rows                               =            │       │",
+        "│       │   Expand the selected row                       right        │       │",
+        "│       │   Focus the tile above                          shift-up     │       │",
+        "│       │   Focus the tile below                          shift-down   │       │",
+        "│       │   Focus the tile to the left                    shift-left   │       │",
+        "│       │   Focus the tile to the right                   shift-right  │       │",
+        "│       │   Open attract favorites                        ctrl-o       │       │",
+        "│       └───────────────────────────1 of 7 ▼───────────────────────────┘       │",
         "│                                             content rows: 1 of 1  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
@@ -1193,28 +1274,28 @@ fraying = "leading"
     /// The `?` overlay's first screen, with no `x` Dismiss row.
     const SHORTCUTS_OVERLAY: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
-        "│ natedev · no ┌ Global Shortcuts ──────────────────────────────┐              │",
-        "│              │                                                │              │",
-        "│              │ Global Navigation:                             │              │",
-        "│              │ ▸ Next pane                         tab        │              │",
-        "│              │   Previous pane                     shift-tab  │              │",
-        "│              │ Global Shortcuts:                              │              │",
-        "│              │   Add a tile                        +          │              │",
-        "│              │   Focus the tile above              shift-up   │              │",
-        "│              │   Focus the tile below              shift-down │              │",
-        "│              │   Focus the tile to the left        left       │              │",
-        "│              │   Focus the tile to the right       right      │              │",
-        "│              │   Open attract favorites            ctrl-o     │              │",
-        "│              │   Open keymap viewer                ctrl-k     │              │",
-        "│              │   Open settings                     s          │              │",
-        "│              │   Quit                              q          │              │",
-        "│              │   Randomize the attract screen      r          │              │",
-        "│              │   Remove an empty tile              -          │              │",
-        "│              │   Restart                           R          │              │",
-        "│              │   Save attract parameters           ctrl-s     │              │",
-        "│              │   Select one page above             pageup     │              │",
-        "│              │   Select one page below             pagedown   │1  r/c: 21/78 │",
-        "└──────────────└────────────────────1 of 2 ▼────────────────────┘──────────────┘",
+        "│ natedev · no┌ Global Shortcuts ────────────────────────────────┐             │",
+        "│             │                                                  │             │",
+        "│             │ Global Navigation:                               │             │",
+        "│             │ ▸ Next pane                         tab          │             │",
+        "│             │   Previous pane                     shift-tab    │             │",
+        "│             │ Global Shortcuts:                                │             │",
+        "│             │   Add a tile                        +            │             │",
+        "│             │   Clear the word highlight          escape       │             │",
+        "│             │   Collapse all to first level       -            │             │",
+        "│             │   Collapse the selected row         left         │             │",
+        "│             │   Expand all rows                   =            │             │",
+        "│             │   Expand the selected row           right        │             │",
+        "│             │   Focus the tile above              shift-up     │             │",
+        "│             │   Focus the tile below              shift-down   │             │",
+        "│             │   Focus the tile to the left        shift-left   │             │",
+        "│             │   Focus the tile to the right       shift-right  │             │",
+        "│             │   Open attract favorites            ctrl-o       │             │",
+        "│             │   Open keymap viewer                ctrl-k       │             │",
+        "│             │   Open settings                     s            │             │",
+        "│             │   Quit                              q            │             │",
+        "│             │   Randomize the attract screen      r            │  r/c: 21/78 │",
+        "└─────────────└─────────────────────1 of 3 ▼─────────────────────┘─────────────┘",
     ];
 
     /// The favorites overlay on one saved moving-band favorite.
@@ -1262,8 +1343,8 @@ fraying = "leading"
         "│                                                                              │",
         "│                                             content rows: 1 of 1  r/c: 10/78 │",
         "├ unassigned · natedev─────────────────────────────────────────────────────────┤",
-        "│ session ▲       status  directory                                        age │",
-        "│ boss of bosses  idle    ~/rust/hana_catalyst/docs/hana                 21:00 │",
+        "│   session ▲       status  directory                                      age │",
+        "│   boss of bosses  idle    ~/rust/hana_catalyst/docs/hana               21:00 │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
@@ -1528,7 +1609,10 @@ fraying = "leading"
         let mut app = laid_out_app();
         dispatch_key(&mut app, key('+'));
         dispatch_key(&mut app, key('+'));
-        dispatch_key(&mut app, key('-'));
+        dispatch_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT),
+        );
         app.tiles.settle_for_test();
 
         assert_eq!(
@@ -1593,6 +1677,8 @@ fraying = "leading"
     /// one thread, and a subagent, started `age` seconds before [`NOW`].
     fn boss(age: u64) -> AgentRow {
         let child = |depth, kind, pid, name: &str, age: u64| ChildRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
             worker_task: WorkerTask::Unrecorded,
             dispatch: WorkerDispatch::Plain,
             activity: AgentActivity::Idle,
@@ -1607,6 +1693,9 @@ fraying = "leading"
             work_id: WorkIdentity::Legacy,
         };
         AgentRow {
+            model:           ModelName::Unrecorded,
+            effort:          ReasoningEffort::Unrecorded,
+            staff_names:     StaffRowNames::default(),
             role_fallback:   RoleFallback::None,
             session_id:      SessionIdentity::Unrecorded,
             agent:           Agent::Claude,
@@ -1671,7 +1760,6 @@ fraying = "leading"
                 ..root.clone()
             });
             edges.push(HierarchyEdge {
-                reviewer: ReviewerState::NotPool,
                 manager,
                 member,
                 role: HierarchyRole::Impl,
@@ -1682,8 +1770,8 @@ fraying = "leading"
     }
 
     /// Resolve the role header in the current frame after each sort selection.
-    fn role_header_click(app: &App) -> CellClick<TileKey> {
-        let area = Rect::new(0, 0, 220, 30);
+    fn role_header_click(app: &mut App) -> CellPointer<TileKey> {
+        let area = Rect::new(8, 5, 220, 30);
         let (id, point) = {
             let cells = Cells::new(
                 app.census.machines(&[]),
@@ -1691,22 +1779,33 @@ fraying = "leading"
                 app.footer_colors.colors(),
                 &app.tree_sorts,
                 app.summary_sort,
-            );
+            )
+            .with_color_mode(app.framework.color_mode)
+            .with_expansion(&app.expansion);
             let tile = &cells.tiles[0];
+            let mut buffer = Buffer::empty(area);
+            cells.draw(
+                &mut buffer,
+                &TileContent::Group(tile.key()),
+                area,
+                Color::Reset,
+            );
             let span = cells
-                .header_spans(tile, area)
+                .header_spans(tile, Rect::new(0, 0, area.width, area.height))
                 .into_iter()
                 .find(|span| span.column == TreeColumn::Role)
                 .expect("a role header");
+            let key = tile.key();
+            app.painted_surfaces = cells.painted_surfaces.into_inner();
             (
-                tile.key(),
+                key,
                 CellPoint {
                     column: span.columns.start,
                     row:    span.row,
                 },
             )
         };
-        CellClick {
+        CellPointer {
             index: 2,
             content: TileContent::Group(id),
             area: Rect::new(8, 5, area.width, area.height),
@@ -1723,7 +1822,11 @@ fraying = "leading"
             hierarchy: HierarchyEdges::default().into(),
             stage:     ScanStage::Completed,
         });
-        let mut click = role_header_click(&app);
+        crate::app::expansion::dispatch(
+            &mut app,
+            HandlerExpansionAction::Shared(ExpansionAction::ExpandAll),
+        );
+        let mut click = role_header_click(&mut app);
         cell_clicked(&mut app, click.clone());
         assert_eq!(app.tree_sorts.len(), 1, "only the clicked tile gets a sort");
         let id = app
@@ -1740,14 +1843,14 @@ fraying = "leading"
             }
         );
         assert_eq!(app.summary_sort, SummarySort::default());
-        click = role_header_click(&app);
+        click = role_header_click(&mut app);
         cell_clicked(&mut app, click.clone());
         assert_eq!(app.tree_sorts[&id].direction, SortDirection::Descending);
         let selected = app.tree_sorts[&id];
         let point = click.point;
         cell_clicked(
             &mut app,
-            CellClick {
+            CellPointer {
                 point: CellPoint {
                     row: point.row + 1,
                     ..point
@@ -1790,7 +1893,7 @@ fraying = "leading"
                 .find(|span| span.column == SummaryColumn::Agent)
                 .expect("summary header");
             [
-                CellClick {
+                CellPointer {
                     index: 1,
                     content: TileContent::Group(tile.key()),
                     area,
@@ -1799,7 +1902,7 @@ fraying = "leading"
                         row:    tree.row,
                     },
                 },
-                CellClick {
+                CellPointer {
                     index: 0,
                     content: TileContent::Summary,
                     area,
@@ -1854,6 +1957,7 @@ fraying = "leading"
             growth,
             TileGridContents::Shown,
             &cells,
+            ColorMode::Colored,
         );
         buffer
     }
@@ -1931,7 +2035,6 @@ fraying = "leading"
             let edges = HierarchyEdges(
                 role.into_iter()
                     .map(|role| HierarchyEdge {
-                        reviewer: ReviewerState::NotPool,
                         manager: "production".to_string(),
                         member: "member".to_string(),
                         role,
@@ -1994,7 +2097,7 @@ fraying = "leading"
             }
             let member_line = rendered
                 .iter()
-                .find(|line| line.contains("└─ member"))
+                .find(|line| line.contains("└── member"))
                 .expect("the child has a tree line");
             assert!(member_line.contains(member_role_label.column_text()));
             assert!(!member_line.contains(&format!("member{HEADING_SEPARATOR}")));
@@ -2257,3 +2360,22 @@ mod pinned_accounts_tests;
 
 #[cfg(test)]
 mod narrow_width_tests;
+
+#[cfg(test)]
+mod word_click_tests;
+
+#[cfg(test)]
+mod word_contrast_tests;
+
+#[cfg(test)]
+#[path = "drawn_frame_tests.rs"]
+mod drawn_frame_tests;
+
+#[cfg(test)]
+mod layout_stability_tests;
+
+/// Draw the complete frame for census placement tests, including tile titles.
+#[cfg(test)]
+pub(crate) fn astra_frame_for_test(rows: Vec<AgentRow>, edges: HierarchyEdges) -> Buffer {
+    selection_tests::complete_astra_frame(rows, edges)
+}

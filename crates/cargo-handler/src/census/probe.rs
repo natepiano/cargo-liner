@@ -11,7 +11,12 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
+use serde::ser::SerializeStruct;
+#[cfg(test)]
+use serde_json::Error;
 
 use super::Account;
 use super::Agent;
@@ -22,19 +27,22 @@ use super::ChildRow;
 use super::CodexThreadId;
 use super::HierarchyEdges;
 use super::HierarchyNotice;
-use super::HierarchySnapshot;
+use super::HierarchyRole;
 use super::HierarchySource;
+use super::ProvenCodexThread;
 use super::ServiceTier;
 use super::SessionIdentity;
 use super::ShellTimerObservation;
+use super::StaffRowNames;
 use super::Timer;
 use super::WorkIdentity;
 use super::account::AccountLabels;
-use super::hierarchy;
-use super::hierarchy::CommandRunner;
+use super::activity::Activity;
+use super::hierarchy::AstraMembership;
+use super::hierarchy::AstraRole;
 use super::hierarchy::HierarchyAnswer;
 use super::hierarchy::HierarchyError;
-use super::hierarchy::ReviewerOutcome;
+use super::hierarchy::StaffFileReader;
 use super::idle_activity;
 use super::local_machine_name;
 use super::scan::LocalScanner;
@@ -43,11 +51,56 @@ use super::worker_dispatch::JobText;
 use super::worker_dispatch::WorkerDispatch;
 use super::worker_dispatch::WorkerTask;
 use crate::config::CargoHandler;
+use crate::config::Config;
 use crate::config::LoadedConfig;
 use crate::constants::BINARY_NAME;
 use crate::constants::PROBE_SCHEMA;
 use crate::constants::UNREADABLE_PROBE_REASON;
 use crate::startup_log;
+
+/// `ProbeActivity` defaults the compaction extension for schema-3 receivers.
+#[derive(Deserialize)]
+pub(super) struct ProbeActivity {
+    active:     Activity,
+    #[serde(default)]
+    compacting: bool,
+}
+
+impl From<ProbeActivity> for AgentActivity {
+    fn from(wire: ProbeActivity) -> Self {
+        Self::Active(if wire.compacting {
+            Activity::Compacting
+        } else {
+            wire.active
+        })
+    }
+}
+
+impl Serialize for AgentActivity {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Unreported => serializer.serialize_str("unreported"),
+            Self::Idle => serializer.serialize_str("idle"),
+            Self::Active(activity) => {
+                let compacting = *activity == Activity::Compacting;
+                let mut fields =
+                    serializer.serialize_struct("AgentActivity", if compacting { 2 } else { 1 })?;
+                fields.serialize_field(
+                    "active",
+                    if compacting {
+                        &Activity::Thinking
+                    } else {
+                        activity
+                    },
+                )?;
+                if compacting {
+                    fields.serialize_field("compacting", &true)?;
+                }
+                fields.end()
+            },
+        }
+    }
+}
 
 /// The schema-3 task variants understood by older receivers.
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -92,6 +145,61 @@ enum ProbeChildKind {
     Thread,
 }
 
+/// The checkpoint role vocabulary used only at the probe wire boundary.
+#[derive(Debug, Deserialize, Serialize)]
+pub(super) enum SubagentRoleWire {
+    Capture,
+    Review,
+    Lint,
+    Test,
+    Survey,
+    Specialist(String),
+    Unrecorded,
+}
+
+impl From<SubagentRoleWire> for SubagentRole {
+    fn from(role: SubagentRoleWire) -> Self {
+        match role {
+            SubagentRoleWire::Capture => Self::Capture,
+            SubagentRoleWire::Review => Self::Reviewer,
+            SubagentRoleWire::Lint => Self::Lint,
+            SubagentRoleWire::Test => Self::Test,
+            SubagentRoleWire::Survey => Self::Survey,
+            SubagentRoleWire::Unrecorded => Self::Unrecorded,
+            SubagentRoleWire::Specialist(word) => match Self::from_sources(&word, "", "", "") {
+                Self::Unrecorded => Self::Agent,
+                role => role,
+            },
+        }
+    }
+}
+
+impl From<SubagentRole> for SubagentRoleWire {
+    fn from(role: SubagentRole) -> Self {
+        match role {
+            SubagentRole::Capture => Self::Capture,
+            SubagentRole::Reviewer => Self::Review,
+            SubagentRole::Lint => Self::Lint,
+            SubagentRole::Test => Self::Test,
+            SubagentRole::Survey => Self::Survey,
+            SubagentRole::Unrecorded => Self::Unrecorded,
+            role => Self::Specialist(role.text().to_owned()),
+        }
+    }
+}
+
+impl Serialize for SubagentRole {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        SubagentRoleWire::from(self.clone()).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SubagentRole {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        SubagentRoleWire::deserialize(deserializer).map(Self::from)
+    }
+}
+
 /// A role extension alongside the unchanged schema-3 kind vocabulary.
 #[derive(Debug, Deserialize, Serialize)]
 struct ProbeChildWork {
@@ -105,7 +213,7 @@ impl ProbeChildWork {
         matches!(role, SubagentRole::Unrecorded)
     }
 
-    fn into_kind(self) -> ChildKind {
+    const fn into_kind(self) -> ChildKind {
         match self.kind {
             ProbeChildKind::Shell => ChildKind::Shell(ShellTimerObservation::Untimed),
             ProbeChildKind::Subagent => ChildKind::Subagent(self.subagent_role),
@@ -143,6 +251,16 @@ impl From<ChildKind> for ProbeChildWork {
 /// Child rows keep the schema-3 task vocabulary at the wire boundary.
 #[derive(Debug, Deserialize, Serialize)]
 pub(super) struct ProbeChildRow {
+    #[serde(
+        default,
+        skip_serializing_if = "super::model::ModelName::is_unrecorded"
+    )]
+    model:         super::model::ModelName,
+    #[serde(
+        default,
+        skip_serializing_if = "super::model::ReasoningEffort::is_unrecorded"
+    )]
+    effort:        super::model::ReasoningEffort,
     #[serde(default, skip_serializing_if = "work_id_is_legacy")]
     work_id:       WorkIdentity,
     /// Task naming survives placement so the final hierarchy role supplies its label.
@@ -212,6 +330,8 @@ impl From<ChildRow> for ProbeChildRow {
             ),
         };
         Self {
+            model: row.model,
+            effort: row.effort,
             worker_task,
             reviewer_task,
             activity: row.activity,
@@ -244,6 +364,8 @@ impl From<ProbeChildRow> for ChildRow {
             },
         };
         Self {
+            model: row.model,
+            effort: row.effort,
             worker_task,
 
             activity: row.activity,
@@ -270,16 +392,26 @@ impl From<ProbeChildRow> for ChildRow {
 /// A probe row before compatibility defaults are resolved into domain values.
 #[derive(Deserialize)]
 pub(super) struct ProbeAgentRow {
+    #[serde(default)]
+    model:           super::model::ModelName,
+    #[serde(default)]
+    effort:          super::model::ReasoningEffort,
     agent:           super::Agent,
     #[serde(default)]
     role_fallback:   super::RoleFallback,
     #[serde(default)]
     session_id:      Option<String>,
     #[serde(default)]
+    codex_session:   Option<ProvenCodexThread>,
+    #[serde(default)]
+    astra_member:    Option<AstraMembership>,
+    #[serde(default)]
     service_tier:    super::ServiceTier,
     #[serde(default)]
     account:         Account,
     name:            String,
+    #[serde(default)]
+    staff_names:     StaffRowNames,
     #[serde(default)]
     status:          Option<String>,
     #[serde(default)]
@@ -297,15 +429,27 @@ pub(super) struct ProbeAgentRow {
 
 impl From<ProbeAgentRow> for AgentRow {
     fn from(row: ProbeAgentRow) -> Self {
+        let identity = row.codex_session.map_or_else(
+            || {
+                row.session_id
+                    .map_or(SessionIdentity::Unrecorded, SessionIdentity::from)
+            },
+            SessionIdentity::Codex,
+        );
+        let identity = match row.astra_member {
+            Some(member) => identity.with_astra(member),
+            None => identity,
+        };
         Self {
+            model:           row.model,
+            effort:          row.effort,
             agent:           row.agent,
             role_fallback:   row.role_fallback,
-            session_id:      row
-                .session_id
-                .map_or(SessionIdentity::Unrecorded, SessionIdentity::from),
+            session_id:      identity,
             service_tier:    row.service_tier,
             account:         row.account,
             name:            row.name,
+            staff_names:     row.staff_names,
             activity:        row
                 .activity
                 .unwrap_or_else(|| AgentActivity::from(row.status.as_deref())),
@@ -326,8 +470,6 @@ impl From<ProbeAgentRow> for AgentRow {
 struct ProbeReport {
     /// [`PROBE_SCHEMA`] of the build that printed it.
     schema:           u32,
-    #[serde(default)]
-    reviewers:        Vec<ReviewerOutcome>,
     /// The printing machine's short host name.
     machine:          String,
     /// Its agents, oldest first, each with what it is running.
@@ -335,6 +477,8 @@ struct ProbeReport {
     /// Optional for compatibility with older schema-3 probes.
     #[serde(default)]
     edges:            HierarchyEdges,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    astra_edges:      Vec<AstraHierarchyEdge>,
     /// A failed command must not erase the receiver's last successful links.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     hierarchy_failed: bool,
@@ -347,7 +491,8 @@ struct ProbeReport {
 }
 
 impl ProbeReport {
-    /// Keep the schema-3 failure flag for receivers that predate typed notices.
+    /// Keep the failure flag for receivers that cannot read typed notices.
+    #[cfg(test)]
     const fn record_failure(&mut self, reason: HierarchyError) {
         self.hierarchy_failed = true;
         self.hierarchy_notice = HierarchyNotice::Failed(reason);
@@ -356,12 +501,28 @@ impl ProbeReport {
     /// Separate visible agents from carriers at the outgoing wire boundary.
     fn from_answer(machine: String, rows: Vec<AgentRow>, edges: HierarchyEdges) -> Self {
         let (rows, thread_hosts) = rows.into_iter().partition(AgentRow::is_visible);
+        let mut edges = edges;
+        let mut astra_edges = Vec::new();
+        for edge in &mut edges.0 {
+            let role = match edge.role {
+                HierarchyRole::AstraDesigner => AstraRole::Designer,
+                HierarchyRole::AstraReviewer => AstraRole::Reviewer,
+                _ => continue,
+            };
+            astra_edges.push(AstraHierarchyEdge {
+                manager: edge.manager.clone(),
+                member: edge.member.clone(),
+                role,
+            });
+            edge.role = HierarchyRole::Worker;
+        }
         Self {
             schema: PROBE_SCHEMA,
-            reviewers: Vec::new(),
+
             machine,
             rows,
             edges,
+            astra_edges,
             thread_hosts,
             hierarchy_failed: false,
             hierarchy_notice: HierarchyNotice::Clear,
@@ -369,8 +530,18 @@ impl ProbeReport {
     }
 
     /// Restore transport-only identity before handing an answer to the census.
-    fn into_answer(self) -> (Vec<AgentRow>, HierarchyAnswer) {
-        let mut rows: Vec<AgentRow> = self
+    fn into_answer(mut self) -> (Vec<AgentRow>, HierarchyAnswer) {
+        for astra in self.astra_edges {
+            if let Some(edge) = self
+                .edges
+                .0
+                .iter_mut()
+                .find(|edge| edge.manager == astra.manager && edge.member == astra.member)
+            {
+                edge.role = astra.role.hierarchy();
+            }
+        }
+        let rows: Vec<AgentRow> = self
             .rows
             .into_iter()
             .chain(self.thread_hosts.into_iter().map(|mut host| {
@@ -378,16 +549,11 @@ impl ProbeReport {
                 host
             }))
             .collect();
-        hierarchy::ReviewerPools::apply_outcomes(&mut rows, &self.reviewers);
         let hierarchy = match self.hierarchy_notice {
-            HierarchyNotice::Failed(reason) => HierarchyAnswer::Failed {
-                reason,
-                reviewers: self.reviewers,
-            },
+            HierarchyNotice::Failed(reason) => HierarchyAnswer::Failed { reason },
             HierarchyNotice::NoSessionMatched => HierarchyAnswer::Unmatched(self.edges),
             HierarchyNotice::Clear if self.hierarchy_failed => HierarchyAnswer::Failed {
-                reason:    HierarchyError::ExitedUnsuccessfully,
-                reviewers: self.reviewers,
+                reason: HierarchyError::ExitedUnsuccessfully,
             },
             HierarchyNotice::Clear => HierarchyAnswer::Answered(self.edges),
         };
@@ -407,51 +573,49 @@ struct SchemaHeader {
 pub(crate) fn print() -> ExitCode {
     startup_log::init();
     let loaded = LoadedConfig::load::<CargoHandler>();
-    let source = HierarchySource::from(loaded.config.census.hierarchy_command);
-    let mut report = ProbeReport::from_answer(
-        local_machine_name(),
-        LocalScanner::new(AccountLabels::new(
-            &loaded.config.accounts,
-            dirs::home_dir().as_deref(),
-        ))
-        .scan(),
-        HierarchyEdges::default(),
-    );
-    let pools = hierarchy::ReviewerPools::root().read();
-    report.reviewers = pools.outcomes();
-    hierarchy::ReviewerPools::apply_outcomes(&mut report.rows, &report.reviewers);
-    hierarchy::ReviewerPools::apply_outcomes(&mut report.thread_hosts, &report.reviewers);
-    match hierarchy::read(&source, &CommandRunner) {
-        Ok(mut edges) => {
-            let pools = hierarchy::ReviewerPools::root().read();
-            pools.refresh(&mut edges);
-            hierarchy::ReviewerPools::apply(&mut report.rows, &edges);
-            hierarchy::ReviewerPools::apply(&mut report.thread_hosts, &edges);
-            let snapshot = HierarchySnapshot {
-                edges,
-                notice: HierarchyNotice::Clear,
-            };
-            let snapshot = if matches!(source, HierarchySource::Command(_)) {
-                let mut rows = report.rows.clone();
-                rows.extend_from_slice(&report.thread_hosts);
-                snapshot.matched(&rows)
-            } else {
-                snapshot
-            };
-            report.edges = snapshot.edges;
-            report.hierarchy_notice = snapshot.notice;
-        },
-        Err(reason) => {
-            report.record_failure(reason);
-        },
+    print_to(
+        &loaded,
+        scan_configured,
+        &mut io::stdout().lock(),
+        &mut io::stderr().lock(),
+    )
+}
+
+/// Scan with the configuration that remains valid after loading.
+fn scan_configured(config: &Config) -> ProbeReport {
+    let source = HierarchySource::from(config.census.staff_file.0.clone());
+    let staff = StaffFileReader::default();
+    let (rows, snapshot) = LocalScanner::new(AccountLabels::new(
+        &config.accounts,
+        dirs::home_dir().as_deref(),
+    ))
+    .with_codex_start_window(config.census.codex_thread_start_window)
+    .with_herdr_probe_wait(config.census.herdr_probe_wait)
+    .with_herdr_read_timeout(config.census.herdr_read_timeout)
+    .with_staff_file(super::StaffFileSetting::new(source), staff)
+    .scan();
+    let edges = snapshot.publication().edges;
+    ProbeReport::from_answer(local_machine_name(), rows, edges)
+}
+
+/// Keep the JSON report separate from probe diagnostics.
+fn print_to(
+    loaded: &LoadedConfig,
+    scan: impl FnOnce(&Config) -> ProbeReport,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> ExitCode {
+    if let Some(error) = &loaded.error {
+        let _ = writeln!(stderr, "{error}");
     }
+    let report = scan(&loaded.config);
     let written = serde_json::to_string(&report)
         .map_err(io::Error::from)
-        .and_then(|json| writeln!(io::stdout().lock(), "{json}"));
+        .and_then(|json| writeln!(stdout, "{json}"));
     match written {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("{BINARY_NAME}: probe: {error}");
+            let _ = writeln!(stderr, "{BINARY_NAME}: probe: {error}");
             ExitCode::FAILURE
         },
     }
@@ -484,6 +648,14 @@ pub(super) fn parse_answer(output: &[u8]) -> Result<(Vec<AgentRow>, HierarchyAns
         .map_err(|_| UNREADABLE_PROBE_REASON.to_string())
 }
 
+/// Older receivers read a plain worker edge and ignore this role extension.
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct AstraHierarchyEdge {
+    manager: String,
+    member:  String,
+    role:    AstraRole,
+}
+
 #[cfg(test)]
 #[path = "probe/hierarchy_transport_tests.rs"]
 mod hierarchy_transport_tests;
@@ -511,9 +683,52 @@ mod tests {
     use crate::census::worker_dispatch::WorkerDispatch;
     use crate::census::worker_dispatch::WorkerTask;
 
+    #[test]
+    fn compacting_probe_extension_preserves_legacy_thinking() {
+        let mut wire = serde_json::to_value(report()).expect("probe fixture");
+        wire["rows"][0]["activity"] = serde_json::json!({"active":"thinking","compacting":true});
+        let (rows, edges) = parse_report(&serde_json::to_vec(&wire).expect("probe bytes"))
+            .expect("current compacting probe");
+        assert_eq!(rows[0].activity.text(), "compacting");
+        let encoded = serde_json::to_value(ProbeReport::from_answer("fixture".into(), rows, edges))
+            .expect("outgoing compacting probe");
+        assert_eq!(encoded["rows"][0]["activity"]["active"], "thinking");
+        assert_eq!(encoded["rows"][0]["activity"]["compacting"], true);
+        wire["rows"][0]["activity"]
+            .as_object_mut()
+            .expect("activity object")
+            .remove("compacting");
+        let (legacy, _) = parse_report(&serde_json::to_vec(&wire).expect("legacy bytes"))
+            .expect("legacy thinking probe");
+        assert_eq!(legacy[0].activity.text(), "thinking");
+    }
+
+    #[test]
+    fn refused_probe_config_reports_the_same_error_without_changing_json() {
+        let error = toml::from_str::<Config>("[census]\nherdr_read_timeout = -1\n")
+            .expect_err("a negative timeout is refused")
+            .to_string();
+        let loaded = LoadedConfig {
+            config: Config::default(),
+            error:  Some(error.clone()),
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let status = print_to(&loaded, |_| report(), &mut stdout, &mut stderr);
+        assert_eq!(status, ExitCode::SUCCESS);
+        assert_eq!(
+            String::from_utf8(stderr).expect("diagnostic text"),
+            format!("{error}\n")
+        );
+        let (rows, _) = parse_report(&stdout).expect("stdout remains a JSON report");
+        assert_eq!(rows.len(), 3);
+    }
+
     /// One row of an agent's cell.
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, started: u64) -> ChildRow {
         ChildRow {
+            model: crate::census::model::ModelName::Unrecorded,
+            effort: crate::census::model::ReasoningEffort::Unrecorded,
             worker_task: WorkerTask::Unrecorded,
             thread_id: crate::census::CodexThreadId::Unrecorded,
             dispatch: WorkerDispatch::Plain,
@@ -534,100 +749,110 @@ mod tests {
     /// opened.
     fn report() -> ProbeReport {
         ProbeReport {
-            reviewers:        Vec::new(),
             hierarchy_failed: false,
             hierarchy_notice: HierarchyNotice::Clear,
             schema:           PROBE_SCHEMA,
             machine:          "mac".to_string(),
             thread_hosts:     Vec::new(),
             edges:            HierarchyEdges::default(),
-            rows:             vec![
-                AgentRow {
-                    agent:           Agent::Codex,
-                    role_fallback:   crate::census::RoleFallback::None,
-                    session_id:      SessionIdentity::Unrecorded,
-                    service_tier:    ServiceTier::Unrecorded,
-                    account:         Account::Unrecorded,
-                    name:            "ChatGPT".to_string(),
-                    activity:        AgentActivity::Unreported,
-                    started:         1_790_000_000,
-                    process_started: 1_790_000_000,
-                    pid:             76_130,
-                    desktop:         None,
-                    directory:       "/".to_string(),
-                    branch:          None,
-                    launched_by:     None,
-                    children:        Vec::new(),
+            astra_edges:      Vec::new(),
+            rows:             vec![codex_report_row(), claude_report_row(), worker()],
+        }
+    }
+
+    fn codex_report_row() -> AgentRow {
+        AgentRow {
+            model:           crate::census::model::ModelName::Unrecorded,
+            effort:          crate::census::model::ReasoningEffort::Unrecorded,
+            staff_names:     StaffRowNames::default(),
+            agent:           Agent::Codex,
+            role_fallback:   RoleFallback::None,
+            session_id:      SessionIdentity::Unrecorded,
+            service_tier:    ServiceTier::Unrecorded,
+            account:         Account::Unrecorded,
+            name:            "ChatGPT".to_string(),
+            activity:        AgentActivity::Unreported,
+            started:         1_790_000_000,
+            process_started: 1_790_000_000,
+            pid:             76_130,
+            desktop:         None,
+            directory:       "/".to_string(),
+            branch:          None,
+            launched_by:     None,
+            children:        Vec::new(),
+        }
+    }
+
+    fn claude_report_row() -> AgentRow {
+        AgentRow {
+            model:           crate::census::model::ModelName::Unrecorded,
+            effort:          crate::census::model::ReasoningEffort::Unrecorded,
+            staff_names:     StaffRowNames::default(),
+            agent:           Agent::Claude,
+            role_fallback:   RoleFallback::None,
+            session_id:      SessionIdentity::Unrecorded,
+            service_tier:    ServiceTier::Unrecorded,
+            account:         Account::Unrecorded,
+            name:            "natemccoy-30".to_string(),
+            activity:        AgentActivity::from(Some("idle")),
+            started:         1_790_000_100,
+            process_started: 1_790_000_100,
+            pid:             80_020,
+            desktop:         None,
+            directory:       "~".to_string(),
+            branch:          Some("main".to_string()),
+            launched_by:     None,
+            children:        vec![
+                child(
+                    0,
+                    ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                    Some(80_100),
+                    "Run the mesh",
+                    1_790_000_110,
+                ),
+                child(
+                    1,
+                    ChildKind::UnderShell(Agent::Codex),
+                    Some(80_200),
+                    "app-server",
+                    1_790_000_111,
+                ),
+                ChildRow {
+                    worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
+                    service_tier: ServiceTier::Fast,
+                    account: Account::Unrecorded,
+                    ..child(2, ChildKind::Thread, None, "phase 1", 1_790_000_112)
                 },
-                AgentRow {
-                    agent:           Agent::Claude,
-                    role_fallback:   crate::census::RoleFallback::None,
-                    session_id:      SessionIdentity::Unrecorded,
-                    service_tier:    ServiceTier::Unrecorded,
-                    account:         Account::Unrecorded,
-                    name:            "natemccoy-30".to_string(),
-                    activity:        AgentActivity::from(Some("idle")),
-                    started:         1_790_000_100,
-                    process_started: 1_790_000_100,
-                    pid:             80_020,
-                    desktop:         None,
-                    directory:       "~".to_string(),
-                    branch:          Some("main".to_string()),
-                    launched_by:     None,
-                    children:        vec![
-                        child(
-                            0,
-                            ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
-                            Some(80_100),
-                            "Run the mesh",
-                            1_790_000_110,
-                        ),
-                        child(
-                            1,
-                            ChildKind::UnderShell(Agent::Codex),
-                            Some(80_200),
-                            "app-server",
-                            1_790_000_111,
-                        ),
-                        ChildRow {
-                            worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
-                            service_tier: ServiceTier::Fast,
-                            account: Account::Unrecorded,
-                            ..child(2, ChildKind::Thread, None, "phase 1", 1_790_000_112)
-                        },
-                        child(
-                            0,
-                            ChildKind::Subagent(SubagentRole::Unrecorded),
-                            None,
-                            "Review",
-                            1_790_000_120,
-                        ),
-                        ChildRow {
-                            worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
-                            kind: ChildKind::Shell(
-                                crate::census::ShellTimerObservation::ObservedCountdown(Timer {
-                                    started:  1_790_000_125,
-                                    deadline: 1_790_000_425,
-                                }),
-                            ),
-                            ..child(
-                                0,
-                                ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
-                                Some(80_300),
-                                "Re-arm the progress timer",
-                                1_790_000_125,
-                            )
-                        },
-                        child(
-                            0,
-                            ChildKind::Session(Agent::Claude),
-                            Some(81_020),
-                            "worker",
-                            1_790_000_130,
-                        ),
-                    ],
+                child(
+                    0,
+                    ChildKind::Subagent(SubagentRole::Unrecorded),
+                    None,
+                    "Review",
+                    1_790_000_120,
+                ),
+                ChildRow {
+                    worker_task: crate::census::worker_dispatch::WorkerTask::Unrecorded,
+                    kind: ChildKind::Shell(
+                        crate::census::ShellTimerObservation::ObservedCountdown(Timer {
+                            started:  1_790_000_125,
+                            deadline: 1_790_000_425,
+                        }),
+                    ),
+                    ..child(
+                        0,
+                        ChildKind::Shell(crate::census::ShellTimerObservation::Untimed),
+                        Some(80_300),
+                        "Re-arm the progress timer",
+                        1_790_000_125,
+                    )
                 },
-                worker(),
+                child(
+                    0,
+                    ChildKind::Session(Agent::Claude),
+                    Some(81_020),
+                    "worker",
+                    1_790_000_130,
+                ),
             ],
         }
     }
@@ -635,6 +860,9 @@ mod tests {
     /// The separate session launched by the report's Claude row.
     fn worker() -> AgentRow {
         AgentRow {
+            model:           crate::census::model::ModelName::Unrecorded,
+            effort:          crate::census::model::ReasoningEffort::Unrecorded,
+            staff_names:     StaffRowNames::default(),
             agent:           Agent::Claude,
             role_fallback:   RoleFallback::None,
             session_id:      SessionIdentity::Unrecorded,
@@ -662,7 +890,7 @@ mod tests {
         assert_eq!(
             json,
             concat!(
-                r#"{"schema":3,"reviewers":[],"machine":"mac","rows":["#,
+                r#"{"schema":3,"machine":"mac","rows":["#,
                 r#"{"agent":"codex","session_id":null,"role_fallback":"none","service_tier":"unrecorded","account":null,"name":"ChatGPT","activity":"unreported","started":1790000000,"process_started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
                 r#"{"agent":"claude","session_id":null,"role_fallback":"none","service_tier":"unrecorded","account":null,"name":"natemccoy-30","activity":"idle","started":1790000100,"process_started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80100,"name":"Run the mesh","started":1790000110},"#,
@@ -718,10 +946,9 @@ mod tests {
         report.rows[1].session_id = SessionIdentity::Claude("manager".to_string());
         report.rows[2].session_id = SessionIdentity::Claude("member".to_string());
         report.edges = HierarchyEdges(vec![super::super::HierarchyEdge {
-            reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-            manager:  "manager".to_string(),
-            member:   "member".to_string(),
-            role:     super::super::HierarchyRole::Review,
+            manager: "manager".to_string(),
+            member:  "member".to_string(),
+            role:    super::super::HierarchyRole::Review,
         }]);
         let output = serde_json::to_vec(&report).expect("the extended report should serialize");
         assert_eq!(
@@ -787,8 +1014,7 @@ mod tests {
             Ok((
                 report.rows,
                 HierarchyAnswer::Failed {
-                    reason:    HierarchyError::ExitedUnsuccessfully,
-                    reviewers: Vec::new(),
+                    reason: HierarchyError::ExitedUnsuccessfully,
                 }
             ))
         );
@@ -890,3 +1116,11 @@ mod tests {
 #[cfg(test)]
 #[path = "probe_role_tests.rs"]
 mod role_tests;
+
+#[cfg(test)]
+pub(super) fn encode_astra_test_report(
+    rows: Vec<AgentRow>,
+    edges: HierarchyEdges,
+) -> Result<Vec<u8>, Error> {
+    serde_json::to_vec(&ProbeReport::from_answer("fixture".to_owned(), rows, edges))
+}

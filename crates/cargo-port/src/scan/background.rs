@@ -20,6 +20,7 @@ use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::CommitDate;
 use crate::project::CratesIoRelease;
+use crate::project::GithubRunCount;
 use crate::project::LanguageStats;
 use crate::project::ManifestFingerprint;
 use crate::project::ProjectPrData;
@@ -53,7 +54,7 @@ pub(crate) enum BackgroundMsg {
     CiRuns {
         path:         AbsolutePath,
         runs:         Vec<CiRun>,
-        github_total: u32,
+        github_total: GithubRunCount,
     },
     /// A GitHub repo fetch has been queued (for startup tracking).
     RepoFetchQueued { repo: OwnerRepo },
@@ -77,6 +78,8 @@ pub(crate) enum BackgroundMsg {
     /// `path` is the primary checkout's path so `handle_repo_info` can
     /// enforce the "only the primary writes `RepoInfo`" policy.
     RepoInfo { path: AbsolutePath, info: RepoInfo },
+    /// The Git probe completed and found no repository at this path.
+    NoRepository { path: AbsolutePath },
     /// First commit date detected for a project (deferred post-scan,
     /// batched by repo root to avoid redundant `git log` calls).
     GitFirstCommit {
@@ -263,6 +266,7 @@ impl BackgroundMsg {
             | Self::CiRuns { path, .. }                // ci.runs
             | Self::CheckoutInfo { path, .. }          // git.branch / git.status
             | Self::RepoInfo { path, .. }              // git.remotes / git.workflows
+            | Self::NoRepository { path }              // git.description
             | Self::GitFirstCommit { path, .. }        // git.inception
             | Self::CratesIoVersion { path, .. }      // package.crates_io
             | Self::RepoMeta { path, .. }              // git.stars / git.description
@@ -378,14 +382,12 @@ pub(crate) fn emit_service_recovered(sender: &Sender<BackgroundMsg>, service: Se
     let _ = sender.send(BackgroundMsg::ServiceRecovered { service });
 }
 
-/// Probe per-repo + per-checkout git state for a single project and
-/// emit them as two background messages. Used by the initial scan and
-/// project-discovery enrichment paths, where each project is processed
-/// independently. The watcher's refresh path uses a smarter
-/// orchestration that probes `RepoInfo` once per repo and reuses it
-/// across sibling worktrees.
+/// Emit the repository and checkout results, or a completed result outside Git.
+/// The scan and discovery paths use this probe for each project.
+/// The watcher shares its repository probe across sibling worktrees.
 pub(crate) fn emit_git_info(sender: &Sender<BackgroundMsg>, path: &AbsolutePath) {
     let Some(repo) = RepoInfo::get(path.as_path()) else {
+        let _ = sender.send(BackgroundMsg::NoRepository { path: path.clone() });
         return;
     };
     let checkout = CheckoutInfo::get(path.as_path(), &repo.local_main_branch);

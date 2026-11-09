@@ -95,6 +95,7 @@ impl App {
         service: ServiceKind,
         availability_kind: AvailabilityKind,
     ) {
+        let previous = self.net.availability_for(service).status();
         let spawn_retry = {
             let availability = self.net.availability_for(service);
             match availability_kind {
@@ -102,6 +103,9 @@ impl App {
                 AvailabilityKind::RateLimited => availability.mark_rate_limited(),
             }
         };
+        if previous != self.net.availability_for(service).status() {
+            self.scan.bump_generation();
+        }
         if spawn_retry {
             self.spawn_service_retry(service);
         }
@@ -180,6 +184,7 @@ impl App {
             self.background.background_sender(),
             self.net.http_client(),
             service_kind,
+            self.net.quota_refresh.clone(),
         );
     }
     /// Apply a `ServiceRecovered` message from the retry probe.
@@ -190,27 +195,28 @@ impl App {
         let recovery_outcome = self.net.availability_for(service_kind).mark_recovered();
         self.apply_recovery_outcome(service_kind, recovery_outcome);
     }
-    /// Unified post-recovery dispatch: dismiss / push the back-online
-    /// toast on the `WithToast` variant, then fire
-    /// [`Self::refetch_missing_after_recovery`] — but only for a
-    /// *confirmed* outage. A transient blip absorbed by the grace window
-    /// recovers `Silent`, and refetching there re-dispatches every fetch
-    /// that failed during the blip; at startup those land after the panel
-    /// hands the network rows back to steady state and leak the standalone
-    /// "Fetching crates.io info" / "Retrieving GitHub repo details" toasts
-    /// the startup panel was meant to embed. The `RecoveryOutcome::WithToast`
-    /// arm of `apply_recovery_outcome` owns the missing-data refetch for outages
-    /// the user actually saw, while `NoTransition` and `Silent` suppress that startup burst.
+    /// Dismiss the outage toast and show recovery for `RecoveryOutcome::WithToast`.
+    /// Refresh the scan generation after a recovery transition, before any missing-data refetch.
+    /// Only `WithToast` refetches data after an outage that the user saw.
+    /// `Silent` represents a transient failure within the grace period.
+    /// Refetching after `Silent` would repeat every failed request after the startup panel releases
+    /// its network rows. Those requests would show separate "Fetching crates.io info" and
+    /// "Retrieving GitHub repo details" toasts. The startup panel must contain those toasts, so
+    /// `Silent` and `NoTransition` do not refetch.
     fn apply_recovery_outcome(&mut self, service: ServiceKind, recovery_outcome: RecoveryOutcome) {
         match recovery_outcome {
-            RecoveryOutcome::NoTransition => (),
+            RecoveryOutcome::NoTransition => return,
             RecoveryOutcome::Silent => {},
             RecoveryOutcome::WithToast(toast_id) => {
                 self.framework.toasts.dismiss(toast_id);
                 let (title, body) = service_recovered_message(service);
                 self.show_timed_toast(title, body);
-                self.refetch_missing_after_recovery(service);
             },
+        }
+        self.scan.bump_generation();
+        match recovery_outcome {
+            RecoveryOutcome::WithToast(_) => self.refetch_missing_after_recovery(service),
+            RecoveryOutcome::NoTransition | RecoveryOutcome::Silent => {},
         }
     }
 }
@@ -228,7 +234,7 @@ const fn service_unavailable_message(
     match (service, kind) {
         (ServiceKind::GitHub, AvailabilityKind::Unreachable) => (
             "GitHub unreachable",
-            "Rate limits and CI data are unavailable until GitHub recovers.",
+            "Rate limits and CI data return when GitHub recovers.",
         ),
         (ServiceKind::GitHub, AvailabilityKind::RateLimited) => (
             "GitHub rate-limited",
@@ -254,10 +260,15 @@ const fn service_recovered_message(service_kind: ServiceKind) -> (&'static str, 
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Context;
+    use tui_pane::ColorMode;
+
     use super::RecoveryOutcome;
-    use super::ServiceKind;
     use super::ToastId;
     use crate::ci::OwnerRepo;
+    use crate::http::ServiceKind;
+    use crate::http::ServiceSignal;
+    use crate::project::GithubRunCount;
     use crate::project::ProjectPrData;
     use crate::scan;
     use crate::scan::CachedRepoData;
@@ -273,7 +284,7 @@ mod tests {
             CachedRepoData {
                 runs:         Vec::new(),
                 meta:         None,
-                github_total: 0,
+                github_total: GithubRunCount::Known(0),
                 pr_data:      ProjectPrData::Unfetched,
             },
         );
@@ -297,5 +308,43 @@ mod tests {
             scan::load_cached_repo_data(&app.net.github.fetch_cache, &owner_repo).is_none(),
             "WithToast must invalidate failed entries for refetch"
         );
+    }
+
+    #[test]
+    fn github_unreachable_toast_keeps_its_body_on_one_line() -> anyhow::Result<()> {
+        let mut app = test_support::project_app();
+        app.framework.color_mode = ColorMode::Colored;
+        app.framework
+            .toasts
+            .settings_mut()
+            .animation
+            .entrance_duration = tui_pane::ToastDuration::try_from_secs("entrance_duration", 0.0)?;
+        app.apply_service_signal(ServiceSignal::Unreachable(ServiceKind::GitHub));
+        app.confirm_service_unreachable(ServiceKind::GitHub);
+        let buffer = test_support::draw_ui(&mut app, 160)?;
+        let toast = app
+            .framework
+            .toasts
+            .hits()
+            .first()
+            .context("GitHub outage toast")?;
+        let body = "Rate limits and CI data return when GitHub recovers.";
+        let rows: Vec<String> = (toast.card_rect.top()..toast.card_rect.bottom())
+            .map(|y| {
+                (toast.card_rect.left()..toast.card_rect.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect();
+        assert!(
+            rows.iter().any(|row| row.contains("GitHub unreachable")),
+            "{rows:?}"
+        );
+        assert_eq!(
+            rows.iter().filter(|row| row.contains(body)).count(),
+            1,
+            "GitHub outage toast must draw the exact body on one line: {rows:?}"
+        );
+        Ok(())
     }
 }

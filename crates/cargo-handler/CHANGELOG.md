@@ -7,7 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep pane workers visible and show their detached run activity without separate dispatch rows.
+
+- Codex remote option values cannot supply resume proof for staff placement.
+
+- Unknown Codex switches preserve resume proof when the census places workers under their staff manager.
+
+- Tiles keep their columns when status text changes without changing requested rows, and reselect when candidate row counts change.
+
+- Codex workers in herdr panes show under their staff manager when their command line or open rollout proves their thread.
+
+- Clicks use the headers and rows from the last painted frame, including during tile motion and repeated input.
+
+- Subagent rows show their role word instead of the agent name.
+
+- Narrow session rows retain tree guides and give sparse optional columns to names. The probe reports refused configuration values on stderr.
+
 ### Added
+
+- Show `compacting` while Claude or Codex compacts a conversation, including during detached runs.
+
+- Astra designer and Astra reviewer sessions show under their staff manager with separate role words, colors, and work states.
+
+- Agent tiles show each conversation's model and reasoning effort in separate columns.
+
+- The census retains each conversation's model and reasoning effort for local and probe rows.
+
+- Click a word to highlight matching words across tile content and titles. Esc or a repeated word click clears the highlight.
+
+- Click a row marker to toggle its children. Use digits 0 to 9 to set the focused tile depth.
+
+- Codex windows without a proven thread show their herdr pane name or tab label.
+- Handler rows support expansion and collapse, with root children visible by default.
 
 - Shift-Up and Shift-Down focus the tile above and below.
 - Shell rows for sleep commands show timer in the role column.
@@ -15,6 +48,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Select rows with Up, Down, PageUp, PageDown, Home and End, click a row, or scroll the tile under the pointer. The mouse wheel scrolls the shortcuts, keymap and settings overlays and leaves the tiles behind them still. Selection follows sessions and worker seats as their work changes. Role and status widths follow the painted rows while age units remain aligned through scrolling.
 
 ### Changed
+
+- Worker units and roles come from the shared staff file instead of legacy roster and role cache files.
+
+- A left press anywhere on an expandable row opens or closes it through the shared `tui_pane` rule.
+- Accounts show busy, idle, paused, exited and total counts in the accounts board's order, with no shell column.
+- Reset times use three clear color steps in every theme. The soonest resets use the strongest step.
+- `-` shows roots and the first level in every tile. `0` shows only roots in the focused tile.
+- Match the accounts board: remove the read-age and in-use columns, show each role's session counts, and add a total row.
+- Skip equal tile frames and repaint session ages when their minute labels or shared column width changes.
+- Read managers, members and staff names directly from the staff file (`staff_file` setting, schema 2), and reread it only when it changes. A missing staff file shows no staff names and no error. Remove the `hierarchy_command` setting and the review pool reader.
 - Idle CPU drops: the census watches its inputs, refreshes only changed process rows, reuses parsed worker data, and redraws body text only when it changes.
 - Summary and tile ages use d:hh:mm without seconds and align to the right.
 - Idle census scans retain parsed run records and process tables; stored account and hierarchy commands run when their inputs change.
@@ -23,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The accounts table drops optional columns before it wraps, keeps account and error lines in view, and marks cut summary titles with “…”.
 - Reset shades follow time order: the soonest reset takes the nearest shade. On dark themes the shades go from yellow-green (soonest) to sea green (latest). On light themes a brighter violet means a sooner reset.
 - Light reset times use new ramp ends: violet to deep violet in Default Light and violet to indigo in High Contrast Light. No reset shade now matches the darkest violet session color.
-- The accounts table matches the accounts board: nine columns with lower-case headers, a separate `read` age, `enabled` and `in use` credit columns, and a green/red read dot. Session name colors stay apart from status, account and role colors. **Breaking:** user theme files must supply `session_hues` with exactly five colors under every variant; the old rainbow role keys are removed, and files without the list do not load.
+- The accounts table matches the accounts board: lower-case headers, an `enabled` credit column, and a green/red read dot. Session name colors stay apart from status, account and role colors. **Breaking:** user theme files must supply `session_hues` with exactly five colors under every variant; the old rainbow role keys are removed, and files without the list do not load.
 - Reset times use their own green (dark) or violet-to-indigo (light) ramp, never error red or a low-quota ink; a failed reading keeps its red dot. Each top-level session takes its own color whatever the size of its subtree, and light themes use more saturated session colors. Theme files can set the ramp ends with `reset_nearest` and `reset_farthest`.
 - Selected rows keep their text hues and adjust lightness for readability, reducing chroma only at the color gamut boundary; unselected rows retain their theme inks.
 - Low weekly-quota values use the theme's readable ink on dark and light backgrounds.
@@ -49,6 +92,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tiles settle at once when the accounts table wraps: requested tree rows stay separate from allocation compression, so the first selected layout holds.
+- One-shot probes share a scan deadline while waiting for herdr names and use configurable socket time limits.
+- Show workers as waiting during every live detached run, including Python commands and shell strings.
+
+- Dispatch shells fold into their Codex or Claude worker rows by seat identity, including detached servers and current assign launchers.
+
+- Keep waiting workers in their unit tree while detached verification runs remain live, including workers on another Codex account.
+
+- Codex sessions that use a detached daemon show their thread names through their socket connection.
+
+- Codex sessions opened from the resume picker show their own thread names and follow thread switches.
 - Resumed Codex sessions keep their own account and name when account homes share a sessions directory.
 - Release subagent and worker directory watches and cached records when their sessions leave the census.
 - Show renamed interactive Codex sessions from newer thread sources in tiles and the summary.

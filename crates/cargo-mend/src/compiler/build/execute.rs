@@ -1,11 +1,16 @@
+use std::collections::BTreeSet;
 use std::collections::hash_map::DefaultHasher;
+#[cfg(not(target_os = "linux"))]
 use std::env;
+use std::env::consts::EXE_SUFFIX;
 use std::ffi::OsString;
 use std::fs;
+use std::fs::File;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io;
 use std::io::ErrorKind;
+use std::io::Seek;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
@@ -25,6 +30,7 @@ use anyhow::Error;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
+use anyhow::ensure;
 use serde_json::to_string;
 
 use super::cache;
@@ -94,6 +100,7 @@ pub(crate) enum BuildOutputMode {
 
 #[derive(Debug)]
 struct CommandOutcome {
+    error_files:            BTreeSet<PathBuf>,
     exit_status:            ExitStatus,
     compiler_warning_facts: CompilerWarningFacts,
     duration:               Duration,
@@ -114,6 +121,64 @@ enum CargoFixFeatures {
 enum WrapperAliasResolution {
     Current,
     NeedsReplacement,
+}
+
+/// The open executable inode retained before the run resolves Cargo metadata.
+pub(crate) struct RunningExecutable {
+    file: File,
+}
+
+impl RunningExecutable {
+    pub(crate) fn open() -> Result<Self> {
+        #[cfg(target_os = "linux")]
+        let source = PathBuf::from("/proc/self/exe");
+        #[cfg(not(target_os = "linux"))]
+        let source = env::current_exe().context("failed to locate the running mend executable")?;
+        Self::open_path(&source)
+    }
+
+    fn open_path(source: &Path) -> Result<Self> {
+        let file = fs::File::open(source).with_context(|| {
+            format!(
+                "failed to open the running mend executable {}",
+                source.display()
+            )
+        })?;
+        Ok(Self { file })
+    }
+}
+
+/// The independent executable copy shared by every driver command in one run.
+pub(crate) struct RunWrapper {
+    path: PathBuf,
+}
+
+impl RunWrapper {
+    pub(crate) fn resolve(
+        target_directory: &Path,
+        executable: &mut RunningExecutable,
+    ) -> Result<Self> {
+        let path = wrapper_alias(target_directory, executable).with_context(|| {
+            format!(
+                "failed to retain the open mend executable in {}",
+                target_directory.display()
+            )
+        })?;
+        Ok(Self { path })
+    }
+
+    fn configure(&self, command: &mut Command) -> Result<()> {
+        ensure!(
+            self.path.is_file(),
+            "the retained mend wrapper is missing: {}",
+            self.path.display()
+        );
+        let compiler = DriverCompiler::for_build()?;
+        #[cfg(target_os = "linux")]
+        compiler.configure_runtime_libraries(command)?;
+        compiler.configure(command, &self.path);
+        Ok(())
+    }
 }
 
 /// Explicit feature flags preserve the user's selection during the fix pass.
@@ -137,6 +202,7 @@ pub(crate) fn run_selection(
     output_mode: BuildOutputMode,
     color_mode: ColorMode,
     toolchain_probes: &ToolchainProbes,
+    wrapper: &RunWrapper,
 ) -> Result<SelectionResult, MendFailure> {
     let command_outcome = check_with_cache_recovery(
         selection,
@@ -145,6 +211,7 @@ pub(crate) fn run_selection(
         output_mode,
         color_mode,
         toolchain_probes,
+        wrapper,
     )?;
     let report_paths: Vec<_> = command_outcome
         .units
@@ -179,24 +246,26 @@ fn check_with_cache_recovery(
     output_mode: BuildOutputMode,
     color_mode: ColorMode,
     toolchain_probes: &ToolchainProbes,
+    wrapper: &RunWrapper,
 ) -> Result<CommandOutcome, MendFailure> {
     let analyzing_dir = analyzing::analyzing_dir(cargo_plan.target_directory.as_path());
-    let scope_fingerprint = scope_fingerprint_for(cargo_plan);
 
     let mut command_outcome = run_cargo_check(
         cargo_plan,
         loaded_config,
         &analyzing_dir,
-        &scope_fingerprint,
         output_mode,
         color_mode,
         toolchain_probes,
+        wrapper,
     )
     .map_err(driver_setup_failure)?;
 
     if !command_outcome.exit_status.success() {
         return Err(MendFailure::Analysis(AnalysisFailure {
-            cause: CompilerFailureCause::CargoCheck,
+            cause: CompilerFailureCause::CargoCheck {
+                error_files: command_outcome.error_files,
+            },
         }));
     }
 
@@ -219,16 +288,18 @@ fn check_with_cache_recovery(
         cargo_plan,
         loaded_config,
         &analyzing_dir,
-        &scope_fingerprint,
         output_mode,
         color_mode,
         toolchain_probes,
+        wrapper,
     )
     .map_err(driver_setup_failure)?;
     command_outcome.duration += previous_duration;
     if !command_outcome.exit_status.success() {
         return Err(MendFailure::Analysis(AnalysisFailure {
-            cause: CompilerFailureCause::CargoCheck,
+            cause: CompilerFailureCause::CargoCheck {
+                error_files: command_outcome.error_files,
+            },
         }));
     }
     match AnalysisCache::inspect(
@@ -257,24 +328,23 @@ const fn driver_setup_failure(error: Error) -> MendFailure {
 /// `DriverCompiler` sets the workspace wrapper and selects rustc from the build sysroot together.
 /// This prevents metadata mismatches when the project selects another compiler release.
 /// Cargo retains artifacts for each compiler in the same target directory under separate hashes.
+/// The run opens its executable before Cargo metadata resolution.
+/// It retains one wrapper copy across analysis, cache recovery, and fix validation.
 fn run_cargo_check(
     cargo_plan: &CargoCheckPlan,
     loaded_config: &LoadedConfig,
     analyzing_dir: &Path,
-    scope_fingerprint: &str,
     output_mode: BuildOutputMode,
     color_mode: ColorMode,
     toolchain_probes: &ToolchainProbes,
+    wrapper: &RunWrapper,
 ) -> Result<CommandOutcome> {
-    let current_exe = env::current_exe().context("failed to determine current executable path")?;
     let mut command = Command::new(CARGO_BIN);
     command.arg(CARGO_SUBCOMMAND_CHECK);
     command.args(&cargo_plan.cargo_args);
     command.arg(CARGO_FLAG_MESSAGE_FORMAT_JSON_RENDER_DIAGNOSTICS);
 
-    let wrapper =
-        wrapper_alias(cargo_plan.target_directory.as_path(), &current_exe).unwrap_or(current_exe);
-    DriverCompiler::for_build()?.configure(&mut command, &wrapper);
+    wrapper.configure(&mut command)?;
     toolchain_probes.configure(&mut command);
 
     command
@@ -287,7 +357,7 @@ fn run_cargo_check(
         )
         .env(CONFIG_FINGERPRINT_ENV, &loaded_config.fingerprint)
         .env(ANALYZING_DIR_ENV, analyzing_dir)
-        .env(SCOPE_FINGERPRINT_ENV, scope_fingerprint)
+        .env(SCOPE_FINGERPRINT_ENV, scope_fingerprint_for(cargo_plan))
         .stdin(Stdio::inherit());
 
     run_cargo_command(&mut command, output_mode, color_mode, analyzing_dir)
@@ -307,32 +377,35 @@ fn run_cargo_check(
 /// protocol. Executable length and modification time distinguish development
 /// rebuilds that retain the analysis fingerprint. Reuse needs only metadata
 /// checks, not a read of the whole binary on every mend invocation.
-/// Returns `None` when the copy cannot be created.
-fn wrapper_alias(target_directory: &Path, current_exe: &Path) -> Option<PathBuf> {
-    let revision = WrapperExecutableRevision::read(current_exe).ok()?;
+/// Report the cause when the executable copy cannot be created.
+fn wrapper_alias(target_directory: &Path, executable: &mut RunningExecutable) -> Result<PathBuf> {
+    let revision = WrapperExecutableRevision::read(&executable.file)
+        .context("failed to inspect the open mend executable")?;
     let alias_dir = target_directory
         .join(WRAPPER_DIR_NAME)
         .join(settings::current_analysis_fingerprint())
         .join("independent-copy-v1")
         .join(revision.directory_name());
-    fs::create_dir_all(&alias_dir).ok()?;
-    let alias = alias_dir.join(current_exe.file_name()?);
+    fs::create_dir_all(&alias_dir)
+        .with_context(|| format!("failed to create wrapper directory {}", alias_dir.display()))?;
+    let alias = alias_dir.join(format!("{}{EXE_SUFFIX}", env!("CARGO_PKG_NAME")));
     if wrapper_alias_resolution(&alias) == WrapperAliasResolution::Current {
-        return Some(alias);
+        return Ok(alias);
     }
-    replace_wrapper_alias(current_exe, &alias).ok()?;
-    Some(alias)
+    replace_wrapper_alias(executable, &alias)
+        .with_context(|| format!("failed to copy wrapper to {}", alias.display()))?;
+    Ok(alias)
 }
 
-/// Identifies executable rebuilds without opening or hashing executable bytes.
+/// Identifies executable rebuilds from the open inode without hashing its bytes.
 struct WrapperExecutableRevision {
     length:   u64,
     modified: SystemTime,
 }
 
 impl WrapperExecutableRevision {
-    fn read(executable: &Path) -> io::Result<Self> {
-        let metadata = fs::metadata(executable)?;
+    fn read(executable: &File) -> io::Result<Self> {
+        let metadata = executable.metadata()?;
         Ok(Self {
             length:   metadata.len(),
             modified: metadata.modified()?,
@@ -372,7 +445,7 @@ struct StagedWrapperCopy {
 }
 
 impl StagedWrapperCopy {
-    fn create(current_exe: &Path, alias: &Path) -> io::Result<Self> {
+    fn create(executable: &mut RunningExecutable, alias: &Path) -> io::Result<Self> {
         let path = alias.with_extension(format!(
             "{WRAPPER_ALIAS_STAGING_EXTENSION}-{}",
             process::id()
@@ -382,7 +455,7 @@ impl StagedWrapperCopy {
             Err(error) if error.kind() == ErrorKind::NotFound => {},
             Err(error) => return Err(error),
         }
-        copy_wrapper_executable(current_exe, &path)
+        copy_wrapper_executable(&mut executable.file, &path)
             .and_then(|()| {
                 if wrapper_alias_resolution(&path) == WrapperAliasResolution::Current {
                     Ok(())
@@ -404,27 +477,20 @@ impl Drop for StagedWrapperCopy {
 /// Publish a complete copy without ever leaving the alias path absent.
 /// Cargo can execute the old or new copy during the rename. The process id
 /// prevents separate mend runs from sharing an unpublished staging path.
-fn replace_wrapper_alias(current_exe: &Path, alias: &Path) -> io::Result<()> {
-    StagedWrapperCopy::create(current_exe, alias)?.publish(alias)
+fn replace_wrapper_alias(executable: &mut RunningExecutable, alias: &Path) -> io::Result<()> {
+    StagedWrapperCopy::create(executable, alias)?.publish(alias)
 }
 
-#[cfg(target_os = "linux")]
-fn copy_wrapper_executable(source: &Path, destination: &Path) -> io::Result<()> {
-    let mut source = fs::File::open(source)?;
+fn copy_wrapper_executable(source: &mut File, destination: &Path) -> io::Result<()> {
     let mut destination = fs::File::create_new(destination)?;
-    // FICLONE shares extents, never the inode. Unsupported filesystems use an
-    // ordinary byte copy of the same opened source, retaining execute bits.
-    if rustix::fs::ioctl_ficlone(&destination, &source).is_err() {
-        io::copy(&mut source, &mut destination)?;
+    // A clone shares extents, never the inode. Other filesystems copy bytes.
+    #[cfg(target_os = "linux")]
+    if rustix::fs::ioctl_ficlone(&destination, &*source).is_ok() {
+        return destination.set_permissions(source.metadata()?.permissions());
     }
+    source.rewind()?;
+    io::copy(source, &mut destination)?;
     destination.set_permissions(source.metadata()?.permissions())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn copy_wrapper_executable(source: &Path, destination: &Path) -> io::Result<()> {
-    // On macOS std::fs::copy first uses fclonefileat (clonefile), with a
-    // copyfile fallback off APFS. The staging path is absent to permit cloning.
-    fs::copy(source, destination).map(drop)
 }
 
 fn scope_fingerprint_for(cargo_plan: &CargoCheckPlan) -> String {
@@ -464,7 +530,9 @@ pub(crate) fn run_cargo_fix(
         Ok(status) if status.success() => Ok(start.elapsed()),
         Ok(_) => Err(compiler_fix_failure(
             &transaction,
-            CompilerFailureCause::CargoCheck,
+            CompilerFailureCause::CargoCheck {
+                error_files: BTreeSet::new(),
+            },
         )),
         Err(error) => Err(compiler_fix_failure(
             &transaction,
@@ -673,6 +741,7 @@ fn run_cargo_command(
     let exit_status = child.wait().context("failed to wait for cargo command")?;
     let duration = start.elapsed();
     Ok(CommandOutcome {
+        error_files: stderr_outcome.error_files,
         exit_status,
         compiler_warning_facts: stderr_outcome.compiler_warning_facts,
         duration,
@@ -695,6 +764,7 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
     use std::process::Command;
     #[cfg(unix)]
     use std::process::Stdio;
@@ -772,7 +842,7 @@ mod tests {
             wrapper_alias_resolution(&alias),
             WrapperAliasResolution::NeedsReplacement
         );
-        super::replace_wrapper_alias(&source, &alias)?;
+        super::replace_wrapper_alias(&mut super::RunningExecutable::open_path(&source)?, &alias)?;
         assert_eq!(
             wrapper_alias_resolution(&alias),
             WrapperAliasResolution::Current
@@ -796,7 +866,11 @@ mod tests {
         let directory = tempdir()?;
         let source = directory.path().join("cargo-mend");
         fs::write(&source, b"current build")?;
-        let alias = super::wrapper_alias(directory.path(), &source).context("create alias")?;
+        let alias = super::wrapper_alias(
+            directory.path(),
+            &mut super::RunningExecutable::open_path(&source)?,
+        )
+        .context("create alias")?;
         fs::remove_file(&alias)?;
         fs::hard_link(&source, &alias)?;
         assert_eq!(
@@ -804,15 +878,21 @@ mod tests {
             WrapperAliasResolution::NeedsReplacement
         );
         assert_eq!(
-            super::wrapper_alias(directory.path(), &source),
-            Some(alias.clone())
+            super::wrapper_alias(
+                directory.path(),
+                &mut super::RunningExecutable::open_path(&source)?
+            )?,
+            alias
         );
         let inode = fs::metadata(&alias)?.ino();
         assert_ne!(inode, fs::metadata(&source)?.ino());
         assert_eq!(fs::metadata(&alias)?.nlink(), 1);
         assert_eq!(
-            super::wrapper_alias(directory.path(), &source),
-            Some(alias.clone())
+            super::wrapper_alias(
+                directory.path(),
+                &mut super::RunningExecutable::open_path(&source)?
+            )?,
+            alias
         );
         assert_eq!(fs::metadata(&alias)?.ino(), inode);
         fs::write(&source, b"changed build")?;
@@ -835,7 +915,11 @@ mod tests {
         fs::hard_link(&source, &legacy)?;
         fs::remove_file(&source)?;
         fs::write(&source, b"current build")?;
-        let alias = super::wrapper_alias(directory.path(), &source).context("create copy")?;
+        let alias = super::wrapper_alias(
+            directory.path(),
+            &mut super::RunningExecutable::open_path(&source)?,
+        )
+        .context("create copy")?;
         assert_ne!(alias, legacy);
         assert_eq!(fs::read(alias)?, b"current build");
         assert_eq!(fs::read(legacy)?, b"legacy overwritten contents");
@@ -847,10 +931,21 @@ mod tests {
         let directory = tempdir()?;
         let source = directory.path().join("cargo-mend");
         fs::write(&source, b"retained build")?;
-        let alias = super::wrapper_alias(directory.path(), &source).context("create copy")?;
-        fs::remove_file(&source)?;
-        assert!(super::replace_wrapper_alias(&source, &alias).is_err());
-        assert_eq!(fs::read(alias)?, b"retained build");
+        let alias = super::wrapper_alias(
+            directory.path(),
+            &mut super::RunningExecutable::open_path(&source)?,
+        )
+        .context("create copy")?;
+        let file = fs::OpenOptions::new().write(true).open(&source)?;
+        let mut executable = super::RunningExecutable { file };
+        assert!(super::replace_wrapper_alias(&mut executable, &alias).is_err());
+        assert_eq!(fs::read(&alias)?, b"retained build");
+        let staging = alias.with_extension(format!(
+            "{}-{}",
+            super::WRAPPER_ALIAS_STAGING_EXTENSION,
+            std::process::id()
+        ));
+        assert!(!staging.try_exists()?);
         Ok(())
     }
 
@@ -882,7 +977,11 @@ mod tests {
         let installed = directory.path().join("cargo-mend");
         fs::write(&installed, b"#!/bin/sh\nprintf 'retained build'\n")?;
         fs::set_permissions(&installed, fs::Permissions::from_mode(0o755))?;
-        let alias = super::wrapper_alias(directory.path(), &installed).context("create alias")?;
+        let alias = super::wrapper_alias(
+            directory.path(),
+            &mut super::RunningExecutable::open_path(&installed)?,
+        )
+        .context("create alias")?;
         // The child announces that it is about to exec this alias, then waits
         // for the source rewrite. No clock or scheduler timing decides the test.
         let mut child = Command::new("/bin/sh")
@@ -918,7 +1017,11 @@ mod tests {
         let directory = tempdir()?;
         let installed = directory.path().join("cargo-mend");
         fs::write(&installed, b"first build")?;
-        let original = super::wrapper_alias(directory.path(), &installed).context("first alias")?;
+        let original = super::wrapper_alias(
+            directory.path(),
+            &mut super::RunningExecutable::open_path(&installed)?,
+        )
+        .context("first alias")?;
         let modified = fs::metadata(&installed)?.modified()? + std::time::Duration::from_secs(1);
 
         // Keep the fingerprint and length unchanged. Set the time explicitly
@@ -928,11 +1031,116 @@ mod tests {
             .write(true)
             .open(&installed)?
             .set_modified(modified)?;
-        let rebuilt =
-            super::wrapper_alias(directory.path(), &installed).context("rebuilt alias")?;
+        let rebuilt = super::wrapper_alias(
+            directory.path(),
+            &mut super::RunningExecutable::open_path(&installed)?,
+        )
+        .context("rebuilt alias")?;
         assert_eq!(fs::read(&rebuilt)?, b"fresh build");
         assert_ne!(rebuilt, original);
         assert_eq!(fs::read(original)?, b"first build");
+        Ok(())
+    }
+
+    #[test]
+    fn run_wrapper_stays_the_same_after_source_replacement_and_removal() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let installed = directory.path().join("cargo-mend");
+        fs::write(&installed, b"running build")?;
+        #[cfg(unix)]
+        fs::set_permissions(&installed, fs::Permissions::from_mode(0o755))?;
+        let wrapper = super::RunWrapper::resolve(
+            directory.path(),
+            &mut super::RunningExecutable::open_path(&installed)?,
+        )?;
+        let first = configured_wrapper_path(&wrapper)?;
+        let replacement = directory.path().join("replacement");
+        fs::write(&replacement, b"replacement build")?;
+        fs::rename(replacement, &installed)?;
+        let second = configured_wrapper_path(&wrapper)?;
+        assert_eq!(second, first);
+        assert!(second.is_file());
+        assert_eq!(fs::read(&second)?, b"running build");
+        fs::remove_file(&installed)?;
+        let third = configured_wrapper_path(&wrapper)?;
+        assert_eq!(third, first);
+        assert!(third.is_file());
+        assert_eq!(fs::read(third)?, b"running build");
+        Ok(())
+    }
+
+    #[test]
+    fn run_wrapper_resolves_open_executable_after_source_replacement_and_removal()
+    -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let installed = directory.path().join("cargo-mend");
+        fs::write(&installed, b"running build")?;
+        let mut executable = super::RunningExecutable::open_path(&installed)?;
+        let replacement = directory.path().join("replacement");
+        fs::write(&replacement, b"replacement build")?;
+        fs::rename(replacement, &installed)?;
+        fs::remove_file(&installed)?;
+        let wrapper = super::RunWrapper::resolve(directory.path(), &mut executable)?;
+        assert_eq!(fs::read(&wrapper.path)?, b"running build");
+        drop(executable);
+        Ok(())
+    }
+
+    fn configured_wrapper_path(wrapper: &super::RunWrapper) -> anyhow::Result<PathBuf> {
+        let mut command = Command::new(CARGO_BIN);
+        wrapper.configure(&mut command)?;
+        command
+            .get_envs()
+            .find_map(|(key, value)| {
+                if key == crate::compiler::constants::RUSTC_WORKSPACE_WRAPPER_ENV {
+                    value.map(std::path::PathBuf::from)
+                } else {
+                    None
+                }
+            })
+            .context("the driver command must have a wrapper")
+    }
+
+    #[test]
+    fn run_wrapper_reports_source_and_copy_failures() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let source = directory.path().join("cargo-mend");
+        let missing = super::RunningExecutable::open_path(&source)
+            .err()
+            .context("a missing source must fail")?;
+        assert!(format!("{missing:#}").contains(&source.display().to_string()));
+        fs::write(&source, b"running build")?;
+        let target = directory.path().join("not-a-directory");
+        fs::write(&target, b"occupied")?;
+        let blocked =
+            super::RunWrapper::resolve(&target, &mut super::RunningExecutable::open_path(&source)?)
+                .err()
+                .context("an invalid copy directory must fail")?;
+        assert!(format!("{blocked:#}").contains(&target.display().to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn run_wrapper_rejects_a_missing_copy_before_configuring_cargo() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let source = directory.path().join("cargo-mend");
+        fs::write(&source, b"running build")?;
+        let wrapper = super::RunWrapper::resolve(
+            directory.path(),
+            &mut super::RunningExecutable::open_path(&source)?,
+        )?;
+        fs::remove_file(&wrapper.path)?;
+        let mut command = Command::new(CARGO_BIN);
+        let error = wrapper
+            .configure(&mut command)
+            .err()
+            .context("a missing wrapper must fail")?;
+        assert!(
+            error
+                .to_string()
+                .contains(&wrapper.path.display().to_string())
+        );
+        assert_eq!(command.get_envs().next(), None);
         Ok(())
     }
 
@@ -942,12 +1150,20 @@ mod tests {
         let temp = tempdir()?;
         let installed = temp.path().join("cargo-mend");
         fs::write(&installed, b"first build")?;
-        let alias = super::wrapper_alias(temp.path(), &installed).context("create alias")?;
+        let alias = super::wrapper_alias(
+            temp.path(),
+            &mut super::RunningExecutable::open_path(&installed)?,
+        )
+        .context("create alias")?;
         let replacement = temp.path().join("replacement");
         fs::write(&replacement, b"next build")?;
         fs::rename(replacement, &installed)?;
         assert_eq!(fs::read(&alias)?, b"first build");
-        let rebuilt = super::wrapper_alias(temp.path(), &installed).context("rebuilt alias")?;
+        let rebuilt = super::wrapper_alias(
+            temp.path(),
+            &mut super::RunningExecutable::open_path(&installed)?,
+        )
+        .context("rebuilt alias")?;
         assert_ne!(rebuilt, alias);
         assert_eq!(fs::read(rebuilt)?, b"next build");
         assert_eq!(fs::read(alias)?, b"first build");
@@ -960,12 +1176,19 @@ mod tests {
         let temp = tempdir()?;
         let installed = temp.path().join("cargo-mend");
         fs::write(&installed, b"current build")?;
-        let alias = super::wrapper_alias(temp.path(), &installed).context("create alias")?;
+        let alias = super::wrapper_alias(
+            temp.path(),
+            &mut super::RunningExecutable::open_path(&installed)?,
+        )
+        .context("create alias")?;
         fs::remove_file(&alias)?;
         std::os::unix::fs::symlink(&installed, &alias)?;
         assert_eq!(
-            super::wrapper_alias(temp.path(), &installed),
-            Some(alias.clone())
+            super::wrapper_alias(
+                temp.path(),
+                &mut super::RunningExecutable::open_path(&installed)?
+            )?,
+            alias
         );
         assert!(!fs::symlink_metadata(alias)?.file_type().is_symlink());
         Ok(())

@@ -1,5 +1,6 @@
 use super::BuildMode;
 use super::RunTargetKind;
+use crate::project::AbsolutePath;
 
 /// How an owned Cargo invocation selects its package.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -15,6 +16,7 @@ pub enum CargoPackageInvocation {
 #[derive(Clone)]
 pub struct PendingExampleRun {
     pub abs_path:                 String,
+    pub package_path:             AbsolutePath,
     pub target_name:              String,
     pub display_path:             String,
     pub cargo_package_invocation: CargoPackageInvocation,

@@ -23,7 +23,7 @@ fn output_with_no_producer_or_no_lines_is_not_drawn() {
 
     let lineless = OutputPresentation::derive(
         OwnedRunOutputStateRef::Retained {
-            producer: OwnedRunId::for_test(NonZeroU64::MIN),
+            producer: OwnedRunId::from(NonZeroU64::MIN),
             title:    OwnedRunOutputTitleRef::Unavailable,
             lines:    &[],
         },

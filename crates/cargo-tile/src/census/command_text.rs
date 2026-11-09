@@ -10,6 +10,7 @@ use crate::config::DefaultArguments;
 use crate::constants::ARGUMENT_ASSIGNMENT;
 use crate::constants::ARGUMENT_SEPARATOR;
 use crate::constants::CAPTURE_RUNNER_NAME;
+use crate::constants::CAPTURE_SHELL_NAME;
 use crate::constants::CAPTURE_SHIM_ARGUMENT;
 use crate::constants::CAPTURE_SHIM_PASSTHROUGH_ARGUMENT;
 use crate::constants::CARGO_DEFAULT_PROFILE;
@@ -283,6 +284,16 @@ impl CommandText {
     /// Parsed argument units in their original argv order.
     pub(crate) fn words(&self) -> &[CommandWord] { &self.words }
 
+    /// `named_words` exposes the parsed command names and toolchain selectors in argv order.
+    pub(crate) fn named_words(&self) -> impl Iterator<Item = &CommandWord> {
+        self.words.iter().filter(|word| {
+            matches!(
+                word.kind,
+                CommandWordKind::Name(_) | CommandWordKind::Selector(_)
+            )
+        })
+    }
+
     /// Both default text and wrapping select the same parsed units.
     pub(crate) fn selected_words<'a>(
         &'a self,
@@ -360,16 +371,12 @@ impl CommandText {
     /// than an argument to it -- `+nightly fmt` says something `fmt`
     /// alone does not.
     pub(crate) fn named(&self) -> CommandName {
-        let mut kept = Vec::new();
-        let mut omission = ArgumentOmission::Kept;
-        for word in &self.words {
-            match &word.kind {
-                CommandWordKind::Name(name) | CommandWordKind::Selector(name) => {
-                    kept.push(name.as_str());
-                },
-                _ => omission = ArgumentOmission::Dropped,
-            }
-        }
+        let kept: Vec<_> = self.named_words().map(CommandWord::text).collect();
+        let omission = if kept.len() == self.words.len() {
+            ArgumentOmission::Kept
+        } else {
+            ArgumentOmission::Dropped
+        };
         CommandName {
             words:     kept.join(COMMAND_WORD_SEPARATOR),
             arguments: omission,
@@ -543,21 +550,26 @@ pub(super) enum CargoArgvAbsence {
     ProgramRejected,
 }
 
+impl CargoArgvAbsence {
+    /// Map this `CargoArgvAbsence` to its target reason: `argv_unavailable` for
+    /// `ArgvUnavailable`, `program_rejected` for `ProgramRejected`.
+    fn map_reason<T>(self, argv_unavailable: T, program_rejected: T) -> T {
+        match self {
+            Self::ArgvUnavailable => argv_unavailable,
+            Self::ProgramRejected => program_rejected,
+        }
+    }
+}
+
 impl From<CargoArgvAbsence> for RowAbsence {
     fn from(absence: CargoArgvAbsence) -> Self {
-        match absence {
-            CargoArgvAbsence::ArgvUnavailable => Self::ArgvUnavailable,
-            CargoArgvAbsence::ProgramRejected => Self::ProgramRejected,
-        }
+        absence.map_reason(Self::ArgvUnavailable, Self::ProgramRejected)
     }
 }
 
 impl From<CargoArgvAbsence> for SubcommandAbsence {
     fn from(absence: CargoArgvAbsence) -> Self {
-        match absence {
-            CargoArgvAbsence::ArgvUnavailable => Self::ArgvUnavailable,
-            CargoArgvAbsence::ProgramRejected => Self::ProgramRejected,
-        }
+        absence.map_reason(Self::ArgvUnavailable, Self::ProgramRejected)
     }
 }
 
@@ -591,7 +603,9 @@ impl CargoArguments {
 pub(super) enum CargoTransport<'argv> {
     /// The v4 runner owns the invocation while another process executes these arguments.
     NativeCapture { arguments: &'argv [OsString] },
-    /// Cargo, an external subcommand, or the earlier shell transport.
+    /// The v3 shell entry runs cargo through a PTY or a pipe.
+    ShellCapture { arguments: &'argv [OsString] },
+    /// Cargo or an external subcommand without a capture entry.
     Ordinary,
 }
 
@@ -599,13 +613,19 @@ impl<'argv> CargoTransport<'argv> {
     /// Recognize the installed entry's complete protocol before interpreting cargo argv.
     pub(super) fn from_argv(argv: &'argv [OsString]) -> Self {
         match argv {
-            [program, flag, executable, _capture_parent, arguments @ ..]
+            [program, flag, executable, _, arguments @ ..]
                 if Path::new(program).file_name() == Some(OsStr::new(CAPTURE_RUNNER_NAME))
                     && (flag == CAPTURE_SHIM_ARGUMENT
                         || flag == CAPTURE_SHIM_PASSTHROUGH_ARGUMENT)
                     && is_cargo_binary(executable) =>
             {
                 Self::NativeCapture { arguments }
+            },
+            [shell, executable, arguments @ ..]
+                if Path::new(shell).file_name() == Some(OsStr::new(CAPTURE_SHELL_NAME))
+                    && is_cargo_binary(executable) =>
+            {
+                Self::ShellCapture { arguments }
             },
             _ => Self::Ordinary,
         }

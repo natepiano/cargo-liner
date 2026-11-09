@@ -1,10 +1,19 @@
 {
-  "schema": 1,
-  "edges": [
+  "schema": 2,
+  "rows": [
     {
-      "manager": "96b016bf-87cf-4a19-af7a-77425852c2e2",
-      "member": "80636f6b-b7f3-4a3f-9853-ead35573c524",
-      "role": "unit"
+      "id": "s0",
+      "name": "96b016bf-87cf-4a19-af7a-77425852c2e2",
+      "kind": "showrunner",
+      "parent": null,
+      "current_session": "96b016bf-87cf-4a19-af7a-77425852c2e2"
+    },
+    {
+      "id": "s1",
+      "name": "80636f6b-b7f3-4a3f-9853-ead35573c524",
+      "kind": "unit",
+      "parent": "s0",
+      "current_session": "80636f6b-b7f3-4a3f-9853-ead35573c524"
     }
   ]
 }

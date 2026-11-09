@@ -1,0 +1,6 @@
+{
+  "follow": ["python3", "/fixture/.claude/scripts/direct/../agents/codex_mesh.py", "follow", "--session-dir", "SESSION", "--to", "fixture-worker", "--role", "fix", "--claim-pid", "701", "--message-file", "PROMPT", "--summary-file", "/fixture/summary", "--reply-file", "/fixture/reply", "--log-file", "/fixture/log", "--task", "direct.fix", "--read-only"],
+  "assign": ["python3", "/fixture/.claude/scripts/direct/assign.py", "--role", "fix", "--to", "fixture-worker", "--phase", "42", "--fix-cause", "repair dispatch pairing", "--session-dir", "SESSION", "--cwd", "/fixture/cargo-liner-handler-enh", "--paths", "/fixture/paths", "--summary", "/fixture/summary", "--prompt", "PROMPT"],
+  "thread": "worker-thread",
+  "staff_id": "fixture-worker"
+}

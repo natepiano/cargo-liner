@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -24,6 +25,8 @@ use crate::constants::CONFIG_DIRNAME;
 use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_LIGHT_THEME;
 use crate::constants::DEFAULT_WIDEN_SUMMARY;
+use crate::constants::HERDR_PROBE_WAIT_LIMIT;
+use crate::constants::PROBE_TIMEOUT;
 #[cfg(test)]
 use crate::constants::TEST_CONFIG_ROOT;
 
@@ -113,11 +116,104 @@ pub(crate) struct MachinesConfig {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct CensusConfig {
-    /// One line of shell that prints this machine's hierarchy edges;
-    /// empty disables hierarchy discovery.
-    pub(crate) hierarchy_command: String,
+    /// The staff file path. An empty path disables staff discovery.
+    pub(crate) staff_file:                StaffFilePath,
     /// Optional command printing stored account roles and usage as JSON.
-    pub(crate) accounts_command:  String,
+    pub(crate) accounts_command:          String,
+    /// Seconds after process startup in which a new Codex thread can match.
+    pub(crate) codex_thread_start_window: CodexStartWindow,
+    /// Milliseconds from scan start allowed for the probe to obtain herdr names.
+    pub(crate) herdr_probe_wait:          HerdrProbeWait,
+    /// Milliseconds allowed for each herdr socket read or write.
+    pub(crate) herdr_read_timeout:        HerdrReadTimeout,
+}
+
+/// The configured staff file path, including its default location.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct StaffFilePath(pub(crate) String);
+
+impl Default for StaffFilePath {
+    fn default() -> Self { Self("~/.local/state/staff/staff.json".to_owned()) }
+}
+
+/// The configured span for the Codex startup fallback, in seconds.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(transparent)]
+pub(crate) struct CodexStartWindow(u64);
+
+impl Default for CodexStartWindow {
+    fn default() -> Self { Self(60) }
+}
+
+impl CodexStartWindow {
+    pub(crate) const fn milliseconds(self) -> u64 { self.0.saturating_mul(1000) }
+}
+
+/// A bound in milliseconds from scan start that reserves time for ssh and output.
+/// The 12-second default covers the reported 11-second probe at load 47.
+/// Five current probes took 1.60–5.88 seconds at load 82–84.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(try_from = "u64", into = "u64")]
+pub(crate) struct HerdrProbeWait(u64);
+
+impl Default for HerdrProbeWait {
+    fn default() -> Self { Self(12_000) }
+}
+
+impl HerdrProbeWait {
+    pub(crate) const fn duration(self) -> Duration { Duration::from_millis(self.0) }
+}
+
+impl TryFrom<u64> for HerdrProbeWait {
+    type Error = String;
+
+    fn try_from(milliseconds: u64) -> Result<Self, Self::Error> {
+        if Duration::from_millis(milliseconds) > HERDR_PROBE_WAIT_LIMIT {
+            return Err(format!(
+                "herdr_probe_wait must not exceed {} ms",
+                HERDR_PROBE_WAIT_LIMIT.as_millis()
+            ));
+        }
+        Ok(Self(milliseconds))
+    }
+}
+
+impl From<HerdrProbeWait> for u64 {
+    fn from(wait: HerdrProbeWait) -> Self { wait.0 }
+}
+
+/// A positive herdr socket timeout in milliseconds, within the remote probe deadline.
+/// Three of 20 snapshot reads exceeded 100 ms at load 79; the maximum was 155 ms.
+/// The 1,000 ms default allows more time for a loaded service.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(try_from = "u64", into = "u64")]
+pub(crate) struct HerdrReadTimeout(u64);
+
+impl Default for HerdrReadTimeout {
+    fn default() -> Self { Self(1_000) }
+}
+
+impl HerdrReadTimeout {
+    pub(crate) const fn duration(self) -> Duration { Duration::from_millis(self.0) }
+}
+
+impl TryFrom<u64> for HerdrReadTimeout {
+    type Error = String;
+
+    fn try_from(milliseconds: u64) -> Result<Self, Self::Error> {
+        if milliseconds == 0 || Duration::from_millis(milliseconds) > PROBE_TIMEOUT {
+            return Err(format!(
+                "herdr_read_timeout must be between 1 and {} ms",
+                PROBE_TIMEOUT.as_millis()
+            ));
+        }
+        Ok(Self(milliseconds))
+    }
+}
+
+impl From<HerdrReadTimeout> for u64 {
+    fn from(timeout: HerdrReadTimeout) -> Self { timeout.0 }
 }
 
 /// `[accounts]`: each agent home this machine runs, mapped to the label its tiles show.
@@ -200,14 +296,69 @@ widen_summary = true
 remote = []
 
 [census]
-hierarchy_command = \"\"
+staff_file = \"~/.local/state/staff/staff.json\"
 accounts_command = \"\"
+codex_thread_start_window = 60
+herdr_probe_wait = 12000
+herdr_read_timeout = 1000
 
 [accounts]
 ";
         let written =
             toml::to_string_pretty(&Config::default()).expect("a config should serialize");
         assert_eq!(written, expected);
+    }
+
+    #[test]
+    fn herdr_probe_wait_defaults_and_configured_limits_survive_serialization() {
+        let missing: Config = toml::from_str("[census]\n").expect("missing keys");
+        assert_eq!(
+            missing.census.herdr_probe_wait.duration(),
+            Duration::from_secs(12)
+        );
+        assert_eq!(
+            missing.census.herdr_read_timeout.duration(),
+            Duration::from_secs(1)
+        );
+        let configured: Config =
+            toml::from_str("[census]\nherdr_probe_wait = 750\nherdr_read_timeout = 300\n")
+                .expect("configured limits");
+        let saved = toml::to_string(&configured).expect("saved limits");
+        let restored: Config = toml::from_str(&saved).expect("restored limits");
+        assert_eq!(
+            restored.census.herdr_probe_wait.duration(),
+            Duration::from_millis(750)
+        );
+        assert_eq!(
+            restored.census.herdr_read_timeout.duration(),
+            Duration::from_millis(300)
+        );
+    }
+
+    #[test]
+    fn herdr_probe_wait_must_fit_the_remote_probe_deadline() {
+        let limit = HERDR_PROBE_WAIT_LIMIT.as_millis();
+        let at_limit: Config = toml::from_str(&format!("[census]\nherdr_probe_wait = {limit}\n"))
+            .expect("wait at the scan limit");
+        assert_eq!(
+            at_limit.census.herdr_probe_wait.duration(),
+            HERDR_PROBE_WAIT_LIMIT
+        );
+        let rejected =
+            toml::from_str::<Config>(&format!("[census]\nherdr_probe_wait = {}\n", limit + 1))
+                .expect_err("wait beyond the scan limit");
+        assert!(rejected.to_string().contains(&format!("{limit} ms")));
+    }
+
+    #[test]
+    fn herdr_read_timeout_rejects_zero_and_remote_deadline_overflow() {
+        for milliseconds in [0, PROBE_TIMEOUT.as_millis() + 1] {
+            let rejected = toml::from_str::<Config>(&format!(
+                "[census]\nherdr_read_timeout = {milliseconds}\n"
+            ))
+            .expect_err("invalid socket timeout");
+            assert!(rejected.to_string().contains("herdr_read_timeout"));
+        }
     }
 
     #[test]
@@ -231,8 +382,9 @@ accounts_command = \"\"
 
     #[test]
     fn config_without_an_accounts_table_has_no_labels() {
-        let config: Config = toml::from_str("[census]\nhierarchy_command = \"\"\n")
-            .expect("config from before accounts parses");
+        let config: Config =
+            toml::from_str("[census]\nstaff_file = \"~/.local/state/staff/staff.json\"\n")
+                .expect("config from before accounts parses");
         assert!(config.accounts.0.is_empty());
     }
 
@@ -254,19 +406,13 @@ accounts_command = \"\"
         assert_eq!(round_trip(&restated), restated);
     }
 
-    /// Shell quoting and separators survive a config save and reload.
+    /// Spaces in the staff path survive a config save.
     #[test]
-    fn the_hierarchy_command_round_trips_as_one_shell_line() {
-        let text =
-            "[census]\nhierarchy_command = '''printf '%s' '{\"schema\":1,\"edges\":[]}' | cat'''\n";
+    fn the_staff_file_round_trips_as_a_path() {
+        let text = "[census]\nstaff_file = '/tmp/staff list.json'\n";
         let restated = round_trip(text);
-        let reloaded: Config =
-            toml::from_str(&restated).expect("the saved shell command should parse");
-
-        assert_eq!(
-            reloaded.census.hierarchy_command,
-            "printf '%s' '{\"schema\":1,\"edges\":[]}' | cat"
-        );
+        let reloaded: Config = toml::from_str(&restated).expect("the staff path should parse");
+        assert_eq!(reloaded.census.staff_file.0, "/tmp/staff list.json");
         assert_eq!(round_trip(&restated), restated);
     }
 

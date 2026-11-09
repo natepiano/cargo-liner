@@ -29,8 +29,11 @@ use crate::census::RoleFallback;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
 use crate::census::ShellTimerObservation;
+use crate::census::StaffRowNames;
 use crate::census::WorkIdentity;
 use crate::census::classify::ProcessEntry;
+use crate::census::model::ModelName;
+use crate::census::model::ReasoningEffort;
 use crate::census::probe;
 use crate::census::worker_dispatch::WorkerDispatch;
 use crate::census::worker_dispatch::WorkerTask;
@@ -327,6 +330,9 @@ fn account_column_counts_the_same_label_on_two_machines_once() {
 /// An agent fixture serialized by the public row type, not a duplicate wire struct.
 fn agent_row(account: Account) -> AgentRow {
     AgentRow {
+        model: ModelName::Unrecorded,
+        effort: ReasoningEffort::Unrecorded,
+        staff_names: StaffRowNames::default(),
         agent: Agent::Codex,
         role_fallback: RoleFallback::None,
         session_id: SessionIdentity::Unrecorded,
@@ -382,6 +388,8 @@ fn a_schema_three_probe_without_accounts_keeps_them_unrecorded() {
 /// A child with enough identity to check that account transport preserves its row.
 fn child_row(kind: ChildKind, account: Account) -> ChildRow {
     ChildRow {
+        model: ModelName::Unrecorded,
+        effort: ReasoningEffort::Unrecorded,
         worker_task: WorkerTask::Unrecorded,
         thread_id: CodexThreadId::Unrecorded,
         dispatch: WorkerDispatch::Plain,

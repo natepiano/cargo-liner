@@ -1845,18 +1845,29 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn waiting_reasons_pair_typed_evidence_with_actions() -> FixtureResult<()> {
-        assert_checkpoint_not_integrated_and_incorporation_actions()?;
-        assert_trunk_rewritten_action()?;
-        assert_object_unknown_action()?;
-        Ok(())
+    macro_rules! waiting_reason_cases {
+        ($($name:ident => $case:ident),+ $(,)?) => {
+            $(
+                #[test]
+                fn $name() -> FixtureResult<()> {
+                    let fixture = OrderedBoardFixture::new()?;
+                    $case(&fixture)
+                }
+            )+
+        };
     }
 
-    fn assert_checkpoint_not_integrated_and_incorporation_actions() -> FixtureResult<()> {
-        let initial = OrderedBoardFixture::new()?;
+    waiting_reason_cases! {
+        waiting_reasons_pair_typed_evidence_with_actions => assert_checkpoint_not_integrated_and_incorporation_actions,
+        rewritten_waiting_reason_pairs_typed_evidence_with_action => assert_trunk_rewritten_action,
+        missing_object_waiting_reason_pairs_typed_evidence_with_action => assert_object_unknown_action,
+    }
+
+    fn assert_checkpoint_not_integrated_and_incorporation_actions(
+        initial: &OrderedBoardFixture,
+    ) -> FixtureResult<()> {
         let initial_model = initial.model()?;
-        assert_waiting_endpoints(&initial_model, &initial)?;
+        assert_waiting_endpoints(&initial_model, initial)?;
         let WaitingAction::PredecessorCheckpoint { instruction } = waiting_action(&initial_model)?
         else {
             return Err(io::Error::other("active predecessor should require a checkpoint").into());
@@ -1913,8 +1924,7 @@ mod tests {
         Ok(())
     }
 
-    fn assert_trunk_rewritten_action() -> FixtureResult<()> {
-        let rewritten = OrderedBoardFixture::new()?;
+    fn assert_trunk_rewritten_action(rewritten: &OrderedBoardFixture) -> FixtureResult<()> {
         // `OrderedBoardFixture::commit_predecessor` must create real scoped work: a rewrite costs
         // a reservation its evidence only when trunk loses the content that evidence rested on.
         let protected_tip = rewritten.commit_predecessor()?;
@@ -1964,8 +1974,7 @@ mod tests {
         Ok(())
     }
 
-    fn assert_object_unknown_action() -> FixtureResult<()> {
-        let unknown = OrderedBoardFixture::new()?;
+    fn assert_object_unknown_action(unknown: &OrderedBoardFixture) -> FixtureResult<()> {
         let known_tip = unknown.commit_predecessor()?;
         let checkpoint_trunk = unknown.board.trunk()?;
         unknown.board.checkpoint(

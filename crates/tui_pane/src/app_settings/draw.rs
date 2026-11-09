@@ -34,6 +34,7 @@ pub fn draw_settings<S: Copy>(
     frame: &mut Frame,
     settings_pane: &mut SettingsPane,
     rows: &SettingsRows<S>,
+    mode: crate::ColorMode,
 ) {
     let area = frame.area();
     // `PopupFrame::render_with_areas` centers and clamps to the frame, so `rows` have
@@ -52,8 +53,8 @@ pub fn draw_settings<S: Copy>(
         success_style: Style::default().fg(success_color()),
         error_style: Style::default().fg(error_color()),
         inline_error_style: Style::default().fg(inline_error_color()),
-        active_style: selection_style(PaneFocusState::Active),
-        remembered_style: selection_style(PaneFocusState::Remembered),
+        active_style: selection_style(PaneFocusState::Active, mode),
+        remembered_style: selection_style(PaneFocusState::Remembered, mode),
         hovered_style: Style::default().bg(hover_focus_color()),
     };
     let settings_render = settings_pane.render_rows(rows.rows(), settings_render_options);
@@ -62,6 +63,7 @@ pub fn draw_settings<S: Copy>(
         .saturating_add(POPUP_BORDER_HEIGHT)
         .min(area.height);
     let popup_areas = PopupFrame {
+        color_mode: mode,
         title: Some(SETTINGS_TITLE.to_string()),
         border_color: title_color(),
         width,

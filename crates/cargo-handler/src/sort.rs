@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 use std::ops::Range;
 
+use ratatui::layout::Alignment;
 use ratatui::layout::Rect;
 use tui_pane::CellPoint;
 
@@ -171,46 +172,80 @@ pub(crate) type SummarySort = ColumnSort<SummaryColumn>;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AccountsColumn {
     Account,
-    Roles,
     WeeklyLeft,
+    Roles,
+    Busy,
+    Idle,
+    Paused,
+    Exited,
+    Total,
     Resets,
     Credits,
     Enabled,
-    InUse,
-    Read,
 }
 
 impl AccountsColumn {
-    /// Every labelled account column, in drawing order; the status dot has no header.
-    pub(crate) const ALL: [Self; 8] = [
+    /// The read mark has no header or sort key.
+    pub(crate) const ALL: [Self; 11] = [
         Self::Account,
-        Self::Roles,
         Self::WeeklyLeft,
+        Self::Roles,
+        Self::Busy,
+        Self::Idle,
+        Self::Paused,
+        Self::Exited,
+        Self::Total,
         Self::Resets,
         Self::Credits,
         Self::Enabled,
-        Self::InUse,
-        Self::Read,
     ];
+
+    /// Count columns share their drawing and sum rules.
+    pub(crate) const COUNTS: [Self; 5] = [
+        Self::Busy,
+        Self::Idle,
+        Self::Paused,
+        Self::Exited,
+        Self::Total,
+    ];
+
+    /// Numeric cells align at the right edge.
+    pub(crate) const fn alignment(self) -> Alignment {
+        match self {
+            Self::WeeklyLeft
+            | Self::Busy
+            | Self::Idle
+            | Self::Paused
+            | Self::Exited
+            | Self::Total
+            | Self::Resets
+            | Self::Credits => Alignment::Right,
+            Self::Account | Self::Roles | Self::Enabled => Alignment::Left,
+        }
+    }
 
     /// Position in the measured account row.
     pub(crate) const fn index(self) -> usize {
         match self {
             Self::Account => 0,
-            Self::Roles => 1,
-            Self::WeeklyLeft => 2,
-            Self::Resets => 3,
-            Self::Credits => 4,
-            Self::Enabled => 5,
-            Self::InUse => 6,
-            Self::Read => 7,
+            Self::WeeklyLeft => 1,
+            Self::Roles => 2,
+            Self::Busy => 3,
+            Self::Idle => 4,
+            Self::Paused => 5,
+            Self::Exited => 6,
+            Self::Total => 7,
+            Self::Resets => 8,
+            Self::Credits => 9,
+            Self::Enabled => 10,
         }
     }
 
     /// The label before a sort is selected.
     pub(crate) const fn header(self) -> &'static str {
         const HEADERS: [&str; AccountsColumn::ALL.len()] = [
-            "account", "role", "left", "resets", "credits", "enabled", "in use", "read",
+            "account", "left", "role", "busy", "idle", "paused", "exited", "total", "resets",
+            "credits", "enabled",
         ];
         HEADERS[self.index()]
     }

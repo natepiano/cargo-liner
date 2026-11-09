@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+use std::fmt::Formatter;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::thread;
 
 use ansi_to_tui::IntoText;
 use cargo_metadata::Error;
@@ -16,11 +16,17 @@ use tokio::sync::Semaphore;
 use tui_pane::PERF_LOG_TARGET;
 
 use super::BackgroundMsg;
+use super::SourceMeasurements;
+use super::background_workers;
 use super::constants::CARGO_OFFLINE_FLAG;
 use super::discovery;
 use super::disk_usage;
 use super::exclude::ExcludeDirs;
 use super::language_stats;
+use super::pending_work::NextWork;
+use super::pending_work::PendingWork;
+use super::pending_work::PendingWorker;
+use super::pending_work::WorkSubmission;
 use super::test_counts;
 use super::tree;
 use crate::channel;
@@ -86,11 +92,12 @@ impl From<Error> for CargoMetadataError {
 
 #[derive(Clone)]
 pub(super) struct StreamingScanContext {
-    pub(super) client:         HttpClient,
-    pub(super) sender:         Sender<BackgroundMsg>,
-    pub(super) disk_limit:     Arc<Semaphore>,
-    pub(super) metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
-    pub(super) metadata_limit: Arc<Semaphore>,
+    pub(super) source_measurements: Arc<SourceMeasurements>,
+    pub(super) client:              HttpClient,
+    pub(super) sender:              Sender<BackgroundMsg>,
+    pub(super) disk_limit:          Arc<Semaphore>,
+    pub(super) metadata_store:      Arc<Mutex<WorkspaceMetadataStore>>,
+    pub(super) metadata_limit:      Arc<Semaphore>,
 }
 
 /// Spawn a streaming scan using a hybrid approach:
@@ -113,13 +120,15 @@ pub(crate) fn spawn_streaming_scan(
     exclude_dirs: ExcludeDirs,
     client: HttpClient,
     metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+    source_measurements: Arc<SourceMeasurements>,
 ) -> (Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
     let (sender, receiver) = channel::unbounded();
     let inline_dirs = inline_dirs.to_vec();
 
     let scan_sender = sender.clone();
-    thread::spawn(move || {
+    background_workers::spawn_discovery_for_roots(scan_dirs.clone(), move || {
         let scan_context = StreamingScanContext {
+            source_measurements,
             client,
             sender: scan_sender.clone(),
             disk_limit: Arc::new(tokio::sync::Semaphore::new(
@@ -245,57 +254,107 @@ pub(crate) fn spawn_cargo_metadata_refresh(
     dispatch: MetadataDispatchContext,
     workspace_root: AbsolutePath,
 ) {
-    let MetadataDispatchContext {
-        handle,
-        sender,
-        metadata_store: store,
-        metadata_limit: limit,
-    } = dispatch;
-
-    let metadata_timeout = config::active_config().scan.metadata_timeout();
+    let owner = workspace_root;
+    let handle = dispatch.handle.clone();
+    let limit = Arc::clone(&dispatch.metadata_limit);
+    let pending = {
+        let store = dispatch
+            .metadata_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(&store.metadata_refreshes.pending)
+    };
+    let submission = {
+        let mut pending = pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = dispatch
+            .metadata_store
+            .lock()
+            .map_or(0, |mut store| store.next_generation(&owner));
+        pending.submit(
+            owner.clone(),
+            MetadataRefresh {
+                dispatch,
+                generation,
+            },
+        )
+    };
+    if matches!(submission, WorkSubmission::JoinedWorker) {
+        return;
+    }
+    let mut worker = PendingWorker::new(pending, owner);
     handle.spawn(async move {
-        let Ok(_permit) = limit.acquire_owned().await else {
-            return;
-        };
-
-        let workspace_root_for_task = workspace_root.clone();
-        let blocking = tokio::task::spawn_blocking(move || {
-            run_cargo_metadata_for_root(&workspace_root_for_task, &store)
-        });
-        let task_result = match tokio::time::timeout(metadata_timeout, blocking).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(_)) => {
-                tracing::warn!(
-                    workspace_root = %workspace_root.display(),
-                    "cargo_metadata_task_join_failed"
-                );
+        while let NextWork::Run(refresh) = worker.next() {
+            let Ok(permit) = Arc::clone(&limit).acquire_owned().await else {
                 return;
-            },
-            Err(_) => {
-                let fingerprint = ManifestFingerprint::capture(workspace_root.as_path())
-                    .unwrap_or_else(|_| synthetic_fingerprint());
-                CargoMetadataTaskOutput {
-                    generation: 0,
-                    fingerprint,
-                    result: Err(CargoMetadataError::Other(format!(
-                        "cargo metadata timed out after {}s",
-                        metadata_timeout.as_secs()
-                    ))),
-                }
-            },
-        };
+            };
+            execute_metadata_refresh(worker.owner(), refresh).await;
+            drop(permit);
+        }
+    });
+}
 
-        let CargoMetadataTaskOutput {
-            generation,
-            fingerprint,
-            result,
-        } = task_result;
-        let _ = sender.send(BackgroundMsg::CargoMetadata {
-            workspace_root,
-            generation,
-            fingerprint,
-            result,
-        });
+/// Own pending refreshes for one metadata store and its runtime.
+#[derive(Default)]
+pub(crate) struct MetadataRefreshQueue {
+    pending: Arc<Mutex<PendingWork<AbsolutePath, MetadataRefresh>>>,
+}
+
+impl std::fmt::Debug for MetadataRefreshQueue {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MetadataRefreshQueue")
+            .finish_non_exhaustive()
+    }
+}
+
+struct MetadataRefresh {
+    dispatch:   MetadataDispatchContext,
+    generation: u64,
+}
+
+async fn execute_metadata_refresh(workspace_root: &AbsolutePath, refresh: MetadataRefresh) {
+    let metadata_timeout = config::active_config().scan.metadata_timeout();
+    let MetadataRefresh {
+        dispatch,
+        generation,
+    } = refresh;
+    let workspace_root_for_task = workspace_root.clone();
+    let blocking = tokio::task::spawn_blocking(move || {
+        background_workers::run_metadata(|| {
+            run_cargo_metadata_for_root(&workspace_root_for_task, generation)
+        })
+    });
+    let task_result = match tokio::time::timeout(metadata_timeout, blocking).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(_)) => {
+            tracing::warn!(workspace_root = %workspace_root.display(), "cargo_metadata_task_join_failed");
+            return;
+        },
+        Err(_) => {
+            let fingerprint = ManifestFingerprint::capture(workspace_root.as_path())
+                .unwrap_or_else(|_| synthetic_fingerprint());
+            CargoMetadataTaskOutput {
+                generation,
+                fingerprint,
+                result: Err(CargoMetadataError::Other(format!(
+                    "cargo metadata timed out after {}s",
+                    metadata_timeout.as_secs()
+                ))),
+            }
+        },
+    };
+    let CargoMetadataTaskOutput {
+        generation,
+        fingerprint,
+        result,
+    } = task_result;
+    let _ = dispatch.sender.send(BackgroundMsg::CargoMetadata {
+        workspace_root: workspace_root.clone(),
+        generation,
+        fingerprint,
+        result,
     });
 }
 
@@ -348,11 +407,8 @@ pub(crate) fn spawn_out_of_tree_target_walk(
 
 fn run_cargo_metadata_for_root(
     workspace_root: &AbsolutePath,
-    store: &Arc<Mutex<WorkspaceMetadataStore>>,
+    generation: u64,
 ) -> CargoMetadataTaskOutput {
-    let generation = store
-        .lock()
-        .map_or(0, |mut guard| guard.next_generation(workspace_root));
     let fingerprint = match ManifestFingerprint::capture(workspace_root.as_path()) {
         Ok(fp) => fp,
         Err(err) => {
@@ -481,12 +537,106 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    use tokio::runtime::Runtime;
+
     use super::*;
+    use crate::constants::SCAN_METADATA_CONCURRENCY;
     use crate::project::Package;
     use crate::project::RustProject;
     use crate::project::Workspace;
     use crate::project::WorktreeStatus;
     use crate::scan::tree;
+
+    #[test]
+    fn metadata_bursts_keep_one_pending_refresh_and_the_latest_generation() -> anyhow::Result<()> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let directory = tempfile::tempdir()?;
+        let root = AbsolutePath::from(directory.path());
+        let (sender, receiver) = channel::unbounded();
+        let store = Arc::new(Mutex::new(WorkspaceMetadataStore::new()));
+        let dispatch = MetadataDispatchContext {
+            handle: runtime.handle().clone(),
+            sender,
+            metadata_store: Arc::clone(&store),
+            metadata_limit: Arc::new(Semaphore::new(SCAN_METADATA_CONCURRENCY)),
+        };
+        for _ in 0..128 {
+            spawn_cargo_metadata_refresh(dispatch.clone(), root.clone());
+        }
+        assert_eq!(
+            runtime.metrics().num_alive_tasks(),
+            1,
+            "one checkout must have one pending refresh"
+        );
+        let message = runtime
+            .block_on(async { tokio::task::spawn_blocking(move || receiver.recv()).await })??;
+        let BackgroundMsg::CargoMetadata { generation, .. } = message else {
+            anyhow::bail!("metadata refresh returned a different message");
+        };
+        assert_eq!(generation, 128);
+        competing_checkout_runs_during_metadata_bursts(&runtime)?;
+        Ok(())
+    }
+
+    fn competing_checkout_runs_during_metadata_bursts(runtime: &Runtime) -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut busy_roots = Vec::new();
+        for index in 0..SCAN_METADATA_CONCURRENCY {
+            let path = directory.path().join(format!("busy-{index}"));
+            std::fs::create_dir_all(path.join("src"))?;
+            std::fs::write(path.join("src/lib.rs"), "pub fn measured() {}")?;
+            std::fs::write(
+                path.join(CARGO_TOML),
+                format!(
+                    "[package]\nname = \"busy-{index}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
+                ),
+            )?;
+            busy_roots.push(AbsolutePath::from(path));
+        }
+        let competitor = AbsolutePath::from(directory.path().join("competitor"));
+        let (sender, receiver) = channel::unbounded();
+        let dispatch = MetadataDispatchContext {
+            handle: runtime.handle().clone(),
+            sender,
+            metadata_store: Arc::new(Mutex::new(WorkspaceMetadataStore::new())),
+            metadata_limit: Arc::new(Semaphore::new(SCAN_METADATA_CONCURRENCY)),
+        };
+        runtime.block_on(async move {
+            for root in &busy_roots {
+                spawn_cargo_metadata_refresh(dispatch.clone(), root.clone());
+            }
+            tokio::task::yield_now().await;
+            for root in &busy_roots {
+                spawn_cargo_metadata_refresh(dispatch.clone(), root.clone());
+            }
+            spawn_cargo_metadata_refresh(dispatch.clone(), competitor.clone());
+            let replenish = tokio::spawn(async move {
+                loop {
+                    for root in &busy_roots {
+                        spawn_cargo_metadata_refresh(dispatch.clone(), root.clone());
+                    }
+                    tokio::task::yield_now().await;
+                }
+            });
+            let result = tokio::task::spawn_blocking(move || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                loop {
+                    let message = receiver.recv_deadline(deadline)?;
+                    if let BackgroundMsg::CargoMetadata { workspace_root, .. } = message
+                        && workspace_root == competitor
+                    {
+                        return Ok::<_, crate::channel::RecvTimeoutError>(());
+                    }
+                }
+            })
+            .await;
+            replenish.abort();
+            result??;
+            Ok::<_, anyhow::Error>(())
+        })
+    }
 
     #[cfg(unix)]
     #[test]

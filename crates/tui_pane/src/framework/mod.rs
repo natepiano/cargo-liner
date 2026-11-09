@@ -38,6 +38,7 @@ pub use self::wheel::OverlayWheel;
 pub use self::wheel::wheel_framework_overlay;
 use crate::AppContext;
 use crate::ClipboardBackend;
+use crate::ColorMode;
 use crate::CopyOutcome;
 use crate::CopySelection;
 use crate::CopySelectionResult;
@@ -84,6 +85,8 @@ enum LifecycleRequest {
 /// [`FrameworkFocusId`]) keep that distinction enforced at the type
 /// level.
 pub struct Framework<Ctx: AppContext> {
+    /// The terminal colour policy held by this app.
+    pub color_mode:            ColorMode,
     focused:                   FocusedPane<Ctx::AppPaneId>,
     lifecycle_request:         LifecycleRequest,
     mode_queries:              HashMap<Ctx::AppPaneId, ModeQuery<Ctx>>,
@@ -117,6 +120,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
     #[must_use]
     pub fn new(initial_focus: FocusedPane<Ctx::AppPaneId>) -> Self {
         Self {
+            color_mode:            ColorMode::Colored,
             focused:               initial_focus,
             lifecycle_request:     LifecycleRequest::None,
             mode_queries:          HashMap::new(),

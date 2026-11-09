@@ -5,6 +5,9 @@ use crate::lint;
 use crate::project::Visibility::Dismissed;
 use crate::tui::dismiss_target::DismissTarget;
 use crate::tui::panes::PaneId;
+use crate::tui::project_list::ProjectPathLookup::Found;
+use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+use crate::tui::project_list::ProjectPathLookup::UnknownPath;
 
 // ── Resolution + dispatch ───────────────────────────────────────
 
@@ -45,8 +48,11 @@ impl App {
                 }
                 self.lint.clear_running_path(path.as_path());
                 let parent_node_index = self.project_list.worktree_parent_node_index(&path);
-                if let Some(project) = self.project_list.at_path_mut(&path) {
-                    project.visibility = Dismissed;
+                match self.project_list.at_path_mut(&path) {
+                    Found(project) => {
+                        project.visibility = Dismissed;
+                    },
+                    UnknownPath | StaleRoute => {},
                 }
                 self.panes.clear_for_tree_change();
                 self.scan.bump_generation();
@@ -59,6 +65,11 @@ impl App {
                     if selected >= count {
                         self.project_list.set_cursor(count.saturating_sub(1));
                     }
+                }
+                self.record_selection_choice();
+                if self.project_list.row_count() == 0 {
+                    self.project_list.paths.last_selected = None;
+                    self.project_list.mark_sync_changed();
                 }
             },
         }

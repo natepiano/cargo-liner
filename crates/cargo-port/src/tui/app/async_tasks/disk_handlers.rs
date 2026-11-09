@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use super::constants::PROJECT_STORAGE_REFRESH_SECS;
 use crate::project::AbsolutePath;
+use crate::project::DiskMeasurement;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Dismissed;
 use crate::project::Visibility::Visible;
@@ -12,12 +13,22 @@ use crate::scan::BackgroundMsg;
 use crate::scan::DirSizes;
 use crate::scan::ProjectStorage;
 use crate::tui::app::App;
+use crate::tui::project_list::ProjectPathLookup::Found;
+use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+use crate::tui::project_list::ProjectPathLookup::UnknownPath;
 
 impl App {
     /// Refresh the mounted-volume capacity for the roots represented in the
     /// project-pane summary without doing filesystem work on the render path.
     pub(super) fn refresh_project_storage(&mut self) {
         self.storage_refresh_at = Instant::now();
+        #[cfg(test)]
+        if matches!(
+            self.startup_services.background_query_source(),
+            crate::tui::startup_services::BackgroundQuerySource::QueuedReplies
+        ) {
+            return;
+        }
         let paths = self.project_list.visible_project_storage_paths();
         let sender = self.background.background_sender();
         let handle = self.net.http_client().handle;
@@ -51,36 +62,42 @@ impl App {
             self.apply_disk_usage_breakdown(path.as_path(), sizes);
         }
     }
-    /// Apply a [`DirSizes`] breakdown to the matching project. Shares
-    /// the post-set logic with `apply_disk_usage` (visibility /
-    /// lint-runtime registration) by reusing that helper for the
-    /// total — the breakdown fields are stored alongside.
+    /// Store the total and its parts from the same measurement.
     pub(super) fn apply_disk_usage_breakdown(&mut self, path: &Path, sizes: DirSizes) {
-        if let Some(project) = self.project_list.at_path_mut(path) {
-            project.in_project_target = Some(sizes.in_project_target);
-            project.in_project_non_target = Some(sizes.in_project_non_target);
-        }
         self.apply_disk_usage(path, sizes.total);
+        if let Found(project) = self.project_list.at_path_mut(path) {
+            project.disk = DiskMeasurement::Measured {
+                total:  sizes.total,
+                target: sizes.in_project_target,
+                other:  sizes.in_project_non_target,
+            };
+        }
     }
     pub(super) fn apply_disk_usage(&mut self, path: &Path, bytes: u64) {
-        // `project_list.at_path_mut` locates the `ProjectInfo` whose `disk_usage_bytes` and
-        // `visibility` are updated to reflect `Deleted` or `Visible`; `lint_runtime_changed` tracks
-        // required registration updates.
+        // Update the measurement and visibility for this path.
+        // Refresh lint registration when visibility changes.
         let mut lint_runtime_changed = false;
-        if let Some(project) = self.project_list.at_path_mut(path) {
-            project.disk_usage_bytes = Some(bytes);
-            // Periodic probes also include dismissed roots. Their result must
-            // not undo the user's explicit dismissal of a deleted project.
-            if project.visibility == Dismissed {
-                return;
-            }
-            if bytes == 0 && !path.exists() && project.visibility != Deleted {
-                project.visibility = Deleted;
-                lint_runtime_changed = true;
-            } else if bytes > 0 && project.visibility != Visible {
-                project.visibility = Visible;
-                lint_runtime_changed = true;
-            }
+        match self.project_list.at_path_mut(path) {
+            Found(project) => {
+                if !matches!(project.disk, DiskMeasurement::Measured { .. })
+                    || (bytes == 0 && !path.exists())
+                {
+                    project.disk = DiskMeasurement::TotalOnly(bytes);
+                }
+                // Periodic probes also include dismissed roots. Their result must
+                // not undo the user's explicit dismissal of a deleted project.
+                if project.visibility == Dismissed {
+                    return;
+                }
+                if bytes == 0 && !path.exists() && project.visibility != Deleted {
+                    project.visibility = Deleted;
+                    lint_runtime_changed = true;
+                } else if bytes > 0 && project.visibility != Visible {
+                    project.visibility = Visible;
+                    lint_runtime_changed = true;
+                }
+            },
+            UnknownPath | StaleRoute => {},
         }
         if lint_runtime_changed {
             if let Some(runtime) = self.lint.runtime()
@@ -104,7 +121,8 @@ impl App {
         root_path: &AbsolutePath,
         entries: Vec<(AbsolutePath, DirSizes)>,
     ) {
-        self.scan.bump_generation();
+        // Dispatch compares the applied bytes, breakdown and visibility for
+        // each path. An unchanged poll must retain both row and detail caches.
         // Insert root_path and each entries path into startup.disk.seen: group_disk_usage_trees
         // groups flat disk_entries under shallow ancestors while ProjectList::iter follows
         // build_tree workspaces/worktree groups, so root-only marking could leave expected paths
@@ -154,30 +172,30 @@ mod tests {
         let mut app = test_support::make_app(&[item]);
         app.apply_disk_usage(&path, 0);
         assert_eq!(
-            app.project_list
+            (app.project_list
                 .at_path(&path)
-                .expect("deleted row remains")
-                .visibility,
+                .expect_found("deleted row remains"))
+            .visibility,
             Visibility::Deleted
         );
-        app.project_list
+        (app.project_list
             .at_path_mut(&path)
-            .expect("row to dismiss")
-            .visibility = Visibility::Dismissed;
+            .expect_found("row to dismiss"))
+        .visibility = Visibility::Dismissed;
         app.apply_disk_usage(&path, 0);
         assert_eq!(
-            app.project_list
+            (app.project_list
                 .at_path(&path)
-                .expect("dismissed row remains stored")
-                .visibility,
+                .expect_found("dismissed row remains stored"))
+            .visibility,
             Visibility::Dismissed
         );
         app.apply_disk_usage(&path, 42);
         assert_eq!(
-            app.project_list
+            (app.project_list
                 .at_path(&path)
-                .expect("late result retains dismissal")
-                .visibility,
+                .expect_found("late result retains dismissal"))
+            .visibility,
             Visibility::Dismissed
         );
     }

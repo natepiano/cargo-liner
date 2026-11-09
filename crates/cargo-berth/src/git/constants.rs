@@ -1,7 +1,50 @@
 //! Named git command, flag, reference, and status spellings.
 
+// Environment names, values, and inherited read policy.
 /// Keep internally spawned hooks on this berth executable unless the caller selected another.
 pub(super) const BERTH_EXECUTABLE_ENVIRONMENT: &str = "CARGO_BERTH_EXECUTABLE";
+
+/// Number of inherited configuration overlay entries.
+pub(super) const GIT_CONFIG_COUNT_ENVIRONMENT: &str = "GIT_CONFIG_COUNT";
+
+/// Prefix of an overlay configuration key variable.
+pub(super) const GIT_CONFIG_KEY_PREFIX: &str = "GIT_CONFIG_KEY_";
+
+/// Shell-encoded inherited command configuration.
+pub(super) const GIT_CONFIG_PARAMETERS_ENVIRONMENT: &str = "GIT_CONFIG_PARAMETERS";
+
+/// Prefix of an overlay configuration value variable.
+pub(super) const GIT_CONFIG_VALUE_PREFIX: &str = "GIT_CONFIG_VALUE_";
+
+/// Stable English diagnostics.
+pub(super) const GIT_DIAGNOSTIC_LOCALE: &str = "C";
+
+/// Inherited read semantics that require Git when checkout selectors are cleared.
+pub(super) const GIT_INHERITED_READ_ENVIRONMENT: [&str; 20] = [
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_ALLOC_LIMIT",
+    "GIT_NOTES_REF",
+    "GIT_NOTES_DISPLAY_REF",
+    "GIT_CONFIG",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_NAMESPACE",
+    "GIT_SHALLOW_FILE",
+    "GIT_LITERAL_PATHSPECS",
+    "GIT_GLOB_PATHSPECS",
+    "GIT_NOGLOB_PATHSPECS",
+    "GIT_ICASE_PATHSPECS",
+    "GIT_ATTR_NOSYSTEM",
+    "GIT_ATTR_SOURCE",
+    "GIT_EXTERNAL_DIFF",
+];
+
+/// Locale selector used for machine-readable diagnostics.
+pub(super) const GIT_LOCALE_ENVIRONMENT: &str = "LC_ALL";
 
 /// Hook-local repository selectors must not redirect Git away from its requested checkout.
 pub(super) const GIT_REPOSITORY_ENVIRONMENT: [&str; 5] = [
@@ -12,6 +55,8 @@ pub(super) const GIT_REPOSITORY_ENVIRONMENT: [&str; 5] = [
     "GIT_PREFIX",
 ];
 
+include!("constants/child.rs");
+
 // Configuration spellings: `GIT_BRANCH_CONFIGURATION_SECTION` through `GIT_SPLIT_INDEX_KEY`.
 /// Configuration section for branch tracking rules.
 pub(super) const GIT_BRANCH_CONFIGURATION_SECTION: &str = "branch";
@@ -21,8 +66,7 @@ pub(super) const GIT_BRANCH_MERGE_KEY: &str = "merge";
 pub(super) const GIT_BRANCH_REMOTE_KEY: &str = "remote";
 /// Explicit disabled configuration value.
 pub(super) const GIT_CONFIG_FALSE_VALUE: &str = "false";
-/// Shell-encoded inherited command configuration.
-pub(super) const GIT_CONFIG_PARAMETERS_ENVIRONMENT: &str = "GIT_CONFIG_PARAMETERS";
+
 /// Numeric disabled configuration value.
 pub(super) const GIT_CONFIG_ZERO_VALUE: &str = "0";
 /// Filesystem monitor configuration.
@@ -234,16 +278,7 @@ pub(super) const LSOF_BINARY: &str = "/usr/sbin/lsof";
 /// Request process ids alone from lsof.
 #[cfg(not(target_os = "linux"))]
 pub(super) const LSOF_PROCESS_IDS_ARG: &str = "-t";
-/// Locale selector used for machine-readable diagnostics.
-pub(super) const GIT_LOCALE_ENVIRONMENT: &str = "LC_ALL";
-/// Stable English diagnostics.
-pub(super) const GIT_DIAGNOSTIC_LOCALE: &str = "C";
-/// Number of inherited configuration overlay entries.
-pub(super) const GIT_CONFIG_COUNT_ENVIRONMENT: &str = "GIT_CONFIG_COUNT";
-/// Prefix of an overlay configuration key variable.
-pub(super) const GIT_CONFIG_KEY_PREFIX: &str = "GIT_CONFIG_KEY_";
-/// Prefix of an overlay configuration value variable.
-pub(super) const GIT_CONFIG_VALUE_PREFIX: &str = "GIT_CONFIG_VALUE_";
+
 /// Configuration overlay for explicit private-ref writes.
 pub(super) const RETENTION_REF_CONFIG: &[(&str, &str)] = &[("core.hooksPath", "/dev/null")];
 /// Only deferrable maintenance yields immediately when another ref writer holds a lock.

@@ -12,11 +12,11 @@ use std::time::Instant;
 use tui_pane::Appearance;
 use tui_pane::PollWork;
 use tui_pane::Repaint;
-use tui_pane::Updates;
 use tui_pane::install_theme;
 use tui_pane::run_terminal;
 
 use crate::app::App;
+use crate::app::Updates;
 use crate::capture;
 use crate::census;
 use crate::census::CargoGroup;
@@ -25,11 +25,15 @@ use crate::census::CensusScope;
 use crate::census::ExcludedCommands;
 #[cfg(test)]
 use crate::census::cpu_observation::CpuScanPublication;
+use crate::census::invocation_cpu_accounting::CompileMemoryShares;
+use crate::census::scan::FreeDiskSpace;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
 use crate::constants::CAPTURE_ROOT;
 use crate::progress::capture_roots::AccountCaptureDirectory;
+use crate::render::SummaryDiskSpace;
 use crate::root_scan::SharedCaptureDirectory;
+use crate::roster::MemorySharesChange;
 use crate::sccache;
 use crate::sccache::SccacheServer;
 use crate::sccache::SccacheSummary;
@@ -49,8 +53,12 @@ pub(crate) struct Scan {
     pub(crate) cpu_scan_publication: CpuScanPublication,
     /// The commands running, newest first.
     pub(crate) groups:               Vec<CargoGroup>,
+    /// Compiler memory published beside the cargo rows.
+    pub(crate) memory_shares:        CompileMemoryShares,
     /// Whether a process named [`crate::constants::SCCACHE_BINARY`] was among them.
     pub(crate) sccache:              SccacheServer,
+    /// Available disk bytes read with this census.
+    pub(crate) free_disk_space:      FreeDiskSpace,
     /// Settings reads these observations without reopening any capture path.
     pub(crate) root_status:          Vec<AccountCaptureDirectory>,
     pub(crate) shared_directory:     SharedCaptureDirectory,
@@ -89,20 +97,24 @@ pub(crate) fn run() -> ExitCode {
         CensusCadence::default(),
         CensusScope::default(),
         GridMotion::Animated,
+        || {},
     )
 }
 
 /// The executable supplies the fixed parent, the production cadence and
 /// every cargo on the machine; PTY tests supply an isolated path, a shorter
 /// cadence and only their own processes.
+/// `before_first_scan` lets a test start the reader during fixture setup.
 pub(crate) fn run_with_capture_parent(
     parent: PathBuf,
     cadence: CensusCadence,
     scope: CensusScope,
     grid_motion: GridMotion,
+    before_first_scan: impl FnOnce(),
 ) -> ExitCode {
     run_with_scanner(
         move |excluded| {
+            before_first_scan();
             census::spawn_with_resolver(excluded, cadence, scope, move || {
                 crate::progress::capture_roots::CaptureRoots::from_parent(&parent)
             })
@@ -188,7 +200,10 @@ impl Workers {
 
 impl PollWork<App> for Workers {
     fn poll(&mut self, app: &mut App, now: Instant) -> Repaint {
+        #[cfg(feature = "attract")]
         let mut dirty = tui_pane::poll_favorites(app, now) == Repaint::Needed;
+        #[cfg(not(feature = "attract"))]
+        let mut dirty = false;
         dirty |= drain_appearances(app, &self.appearances);
         // Frozen, every one of these is skipped: what a scan found,
         // how far a fade has walked and where a travelling cell has
@@ -210,28 +225,29 @@ impl PollWork<App> for Workers {
             if drain_sccache(app, &self.sccache_replies) {
                 dirty = true;
             }
-            sccache::refresh_if_due(&mut app.sccache, &self.sccache_reads, Instant::now());
+            sccache::refresh_if_due(&mut app.sccache, &self.sccache_reads, now);
             // A finished row walks its grey toward the ground it is
             // drawn on for the configured spell and then goes, taking
             // its cell with it. Nothing external announces either the
             // steps or the moment, so the poll is what carries them.
             if app
                 .roster
-                .advance(Instant::now(), app.loaded_config.config.tiles.fade())
+                .advance(now, app.loaded_config.config.tiles.fade())
             {
                 dirty = true;
             }
-            // A grid in motion repaints every poll until it settles,
-            // which is the one thing here that draws without an event
-            // behind it.
+            // Advance motion even when two polls resolve to equal geometry.
+            // Only a change from the last body paint requests another frame.
+            dirty |= app.grid_view.advance(now) == Repaint::Needed;
+            self.grid_motion.settle_if_immediate(app);
             if app.tiles.tick() {
-                self.grid_motion.settle_if_immediate(app);
                 dirty = true;
             }
             // The attract screen is the other: it asks for frames on its
             // own cadence while it is on the screen, and for one more at
             // the end of the quiet it waits out before coming back. See
             // [`tui_pane::Attract::frame_due`].
+            #[cfg(feature = "attract")]
             if app.attract.frame_due() == Repaint::Needed {
                 dirty = true;
             }
@@ -284,13 +300,20 @@ fn drain_scans(app: &mut App, scans: &Receiver<Scan>) -> bool {
         return false;
     };
     app.sccache.observe_server(scan.sccache);
+    let memory_changed = app.roster.observe_memory_shares(scan.memory_shares);
+    let disk_changed =
+        SummaryDiskSpace::from(app.free_disk_space) != SummaryDiskSpace::from(scan.free_disk_space);
+    app.free_disk_space = scan.free_disk_space;
     let status_changed =
         app.root_status != scan.root_status || app.shared_directory != scan.shared_directory;
     app.shared_directory = scan.shared_directory;
     app.root_status = scan.root_status;
     #[cfg(test)]
     census::cpu_observation::accept(scan.cpu_scan_publication);
-    app.roster.observe(scan.groups, Instant::now()) || status_changed
+    app.roster.observe(scan.groups, Instant::now())
+        || status_changed
+        || disk_changed
+        || memory_changed == MemorySharesChange::Changed
 }
 
 /// Take whatever the sccache workers have replied, reporting whether the
@@ -318,11 +341,16 @@ mod tests {
     use crossterm::event::KeyModifiers;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    #[cfg(feature = "attract")]
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use tempfile::TempDir;
+    #[cfg(feature = "attract")]
+    use tui_pane::ColorMode;
+    #[cfg(feature = "attract")]
     use tui_pane::FavoritesFileState;
     use tui_pane::FrameworkOverlayId;
+    #[cfg(feature = "attract")]
     use tui_pane::SettingsApplicationOutcome;
     use tui_pane::TerminalApp;
     use tui_pane::dispatch_key;
@@ -339,7 +367,6 @@ mod tests {
     use crate::census::Measurement;
     use crate::census::ProcessOwner;
     use crate::census::RowProvenance;
-    use crate::census::RunStart;
     use crate::census::SelectedProof;
     use crate::census::VisibleParent;
     use crate::census::command_text::CommandText;
@@ -347,7 +374,9 @@ mod tests {
     use crate::census::invocation_cpu_accounting::MeasurementAbsence;
     use crate::census::process_identity::CaptureMembership;
     use crate::census::process_identity::ProcessIdentity;
+    use crate::census::scan::InvocationExecution;
     use crate::census::scan::InvocationResourceUse;
+    use crate::census::scan::OriginStart;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::TEST_INVOCATION_PID;
     use crate::constants::TEST_REPLACEMENT_LIFETIME;
@@ -364,6 +393,27 @@ mod tests {
     use crate::settings::AssociationSelection;
     use crate::settings::CaptureAssociation;
 
+    #[test]
+    fn idle_visual_tile_draws_an_appearance_change_without_a_scan() {
+        let mut app = App::new_for_test().expect("test app");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).expect("terminal");
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        for _ in 0..2 {
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("frame");
+            app.tiles.settle_for_test();
+        }
+        let mut workers = Workers::new(mpsc::channel().1, mpsc::channel().1, GridMotion::Animated);
+        let tint = tui_pane::focused_pane_tint_enabled();
+        tui_pane::set_focused_pane_tint(!tint);
+        let changed = workers.poll(&mut app, Instant::now());
+        tui_pane::set_focused_pane_tint(tint);
+        assert_eq!(changed, Repaint::Needed, "appearance needs a body frame");
+    }
+
+    #[cfg(feature = "attract")]
     const FAVORITE_ROW: &str = r#"
 [[favorite]]
 id = "01a03f60-9c14-7b41-8a02-1de4c7c9b332"
@@ -378,6 +428,7 @@ fraying = "leading"
 
     fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
 
+    #[cfg(feature = "attract")]
     fn rendered_buffer_lines(buffer: &Buffer) -> Vec<String> {
         (buffer.area.y..buffer.area.bottom())
             .map(|y| {
@@ -394,6 +445,8 @@ fraying = "leading"
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {
+                memory_shares:        CompileMemoryShares::default(),
+                free_disk_space:      FreeDiskSpace::Unavailable,
                 cpu_scan_publication: CpuScanPublication::Unobserved,
                 groups:               Vec::new(),
                 sccache:              SccacheServer::Stopped,
@@ -411,12 +464,14 @@ fraying = "leading"
             directory_identity: WorkingDirectoryIdentity::Absolute("/runner/project".into()),
             pid: 11,
             invocation_id,
+            execution: InvocationExecution::Command,
             capture_membership: CaptureMembership::Outside,
             provenance: RowProvenance::Uncaptured(ProcessOwner::Unavailable),
             parent: VisibleParent::None,
-            start: "10:00".to_owned(),
-            started: RunStart::Known(0),
-            duration: "00:01".to_owned(),
+            origin_start: OriginStart::Process {
+                epoch:   0,
+                elapsed: std::time::Duration::from_secs(1),
+            },
             resource_use: InvocationResourceUse {
                 cpu:      Measurement::Reading(0.0),
                 memory:   Measurement::Unavailable(MeasurementAbsence::Unproven),
@@ -432,6 +487,52 @@ fraying = "leading"
             nested: false,
             command: CommandText::of("cargo", &["test"]),
         }
+    }
+
+    #[test]
+    fn idle_visual_tile_skips_equal_polls_but_keeps_content_fades() {
+        let mut app = App::new_for_test().expect("test app");
+        let process = scan_process(
+            InvocationId::for_test(TEST_INVOCATION_PID),
+            CaptureLookup::Unregistered,
+        );
+        let now = Instant::now();
+        app.roster.observe(
+            vec![CargoGroup {
+                lead:     process,
+                rest:     Vec::new(),
+                ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
+            }],
+            now,
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        for _ in 0..2 {
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("body paint");
+            app.tiles.settle_for_test();
+        }
+        let mut workers = Workers::new(mpsc::channel().1, mpsc::channel().1, GridMotion::Animated);
+        let mut frames = 0;
+        for _ in 0..32 {
+            frames += usize::from(workers.poll(&mut app, now) == Repaint::Needed);
+        }
+        assert_eq!(frames, 0, "unchanged content and geometry skip frames");
+        app.roster.observe(Vec::new(), now);
+        let mut fades = 0;
+        let fade = app.loaded_config.config.tiles.fade();
+        for step in 1..=3 {
+            fades += usize::from(workers.poll(&mut app, now + fade * step / 4) == Repaint::Needed);
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("fade paint");
+            app.tiles.settle_for_test();
+        }
+        assert_eq!(
+            fades, 3,
+            "settled geometry must not suppress fading content"
+        );
     }
 
     /// PID reuse arrives through the channel as a new invocation and a second tile.
@@ -454,6 +555,8 @@ fraying = "leading"
         for process in [&first, &replacement] {
             sender
                 .send(Scan {
+                    memory_shares:        CompileMemoryShares::default(),
+                    free_disk_space:      FreeDiskSpace::Unavailable,
                     cpu_scan_publication: CpuScanPublication::Unobserved,
                     groups:               vec![CargoGroup {
                         lead:     process.clone(),
@@ -474,6 +577,37 @@ fraying = "leading"
             app.roster.tiled_ids(&[]),
             vec![first.invocation_id, replacement.invocation_id]
         );
+    }
+
+    #[test]
+    fn disk_scans_mark_changes_only_when_the_shown_value_changes() {
+        let mut app = App::new_for_test().expect("test app");
+        app.free_disk_space = FreeDiskSpace::Unavailable;
+        let (sender, scans) = mpsc::channel();
+        let gibibyte = 1_u64 << 30;
+
+        for (free_disk_space, changed) in [
+            (FreeDiskSpace::Available(gibibyte), true),
+            (FreeDiskSpace::Available(gibibyte + 1), false),
+            (FreeDiskSpace::Available(2 * gibibyte), true),
+            (FreeDiskSpace::Unavailable, true),
+            (FreeDiskSpace::Unavailable, false),
+        ] {
+            sender
+                .send(Scan {
+                    memory_shares: CompileMemoryShares::default(),
+                    free_disk_space,
+                    cpu_scan_publication: CpuScanPublication::Unobserved,
+                    groups: Vec::new(),
+                    sccache: SccacheServer::Stopped,
+                    root_status: app.root_status.clone(),
+                    shared_directory: app.shared_directory.clone(),
+                })
+                .expect("scan receiver is alive");
+
+            assert_eq!(drain_scans(&mut app, &scans), changed);
+            assert_eq!(app.free_disk_space, free_disk_space);
+        }
     }
 
     /// Availability changes must redraw and reach the roster without a stale value.
@@ -505,6 +639,8 @@ fraying = "leading"
         ] {
             sender
                 .send(Scan {
+                    memory_shares:        CompileMemoryShares::default(),
+                    free_disk_space:      FreeDiskSpace::Unavailable,
                     cpu_scan_publication: CpuScanPublication::Unobserved,
                     groups:               vec![CargoGroup {
                         lead:     process.clone(),
@@ -687,6 +823,8 @@ fraying = "leading"
         let (sender, scans) = mpsc::channel();
         sender
             .send(Scan {
+                memory_shares:        CompileMemoryShares::default(),
+                free_disk_space:      FreeDiskSpace::Unavailable,
                 cpu_scan_publication: CpuScanPublication::Unobserved,
                 groups:               vec![CargoGroup {
                     lead:     process.clone(),
@@ -713,6 +851,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn app_modal_consumes_app_and_framework_globals_until_escape() {
         let mut app = App::new_for_test().expect("test app should build");
         dispatch_key(
@@ -732,6 +871,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn coalesced_resize_refreshes_currency_after_attract_reclamping() {
         let mut app = App::new_for_test().expect("test app should build");
         let rows = tui_pane::parse_favorite_rows_for_test(FAVORITE_ROW)
@@ -756,14 +896,14 @@ fraying = "leading"
         let mut terminal =
             Terminal::new(TestBackend::new(100, 30)).expect("test terminal should be created");
         terminal
-            .draw(|frame| app.favorites_overlay.render(frame))
+            .draw(|frame| app.favorites_overlay.render(frame, ColorMode::Colored))
             .expect("favorites overlay should render");
         let initial_rows = rendered_buffer_lines(terminal.backend().buffer());
         assert!(initial_rows.iter().any(|line| line.contains("▸● ")));
 
         app.resized(Rect::new(0, 0, 5, 4));
         terminal
-            .draw(|frame| app.favorites_overlay.render(frame))
+            .draw(|frame| app.favorites_overlay.render(frame, ColorMode::Colored))
             .expect("favorites overlay should render before resize refresh");
         let before_refresh = rendered_buffer_lines(terminal.backend().buffer());
         assert!(before_refresh.iter().any(|line| line.contains("▸● ")));
@@ -771,7 +911,7 @@ fraying = "leading"
         app.resize_settled();
         assert_ne!(app.attract.current_settings(), favorite_settings);
         terminal
-            .draw(|frame| app.favorites_overlay.render(frame))
+            .draw(|frame| app.favorites_overlay.render(frame, ColorMode::Colored))
             .expect("favorites overlay should render after resize refresh");
         let refreshed_rows = rendered_buffer_lines(terminal.backend().buffer());
         assert!(refreshed_rows.iter().any(|line| line.contains("▸  ")));
@@ -798,6 +938,7 @@ fraying = "leading"
     }
 
     #[test]
+    #[cfg(feature = "attract")]
     fn framework_modal_prevents_a_second_app_modal_from_opening() {
         let mut app = App::new_for_test().expect("test app should build");
         dispatch_key(&mut app, key(KeyCode::Char('s')));

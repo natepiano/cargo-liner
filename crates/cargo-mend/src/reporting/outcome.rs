@@ -1,7 +1,9 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -56,6 +58,15 @@ pub(crate) struct ExecutionNotice {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NoticeKind {
+    FunctionLengthUnavailable {
+        cause: String,
+    },
+    FunctionRetained {
+        path:     PathBuf,
+        function: String,
+        lines:    usize,
+        limit:    usize,
+    },
     Fixes(FixNotice),
     PubUseFixes(PubUseNotice),
     /// Fixable `pub_use_outside_subtree` findings the pass left unedited. A
@@ -162,7 +173,9 @@ impl From<&NoticeKind> for NoticeEffect {
                 skipped_unsupported: 0,
             }) => Self::EmptyNoop,
             NoticeKind::PubUseFixes(PubUseNotice::NoneAvailable { .. })
-            | NoticeKind::SubtreeReexportSkipped(_) => Self::RetainedWithoutEdits,
+            | NoticeKind::SubtreeReexportSkipped(_)
+            | NoticeKind::FunctionRetained { .. }
+            | NoticeKind::FunctionLengthUnavailable { .. } => Self::RetainedWithoutEdits,
         }
     }
 }
@@ -192,7 +205,9 @@ pub(crate) enum MendFailure {
 
 #[derive(Debug)]
 pub(crate) enum CompilerFailureCause {
-    CargoCheck,
+    CargoCheck {
+        error_files: BTreeSet<PathBuf>,
+    },
     /// Automatic recovery could not supply compatible analysis for the selected
     /// units. An empty or partial report must never print as a clean crate.
     NoAnalysisProduced,
@@ -241,7 +256,7 @@ impl Display for MendFailure {
 impl Display for AnalysisFailure {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match &self.cause {
-            CompilerFailureCause::CargoCheck => {
+            CompilerFailureCause::CargoCheck { .. } => {
                 write!(
                     f,
                     "compiler failed while validating this crate\n\nmend: did not run due to compiler errors"
@@ -267,7 +282,7 @@ impl Display for FixValidationFailure {
             AppliedFixes::Compiler => "compiler",
         };
         let source = match &self.cause {
-            CompilerFailureCause::CargoCheck => {
+            CompilerFailureCause::CargoCheck { .. } => {
                 format!("compiler failed after applying {applied_fixes} fixes")
             },
             CompilerFailureCause::NoAnalysisProduced => {
@@ -332,7 +347,10 @@ impl ExecutionNotice {
                     NoticeKind::Fixes(notice) => {
                         (notice.fix_kind == fix_kind).then_some(&mut notice.outcome)
                     },
-                    NoticeKind::PubUseFixes(_) | NoticeKind::SubtreeReexportSkipped(_) => None,
+                    NoticeKind::PubUseFixes(_)
+                    | NoticeKind::SubtreeReexportSkipped(_)
+                    | NoticeKind::FunctionRetained { .. }
+                    | NoticeKind::FunctionLengthUnavailable { .. } => None,
                 });
                 if let Some(current) = current {
                     current.merge(outcome);
@@ -344,7 +362,10 @@ impl ExecutionNotice {
             NoticeKind::PubUseFixes(additional) => {
                 let current = self.kinds.iter_mut().find_map(|entry| match entry {
                     NoticeKind::PubUseFixes(notice) => Some(notice),
-                    NoticeKind::Fixes(_) | NoticeKind::SubtreeReexportSkipped(_) => None,
+                    NoticeKind::Fixes(_)
+                    | NoticeKind::SubtreeReexportSkipped(_)
+                    | NoticeKind::FunctionRetained { .. }
+                    | NoticeKind::FunctionLengthUnavailable { .. } => None,
                 });
                 if let Some(current) = current {
                     current.merge(additional);
@@ -355,13 +376,50 @@ impl ExecutionNotice {
             NoticeKind::SubtreeReexportSkipped(additional) => {
                 let current = self.kinds.iter_mut().find_map(|entry| match entry {
                     NoticeKind::SubtreeReexportSkipped(skipped) => Some(skipped),
-                    NoticeKind::Fixes(_) | NoticeKind::PubUseFixes(_) => None,
+                    NoticeKind::Fixes(_)
+                    | NoticeKind::PubUseFixes(_)
+                    | NoticeKind::FunctionRetained { .. }
+                    | NoticeKind::FunctionLengthUnavailable { .. } => None,
                 });
                 if let Some(current) = current {
                     *current = additional;
                 } else {
                     self.kinds
                         .push(NoticeKind::SubtreeReexportSkipped(additional));
+                }
+            },
+            NoticeKind::FunctionLengthUnavailable { cause } => {
+                let additional = NoticeKind::FunctionLengthUnavailable { cause };
+                if let Some(current) = self
+                    .kinds
+                    .iter_mut()
+                    .find(|entry| matches!(entry, NoticeKind::FunctionLengthUnavailable { .. }))
+                {
+                    *current = additional;
+                } else {
+                    self.kinds.push(additional);
+                }
+            },
+            NoticeKind::FunctionRetained {
+                path,
+                function,
+                lines,
+                limit,
+            } => {
+                let current = self.kinds.iter_mut().find(|entry| {
+                    matches!(entry, NoticeKind::FunctionRetained { path: existing_path, function: existing_function, .. }
+                        if *existing_path == path && *existing_function == function)
+                });
+                let retained = NoticeKind::FunctionRetained {
+                    path,
+                    function,
+                    lines,
+                    limit,
+                };
+                if let Some(current) = current {
+                    *current = retained;
+                } else {
+                    self.kinds.push(retained);
                 }
             },
         }
@@ -379,6 +437,18 @@ impl From<Vec<NoticeKind>> for ExecutionNotice {
 impl NoticeKind {
     fn render_part(&self) -> Option<String> {
         match self {
+            Self::FunctionLengthUnavailable { cause } => Some(format!(
+                "function length protection is unavailable: {cause}"
+            )),
+            Self::FunctionRetained {
+                path,
+                function,
+                lines,
+                limit,
+            } => Some(format!(
+                "kept {}::{function}: formatted edits would give {lines}/{limit} body lines; split the function",
+                path.display(),
+            )),
             Self::Fixes(fix_notice) => Some(fix_notice.render()),
             Self::PubUseFixes(pub_use_notice) => Some(pub_use_notice.render()),
             Self::SubtreeReexportSkipped(0) => None,
@@ -579,6 +649,8 @@ impl PubUseNotice {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use anyhow::anyhow;
 
     use super::AnalysisFailure;
@@ -739,7 +811,9 @@ mod tests {
     #[test]
     fn analysis_failure_message_uses_typed_collection_wording() {
         let analysis_failure = AnalysisFailure {
-            cause: CompilerFailureCause::CargoCheck,
+            cause: CompilerFailureCause::CargoCheck {
+                error_files: BTreeSet::new(),
+            },
         };
         assert_eq!(
             analysis_failure.to_string(),

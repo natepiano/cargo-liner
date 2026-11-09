@@ -44,6 +44,8 @@ pub(crate) enum FooterColor {
     BrightBlack,
     BrightRed,
     BrightGreen,
+    /// The Astra reviewer keeps its statusline color and uses its own theme shade.
+    AstraReviewerGreen,
     BrightYellow,
     BrightBlue,
     BrightMagenta,
@@ -52,8 +54,130 @@ pub(crate) enum FooterColor {
     Orange,
     Purple,
     Pink,
+    Mauve,
     Teal,
     Brown,
+}
+
+/// D65 CIELAB coordinates for CIEDE2000 distance measurements.
+struct PerceptualColor {
+    lightness:   f64,
+    red_green:   f64,
+    yellow_blue: f64,
+}
+
+impl From<Color> for PerceptualColor {
+    fn from(color: Color) -> Self {
+        let (red, green, blue) = rgb(color);
+        let linear = |channel: u8| {
+            let value = f64::from(channel) / 255.0;
+            if value <= SRGB_LINEAR_THRESHOLD {
+                value / SRGB_LINEAR_DIVISOR
+            } else {
+                ((value + SRGB_ENCODED_OFFSET) / SRGB_ENCODED_SCALE).powf(SRGB_POWER)
+            }
+        };
+        let (red, green, blue) = (linear(red), linear(green), linear(blue));
+        // The sRGB-to-XYZ matrix and D65 reference white define this conversion.
+        let x = 0.180_437_5_f64.mul_add(blue, 0.357_576_1_f64.mul_add(green, 0.412_456_4 * red))
+            / 0.95047;
+        let y = 0.072_175_0_f64.mul_add(blue, 0.715_152_2_f64.mul_add(green, 0.212_672_9 * red));
+        let z = 0.950_304_1_f64.mul_add(blue, 0.119_192_0_f64.mul_add(green, 0.019_333_9 * red))
+            / 1.08883;
+        let transform = |value: f64| {
+            let delta = 6.0_f64 / 29.0;
+            if value > delta.powi(3) {
+                value.cbrt()
+            } else {
+                value / (3.0 * delta.powi(2)) + 4.0 / 29.0
+            }
+        };
+        Self {
+            lightness:   116.0f64.mul_add(transform(y), -16.0),
+            red_green:   500.0 * (transform(x) - transform(y)),
+            yellow_blue: 200.0 * (transform(y) - transform(z)),
+        }
+    }
+}
+
+impl PerceptualColor {
+    /// CIEDE2000 with unit lightness, chroma and hue weighting factors.
+    fn distance(&self, other: &Self) -> f64 {
+        let mean_chroma = f64::midpoint(
+            self.red_green.hypot(self.yellow_blue),
+            other.red_green.hypot(other.yellow_blue),
+        );
+        let chroma_weight =
+            |chroma: f64| (chroma.powi(7) / (chroma.powi(7) + 25.0_f64.powi(7))).sqrt();
+        let adjustment = (1.0 - chroma_weight(mean_chroma)) / 2.0;
+        let first_red = (1.0 + adjustment) * self.red_green;
+        let second_red = (1.0 + adjustment) * other.red_green;
+        let first_chroma = first_red.hypot(self.yellow_blue);
+        let second_chroma = second_red.hypot(other.yellow_blue);
+        let hue = |red: f64, yellow: f64| yellow.atan2(red).to_degrees().rem_euclid(360.0);
+        let first_hue = hue(first_red, self.yellow_blue);
+        let second_hue = hue(second_red, other.yellow_blue);
+        let hue_delta = if first_chroma * second_chroma == 0.0 {
+            0.0
+        } else if (second_hue - first_hue).abs() <= 180.0 {
+            second_hue - first_hue
+        } else if second_hue <= first_hue {
+            second_hue - first_hue + 360.0
+        } else {
+            second_hue - first_hue - 360.0
+        };
+        let mean_hue = if first_chroma * second_chroma == 0.0 {
+            first_hue + second_hue
+        } else if (first_hue - second_hue).abs() <= 180.0 {
+            f64::midpoint(first_hue, second_hue)
+        } else if first_hue + second_hue < 360.0 {
+            (first_hue + second_hue + 360.0) / 2.0
+        } else {
+            (first_hue + second_hue - 360.0) / 2.0
+        };
+        let cosine = |degrees: f64| degrees.to_radians().cos();
+        let mean_lightness = f64::midpoint(self.lightness, other.lightness);
+        let mean_chroma = f64::midpoint(first_chroma, second_chroma);
+        let hue_scale = 0.20f64.mul_add(
+            -cosine(4.0f64.mul_add(mean_hue, -63.0)),
+            0.32f64.mul_add(
+                cosine(3.0f64.mul_add(mean_hue, 6.0)),
+                0.24f64.mul_add(
+                    cosine(2.0 * mean_hue),
+                    0.17f64.mul_add(-cosine(mean_hue - 30.0), 1.0),
+                ),
+            ),
+        );
+        let lightness_delta = (other.lightness - self.lightness)
+            / (1.0
+                + 0.015 * (mean_lightness - 50.0).powi(2)
+                    / (mean_lightness - 50.0)
+                        .mul_add(mean_lightness - 50.0, 20.0)
+                        .sqrt());
+        let chroma_delta = (second_chroma - first_chroma) / 0.045f64.mul_add(mean_chroma, 1.0);
+        let hue_delta =
+            2.0 * (first_chroma * second_chroma).sqrt() * (hue_delta / 2.0).to_radians().sin()
+                / (0.015 * mean_chroma).mul_add(hue_scale, 1.0);
+        let rotation = -2.0
+            * chroma_weight(mean_chroma)
+            * (60.0 * (-((mean_hue - 275.0) / 25.0).powi(2)).exp())
+                .to_radians()
+                .sin();
+        (rotation * chroma_delta)
+            .mul_add(
+                hue_delta,
+                hue_delta.mul_add(
+                    hue_delta,
+                    chroma_delta.mul_add(chroma_delta, lightness_delta.powi(2)),
+                ),
+            )
+            .sqrt()
+    }
+}
+
+/// Measure the CIEDE2000 distance between two terminal colors.
+pub(crate) fn perceptual_distance(first: Color, second: Color) -> f64 {
+    PerceptualColor::from(first).distance(&PerceptualColor::from(second))
 }
 
 /// A name outside the footer's color table.
@@ -94,6 +218,7 @@ impl FromStr for FooterColor {
             "orange" => Self::Orange,
             "purple" => Self::Purple,
             "pink" => Self::Pink,
+            "mauve" => Self::Mauve,
             "teal" => Self::Teal,
             "brown" => Self::Brown,
             _ => return Err(UnknownFooterColor),
@@ -114,7 +239,7 @@ impl From<FooterColor> for Color {
             FooterColor::White => Self::Gray,
             FooterColor::BrightBlack => Self::DarkGray,
             FooterColor::BrightRed => Self::LightRed,
-            FooterColor::BrightGreen => Self::LightGreen,
+            FooterColor::BrightGreen | FooterColor::AstraReviewerGreen => Self::LightGreen,
             FooterColor::BrightYellow => Self::LightYellow,
             FooterColor::BrightBlue => Self::LightBlue,
             FooterColor::BrightMagenta => Self::LightMagenta,
@@ -123,6 +248,7 @@ impl From<FooterColor> for Color {
             FooterColor::Orange => Self::Indexed(208),
             FooterColor::Purple => Self::Indexed(141),
             FooterColor::Pink => Self::Indexed(211),
+            FooterColor::Mauve => Self::Indexed(139),
             FooterColor::Teal => Self::Indexed(30),
             FooterColor::Brown => Self::Indexed(137),
         }
@@ -134,6 +260,8 @@ impl From<FooterColor> for Color {
 pub(crate) enum FooterRole {
     Showrunner,
     UnitDirector,
+    AstraDesigner,
+    AstraReviewer,
 }
 
 /// Whether the footer supplies a foreground or leaves the theme's style intact.
@@ -240,7 +368,7 @@ impl ReadablePalette {
 }
 
 impl FooterColor {
-    const ALL: [Self; 21] = [
+    const ALL: [Self; 23] = [
         Self::Black,
         Self::Red,
         Self::Green,
@@ -252,6 +380,7 @@ impl FooterColor {
         Self::BrightBlack,
         Self::BrightRed,
         Self::BrightGreen,
+        Self::AstraReviewerGreen,
         Self::BrightYellow,
         Self::BrightBlue,
         Self::BrightMagenta,
@@ -260,6 +389,7 @@ impl FooterColor {
         Self::Orange,
         Self::Purple,
         Self::Pink,
+        Self::Mauve,
         Self::Teal,
         Self::Brown,
     ];
@@ -274,7 +404,7 @@ fn resolved_management(color: FooterColor) -> ReadableInk {
 }
 
 /// Read named channels through `tui_pane`'s xterm approximation.
-fn rgb(color: Color) -> (u8, u8, u8) {
+pub(crate) fn rgb(color: Color) -> (u8, u8, u8) {
     match tui_pane::blend_color(color, Color::Black, 0) {
         Color::Rgb(red, green, blue) => (red, green, blue),
         _ => (0, 0, 0),
@@ -347,6 +477,13 @@ impl InkPurpose {
                 constants::ACCOUNT_BLUE_SEED
             },
             (Self::Account, FooterColor::Teal) => constants::ACCOUNT_TEAL_SEED,
+            (Self::Management, FooterColor::AstraReviewerGreen) => tui_pane::role_color(
+                "astra_reviewer",
+                tui_pane::StyleSpec::from_color(color.into()),
+            ),
+            (Self::Management, FooterColor::Mauve) => {
+                tui_pane::role_color("mauve", tui_pane::StyleSpec::from_color(color.into()))
+            },
             (Self::Account | Self::Management, _) => color.into(),
         }
     }
@@ -370,31 +507,34 @@ impl InkCoverage {
             Self::Opaque => grounds.contrast(ink),
             Self::Antialiased => [grounds.base, grounds.unfocused, grounds.focused]
                 .into_iter()
-                .map(|ground| {
-                    let (red, green, blue) = rgb(ink);
-                    let (ground_red, ground_green, ground_blue) = rgb(ground);
-                    let coverage = f64::from(ANTIALIASED_GLYPH_COVERAGE) / 255.0;
-                    let covered = [
-                        (red, ground_red),
-                        (green, ground_green),
-                        (blue, ground_blue),
-                    ]
-                    .map(|(ink, ground)| {
-                        f64::mul_add(f64::from(ground), 1.0 - coverage, f64::from(ink) * coverage)
-                    });
-                    let ground = luminance(ground);
-                    [covered, covered.map(f64::round)]
-                        .into_iter()
-                        .map(|covered| {
-                            let ink = channel_luminance(covered);
-                            (ink.max(ground) + CONTRAST_LUMINANCE_OFFSET)
-                                / (ink.min(ground) + CONTRAST_LUMINANCE_OFFSET)
-                        })
-                        .fold(f64::INFINITY, f64::min)
-                })
+                .map(|ground| antialiased_contrast(ink, ground))
                 .fold(f64::INFINITY, f64::min),
         }
     }
+}
+
+/// Measure fractional and byte-rounded glyph stems with `InkCoverage::Antialiased` coverage.
+pub(crate) fn antialiased_contrast(ink: Color, ground: Color) -> f64 {
+    let (red, green, blue) = rgb(ink);
+    let (ground_red, ground_green, ground_blue) = rgb(ground);
+    let coverage = f64::from(ANTIALIASED_GLYPH_COVERAGE) / 255.0;
+    let covered = [
+        (red, ground_red),
+        (green, ground_green),
+        (blue, ground_blue),
+    ]
+    .map(|(ink, ground)| {
+        f64::mul_add(f64::from(ground), 1.0 - coverage, f64::from(ink) * coverage)
+    });
+    let ground = luminance(ground);
+    [covered, covered.map(f64::round)]
+        .into_iter()
+        .map(|covered| {
+            let ink = channel_luminance(covered);
+            (ink.max(ground) + CONTRAST_LUMINANCE_OFFSET)
+                / (ink.min(ground) + CONTRAST_LUMINANCE_OFFSET)
+        })
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Status foregrounds share the footer's contrast policy and palette lifetime.
@@ -801,6 +941,8 @@ impl FooterColors {
             let role = match key.trim() {
                 "role.showrunner" => FooterRole::Showrunner,
                 "role.unit-director" => FooterRole::UnitDirector,
+                "role.astra-designer" => FooterRole::AstraDesigner,
+                "role.astra-reviewer" => FooterRole::AstraReviewer,
                 key => {
                     if let Some(account) = key.strip_prefix(ACCOUNT_KEY_PREFIX) {
                         match color {
@@ -817,6 +959,12 @@ impl FooterColors {
             };
             match color {
                 Ok(color) => {
+                    let color = match (role, color) {
+                        (FooterRole::AstraReviewer, FooterColor::BrightGreen) => {
+                            FooterColor::AstraReviewerGreen
+                        },
+                        (_, color) => color,
+                    };
                     colors.roles.insert(role, color);
                 },
                 Err(_) => {
@@ -835,24 +983,19 @@ impl FooterColors {
             .map_or(FooterTint::Plain, FooterTint::Management)
     }
 
-    /// A specialist can name the same management responsibilities as a session.
-    pub(crate) fn named_role(&self, word: &str) -> FooterTint {
-        match word {
-            "showrunner" => self.role(FooterRole::Showrunner),
-            "unit-director" | "unit" => self.role(FooterRole::UnitDirector),
-            _ => FooterTint::Plain,
-        }
-    }
-
     /// Management responsibilities use configured ink; worker roles remain plain.
     pub(crate) fn hierarchy_role(&self, role: HierarchyRole) -> FooterTint {
         match role {
             HierarchyRole::Showrunner => self.role(FooterRole::Showrunner),
             HierarchyRole::Unit => self.role(FooterRole::UnitDirector),
+            HierarchyRole::AstraDesigner => self.role(FooterRole::AstraDesigner),
+            HierarchyRole::AstraReviewer => self.role(FooterRole::AstraReviewer),
             HierarchyRole::Impl
             | HierarchyRole::Test
             | HierarchyRole::Review
-            | HierarchyRole::Fix => FooterTint::Plain,
+            | HierarchyRole::Fix
+            | HierarchyRole::Worker
+            | HierarchyRole::Agent => FooterTint::Plain,
         }
     }
 

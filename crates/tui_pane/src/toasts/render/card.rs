@@ -16,12 +16,15 @@ use unicode_width::UnicodeWidthStr;
 use super::fallback_toast_palette;
 use super::format;
 use crate::ACTIVITY_SPINNER;
-use crate::constants::ELISION;
+use crate::ToastPlacement;
+use crate::ToastSettings;
+use crate::ViewportOverflow;
 use crate::constants::TOAST_BODY_HORIZONTAL_PADDING;
 use crate::constants::TOAST_ROW_GAP;
 use crate::constants::TOAST_SIDE_GAP;
 use crate::inactive_border_color;
 use crate::inactive_title_color;
+use crate::render_overflow_affordance;
 use crate::title_color;
 use crate::toasts::ToastCountdownState;
 use crate::toasts::ToastFocus;
@@ -32,6 +35,7 @@ use crate::toasts::TrackedItemActivity;
 use crate::toasts::TrackedItemElapsed;
 use crate::toasts::TrackedItemLifecycle;
 use crate::toasts::TrackedItemView;
+use crate::toasts::manager;
 use crate::wrap;
 
 pub(super) fn render_toast(
@@ -40,6 +44,7 @@ pub(super) fn render_toast(
     card: Rect,
     toast: &ToastView,
     focus: ToastFocus,
+    page_height: u16,
 ) -> Rect {
     let palette = fallback_toast_palette();
     let card = card.intersection(area);
@@ -86,14 +91,17 @@ pub(super) fn render_toast(
 
     let close_text = "[x]";
     let close_width = u16::try_from(close_text.len()).unwrap_or(u16::MAX);
-    let title_max = usize::from(card.width.saturating_sub(close_width + 4));
-    let raw_title = match toast_style {
-        ToastStyle::Error => format!("x {}", toast.title()),
-        ToastStyle::Warning => format!("! {}", toast.title()),
-        ToastStyle::Success => format!("\u{2713} {}", toast.title()),
-        ToastStyle::Normal => toast.title().to_owned(),
+    let raw_title = toast_title(toast);
+    let title_max = usize::from(card.width.saturating_sub(close_width + 5));
+    // Use the last border cell before the corner when it keeps the title whole.
+    let title_uses_border_cell = raw_title.width() == title_max.saturating_add(1);
+    let close_padding = u16::from(!title_uses_border_cell);
+    let title_max = title_max.saturating_add(usize::from(title_uses_border_cell));
+    let title = if raw_title.width() > title_max && title_max > 0 {
+        format!("{}…", format::truncate(&raw_title, title_max - 1))
+    } else {
+        format::truncate(&raw_title, title_max)
     };
-    let title = format::truncate(&raw_title, title_max);
 
     let block = Block::default()
         .title(Span::styled(format!(" {title} "), text_style))
@@ -103,16 +111,14 @@ pub(super) fn render_toast(
     frame.render_widget(block, card);
 
     let close_rect = Rect {
-        x:      card.x + card.width.saturating_sub(close_width + 2),
+        x:      card.x + card.width.saturating_sub(close_width + 1 + close_padding),
         y:      card.y,
-        width:  close_width + 1,
+        width:  close_width + close_padding,
         height: 1,
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(close_text, text_style))),
-        close_rect,
-    );
+    render_close_button(frame, close_rect, text_style);
 
+    let mut page_area = card;
     if let ToastCountdownState::CountingDown {
         remaining_secs: secs,
     } = toast.countdown()
@@ -125,6 +131,7 @@ pub(super) fn render_toast(
             width:  countdown_width,
             height: 1,
         };
+        page_area.width = countdown_rect.x.saturating_sub(card.x).saturating_add(1);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 countdown,
@@ -136,19 +143,94 @@ pub(super) fn render_toast(
 
     if inner.height > 0 {
         let alloc_interior = card.height.saturating_sub(2);
-        render_toast_body(
+        let overflow = render_toast_body(
             frame,
             toast,
             body_style,
             toast_body_area(inner),
             alloc_interior,
+            page_height.saturating_sub(2),
         );
+        render_overflow_affordance(frame, page_area, overflow, border_style);
     }
 
     close_rect
 }
 
-/// Clear the card and its gaps, then close the frame columns beside them.
+fn toast_title(toast: &ToastView) -> String {
+    match toast.style() {
+        ToastStyle::Error => format!("x {}", toast.title()),
+        ToastStyle::Warning => format!("! {}", toast.title()),
+        ToastStyle::Success => format!("\u{2713} {}", toast.title()),
+        ToastStyle::Normal => toast.title().to_owned(),
+    }
+}
+
+pub(super) fn title_card_width(toast: &ToastView) -> u16 {
+    u16::try_from(toast_title(toast).width().saturating_add(8)).unwrap_or(u16::MAX)
+}
+
+/// Draw the close button with one blank cell before it.
+fn render_close_button(frame: &mut Frame, close_rect: Rect, style: Style) {
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(" [x]", style))),
+        Rect {
+            x: close_rect.x.saturating_sub(1),
+            width: close_rect.width.saturating_add(1),
+            ..close_rect
+        },
+    );
+}
+
+/// Keep the stack in its corner region between the drawn pane borders.
+pub(super) fn area_between_pane_borders(
+    frame: &mut Frame,
+    area: Rect,
+    settings: &ToastSettings,
+    required_height: u16,
+) -> Rect {
+    let area = area.intersection(frame.area());
+    if area.is_empty() {
+        return area;
+    }
+    let width = manager::toast_card_width(settings, area.width);
+    let left = area
+        .right()
+        .saturating_sub(width)
+        .saturating_sub(TOAST_SIDE_GAP.saturating_mul(2))
+        .max(area.left());
+    let mut selected = Rect::new(area.x, area.y, area.width, 0);
+    let mut start = area.top();
+    for row in area.top()..=area.bottom() {
+        let border = row == area.bottom()
+            || (left..area.right())
+                .any(|x| is_horizontal_frame(frame.buffer_mut()[(x, row)].symbol()));
+        if !border {
+            continue;
+        }
+        let candidate = Rect::new(area.x, start, area.width, row.saturating_sub(start));
+        if !candidate.is_empty() {
+            selected = candidate;
+            if settings.placement == ToastPlacement::TopRight {
+                break;
+            }
+        }
+        start = row.saturating_add(1);
+    }
+    let occupied_height = required_height.min(selected.height);
+    let mut occupied = match settings.placement {
+        ToastPlacement::TopRight => selected.top()..selected.top().saturating_add(occupied_height),
+        ToastPlacement::BottomRight => {
+            selected.bottom().saturating_sub(occupied_height)..selected.bottom()
+        },
+    };
+    if occupied.any(|y| is_vertical_frame(frame.buffer_mut()[(selected.right() - 1, y)].symbol())) {
+        selected.width = selected.width.saturating_sub(TOAST_SIDE_GAP);
+    }
+    selected
+}
+
+/// Clear the card and plain gap cells. Keep pane borders and whole title rows in the gaps.
 fn clear_toast_surroundings(frame: &mut Frame, area: Rect, card: Rect) {
     let clear_left = card.x.saturating_sub(TOAST_SIDE_GAP).max(area.x);
     let clear_right = card
@@ -160,16 +242,93 @@ fn clear_toast_surroundings(frame: &mut Frame, area: Rect, card: Rect) {
         .bottom()
         .saturating_add(TOAST_ROW_GAP)
         .min(area.bottom());
-    frame.render_widget(
-        Clear,
-        Rect {
-            x:      clear_left,
-            y:      clear_top,
-            width:  clear_right.saturating_sub(clear_left),
-            height: clear_bottom.saturating_sub(clear_top),
-        },
+    let gaps = Rect::new(
+        clear_left,
+        clear_top,
+        clear_right.saturating_sub(clear_left),
+        clear_bottom.saturating_sub(clear_top),
     );
+    for y in gaps.top()..gaps.bottom() {
+        let frame_row = (gaps.left()..gaps.right())
+            .any(|x| is_horizontal_frame(frame.buffer_mut()[(x, y)].symbol()));
+        if frame_row {
+            continue;
+        }
+        for x in gaps.left()..gaps.right() {
+            if !card.contains((x, y).into())
+                && !is_vertical_frame(frame.buffer_mut()[(x, y)].symbol())
+            {
+                frame.buffer_mut()[(x, y)].reset();
+            }
+        }
+    }
+    frame.render_widget(Clear, card);
+    clear_covered_border_fragments(frame, gaps, card);
     join_adjacent_frame_columns(frame, area, card);
+}
+
+fn is_horizontal_frame(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "─" | "━"
+            | "═"
+            | "┌"
+            | "┐"
+            | "└"
+            | "┘"
+            | "╭"
+            | "╮"
+            | "╰"
+            | "╯"
+            | "┏"
+            | "┓"
+            | "┗"
+            | "┛"
+            | "╔"
+            | "╗"
+            | "╚"
+            | "╝"
+            | "├"
+            | "┤"
+            | "┬"
+            | "┴"
+            | "┼"
+            | "┣"
+            | "┫"
+            | "┳"
+            | "┻"
+            | "╋"
+            | "╠"
+            | "╣"
+            | "╦"
+            | "╩"
+            | "╬"
+    )
+}
+
+fn is_vertical_frame(symbol: &str) -> bool { matches!(symbol, "│" | "┃" | "║") }
+
+/// Remove a lone border cell only where the card covers its neighbour.
+fn clear_covered_border_fragments(frame: &mut Frame, gaps: Rect, card: Rect) {
+    let bounds = frame.area();
+    for y in gaps.top()..gaps.bottom() {
+        for x in gaps.left()..gaps.right() {
+            if !is_vertical_frame(frame.buffer_mut()[(x, y)].symbol()) {
+                continue;
+            }
+            let neighbors = y.saturating_sub(1)..=y.saturating_add(1);
+            let covered = neighbors.clone().any(|row| card.contains((x, row).into()));
+            let connected = neighbors.filter(|row| *row != y).any(|row| {
+                bounds.contains((x, row).into()) && {
+                    let symbol = frame.buffer_mut()[(x, row)].symbol();
+                    is_vertical_frame(symbol) || is_horizontal_frame(symbol)
+                }
+            });
+            if covered && !connected {
+                frame.buffer_mut()[(x, y)].reset();
+            }
+        }
+    }
 }
 
 /// Remove divider stubs that point into a toast's cleared side gaps.
@@ -205,13 +364,19 @@ const fn toast_body_area(inner: Rect) -> Rect {
     }
 }
 
+pub(super) struct ToastBodyRows {
+    pub(super) lines: Vec<Line<'static>>,
+    overflow:         ViewportOverflow,
+}
+
 fn render_toast_body(
     frame: &mut Frame,
     toast_view: &ToastView,
     body_style: Style,
     body_area: Rect,
     alloc_interior: u16,
-) {
+    page_interior: u16,
+) -> ViewportOverflow {
     let palette = fallback_toast_palette();
     let alloc_body = usize::from(alloc_interior);
     let has_action = toast_view.has_action() && alloc_body >= 2;
@@ -220,17 +385,23 @@ fn render_toast_body(
     } else {
         alloc_body
     };
-    let (lines, body_was_cut) = if toast_view.tracked_items().is_empty() {
-        body_lines_plain(toast_view, body_style, lines_for_body, body_area.width)
+    let page_rows = usize::from(page_interior)
+        .saturating_sub(usize::from(toast_view.has_action() && page_interior >= 2));
+    let body = if toast_view.tracked_items().is_empty() {
+        body_lines_plain(
+            toast_view,
+            body_style,
+            lines_for_body,
+            body_area.width,
+            page_rows,
+        )
     } else {
-        (
-            body_lines_tracked(
-                toast_view.tracked_items(),
-                body_style,
-                lines_for_body,
-                usize::from(body_area.width),
-            ),
-            false,
+        body_lines_tracked(
+            toast_view.tracked_items(),
+            body_style,
+            lines_for_body,
+            usize::from(body_area.width),
+            page_rows,
         )
     };
 
@@ -239,7 +410,7 @@ fn render_toast_body(
             height: body_area.height.saturating_sub(1),
             ..body_area
         };
-        frame.render_widget(Paragraph::new(lines).style(body_style), text_area);
+        frame.render_widget(Paragraph::new(body.lines).style(body_style), text_area);
         let hint_area = Rect {
             y: body_area.y + body_area.height.saturating_sub(1),
             height: 1,
@@ -255,37 +426,9 @@ fn render_toast_body(
             hint_area,
         );
     } else {
-        frame.render_widget(Paragraph::new(lines).style(body_style), body_area);
+        frame.render_widget(Paragraph::new(body.lines).style(body_style), body_area);
     }
-    if body_was_cut {
-        render_body_elision(frame, toast_view, body_style, body_area, lines_for_body);
-    }
-}
-
-fn render_body_elision(
-    frame: &mut Frame,
-    toast_view: &ToastView,
-    body_style: Style,
-    body_area: Rect,
-    lines_for_body: usize,
-) {
-    if lines_for_body == 0 || body_area.width == 0 {
-        return;
-    }
-    let row = u16::try_from(lines_for_body.saturating_sub(1)).unwrap_or(u16::MAX);
-    let style = match toast_view.linger() {
-        ToastLingerState::Live => body_style,
-        ToastLingerState::Lingering { progress } => format::fade_to_style(f64::from(progress)),
-    };
-    frame.render_widget(
-        Paragraph::new(ELISION).style(style),
-        Rect {
-            x:      body_area.right().saturating_sub(1),
-            y:      body_area.y.saturating_add(row),
-            width:  1,
-            height: 1,
-        },
-    );
+    body.overflow
 }
 
 fn body_lines_plain(
@@ -293,7 +436,8 @@ fn body_lines_plain(
     body_style: Style,
     lines_for_body: usize,
     width: u16,
-) -> (Vec<Line<'static>>, bool) {
+    page_rows: usize,
+) -> ToastBodyRows {
     let mut lines = match toast.linger() {
         ToastLingerState::Live => toast.render_body.wrapped_lines(width, body_style),
         ToastLingerState::Lingering { progress } => toast
@@ -308,9 +452,9 @@ fn body_lines_plain(
             })
             .collect(),
     };
-    let body_was_cut = lines.len() > lines_for_body;
+    let overflow = ViewportOverflow::new(lines.len(), 0, page_rows, 0);
     lines.truncate(lines_for_body);
-    (lines, body_was_cut)
+    ToastBodyRows { lines, overflow }
 }
 
 pub(super) fn body_lines_tracked(
@@ -318,31 +462,36 @@ pub(super) fn body_lines_tracked(
     body_style: Style,
     lines_for_body: usize,
     line_width: usize,
-) -> Vec<Line<'static>> {
+    page_rows: usize,
+) -> ToastBodyRows {
     let total_items = tracked_item_views.len();
-    let needs_truncation = total_items > lines_for_body;
-    let (visible_items, overflow_line) = if needs_truncation && lines_for_body >= 1 {
-        let show = lines_for_body.saturating_sub(1);
-        let remaining = total_items.saturating_sub(show);
-        (
-            &tracked_item_views[..show],
-            Some(format!("(+{remaining} more)")),
-        )
-    } else {
-        (tracked_item_views, None)
+    let visible_count = |rows: usize| {
+        if total_items > rows {
+            rows.saturating_sub(1)
+        } else {
+            total_items
+        }
     };
+    let visible = visible_count(lines_for_body);
+    let visible_items = &tracked_item_views[..visible];
 
     let mut result = visible_items
         .iter()
         .map(|tracked_item_view| tracked_item_line(tracked_item_view, body_style, line_width))
         .collect::<Vec<_>>();
-    if let Some(overflow) = overflow_line {
+    if visible < total_items && lines_for_body > 0 {
         let overflow_style = Style::default()
             .fg(fallback_toast_palette().label)
             .add_modifier(Modifier::ITALIC);
-        result.push(Line::from(Span::styled(overflow, overflow_style)));
+        result.push(Line::from(Span::styled(
+            format!("(+{} more)", total_items - visible),
+            overflow_style,
+        )));
     }
-    result
+    ToastBodyRows {
+        lines:    result,
+        overflow: ViewportOverflow::new(total_items, 0, visible_count(page_rows).max(1), 0),
+    }
 }
 
 /// A running item's spinner takes the palette's error color while the item is
@@ -376,7 +525,10 @@ pub(super) fn tracked_item_line(
         TrackedItemLifecycle::CompletedFading { progress } => format::fade_to_style(progress),
     };
     let TrackedItemElapsed::Measured(elapsed) = tracked_item_view.elapsed else {
-        return Line::from(Span::styled(tracked_item_view.label.clone(), label_style));
+        return Line::from(Span::styled(
+            format::truncate_with_ellipsis(&tracked_item_view.label, line_width),
+            label_style,
+        ));
     };
 
     let spinner_text = match tracked_item_view.lifecycle {
@@ -388,6 +540,21 @@ pub(super) fn tracked_item_line(
     let duration_text = format::format_elapsed(elapsed);
     let duration_suffix = format!("{duration_text} ");
     let suffix_width = duration_suffix.len();
+    if tracked_item_view.label.width() + suffix_width + SPINNER_SLOT + 1 > line_width {
+        let label = format::truncate_with_ellipsis(&tracked_item_view.label, line_width);
+        let label_width = label.width();
+        let mut spans = vec![Span::styled(label, label_style)];
+        if label_width + SPINNER_SLOT < line_width {
+            spans.push(Span::raw(
+                " ".repeat(line_width - label_width - SPINNER_SLOT),
+            ));
+            spans.push(Span::styled(
+                spinner_text,
+                spinner_style(tracked_item_view.lifecycle, tracked_item_view.activity),
+            ));
+        }
+        return Line::from(spans);
+    }
     let label_budget = line_width.saturating_sub(suffix_width + SPINNER_SLOT + 1);
     let label = format::truncate_with_ellipsis(&tracked_item_view.label, label_budget);
     let used = label.width() + spinner_text.width() + suffix_width;
@@ -407,4 +574,110 @@ pub(super) fn tracked_item_line(
         ),
         Span::styled(duration_suffix, duration_style),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::time::Duration;
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    use super::render_toast;
+    use crate::ColorMode;
+    use crate::ToastActivation;
+    use crate::ToastId;
+    use crate::toasts::ToastBody;
+    use crate::toasts::ToastCountdownState;
+    use crate::toasts::ToastFocus;
+    use crate::toasts::ToastLingerState;
+    use crate::toasts::ToastStyle;
+    use crate::toasts::ToastView;
+    use crate::toasts::TrackedItemActivity;
+    use crate::toasts::TrackedItemElapsed;
+    use crate::toasts::TrackedItemLifecycle;
+    use crate::toasts::TrackedItemView;
+    use crate::toasts::view::ToastExitState;
+
+    fn toast() -> ToastView {
+        let body = "Metadata\nDisk\nLanguages\nGit\nTests\nLints".to_owned();
+        ToastView {
+            id: ToastId(1),
+            title: "Startup".to_owned(),
+            render_body: ToastBody::Text(body.clone()).into(),
+            body,
+            style: ToastStyle::Normal,
+            activation: ToastActivation::Informational,
+            linger: ToastLingerState::Live,
+            countdown: ToastCountdownState::NoCountdown,
+            tracked_items: Vec::new(),
+            min_height: 3,
+            desired_height: 8,
+            settled_height: 8,
+            exit_state: ToastExitState::Visible,
+        }
+    }
+
+    #[test]
+    fn hidden_rows_keep_the_countdown_and_action_hint_whole() -> Result<(), Box<dyn Error>> {
+        let mut toast = toast();
+        toast.activation = ToastActivation::Opens(());
+        toast.countdown = ToastCountdownState::CountingDown { remaining_secs: 12 };
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            let mut terminal = Terminal::new(TestBackend::new(40, 6))?;
+            terminal.draw(|frame| {
+                render_toast(
+                    frame,
+                    frame.area(),
+                    frame.area(),
+                    &toast,
+                    ToastFocus::PaneUnfocused,
+                    6,
+                );
+                mode.clear_colors(frame.buffer_mut());
+            })?;
+            let buffer = terminal.backend().buffer();
+            let row = |y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+            let bottom = row(5);
+            assert!(bottom.contains("1 of 2 ▼"), "{mode:?}: {bottom}");
+            assert!(bottom.contains(" Closing in 12 "), "{mode:?}: {bottom}");
+            assert!(row(4).contains("Enter open"));
+            assert!(row(3).contains("Languages"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_narrow_tracked_card_cuts_elapsed_detail_before_the_label() -> Result<(), Box<dyn Error>> {
+        let mut toast = toast();
+        toast.tracked_items = vec![TrackedItemView {
+            label:     "Cargo metadata".to_owned(),
+            lifecycle: TrackedItemLifecycle::Running,
+            elapsed:   TrackedItemElapsed::Measured(Duration::from_secs(123)),
+            activity:  TrackedItemActivity::Progressing,
+        }];
+        for (width, detail_fits) in [(20, false), (40, true)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 4))?;
+            terminal.draw(|frame| {
+                let card = Rect::new(0, 0, width, 4);
+                render_toast(
+                    frame,
+                    frame.area(),
+                    card,
+                    &toast,
+                    ToastFocus::PaneUnfocused,
+                    card.height,
+                );
+                ColorMode::Colored.clear_colors(frame.buffer_mut());
+            })?;
+            let buffer = terminal.backend().buffer();
+            let row: String = (1..width - 1).map(|x| buffer[(x, 1)].symbol()).collect();
+            assert!(row.contains("Cargo metadata"), "{row}");
+            assert!(!row.contains('…'), "{row}");
+            assert_eq!(row.contains("2m 03s"), detail_fits, "{row}");
+        }
+        Ok(())
+    }
 }

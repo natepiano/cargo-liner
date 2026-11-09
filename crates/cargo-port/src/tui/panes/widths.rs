@@ -19,6 +19,7 @@ use std::path::Path;
 use super::constants;
 use super::constants::DiskCell;
 use super::constants::PREFIX_ROOT_COLLAPSED;
+use super::constants::PROJECT_LIST_LEFT_PADDING;
 use super::constants::TreeRowDepth;
 use crate::project::CheckoutInfo;
 use crate::project::MemberGroup;
@@ -53,6 +54,10 @@ pub(in crate::tui) fn compute_project_list_widths(
     lint_column: LintColumnStatus,
     generation: u64,
 ) -> ProjectListWidths {
+    #[cfg(test)]
+    entries
+        .fit_width_builds
+        .set(entries.fit_width_builds.get() + 1);
     let mut widths = ProjectListWidths::new(lint_column);
     for (index, entry) in entries.iter().enumerate() {
         observe_item_fit_widths(&mut widths, entries, metadata, entry, &root_labels[index]);
@@ -69,7 +74,10 @@ pub(in crate::tui) const fn name_width_with_gutter(content_width: usize) -> usiz
 }
 
 fn observe_name_width(widths: &mut ProjectListWidths, content_width: usize) {
-    widths.observe(COL_NAME, name_width_with_gutter(content_width));
+    widths.observe(
+        COL_NAME,
+        name_width_with_gutter(PROJECT_LIST_LEFT_PADDING + content_width),
+    );
 }
 
 /// Project state shared by the name-marker and deletion-aware disk measurements.
@@ -85,7 +93,7 @@ impl ProjectFitContext<'_> {
         let deleted =
             self.projects.is_deleted(self.ancestor) || self.projects.is_deleted(entry.path());
         DiskCell::for_row(
-            formatted_disk(entry.info().disk_usage_bytes),
+            formatted_disk(entry.info().disk.total()),
             columns::RowLifecycle::from(deleted),
             entry.info().worktree_health,
         )
@@ -404,7 +412,7 @@ fn observe_worktree_group_fit_widths(
 }
 
 fn formatted_disk(bytes: Option<u64>) -> String {
-    bytes.map_or_else(|| render::format_bytes(0), render::format_bytes)
+    bytes.map_or_else(|| "…".to_string(), render::format_bytes)
 }
 
 fn git_sync_label(checkout: Option<&CheckoutInfo>, repo: Option<&RepoInfo>) -> String {

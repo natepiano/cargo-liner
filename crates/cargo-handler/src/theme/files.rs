@@ -164,15 +164,9 @@ impl StartupThemeNotes {
 pub(crate) fn install_theme<I: AppIdentity>(
     appearance: &AppearanceConfig<I>,
     builtins: Vec<ThemeVariant>,
+    source: ThemeSource<'_>,
 ) -> ThemeInstallation {
-    let registry = match I::themes_dir() {
-        Some(dir) => ThemeRegistry::from_dir_with_parser(
-            ThemeSource::Directory(&dir),
-            builtins,
-            parse_family,
-        ),
-        None => ThemeRegistry::new_with_builtins(builtins),
-    };
+    let registry = ThemeRegistry::from_dir_with_parser(source, builtins, parse_family);
     let resolved = registry.resolve_active(
         &appearance.mode,
         &appearance.light_theme,

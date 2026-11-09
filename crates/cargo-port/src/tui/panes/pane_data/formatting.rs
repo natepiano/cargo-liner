@@ -27,6 +27,7 @@ use crate::project::RemoteList;
 use crate::project::RepoInfo;
 use crate::project::ResolvedBranch;
 use crate::project::TrackedRef;
+use crate::tui::state::AvailabilityStatus;
 
 /// Whether any completed git read failed, independently of path status.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -150,16 +151,29 @@ impl GitReadFailures {
         })
     }
 
-    pub(in crate::tui::panes) fn field_failed(&self, field: DetailField) -> bool {
-        self.rows.contains(&UnreadableGitRow::Field(field))
+    /// Readable means no failure is recorded for this row; it does not promise a completed probe.
+    pub(in crate::tui::panes) fn field_health(&self, field: DetailField) -> GitReadHealth {
+        if self.rows.contains(&UnreadableGitRow::Field(field)) {
+            GitReadHealth::Unreadable
+        } else {
+            GitReadHealth::Readable
+        }
     }
 
-    pub(super) fn remote_tracked_failed(&self, index: usize) -> bool {
-        self.rows.contains(&UnreadableGitRow::RemoteTracked(index))
+    pub(super) fn remote_tracked_health(&self, index: usize) -> GitReadHealth {
+        if self.rows.contains(&UnreadableGitRow::RemoteTracked(index)) {
+            GitReadHealth::Unreadable
+        } else {
+            GitReadHealth::Readable
+        }
     }
 
-    pub(super) fn remote_sync_failed(&self, index: usize) -> bool {
-        self.rows.contains(&UnreadableGitRow::RemoteSync(index))
+    pub(super) fn remote_sync_health(&self, index: usize) -> GitReadHealth {
+        if self.rows.contains(&UnreadableGitRow::RemoteSync(index)) {
+            GitReadHealth::Unreadable
+        } else {
+            GitReadHealth::Readable
+        }
     }
 }
 
@@ -238,18 +252,44 @@ const fn days_in_month(year: i64, month: i64) -> i64 {
     }
 }
 
+/// `TimestampZone` retains the time slice and whether an embedded offset already
+/// makes it local; only Utc needs the local offset when formatting its time.
+enum TimestampZone<'a> {
+    Embedded { date: &'a str, time: &'a str },
+    Utc(&'a str),
+    Unzoned(&'a str),
+    MissingTime,
+}
+
+impl<'a> From<&'a str> for TimestampZone<'a> {
+    fn from(iso: &'a str) -> Self {
+        let stripped = iso.trim_end_matches('Z');
+        let Some((date, time)) = stripped.split_once('T') else {
+            return Self::MissingTime;
+        };
+        if let Some(pos) = time.rfind(['+', '-']).filter(|pos| *pos > 0) {
+            return Self::Embedded {
+                date,
+                time: &time[..pos],
+            };
+        }
+        if iso.ends_with('Z') {
+            Self::Utc(time)
+        } else {
+            Self::Unzoned(time)
+        }
+    }
+}
+
 /// Extract the local date from an ISO 8601 timestamp as `yyyy-mm-dd`.
 ///
 /// If the timestamp has an embedded timezone offset, the date portion is
 /// already local and is returned directly. For UTC timestamps, the local
 /// offset is applied via `format_timestamp`.
 pub fn format_date(iso: &str) -> String {
-    let stripped = iso.trim_end_matches('Z');
-    if let Some((date, after_t)) = stripped.split_once('T') {
-        let has_offset = after_t.rfind(['+', '-']).is_some_and(|p| p > 0);
-        if has_offset {
-            return date.to_string();
-        }
+    match TimestampZone::from(iso) {
+        TimestampZone::Embedded { date, .. } => return date.to_string(),
+        TimestampZone::Utc(_) | TimestampZone::Unzoned(_) | TimestampZone::MissingTime => {},
     }
     let full = format_timestamp(iso);
     full.split(' ').next().unwrap_or(&full).to_string()
@@ -258,25 +298,16 @@ pub fn format_date(iso: &str) -> String {
 /// Extract the local time portion from an ISO 8601 timestamp as `hh:mm:ss`.
 ///
 /// If the timestamp has an embedded timezone offset (e.g., `-04:00`), the
-/// time is already local and no offset is applied. If it ends in `Z` or has
-/// no offset, the local UTC offset is applied.
+/// time is already local and no offset is applied. A trailing `Z` requests
+/// the local UTC offset; an unzoned time keeps its existing clock value.
 pub fn format_time(iso: &str) -> String {
-    let is_utc = iso.ends_with('Z');
-    let stripped = iso.trim_end_matches('Z');
-    let Some((_, time_and_offset)) = stripped.split_once('T') else {
-        return "—".to_string();
+    let timestamp_zone = TimestampZone::from(iso);
+    let time_str = match timestamp_zone {
+        TimestampZone::Embedded { time, .. }
+        | TimestampZone::Unzoned(time)
+        | TimestampZone::Utc(time) => time,
+        TimestampZone::MissingTime => return "—".to_string(),
     };
-
-    let (time_str, has_embedded_offset) =
-        time_and_offset
-            .rfind(['+', '-'])
-            .map_or((time_and_offset, false), |pos| {
-                if pos > 0 {
-                    (&time_and_offset[..pos], true)
-                } else {
-                    (time_and_offset, false)
-                }
-            });
 
     let time_parts: Vec<&str> = time_str.split(':').collect();
     if time_parts.len() < 3 {
@@ -294,10 +325,10 @@ pub fn format_time(iso: &str) -> String {
         return time_str.to_string();
     };
 
-    let offset = if has_embedded_offset || !is_utc {
-        0
-    } else {
-        local_utc_offset_secs()
+    let offset = match timestamp_zone {
+        TimestampZone::Embedded { .. } | TimestampZone::Unzoned(_) => 0,
+        TimestampZone::Utc(_) => local_utc_offset_secs(),
+        TimestampZone::MissingTime => return "—".to_string(),
     };
 
     let seconds_per_day = SECONDS_PER_DAY.cast_signed();
@@ -390,18 +421,11 @@ pub fn format_timestamp(iso: &str) -> String {
     }
 }
 
-/// Render a rate-limit bucket as `"remaining/limit resets HH:MM:SS"`.
-/// Returns the empty string when the bucket has not been observed yet;
-/// drops the `resets …` suffix when no reset timestamp is available
-/// **or** when the bucket is fully unused (`used == 0`). GitHub
-/// re-bases the reset window on every `/rate_limit` poll for an
-/// unused bucket, so including the countdown for those rows makes
-/// the value oscillate between `HH:00:00` and `(HH-1):59:59` every
-/// second. Nothing has been consumed there — no countdown to show.
-pub(super) fn format_rate_limit_bucket(quota: Option<RateLimitQuota>) -> String {
-    let Some(quota) = quota else {
-        return String::new();
-    };
+/// `format_rate_limit_bucket` formats `quota.remaining`, `quota.limit`, and an active reset
+/// countdown. The countdown stays hidden when `quota.used == 0` or `quota.reset_at` has expired.
+/// GitHub resets the window on each poll when `quota.used == 0`.
+/// An unused bucket's countdown alternates between `HH:00:00` and `(HH-1):59:59` each second.
+pub(super) fn format_rate_limit_bucket(quota: RateLimitQuota) -> String {
     let base = format!("{}/{}", quota.remaining, quota.limit);
     if quota.used == 0 {
         return base;
@@ -413,6 +437,9 @@ pub(super) fn format_rate_limit_bucket(quota: Option<RateLimitQuota>) -> String 
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let secs = reset_at.saturating_sub(now);
+    if secs == 0 {
+        return base;
+    }
     format!("{base} resets {}", tui_pane::format_progressive(secs))
 }
 
@@ -506,6 +533,17 @@ pub(super) fn format_tracked_ref(reference: &TrackedRef) -> String {
         TrackedRef::Named(name) => name.clone(),
         TrackedRef::Untracked => NO_REMOTE_SYNC.to_string(),
         TrackedRef::Unreadable => GIT_UNREADABLE_LABEL.to_string(),
+    }
+}
+
+/// Shared GitHub status text for the Git pane.
+pub(super) const fn github_status_text(status: AvailabilityStatus) -> &'static str {
+    match status {
+        AvailabilityStatus::Reachable => "",
+        AvailabilityStatus::Unreachable => "GitHub unreachable",
+        AvailabilityStatus::RateLimited => "github rate-limited",
+        AvailabilityStatus::Unauthenticated => "unauthenticated — gh auth login",
+        AvailabilityStatus::NotInstalled => "gh not installed",
     }
 }
 

@@ -3,6 +3,9 @@ use std::path::Path;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::tui::app::App;
+use crate::tui::project_list::ProjectPathLookup::Found;
+use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+use crate::tui::project_list::ProjectPathLookup::UnknownPath;
 use crate::tui::project_list::VisibleRow;
 use crate::tui::startup_services::StartupEffect;
 use crate::tui::terminal;
@@ -78,11 +81,10 @@ impl App {
         let display_path = self
             .selected_display_path()
             .unwrap_or_else(|| abs_key.display_path());
-        if self
-            .project_list
-            .at_path(abs_key.as_path())
-            .is_none_or(|p| p.disk_usage_bytes.is_none())
-            && self.scan.priority_fetch_path() != Some(&abs_key)
+        if match self.project_list.at_path(abs_key.as_path()) {
+            Found(p) => p.disk.total().is_none(),
+            UnknownPath | StaleRoute => true,
+        } && self.scan.priority_fetch_path() != Some(&abs_key)
         {
             let effect = self.startup_services.priority_detail_fetch_effect();
             self.startup_services.record_priority_detail_fetch(effect);

@@ -2,9 +2,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use super::CheckedSelection;
+use super::chain::ChainValidation;
+use super::function_length::FunctionLengthPlan;
 use super::session_snapshot::SessionSnapshot;
 use crate::compiler;
+use crate::compiler::RunWrapper;
 use crate::compiler::ToolchainProbes;
 use crate::config::LoadedConfig;
 use crate::config::OperationMode;
@@ -31,10 +33,12 @@ use crate::selection::Selection;
 /// A validation already describes the tree the next pass would check.
 pub(super) enum NextAnalysis {
     Required,
-    Validated(Box<CheckedSelection>),
+    Validated(Box<RunPlan>),
 }
 
 pub(crate) struct MendRunner<'a> {
+    pub(super) chain_validation: ChainValidation,
+    pub(super) wrapper:          RunWrapper,
     pub(super) next_analysis:    NextAnalysis,
     pub(super) toolchain_probes: &'a ToolchainProbes,
     pub(super) selection:        &'a Selection,
@@ -56,8 +60,11 @@ impl<'a> MendRunner<'a> {
         color_mode: ColorMode,
         output_format: OutputFormat,
         toolchain_probes: &'a ToolchainProbes,
+        wrapper: RunWrapper,
     ) -> Self {
         Self {
+            chain_validation: ChainValidation::Batch,
+            wrapper,
             next_analysis: NextAnalysis::Required,
             toolchain_probes,
             selection,
@@ -90,6 +97,7 @@ impl<'a> MendRunner<'a> {
 }
 
 pub(super) struct RunPlan {
+    pub(super) function_plan:              FunctionLengthPlan,
     /// The checked selection's source and Cargo module context, reused until
     /// all selected edits have been combined, before any source is written.
     pub(super) sources:                    ParsedSources,
@@ -110,7 +118,7 @@ pub(super) struct RunPlan {
     pub(super) compiler_fixable:           usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct FixScans<'a> {
     pub(super) imports:               Option<&'a ImportScan>,
     pub(super) module_imports:        Option<&'a PreferModuleImportScan>,

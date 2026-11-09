@@ -15,6 +15,7 @@ use super::Measurement;
 use super::invocation_cpu_accounting::InvocationCpuAccounting;
 use super::invocation_cpu_accounting::MeasurementAbsence;
 use super::invocation_cpu_accounting::MemoryReport;
+use super::scan::Census;
 use super::scan::CensusSequence;
 use super::scan::ProcessField;
 use super::scan::ProcessObservation;
@@ -147,7 +148,9 @@ fn detached_compiler_descendants_are_credited_to_the_named_owner() {
     let owner_argv = vec!["cargo".into(), "build".into()];
     let compiler = vec!["sccache".into()];
     let worker_argv = vec!["rustc".into(), "--crate-name".into(), "app".into()];
-    let records = ProcessObservations::new([
+    let request = [vec![OsString::from("sccache")], worker_argv.clone()].concat();
+    let input = [
+        non_cargo(101, OsStr::new("sccache"), &request, parent(100), 0),
         cargo(100, &owner_argv, ProcessField::Unavailable, 10),
         non_cargo(
             200,
@@ -157,15 +160,21 @@ fn detached_compiler_descendants_are_credited_to_the_named_owner() {
             20,
         ),
         non_cargo(201, OsStr::new("rustc"), &worker_argv, parent(200), 30),
-    ]);
+    ];
 
     let owner = Pid::from_u32(100);
-    let detached = HashMap::from([(Pid::from_u32(200), owner)]);
+    let census = Census::take(input.iter());
+    let records = ProcessObservations::new(input.clone());
+    let credited = census.memory_sample(&records).cargo;
+    let input: Vec<_> = input
+        .into_iter()
+        .filter(|record| record.pid != Pid::from_u32(101))
+        .collect();
+    let census = Census::take(input.iter());
+    let without_request = ProcessObservations::new(input);
+    let uncredited = census.memory_sample(&without_request).cargo;
 
-    let credited = CensusSequence::attribute_memory(&records, &detached);
-    let uncredited = CensusSequence::attribute_memory(&records, &HashMap::new());
-
-    assert_eq!(credited, HashMap::from([(owner, Measurement::Reading(60))]));
+    assert_eq!(credited, HashMap::from([(owner, Measurement::Reading(40))]));
     assert_eq!(
         uncredited,
         HashMap::from([(owner, Measurement::Reading(10))])

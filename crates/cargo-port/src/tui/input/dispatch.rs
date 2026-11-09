@@ -51,6 +51,7 @@ use crate::tui::panes::PaneBehavior;
 use crate::tui::panes::PaneId;
 use crate::tui::sccache;
 use crate::tui::settings;
+use crate::tui::state::inflight::OwnedRunActivity;
 use crate::tui::terminal;
 
 pub fn handle_event(app: &mut App, event: &Event) {
@@ -210,8 +211,12 @@ fn classify_output_cancel_preflight(
     let output_visual = is_output_cancel
         && app.focus_is(PaneId::Output)
         && app.panes.output.selection().is_visual();
-    let running_example =
-        can_handle_output_cancel && code == KeyCode::Esc && app.inflight.owned_run().is_running();
+    let running_example = can_handle_output_cancel
+        && code == KeyCode::Esc
+        && matches!(
+            app.inflight.owned_run().activity(),
+            OwnedRunActivity::Running
+        );
     let visible_output = is_output_cancel
         && matches!(
             app.output_copy_availability(),
@@ -478,7 +483,7 @@ fn dispatch_navigation(app: &mut App, focused: FocusedPane<AppPaneId>, bind: &Ke
         && !nav_scope.has_prefix(pending.keys())
     {
         app.pending_nav_chord.clear();
-        (AppNavigation::dispatcher())(action, focused, app);
+        dispatch_navigation_choice(app, action, focused);
         return true;
     }
     if nav_scope.has_prefix(pending.keys()) {
@@ -490,7 +495,7 @@ fn dispatch_navigation(app: &mut App, focused: FocusedPane<AppPaneId>, bind: &Ke
     if let Some(action) = nav_scope.action_for_sequence(&single)
         && !nav_scope.has_prefix(single.keys())
     {
-        (AppNavigation::dispatcher())(action, focused, app);
+        dispatch_navigation_choice(app, action, focused);
         return true;
     }
     if nav_scope.has_prefix(single.keys()) {
@@ -498,6 +503,13 @@ fn dispatch_navigation(app: &mut App, focused: FocusedPane<AppPaneId>, bind: &Ke
         return true;
     }
     false
+}
+
+fn dispatch_navigation_choice(app: &mut App, action: NavAction, focused: FocusedPane<AppPaneId>) {
+    (AppNavigation::dispatcher())(action, focused, app);
+    if focused == FocusedPane::App(AppPaneId::ProjectList) {
+        app.record_selection_choice();
+    }
 }
 
 fn focused_text_input_mode(app: &App) -> bool {
@@ -669,6 +681,7 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, direction: ScrollDirecti
         } else {
             app.project_list.move_down();
         }
+        app.record_selection_choice();
         return;
     }
 
@@ -815,6 +828,7 @@ pub fn dispatch_project_list_action(action: ProjectListAction, app: &mut App) {
             }
         },
     }
+    app.record_selection_choice();
 }
 
 pub fn dispatch_output_action(action: OutputAction, app: &mut App) {
@@ -832,7 +846,10 @@ pub fn dispatch_output_action(action: OutputAction, app: &mut App) {
 /// Stop the owned run if it is still running, and otherwise close its captured
 /// output and hand focus back to Targets.
 fn cancel_owned_output(app: &mut App) {
-    if app.inflight.owned_run().is_running() {
+    if matches!(
+        app.inflight.owned_run().activity(),
+        OwnedRunActivity::Running
+    ) {
         let _ = terminal::signal_owned_run(&mut app.inflight);
     } else if matches!(
         app.output_copy_availability(),

@@ -22,6 +22,7 @@ use super::commit_file;
 use super::git_command;
 use super::journal_events;
 use super::json_output;
+use super::loose_refs;
 use super::reanchoring_templates;
 use super::reanchoring_templates::CheckpointPlacement;
 use super::reanchoring_templates::DRAINED_SPLIT_RETENTION_CHECKPOINT;
@@ -32,6 +33,7 @@ use super::reanchoring_templates::REWRITE_MAIN;
 use super::reanchoring_templates::RewriteRepository;
 use super::reanchoring_templates::SPLIT_ACTIVE_PHASE;
 use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_ACTIVE_RETENTION;
+use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT;
 use super::reanchoring_templates::SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING;
 use super::reanchoring_templates::SPLIT_OUTSTANDING_PHASE;
 use super::reanchoring_templates::STACKED_UPPER_CHECKPOINT;
@@ -1287,19 +1289,10 @@ fn split_checkpoint_before_ref_change(
             (fixture, state)
         },
         SplitRefChange::SwitchedCheckout => {
-            let fixture = RewriteFixture::new();
-            let trunk = fixture.head();
-            let lower = fixture.start_phase();
-            fixture.commit("one", "two");
-            let old_lower = fixture.head();
-            fixture.checkpoint(&lower);
-            let state = SplitLowerCheckpointState {
-                trunk,
-                lower,
-                old_upper: old_lower.clone(),
-                old_lower,
-                active_phases: Vec::new(),
-            };
+            let fixture = RewriteFixture::from_repository(
+                SPLIT_LOWER_CHECKPOINT_SWITCHED_CHECKOUT.instantiate(),
+            );
+            let state = read_state(fixture.root());
             (fixture, state)
         },
     }
@@ -1692,7 +1685,7 @@ fn assert_final_checkpoint(fixture: &RewriteFixture, id: &str, tip: &str, trunk:
 }
 
 fn retained_tip(fixture: &RewriteFixture, id: &str) -> String {
-    super::loose_refs::read_loose_ref(fixture.root(), &format!("{RETENTION_REF_PREFIX}{id}"))
+    loose_refs::read_loose_ref(fixture.root(), &format!("{RETENTION_REF_PREFIX}{id}"))
 }
 
 fn read_state<T: serde::de::DeserializeOwned>(root: &Path) -> T {

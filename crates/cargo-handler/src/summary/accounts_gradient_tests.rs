@@ -16,26 +16,41 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use tui_pane::CellPoint;
-use tui_pane::Theme;
 
 use super::PaintedSummary;
 use super::SummaryFrame;
 use crate::agent_cell;
 use crate::app::App;
 use crate::census::AgentPlacement;
+use crate::census::HierarchyRole;
 use crate::census::accounts::AccountReadStatus;
+use crate::census::accounts::AccountRole;
+use crate::census::accounts::AccountRoleUsage;
 use crate::census::accounts::AccountUsage;
 use crate::census::accounts::AccountsReading;
 use crate::census::accounts::AccountsTable;
-use crate::census::accounts::CreditActivity;
 use crate::census::accounts::CreditPermission;
 use crate::census::accounts::Credits;
 use crate::census::accounts::Reading;
+use crate::constants::DEFAULT_DARK_THEME;
+use crate::constants::DEFAULT_HC_DARK_THEME;
+use crate::constants::DEFAULT_HC_LIGHT_THEME;
+use crate::constants::DEFAULT_LIGHT_THEME;
 use crate::footer_colors;
 use crate::footer_colors::tests;
 use crate::sort::AccountsColumn;
 use crate::theme;
+use crate::theme::ResetThemeFixture;
 use crate::theme::SessionRowInk;
+
+const MINIMUM_RESET_STEP_DISTANCE: f64 = 5.0;
+
+pub(super) fn role_usage(role: AccountRole) -> AccountRoleUsage {
+    AccountRoleUsage {
+        role,
+        counts: Reading::Unavailable,
+    }
+}
 
 const NOW: u64 = 1_792_166_400;
 const SUMMARY_AREA: Rect = Rect::new(4, 3, 160, 32);
@@ -55,7 +70,6 @@ pub(super) fn account(label: &str, resets_at: Reading<DateTime<Utc>>) -> Account
         resets_at,
         credits: Credits::Amount(20.0),
         credit_permission: CreditPermission::Enabled,
-        credit_activity: CreditActivity::Idle,
         read_status: AccountReadStatus::Ok,
         read_at: reset(0),
     }
@@ -116,7 +130,7 @@ pub(super) fn locate(buffer: &Buffer, label: &str) -> CellPoint {
 
 fn reset_color(buffer: &Buffer, label: &str) -> Color {
     let right = locate(buffer, "resets").column + 6;
-    let left = locate(buffer, "left").column + 4 + 2;
+    let left = right.saturating_sub(9);
     let row = locate(buffer, label).row;
     let color = buffer[(right - 1, row)].fg;
     let mut glyphs = 0;
@@ -128,31 +142,6 @@ fn reset_color(buffer: &Buffer, label: &str) -> Color {
     }
     assert!(glyphs >= 5, "a whole reset time draws");
     color
-}
-
-/// Install handler reset roles for tests that otherwise inherit `tui_pane`'s empty role map.
-struct ResetThemeFixture {
-    previous: Arc<Theme>,
-}
-
-impl ResetThemeFixture {
-    fn install() -> Self {
-        let variant = theme::builtins()
-            .into_iter()
-            .find(|variant| variant.id.as_str() == "Default Dark")
-            .expect("default reset theme");
-        Self::with_theme(variant.theme)
-    }
-
-    fn with_theme(theme: Theme) -> Self {
-        let previous = tui_pane::theme();
-        tui_pane::set_active_theme(Arc::new(theme));
-        Self { previous }
-    }
-}
-
-impl Drop for ResetThemeFixture {
-    fn drop(&mut self) { tui_pane::set_active_theme(Arc::clone(&self.previous)); }
 }
 
 fn reset_role(key: &str) -> Color {
@@ -170,12 +159,50 @@ fn readable_rank(color: Color) -> Color {
 }
 
 #[test]
+fn chronological_resets_draw_three_or_four_distinct_steps_in_every_theme() {
+    for variant in theme::builtins() {
+        let theme_name = variant.id.to_string();
+        let fixture = ResetThemeFixture::with_theme(variant.theme);
+        for tint in [false, true] {
+            tui_pane::set_focused_pane_tint(tint);
+            let app = app_with_accounts(
+                [5, 1, 3, 0, 4, 2]
+                    .map(|rank| account(&format!("step-{rank}"), reset(60 + rank * 120)))
+                    .to_vec(),
+            );
+            let buffer = drawn(&app);
+            let mut steps = Vec::new();
+            for rank in 0..6 {
+                let color = reset_color(&buffer, &format!("step-{rank}"));
+                if steps.last() != Some(&color) {
+                    assert!(!steps.contains(&color), "{theme_name}: reset steps repeat");
+                    steps.push(color);
+                }
+            }
+            assert!(
+                (3..=4).contains(&steps.len()),
+                "{theme_name}, tint={tint}: drawn reset steps={steps:?}"
+            );
+            for pair in steps.windows(2) {
+                let distance = footer_colors::perceptual_distance(pair[0], pair[1]);
+                assert!(
+                    distance >= MINIMUM_RESET_STEP_DISTANCE,
+                    "{theme_name}, tint={tint}: adjacent reset steps need dE >= {MINIMUM_RESET_STEP_DISTANCE}: {pair:?}, dE={distance:.9}"
+                );
+                eprintln!("RESET_STEP {theme_name} tint={tint} inks={pair:?} dE={distance:.9}");
+            }
+        }
+        drop(fixture);
+    }
+}
+
+#[test]
 fn accounts_gradient_fixture_readings_draw_fresh_at_the_fixture_time() {
     let app = app_with_accounts(vec![account("fresh-account", reset(60))]);
     let buffer = drawn(&app);
     let label = locate(&buffer, "fresh-account");
-    let roles_column = locate(&buffer, AccountsColumn::Roles.header()).column;
-    let account_text: String = (label.column..roles_column)
+    let left_column = locate(&buffer, AccountsColumn::WeeklyLeft.header()).column;
+    let account_text: String = (label.column..left_column)
         .map(|column| buffer[(column, label.row)].symbol())
         .collect();
     assert_eq!(account_text.trim(), "fresh-account");
@@ -236,13 +263,8 @@ fn reset_time_order_assigns_the_nearest_shade_to_the_earliest_instant() {
         let _theme = ResetThemeFixture::with_theme(variant.theme);
         let nearest = reset_role("reset_nearest");
         let farthest = reset_role("reset_farthest");
-        let expected: Vec<_> = (0..times.len())
-            .map(|rank| {
-                let alpha = u8::try_from(rank * usize::from(u8::MAX) / (times.len() - 1))
-                    .expect("evenly spaced reset shade");
-                readable_rank(tui_pane::blend_color(nearest, farthest, alpha))
-            })
-            .collect();
+        let middle = tui_pane::blend_color(nearest, farthest, 128);
+        let expected = [nearest, nearest, middle, middle, farthest, farthest].map(readable_rank);
         for order in [[5, 1, 3, 0, 4, 2], [2, 4, 0, 3, 1, 5]] {
             let app = app_with_accounts(
                 order
@@ -391,85 +413,85 @@ fn check_rendered_reset_ramp(variant_name: &str) {
     let fixture = include_str!("../footer_colors/fixtures/statusline.conf");
     let mut failures = Vec::new();
     let mut reports = Vec::new();
-    for variant in theme::builtins()
+    let variant = theme::builtins()
         .into_iter()
-        .filter(|variant| variant.id.as_str() == variant_name)
-    {
-        let name = variant.id.as_str().to_owned();
-        tui_pane::set_active_theme(Arc::new(variant.theme));
-        let buffer = draw_reset_ranks();
-        let account_inks = configured_account_inks(fixture);
-        let left_right = locate(&buffer, "left").column + 4;
-        let reset_right = locate(&buffer, "resets").column + 6;
-        let positions = reset_rank_positions(&buffer);
-        assert_eq!(positions.len(), 256, "the complete quantized ramp draws");
-        let mut error_pairs = Vec::new();
-        let mut warning_pairs = Vec::new();
-        let mut alarm_pairs = Vec::new();
-        let mut account_pairs = Vec::new();
-        let alarm = buffer[(left_right - 1, positions["rank-000"].row)].fg;
-        let warning = buffer[(left_right - 1, positions["rank-001"].row)].fg;
-        for rank in 0..=u8::MAX {
-            let label = format!("rank-{rank:03}");
-            let at = positions[&label];
-            let dot = (0..at.column)
-                .find(|x| buffer[(*x, at.row)].symbol() == "●")
-                .expect("reading dot");
-            assert_eq!(
-                buffer[(dot, at.row)].fg,
-                tui_pane::error_color(),
-                "failed reading stays error red"
-            );
-            let ink = buffer[(reset_right - 1, at.row)].fg;
-            let reset_cells: Vec<_> = (left_right + 2..reset_right)
-                .map(|x| &buffer[(x, at.row)])
-                .filter(|cell| !cell.symbol().trim().is_empty())
-                .collect();
-            assert!(reset_cells.len() >= 5, "whole reset timestamp draws");
-            for cell in reset_cells {
-                assert_eq!(cell.fg, ink, "whole reset uses the rank ink");
-                let contrast = tests::covered_role_contrast(cell.fg, cell.bg);
-                if contrast < 4.5 {
-                    failures.push(format!("{name} {label} {cell:?} covered={contrast:.6}"));
-                }
-            }
-            for (other_name, other, pairs) in [
-                ("error", tui_pane::error_color(), &mut error_pairs),
-                ("left warning", warning, &mut warning_pairs),
-                ("left alarm", alarm, &mut alarm_pairs),
-            ] {
-                let distance = tests::perceptual_distance(ink, other);
-                if distance < 20.0 {
-                    failures.push(format!(
-                        "{name} {label} {ink:?}/{other_name} {other:?} dE={distance:.6}"
-                    ));
-                }
-                pairs.push((label.clone(), ink, other_name.to_owned(), other));
-            }
-            for (account_name, other) in &account_inks {
-                let gap = tests::hue_gap(ink, *other);
-                if gap < 30.0 {
-                    failures.push(format!(
-                        "{name} {label} {ink:?}/{account_name} {other:?} hue={gap:.6}"
-                    ));
-                }
-                account_pairs.push((label.clone(), ink, (*account_name).to_owned(), *other));
-            }
-        }
-        let mut report = format!(
-            "{name} drawn left warning={warning:?} alarm={alarm:?} error={:?}\n",
-            tui_pane::error_color()
+        .find(|variant| variant.id.as_str() == variant_name)
+        .expect("the requested built-in theme exists");
+    let name = variant.id.as_str().to_owned();
+    tui_pane::set_active_theme(Arc::new(variant.theme));
+    let buffer = draw_reset_ranks();
+    let account_inks = configured_account_inks(fixture);
+    let left_right = locate(&buffer, "left").column + 4;
+    let reset_right = locate(&buffer, "resets").column + 6;
+    let positions = reset_rank_positions(&buffer);
+    assert_eq!(positions.len(), 256, "the complete quantized ramp draws");
+    let mut error_pairs = Vec::new();
+    let mut warning_pairs = Vec::new();
+    let mut alarm_pairs = Vec::new();
+    let mut account_pairs = Vec::new();
+    let alarm = buffer[(left_right - 1, positions["rank-000"].row)].fg;
+    let warning = buffer[(left_right - 1, positions["rank-001"].row)].fg;
+    for rank in 0..=u8::MAX {
+        let label = format!("rank-{rank:03}");
+        let at = positions[&label];
+        let dot = (0..at.column)
+            .find(|x| buffer[(*x, at.row)].symbol() == "●")
+            .expect("reading dot");
+        assert_eq!(
+            buffer[(dot, at.row)].fg,
+            tui_pane::error_color(),
+            "failed reading stays error red"
         );
-        for (class, pairs) in [
-            ("reset/error", error_pairs),
-            ("reset/left-warning", warning_pairs),
-            ("reset/left-alarm", alarm_pairs),
-            ("reset/account", account_pairs),
-        ] {
-            report.push_str(&tests::palette_pair_report(class, &pairs));
+        let ink = buffer[(reset_right - 1, at.row)].fg;
+        let reset_cells: Vec<_> = (left_right + 2..reset_right)
+            .map(|x| &buffer[(x, at.row)])
+            .filter(|cell| !cell.symbol().trim().is_empty())
+            .collect();
+        assert!(reset_cells.len() >= 5, "whole reset timestamp draws");
+        for cell in reset_cells {
+            assert_eq!(cell.fg, ink, "whole reset uses the rank ink");
+            let contrast = tests::covered_role_contrast(cell.fg, cell.bg);
+            if contrast < 4.5 {
+                failures.push(format!("{name} {label} {cell:?} covered={contrast:.6}"));
+            }
         }
-        reports.push(report);
+        for (other_name, other, pairs) in [
+            ("error", tui_pane::error_color(), &mut error_pairs),
+            ("left warning", warning, &mut warning_pairs),
+            ("left alarm", alarm, &mut alarm_pairs),
+        ] {
+            let distance = footer_colors::perceptual_distance(ink, other);
+            if distance < 20.0 {
+                failures.push(format!(
+                    "{name} {label} {ink:?}/{other_name} {other:?} dE={distance:.6}"
+                ));
+            }
+            pairs.push((label.clone(), ink, other_name.to_owned(), other));
+        }
+        for (account_name, other) in &account_inks {
+            let gap = tests::hue_gap(ink, *other);
+            if gap < 30.0 {
+                failures.push(format!(
+                    "{name} {label} {ink:?}/{account_name} {other:?} hue={gap:.6}"
+                ));
+            }
+            account_pairs.push((label.clone(), ink, (*account_name).to_owned(), *other));
+        }
     }
+    let mut report = format!(
+        "{name} drawn left warning={warning:?} alarm={alarm:?} error={:?}\n",
+        tui_pane::error_color()
+    );
+    for (class, pairs) in [
+        ("reset/error", error_pairs),
+        ("reset/left-warning", warning_pairs),
+        ("reset/left-alarm", alarm_pairs),
+        ("reset/account", account_pairs),
+    ] {
+        report.push_str(&tests::palette_pair_report(class, &pairs));
+    }
+    reports.push(report);
+
     tui_pane::set_active_theme(previous);
     assert!(
         failures.is_empty(),
@@ -479,22 +501,22 @@ fn check_rendered_reset_ramp(variant_name: &str) {
 
 #[test]
 fn reset_shades_avoid_alarms_and_account_hues_with_failed_dots_red_in_default_dark() {
-    check_rendered_reset_ramp("Default Dark");
+    check_rendered_reset_ramp(DEFAULT_DARK_THEME);
 }
 
 #[test]
 fn reset_shades_avoid_alarms_and_account_hues_with_failed_dots_red_in_default_light() {
-    check_rendered_reset_ramp("Default Light");
+    check_rendered_reset_ramp(DEFAULT_LIGHT_THEME);
 }
 
 #[test]
 fn reset_shades_avoid_alarms_and_account_hues_with_failed_dots_red_in_high_contrast_dark() {
-    check_rendered_reset_ramp("High Contrast Dark");
+    check_rendered_reset_ramp(DEFAULT_HC_DARK_THEME);
 }
 
 #[test]
 fn reset_shades_avoid_alarms_and_account_hues_with_failed_dots_red_in_high_contrast_light() {
-    check_rendered_reset_ramp("High Contrast Light");
+    check_rendered_reset_ramp(DEFAULT_HC_LIGHT_THEME);
 }
 
 #[test]
@@ -514,7 +536,7 @@ fn reset_endpoints_remain_perceptually_distinct_on_every_theme() {
             let buffer = drawn(&app);
             let nearest = reset_color(&buffer, "nearest");
             let farthest = reset_color(&buffer, "furthest");
-            let distance = tests::perceptual_distance(nearest, farthest);
+            let distance = footer_colors::perceptual_distance(nearest, farthest);
             if distance < 12.0 {
                 failures.push(format!("{name} tint={tint} nearest={nearest:?} farthest={farthest:?} dE={distance:.9} floor=12"));
             }
@@ -530,46 +552,123 @@ fn reset_endpoints_remain_perceptually_distinct_on_every_theme() {
 
 #[test]
 fn reset_shades_keep_saturated_chroma_and_separation_from_plain_text() {
+    check_reset_chroma(DEFAULT_DARK_THEME);
+}
+
+#[test]
+fn reset_shades_keep_chroma_and_text_separation_in_default_light() {
+    check_reset_chroma(DEFAULT_LIGHT_THEME);
+}
+
+#[test]
+fn reset_shades_keep_chroma_and_text_separation_in_high_contrast_dark() {
+    check_reset_chroma(DEFAULT_HC_DARK_THEME);
+}
+
+#[test]
+fn reset_shades_keep_chroma_and_text_separation_in_high_contrast_light() {
+    check_reset_chroma(DEFAULT_HC_LIGHT_THEME);
+}
+
+fn check_reset_chroma(theme_name: &str) {
     let previous = tui_pane::theme();
     let tinted = tui_pane::focused_pane_tint_enabled();
     let mut failures = Vec::new();
-    for variant in theme::builtins() {
-        let name = variant.id.as_str().to_owned();
-        tui_pane::set_active_theme(Arc::new(variant.theme));
-        let mut drawings = HashMap::new();
-        for tint in [false, true] {
-            tui_pane::set_focused_pane_tint(tint);
-            let text = SessionRowInk::Text.style().fg.expect("plain text ink");
-            // Tint settings can resolve to the same grounds on a transparent screen.
-            // Reuse that draw while checking every rank in each case.
-            let grounds = (
-                tui_pane::pane_background(false),
-                tui_pane::pane_background(true),
+    let variant = theme::builtins()
+        .into_iter()
+        .find(|variant| variant.id.as_str() == theme_name)
+        .expect("the requested built-in theme exists");
+    let name = variant.id.as_str().to_owned();
+    tui_pane::set_active_theme(Arc::new(variant.theme));
+    let mut drawings = HashMap::new();
+    for tint in [false, true] {
+        tui_pane::set_focused_pane_tint(tint);
+        let text = SessionRowInk::Text.style().fg.expect("plain text ink");
+        // Tint settings can resolve to the same grounds on a transparent screen.
+        // Reuse that draw while checking every rank in each case.
+        let grounds = (
+            tui_pane::pane_background(false),
+            tui_pane::pane_background(true),
+        );
+        let buffer = drawings.entry(grounds).or_insert_with(draw_reset_ranks);
+        let reset_column = locate(buffer, "resets").column + 5;
+        let positions = reset_rank_positions(buffer);
+        assert_eq!(positions.len(), 256, "{name} tint={tint}: every rank draws");
+        for rank in 0..=u8::MAX {
+            let label = format!("rank-{rank:03}");
+            let row = positions[&label].row;
+            let cell = &buffer[(reset_column, row)];
+            assert!(
+                !cell.symbol().trim().is_empty(),
+                "{name} {label}: reset glyph"
             );
-            let buffer = drawings.entry(grounds).or_insert_with(draw_reset_ranks);
-            let reset_column = locate(buffer, "resets").column + 5;
-            let positions = reset_rank_positions(buffer);
-            assert_eq!(positions.len(), 256, "{name} tint={tint}: every rank draws");
-            for rank in 0..=u8::MAX {
-                let label = format!("rank-{rank:03}");
-                let row = positions[&label].row;
-                let cell = &buffer[(reset_column, row)];
-                assert!(
-                    !cell.symbol().trim().is_empty(),
-                    "{name} {label}: reset glyph"
-                );
-                let ink = cell.fg;
-                let chroma = footer_colors::Oklch::from_color(ink).chroma;
-                let distance = tests::perceptual_distance(ink, text);
-                if chroma < 0.10 || distance < 15.0 {
-                    failures.push(format!(
+            let ink = cell.fg;
+            let chroma = footer_colors::Oklch::from_color(ink).chroma;
+            let distance = footer_colors::perceptual_distance(ink, text);
+            if chroma < 0.10 || distance < 15.0 {
+                failures.push(format!(
                         "{name} tint={tint} {label} reset={ink:?} text={text:?} C={chroma:.9} floor=0.10 dE={distance:.9} floor=15"
                     ));
+            }
+        }
+    }
+
+    tui_pane::set_active_theme(previous);
+    tui_pane::set_focused_pane_tint(tinted);
+    assert!(failures.is_empty(), "reset visibility: {failures:#?}");
+}
+
+fn check_astra_reset_shades(theme_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let theme_reset = ResetThemeFixture::install();
+    let colors = footer_colors::FooterColors::parse(include_str!(
+        "../footer_colors/fixtures/statusline_astra.conf"
+    ));
+    let mut failures = Vec::new();
+    for variant in theme::builtins()
+        .into_iter()
+        .filter(|variant| variant.id.as_str() == theme_name)
+    {
+        let name = variant.id.as_str().to_owned();
+        tui_pane::set_active_theme(Arc::new(variant.theme));
+        tui_pane::set_transparent_background(false);
+        for tint in [false, true] {
+            tui_pane::set_focused_pane_tint(tint);
+            let buffer = draw_reset_ranks();
+            let positions = reset_rank_positions(&buffer);
+            let reset_right = locate(&buffer, "resets").column + 6;
+            for role in [HierarchyRole::AstraDesigner, HierarchyRole::AstraReviewer] {
+                let role_ink = colors
+                    .hierarchy_role(role)
+                    .style(ratatui::style::Style::default())
+                    .fg
+                    .ok_or("Astra management ink")?;
+                let mut minimum = f64::INFINITY;
+                for at in positions.values() {
+                    minimum = minimum.min(footer_colors::perceptual_distance(
+                        role_ink,
+                        buffer[(reset_right - 1, at.row)].fg,
+                    ));
+                }
+                eprintln!("ASTRA_RESET {name} tint={tint} {role:?}: {minimum:.6}");
+                if minimum < 15.0 {
+                    failures.push(format!("{name} tint={tint} {role:?}: {minimum:.6}"));
                 }
             }
         }
     }
-    tui_pane::set_active_theme(previous);
-    tui_pane::set_focused_pane_tint(tinted);
-    assert!(failures.is_empty(), "reset visibility: {failures:#?}");
+    drop(theme_reset);
+    assert!(failures.is_empty(), "Astra/reset distances: {failures:?}");
+    Ok(())
+}
+
+#[test]
+fn astra_role_inks_stay_distinct_from_default_light_reset_shades()
+-> Result<(), Box<dyn std::error::Error>> {
+    check_astra_reset_shades("Default Light")
+}
+
+#[test]
+fn astra_role_inks_stay_distinct_from_high_contrast_light_reset_shades()
+-> Result<(), Box<dyn std::error::Error>> {
+    check_astra_reset_shades("High Contrast Light")
 }

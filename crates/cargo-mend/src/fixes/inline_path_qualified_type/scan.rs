@@ -153,8 +153,42 @@ fn scan_file(
 
 #[cfg(test)]
 mod tests {
+    use anyhow::anyhow;
+
     use crate::fixes::imports::ImportSource;
     use crate::rust_syntax::ParsedSources;
+
+    const ABSOLUTE_SHADOWED_SOURCE: &str = "use other::std;\nfn f(_: ::std::time::Duration) {}\n";
+    const ABSOLUTE_DURATION_PATH: &str = "::std::time::Duration";
+    const ABSOLUTE_DURATION_IMPORT: &str = "use ::std::time::Duration;";
+
+    #[test]
+    fn absolute_paths_keep_external_identity_and_complete_highlight() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("lib.rs");
+        std::fs::write(&path, ABSOLUTE_SHADOWED_SOURCE)?;
+        let sources = ParsedSources::default();
+        let module_map = sources.module_map(dir.path());
+        let (findings, fixes) =
+            super::scan_file(dir.path(), dir.path(), &path, &module_map, &sources)?;
+        assert_eq!(findings.len(), 1);
+        assert!(
+            fixes
+                .iter()
+                .any(|fix| fix.replacement.trim() == ABSOLUTE_DURATION_IMPORT)
+        );
+        let rewrite = fixes
+            .iter()
+            .find(|fix| fix.start != fix.end)
+            .ok_or_else(|| anyhow!("missing absolute path rewrite"))?;
+        assert_eq!(
+            &ABSOLUTE_SHADOWED_SOURCE[rewrite.start..rewrite.end],
+            ABSOLUTE_DURATION_PATH
+        );
+        assert_eq!(findings[0].highlight_len, rewrite.end - rewrite.start);
+        assert_eq!(findings[0].column, 9);
+        Ok(())
+    }
 
     #[test]
     fn completed_scan_rejects_ambiguous_and_already_bare_names() -> anyhow::Result<()> {

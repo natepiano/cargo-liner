@@ -14,7 +14,6 @@ use crate::census::accounts::AccountReadStatus;
 use crate::census::accounts::AccountRole;
 use crate::census::accounts::AccountUsage;
 use crate::census::accounts::AccountsReading;
-use crate::census::accounts::CreditActivity;
 use crate::census::accounts::CreditPermission;
 use crate::census::accounts::Credits;
 use crate::census::accounts::Reading;
@@ -34,16 +33,15 @@ fn draw_account_roles(
         accounts: vec![AccountUsage {
             label: "fixture-account".into(),
             roles: vec![
-                AccountRole::Units,
-                AccountRole::Showrunners,
-                AccountRole::Workers,
-                AccountRole::Spare,
+                accounts_gradient_tests::role_usage(AccountRole::Units),
+                accounts_gradient_tests::role_usage(AccountRole::Showrunners),
+                accounts_gradient_tests::role_usage(AccountRole::Workers),
+                accounts_gradient_tests::role_usage(AccountRole::Spare),
             ],
             weekly_left_percent: Reading::Known(50.0),
             resets_at: Reading::Unavailable,
             credits: Credits::Amount(20.0),
             credit_permission: CreditPermission::Enabled,
-            credit_activity: CreditActivity::Idle,
             read_status: AccountReadStatus::Ok,
             read_at,
         }],
@@ -91,20 +89,12 @@ fn account_role_spans_use_each_role_color_and_keep_spare_and_separators_plain() 
             );
         let area = Rect::new(0, 0, 180, 12);
         let buffer = draw_account_roles(read_at, &colors, area);
-        let row = (0..area.height)
-            .find(|&y| {
-                (0..area.width)
-                    .map(|x| buffer[(x, y)].symbol())
-                    .collect::<String>()
-                    .contains("fixture-account")
-            })
-            .expect("account row");
-        let line: String = (0..area.width).map(|x| buffer[(x, row)].symbol()).collect();
         for (word, role) in [
             ("units", FooterRole::UnitDirector),
             ("showrunners", FooterRole::Showrunner),
         ] {
-            let start = cell_width(&line[..line.find(word).expect("role word")]);
+            let point = accounts_gradient_tests::locate(&buffer, word);
+            let (row, start) = (point.row, point.column);
             let base = Style::default().fg(text_default());
             let expected = if stale {
                 colors.role(role).subdued_style(base)
@@ -131,19 +121,13 @@ fn account_role_spans_use_each_role_color_and_keep_spare_and_separators_plain() 
         } else {
             FooterTint::Plain.style(base)
         };
-        let separator = cell_width(
-            &line[..line
-                .find(constants::ACCOUNT_ROLE_SEPARATOR)
-                .expect("role separator")],
-        );
-        assert_eq!(buffer[(separator, row)].fg, text_default());
-        assert_eq!(
-            buffer[(separator, row)].modifier.contains(Modifier::DIM),
-            stale,
-            "separators keep the row's base style"
-        );
+        let role_point = accounts_gradient_tests::locate(&buffer, "showrunners");
+        let (continuation, role_start) = (role_point.row, role_point.column);
+        let account_start = accounts_gradient_tests::locate(&buffer, "fixture-account").column;
+        assert!((account_start..role_start).all(|x| buffer[(x, continuation)].symbol() == " "));
         for word in ["spare", "workers"] {
-            let start = cell_width(&line[..line.find(word).expect("plain role word")]);
+            let point = accounts_gradient_tests::locate(&buffer, word);
+            let (row, start) = (point.row, point.column);
             for offset in 0..cell_width(word) {
                 assert_eq!(
                     Some(buffer[(start + offset, row)].fg),

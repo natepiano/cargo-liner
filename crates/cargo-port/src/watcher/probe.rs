@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -22,6 +23,7 @@ use crate::scan::BackgroundMsg;
 use crate::scan::ExcludeDirs;
 use crate::scan::FetchContext;
 use crate::scan::ProjectDetailRequest;
+use crate::scan::SourceMeasurements;
 
 pub(super) fn spawn_project_refresh(
     background_tx: Sender<BackgroundMsg>,
@@ -81,16 +83,30 @@ fn project_probe_outcome(item: &RootItem) -> FolderProbeOutcome {
     })
 }
 
+/// Inputs of new-project probing that stay fixed for the life of the watcher loop.
+#[derive(Clone, Copy)]
+pub(super) struct NewProjectProbeInputs<'a> {
+    pub(super) watcher_config:      &'a WatcherConfig,
+    pub(super) source_measurements: &'a Arc<SourceMeasurements>,
+    pub(super) non_rust:            NonRustInclusion,
+    pub(super) exclude_dirs:        &'a ExcludeDirs,
+    pub(super) client:              &'a HttpClient,
+}
+
 /// Probe and publish discovery data; the caller applies each watch-role result.
 pub(super) fn probe_new_projects(
     background_tx: &Sender<BackgroundMsg>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
     discovered: &mut HashSet<AbsolutePath>,
-    watcher_config: &WatcherConfig,
-    non_rust: NonRustInclusion,
-    exclude_dirs: &ExcludeDirs,
-    client: &HttpClient,
+    inputs: NewProjectProbeInputs<'_>,
 ) -> Vec<FolderProbeOutcome> {
+    let NewProjectProbeInputs {
+        watcher_config,
+        source_measurements,
+        non_rust,
+        exclude_dirs,
+        client,
+    } = inputs;
     let mut outcomes = Vec::new();
     let now = Instant::now();
     let ready: Vec<AbsolutePath> = pending_new
@@ -152,19 +168,22 @@ pub(super) fn probe_new_projects(
             }
             let sender = background_tx.clone();
             let fetch_context = FetchContext {
-                client: client.clone(),
+                source_measurements: std::sync::Arc::clone(source_measurements),
+                client:              client.clone(),
             };
-            enrichment::spawn_language_scan(abs_path.clone(), background_tx.clone());
-            rayon::spawn(move || {
-                let request = ProjectDetailRequest {
-                    sender: &sender,
-                    fetch_context: &fetch_context,
-                    abs_path: &abs_path,
-                    name: project_name.as_deref(),
-                    repo_presence,
-                };
-                scan::fetch_project_details(&request);
-            });
+            enrichment::spawn_language_scan(
+                abs_path.clone(),
+                background_tx.clone(),
+                source_measurements,
+            );
+            let request = ProjectDetailRequest {
+                sender: &sender,
+                fetch_context: &fetch_context,
+                abs_path: &abs_path,
+                name: project_name.as_deref(),
+                repo_presence,
+            };
+            rayon::spawn(scan::project_detail_job(&request));
         } else {
             outcomes.push(FolderProbeOutcome::NotProject(dir));
         }

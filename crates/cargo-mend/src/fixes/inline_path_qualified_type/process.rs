@@ -254,7 +254,7 @@ fn record_occurrence(
         path:            ctx.display_path.to_string(),
         line:            resolved.location.start.line,
         column:          resolved.location.start.column + 1,
-        highlight_len:   occ.full_path.len().max(1),
+        highlight_len:   (resolved.location.byte_end - resolved.location.byte_start).max(1),
         source_line:     resolved.location.source_line.to_string(),
         item:            None,
         message:         format!(
@@ -296,12 +296,20 @@ pub(super) fn resolve_occurrence<'a>(
     // `absolutize_import_path` resolves a partial path (`fmt::Display` written because `use
     // std::fmt;` is in scope) to its absolute form (`std::fmt::Display`) so the inserted
     // `use` does not depend on a sibling module import remaining in place.
-    let import_path = scope.map_or_else(
-        || ImportResolution::Unresolved {
-            spelling: occurrence.import_path.clone(),
-        },
-        |scope| absolutize_import_path(&occurrence.import_path, &scope.existing_imports),
-    );
+    // An absolute path names an external crate, regardless of local imports.
+    let import_path = if occurrence.full_path.starts_with("::") {
+        ImportResolution::Resolved {
+            path:       format!("::{}", occurrence.import_path),
+            attributes: ConditionalAttributes::default(),
+        }
+    } else {
+        scope.map_or_else(
+            || ImportResolution::Unresolved {
+                spelling: occurrence.import_path.clone(),
+            },
+            |scope| absolutize_import_path(&occurrence.import_path, &scope.existing_imports),
+        )
+    };
     // `absolutize_through_ancestors` handles a nested module seeing the leading segment only
     // through a glob (`use super::*;`), so its own scope cannot absolutize. Resolve through
     // ancestor imports before falling back to a `super::`-qualified path:

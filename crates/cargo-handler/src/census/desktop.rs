@@ -226,7 +226,10 @@ mod tests {
     use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::StaffRowNames;
     use crate::census::account::ConfigHome;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
 
     /// The single-instance terminal that owns several windows.
     const GHOSTTY: u32 = 44_122;
@@ -263,6 +266,9 @@ mod tests {
     /// A Claude Code row with no desktop yet.
     fn row(pid: u32, name: &str) -> AgentRow {
         AgentRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
+            staff_names: StaffRowNames::default(),
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             agent: Agent::Claude,

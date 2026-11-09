@@ -12,6 +12,7 @@ use anyhow::bail;
 use crate::reporting::AppliedFixCounts;
 use crate::reporting::Finding;
 use crate::reporting::FixKind;
+use crate::rust_syntax::ParsedSources;
 
 pub(in crate::fixes) struct ImportScan {
     pub findings: Vec<Finding>,
@@ -78,9 +79,14 @@ pub(in crate::fixes) enum FixSetPresence {
     HasEdits,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(in crate::fixes) struct ValidatedFixSet {
     fixes: Vec<TaggedFix>,
+}
+
+pub(in crate::fixes) struct RewrittenFiles {
+    pub files:  BTreeMap<PathBuf, String>,
+    pub counts: AppliedFixCounts,
 }
 
 impl ValidatedFixSet {
@@ -90,6 +96,47 @@ impl ValidatedFixSet {
         } else {
             FixSetPresence::HasEdits
         }
+    }
+
+    /// Use the write path for previews, so both paths apply equal byte ranges.
+    pub(in crate::fixes) fn rewritten_files(&self) -> Result<RewrittenFiles> {
+        self.rewritten_sources(&crate::rust_syntax::ParsedSources::default())
+    }
+
+    /// Compose a later chain link against the preceding proposed source text.
+    pub(in crate::fixes) fn rewritten_sources(
+        &self,
+        sources: &ParsedSources,
+    ) -> Result<RewrittenFiles> {
+        let mut by_file: BTreeMap<&Path, Vec<&TaggedFix>> = BTreeMap::new();
+        for tagged in self.tagged() {
+            by_file.entry(&tagged.fix.path).or_default().push(tagged);
+        }
+        let mut counts = AppliedFixCounts::default();
+        let files = by_file
+            .into_iter()
+            .map(|(path, mut fixes)| {
+                let mut text = sources
+                    .source(path)
+                    .with_context(|| format!("failed to read {}", path.display()))?
+                    .text()
+                    .to_string();
+                // Apply later edits first to keep earlier byte offsets valid.
+                // For equal starts, apply the wider replacement before the insertion.
+                fixes.sort_by_key(|tagged| Reverse((tagged.fix.start, tagged.fix.end)));
+                for tagged in fixes {
+                    let fix = &tagged.fix;
+                    if fix.end <= text.len() && fix.start <= fix.end {
+                        text.replace_range(fix.start..fix.end, &fix.replacement);
+                        if let Some(kind) = tagged.fix_kind {
+                            counts.record(kind);
+                        }
+                    }
+                }
+                Ok((path.to_path_buf(), text))
+            })
+            .collect::<Result<_>>()?;
+        Ok(RewrittenFiles { files, counts })
     }
 
     pub(in crate::fixes) fn iter(&self) -> impl Iterator<Item = &UseFix> {
@@ -215,35 +262,12 @@ pub(super) fn canonical_fixes(mut fixes: Vec<TaggedFix>) -> Vec<TaggedFix> {
 /// notice kind. A fix whose range no longer fits its file is skipped and
 /// counted nowhere — the run must not claim an edit it did not write.
 pub(in crate::fixes) fn apply_fixes(fixes: &ValidatedFixSet) -> Result<AppliedFixCounts> {
-    let mut by_file: BTreeMap<&Path, Vec<&TaggedFix>> = BTreeMap::new();
-    for tagged in fixes.tagged() {
-        by_file
-            .entry(tagged.fix.path.as_path())
-            .or_default()
-            .push(tagged);
-    }
-    let mut applied_fix_counts = AppliedFixCounts::default();
-    for (path, mut file_tagged_fixes) in by_file {
-        let mut text = fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        // `apply_fixes` sorts `file_fixes` by descending `(start, end)` to apply later edits first
-        // so earlier offsets remain valid. When two fixes share a start offset (a
-        // replacement at [N..M] and an insertion at [N..N]), apply the wider replacement
-        // first so [N..M] still targets the original bytes.
-        file_tagged_fixes.sort_by_key(|tagged| Reverse((tagged.fix.start, tagged.fix.end)));
-        for tagged in file_tagged_fixes {
-            let use_fix = &tagged.fix;
-            if use_fix.end <= text.len() && use_fix.start <= use_fix.end {
-                text.replace_range(use_fix.start..use_fix.end, &use_fix.replacement);
-                if let Some(fix_kind) = tagged.fix_kind {
-                    applied_fix_counts.record(fix_kind);
-                }
-            }
-        }
-        fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))?;
+    let rewritten = fixes.rewritten_files()?;
+    for (path, text) in rewritten.files {
+        fs::write(&path, text).with_context(|| format!("failed to write {}", path.display()))?;
     }
 
-    Ok(applied_fix_counts)
+    Ok(rewritten.counts)
 }
 
 #[cfg(test)]

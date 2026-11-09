@@ -53,14 +53,19 @@ fn run_fix(root: &Path) -> String {
 }
 
 fn run_fix_command(command: &mut std::process::Command) -> String {
+    let output = run_fix_output(command);
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn run_fix_output(command: &mut std::process::Command) -> std::process::Output {
     let output = command.output().expect("run cargo-mend --fix");
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
         "cargo-mend --fix failed:\n{}\n{stderr}",
         String::from_utf8_lossy(&output.stdout)
     );
-    stderr
+    output
 }
 
 /// Runs `--fix` and asserts that exactly the `expected` files changed, to
@@ -80,22 +85,23 @@ fn assert_fixed_without_warnings(root: &Path, expected: &[(&str, &str)]) {
 /// The assertions of [`assert_fixed`]; returns the stderr of the passing
 /// `cargo check --all-targets`.
 fn fixed_check_stderr(root: &Path, expected: &[(&str, &str)]) -> String {
-    fixed_check_stderr_after(root, expected, || run_fix(root))
+    fixed_check_stderr_after(root, expected, || {
+        run_fix(root);
+        run_mend_json(&root.join("Cargo.toml"))
+    })
 }
 
 fn fixed_check_stderr_after(
     root: &Path,
     expected: &[(&str, &str)],
-    fix: impl FnOnce() -> String,
+    fix: impl FnOnce() -> Report,
 ) -> String {
     let mut sources = rust_sources(root);
     for (relative, contents) in expected {
         sources.insert(PathBuf::from(relative), (*contents).to_string());
     }
-    fix();
+    let report = fix();
     assert_eq!(rust_sources(root), sources, "fixed sources");
-
-    let report = run_mend_json(&root.join("Cargo.toml"));
     let left = report
         .findings
         .iter()
@@ -807,14 +813,18 @@ fn reexport_of_another_owner_module_is_fixed_on_a_later_pass() {
     );
 }
 
-/// A chain of four re-exports, each forwarding the one below it: removing one
-/// link turns the next into the finding, and one `--fix` run keeps passing
-/// until the crate root names the defining module.
+/// Four private forwarding links converge in one validated batch.
+/// The crate root keeps the direct path to the defining module.
 #[test]
 fn reexport_chain_collapses_in_one_run() {
     let temp = tempdir().expect("create temp fixture dir");
     let root = temp.path();
     pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
+        root,
+        "Cargo.toml",
+        "[package]\nname = \"chain_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[lib]\ntest = false\n",
+    );
     pub_use_outside_subtree::write(
         root,
         "src/lib.rs",
@@ -858,18 +868,129 @@ fn reexport_chain_collapses_in_one_run() {
     );
 }
 
-/// Count the real Cargo checks for the four-link convergence sequence.
-/// Each edited tree needs validation; starting a new pass on the tree just
-/// validated must not start another check.
-fn fix_chain_with_check_budget(root: &Path) -> String {
+/// A macro's module argument prevents one path rewrite from reaching its use.
+#[test]
+fn failed_chain_link_keeps_the_other_validated_fixes() {
+    let temp = tempdir().expect("create macro chain fixture");
+    let root = temp.path();
+    pub_use_outside_subtree::write_manifest(root);
+    pub_use_outside_subtree::write(
+        root,
+        "Cargo.toml",
+        "[package]\nname = \"macro_chain_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[lib]\ntest = false\n",
+    );
+    let sources = [
+        (
+            "src/lib.rs",
+            "mod input;\nmod orbit_cam;\n\npub use orbit_cam::Gain;\n\nmacro_rules! read_gain { ($module:ident) => { crate::$module::Gain(7).0 }; }\npub fn read() -> u32 { read_gain!(orbit_cam) }\n",
+        ),
+        ("src/input.rs", "pub struct Gain(pub u32);\n"),
+        (
+            "src/orbit_cam/mod.rs",
+            "mod controls;\n\npub use controls::Gain;\n",
+        ),
+        ("src/orbit_cam/controls.rs", "pub use crate::input::Gain;\n"),
+    ];
+    for (path, source) in sources {
+        pub_use_outside_subtree::write(root, path, source);
+    }
+    let stderr = run_fix(root);
+    assert!(
+        stderr.contains("error[E0425]"),
+        "the batch must fail a real check: {stderr}"
+    );
+    assert!(stderr.contains("chain batch did not validate"), "{stderr}");
+    assert!(
+        stderr.contains("retrying remaining links as one batch"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("retrying individual links"), "{stderr}");
+    assert!(stderr.contains("chain link did not validate"), "{stderr}");
+    assert!(!stderr.contains("rolled back"), "{stderr}");
+    let expected = sources
+        .into_iter()
+        .map(|(path, source)| {
+            let fixed = match path {
+                "src/orbit_cam/mod.rs" => "mod controls;\n\npub use crate::input::Gain;\n",
+                "src/orbit_cam/controls.rs" => "",
+                _ => source,
+            };
+            (PathBuf::from(path), fixed.to_string())
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        rust_sources(root),
+        expected,
+        "only the invalid link must be restored"
+    );
+}
+
+/// A failed chain does not prevent an independent chain from collapsing.
+#[test]
+fn failed_chain_link_keeps_an_independent_chain() {
+    let temp = tempdir().expect("create independent chains fixture");
+    let root = temp.path();
+    let sources = [
+        (
+            "src/lib.rs",
+            "mod input;\nmod orbit_cam;\nmod output;\nmod meter;\n\npub use orbit_cam::Gain;\npub use meter::Scale;\n\nmacro_rules! read_gain { ($module:ident) => { crate::$module::Gain(7).0 }; }\npub fn read() -> u32 { read_gain!(orbit_cam) }\n",
+        ),
+        ("src/input.rs", "pub struct Gain(pub u32);\n"),
+        (
+            "src/orbit_cam/mod.rs",
+            "mod controls;\n\npub use controls::Gain;\n",
+        ),
+        ("src/orbit_cam/controls.rs", "pub use crate::input::Gain;\n"),
+        ("src/output.rs", "pub struct Scale(pub u32);\n"),
+        (
+            "src/meter/mod.rs",
+            "mod controls;\n\npub use controls::Scale;\n",
+        ),
+        ("src/meter/controls.rs", "pub use crate::output::Scale;\n"),
+    ];
+    pub_use_outside_subtree::write(
+        root,
+        "Cargo.toml",
+        "[package]\nname = \"independent_chains_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[lib]\ntest = false\n",
+    );
+    for (path, source) in sources {
+        pub_use_outside_subtree::write(root, path, source);
+    }
+    let stderr = run_fix(root);
+    assert!(stderr.contains("error[E0425]"), "{stderr}");
+    assert!(stderr.contains("chain batch did not validate"), "{stderr}");
+    assert!(stderr.contains("retrying individual links"), "{stderr}");
+    let expected = sources
+        .into_iter()
+        .map(|(path, source)| {
+            let fixed = match path {
+                "src/lib.rs" => "mod input;\nmod orbit_cam;\nmod output;\nmod meter;\n\npub use orbit_cam::Gain;\npub use output::Scale;\n\nmacro_rules! read_gain { ($module:ident) => { crate::$module::Gain(7).0 }; }\npub fn read() -> u32 { read_gain!(orbit_cam) }\n",
+                "src/orbit_cam/mod.rs" => "mod controls;\n\npub use crate::input::Gain;\n",
+                "src/meter/mod.rs" => "mod controls;\n",
+                "src/orbit_cam/controls.rs" | "src/meter/controls.rs" => "",
+                _ => source,
+            };
+            (PathBuf::from(path), fixed.to_string())
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        rust_sources(root),
+        expected,
+        "the valid chain must collapse"
+    );
+}
+
+/// Count the initial check and the batch validation for four forwarding links.
+fn fix_chain_with_check_budget(root: &Path) -> Report {
     let mut command = mend_command_for(&root.join("Cargo.toml"));
-    command.arg("--fix");
+    command.args(["--fix", "--json"]);
     #[cfg(unix)]
     {
         let tools = tempdir().expect("create check counter directory");
         let cargo = tools.path().join("cargo");
         let count = tools.path().join("checks");
-        fs::write(&cargo, "#!/bin/sh\nif [ \"$1\" = check ]; then printf x >> \"$MEND_TEST_CHECK_STARTS\"; fi\nexec \"$MEND_TEST_REAL_CARGO\" \"$@\"\n")
+        let metadata_count = tools.path().join("metadata");
+        fs::write(&cargo, "#!/bin/sh\nif [ \"$1\" = check ]; then printf x >> \"$MEND_TEST_CHECK_STARTS\"; fi\nif [ \"$1\" = metadata ]; then printf x >> \"$MEND_TEST_METADATA_STARTS\"; fi\nexec \"$MEND_TEST_REAL_CARGO\" \"$@\"\n")
             .expect("write counting cargo entry");
         fs::set_permissions(&cargo, fs::Permissions::from_mode(0o700))
             .expect("make counting cargo entry executable");
@@ -881,20 +1002,29 @@ fn fix_chain_with_check_budget(root: &Path) -> String {
         .expect("prepend counting cargo entry");
         command
             .env("PATH", path)
+            .env("CARGO", &cargo)
             .env("MEND_TEST_REAL_CARGO", env!("CARGO"))
-            .env("MEND_TEST_CHECK_STARTS", &count);
-        let stderr = run_fix_command(&mut command);
+            .env("MEND_TEST_CHECK_STARTS", &count)
+            .env("MEND_TEST_METADATA_STARTS", &metadata_count);
+        let output = run_fix_output(&mut command);
         let starts = fs::read(&count)
             .expect("read real cargo check starts")
             .len();
         assert!(
-            starts <= 5,
-            "four edited trees need at most five checks, observed {starts}"
+            starts <= 2,
+            "one chain batch needs at most two checks, observed {starts}"
         );
-        stderr
+        let metadata_starts = fs::read(&metadata_count)
+            .expect("read workspace metadata starts")
+            .len();
+        assert_eq!(
+            metadata_starts, 1,
+            "the workspace inventory must be resolved once"
+        );
+        report_from_mend_output(&output)
     }
     #[cfg(not(unix))]
-    run_fix_command(&mut command)
+    report_from_mend_output(&run_fix_output(&mut command))
 }
 
 /// A caller in another file reaching the owner module through a `use ... as`

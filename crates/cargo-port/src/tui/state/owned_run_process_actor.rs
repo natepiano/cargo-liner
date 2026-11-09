@@ -699,7 +699,7 @@ mod tests {
     use crate::process_observation::identity::CurrentProcessIdentityObservation;
 
     fn owned_run_id(value: u64) -> OwnedRunId {
-        OwnedRunId::for_test(NonZeroU64::new(value).unwrap_or(NonZeroU64::MIN))
+        OwnedRunId::from(NonZeroU64::new(value).unwrap_or(NonZeroU64::MIN))
     }
 
     struct StartedActorFixture {

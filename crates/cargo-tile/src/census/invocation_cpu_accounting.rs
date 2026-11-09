@@ -21,6 +21,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use sysinfo::Pid;
+#[cfg(any(not(target_os = "linux"), test))]
 use sysinfo::Process;
 
 use super::command_text;
@@ -53,10 +54,8 @@ use crate::constants::BIRTH_BOOT_ID_PATH;
 #[cfg(target_os = "linux")]
 use crate::constants::BIRTH_PROC_DIRECTORY;
 #[cfg(target_os = "linux")]
-use crate::constants::BIRTH_STAT_COMM_END;
-#[cfg(target_os = "linux")]
 use crate::constants::BIRTH_STAT_FILENAME;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 use crate::constants::BIRTH_STAT_START_INDEX;
 use crate::constants::CARGO_TARGET_DIR_ENV;
 use crate::constants::CARGO_TARGET_DIR_FLAG;
@@ -74,11 +73,26 @@ use crate::constants::CPU_AUXV_ENTRY_WORDS;
 use crate::constants::CPU_AUXV_PATH;
 use crate::constants::CPU_REPORT_MILLIS;
 use crate::constants::CPU_SMOOTHING_SECONDS;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 use crate::constants::CPU_STAT_TIME_FIELDS;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 use crate::constants::CPU_STAT_TIME_INDEX;
 use crate::constants::PROCESS_POLL_MILLIS;
+use crate::constants::RUSTC_BINARY;
+use crate::constants::RUSTC_CRATE_TYPE_FLAG;
+use crate::constants::RUSTC_DEPENDENCY_EMIT;
+use crate::constants::RUSTC_DIAGNOSTIC_FLAGS;
+use crate::constants::RUSTC_EMIT_FLAG;
+use crate::constants::RUSTC_LIBRARY_CRATE_TYPE;
+use crate::constants::RUSTC_OUT_DIR_FLAG;
+use crate::constants::RUSTC_OUTPUT_FLAG;
+use crate::constants::RUSTC_OUTPUT_NAMES_PRINT;
+use crate::constants::RUSTC_PRINT_FLAG;
+use crate::constants::RUSTC_REQUEST_VALUE_FLAGS;
+use crate::constants::RUSTC_RLIB_CRATE_TYPE;
+use crate::constants::SCCACHE_BINARY;
+use crate::constants::SCCACHE_DEPENDENCY_FILENAME;
+use crate::constants::SCCACHE_START_SERVER_FLAG;
 use crate::constants::UNAVAILABLE_MEASUREMENT;
 
 /// A reading remains distinct from every reason the scanner cannot establish one.
@@ -101,7 +115,29 @@ pub(crate) enum MeasurementAbsence {
     Unproven,
     /// The counter read is sound and unchanged, but the rate is the platform's
     /// last one: macOS keeps a process's previous rate until its counter moves.
+    #[cfg(any(not(target_os = "linux"), test))]
     RetainedRate,
+}
+
+/// Live resources keep a measured value separate from sampling and absence reasons.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum LiveResources<T> {
+    /// Measured work, including a measured zero.
+    Reading(T),
+    /// A first rate needs another observation.
+    Sampling,
+    /// The absence reason stays explicit until display policy chooses its presentation.
+    Unavailable(MeasurementAbsence),
+}
+
+impl<T> From<Measurement<T>> for LiveResources<T> {
+    fn from(measurement: Measurement<T>) -> Self {
+        match measurement {
+            Measurement::Reading(reading) => Self::Reading(reading),
+            Measurement::Unavailable(MeasurementAbsence::FirstObservation) => Self::Sampling,
+            Measurement::Unavailable(reason) => Self::Unavailable(reason),
+        }
+    }
 }
 
 impl<T> Measurement<T> {
@@ -136,6 +172,189 @@ impl<T: Add<Output = T>> Add for Measurement<T> {
     }
 }
 
+/// Resident memory that has no cargo row.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CompileMemoryShares {
+    /// The cache servers' own resident bytes, counted once per process.
+    pub(crate) shared_compiler_cache: u64,
+    /// Compiler resident bytes with no proven requesting cargo.
+    pub(crate) unattributed:          u64,
+}
+
+/// Arguments that remain equal after the observed sccache rewrites.
+#[derive(Eq, Hash, PartialEq)]
+pub(super) struct CompileRequestKey(Vec<OsString>);
+
+impl CompileRequestKey {
+    /// Keep every argument exact except the rewrites approved from the live capture.
+    pub(super) fn new(arguments: &[OsString]) -> Self {
+        let mut key = Vec::with_capacity(arguments.len());
+        let mut index = 0;
+        while let Some(argument) = arguments.get(index) {
+            index += 1;
+            let bytes = argument.as_bytes();
+            let split = bytes.iter().position(|&byte| byte == b'=');
+            let name = split.map_or(bytes, |split| &bytes[..split]);
+            if RUSTC_DIAGNOSTIC_FLAGS.contains(&name) {
+                if split.is_none() {
+                    index = index.saturating_add(1);
+                }
+                continue;
+            }
+            if RUSTC_REQUEST_VALUE_FLAGS.contains(&name) {
+                let value = if let Some(split) = split {
+                    OsStr::from_bytes(&bytes[split + 1..])
+                } else if let Some(value) = arguments.get(index) {
+                    index += 1;
+                    value.as_os_str()
+                } else {
+                    key.push(argument.clone());
+                    continue;
+                };
+                let value = if name == RUSTC_CRATE_TYPE_FLAG.as_bytes()
+                    && value == OsStr::new(RUSTC_LIBRARY_CRATE_TYPE)
+                {
+                    OsStr::new(RUSTC_RLIB_CRATE_TYPE)
+                } else {
+                    value
+                };
+                let mut joined = OsStr::from_bytes(name).to_owned();
+                joined.push("=");
+                joined.push(value);
+                key.push(joined);
+            } else {
+                key.push(argument.clone());
+            }
+        }
+        Self(key)
+    }
+
+    /// Read an option from the normalized argument boundary.
+    fn option_value(&self, name: &str) -> Option<&OsStr> {
+        self.0
+            .iter()
+            .find_map(|argument| request_option_value(argument, name))
+    }
+
+    /// Remove only the options that the observed discovery stage replaces.
+    fn without_options(&self, names: &[&str]) -> Self {
+        Self(
+            self.0
+                .iter()
+                .filter(|argument| {
+                    !names
+                        .iter()
+                        .any(|name| request_option_value(argument, name).is_some())
+                })
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// Dependency discovery keeps the source and compiler configuration exact.
+    fn dependency_discovery_key(&self) -> Self {
+        self.without_options(&[RUSTC_EMIT_FLAG, RUSTC_OUT_DIR_FLAG, RUSTC_OUTPUT_FLAG])
+    }
+}
+
+/// Split a normalized option at its argument boundary.
+fn request_option_value<'argument>(
+    argument: &'argument OsStr,
+    name: &str,
+) -> Option<&'argument OsStr> {
+    argument
+        .as_bytes()
+        .strip_prefix(name.as_bytes())?
+        .strip_prefix(b"=")
+        .map(OsStr::from_bytes)
+}
+
+/// A compiler either executes a request or discovers one part of its outputs.
+pub(super) enum CompilerRequest {
+    /// Compilation keeps the complete request key, including the emit value.
+    Compilation(CompileRequestKey),
+    /// Dependency discovery replaces the emit kind and output destination.
+    DependencyDiscovery(CompileRequestKey),
+    /// Output discovery adds a file-name query to the complete request.
+    OutputDiscovery(CompileRequestKey),
+}
+
+impl CompilerRequest {
+    /// Recognize only the discovery rewrites recorded in the live capture.
+    pub(super) fn new(arguments: &[OsString]) -> Self {
+        let key = CompileRequestKey::new(arguments);
+        let dependency_output = key.option_value(RUSTC_OUTPUT_FLAG).is_some_and(|output| {
+            let path = Path::new(output);
+            path.file_name() == Some(OsStr::new(SCCACHE_DEPENDENCY_FILENAME))
+                && path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .is_some_and(|directory| {
+                        directory.as_bytes().starts_with(SCCACHE_BINARY.as_bytes())
+                    })
+        });
+        if key.option_value(RUSTC_EMIT_FLAG) == Some(OsStr::new(RUSTC_DEPENDENCY_EMIT))
+            && dependency_output
+        {
+            Self::DependencyDiscovery(key.dependency_discovery_key())
+        } else if key.option_value(RUSTC_PRINT_FLAG) == Some(OsStr::new(RUSTC_OUTPUT_NAMES_PRINT)) {
+            Self::OutputDiscovery(key.without_options(&[RUSTC_PRINT_FLAG]))
+        } else {
+            Self::Compilation(key)
+        }
+    }
+
+    /// Keep every matching client so ambiguity still prevents cargo attribution.
+    pub(super) fn matching_clients(
+        &self,
+        requests: &HashMap<CompileRequestKey, Vec<Pid>>,
+    ) -> Vec<Pid> {
+        match self {
+            Self::Compilation(key) | Self::OutputDiscovery(key) => {
+                requests.get(key).cloned().unwrap_or_default()
+            },
+            Self::DependencyDiscovery(key) => requests
+                .iter()
+                .filter(|(request, _)| {
+                    request.option_value(RUSTC_EMIT_FLAG).is_some()
+                        && request.option_value(RUSTC_OUT_DIR_FLAG).is_some()
+                        && request.dependency_discovery_key() == *key
+                })
+                .flat_map(|(_, clients)| clients.iter().copied())
+                .collect(),
+        }
+    }
+}
+
+/// A cache process either requests a compile or performs server work.
+pub(super) enum CacheCommand<'scan> {
+    /// Arguments after the rustc executable, borrowed from this scan.
+    CompileRequest(&'scan [OsString]),
+    /// A server owns its RSS separately from its compiler children.
+    Server,
+    /// A statistics or administration client keeps ordinary ancestry ownership.
+    Administration,
+}
+
+/// Parse the collected arguments without reading the process again.
+pub(super) fn cache_command(arguments: &[OsString]) -> CacheCommand<'_> {
+    if let Some(index) = arguments
+        .iter()
+        .position(|argument| Path::new(argument).file_name() == Some(OsStr::new(RUSTC_BINARY)))
+    {
+        return CacheCommand::CompileRequest(&arguments[index + 1..]);
+    }
+    if arguments.len() <= 1
+        || arguments
+            .iter()
+            .any(|argument| argument == SCCACHE_START_SERVER_FLAG)
+    {
+        CacheCommand::Server
+    } else {
+        CacheCommand::Administration
+    }
+}
+
 /// What the census worked out per cargo invocation, once every process
 /// under one has been walked up to it.
 /// Buckets are disjoint: nested cargo retains its own contribution, never folded into its parent.
@@ -149,6 +368,8 @@ pub(super) struct InvocationMeasurements {
     pub(super) cpu:                  HashMap<Pid, Measurement<f32>>,
     /// Resident bytes held on the same publication cadence as CPU.
     pub(super) memory:               HashMap<Pid, Measurement<u64>>,
+    /// Compiler memory published beside the cargo rows.
+    pub(super) memory_shares:        CompileMemoryShares,
 }
 
 /// Evidence retained across a refresh to establish identity and monotonic CPU time.
@@ -157,9 +378,11 @@ pub(super) struct CpuBaseline {
     /// A reused pid must begin a fresh rate observation.
     pub(super) lifetime:    LifetimeEvidence,
     /// A decrease for the same process proves the samples cannot form a valid rate.
+    #[cfg(any(not(target_os = "linux"), test))]
     pub(super) accumulated: u64,
 }
 
+#[cfg(any(not(target_os = "linux"), test))]
 impl From<&Process> for CpuBaseline {
     fn from(process: &Process) -> Self {
         Self {
@@ -263,33 +486,35 @@ pub(super) enum MemoryReport {
 #[derive(Default)]
 pub(super) struct InvocationCpuAccounting {
     /// Native lifetimes preserve the first confirmed generation through registration gaps.
-    pub(super) owners:          HashMap<ProcessIdentity, InvocationId>,
+    pub(super) owners:                 HashMap<ProcessIdentity, InvocationId>,
     /// Accumulated invocation work survives descendant exits between scans.
-    pub(super) invocations:     HashMap<InvocationId, InvocationCpuHistory>,
+    pub(super) invocations:            HashMap<InvocationId, InvocationCpuHistory>,
     /// Observed client destinations remain usable while their invocation lives.
-    pub(super) targets:         HashMap<InvocationId, HashSet<PathBuf>>,
+    pub(super) targets:                HashMap<InvocationId, HashSet<PathBuf>>,
     /// A compiler lifetime can never donate its accumulated history to another invocation.
-    pub(super) cache_owners:    HashMap<ProcessIdentity, InvocationId>,
+    pub(super) cache_owners:           HashMap<ProcessIdentity, InvocationId>,
     /// Unavailable lifetime reads retain rows only during continuous pid presence.
-    pub(super) identities:      ProcessIdentities,
+    pub(super) identities:             ProcessIdentities,
     /// Bind the pre-refresh counters to the lifetime observed with their last sample.
-    pub(super) observed:        HashMap<Pid, LifetimeEvidence>,
+    pub(super) observed:               HashMap<Pid, LifetimeEvidence>,
     /// Where each invocation's reading has settled, moved on every scan.
     /// Keyed by invocation identity, so a replaced pid cannot inherit old readings.
-    pub(super) settled:         HashMap<InvocationId, Measurement<f32>>,
+    pub(super) settled:                HashMap<InvocationId, Measurement<f32>>,
     /// What the table is carrying, taken from
     /// [`settled`](Self::settled) when a reading falls due.
-    pub(super) reported:        HashMap<InvocationId, Measurement<f32>>,
+    pub(super) reported:               HashMap<InvocationId, Measurement<f32>>,
     /// Compiler pid to invocation owner for this scan's detached compiler trees.
-    pub(super) detached:        HashMap<Pid, Pid>,
+    pub(super) detached:               HashMap<Pid, Pid>,
     /// Resident bytes per invocation as `report_memory` last returned them.
-    pub(super) reported_memory: HashMap<InvocationId, Measurement<u64>>,
+    pub(super) reported_memory:        HashMap<InvocationId, Measurement<u64>>,
+    /// Shares retained with the cargo memory publication.
+    pub(super) reported_memory_shares: CompileMemoryShares,
     /// A never-published smoother has no previous snapshot to hold.
-    publication:                CpuPublication,
+    publication:                       CpuPublication,
     /// A delayed scan still advances smoothing by the full elapsed interval.
-    smoothing_sample:           CpuSmoothingSample,
+    smoothing_sample:                  CpuSmoothingSample,
     /// The scan interval and the windows that smooth and hold a reading.
-    cadence:                    CensusCadence,
+    cadence:                           CensusCadence,
 }
 
 /// A cumulative subtree counter, retaining completed work on platforms without wait totals.
@@ -607,35 +832,15 @@ impl LinuxCpuSample {
 /// Parse the four CPU counters and start ticks after the final comm delimiter.
 #[cfg(target_os = "linux")]
 fn linux_cpu_ticks(stat: &[u8]) -> Result<LinuxCpuSample, MeasurementAbsence> {
-    let end = stat
-        .iter()
-        .rposition(|byte| *byte == BIRTH_STAT_COMM_END)
-        .ok_or(MeasurementAbsence::ReadFailed)?;
-    let mut fields = stat[end + 1..]
-        .split(u8::is_ascii_whitespace)
-        .filter(|field| !field.is_empty())
-        .skip(CPU_STAT_TIME_INDEX);
-    let mut ticks = 0_u64;
-    for _ in 0..CPU_STAT_TIME_FIELDS {
-        let field = fields.next().ok_or(MeasurementAbsence::ReadFailed)?;
-        let value = std::str::from_utf8(field)
-            .map_err(|_| MeasurementAbsence::ReadFailed)?
-            .parse::<u64>()
-            .map_err(|_| MeasurementAbsence::ReadFailed)?;
-        ticks = ticks
-            .checked_add(value)
-            .ok_or(MeasurementAbsence::ReadFailed)?;
-    }
-    let field = fields
-        .nth(BIRTH_STAT_START_INDEX - CPU_STAT_TIME_INDEX - CPU_STAT_TIME_FIELDS)
-        .ok_or(MeasurementAbsence::ReadFailed)?;
-    let start_ticks = std::str::from_utf8(field)
-        .map_err(|_| MeasurementAbsence::ReadFailed)?
-        .parse::<u64>()
-        .map_err(|_| MeasurementAbsence::ReadFailed)?;
+    let stat = crate::linux_process_stat::LinuxProcessStat::parse(stat)
+        .map_err(|()| MeasurementAbsence::ReadFailed)?;
     Ok(LinuxCpuSample {
-        start_ticks,
-        accumulated_ticks: ticks,
+        start_ticks:       stat
+            .start_ticks()
+            .map_err(|()| MeasurementAbsence::ReadFailed)?,
+        accumulated_ticks: stat
+            .cpu_ticks()
+            .map_err(|()| MeasurementAbsence::ReadFailed)?,
     })
 }
 

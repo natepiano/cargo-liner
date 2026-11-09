@@ -159,8 +159,8 @@ pub(crate) const READER_TIMESTAMPS_ENV: &str = "CARGO_TILE_READER_TIMESTAMPS";
 /// `tiles.widen_summary` when `config.toml` says nothing: the summary
 /// stays in its own column.
 pub(crate) const DEFAULT_WIDEN_SUMMARY: bool = false;
-/// Shortest useful height for one command cell, including its frame.
-pub(crate) const MIN_CELL_HEIGHT: u16 = 6;
+/// A command cell needs its labels, command and readout between its borders.
+pub(crate) const MIN_CELL_HEIGHT: u16 = 5;
 /// Narrowest useful width for one command cell, including its frame.
 pub(crate) const MIN_CELL_WIDTH: u16 = 40;
 /// Width at which a summary memory foot leaves room for the content-rows readout only.
@@ -174,10 +174,12 @@ pub(crate) const SUMMARY_WITHOUT_ROWS_READOUT_WIDTH: u16 = 28;
 pub(crate) const DEFAULT_FADE_SECONDS: u64 = 3;
 /// Distance between fade alpha levels that keep built-in ink contrast monotone.
 pub(crate) const FADE_ALPHA_STEP: u8 = 2;
-/// First-paint fade beyond which a delayed cell holds final ink until expiry.
-/// Full ink meets the three-quarter readability floor on every channel without
-/// truncating blends; cells already readable on entry keep their ordinary fade.
+/// First-text fade beyond which a delayed row starts its entry at three-quarter ink.
+/// The same limit sets the brighten's starting ground contribution: 64 of 256,
+/// rounded toward the ink. Rows already this readable keep their ordinary fade.
 pub(crate) const CELL_ENTRY_FADE_LIMIT: u8 = 63;
+/// Time for delayed command text to brighten from three-quarter to full ink.
+pub(crate) const CELL_BRIGHTEN_DURATION: Duration = Duration::from_millis(250);
 /// Contrast floor for a finished row through the first half of its fade.
 #[cfg(test)]
 pub(crate) const MIN_FINISHED_ROW_CONTRAST: f64 = 3.0;
@@ -199,6 +201,7 @@ pub(crate) const PROBE_THRESHOLD: Duration = Duration::from_millis(33);
 /// a reason the user cannot grant their way out of. The frame log is off
 /// unless its variable is set, so the line names the variable rather
 /// than promising a recording an ordinary run never makes.
+#[cfg(feature = "attract")]
 pub(crate) const ATTRACT_BACKDROP_UNAVAILABLE_NOTICE: &str =
     "attract: desktop capture unavailable -- set CARGO_TILE_FRAME_LOG to record why";
 /// Marks anything shortened or shed for lack of room.
@@ -211,6 +214,7 @@ pub(crate) const ELISION: &str = "\u{2026}";
 /// command it is on every row it draws. The leading space holds the
 /// word off the corner glyph the title is set against.
 pub(crate) const SUMMARY_CELL_TITLE: &str = " summary ";
+
 /// The capture-installation card describes the work it starts.
 pub(crate) const CAPTURE_PROGRESS_TITLE: &str = "Capturing cargo progress";
 /// Delimiters around a command's non-default build profile.
@@ -249,6 +253,7 @@ pub(crate) const ARGUMENT_SEPARATOR: &str = "--";
 /// because it was asked for. Stands alone for the same reason
 /// [`FROZEN_NOTE_LABEL`] does, and says the same kind of thing: the
 /// grid is still there, it is being drawn over.
+#[cfg(feature = "attract")]
 pub(crate) const ATTRACT_NOTE_LABEL: &str = "attract";
 /// Number of bytes in one gibibyte.
 pub(crate) const BYTES_PER_GIBIBYTE: u64 = 1 << 30;
@@ -373,7 +378,7 @@ pub(crate) const MANAGED_COLUMN: usize = 9;
 /// resident memory used by the invocation and everything under it. A
 /// `12.4G` reading and its spacing take seven cells from `command`.
 pub(crate) const MEMORY_COLUMN: usize = 5;
-/// Unit suffix for resident-memory readings.
+/// Unit suffix for memory and disk readings in gibibytes.
 pub(crate) const MEMORY_UNIT: &str = "G";
 /// Shown in place of the table when no cargo is running.
 pub(crate) const NO_PROCESSES_NOTE: &str = "no cargo processes running";
@@ -412,6 +417,39 @@ pub(crate) const ROOT_PROCESS_PID: u32 = 1;
 pub(crate) const RUSTC_BINARY: &str = "rustc";
 /// Both rustc and its cache client carry the destination of a compilation.
 pub(crate) const RUSTC_OUT_DIR_FLAG: &str = "--out-dir";
+/// The compiler selects its output kinds with this option.
+pub(crate) const RUSTC_EMIT_FLAG: &str = "--emit";
+/// The cache directs dependency discovery to one temporary file.
+pub(crate) const RUSTC_OUTPUT_FLAG: &str = "-o";
+/// The compiler can report its output names without compiling.
+pub(crate) const RUSTC_PRINT_FLAG: &str = "--print";
+/// The cache requests only dependency information during discovery.
+pub(crate) const RUSTC_DEPENDENCY_EMIT: &str = "dep-info";
+/// The cache asks the compiler for these output names.
+pub(crate) const RUSTC_OUTPUT_NAMES_PRINT: &str = "file-names";
+/// The cache writes dependency discovery to this file.
+pub(crate) const SCCACHE_DEPENDENCY_FILENAME: &str = "deps.d";
+/// Diagnostic options that do not identify a compile request.
+pub(crate) const RUSTC_DIAGNOSTIC_FLAGS: &[&[u8]] = &[b"--error-format", b"--json"];
+/// The crate type option can use split or joined spelling.
+pub(crate) const RUSTC_CRATE_TYPE_FLAG: &str = "--crate-type";
+/// Cargo's library crate type before the cache rewrites it.
+pub(crate) const RUSTC_LIBRARY_CRATE_TYPE: &str = "lib";
+/// The equivalent library crate type used by the cache server.
+pub(crate) const RUSTC_RLIB_CRATE_TYPE: &str = "rlib";
+/// Request options whose values remain exact across split and joined spelling.
+pub(crate) const RUSTC_REQUEST_VALUE_FLAGS: &[&[u8]] = &[
+    b"--crate-name",
+    b"--edition",
+    RUSTC_CRATE_TYPE_FLAG.as_bytes(),
+    b"--check-cfg",
+    RUSTC_OUT_DIR_FLAG.as_bytes(),
+    RUSTC_EMIT_FLAG.as_bytes(),
+    RUSTC_OUTPUT_FLAG.as_bytes(),
+    RUSTC_PRINT_FLAG.as_bytes(),
+];
+/// This option starts a cache server rather than requesting a compile.
+pub(crate) const SCCACHE_START_SERVER_FLAG: &str = "--start-server";
 /// Seconds in an hour, past which `dur` widens to `hh:mm:ss`.
 pub(crate) const SECONDS_PER_HOUR: u64 = 3600;
 /// Seconds in a minute, for splitting a run time into its parts.
@@ -451,6 +489,14 @@ pub(crate) const SUMMARY_HIDDEN_COLUMNS: [usize; 3] =
     [PARENT_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN];
 /// Label before the summary's total resident memory.
 pub(crate) const SUMMARY_MEMORY_LABEL: &str = "mem ";
+/// The cache servers' resident memory has no cargo owner.
+pub(crate) const SUMMARY_SHARED_COMPILER_CACHE_LABEL: &str = "shared compiler cache";
+/// Detached compiler memory can lack a proven cargo owner.
+pub(crate) const SUMMARY_UNATTRIBUTED_MEMORY_LABEL: &str = "unattributed";
+/// Separator before the optional summary disk reading.
+pub(crate) const SUMMARY_DISK_SEPARATOR: &str = "  ";
+/// Label before the summary disk reading.
+pub(crate) const SUMMARY_DISK_LABEL: &str = "disk ";
 /// Shared reductions for every view: arguments, blank state alignment, counts,
 /// start, duration, memory, CPU, filled state and parent. Progress state has no
 /// removable handle. Command words yield only after optional metadata has left.
@@ -642,45 +688,56 @@ pub(crate) const ACCOUNT_GROUPS_INITIAL_CAPACITY: usize = 32;
 pub(crate) const ACCOUNT_GROUPS_MAX_CAPACITY: usize = 65_536;
 /// Hidden per-account hook protocol shared by the admin command and account process.
 pub(crate) const ACCOUNT_HOOK_REPORT_FLAG: &str = "account-hook-report";
-/// Name of the real cargo once the shim takes its place beside it. The
-/// shim resolves it as a sibling, so a hardcoded-path invocation of a
-/// toolchain's cargo is captured the same as one found through `PATH`.
-pub(crate) const REAL_CARGO_NAME: &str = "cargo-tile-real";
-/// The binary the shim stands in for, in each toolchain's `bin`.
-pub(crate) const CARGO_NAME: &str = "cargo";
-/// Line the installer recognises its own shim by. A `cargo` without it
-/// is the real binary, whatever else it may be, and is moved aside
-/// rather than overwritten.
-pub(crate) const SHIM_MARKER: &str = "cargo-tile-capture-shim";
-/// Native runner executable shared by the entry protocol and census recognition.
+/// How long the toast announcing a shim the grid just installed stays
+/// up. Longer than a notice: it names a change to every toolchain on
+/// the machine and the command that reverses it.
+pub(crate) const CAPTURE_INSTALLED_TOAST_VISIBLE: Duration = Duration::from_secs(12);
+/// The native capture entry owns this executable name.
 pub(crate) const CAPTURE_RUNNER_NAME: &str = "cargo-tile-capture";
+/// The shell that forwards a captured command.
+pub(crate) const CAPTURE_SHELL_NAME: &str = "sh";
+/// Version of the installed entry, independent of registration framing.
+pub(crate) const CAPTURE_SHIM_VERSION: u64 = 4;
+/// Placeholder for the installed runner path.
+pub(crate) const CAPTURE_SHIM_EXECUTABLE: &str = "@CARGO_TILE_EXECUTABLE@";
 /// Entry argument that selects native output capture.
 pub(crate) const CAPTURE_SHIM_ARGUMENT: &str = "--capture-shim";
 /// Entry argument that runs cargo without opening another capture.
 pub(crate) const CAPTURE_SHIM_PASSTHROUGH_ARGUMENT: &str = "--capture-shim-passthrough";
-/// Permissions the shim is written with: readable and executable by
-/// all, writable by its owner.
-pub(crate) const SHIM_MODE: u32 = 0o755;
-/// Directory under the rustup home holding one directory per toolchain.
-pub(crate) const TOOLCHAINS_DIR: &str = "toolchains";
-/// Directory under a toolchain holding its binaries.
-pub(crate) const TOOLCHAIN_BIN_DIR: &str = "bin";
+/// The binary the shim stands in for, in each toolchain's `bin`.
+pub(crate) const CARGO_NAME: &str = "cargo";
+/// Whether the grid puts the shim in front of cargo when it opens,
+/// when `config.toml` says nothing.
+pub(crate) const DEFAULT_CAPTURE_AUTO_INSTALL: bool = true;
+/// Observe cargo's original invocation when a directory wins the final
+/// registration name after the shim's preliminary existence check.
+#[cfg(test)]
+pub(crate) const HOOK_TEST_DIRECTORY_COLLISION_CARGO: &str = r#"#!/bin/sh
+printf '%s\000' "$@" > "$HOOK_TEST_OBSERVATIONS/arguments"
+umask > "$HOOK_TEST_OBSERVATIONS/umask"
+printf '%s\000' "${CARGOTILE_NESTED-unset}" "${CARGO_TERM_PROGRESS_WHEN-unset}" "${CARGO_TERM_PROGRESS_WIDTH-unset}" > "$HOOK_TEST_OBSERVATIONS/environment"
+printf 'cargo-stdout\n'
+printf 'cargo-stderr\n' >&2
+exit 37
+"#;
+/// A saved cargo fixture that echoes its arguments. Its marker proves
+/// interrupted-install repair depends on the filenames, not its bytes.
+#[cfg(test)]
+pub(crate) const HOOK_TEST_REAL_CARGO: &str =
+    "#!/bin/sh\n# cargo-tile-capture-shim inside the saved cargo\nprintf '%s\\n' \"$@\"\n";
+/// The shim passes version requests straight through, so repair tests
+/// can execute the saved cargo without creating capture state.
+#[cfg(test)]
+pub(crate) const HOOK_TEST_VERSION_ARGUMENT: &str = "--version";
+/// Name of the real cargo once the shim takes its place beside it. The
+/// shim resolves it as a sibling, so a hardcoded-path invocation of a
+/// toolchain's cargo is captured the same as one found through `PATH`.
+pub(crate) const REAL_CARGO_NAME: &str = "cargo-tile-real";
 /// Where rustup keeps its toolchains, under the home directory.
 pub(crate) const RUSTUP_DIRNAME: &str = ".rustup";
 /// Environment variable moving the rustup home away from
 /// [`RUSTUP_DIRNAME`].
 pub(crate) const RUSTUP_HOME_ENV: &str = "RUSTUP_HOME";
-/// How much of a `cargo` is read to look for [`SHIM_MARKER`]. The real
-/// cargo is a thirty-megabyte binary and the marker is in the shim's
-/// opening comment, so there is no reason to read further.
-pub(crate) const SHIM_MARKER_SEARCH_BYTES: usize = 1024;
-/// Name the shim is written under, beside `cargo`, before it is renamed
-/// over the top. A shim that is running is still being read by its
-/// `sh`, which does not `exec` the real cargo but waits on it, so the
-/// file it was started from is never written in place.
-pub(crate) const SHIM_STAGING_NAME: &str = "cargo-tile-shim.staging";
-/// The installer compares this header before replacing an existing shim.
-pub(crate) const SHIM_VERSION_PREFIX: &str = "# cargo-tile-shim-version: ";
 /// Exclusive-create lock beside the shim, held across state inspection
 /// and installation so concurrent installers cannot overwrite real cargo.
 pub(crate) const SHIM_LOCK_NAME: &str = "cargo-tile-shim.lock";
@@ -693,43 +750,28 @@ pub(crate) const SHIM_LOCK_RECOVERY: &str =
 pub(crate) const SHIM_LOCK_RETRY_ATTEMPTS: usize = 10;
 /// Match the favorites lock's short wait between competing writers.
 pub(crate) const SHIM_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
-/// A saved cargo fixture that echoes its arguments. Its marker proves
-/// interrupted-install repair depends on the filenames, not its bytes.
-#[cfg(test)]
-pub(crate) const HOOK_TEST_REAL_CARGO: &str =
-    "#!/bin/sh\n# cargo-tile-capture-shim inside the saved cargo\nprintf '%s\\n' \"$@\"\n";
-/// The shim passes version requests straight through, so repair tests
-/// can execute the saved cargo without creating capture state.
-#[cfg(test)]
-pub(crate) const HOOK_TEST_VERSION_ARGUMENT: &str = "--version";
-/// Observe cargo's original invocation when a directory wins the final
-/// registration name after the shim's preliminary existence check.
-#[cfg(test)]
-pub(crate) const HOOK_TEST_DIRECTORY_COLLISION_CARGO: &str = r#"#!/bin/sh
-printf '%s\000' "$@" > "$HOOK_TEST_OBSERVATIONS/arguments"
-umask > "$HOOK_TEST_OBSERVATIONS/umask"
-printf '%s\000' "${CARGOTILE_NESTED-unset}" "${CARGO_TERM_PROGRESS_WHEN-unset}" "${CARGO_TERM_PROGRESS_WIDTH-unset}" > "$HOOK_TEST_OBSERVATIONS/environment"
-printf 'cargo-stdout\n'
-printf 'cargo-stderr\n' >&2
-exit 37
-"#;
-/// Create the competing directory at the last possible command boundary,
-/// then use the host's actual ln to expose its directory-target behavior.
-#[cfg(test)]
-pub(crate) const HOOK_TEST_DIRECTORY_COLLISION_LINK: &str = r#"#!/bin/sh
-set -eu
-mkdir "$2"
-printf 'preserved\n' > "$2/keep"
-printf '%s' "$2" > "$HOOK_TEST_OBSERVATIONS/registration-path"
-exec "$HOOK_TEST_REAL_LINK" "$@"
-"#;
-/// Whether the grid puts the shim in front of cargo when it opens,
-/// when `config.toml` says nothing.
-pub(crate) const DEFAULT_CAPTURE_AUTO_INSTALL: bool = true;
-/// How long the toast announcing a shim the grid just installed stays
-/// up. Longer than a notice: it names a change to every toolchain on
-/// the machine and the command that reverses it.
-pub(crate) const CAPTURE_INSTALLED_TOAST_VISIBLE: Duration = Duration::from_secs(12);
+/// Line the installer recognises its own shim by. A `cargo` without it
+/// is the real binary, whatever else it may be, and is moved aside
+/// rather than overwritten.
+pub(crate) const SHIM_MARKER: &str = "cargo-tile-capture-shim";
+/// How much of a `cargo` is read to look for [`SHIM_MARKER`]. The real
+/// cargo is a thirty-megabyte binary and the marker is in the shim's
+/// opening comment, so there is no reason to read further.
+pub(crate) const SHIM_MARKER_SEARCH_BYTES: usize = 1024;
+/// Permissions the shim is written with: readable and executable by
+/// all, writable by its owner.
+pub(crate) const SHIM_MODE: u32 = 0o755;
+/// Name the shim is written under, beside `cargo`, before it is renamed
+/// over the top. A shim that is running is still being read by its
+/// `sh`, which does not `exec` the real cargo but waits on it, so the
+/// file it was started from is never written in place.
+pub(crate) const SHIM_STAGING_NAME: &str = "cargo-tile-shim.staging";
+/// The installer compares this header before replacing an existing shim.
+pub(crate) const SHIM_VERSION_PREFIX: &str = "# cargo-tile-shim-version: ";
+/// Directory under the rustup home holding one directory per toolchain.
+pub(crate) const TOOLCHAINS_DIR: &str = "toolchains";
+/// Directory under a toolchain holding its binaries.
+pub(crate) const TOOLCHAIN_BIN_DIR: &str = "bin";
 
 // birth stamps
 /// An empty cached boot response cannot verify any registration in this session.
@@ -760,6 +802,9 @@ pub(crate) const BIRTH_STAT_FILENAME: &str = "stat";
 /// Field 22 is index 19 after removing fields 1 and 2 (pid and comm).
 #[cfg(target_os = "linux")]
 pub(crate) const BIRTH_STAT_START_INDEX: usize = 19;
+/// Field 24 is index 21 after removing pid and comm.
+#[cfg(target_os = "linux")]
+pub(crate) const RESIDENT_PAGES_INDEX: usize = 21;
 /// A failed or incomplete kernel response cannot prove process identity.
 #[cfg(target_os = "macos")]
 pub(crate) const BIRTH_SYSCTL_INCOMPLETE: &str = "incomplete process birth sysctl response";
@@ -778,6 +823,8 @@ pub(crate) const CAPTURE_ENTRY_NAME_BYTES: usize = 255;
 /// names. A directory record that cannot fit fails enumeration conservatively.
 #[cfg(target_os = "linux")]
 pub(crate) const CAPTURE_DIRECTORY_BUFFER_BYTES: usize = 8192;
+/// Bytes read per transfer from cargo stderr to the log and caller stderr.
+pub(crate) const CAPTURE_STDERR_PUMP_BUFFER_BYTES: usize = 8192;
 /// Registration metadata is small; 64 KiB accommodates long command and cwd
 /// fields. Reads allow one extra byte solely to detect and reject larger files.
 pub(crate) const CAPTURE_REGISTRATION_BYTES: u64 = 64 * 1024;
@@ -980,6 +1027,11 @@ pub(crate) const LARGE_TABLE_TEST_AREA: Rect = Rect::new(0, 0, 70, 30);
 /// Process command used by every row in the large cell.
 #[cfg(test)]
 pub(crate) const LARGE_TABLE_TEST_COMMAND: [&str; 1] = ["test"];
+
+/// The expanded cell uses a fixed Esc key.
+pub(crate) const COLLAPSE_HINT_KEY: &str = "esc";
+
+pub(crate) const COLLAPSE_HINT_LABEL: &str = "collapse";
 
 #[cfg(test)]
 mod tests {

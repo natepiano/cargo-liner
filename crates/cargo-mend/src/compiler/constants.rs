@@ -110,7 +110,8 @@ pub(crate) const SOURCE_DIR_SRC: &str = "src";
 pub(super) const SOURCE_DIR_TESTS: &str = "tests";
 
 // `PRELUDE_MODULE_NAME` identifies the prelude module for visibility policy.
-pub(super) const PRELUDE_MODULE_NAME: &str = "prelude";
+// `pub use super::Item` there is the prelude's whole purpose, not a sideways facade.
+pub(crate) const PRELUDE_MODULE_NAME: &str = "prelude";
 
 // `WRAPPER_DIR_NAME` and `WRAPPER_ALIAS_STAGING_EXTENSION` name the wrapper alias directory and
 // staging extension.

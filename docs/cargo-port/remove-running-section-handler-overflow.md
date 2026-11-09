@@ -2,7 +2,6 @@
 
 > **Status: IMPLEMENTATION PLAN — phased, delegate-ready.** A tile whose content needs more rows than its column has continues at the top of the next column, titled `<name> · <role> · continued`; tiles after it move along, and short tiles take only the rows they need.
 
-> **Production: remove-running-section** — unit `handler-enh-unit`; production doc `docs/cargo-port/remove-running-section-production.md`
 
 ## Source
 

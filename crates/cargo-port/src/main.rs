@@ -28,4 +28,19 @@ mod watcher;
 #[global_allocator]
 static TEST_ALLOCATOR: ThreadCountingAllocator = ThreadCountingAllocator;
 
-fn main() -> ExitCode { tui::run() }
+fn main() -> ExitCode {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    limit_allocator_arenas();
+    tui::run()
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[allow(
+    unsafe_code,
+    reason = "GNU libc arena policy runs before worker threads"
+)]
+fn limit_allocator_arenas() {
+    // SAFETY: This GNU libc call takes integer options. It runs before cargo-port starts worker
+    // threads.
+    unsafe { libc::mallopt(libc::M_ARENA_MAX, constants::GNU_MALLOC_ARENA_LIMIT) };
+}

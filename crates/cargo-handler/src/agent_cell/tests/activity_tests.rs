@@ -266,16 +266,14 @@ fn activity_managed_tree_sorts_status_words_without_reordering_each_workers_chil
         vec![root, writer, reader],
         HierarchyEdges(vec![
             HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "root-id".into(),
-                member:   "reader-id".into(),
-                role:     HierarchyRole::Test,
+                manager: "root-id".into(),
+                member:  "reader-id".into(),
+                role:    HierarchyRole::Test,
             },
             HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "root-id".into(),
-                member:   "writer-id".into(),
-                role:     HierarchyRole::Impl,
+                manager: "root-id".into(),
+                member:  "writer-id".into(),
+                role:    HierarchyRole::Impl,
             },
         ])
         .into(),
@@ -338,16 +336,14 @@ fn activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_
         vec![root],
         HierarchyEdges(vec![
             HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "root-id".into(),
-                member:   task_id.into(),
-                role:     HierarchyRole::Fix,
+                manager: "root-id".into(),
+                member:  task_id.into(),
+                role:    HierarchyRole::Fix,
             },
             HierarchyEdge {
-                reviewer: crate::census::hierarchy::ReviewerState::NotPool,
-                manager:  "root-id".into(),
-                member:   unreadable_id.into(),
-                role:     HierarchyRole::Test,
+                manager: "root-id".into(),
+                member:  unreadable_id.into(),
+                role:    HierarchyRole::Test,
             },
         ])
         .into(),
@@ -362,7 +358,7 @@ fn activity_worker_names_use_the_final_hierarchy_role_and_never_draw_raw_thread_
     let text = lines(&buffer).join("\n");
     assert!(text.contains("fix · Repair the widget"), "{text}");
     assert!(
-        text.contains("└─ test"),
+        text.contains("└── test"),
         "the unreadable task still has its hierarchy role: {text}"
     );
     assert!(
@@ -479,7 +475,8 @@ fn shell_running_uses_agent_running_ink_while_timers_keep_shell_ink() {
         ..agent(10, "shell-owner", HOUR, None)
     };
     let mut cell = entry(&owner, None);
-    cell.lines.push(TreeLine {
+    cell.lines.push(TreeLine::new(TreeLineContent {
+        expansion:      TreeMarker::Leaf,
         dispatch_label: DispatchLabel::Original,
         machine:        "natedev",
         location:       SessionLocation::SameMachine,
@@ -488,7 +485,7 @@ fn shell_running_uses_agent_running_ink_while_timers_keep_shell_ink() {
         rails:          Vec::new(),
         branch:         Branch::Last,
         subject:        LineSubject::Agent(RoleLabel::Unlabeled),
-    });
+    }));
     for width in [180, 65] {
         let buffer = drawn_among(&cell, &[], width);
         let agent_status = status_at(&buffer, "running-agent");

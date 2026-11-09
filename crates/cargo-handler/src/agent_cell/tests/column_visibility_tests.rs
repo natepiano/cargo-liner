@@ -1,5 +1,7 @@
 //! Column visibility is measured from drawn rows, including real grid clicks.
 
+use std::collections::HashSet;
+
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Position;
@@ -16,11 +18,32 @@ use crate::sort;
 use crate::sort::HeaderHit;
 use crate::sort::SortDirection;
 
+const METADATA_WIDTH_MIN: u16 = 55;
+const METADATA_WIDTH_END: u16 = 180;
+const METADATA_COLUMN_STAGES: [MetadataColumns; 3] = [
+    MetadataColumns::ModelAndEffort,
+    MetadataColumns::ModelOnly,
+    MetadataColumns::Neither,
+];
+
+#[derive(Clone, Copy, Debug)]
+enum MetadataFit {
+    Local,
+    SharedColumn,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum MetadataColumns {
+    ModelAndEffort,
+    ModelOnly,
+    Neither,
+}
+
 fn column_rows() -> Vec<AgentRow> {
     let mut owner = agent(10, "owner", HOUR, None);
     owner.children = vec![child(
         0,
-        ChildKind::Subagent(SubagentRole::from_record("review", "")),
+        ChildKind::Subagent(SubagentRole::Reviewer),
         None,
         "inspect-widget",
         MINUTE,
@@ -103,7 +126,7 @@ fn tiles_keep_type_and_role_headers_when_their_rows_have_values() {
     for width in [65, 220] {
         let buffer = drawn_into(owner, &cells, width, 12);
         let y = find(&buffer, "inspect-widget").expect("work row").1;
-        for (header, word) in [("type", "subagent"), ("role", "review")] {
+        for (header, word) in [("type", "subagent"), ("role", "reviewer")] {
             let x = find(&buffer, header).expect("occupied column header").0;
             let actual: String = (x..x + summary::cell_width(word))
                 .map(|x| buffer[(x, y)].symbol())
@@ -434,7 +457,7 @@ fn status_columns_fit_painted_words_without_an_offscreen_thinking_row() {
         activity: AgentActivity::Active(activity),
         ..child(
             0,
-            ChildKind::Subagent(SubagentRole::from_record("review", "")),
+            ChildKind::Subagent(SubagentRole::Reviewer),
             None,
             name,
             age,
@@ -471,36 +494,28 @@ fn status_columns_fit_painted_words_without_an_offscreen_thinking_row() {
 fn role_columns_fit_visible_roles_without_hidden_or_other_screen_column_roles() {
     let mut left = agent(10, "left-owner", HOUR, None);
     left.children = [
-        ("implementation", "impl", 600),
-        ("inspection", "review", 500),
-        ("another-inspection", "review", 400),
-        ("later-inspection", "review", 300),
-        ("last-inspection", "review", 200),
-        ("offscreen-manager", "showrunner", 60),
+        ("implementation", SubagentRole::Impl, 600),
+        ("inspection", SubagentRole::Reviewer, 500),
+        ("another-inspection", SubagentRole::Reviewer, 400),
+        ("later-inspection", SubagentRole::Reviewer, 300),
+        ("last-inspection", SubagentRole::Reviewer, 200),
+        ("offscreen-manager", SubagentRole::Showrunner, 60),
     ]
     .into_iter()
-    .map(|(name, role, age)| {
-        child(
-            0,
-            ChildKind::Subagent(SubagentRole::from_record(role, "")),
-            None,
-            name,
-            age,
-        )
-    })
+    .map(|(name, role, age)| child(0, ChildKind::Subagent(role), None, name, age))
     .collect();
     let mut lower = agent(20, "lower-owner", HOUR, None);
     lower.children = vec![
         child(
             0,
-            ChildKind::Subagent(SubagentRole::from_record("impl", "")),
+            ChildKind::Subagent(SubagentRole::Impl),
             None,
             "lower-implementation",
             600,
         ),
         child(
             0,
-            ChildKind::Subagent(SubagentRole::from_record("review", "")),
+            ChildKind::Subagent(SubagentRole::Reviewer),
             None,
             "lower-inspection",
             500,
@@ -509,7 +524,7 @@ fn role_columns_fit_visible_roles_without_hidden_or_other_screen_column_roles() 
     let mut right = agent(30, "right-owner", HOUR, None);
     right.children.push(child(
         0,
-        ChildKind::Subagent(SubagentRole::from_record("showrunner", "")),
+        ChildKind::Subagent(SubagentRole::Showrunner),
         None,
         "visible-manager",
         600,
@@ -530,26 +545,29 @@ fn role_columns_fit_visible_roles_without_hidden_or_other_screen_column_roles() 
         let role_x = header.find("role").expect("role column");
         let status_x = header.find("status").expect("status column");
         assert!(rows.iter().any(|line| line.contains("impl")), "{rows:?}");
-        assert!(rows.iter().any(|line| line.contains("review")), "{rows:?}");
+        assert!(
+            rows.iter().any(|line| line.contains("reviewer")),
+            "{rows:?}"
+        );
         assert!(
             !rows.iter().any(|line| line.contains("offscreen-manager")),
             "{rows:?}"
         );
         assert_eq!(
             status_x - role_x,
-            6 + 2,
-            "six-cell role plus two-cell gap: {rows:?}"
+            8 + 2,
+            "eight-cell role plus two-cell gap: {rows:?}"
         );
         for (y, _) in rows
             .iter()
             .enumerate()
-            .filter(|(_, line)| line.contains("review"))
+            .filter(|(_, line)| line.contains("reviewer"))
         {
             let y = rect.y + u16::try_from(y).expect("drawn row fits");
             let start = rect.x + u16::try_from(role_x).expect("role column fits");
             let end = rect.x + u16::try_from(status_x).expect("status column fits");
             let role: String = (start..end).map(|x| buffer[(x, y)].symbol()).collect();
-            assert_eq!(role, "review  ");
+            assert_eq!(role, "reviewer  ");
         }
     }
     let right = allocation_text(&buffer, right_area);
@@ -661,7 +679,7 @@ fn narrow_core_owner() -> AgentRow {
         activity: AgentActivity::Active(Activity::Waiting),
         ..child(
             0,
-            ChildKind::Subagent(SubagentRole::from_record("review", "")),
+            ChildKind::Subagent(SubagentRole::Reviewer),
             None,
             "review-name-that-needs-an-ellipsis",
             MINUTE,
@@ -674,7 +692,7 @@ fn narrow_core_owner() -> AgentRow {
 fn narrow_column_visibility_keeps_whole_core_headers_status_and_gaps() {
     let owner = narrow_core_owner();
     let cell = entry(&owner, None);
-    for width in [28, 32, 40, 50] {
+    for width in [30, 32, 40, 50] {
         let buffer = drawn_into(&cell, &[], width, 10);
         let text = lines(&buffer);
         let header = text
@@ -713,8 +731,8 @@ fn narrow_below_core_cuts_names_before_role_and_never_cuts_status() {
         "whole status below core: {text:?}"
     );
     assert!(
-        text.iter().any(|line| line.contains("review")),
-        "six-cell role still fits after cutting session: {text:?}"
+        text.iter().any(|line| line.contains("reviewer")),
+        "eight-cell role still fits after cutting session: {text:?}"
     );
     assert!(
         text.iter().any(|line| line.contains('…')),
@@ -758,4 +776,185 @@ fn narrow_review_sixteen_cell_tree_spends_role_before_status() {
         text.iter().any(|line| line.contains('…')),
         "cut text needs an ellipsis: {text:?}"
     );
+}
+
+#[test]
+fn recorded_models_and_efforts_draw_after_roles_with_blank_shell_values() {
+    let mut rows = column_rows();
+    rows[0].model = ModelName::Opus;
+    rows[0].effort = ReasoningEffort::High;
+    let mut claude = agent(40, "owner", MINUTE, Some(10));
+    claude.model = ModelName::Opus;
+    claude.effort = ReasoningEffort::High;
+    rows.push(claude);
+    let mut codex = agent(30, "codex-worker", MINUTE, Some(10));
+    codex.agent = Agent::Codex;
+    codex.model = ModelName::Sol;
+    codex.effort = ReasoningEffort::Max;
+    rows.push(codex);
+    rows[0].children.push(child(
+        0,
+        ChildKind::Shell(ShellTimerObservation::Untimed),
+        Some(31),
+        "plain-shell",
+        MINUTE,
+    ));
+    let buffer = allocated_tiles(rows, &[(10, Rect::new(0, 0, 220, 12))]);
+    let text = lines(&buffer);
+    let header = text
+        .iter()
+        .find(|line| line.contains("session") && line.contains("status"))
+        .expect("tree header");
+    let role = header.find("role").expect("role header");
+    let model = header.find("model").expect("model header");
+    let effort = header.find("effort").expect("effort header");
+    let status = header.find("status").expect("status header");
+    assert!(
+        role < model && model < effort && effort < status,
+        "{text:?}"
+    );
+    assert!(
+        text.iter()
+            .any(|line| line.contains("owner") && line.contains("opus") && line.contains("high")),
+        "{text:?}"
+    );
+    assert!(
+        text.iter().any(|line| line.contains("codex-worker")
+            && line.contains("sol")
+            && line.contains("max")),
+        "{text:?}"
+    );
+    let shell = text
+        .iter()
+        .find(|line| line.contains("plain-shell"))
+        .expect("shell row");
+    let model_x = summary::cell_width(&header[..model]);
+    let status_x = summary::cell_width(&header[..status]);
+    let metadata: String = shell
+        .chars()
+        .skip(usize::from(model_x))
+        .take(usize::from(status_x - model_x))
+        .collect();
+    assert_eq!(metadata.trim(), "", "{text:?}");
+}
+
+#[test]
+fn model_and_effort_columns_yield_to_names_in_local_and_shared_tiles() {
+    for fit in [MetadataFit::Local, MetadataFit::SharedColumn] {
+        let mut rows = column_rows();
+        rows[0].model = ModelName::Opus;
+        rows[0].effort = ReasoningEffort::XHigh;
+        rows[0].children[0].model = ModelName::Opus;
+        rows[0].children[0].effort = ReasoningEffort::XHigh;
+        for index in 0..4 {
+            rows[0].children.push(child(
+                0,
+                ChildKind::Subagent(SubagentRole::Reviewer),
+                None,
+                &format!("plain-work-{index}"),
+                MINUTE,
+            ));
+        }
+        let wide = metadata_tile(rows.clone(), 220, fit);
+        assert!(find(&wide, "model").is_some(), "wide model header");
+        assert!(find(&wide, "effort").is_some(), "wide effort header");
+        let buffer = metadata_tile(rows, 60, fit);
+        let text = allocation_text(&buffer, Rect::new(0, 0, 60, 12));
+        assert!(
+            text.iter().any(|line| line.contains("inspect-widget")),
+            "{text:?}"
+        );
+        assert!(
+            !text
+                .iter()
+                .any(|line| line.contains("model") || line.contains("effort")),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn shell_tiles_omit_model_and_effort_columns() {
+    let mut rows = column_rows();
+    rows[0].children[0].kind = ChildKind::Shell(ShellTimerObservation::Untimed);
+    let buffer = allocated_tiles(rows, &[(10, Rect::new(0, 0, 220, 12))]);
+    assert!(find(&buffer, "inspect-widget").is_some());
+    assert_eq!(find(&buffer, "model"), None);
+    assert_eq!(find(&buffer, "effort"), None);
+}
+
+fn metadata_tile(mut rows: Vec<AgentRow>, width: u16, fit: MetadataFit) -> Buffer {
+    if matches!(fit, MetadataFit::SharedColumn) {
+        rows[1].children.push(child(
+            0,
+            ChildKind::Shell(ShellTimerObservation::Untimed),
+            Some(21),
+            "neighbor-work",
+            MINUTE,
+        ));
+        return allocated_tiles(
+            rows,
+            &[
+                (10, Rect::new(0, 0, width, 12)),
+                (20, Rect::new(0, 12, width, 12)),
+            ],
+        );
+    }
+    let state = MachineState::Answered(rows, HierarchyEdges::default().into());
+    let machines = [Machine {
+        name:  "natedev",
+        state: &state,
+    }];
+    let placement = AgentPlacement::from_machines(&machines);
+    let cells = cell_order_placed(&placement);
+    let owner = cells
+        .iter()
+        .find(|cell| cell.row.pid == 10)
+        .expect("metadata tile");
+    drawn_into(owner, &cells, width, 12)
+}
+
+#[test]
+fn narrow_tiles_drop_effort_then_model_before_directory_and_branch() {
+    for fit in [MetadataFit::Local, MetadataFit::SharedColumn] {
+        let mut rows = column_rows();
+        rows[0].model = ModelName::Opus;
+        rows[0].effort = ReasoningEffort::XHigh;
+        rows[0].children[0].model = ModelName::Sol;
+        rows[0].children[0].effort = ReasoningEffort::High;
+        let mut member = agent(30, "member", MINUTE, Some(10));
+        member.model = ModelName::Haiku;
+        member.effort = ReasoningEffort::Low;
+        member.branch = Some("topic".into());
+        rows.push(member);
+        let mut stages = HashSet::new();
+        for width in METADATA_WIDTH_MIN..METADATA_WIDTH_END {
+            let buffer = metadata_tile(rows.clone(), width, fit);
+            let text = allocation_text(&buffer, Rect::new(0, 0, width, 12));
+            let header = text
+                .iter()
+                .find(|line| line.contains("session") && line.contains("status"))
+                .expect("core headers");
+            if header.contains("directory") && header.contains("branch") {
+                match (header.contains("model"), header.contains("effort")) {
+                    (true, true) => {
+                        stages.insert(MetadataColumns::ModelAndEffort);
+                    },
+                    (true, false) => {
+                        stages.insert(MetadataColumns::ModelOnly);
+                    },
+                    (false, false) => {
+                        stages.insert(MetadataColumns::Neither);
+                    },
+                    (false, true) => {
+                        assert!(header.contains("model"), "effort outlived model: {header}");
+                    },
+                }
+            }
+            if stages.len() == METADATA_COLUMN_STAGES.len() {
+                break;
+            }
+        }
+        assert_eq!(stages, HashSet::from(METADATA_COLUMN_STAGES), "fit={fit:?}");
+    }
 }

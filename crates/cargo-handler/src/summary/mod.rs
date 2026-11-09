@@ -498,9 +498,6 @@ impl SummaryLayout {
         let Some((_, first)) = self.accounts.selections.first() else {
             return SectionPin::NoAccounts;
         };
-        let Some((_, last)) = self.accounts.selections.last() else {
-            return SectionPin::NoAccounts;
-        };
         let start = self.machines.lines.len()
             + if self.machines.lines.is_empty() {
                 0
@@ -509,7 +506,7 @@ impl SummaryLayout {
             };
         SectionPin::Accounts {
             headers: start..start + first.start(),
-            body:    start + first.start()..start + last.end(),
+            body:    start + first.start()..start + self.accounts.lines.len(),
         }
     }
 
@@ -1001,8 +998,10 @@ mod tests {
     use crate::census::RoleFallback;
     use crate::census::ServiceTier;
     use crate::census::SessionIdentity;
+    use crate::census::StaffRowNames;
     use crate::census::accounts::AccountsTable;
-    use crate::census::hierarchy::ReviewerState;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
     use crate::sort::AccountsSort;
 
     /// The unix second every age in these tests is measured to.
@@ -1028,6 +1027,9 @@ mod tests {
         directory: &str,
     ) -> AgentRow {
         AgentRow {
+            model: ModelName::Unrecorded,
+            effort: ReasoningEffort::Unrecorded,
+            staff_names: StaffRowNames::default(),
             role_fallback: RoleFallback::None,
             session_id: SessionIdentity::Unrecorded,
             agent,
@@ -1145,10 +1147,9 @@ mod tests {
             pairs
                 .iter()
                 .map(|(manager, member)| HierarchyEdge {
-                    reviewer: ReviewerState::NotPool,
-                    manager:  (*manager).to_string(),
-                    member:   (*member).to_string(),
-                    role:     HierarchyRole::Unit,
+                    manager: (*manager).to_string(),
+                    member:  (*member).to_string(),
+                    role:    HierarchyRole::Unit,
                 })
                 .collect(),
         )

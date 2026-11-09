@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Instant;
 
 use tui_pane::PERF_LOG_TARGET;
@@ -9,6 +10,9 @@ use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::scan_state::ScanPhase;
 use crate::tui::panes::PaneId;
+use crate::tui::project_list::ExpandTarget;
+#[cfg(test)]
+use crate::tui::project_list::ReplacementExpansion;
 #[cfg(test)]
 use crate::tui::project_list_state::ProjectList;
 use crate::tui::startup_services::StartupEffect;
@@ -22,26 +26,32 @@ impl App {
             .selected_project_path()
             .map(AbsolutePath::from)
             .or_else(|| self.project_list.paths.last_selected.clone());
-        let should_focus_project_list = false;
-        self.mutate_tree().replace_all(projects);
-        self.prune_inactive_project_state();
+        let expanded = self.project_list.export_expanded();
+        self.mutate_tree()
+            .projects
+            .replace_roots_from(projects, ReplacementExpansion::RestoreSavedTargets);
+        self.restore_expanded(&expanded);
+        self.prune_inactive_project_state(&[]);
         self.register_lint_for_root_items();
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();
 
-        // Restore `selected_path` with `project_list.select_project_in_tree`, or `set_cursor(0)`
-        // when selection is absent and the list is nonempty.
-        if let Some(path) = selected_path {
-            let include_non_rust = self.config.include_non_rust().includes_non_rust();
-            self.project_list
-                .select_project_in_tree(path.as_path(), include_non_rust);
-        } else if !self.project_list.is_empty() {
-            self.project_list.set_cursor(0);
-        }
-        if should_focus_project_list {
-            self.set_focus_to_pane(PaneId::ProjectList);
-        }
+        self.restore_selection(selected_path.as_deref());
         self.sync_selected_project();
+    }
+
+    pub(super) fn restore_expanded(&mut self, expanded: &[ExpandTarget]) {
+        self.project_list.expanded.reset();
+        self.project_list.apply_expanded(expanded);
+        self.rebuild_visible_rows_now();
+    }
+
+    pub(super) fn restore_selection(&mut self, path: Option<&Path>) {
+        self.project_list.set_cursor(0);
+        if let Some(path) = path {
+            self.project_list
+                .select_project_in_tree(path, self.config.include_non_rust().includes_non_rust());
+        }
     }
 
     pub(super) fn rebuild_visible_rows_now(&mut self) {
@@ -50,16 +60,12 @@ impl App {
     }
 
     pub(in crate::tui::app) fn prepare_rescan(&mut self) {
-        // Preserve the open/closed layout across the rebuild: snapshot the live
-        // expansions as restart-stable targets before the tree is cleared, then
-        // hand them back through `pending_expanded` so `handle_scan_result`
-        // re-applies them once the new tree is built.
+        // Keep selection and expansion identities across root reordering.
         let preserved_expanded = self.project_list.export_expanded();
+        let selected_path = self.project_list.paths.last_selected.clone();
         // `scan.manifest_metadata` survives row replacement. Rediscovered manifests
         // retain their last diagnostic until an accepted metadata reply replaces it.
-        self.project_list.clear();
-        // `project_list.clear()` removes `ProjectInfo::disk_usage_bytes` along with the previous
-        // project items.
+        self.mutate_tree().projects.clear();
         self.ci.fetch_tracker.clear();
         self.ci.clear_display_modes();
         self.clear_all_lint_state();
@@ -73,6 +79,7 @@ impl App {
         self.scan.state.phase = ScanPhase::Running;
         self.scan.state.started_at = Instant::now();
         self.scan.state.run_count += 1;
+        self.retire_startup_toast();
         self.startup.reset();
         tracing::trace!(
             target: PERF_LOG_TARGET,
@@ -88,9 +95,9 @@ impl App {
         self.reset_project_panes();
         self.project_list.clear_selected_project();
         self.inflight.clear_pending_ci_fetch();
-        self.project_list.expanded.clear();
+        self.restore_expanded(&preserved_expanded);
         self.project_list.paths.pending_expanded = preserved_expanded;
-        self.project_list.set_cursor(0);
+        self.restore_selection(selected_path.as_deref());
         self.panes.project_list.viewport.set_scroll_offset(0);
         self.scan.bump_generation();
     }
@@ -101,6 +108,7 @@ impl App {
         let scan_start = self
             .startup_services
             .spawn_streaming_scan(StreamingScanStartup {
+                source_measurements: std::sync::Arc::clone(&self.scan.source_measurements),
                 scan_dirs,
                 inline_dirs: &self.config.current().tui.inline_dirs,
                 exclude_dirs: self.config.exclude_dirs(),

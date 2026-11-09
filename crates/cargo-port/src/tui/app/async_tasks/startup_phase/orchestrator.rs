@@ -85,11 +85,24 @@ pub struct Startup {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct StartupToast {
-    id: ColoredToastId,
+    id:                ColoredToastId,
+    pub(super) layout: StartupToastLayout,
+}
+
+/// Keep the last drawn width and time for a delayed detail refresh.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StartupToastLayout {
+    NotDrawn,
+    Drawn { width: usize, at: Instant },
 }
 
 impl StartupToast {
-    pub(super) const fn new(id: ColoredToastId) -> Self { Self { id } }
+    pub(super) const fn new(id: ColoredToastId) -> Self {
+        Self {
+            id,
+            layout: StartupToastLayout::NotDrawn,
+        }
+    }
 
     pub(super) const fn id(self) -> ColoredToastId { self.id }
 }
@@ -256,7 +269,6 @@ impl StartupReady {
         collecting.into_closing();
         startup.phase = StartupPhase::Closing;
         StartedStartupClosing {
-            toast: startup.toast.take(),
             completed_at,
             scan_complete_at,
             network,
@@ -289,7 +301,6 @@ pub(super) enum StartupReadiness {
 }
 
 pub(super) struct StartedStartupClosing {
-    pub(super) toast:            Option<StartupToast>,
     pub(super) completed_at:     Instant,
     pub(super) scan_complete_at: Instant,
     pub(super) network:          StartupNetworkReady,

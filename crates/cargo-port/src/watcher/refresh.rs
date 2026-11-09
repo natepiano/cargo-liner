@@ -1,4 +1,8 @@
 use std::collections::HashMap;
+
+#[cfg(test)]
+#[path = "disk_burst_tests.rs"]
+mod disk_burst_tests;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::Sender as StdSender;
@@ -24,6 +28,8 @@ use crate::project::RepoInfo;
 use crate::project::ResolvedBranch;
 use crate::scan;
 use crate::scan::BackgroundMsg;
+use crate::scan::DirSizes;
+use crate::scan::DiskUsageTree;
 use crate::scan::MetadataDispatchContext;
 
 pub(super) const DISK_POLL_INTERVAL: Duration = Duration::from_secs(30);
@@ -108,14 +114,30 @@ fn linked_target_scope(path: &AbsolutePath, target: &AbsolutePath) -> DiskProbeS
     DiskProbeScope::ProjectTree
 }
 
-fn project_disk_bytes(path: &AbsolutePath, scope: &DiskProbeScope) -> u64 {
-    let bytes = scan::dir_size(path);
+fn project_disk_sizes(path: &AbsolutePath, scope: &DiskProbeScope) -> DirSizes {
+    let tree = DiskUsageTree {
+        root_abs_path: path.clone(),
+        entries:       vec![path.clone()],
+    };
+    let mut sizes = scan::dir_sizes_for_tree(&tree)
+        .into_iter()
+        .next()
+        .map_or_else(DirSizes::default, |(_, sizes)| sizes);
     if path.is_dir()
         && let DiskProbeScope::TreeAndLinkedTarget { target_dir } = scope
     {
-        return bytes.saturating_add(scan::dir_size(target_dir));
+        let target = scan::dir_size(target_dir);
+        sizes.total = sizes.total.saturating_add(target);
+        sizes.in_project_target = sizes.in_project_target.saturating_add(target);
     }
-    bytes
+    sizes
+}
+
+pub(super) fn disk_refresh_message(path: &AbsolutePath, sizes: DirSizes) -> BackgroundMsg {
+    BackgroundMsg::DiskUsageBatch {
+        root_path: path.clone(),
+        entries:   vec![(path.clone(), sizes)],
+    }
 }
 
 pub(super) fn schedule_disk_refresh(
@@ -603,22 +625,19 @@ fn spawn_disk_update(
 
         let started = Instant::now();
         let abs_for_msg = abs_path.clone();
-        let (bytes, target_probe) = tokio::task::spawn_blocking(move || {
-            (project_disk_bytes(&abs_path, &target_probe), target_probe)
+        let (sizes, target_probe) = tokio::task::spawn_blocking(move || {
+            (project_disk_sizes(&abs_path, &target_probe), target_probe)
         })
         .await
-        .unwrap_or((0, DiskProbeScope::ProjectTree));
+        .unwrap_or_else(|_| (scan::DirSizes::default(), DiskProbeScope::ProjectTree));
         tracing::trace!(
             target: PERF_LOG_TARGET,
             elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
             path = %project_label,
-            bytes,
+            bytes = sizes.total,
             "watcher_disk_usage"
         );
-        let _ = background_tx.send(BackgroundMsg::DiskUsage {
-            path: abs_for_msg,
-            bytes,
-        });
+        let _ = background_tx.send(disk_refresh_message(&abs_for_msg, sizes));
         if let DiskProbeScope::TreeAndExternalTarget {
             workspace_root,
             target_dir,
@@ -647,3 +666,36 @@ fn spawn_disk_update(
 #[cfg(test)]
 #[path = "linked_target_poll_tests.rs"]
 mod linked_target_tests;
+
+#[cfg(test)]
+mod disk_render_tests {
+    use super::*;
+
+    #[test]
+    fn watcher_disk_refresh_updates_the_package_total_and_parts() -> anyhow::Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let path = AbsolutePath::from(scratch.path());
+        std::fs::create_dir(path.join("target"))?;
+        for (target, other, labels) in [
+            (4096, 74, ["4.1 KiB", "4.0 KiB", "74 B"]),
+            (8192, 90, ["8.1 KiB", "8.0 KiB", "90 B"]),
+        ] {
+            std::fs::write(path.join("source.rs"), vec![0_u8; other])?;
+            std::fs::write(path.join("target/artifact"), vec![0_u8; target])?;
+            let sizes = project_disk_sizes(&path, &DiskProbeScope::ProjectTree);
+            let buffer = crate::tui::test_support::draw_disk_refresh_for_test(
+                &path,
+                disk_refresh_message(&path, sizes),
+            )?;
+            let text: String = buffer
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect();
+            for label in labels {
+                assert!(text.contains(label), "missing {label}: {text}");
+            }
+        }
+        Ok(())
+    }
+}

@@ -18,9 +18,599 @@ use notify::RecursiveMode;
 use notify::event::ModifyKind;
 
 use super::*;
+use crate::census::AgentRow;
 use crate::census::account::ConfigHome;
+use crate::render;
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+fn captured_compaction_marker(family: &str) -> Result<Value, Box<dyn Error>> {
+    let captured: Value = serde_json::from_str(include_str!("fixtures/compaction_signals.json"))?;
+    Ok(captured[family].clone())
+}
+
+fn write_compaction_database(
+    account: &Path,
+    id: &str,
+    home: &Path,
+    transcript: &Path,
+) -> TestResult {
+    let database = rusqlite::Connection::open(account.join("state_5.sqlite"))?;
+    database.pragma_update(None, "synchronous", "OFF")?;
+    database.execute(
+        "CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT NOT NULL,
+        title TEXT NOT NULL, originator TEXT, created_at_ms INTEGER, name TEXT,
+        first_user_message TEXT NOT NULL DEFAULT '', rollout_path TEXT NOT NULL)",
+        [],
+    )?;
+    database.execute(
+        "INSERT INTO threads VALUES (?1, ?2, 'fixture', 'codex-tui',
+        1794142990000, 'fixture-codex', 'Continue.', ?3)",
+        rusqlite::params![id, home.to_string_lossy(), transcript.to_string_lossy()],
+    )?;
+    let logs = rusqlite::Connection::open(account.join("logs_2.sqlite"))?;
+    logs.pragma_update(None, "synchronous", "OFF")?;
+    logs.execute(
+        "CREATE TABLE logs (id INTEGER PRIMARY KEY, ts INTEGER,
+        process_uuid TEXT, thread_id TEXT, feedback_log_body TEXT)",
+        [],
+    )?;
+    logs.execute("CREATE INDEX idx_logs_ts ON logs(ts)", [])?;
+    logs.execute(
+        "INSERT INTO logs VALUES (1, 1793000001, 'pid:200:fixture', ?1, ?2)",
+        rusqlite::params![
+            id,
+            format!(
+                "app_server.client_name=\"codex-tui\" app_server.connection_id=1 \
+            rpc.method=\"thread/resume\" rpc.request_id=1 rpc.transport=\"in-process\" \
+            shell_snapshot{{thread_id={id}}}: Shell snapshot successfully created:"
+            )
+        ],
+    )?;
+    Ok(())
+}
+
+fn write_compaction_transcript(
+    family: &str,
+    id: &str,
+    account: &Path,
+    home: &Path,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let transcript = if family == "claude" {
+        account.join("projects/fixture").join(format!("{id}.jsonl"))
+    } else {
+        account
+            .join("sessions/2026/11/08")
+            .join(format!("rollout-2026-11-08T13-03-10-{id}.jsonl"))
+    };
+    fs::create_dir_all(transcript.parent().ok_or("transcript directory")?)?;
+    fs::write(
+        &transcript,
+        if family == "codex" {
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"type":"session_meta","payload":{
+            "id":id,"cwd":home,"timestamp":"2026-11-08T13:03:10Z"}}),
+                serde_json::json!({"type":"event_msg","timestamp":"2026-11-08T20:26:29Z",
+                "payload":{"type":"task_started"}})
+            )
+        } else {
+            format!(
+                "{}\n",
+                serde_json::json!({"type":"user","timestamp":"2026-11-08T21:15:52Z",
+            "message":{"content":"Continue."}})
+            )
+        },
+    )?;
+    Ok(transcript)
+}
+
+fn assert_compacting_frame(rows: Vec<AgentRow>) {
+    let buffer = render::astra_frame_for_test(rows, crate::census::HierarchyEdges::default());
+    let text: String = buffer
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert!(text.split_whitespace().any(|word| word == "compacting"));
+}
+
+fn check_deleted_marker(
+    scanner: &mut crate::census::scan::LocalScanner,
+    processes: &[ProcessEntry],
+    sessions: &[crate::census::classify::SessionRecord],
+    home: &Path,
+    marker: &Path,
+    payload: &Value,
+) -> TestResult {
+    fs::remove_file(marker)?;
+    let rows = scanner.scan_details_for_test(processes, sessions, home);
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.pid == 200)
+            .ok_or("session after marker deletion")?
+            .activity
+            .text(),
+        "thinking",
+        "{} marker deletion clears compaction",
+        payload["family"]
+    );
+    fs::write(marker, serde_json::to_vec(payload)?)?;
+    let rows = scanner.scan_details_for_test(processes, sessions, home);
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.pid == 200)
+            .ok_or("session after marker recreation")?
+            .activity
+            .text(),
+        "compacting"
+    );
+    Ok(())
+}
+
+fn check_captured_compaction(family: &str) -> TestResult {
+    use crate::census::account::AccountLabels;
+    use crate::census::classify::SessionRecord;
+    use crate::census::scan::LocalScanner;
+
+    let directory = tempfile::tempdir()?;
+    let captured = captured_compaction_marker(family)?;
+    let id = captured["marker"]["session_id"]
+        .as_str()
+        .ok_or("captured session")?;
+    let account = directory.path().join(format!(".{family}"));
+    let transcript = write_compaction_transcript(family, id, &account, directory.path())?;
+    if family == "codex" {
+        write_compaction_database(&account, id, directory.path(), &transcript)?;
+    }
+    let processes = vec![ProcessEntry {
+        pid:         200,
+        parent:      None,
+        name:        family.to_owned(),
+        arguments:   if family == "codex" {
+            vec!["codex".into(), "resume".into(), id.into()]
+        } else {
+            vec!["claude".into()]
+        },
+        started:     1_793_000_000,
+        directory:   Some(directory.path().to_path_buf()),
+        config_home: ConfigHome::Named(account),
+        claude_pid:  None,
+    }];
+    let sessions: Vec<SessionRecord> = if family == "claude" {
+        serde_json::from_value(serde_json::json!([{"pid":200,"sessionId":id,
+            "name":"fixture-claude","status":"busy","cwd":directory.path()}]))?
+    } else {
+        Vec::new()
+    };
+    let mut scanner = LocalScanner::new(AccountLabels::default());
+    let rows = scanner.scan_details_for_test(&processes, &sessions, directory.path());
+    let row = rows
+        .iter()
+        .find(|row| row.pid == 200)
+        .ok_or("ordinary session row")?;
+    assert_eq!(
+        row.activity.text(),
+        "thinking",
+        "an ordinary turn stays thinking"
+    );
+
+    let markers = directory.path().join(".local/state/compaction");
+    fs::create_dir_all(&markers)?;
+    let marker = markers.join(format!("{id}.json"));
+    for invalid in [
+        serde_json::json!({"session_id":id,"family":"other","started_at":"2026-11-08T20:26:30Z"}),
+        serde_json::json!({"session_id":"another-session","family":family,"started_at":"2026-11-08T20:26:30Z"}),
+        serde_json::json!({"session_id":id,"family":family,"started_at":"2026-11-08T20:26:30"}),
+        serde_json::json!({"session_id":id,"family":family}),
+    ] {
+        fs::write(&marker, serde_json::to_vec(&invalid)?)?;
+        let rows = scanner.scan_details_for_test(&processes, &sessions, directory.path());
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.pid == 200)
+                .ok_or("ordinary row")?
+                .activity
+                .text(),
+            "thinking"
+        );
+    }
+    fs::write(&marker, serde_json::to_vec(&captured["marker"])?)?;
+    let rows = scanner.scan_details_for_test(&processes, &sessions, directory.path());
+    let row = rows
+        .iter()
+        .find(|row| row.pid == 200)
+        .ok_or("compacting session row")?;
+    assert_eq!(row.activity.text(), "compacting", "{family} start marker");
+    assert_eq!(row.activity.color_role(), Role::Busy);
+    assert_compacting_frame(rows);
+    check_deleted_marker(
+        &mut scanner,
+        &processes,
+        &sessions,
+        directory.path(),
+        &marker,
+        &captured["marker"],
+    )?;
+
+    let mut file = fs::OpenOptions::new().append(true).open(&transcript)?;
+    writeln!(file, "{}", captured["completed"])?;
+    let rows = scanner.scan_details_for_test(&processes, &sessions, directory.path());
+    let row = rows
+        .iter()
+        .find(|row| row.pid == 200)
+        .ok_or("completed session row")?;
+    assert_eq!(
+        row.activity.text(),
+        "thinking",
+        "{family} completion expires the marker"
+    );
+    Ok(())
+}
+
+#[test]
+fn compacting_claude_marker_tracks_the_captured_boundary() -> TestResult {
+    check_captured_compaction("claude")
+}
+
+#[test]
+fn compacting_codex_marker_tracks_the_captured_completion() -> TestResult {
+    check_captured_compaction("codex")
+}
+
+#[derive(Clone, Copy)]
+enum CompactionFixture {
+    Absent,
+    Open,
+    Completed,
+}
+
+/// The captured pane either exists or has only its detached supervisor left.
+#[derive(Clone, Copy)]
+enum PaneProcessPresence {
+    Visible,
+    Absent,
+}
+
+#[derive(serde::Deserialize)]
+struct PaneRunProcessRecord {
+    pid:       u32,
+    parent:    u32,
+    name:      String,
+    arguments: Vec<String>,
+    started:   u64,
+    directory: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CapturedImplRun {
+    Live,
+    Finished,
+}
+
+#[derive(Clone, Copy)]
+enum CapturedPane {
+    Codex,
+    Astra(&'static str),
+}
+
+fn write_captured_tile_runs(
+    captured: &Value,
+    directory: &Path,
+    implementation: CapturedImplRun,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let runs = directory.join("mesh_runs");
+    fs::create_dir(&runs)?;
+    for mut run in serde_json::from_value::<Vec<Value>>(captured["runs"].clone())? {
+        run["status"] = serde_json::json!(if run["worker"] == "impl"
+            && matches!(implementation, CapturedImplRun::Finished)
+        {
+            "finished"
+        } else {
+            "running"
+        });
+        run["session_dir"] = serde_json::json!(directory);
+        run["director_dir"] = serde_json::json!(directory);
+        let id = run["run_id"].as_str().ok_or("captured run id")?;
+        fs::write(runs.join(format!("{id}.json")), serde_json::to_vec(&run)?)?;
+    }
+    Ok(runs)
+}
+
+fn pane_run_processes(
+    captured: &Value,
+    pane: PaneProcessPresence,
+    directory: &Path,
+    runs: &Path,
+) -> Result<Vec<ProcessEntry>, Box<dyn Error>> {
+    let pane_pid: u32 = serde_json::from_value(captured["pane_pid"].clone())?;
+    let mut processes = Vec::new();
+    for mut process in
+        serde_json::from_value::<Vec<PaneRunProcessRecord>>(captured["processes"].clone())?
+    {
+        if process.pid == pane_pid {
+            if matches!(pane, PaneProcessPresence::Absent) {
+                continue;
+            }
+            process.arguments = vec![
+                "codex".into(),
+                "resume".into(),
+                captured["pane_session"]
+                    .as_str()
+                    .ok_or("captured pane session")?
+                    .into(),
+            ];
+        }
+        if let Some(argument) = process.arguments.last_mut()
+            && let Some(name) = Path::new(argument).file_name()
+            && name.to_string_lossy().ends_with(".json")
+        {
+            *argument = runs.join(name).to_string_lossy().into_owned();
+        }
+        processes.push(ProcessEntry {
+            pid:         process.pid,
+            parent:      Some(process.parent),
+            name:        process.name,
+            arguments:   process.arguments,
+            started:     process.started,
+            directory:   process.directory,
+            claude_pid:  None,
+            config_home: ConfigHome::Named(directory.join(".codex")),
+        });
+    }
+    Ok(processes)
+}
+
+fn captured_tile_run_rows(
+    pane: PaneProcessPresence,
+    implementation: CapturedImplRun,
+    kind: CapturedPane,
+) -> Result<Vec<AgentRow>, Box<dyn Error>> {
+    captured_tile_run_rows_with_compaction(pane, implementation, kind, CompactionFixture::Absent)
+}
+
+fn write_captured_compaction(
+    captured: &Value,
+    directory: &Path,
+    compaction: CompactionFixture,
+) -> TestResult {
+    if matches!(compaction, CompactionFixture::Absent) {
+        return Ok(());
+    }
+    let signal = captured_compaction_marker("codex")?;
+    let mut marker = signal["marker"].clone();
+    marker["session_id"] = captured["pane_session"].clone();
+    let markers = directory.join(".local/state/compaction");
+    fs::create_dir_all(&markers)?;
+    let id = marker["session_id"].as_str().ok_or("pane session")?;
+    fs::write(
+        markers.join(format!("{id}.json")),
+        serde_json::to_vec(&marker)?,
+    )?;
+    if matches!(compaction, CompactionFixture::Completed) {
+        let account = directory.join(".codex");
+        let transcript = write_compaction_transcript("codex", id, &account, directory)?;
+        write_compaction_database(&account, id, directory, &transcript)?;
+        writeln!(
+            fs::OpenOptions::new().append(true).open(&transcript)?,
+            "{}",
+            signal["completed"]
+        )?;
+    }
+    Ok(())
+}
+
+fn captured_tile_run_rows_with_compaction(
+    pane: PaneProcessPresence,
+    implementation: CapturedImplRun,
+    kind: CapturedPane,
+    compaction: CompactionFixture,
+) -> Result<Vec<AgentRow>, Box<dyn Error>> {
+    use crate::census::HierarchySource;
+    use crate::census::StaffFileSetting;
+    use crate::census::account::AccountLabels;
+    use crate::census::classify::SessionRecord;
+    use crate::census::hierarchy::StaffFileReader;
+    use crate::census::scan::LocalScanner;
+
+    let mut captured: Value =
+        serde_json::from_str(include_str!("fixtures/pane_detached_tile.json"))?;
+    let root = Path::new(crate::constants::SESSION_ROOTS[0]);
+    fs::create_dir_all(root)?;
+    let directory = tempfile::Builder::new()
+        .prefix("pane-run-")
+        .tempdir_in(root)?;
+    let runs = write_captured_tile_runs(&captured, directory.path(), implementation)?;
+    write_captured_compaction(&captured, directory.path(), compaction)?;
+    fs::write(
+        directory.path().join("progress_history_state.json"),
+        serde_json::to_vec(&captured["unit_owner"])?,
+    )?;
+    if matches!(kind, CapturedPane::Astra(_)) {
+        captured["staff"]["rows"][0]["role"] = serde_json::json!("astra-designer");
+        captured["staff"]["rows"][0]["home"] = serde_json::json!(directory.path().join(".codex"));
+    }
+    let staff_path = directory.path().join("staff.json");
+    fs::write(&staff_path, serde_json::to_vec(&captured["staff"])?)?;
+    let processes = pane_run_processes(&captured, pane, directory.path(), &runs)?;
+    let sessions: Vec<SessionRecord> = serde_json::from_value(serde_json::json!([{
+        "pid":captured["director_pid"], "sessionId":captured["director_session"], "name":"tile"
+    }]))?;
+    let mut scanner = LocalScanner::new(AccountLabels::default()).with_staff_file(
+        StaffFileSetting::new(HierarchySource::File(
+            staff_path.to_string_lossy().into_owned(),
+        )),
+        StaffFileReader::default(),
+    );
+    scanner.use_fixture_run_events();
+    if let CapturedPane::Astra(status) = kind {
+        let snapshot = serde_json::json!({"snapshot":{"tabs":[],"panes":[{
+            "pane_id":captured["pane_pid"].to_string(), "tab_id":"workers", "terminal_id":"captured-pane", "revision":1,"agent_status":status
+        }]}});
+        scanner.set_herdr_for_test(crate::census::herdr::HerdrNames::from_snapshot_for_test(
+            &processes, &snapshot,
+        ));
+    }
+    Ok(scanner.scan_details_for_test(&processes, &sessions, directory.path()))
+}
+
+#[test]
+fn captured_tile_impl_pane_joins_its_detached_package_run() -> TestResult {
+    let rows = captured_tile_run_rows(
+        PaneProcessPresence::Visible,
+        CapturedImplRun::Live,
+        CapturedPane::Codex,
+    )?;
+    let worker = rows
+        .iter()
+        .find(|row| {
+            row.session_id
+                .ids()
+                .any(|id| id == "01a1b9c6-4b1b-79c0-ad78-920ac1efe28a")
+        })
+        .ok_or("the captured impl pane has its own row")?;
+    assert_eq!(
+        worker.activity.text(),
+        "waiting",
+        "the captured package wrapper belongs to impl"
+    );
+    Ok(())
+}
+
+#[test]
+fn captured_tile_test_worker_keeps_a_row_with_only_its_live_run() -> TestResult {
+    for implementation in [CapturedImplRun::Live, CapturedImplRun::Finished] {
+        let rows = captured_tile_run_rows(
+            PaneProcessPresence::Absent,
+            implementation,
+            CapturedPane::Codex,
+        )?;
+        let worker = rows.iter().flat_map(|row| &row.children)
+        .find(|child| child.name == "test" || matches!(&child.dispatch,
+            crate::census::worker_dispatch::WorkerDispatch::Worker(worker) if worker.seat() == "test"))
+        .ok_or("the captured test worker with a live run must retain its row")?;
+        assert_eq!(worker.activity.text(), "waiting");
+    }
+    Ok(())
+}
+
+#[test]
+fn captured_tile_astra_pane_keeps_its_live_run_status() -> TestResult {
+    use crate::census::HierarchyEdge;
+    use crate::census::HierarchyEdges;
+    use crate::census::HierarchyRole;
+    for (status, without_run) in [
+        ("idle", "idle"),
+        ("unknown", "unknown"),
+        ("working", "thinking"),
+    ] {
+        for implementation in [CapturedImplRun::Live, CapturedImplRun::Finished] {
+            let rows = captured_tile_run_rows(
+                PaneProcessPresence::Visible,
+                implementation,
+                CapturedPane::Astra(status),
+            )?;
+            let edges = HierarchyEdges(vec![HierarchyEdge {
+                manager: "da82452f-3640-4dec-b6c5-0c783d77e79f".into(),
+                member:  "01a1b9c6-4b1b-79c0-ad78-920ac1efe28a".into(),
+                role:    HierarchyRole::AstraDesigner,
+            }]);
+            let buffer = render::astra_frame_for_test(rows, edges);
+            let line = buffer
+                .content
+                .chunks(220)
+                .map(|cells| {
+                    cells
+                        .iter()
+                        .map(ratatui::buffer::Cell::symbol)
+                        .collect::<String>()
+                })
+                .find(|line| line.contains("impl") && line.contains("astra designer"))
+                .ok_or("the Astra pane worker must draw its status")?;
+            let expected = match implementation {
+                CapturedImplRun::Live => "waiting",
+                CapturedImplRun::Finished => without_run,
+            };
+            assert!(
+                line.split_whitespace().any(|word| word == expected),
+                "{status}, {implementation:?}: {line}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn compacting_captured_run_and_astra_rows_keep_the_run_activity() -> TestResult {
+    for kind in [
+        CapturedPane::Codex,
+        CapturedPane::Astra("idle"),
+        CapturedPane::Astra("working"),
+    ] {
+        for implementation in [CapturedImplRun::Live, CapturedImplRun::Finished] {
+            let rows = captured_tile_run_rows_with_compaction(
+                PaneProcessPresence::Visible,
+                implementation,
+                kind,
+                CompactionFixture::Open,
+            )?;
+            let worker = rows
+                .iter()
+                .find(|row| {
+                    row.session_id
+                        .ids()
+                        .any(|id| id == "01a1b9c6-4b1b-79c0-ad78-920ac1efe28a")
+                })
+                .ok_or("compacting worker")?;
+            assert_eq!(worker.activity.text(), "compacting");
+            if matches!(kind, CapturedPane::Astra(_))
+                && matches!(implementation, CapturedImplRun::Live)
+            {
+                let wire = serde_json::to_value(worker)?;
+                assert_eq!(wire["astra_member"]["run"]["live"], "waiting");
+            }
+            if matches!(kind, CapturedPane::Astra(_)) {
+                let edges = crate::census::HierarchyEdges(vec![crate::census::HierarchyEdge {
+                    manager: "da82452f-3640-4dec-b6c5-0c783d77e79f".into(),
+                    member:  "01a1b9c6-4b1b-79c0-ad78-920ac1efe28a".into(),
+                    role:    crate::census::HierarchyRole::AstraDesigner,
+                }]);
+                let buffer = render::astra_frame_for_test(rows, edges);
+                let text: String = buffer
+                    .content
+                    .iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect();
+                assert!(text.split_whitespace().any(|word| word == "compacting"));
+            }
+        }
+    }
+    for (compaction, expected) in [
+        (CompactionFixture::Open, "compacting"),
+        (CompactionFixture::Completed, "waiting"),
+    ] {
+        let rows = captured_tile_run_rows_with_compaction(
+            PaneProcessPresence::Absent,
+            CapturedImplRun::Live,
+            CapturedPane::Codex,
+            compaction,
+        )?;
+        let worker = rows
+            .iter()
+            .flat_map(|row| &row.children)
+            .find(|child| {
+                matches!(&child.thread_id, crate::census::CodexThreadId::Recorded(id)
+                if id == "01a1b9c6-4b1b-79c0-ad78-920ac1efe28a")
+            })
+            .ok_or("run-only compacting worker")?;
+        assert_eq!(
+            worker.activity.text(),
+            expected,
+            "run-only worker after native completion"
+        );
+    }
+    Ok(())
+}
 
 #[cfg(target_os = "linux")]
 #[test]
@@ -93,15 +683,29 @@ fn process(pid: u32, parent: u32, arguments: &[&str]) -> ProcessEntry {
 }
 
 fn record(pid: u32, started_at: f64, command: &[&str]) -> Result<RunRecord, serde_json::Error> {
-    serde_json::from_value(serde_json::json!({
+    serde_json::from_value::<RunRecord>(serde_json::json!({
         "pid":pid,"started_at":started_at,"thread_id":"worker","status":"running","command":command
     }))
+    .map(|record| {
+        record.at_file(&PathBuf::from(format!(
+            "/fixture/session/mesh_runs/run-{pid}.json"
+        )))
+    })
 }
 
 #[test]
 fn unrelated_detached_commands_never_override_a_tool_or_an_older_gate() -> TestResult {
     let processes = [
-        process(100, 1, &["bash", "/fixture/verify.sh"]),
+        process(
+            100,
+            1,
+            &[
+                "python3",
+                "mesh_runs.py",
+                "supervise",
+                "/fixture/session/mesh_runs/run-100.json",
+            ],
+        ),
         process(101, 100, &["cargo", "clippy"]),
         process(200, 1, &["python3", "send.py"]),
     ];
@@ -224,7 +828,16 @@ fn remote_step_unknown_uses_the_verify_request_without_changing_local_waits() ->
         &["bash", "/fixture/verify.sh", "test", "cargo-handler"],
     )?];
     let processes = [
-        process(100, 1, &["bash", "verify.sh"]),
+        process(
+            100,
+            1,
+            &[
+                "python3",
+                "mesh_runs.py",
+                "supervise",
+                "/fixture/session/mesh_runs/run-100.json",
+            ],
+        ),
         process(101, 100, &["ssh", "mac", "remote-dispatch"]),
     ];
     assert_eq!(
@@ -401,7 +1014,7 @@ fn idle_run_records_detect_same_size_rewrites_and_replacements() -> TestResult {
             .set_times(fs::FileTimes::new().set_modified(modified))?;
         let answer = records.read(directory.path());
         assert!(
-            matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == pid),
+            matches!(&answer[..], [RunRecord::Running(run)] if run.pid == pid),
             "equal-size records with restored mtime must replace the old answer"
         );
     }
@@ -455,7 +1068,7 @@ fn idle_run_records_copy_only_live_verification_candidates() -> TestResult {
             1,
             "only live runs are copied out for worker matching"
         );
-        assert!(matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == 2));
+        assert!(matches!(&answer[..], [RunRecord::Running(run)] if run.pid == 2));
     }
     Ok(())
 }
@@ -503,7 +1116,7 @@ fn idle_run_records_do_not_list_an_unchanged_watched_directory() -> TestResult {
     let live = HashSet::from([1]);
     for _ in 0..2 {
         let answer = records.read_for_processes(directory.path(), &live);
-        assert!(matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == 1));
+        assert!(matches!(&answer[..], [RunRecord::Running(run)] if run.pid == 1));
     }
     assert_eq!(
         records.directory_reads, 1,
@@ -536,7 +1149,7 @@ fn idle_run_records_recover_events_and_directory_replacement() -> TestResult {
     assert!(
         answer
             .iter()
-            .any(|record| matches!(record, RunRecord::Verify(run) if run.pid == 3))
+            .any(|record| matches!(record, RunRecord::Running(run) if run.pid == 3))
     );
     assert_eq!(records.directory_reads, 3);
 
@@ -562,7 +1175,7 @@ fn idle_run_records_recover_events_and_directory_replacement() -> TestResult {
         .ok_or("missing watch")?
         .recovery = Instant::now();
     let answer = records.read_for_processes(directory.path(), &live);
-    assert!(matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == 2));
+    assert!(matches!(&answer[..], [RunRecord::Running(run)] if run.pid == 2));
     assert_eq!(records.directory_reads, 5);
     records.retain_sessions(&HashSet::new());
     assert!(records.sessions.is_empty());
@@ -588,7 +1201,7 @@ fn idle_run_records_recover_an_unavailable_watch_and_discover_a_new_session() ->
         .ok_or("missing watch")?
         .recovery = now;
     let answer = records.read_for_processes(&session, &live);
-    assert!(matches!(&answer[..], [RunRecord::Verify(run)] if run.pid == 1));
+    assert!(matches!(&answer[..], [RunRecord::Running(run)] if run.pid == 1));
     assert_eq!(records.directory_reads, 2);
     Ok(())
 }
@@ -607,7 +1220,7 @@ fn idle_run_records_patch_one_changed_record_without_listing_its_mates() -> Test
     let rows = records.read_for_processes(directory.path(), &live);
     assert!(
         rows.iter()
-            .any(|row| matches!(row, RunRecord::Verify(run) if run.pid == 4))
+            .any(|row| matches!(row, RunRecord::Running(run) if run.pid == 4))
     );
     assert_eq!(
         records.directory_reads, 1,
@@ -621,4 +1234,89 @@ fn idle_run_records_patch_one_changed_record_without_listing_its_mates() -> Test
     assert_eq!(records.read_for_processes(directory.path(), &live).len(), 3);
     assert_eq!(records.directory_reads, 1);
     Ok(())
+}
+
+fn assert_live_detached_run_waits(encoded: &str) -> TestResult {
+    let mut payload: Value = serde_json::from_str(encoded)?;
+    payload["status"] = serde_json::json!("running");
+    let directory = tempfile::tempdir()?;
+    let runs = directory.path().join("mesh_runs");
+    fs::create_dir(&runs)?;
+    let path = runs.join("run.json");
+    fs::write(&path, serde_json::to_vec(&payload)?)?;
+    let mut records = RunRecords::for_test();
+    let records = records.read(directory.path());
+    let pid: u32 = serde_json::from_value(payload["pid"].clone())?;
+    let processes = [process(
+        pid,
+        1,
+        &[
+            "python3",
+            "mesh_runs.py",
+            "supervise",
+            &path.to_string_lossy(),
+        ],
+    )];
+    let mut verification = VerificationProcesses::new(&processes);
+    assert!(
+        matches!(verification.worker_run(&records), WorkerRun::Running { activity, .. }
+            if activity == AgentActivity::Active(Activity::Waiting)),
+        "a live detached run must show waiting for command {}",
+        payload["command"]
+    );
+    assert!(matches!(
+        VerificationProcesses::new(&[]).worker_run(&records),
+        WorkerRun::Inactive
+    ));
+    payload["status"] = serde_json::json!("finished");
+    let finished: RunRecord = serde_json::from_value(payload)?;
+    assert!(matches!(
+        verification.worker_run(&[finished.at_file(&path)]),
+        WorkerRun::Inactive
+    ));
+    Ok(())
+}
+
+#[test]
+fn unknown_detached_command_waits_without_a_step_name() -> TestResult {
+    assert_live_detached_run_waits(
+        r#"{
+        "command":["unrecognized-job","test"],"pid":100,
+        "thread_id":"worker","started_at":100,"status":"running"
+    }"#,
+    )
+}
+
+#[test]
+fn herdr_python_detached_run_waits_until_its_supervisor_ends() -> TestResult {
+    assert_live_detached_run_waits(
+        r#"{
+  "command": [
+    "python3",
+    "-c",
+    "import json, shlex, subprocess, sys\ncommands=json.loads(\"[[\\\"basedpyright\\\",\\\"scripts/direct/assign.py\\\",\\\"scripts/direct/assign_gate.py\\\",\\\"scripts/direct/test_assign_gate.py\\\",\\\"scripts/direct/test_assign_launcher.py\\\",\\\"scripts/direct/test_assign_claude_door.py\\\",\\\"scripts/direct/test_one_launch_path.py\\\"],[\\\"env\\\",\\\"-u\\\",\\\"PYTHONPATH\\\",\\\"-u\\\",\\\"STAFF_OPERATION_FD\\\",\\\"-u\\\",\\\"PYTHONUNBUFFERED\\\",\\\"-u\\\",\\\"REFUSAL_WATCH_INVENTORY\\\",\\\"HERDR_BIN=/nonexistent/herdr\\\",\\\"scripts/lib/py\\\",\\\"-m\\\",\\\"unittest\\\",\\\"scripts.direct.test_assign_gate\\\",\\\"scripts.direct.test_assign_launcher\\\",\\\"scripts.direct.test_assign_claude_door\\\",\\\"scripts.direct.test_one_launch_path\\\"]]\")\nresults=[]\nfor command in commands:\n print('COMMAND: '+shlex.join(command),flush=True)\n result=subprocess.run(command,check=False)\n print('EXIT: '+str(result.returncode),flush=True)\n results.append(result.returncode)\nsys.exit(0 if all(code == 0 for code in results) else 1)\n"
+  ],
+  "pid": 3410210,
+  "staff_id": "01a1a6ee-8b1d-7520-8d5d-d9fb8042e624",
+  "started_at": 1793929230.1851988,
+  "status": "finished"
+}"#,
+    )
+}
+
+#[test]
+fn herdr_shell_detached_run_waits_until_its_supervisor_ends() -> TestResult {
+    assert_live_detached_run_waits(
+        r#"{
+  "command": [
+    "bash",
+    "-c",
+    "env -u PYTHONPATH basedpyright scripts/herdr/side_pane.py scripts/herdr/test_side_pane.py scripts/herdr/herdr.py scripts/herdr/test_herdr.py && env -u PYTHONPATH -u STAFF_OPERATION_FD -u PYTHONUNBUFFERED -u REFUSAL_WATCH_INVENTORY HERDR_BIN=/nonexistent/herdr scripts/lib/py -m unittest scripts.herdr.test_side_pane scripts.herdr.test_herdr"
+  ],
+  "pid": 3492604,
+  "staff_id": "01a1a862-64ea-78a2-a637-2ff184ab8fe8",
+  "started_at": 1793929292.3816147,
+  "status": "finished"
+}"#,
+    )
 }

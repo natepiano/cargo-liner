@@ -8,7 +8,22 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+
+- Add the optional `text.dim_value` theme role and `dim_value_color()` accessor. Secondary text supplies the fallback.
+- `ExpansionModel::press_row` and `RowPressResult` share branch toggling and leaf handling across applications.
+- `TileGrid::cell_index` resolves current content identity without painted coordinates.
+
+- `CellPress` forwards tile title presses through `TileGridHost::cell_pressed` and preserves the content hook for existing hosts.
+- `SummaryFoot::WithOptionalSuffix` preserves the prefix when the suffix does not fit.
+- `StatusLineGlobal::fixed` uses the shared hint renderer for fixed modal keys.
+- `TileGrid::prepare_covered` updates covered grid geometry without painting. `cell_travel_duration` exposes the shared travel duration.
+
+- `StatusLineGlobal::after_uptime` omits an optional hint when uptime and the other status items need its space.
+- `TileGrid::draw_cell_view` paints one cell with grid travel. `CellTravel` sets its endpoints and elapsed time. `RowsReadout::shown` reports a row range.
+- `ColorMode::clear_colors` preserves terminal text modifiers when `NO_COLOR` disables colours.
+- Add `ExpansionModel`, `ExpansionTree`, and shared expansion actions and keys for application trees.
 - `wheel_framework_overlay` and `OverlayWheel` route a mouse wheel over the settings, keymap or global shortcuts overlay through the settings host; a host clears its own state first with `SettingsHost::before_settings_navigation`.
+- `CellFadeProgress` carries entry blend rounding through `TileCells::readout_progress`, so cell text and numeric readouts share exact ink.
 - `RowsReadout` and `TileCells::rows_readout` let a tile foot name the selected row, `content rows: 3 of 12`; a checked constructor refuses a row past the total, and the default keeps `content rows: 12`.
 - Tile grids can reserve the summary’s measured rows before sharing the remaining rows among tiles.
 - `ThemeRegistry::from_dir_with_parser` lets applications validate their own theme families while sharing deterministic directory loading, failed-file reporting and built-in role inheritance.
@@ -16,11 +31,41 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Shared `Viewport::navigate`, `Viewport::scroll_if_contains` and `table_row_at` support list navigation and table clicks. `TerminalApp::scroll` and `TileGridHost::cell_scrolled` forward wheel input to the tile under the pointer without moving focus.
 
 ### Changed
+
+- **Breaking:** Rename `CellClick` to `CellPointer` for press and wheel input.
+
+- Choose tile columns from the demand at each candidate width, and reuse the selected layout while its inputs stay equal.
+- Titled rules keep their title when the rule has four more cells than the title.
+- `PopupFrame` requires `color_mode`. It draws a thick, bold border for `NoColor` and a plain border for `Colored`.
+- Pass `ColorMode` to pane chrome, selection styles, overlays, and tile drawing.
+- Tile grids request a frame only when the drawn geometry or appearance changes; input uses the same last-painted record.
 - `handle_tile_scroll` gives each wheel step to an open settings, keymap or global shortcuts overlay through `wheel_framework_overlay` first; the tile behind the overlay does not scroll.
 - On an opaque screen, the focus tint fills the whole interior of a focused tile, empty rows and the foot included. On a transparent screen, a tile paints no ground and focus shows only as the lit border.
 - `PaneChrome::paint_tile_ground` paints the tile ground only on opaque screens and returns the fade colour, so transparent tiles keep fading toward the theme ground.
 
 ### Fixed
+
+- Cut pane titles keep a blank cell before the corner or joint.
+- Status lines keep whole hint groups by default. `StatusLine::with_individual_note_hints` enables individual hint fitting and a three-cell gap before notes. With this policy, narrow rows drop whole hints from the right. Rows without notes keep whole hint groups.
+
+- Pane titles use their trailing padding cell before they cut text.
+- Progress rows keep whole labels and reduce bars or counts first.
+- Toasts keep a blank cell before the close button. Opening cards keep their first sentence together when space permits.
+- Toast cards grow for their title before they cut it with an ellipsis.
+- Sentence cards reserve their required rows before stack allocation. Their exit animation still reduces their height.
+
+- Startup toast cards keep a bottom gap while opening in panes with at least six interior rows.
+- Toast page capacity reserves that gap before the opening animation starts.
+- Opening toast cards keep their bottom gap when the drawn rows fit. Progress labels use the space beside their own suffix.
+- Toasts mark hidden rows on the bottom border with the shared page mark. The page count stays fixed during opening. Small panes keep their titles and borders. Startup rows keep their progress bars and percentages inside the corner pane.
+- `TileGrid::cell_at` resolves the last painted piece during motion and between body paints.
+
+- Toast stacks stay in their placement corner and show fewer rows when space is short. Cards preserve pane borders, titles, and unrelated content.
+- Wrap long Settings paths at slashes when a path part fits the content width.
+
+- Optional status hints keep one trailing cell after the shortcuts hint.
+
+- Optional status hints keep two cells before the next shortcut.
 
 - The selected row in the global shortcuts overlay has one highlight width.
 - Tile growth, floor and area changes rebuild cached motion endpoints before reusing their bands and row measurements; unchanged frames reuse endpoint admission.

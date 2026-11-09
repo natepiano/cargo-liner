@@ -8,6 +8,7 @@
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc;
 
 use super::ProcessEntry;
@@ -22,19 +23,28 @@ use crate::census::ChildKind;
 use crate::census::ChildRow;
 use crate::census::CodexThreadId;
 use crate::census::HierarchyEdges;
+use crate::census::HierarchySource;
 use crate::census::RoleFallback;
 use crate::census::ServiceTier;
 use crate::census::SessionIdentity;
 use crate::census::ShellTimerObservation;
+use crate::census::StaffFileSetting;
+use crate::census::StaffRowNames;
 use crate::census::WorkIdentity;
 use crate::census::account::AccountLabels;
 use crate::census::account::ConfigHome;
+use crate::census::hierarchy::StaffFileReader;
+use crate::census::model::ModelName;
+use crate::census::model::ReasoningEffort;
+use crate::census::schedule;
 use crate::census::worker_dispatch::WorkerDispatch;
 use crate::census::worker_dispatch::WorkerTask;
 
 /// The shell detail attached after classification is published.
 fn staged_child() -> ChildRow {
     ChildRow {
+        model:        ModelName::Unrecorded,
+        effort:       ReasoningEffort::Unrecorded,
         worker_task:  WorkerTask::Unrecorded,
         thread_id:    CodexThreadId::Unrecorded,
         dispatch:     WorkerDispatch::Plain,
@@ -52,6 +62,9 @@ fn staged_child() -> ChildRow {
 
 fn staged_agent() -> AgentRow {
     AgentRow {
+        model:           ModelName::Unrecorded,
+        effort:          ReasoningEffort::Unrecorded,
+        staff_names:     StaffRowNames::default(),
         role_fallback:   RoleFallback::None,
         session_id:      SessionIdentity::Claude("abcd1234".to_string()),
         agent:           Agent::Claude,
@@ -112,7 +125,6 @@ fn the_staged_scan_sends_classified_rows_before_reading_details() {
     super::LocalScanner::new(AccountLabels::default()).scan_stages(
         &processes,
         &sessions,
-        &[],
         Some(Path::new("/home/test")),
         |rows| {
             sender
@@ -187,7 +199,6 @@ fn later_scans_publish_completed_rows_without_a_classified_refresh() {
     scanner.scan_stages(
         &processes,
         &sessions,
-        &[],
         None,
         |rows| first_answers.push(rows),
         |_, rows| rows[0].branch = Some("main".to_string()),
@@ -198,7 +209,6 @@ fn later_scans_publish_completed_rows_without_a_classified_refresh() {
     scanner.scan_stages(
         &processes,
         &sessions,
-        &[],
         None,
         |rows| sender.send(rows).expect("the census receiver remains open"),
         |_, rows| {
@@ -276,4 +286,66 @@ fn transcript_cache_changes_paths_and_forgets_sessions_that_disappear()
     scanner.attach_activity_and_names(&[], &std::collections::HashMap::new(), &mut []);
     assert!(scanner.transcript_activity.is_empty());
     Ok(())
+}
+
+#[test]
+fn a_scan_keeps_one_staff_source_for_names_and_links() {
+    let directory = tempfile::tempdir().expect("staff directory");
+    let first = directory.path().join("first.json");
+    let second = directory.path().join("second.json");
+    for (path, name, member) in [
+        (&first, "first name", "first child"),
+        (&second, "second name", "second child"),
+    ] {
+        std::fs::write(path, serde_json::json!({"schema":2,"rows":[
+            {"id":"boss", "kind":"showrunner", "name":name, "parent":null, "current_session":"abcd1234"},
+            {"id":"unit", "kind":"unit", "name":"unit", "parent":"boss", "current_session":member}
+        ]}).to_string()).expect("staff file");
+    }
+    let setting =
+        StaffFileSetting::new(HierarchySource::File(first.to_string_lossy().into_owned()));
+    let scan_setting = setting.clone();
+    let updates = schedule::spawn_with_test_source(
+        setting,
+        Arc::new(StaffFileReader::default()),
+        move |answers| {
+            let mut scanner = super::LocalScanner::new(AccountLabels::default())
+                .with_staff_file(scan_setting.clone(), StaffFileReader::default());
+            for _ in 0..2 {
+                scanner.scan_with_staff(
+                    &[],
+                    &[],
+                    None,
+                    |stage, rows, staff| {
+                        answers
+                            .publish_staff(stage, rows, staff)
+                            .expect("publish staff snapshot");
+                    },
+                    |_, rows| {
+                        rows.push(staged_agent());
+                        scan_setting
+                            .replace(HierarchySource::File(second.to_string_lossy().into_owned()));
+                    },
+                );
+            }
+        },
+    );
+    let mut completed = Vec::new();
+    for update in updates {
+        if let CensusUpdate::Local {
+            rows,
+            hierarchy,
+            stage: ScanStage::Completed,
+        } = update
+        {
+            completed.push((rows[0].name.clone(), hierarchy.edges.0[0].member.clone()));
+        }
+    }
+    assert_eq!(
+        completed,
+        [
+            ("first name".to_string(), "first child".to_string()),
+            ("second name".to_string(), "second child".to_string())
+        ]
+    );
 }

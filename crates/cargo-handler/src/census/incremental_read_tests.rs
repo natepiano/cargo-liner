@@ -265,10 +265,12 @@ fn neutral_records(minimum_bytes: usize) -> String {
 fn incremental_codex_last_tier_after_the_old_head_limit_replaces_priority() {
     let directory = tempfile::tempdir().expect("isolated rollout directory");
     let path = directory.path().join("late-tier.jsonl");
+    // One neutral record retains each gap without hundreds of record boundaries.
     let text = format!(
-        "{CODEX_HEAD}{}{DEFAULT_TIER}{}{CODEX_TAIL}",
-        neutral_records(5 * MEBIBYTE),
-        neutral_records(MEBIBYTE)
+        "{CODEX_HEAD}{{\"type\":\"progress\",\"padding\":\"{}\"}}\n\
+         {DEFAULT_TIER}{{\"type\":\"progress\",\"padding\":\"{}\"}}\n{CODEX_TAIL}",
+        "x".repeat(5 * MEBIBYTE),
+        "x".repeat(MEBIBYTE)
     );
     fs::write(&path, &text).expect("late tier rollout writes");
     let read = Rollouts::default().read(&path);

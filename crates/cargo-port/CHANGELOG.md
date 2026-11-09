@@ -11,10 +11,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Render each allowed frame once into the real terminal and reuse the retained screen buffer.
+- Draw a frame only when something visible changed; look up project paths through an index and recompute disk totals and column widths only when their inputs change, so an idle cargo-port uses about 0.2% of one core.
+- Use the shared `tui_pane` expansion model and keys for the project list; preserve its navigation and saved expansion state.
+
 - The settings, keymap and global shortcuts overlays scroll by the mouse wheel through `tui_pane`; modal capture and scroll inversion stay the same.
 - On macOS, reuse recursive watches for overlapping roots while preserving discovery boundaries and failed-parent fallback; resolve watcher Cargo home once and isolate registration tests from the developer's home.
 
 ### Fixed
+
+- Remove spaces and trailing middle-dot separators before cut-value ellipses. Keep the Tracked header and short Worktree Group CI values whole.
+- Give quiet CI and lint values a separate theme role with readable contrast on focused and unfocused panes.
+- Deliver pull-request results to submodules. Keep cached rows when the remote list cannot be read. Hide empty loading sections without a fetch.
+- Keep narrow Git field labels inset and Stars values on their own row.
+- Reserve Main comparison width before git data arrives, and reserve pull-request loading rows before their fetch starts.
+- Remove the unused on-branch-rows CI state.
+- Reserve preferred Targets width before Projects expands. Cut Source text before target names.
+
+- Release each metadata permit after one refresh so other checkouts can run during continuous edits.
+- Capture submodule language caches before detail work starts so delayed enrichment cannot restore retired owners.
+
+- Limit GNU/Linux allocator arenas at startup so freed scan buffers do not remain spread across many arenas.
+
+- Reuse the shared source cache for runtime enrichment. Retain submodule counts through rescans until their parent reports removed submodules.
+
+- Release retired watcher projects and their pending disk work.
+- Replace each checkout's target-directory membership when metadata removes or changes its members.
+
+- Merge pending metadata refreshes and rescans by owner. Keep the latest metadata generation and release pending work when its worker stops.
+- Capture test-count caches before dispatch so a late job cannot restore a removed owner.
+
+- Dismiss the previous Startup toast before a rescan resets its owner.
+- Reuse source counts for unchanged files across rescans. Skip Markdown parser buffers for prose-only doc comments, and release removed projects' source and Cargo metadata caches.
+- Reuse six file-measurement workers for source counts, rescans and disk polls. Avoid project-tree walks when target exclusions only grow.
+- Reuse discovery, watcher and metadata workers across rescans so whole-tree allocations return to the same workers.
+- Resolve empty descriptions after a Git probe finds no repository. Add a margin after label-only Package titles when it fits.
+- Keep descriptions pending until each source resolves. Keep a blank cell after cut Package titles.
+- Hide unknown descriptions until Cargo or GitHub supplies data. Keep known-empty descriptions distinct from pending descriptions.
+- Keep the Structure divider fixed when crates.io values arrive. Cut long release values inside their column.
+- Draw the CPU page count in the bottom border. Keep unknown Pull Requests counts out of the title.
+
+- Align Disk child labels at narrow widths. Keep their values in the Disk value column.
+- Keep the normal Disk child indent when the values need separate rows.
+- Keep RON icons, known CI counts, and disk child rows whole. Preserve Package columns and section margins.
+- Give spare CI table space to cut commit messages.
+
+- Keep Source columns, whole labels, and whole section titles in narrow panes. Cut names and values first.
+- Keep blank margins beside Package, CI, and Languages values. Balance Git Branch and Tracked widths.
+
+- Hide GitHub quota rows until each bucket has data. Retain measured quota after refresh failures.
+- Keep the Git pane title unchanged when quota data arrives for a project without a Git repository.
+- Label local and GitHub CI counts. Show loading and failure states, retain known counts, and show `No CI runs` for known zero.
+- Keep the Git Worktrees columns visible at narrow widths. Cut Name first, preserve the margins, and align wide characters.
+- Keep target names whole before Source labels. Remove shared checkout words and preserve distinct ends when Source labels need a cut.
+
+- Refresh GitHub quota after each reset and update the Git pane without input.
+- After a reset, fetch the quota again every 10 s, up to 3 times, until GitHub opens the new window.
+- Hide expired countdowns and retain quota limits when they fit.
+- Show one GitHub outage row and distinguish repository applicability from pending Stars data.
+- Wrap Settings paths within the popup margin and use one readable ink on selected rows.
+- Keep language names, CI counts, shortened values, and duplicate project names readable.
+- Update Disk totals and parts together. Show a loading mark until measurements arrive.
+- Keep Workspace statistics, page selections, and column joins visible in Package panes.
+- Limit descriptions to two rows in short panes and retain useful target source text.
+- Show summed CI job time under Total and show the lint cache limit once.
+- Skip empty Deleted language panes during navigation and preserve panes behind startup toasts.
+
+- Show the selected row and focused border without colour. Strike only Deleted row text, and show only its dismiss mark in Disk.
+- Fill the selected project row across all columns. Keep unselected Disk cells without a fill and use size-based colours.
+- Improve the dark theme contrast for selection, Disk values, and System percentages. Draw CPU bars with continuous backgrounds and readable labels.
+- Keep narrow panes useful. Hide panes that cannot fit, preserve focus when they return, and mark shortened Package and CI text.
+- Show language names, complete headers, and distinct child rows. Use common words and sentence case in pane labels.
+- Correct the sccache page count and selection fill. Explain non-cacheable reasons and name the status value Disk cache.
+- Add project margins and a Type heading. Show Deleted package details, use one target name, and show the missing lint state once.
+
+- Clear Deleted rows on a full rescan; keep them struck through until dismissal or rescan.
+- Keep text attributes, including strike-through, when `NO_COLOR` suppresses terminal colours.
+- Give the widest sccache popup row equal left and right padding.
+- Shorten Git pane values at their end with an ellipsis when the value exceeds its column.
+- Keep the chosen VS16 glyphs and anchor the cursor after them to prevent shifted text during partial redraws.
 
 - Mark rejected Cargo manifests on their rows and show the selected error in the Package pane across rescans, without repeated error toasts; clear the diagnostic when metadata succeeds or the project is no longer Rust. Launch, I/O and timeout failures keep their error toasts.
 

@@ -98,6 +98,13 @@ impl Default for SccacheStatusLine {
 /// so the segment stays current on an idle screen. `sccache --show-stats`
 /// spawns a process, so it runs on a worker rather than the render thread.
 pub(in crate::tui) fn refresh_summary_if_due(app: &mut App, now: Instant) {
+    #[cfg(test)]
+    if matches!(
+        app.startup_services.background_query_source(),
+        crate::tui::startup_services::BackgroundQuerySource::QueuedReplies
+    ) {
+        return;
+    }
     if matches!(
         app.sccache_status_line.claim_poll(now),
         SccachePollDecision::NotDue

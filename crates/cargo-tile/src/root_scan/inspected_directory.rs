@@ -514,6 +514,8 @@ pub(super) use tests::create_directories;
 pub(super) use tests::log_entry;
 #[cfg(test)]
 pub(super) use tests::make_fifo;
+#[cfg(test)]
+pub(super) use tests::scan_with_incomplete_logs;
 
 #[cfg(test)]
 #[allow(
@@ -559,6 +561,23 @@ mod tests {
     use crate::root_scan::EffectiveUser;
     use crate::root_scan::RootHistory;
     use crate::root_scan::RootScan;
+
+    /// Fill `RootScan::logs` without creating unrelated files for the sweep test.
+    pub(in crate::root_scan) fn scan_with_incomplete_logs(path: &Path) -> RootScan {
+        let scan = RootScan::open(path, &mut RootHistory::default()).expect("bounded scan");
+        let mut inventory = Inventory {
+            entries: Vec::new(),
+            outcome: Enumeration::Complete,
+        };
+        for number in 0..CAPTURE_INVENTORY_LIMIT {
+            inventory.push(format!("unrelated-{number}").as_bytes());
+        }
+        scan.logs
+            .set(inventory)
+            .ok()
+            .expect("log inventory is not initialized");
+        scan
+    }
 
     #[test]
     fn shared_parent_owner_repairs_modes_that_prevent_opening_the_directory() {
@@ -872,6 +891,21 @@ mod tests {
                 CAPTURE_REGISTRATION_TOO_LARGE
             );
         }
+    }
+
+    #[test]
+    fn an_inventory_becomes_incomplete_at_the_capture_limit() {
+        let mut inventory = Inventory {
+            entries: Vec::new(),
+            outcome: Enumeration::Complete,
+        };
+        for _ in 1..CAPTURE_INVENTORY_LIMIT {
+            inventory.push(b"record");
+        }
+        assert!(matches!(inventory.outcome, Enumeration::Complete));
+        inventory.push(b"last-record");
+        assert!(matches!(inventory.outcome, Enumeration::Incomplete));
+        assert_eq!(inventory.entries.len(), CAPTURE_INVENTORY_LIMIT);
     }
 
     /// A real getdents/readdir failure survives instead of becoming empty success.

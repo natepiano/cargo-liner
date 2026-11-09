@@ -41,9 +41,12 @@ use notify::RecommendedWatcher;
 use notify::RecursiveMode;
 use notify::Watcher;
 use serde::Deserialize;
-use serde::Serialize;
+use serde_json::Value;
 
 use super::AgentActivity;
+use super::hierarchy::FileRevision;
+use super::model;
+use super::model::ConversationModel;
 use crate::constants::ASSISTANT_LINE;
 use crate::constants::BASH_TOOL;
 use crate::constants::BASH_TOOL_MARKER;
@@ -63,6 +66,9 @@ use crate::constants::TRANSCRIPT_SPAN_READ_LIMIT;
 use crate::constants::TRANSCRIPT_TAIL_GROWTH;
 use crate::constants::TRANSCRIPT_TAIL_START;
 use crate::constants::USER_LINE;
+use crate::footer_colors::FooterColors;
+use crate::footer_colors::FooterRole;
+use crate::footer_colors::FooterTint;
 
 /// A cursor owns the bytes fetched in one path generation.
 /// In `Following`, `offset` is the next unread file position and `pending`
@@ -124,6 +130,8 @@ pub(super) enum RecordKind {
     Codex,
     #[serde(rename = "session_meta")]
     Session,
+    #[serde(rename = "turn_context")]
+    Context,
     #[default]
     #[serde(other)]
     Other,
@@ -508,76 +516,103 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-/// The responsibility read once from a subagent's metadata and description.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+/// The responsibility selected at the subagent metadata boundary.
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub(crate) enum SubagentRole {
-    Capture,
-    Review,
-    Lint,
+    Writer,
+    Reviewer,
+    Impl,
     Test,
+    Fix,
+    Capture,
+    Lint,
     Survey,
-    Specialist(SpecialistRole),
+    Plan,
+    Explore,
+    Showrunner,
+    Agent,
     #[default]
     Unrecorded,
 }
 
-/// A nonempty specialist type recorded by Claude.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(try_from = "String", into = "String")]
-pub(crate) struct SpecialistRole(String);
-
-impl TryFrom<String> for SpecialistRole {
-    type Error = &'static str;
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        let value = value.trim();
-        if value.is_empty() {
-            Err("empty subagent type")
-        } else {
-            Ok(Self(value.to_owned()))
-        }
-    }
-}
-
-impl From<SpecialistRole> for String {
-    fn from(role: SpecialistRole) -> Self { role.0 }
-}
-
 impl SubagentRole {
-    /// An explicit specialist type wins over the description's role words.
-    pub(crate) fn from_record(agent_type: &str, description: &str) -> Self {
-        let kind = agent_type.trim();
-        if !kind.is_empty() && kind != GENERAL_SUBAGENT_TYPE {
-            return Self::word(kind)
-                .unwrap_or_else(|| Self::Specialist(SpecialistRole(kind.to_owned())));
+    /// A name or specific type decides the role before the description.
+    pub(super) fn from_sources(
+        name: &str,
+        agent_type: &str,
+        spawned_agent_type: &str,
+        description: &str,
+    ) -> Self {
+        let name = name.trim();
+        if !name.is_empty() {
+            return Self::source_word(name).unwrap_or(Self::Agent);
         }
-        description
-            .split(|character: char| !character.is_alphanumeric())
+        for source in [agent_type, spawned_agent_type] {
+            let source = source.trim();
+            if !source.is_empty() && !source.eq_ignore_ascii_case(GENERAL_SUBAGENT_TYPE) {
+                return Self::source_word(source).unwrap_or(Self::Agent);
+            }
+        }
+        Self::source_word(description).unwrap_or_default()
+    }
+
+    /// Metadata tokens contain letters only, so numbered names keep whole role words.
+    fn source_word(source: &str) -> Option<Self> {
+        source
+            .split(|character: char| !character.is_alphabetic())
             .find_map(Self::word)
-            .unwrap_or_default()
     }
 
     fn word(word: &str) -> Option<Self> {
         match word.to_ascii_lowercase().as_str() {
-            "capture" | "capturing" => Some(Self::Capture),
-            "review" | "reviewing" | "reviewer" => Some(Self::Review),
-            "lint" | "linting" => Some(Self::Lint),
+            "writer" => Some(Self::Writer),
+            "reviewer" | "review" | "reviewing" => Some(Self::Reviewer),
+            "impl" => Some(Self::Impl),
             "test" | "testing" | "tester" => Some(Self::Test),
+            "fix" => Some(Self::Fix),
+            "capture" | "capturing" => Some(Self::Capture),
+            "lint" | "linting" => Some(Self::Lint),
             "survey" | "surveying" => Some(Self::Survey),
+            "plan" => Some(Self::Plan),
+            "explore" => Some(Self::Explore),
+            "showrunner" => Some(Self::Showrunner),
             _ => None,
         }
     }
 
-    pub(crate) fn text(&self) -> &str {
+    pub(crate) const fn text(&self) -> &'static str {
         match self {
-            Self::Capture => "capture",
-            Self::Review => "review",
-            Self::Lint => "lint",
+            Self::Writer => "writer",
+            Self::Reviewer => "reviewer",
+            Self::Impl => "impl",
             Self::Test => "test",
+            Self::Fix => "fix",
+            Self::Capture => "capture",
+            Self::Lint => "lint",
             Self::Survey => "survey",
-            Self::Specialist(role) => &role.0,
+            Self::Plan => "plan",
+            Self::Explore => "explore",
+            Self::Showrunner => "showrunner",
+            Self::Agent => "agent",
             Self::Unrecorded => "",
         }
     }
+
+    /// `SubagentRole::Showrunner` draws `FooterRole::Showrunner` ink.
+    /// Every other role draws `FooterTint::Plain`.
+    pub(crate) fn ink(&self, colors: &FooterColors) -> FooterTint {
+        match self {
+            Self::Showrunner => colors.role(FooterRole::Showrunner),
+            _ => FooterTint::Plain,
+        }
+    }
+}
+
+/// The metadata parent before placement resolves absent or finished subagents.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum SubagentParent {
+    OwningSession,
+    RecordedSubagent(String),
 }
 
 /// A subagent running inside a session.
@@ -586,8 +621,8 @@ pub(super) struct Subagent {
     /// The subagent's id, which a subagent it started names as its
     /// parent.
     pub(super) id:          String,
-    /// The id of the subagent that started this one, where one did.
-    pub(super) parent:      Option<String>,
+    /// The recorded subagent parent, or the owning session.
+    pub(super) parent:      SubagentParent,
     /// What the subagent was asked to do, else its kind.
     pub(super) description: String,
     pub(super) agent_type:  String,
@@ -606,13 +641,19 @@ pub(super) struct Subagent {
 struct SubagentMeta {
     /// What the subagent was asked to do.
     #[serde(default)]
-    description:     Option<String>,
+    description:        Option<String>,
     /// The subagent's kind, such as `general-purpose`.
     #[serde(default)]
-    agent_type:      Option<String>,
+    agent_type:         Option<String>,
+    /// The teammate name, when Claude records one.
+    #[serde(default)]
+    name:               Option<String>,
+    /// The type requested when Claude spawned the subagent.
+    #[serde(default)]
+    spawned_agent_type: Option<String>,
     /// The subagent that started this one.
     #[serde(default)]
-    parent_agent_id: Option<String>,
+    parent_agent_id:    Option<String>,
 }
 
 /// The directory generation attached to an OS subscription.
@@ -884,17 +925,26 @@ fn read_subagents(directory: &Path, reads: &mut SubagentReads) -> Vec<RecentSuba
                 .ok()
                 .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
                 .map_or(0, |since| since.as_secs());
+            let role = SubagentRole::from_sources(
+                meta.name.as_deref().unwrap_or_default(),
+                meta.agent_type.as_deref().unwrap_or_default(),
+                meta.spawned_agent_type.as_deref().unwrap_or_default(),
+                meta.description.as_deref().unwrap_or_default(),
+            );
+            let parent = meta.parent_agent_id.map_or(
+                SubagentParent::OwningSession,
+                SubagentParent::RecordedSubagent,
+            );
             let agent_type = meta.agent_type.unwrap_or_default();
             let description = meta
                 .description
                 .filter(|text| !text.is_empty())
                 .unwrap_or_else(|| id.clone());
-            let role = SubagentRole::from_record(&agent_type, &description);
             Some(RecentSubagent {
                 modified: metadata.modified().ok()?,
                 agent:    Subagent {
                     id,
-                    parent: meta.parent_agent_id,
+                    parent,
                     description,
                     agent_type,
                     role,
@@ -1028,6 +1078,171 @@ impl SubagentReads {
     }
 }
 
+/// `TranscriptModels` retains each conversation's own model and effort between revisions.
+#[derive(Debug, Default)]
+pub(super) struct TranscriptModels {
+    records:       HashMap<PathBuf, TranscriptModelRead>,
+    #[cfg(test)]
+    content_reads: usize,
+    #[cfg(test)]
+    bytes_read:    u64,
+}
+
+#[derive(Debug)]
+struct TranscriptModelRead {
+    revision:  FileRevision,
+    cursor:    JsonlCursor,
+    inference: ConversationModel,
+}
+
+/// `RecordChange` distinguishes appended bytes from a different file generation.
+pub(super) enum RecordChange {
+    Unchanged,
+    Appended,
+    Replaced,
+}
+
+pub(super) fn record_change(previous: &FileRevision, current: &FileRevision) -> RecordChange {
+    if previous == current {
+        return RecordChange::Unchanged;
+    }
+    if let (FileRevision::Present { size: before, .. }, FileRevision::Present { size: after, .. }) =
+        (previous, current)
+        && after > before
+    {
+        #[cfg(unix)]
+        if let (
+            FileRevision::Present {
+                device: left_device,
+                inode: left_inode,
+                ..
+            },
+            FileRevision::Present {
+                device: right_device,
+                inode: right_inode,
+                ..
+            },
+        ) = (previous, current)
+            && (left_device != right_device || left_inode != right_inode)
+        {
+            return RecordChange::Replaced;
+        }
+        return RecordChange::Appended;
+    }
+    RecordChange::Replaced
+}
+
+/// `ConversationFormat` defines the metadata shape and its initial read windows.
+#[derive(Clone, Copy)]
+enum ConversationFormat {
+    Claude,
+    Codex,
+}
+
+impl ConversationFormat {
+    fn take(self, inference: &mut ConversationModel, value: &Value) {
+        match self {
+            Self::Claude => inference.take_claude(value),
+            Self::Codex => inference.take_codex(value),
+        }
+    }
+
+    /// `read_head` reads early Codex context without searching the intervening history.
+    fn read_head(self, path: &Path) -> ReadBatch {
+        if matches!(self, Self::Claude) {
+            return ReadBatch::default();
+        }
+        let Ok(file) = File::open(path) else {
+            return ReadBatch::default();
+        };
+        if !file
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() > TRANSCRIPT_TAIL_START)
+        {
+            return ReadBatch::default();
+        }
+        let mut bytes = Vec::new();
+        let Ok(bytes_read) = file.take(TRANSCRIPT_TAIL_START).read_to_end(&mut bytes) else {
+            return ReadBatch::default();
+        };
+        ReadBatch {
+            lines:      RecordBoundary::Whole
+                .complete(&bytes)
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .map(<[u8]>::to_vec)
+                .collect(),
+            bytes_read: bytes_read as u64,
+        }
+    }
+}
+
+impl TranscriptModels {
+    pub(super) fn read(&mut self, path: &Path) -> ConversationModel {
+        self.read_record(path, ConversationFormat::Claude)
+    }
+
+    pub(super) fn read_codex(&mut self, path: &Path) -> ConversationModel {
+        self.read_record(path, ConversationFormat::Codex)
+    }
+
+    fn read_record(&mut self, path: &Path, format: ConversationFormat) -> ConversationModel {
+        let revision = fs::metadata(path).map_or(FileRevision::Missing, |metadata| {
+            FileRevision::of(&metadata)
+        });
+        let record = self
+            .records
+            .entry(path.to_owned())
+            .or_insert_with(|| TranscriptModelRead {
+                revision:  FileRevision::Missing,
+                cursor:    JsonlCursor::NeverRead,
+                inference: ConversationModel::default(),
+            });
+        match record_change(&record.revision, &revision) {
+            RecordChange::Unchanged => return record.inference.clone(),
+            RecordChange::Replaced => {
+                record.cursor = JsonlCursor::NeverRead;
+                record.inference = ConversationModel::default();
+            },
+            RecordChange::Appended => {},
+        }
+        record.revision = revision;
+        if record.revision == FileRevision::Missing {
+            return record.inference.clone();
+        }
+        #[cfg(test)]
+        {
+            self.content_reads += 1;
+        }
+        let head = if matches!(record.cursor, JsonlCursor::NeverRead) {
+            format.read_head(path)
+        } else {
+            ReadBatch::default()
+        };
+        // `JsonlCursor` reads one bounded tail initially and only appended bytes later.
+        let tail = record
+            .cursor
+            .read_until(path, TRANSCRIPT_TAIL_START, |_| true);
+        #[cfg(test)]
+        {
+            self.bytes_read += head.bytes_read + tail.bytes_read;
+        }
+        for line in head.lines.into_iter().chain(tail.lines) {
+            if let Ok(value) = model::record_metadata(&line) {
+                format.take(&mut record.inference, &value);
+            }
+        }
+        record.inference.clone()
+    }
+
+    pub(super) fn retain(&mut self, paths: &HashSet<PathBuf>) {
+        self.records.retain(|path, _| paths.contains(path));
+    }
+
+    #[cfg(test)]
+    pub(super) const fn content_reads(&self) -> usize { self.content_reads }
+}
+
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
@@ -1042,6 +1257,184 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::census::model::ModelName;
+    use crate::census::model::ReasoningEffort;
+
+    #[test]
+    fn claude_model_and_effort_come_from_its_own_transcript() {
+        let directory = TempDir::new().expect("transcript directory");
+        let path = directory.path().join("session.jsonl");
+        write_lines(
+            &path,
+            &[json!({"type":"assistant", "message":{
+                "model":"claude-opus-4-6", "effort":"max"
+            }})
+            .to_string()],
+        );
+        let read = TranscriptModels::default().read(&path);
+        assert_eq!(read.model, ModelName::Opus);
+        assert_eq!(read.effort, ReasoningEffort::Max);
+    }
+
+    #[test]
+    fn unchanged_claude_metadata_does_not_read_the_file_again() {
+        let directory = TempDir::new().expect("transcript directory");
+        let path = directory.path().join("session.jsonl");
+        write_lines(
+            &path,
+            &[json!({"type":"assistant", "message":{
+                "model":"claude-opus-4-6", "effort":"high"
+            }})
+            .to_string()],
+        );
+        let mut reads = TranscriptModels::default();
+        reads.read(&path);
+        assert_eq!(reads.content_reads, 1);
+        reads.read(&path);
+        assert_eq!(reads.content_reads, 1);
+    }
+
+    #[test]
+    fn a_large_claude_transcript_without_effort_reads_only_its_tail_and_appends() {
+        let directory = TempDir::new().expect("transcript directory");
+        let path = directory.path().join("session.jsonl");
+        let padding = "x".repeat(4 * 1024 * 1024);
+        let body = json!({"type":"user", "message":{"content":padding}});
+        let model = json!({"type":"assistant", "message":{"model":"claude-opus-4-6"}});
+        write_lines(&path, &[body.to_string(), model.to_string()]);
+        let mut reads = TranscriptModels::default();
+        let initial = reads.read(&path);
+        assert_eq!(initial.model, ModelName::Opus);
+        assert_eq!(initial.effort, ReasoningEffort::Unrecorded);
+        assert!(
+            reads.bytes_read <= TRANSCRIPT_TAIL_START,
+            "a missing effort must not expand the tail: {} bytes",
+            reads.bytes_read
+        );
+        let before = reads.bytes_read;
+        reads.read(&path);
+        assert_eq!(reads.bytes_read, before, "unchanged records read no bytes");
+        let append = format!(
+            "{}\n",
+            json!({"type":"system", "model":"claude-sonnet-4-5", "effort":"low"})
+        );
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("transcript");
+        file.write_all(append.as_bytes()).expect("append settings");
+        let changed = reads.read(&path);
+        assert_eq!(changed.model, ModelName::Sonnet);
+        assert_eq!(changed.effort, ReasoningEffort::Low);
+        assert_eq!(
+            reads.bytes_read - before,
+            append.len() as u64,
+            "an append reads only its new bytes"
+        );
+    }
+
+    #[test]
+    fn a_large_codex_rollout_without_effort_reads_bounded_metadata() {
+        let directory = TempDir::new().expect("rollout directory");
+        let path = directory.path().join("rollout.jsonl");
+        let context = json!({"type":"turn_context", "payload":{"model":"gpt-6.1-sol"}});
+        let padding_length =
+            usize::try_from(3 * TRANSCRIPT_TAIL_START).expect("padding length fits");
+        let padding =
+            json!({"type":"response_item", "payload":{"text":"x".repeat(padding_length)}});
+        write_lines(
+            &path,
+            &[
+                context.to_string(),
+                padding.to_string(),
+                context.to_string(),
+            ],
+        );
+        let mut reads = TranscriptModels::default();
+        let initial = reads.read_codex(&path);
+        assert_eq!(initial.model, ModelName::Sol);
+        assert_eq!(initial.effort, ReasoningEffort::Unrecorded);
+        assert!(
+            reads.bytes_read <= 2 * TRANSCRIPT_TAIL_START,
+            "a missing effort must not scan the rollout: {} bytes",
+            reads.bytes_read
+        );
+        let before = reads.bytes_read;
+        let append = format!(
+            "{}\n",
+            json!({"type":"turn_context", "payload":{"model":"gpt-6.1-astra", "effort":"high"}})
+        );
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("rollout");
+        file.write_all(append.as_bytes()).expect("append context");
+        let changed = reads.read_codex(&path);
+        assert_eq!(changed.model, ModelName::Astra);
+        assert_eq!(changed.effort, ReasoningEffort::High);
+        assert_eq!(
+            reads.bytes_read - before,
+            append.len() as u64,
+            "a rollout append reads only its new bytes"
+        );
+    }
+
+    #[test]
+    fn appended_claude_settings_replace_the_recorded_values() {
+        let directory = TempDir::new().expect("transcript directory");
+        let path = directory.path().join("session.jsonl");
+        write_lines(
+            &path,
+            &[json!({"type":"assistant", "message":{
+                "model":"claude-opus-4-6", "effort":"high"
+            }})
+            .to_string()],
+        );
+        let mut reads = TranscriptModels::default();
+        reads.read(&path);
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("transcript");
+        writeln!(
+            file,
+            "{}",
+            json!({"type":"system", "subtype":"settings", "message":"settings applied",
+            "model":"claude-sonnet-4-5", "effortLevel":"low"})
+        )
+        .expect("settings append");
+        let changed = reads.read(&path);
+        assert_eq!(changed.model, ModelName::Sonnet);
+        assert_eq!(changed.effort, ReasoningEffort::Low);
+        assert_eq!(reads.content_reads, 2);
+    }
+
+    #[test]
+    fn replaced_claude_transcripts_discard_the_previous_metadata() {
+        let directory = TempDir::new().expect("transcript directory");
+        let path = directory.path().join("session.jsonl");
+        write_lines(
+            &path,
+            &[json!({"type":"assistant", "message":{
+                "model":"claude-opus-4-6", "effort":"high"
+            }})
+            .to_string()],
+        );
+        let mut reads = TranscriptModels::default();
+        reads.read(&path);
+        let replacement = directory.path().join("replacement.jsonl");
+        write_lines(
+            &replacement,
+            &[json!({"type":"assistant", "message":{
+                "model":"claude-haiku-4-5"
+            }})
+            .to_string()],
+        );
+        fs::rename(replacement, &path).expect("transcript replacement");
+        let changed = reads.read(&path);
+        assert_eq!(changed.model, ModelName::Haiku);
+        assert_eq!(changed.effort, ReasoningEffort::Unrecorded);
+    }
 
     /// An RFC 3339 time `ms` milliseconds after the unix epoch.
     fn stamp(ms: u64) -> String {
@@ -1468,7 +1861,7 @@ mod tests {
                 (
                     agent.id.as_str(),
                     agent.description.as_str(),
-                    agent.parent.as_deref(),
+                    agent.parent.clone(),
                 )
             })
             .collect();
@@ -1477,8 +1870,8 @@ mod tests {
             2,
             "the finished subagent is left out: {described:?}"
         );
-        assert!(described.contains(&("a1", "Review phase 1", None)));
-        assert!(described.contains(&("a2", "a2", Some("a1"))));
+        assert!(described.contains(&("a1", "Review phase 1", SubagentParent::OwningSession)));
+        assert!(described.contains(&("a2", "a2", SubagentParent::RecordedSubagent("a1".into()))));
         assert_eq!(
             running
                 .iter()

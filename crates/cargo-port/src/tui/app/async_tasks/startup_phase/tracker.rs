@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+use ratatui::layout::Rect;
 use ratatui::style::Color;
 use tui_pane::PERF_LOG_TARGET;
 use tui_pane::ProgressDetail;
@@ -8,6 +9,7 @@ use tui_pane::ProgressDetail;
 use super::orchestrator::StartupPlan;
 use super::orchestrator::StartupReadiness;
 use super::orchestrator::StartupToast;
+use super::orchestrator::StartupToastLayout;
 use super::toast_bodies;
 use crate::project;
 use crate::project::AbsolutePath;
@@ -62,17 +64,8 @@ impl Startup {
         github_detail: Option<&str>,
         crates_io_detail: Option<&str>,
     ) -> Vec<ProgressRow> {
-        let phases: [(&'static str, &dyn PhaseCompletion); 8] = [
-            (STARTUP_PHASE_DISK, &self.disk),
-            (STARTUP_PHASE_GIT, &self.git),
-            (STARTUP_PHASE_GITHUB, &self.repo),
-            (STARTUP_PHASE_CRATES_IO, &self.crates_io),
-            (STARTUP_PHASE_METADATA, &self.metadata),
-            (STARTUP_PHASE_LINT, &self.lint_phase),
-            (STARTUP_PHASE_LANGUAGES, &self.languages),
-            (STARTUP_PHASE_TESTS, &self.tests),
-        ];
-        let mut rows: Vec<ProgressRow> = phases
+        let mut rows: Vec<ProgressRow> = self
+            .panel_phases()
             .into_iter()
             .filter_map(|(label, phase)| {
                 let state = phase.progress_state(now, STARTUP_ROW_MIN_VISIBLE)?;
@@ -93,6 +86,30 @@ impl Startup {
                 .cmp(b.label.bytes().map(|byte| byte.to_ascii_lowercase()))
         });
         rows
+    }
+
+    fn panel_phases(&self) -> [(&'static str, &dyn PhaseCompletion); 8] {
+        [
+            (STARTUP_PHASE_DISK, &self.disk),
+            (STARTUP_PHASE_GIT, &self.git),
+            (STARTUP_PHASE_GITHUB, &self.repo),
+            (STARTUP_PHASE_CRATES_IO, &self.crates_io),
+            (STARTUP_PHASE_METADATA, &self.metadata),
+            (STARTUP_PHASE_LINT, &self.lint_phase),
+            (STARTUP_PHASE_LANGUAGES, &self.languages),
+            (STARTUP_PHASE_TESTS, &self.tests),
+        ]
+    }
+
+    fn detail_visibility_changed(&self, drawn_at: Instant, now: Instant) -> bool {
+        self.panel_phases().into_iter().any(|(_, phase)| {
+            phase
+                .progress_state(now, STARTUP_ROW_MIN_VISIBLE)
+                .is_some_and(|state| {
+                    row_wants_detail(now, phase.first_seen(), state)
+                        != row_wants_detail(drawn_at, phase.first_seen(), state)
+                })
+        })
     }
     /// The item a slow row is currently working on (or about to): the live
     /// in-flight fetch for the network rows, the lexically-first pending key
@@ -124,19 +141,9 @@ impl Startup {
     /// cannot silently miss the gate. `repo` is keyed differently, so the
     /// array is over `&dyn PhaseCompletion`.
     pub(super) fn all_rows_gate_satisfied(&self, now: Instant) -> bool {
-        let phases: [&dyn PhaseCompletion; 8] = [
-            &self.disk,
-            &self.git,
-            &self.repo,
-            &self.crates_io,
-            &self.metadata,
-            &self.lint_phase,
-            &self.languages,
-            &self.tests,
-        ];
-        phases
+        self.panel_phases()
             .iter()
-            .all(|phase| phase.gate_satisfied(now, STARTUP_ROW_MIN_VISIBLE))
+            .all(|(_, phase)| phase.gate_satisfied(now, STARTUP_ROW_MIN_VISIBLE))
     }
 }
 impl App {
@@ -237,11 +244,20 @@ impl App {
         self.initialize_startup_phase_tracker_with_plan(&startup_plan);
     }
     pub(super) fn reset_startup_phase_state(&mut self, startup_plan: &StartupPlan) {
+        self.retire_startup_toast();
         self.startup.reset();
         self.startup.scan_complete_at = Some(Instant::now());
         self.startup.toast = None;
         if let Some(planning) = self.startup.take_planning() {
             planning.install(&mut self.startup, startup_plan);
+        }
+    }
+    pub(in crate::tui::app::async_tasks) fn retire_startup_toast(&mut self) {
+        if let Some(toast) = self.startup.toast.take() {
+            self.framework
+                .toasts
+                .start_colored_countdown(toast.id(), std::time::Duration::ZERO);
+            self.prune_toasts();
         }
     }
     pub(super) fn start_startup_toast(&mut self) {
@@ -256,19 +272,17 @@ impl App {
         self.startup.lint_phase.stamp_first_seen(now);
         self.startup.languages.stamp_first_seen(now);
         self.startup.tests.stamp_first_seen(now);
-        let (lines, colors) = self.startup_panel_lines(now);
-        let toast_id = self
-            .framework
-            .toasts
-            .push_colored_persistent("Startup", lines, colors);
+        let toast_id =
+            self.framework
+                .toasts
+                .push_colored_persistent("Startup", Vec::new(), Vec::new());
         self.startup.toast = Some(StartupToast::new(toast_id));
     }
     /// Build the panel's per-line text and matching per-line colors from the
     /// current phase states and the live in-flight network fetches.
-    fn startup_panel_lines(&self, now: Instant) -> (Vec<String>, Vec<Color>) {
+    fn startup_panel_lines(&self, now: Instant, width: usize) -> (Vec<String>, Vec<Color>) {
         let github_detail = self.in_flight_github_label();
         let crates_io_detail = self.in_flight_crates_io_label();
-        let width = tui_pane::toast_body_width(self.framework.toast_settings());
         let rows = self.startup.startup_panel_rows(
             now,
             github_detail.as_deref(),
@@ -312,40 +326,69 @@ impl App {
         self.startup.languages.complete_once(now);
         self.startup.tests.complete_once(now);
         self.startup.details_declared.complete_once(now);
-        // Late work above still completes timed-out phases after panel closure;
-        // `startup.is_collecting()` prevents reopening the toast through
-        // `refresh_startup_panel` or repeating the readiness handoff through
-        // `maybe_complete_startup_ready`.
+        // Late work can complete timed-out phases during the countdown.
+        // Only collecting startup can begin the readiness handoff.
         if !self.startup.is_collecting() {
             return;
         }
-        self.refresh_startup_panel(now);
         self.maybe_complete_startup_ready(now, scan_complete_at);
     }
-    /// Repaint the startup panel body from the current phase states. A
-    /// no-op once the panel has been closed.
-    pub(super) fn refresh_startup_panel(&mut self, now: Instant) {
-        let Some(toast) = self.startup.toast else {
+
+    /// Fit startup rows once after the current frame resolves its pane layout.
+    pub(in crate::tui) fn refresh_startup_panel_for_layout(&mut self, bounds: Rect) {
+        if self.startup.toast.is_none() {
+            return;
+        }
+        let area = self.toast_area(bounds);
+        let width = self.framework.toasts.body_width_for_area(area);
+        self.refresh_startup_panel_at_width(width, Instant::now());
+    }
+
+    fn refresh_startup_panel_at_width(&mut self, width: usize, now: Instant) {
+        let Some(mut toast) = self.startup.toast else {
             return;
         };
-        let (lines, colors) = self.startup_panel_lines(now);
-        self.framework
+        let (lines, colors) = self.startup_panel_lines(now, width);
+        self.startup.toast = if self
+            .framework
             .toasts
-            .update_colored(toast.id(), lines, colors);
+            .update_colored(toast.id(), lines, colors)
+        {
+            toast.layout = StartupToastLayout::Drawn { width, at: now };
+            Some(toast)
+        } else {
+            None
+        };
+    }
+
+    fn refresh_startup_details_if_due(&mut self, now: Instant) {
+        let Some(StartupToast {
+            layout: StartupToastLayout::Drawn { width, at },
+            ..
+        }) = self.startup.toast
+        else {
+            return;
+        };
+        if self.startup.detail_visibility_changed(at, now) {
+            self.refresh_startup_panel_at_width(width, now);
+        }
     }
     /// Re-evaluate the panel each frame so the minimum-visible floor and
     /// the per-row timeout can close it even when no new `BackgroundMsg`
     /// arrives.
     pub(in crate::tui) fn tick_startup_panel(&mut self) {
+        self.tick_startup_panel_at(Instant::now());
+    }
+
+    fn tick_startup_panel_at(&mut self, now: Instant) {
         if !self.startup.is_collecting() {
             return;
         }
         let Some(scan_complete_at) = self.startup.scan_complete_at else {
             return;
         };
-        let now = Instant::now();
         self.sweep_startup_timeouts(now);
-        self.refresh_startup_panel(now);
+        self.refresh_startup_details_if_due(now);
         self.maybe_complete_startup_ready(now, scan_complete_at);
     }
     /// Fail any phase that has been visible past `STARTUP_ROW_TIMEOUT`
@@ -609,13 +652,10 @@ impl App {
                 return;
             },
         };
-        self.refresh_startup_panel(now);
         let closing = ready.begin_closing(&mut self.startup);
         self.net.begin_steady_state_network_toasts(&closing.network);
-        // After `refresh_startup_panel` paints the final complete rows,
-        // `finish_startup_toast_with_countdown` starts only the `StartupToast` countdown;
-        // its colored rows, rather than task items, must bypass the task linger fade path.
-        if let Some(toast) = closing.toast {
+        // Keep the handle in Startup so each closing frame can fit its rows.
+        if let Some(toast) = self.startup.toast {
             self.finish_startup_toast_with_countdown(toast);
         }
         // Call `sync_running_crates_io_toast` and `sync_running_repo_fetch_toast` only after
@@ -698,4 +738,109 @@ fn row_wants_detail(now: Instant, first_seen: Option<Instant>, state: ProgressSt
     let in_progress = matches!(state, ProgressState::Active(percentage) if percentage.get() < 100);
     in_progress
         && first_seen.is_some_and(|first| now.duration_since(first) >= STARTUP_ROW_DETAIL_DELAY)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use anyhow::Context;
+    use ratatui::layout::Rect;
+    use tui_pane::ColorMode;
+    use tui_pane::ToastDuration;
+    use tui_pane::ToastVisualDeadline;
+    use tui_pane::Toasts;
+
+    use super::StartupToastLayout;
+    use crate::project::AbsolutePath;
+    use crate::scan::BackgroundMsg;
+    use crate::tui::app::App;
+    use crate::tui::app::LanguagePhase;
+    use crate::tui::constants::STARTUP_ROW_DETAIL_DELAY;
+    use crate::tui::test_support;
+
+    fn pending_startup(now: Instant) -> anyhow::Result<App> {
+        let mut app = test_support::make_app(&[]);
+        app.framework.color_mode = ColorMode::Colored;
+        app.background
+            .background_sender()
+            .send(BackgroundMsg::ScanResult {
+                projects:     Vec::new(),
+                disk_entries: Vec::new(),
+            })?;
+        app.poll_background();
+        app.framework.toasts = Toasts::with_settings(app.framework.toasts.settings().clone());
+        app.framework
+            .toasts
+            .settings_mut()
+            .animation
+            .entrance_duration = ToastDuration::try_from_secs("entrance_duration", 0.0)?;
+        app.initialize_startup_phase_tracker();
+        app.startup.disk.reset_unknown();
+        app.startup.git.reset_unknown();
+        app.startup.repo.reset_unknown();
+        app.startup.crates_io.reset_unknown();
+        app.startup.lint_phase.reset_unknown();
+        app.startup.tests.reset_unknown();
+        app.startup.languages = LanguagePhase::default();
+        app.startup
+            .metadata
+            .reset_with_expected(HashSet::from([AbsolutePath::from("/idle")]));
+        app.startup.metadata.stamp_first_seen(now);
+        Ok(app)
+    }
+
+    fn startup_body(app: &App, now: Instant) -> anyhow::Result<String> {
+        Ok(app
+            .framework
+            .toasts
+            .active_views(now)
+            .first()
+            .context("startup toast")?
+            .body()
+            .to_owned())
+    }
+
+    #[test]
+    fn idle_startup_tick_reveals_the_pending_detail_after_its_delay() -> anyhow::Result<()> {
+        let now = Instant::now();
+        let mut app = pending_startup(now)?;
+        app.refresh_startup_panel_for_layout(Rect::new(0, 0, 160, 45));
+        let before = startup_body(&app, now)?;
+        assert_eq!(before.lines().count(), 1);
+        assert!(!before.contains("/idle"), "{before}");
+        let layout = app.startup.toast.context("startup handle")?.layout;
+        app.tick_startup_panel_at(now);
+        assert_eq!(app.startup.toast.context("startup handle")?.layout, layout);
+        let later = now + STARTUP_ROW_DETAIL_DELAY;
+        assert_eq!(app.animation_timeout_at(later), Duration::from_secs(1));
+        assert_eq!(
+            app.framework.toasts.next_visual_change_deadline(later),
+            ToastVisualDeadline::NoVisualChangeScheduled
+        );
+        app.tick_startup_panel_at(later);
+        let after = startup_body(&app, later)?;
+        assert!(after.contains("/idle"), "{after}");
+        assert_ne!(before, after);
+        let layout = app.startup.toast.context("startup handle")?.layout;
+        app.tick_startup_panel_at(later + Duration::from_nanos(1));
+        assert_eq!(app.startup.toast.context("startup handle")?.layout, layout);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_ticks_keep_the_body_empty_before_the_first_layout() -> anyhow::Result<()> {
+        let now = Instant::now();
+        let mut app = pending_startup(now)?;
+        let later = now + STARTUP_ROW_DETAIL_DELAY;
+        app.tick_startup_panel_at(later);
+        assert_eq!(startup_body(&app, later)?, "");
+        assert_eq!(
+            app.startup.toast.context("startup handle")?.layout,
+            StartupToastLayout::NotDrawn
+        );
+        Ok(())
+    }
 }

@@ -18,10 +18,14 @@
 //! drift by the tests at the bottom of this file.
 
 mod files;
+mod word_match;
+pub(crate) use word_match::WordMatchGrounds;
+#[cfg(test)]
+pub(crate) use word_match::WordMatchLimit;
 #[cfg(test)]
 mod files_tests;
-
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
 use ratatui::style::Color;
 use ratatui::style::Style;
@@ -42,6 +46,8 @@ pub(crate) use self::files::AppearanceDiagnostic;
 pub(crate) use self::files::StartupThemeNotes;
 pub(crate) use self::files::ThemeInstallation;
 pub(crate) use self::files::install_theme;
+#[cfg(test)]
+pub(crate) use self::tests::ResetThemeFixture;
 use crate::constants::BUSY_ROLE;
 use crate::constants::CLAUDE_ROLE;
 use crate::constants::CODEX_ROLE;
@@ -120,24 +126,20 @@ impl ResetRank {
         })
     }
 
-    /// Blend the reset-only theme roles, retaining exact endpoints.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "positions constructs ranks at most last, so the rounded alpha is at most 255"
-    )]
+    /// `ResetRank::color` uses three steps between the `reset_nearest` and `reset_farthest` roles.
+    /// It retains the exact endpoint colors.
     pub(crate) fn color(self) -> Color {
         let nearest = tui_pane::role_color("reset_nearest", DEFAULT_DARK_ROLES.reset_nearest);
         let farthest = tui_pane::role_color("reset_farthest", DEFAULT_DARK_ROLES.reset_farthest);
-        if self.position == 0 {
+        let quarter_rank = self.position as u128 * 4;
+        let last = self.last as u128;
+        if self.last == 0 || quarter_rank < last {
             return nearest;
         }
-        if self.position == self.last {
+        if quarter_rank > last * 3 {
             return farthest;
         }
-        let intervals = self.last as u128;
-        let alpha =
-            ((self.position as u128 * u128::from(u8::MAX) + intervals / 2) / intervals) as u8;
-        tui_pane::blend_color(nearest, farthest, alpha)
+        tui_pane::blend_color(nearest, farthest, 128)
     }
 }
 
@@ -145,6 +147,8 @@ impl ResetRank {
 /// `[variants.roles]` under [`Role::key`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Role {
+    /// The background behind a matching word.
+    WordMatch,
     /// The `claude` agent label.
     Claude,
     /// The `codex` agent label.
@@ -164,7 +168,8 @@ pub(crate) enum Role {
 
 impl Role {
     /// Every role, in the order [`RolePalette`] lists them.
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
+        Self::WordMatch,
         Self::Claude,
         Self::Codex,
         Self::Busy,
@@ -181,6 +186,7 @@ impl Role {
     /// The role's key in `[variants.roles]`.
     const fn key(self) -> &'static str {
         match self {
+            Self::WordMatch => "word_match",
             Self::Claude => CLAUDE_ROLE,
             Self::Codex => CODEX_ROLE,
             Self::Busy => BUSY_ROLE,
@@ -195,6 +201,10 @@ impl Role {
     /// role gets [`DEFAULT_DARK_ROLES`]' value.
     pub(crate) fn style(self) -> Style {
         match self {
+            Self::WordMatch => Style::default().bg(tui_pane::role_color(
+                "word_match",
+                DEFAULT_DARK_ROLES.word_match,
+            )),
             Self::Claude => SessionRowInk::Claude.style(),
             Self::Codex => SessionRowInk::Codex.style(),
             Self::Busy => SessionRowInk::Busy.style(),
@@ -231,7 +241,7 @@ pub(crate) enum SessionHue {
 
 impl SessionHue {
     /// Every hue, in the order the cells take them.
-    const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 5] = [
         Self::First,
         Self::Second,
         Self::Third,
@@ -268,6 +278,8 @@ impl SessionHue {
 
 /// One built-in variant's value for each [`Role`].
 struct RolePalette {
+    /// The background behind a matching word.
+    word_match:     StyleSpec,
     /// [`Role::Claude`].
     claude:         StyleSpec,
     /// [`Role::Codex`].
@@ -291,6 +303,7 @@ impl RolePalette {
     /// The value for `role`.
     const fn spec(&self, role: Role) -> StyleSpec {
         match role {
+            Role::WordMatch => self.word_match,
             Role::Claude => self.claude,
             Role::Codex => self.codex,
             Role::Busy => self.busy,
@@ -314,9 +327,39 @@ impl RolePalette {
     }
 }
 
+/// The bundled theme files own the Astra role shades.
+fn astra_roles(mut roles: BTreeMap<String, StyleSpec>, name: &str) -> BTreeMap<String, StyleSpec> {
+    static SHADES: LazyLock<BTreeMap<String, BTreeMap<String, StyleSpec>>> = LazyLock::new(|| {
+        [
+            include_str!("../../themes/default_dark.toml"),
+            include_str!("../../themes/default_light.toml"),
+            include_str!("../../themes/high_contrast.toml"),
+        ]
+        .into_iter()
+        .filter_map(|text| files::parse_family(text).ok())
+        .flat_map(|family| family.variants)
+        .map(|variant| {
+            (
+                variant.name,
+                variant
+                    .roles
+                    .into_iter()
+                    .filter(|(key, _)| matches!(key.as_str(), "mauve" | "astra_reviewer"))
+                    .collect(),
+            )
+        })
+        .collect()
+    });
+    if let Some(shades) = SHADES.get(name) {
+        roles.extend(shades.clone());
+    }
+    roles
+}
+
 /// [`default_dark`]'s roles, and the value a variant without a role
 /// falls back to.
 const DEFAULT_DARK_ROLES: RolePalette = RolePalette {
+    word_match:     StyleSpec::from_color(Color::Rgb(38, 38, 38)),
     claude:         StyleSpec::from_color(Color::Rgb(217, 119, 87)),
     codex:          StyleSpec::from_color(Color::Rgb(175, 140, 255)),
     busy:           StyleSpec::from_color(Color::Rgb(100, 220, 100)),
@@ -338,6 +381,7 @@ const DEFAULT_DARK_ROLES: RolePalette = RolePalette {
 /// [`default_light`]'s roles: the same hues, darker, for a white
 /// background.
 const DEFAULT_LIGHT_ROLES: RolePalette = RolePalette {
+    word_match:     StyleSpec::from_color(Color::Rgb(240, 240, 240)),
     claude:         StyleSpec::from_color(Color::Rgb(190, 85, 50)),
     codex:          StyleSpec::from_color(Color::Rgb(110, 60, 200)),
     busy:           StyleSpec::from_color(Color::Rgb(0, 130, 0)),
@@ -359,6 +403,7 @@ const DEFAULT_LIGHT_ROLES: RolePalette = RolePalette {
 /// [`high_contrast_dark`]'s roles: bright and bold, save `idle`, which
 /// stays quiet.
 const HIGH_CONTRAST_DARK_ROLES: RolePalette = RolePalette {
+    word_match:     StyleSpec::from_color(Color::Rgb(38, 38, 38)),
     claude:         StyleSpec::bold(Color::Rgb(255, 150, 90)),
     codex:          StyleSpec::bold(Color::LightMagenta),
     busy:           StyleSpec::bold(Color::LightGreen),
@@ -379,6 +424,7 @@ const HIGH_CONTRAST_DARK_ROLES: RolePalette = RolePalette {
 /// [`high_contrast_light`]'s roles: deep and bold, save `idle`, which
 /// stays quiet.
 const HIGH_CONTRAST_LIGHT_ROLES: RolePalette = RolePalette {
+    word_match:     StyleSpec::from_color(Color::Rgb(240, 240, 240)),
     claude:         StyleSpec::bold(Color::Rgb(160, 60, 0)),
     codex:          StyleSpec::bold(Color::Rgb(100, 0, 160)),
     busy:           StyleSpec::bold(Color::Rgb(0, 100, 0)),
@@ -472,7 +518,7 @@ fn default_dark() -> Theme {
             mid:  StyleSpec::from_color(Color::Rgb(255, 255, 255)),
             high: StyleSpec::from_color(Color::Rgb(255, 100, 100)),
         },
-        roles:       DEFAULT_DARK_ROLES.map(),
+        roles:       astra_roles(DEFAULT_DARK_ROLES.map(), DEFAULT_DARK_THEME),
     }
 }
 
@@ -521,7 +567,7 @@ fn default_light() -> Theme {
             mid:  StyleSpec::from_color(Color::Rgb(90, 90, 90)),
             high: StyleSpec::from_color(Color::Rgb(200, 0, 0)),
         },
-        roles:       DEFAULT_LIGHT_ROLES.map(),
+        roles:       astra_roles(DEFAULT_LIGHT_ROLES.map(), DEFAULT_LIGHT_THEME),
     }
 }
 
@@ -574,7 +620,7 @@ fn high_contrast_dark() -> Theme {
             mid:  StyleSpec::from_color(Color::White),
             high: StyleSpec::bold(Color::LightRed),
         },
-        roles:       HIGH_CONTRAST_DARK_ROLES.map(),
+        roles:       astra_roles(HIGH_CONTRAST_DARK_ROLES.map(), DEFAULT_HC_DARK_THEME),
     }
 }
 
@@ -626,7 +672,7 @@ fn high_contrast_light() -> Theme {
             mid:  StyleSpec::from_color(Color::Black),
             high: StyleSpec::bold(Color::Rgb(180, 0, 0)),
         },
-        roles:       HIGH_CONTRAST_LIGHT_ROLES.map(),
+        roles:       astra_roles(HIGH_CONTRAST_LIGHT_ROLES.map(), DEFAULT_HC_LIGHT_THEME),
     }
 }
 
@@ -636,6 +682,8 @@ fn high_contrast_light() -> Theme {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::sync::Arc;
+
     use tui_pane::ThemeFamily;
     use tui_pane::ThemeVariantFile;
 
@@ -672,6 +720,35 @@ mod tests {
         assert_eq!(family.schema, 1);
         assert_eq!(family.variants.len(), expected);
         family.variants
+    }
+
+    /// `ResetThemeFixture` restores theme, transparency, and tint after a test.
+    pub(crate) struct ResetThemeFixture {
+        previous:    Arc<Theme>,
+        transparent: bool,
+        tinted:      bool,
+    }
+
+    impl ResetThemeFixture {
+        pub(crate) fn install() -> Self { Self::with_theme(default_dark()) }
+
+        pub(crate) fn with_theme(theme: Theme) -> Self {
+            let fixture = Self {
+                previous:    tui_pane::theme(),
+                transparent: tui_pane::transparent_background(),
+                tinted:      tui_pane::focused_pane_tint_enabled(),
+            };
+            tui_pane::set_active_theme(Arc::new(theme));
+            fixture
+        }
+    }
+
+    impl Drop for ResetThemeFixture {
+        fn drop(&mut self) {
+            tui_pane::set_active_theme(Arc::clone(&self.previous));
+            tui_pane::set_transparent_background(self.transparent);
+            tui_pane::set_focused_pane_tint(self.tinted);
+        }
     }
 
     #[test]

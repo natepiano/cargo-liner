@@ -58,7 +58,6 @@ struct InputPattern {
 }
 
 enum InputName {
-    Exact(String),
     Prefix(String),
     Suffix(String),
 }
@@ -66,7 +65,6 @@ enum InputName {
 impl InputName {
     fn matches(&self, name: &str) -> bool {
         match self {
-            Self::Exact(wanted) => name == wanted,
             Self::Prefix(prefix) => name.starts_with(prefix),
             Self::Suffix(suffix) => name.ends_with(suffix),
         }
@@ -79,9 +77,6 @@ struct InputDirectories(BTreeMap<PathBuf, (FileRevision, Vec<PathBuf>)>);
 
 impl InputDirectories {
     fn matching(&mut self, root: &Path, name: &InputName) -> Vec<PathBuf> {
-        if let InputName::Exact(name) = name {
-            return vec![root.join(name)];
-        }
         let revision = FileRevision::at(root);
         let entry = self
             .0
@@ -153,9 +148,7 @@ impl<T: Clone> InputDrivenCommand<T> {
                 level = level
                     .iter()
                     .flat_map(|path| {
-                        if !matches!(name, InputName::Exact(_)) {
-                            used_directories.insert(path.clone());
-                        }
+                        used_directories.insert(path.clone());
                         self.directories.matching(path, name)
                     })
                     .collect();
@@ -211,10 +204,6 @@ impl<T: Clone> InputDrivenCommand<T> {
 
     fn for_command_at(command: &str, home: &Path) -> Self {
         let words: Vec<_> = command.split_whitespace().collect();
-        let hierarchy = words.len() == 3
-            && words[0].ends_with("/.claude/scripts/lib/py")
-            && words[1].ends_with("/.claude/scripts/production/production_tree.py")
-            && words[2] == "--json";
         let accounts = words.len() == 5
             && words[0].ends_with("/.claude/scripts/lib/py")
             && words[1].ends_with("/.claude/scripts/accounts/accounts.py")
@@ -223,7 +212,7 @@ impl<T: Clone> InputDrivenCommand<T> {
                 (words[3], words[4]),
                 ("--stored", "--json") | ("--json", "--stored")
             );
-        if !hierarchy && !accounts {
+        if !accounts {
             return Self::new(Vec::new(), Duration::ZERO);
         }
         // Live herdr marks, process liveness, keychain state and external links have
@@ -244,107 +233,21 @@ impl<T: Clone> InputDrivenCommand<T> {
                 vec![InputName::Suffix(".py".into())],
             );
         }
-        if hierarchy {
-            inputs.hierarchy_inputs(home);
-        }
         if accounts {
             inputs.accounts_inputs(home);
         }
         inputs
     }
 
-    fn hierarchy_inputs(&mut self, home: &Path) {
-        self.paths
-            .push(home.join(".claude/scripts/direct/board.sh"));
-        for root in ["/tmp/claude/unit", "/tmp/claude/delegate"] {
-            for file in [
-                "director",
-                "mesh_roster.json",
-                "mesh_server.json",
-                "workers",
-                "board.log",
-                "progress_history_state.json",
-            ] {
-                self.pattern(
-                    root.into(),
-                    vec![
-                        InputName::Prefix(String::new()),
-                        InputName::Exact(file.into()),
-                    ],
-                );
-            }
-            self.pattern(
-                root.into(),
-                vec![
-                    InputName::Prefix(String::new()),
-                    InputName::Prefix("impl_worker_".into()),
-                ],
-            );
-        }
-        self.pattern(
-            env_path("NOTIFIER_SESSIONS_DIR", home.join(".claude/sessions")),
-            vec![InputName::Suffix(".json".into())],
-        );
-        self.pattern(
-            env_path("NOTIFIER_STATE_DIR", home.join(".local/state/notifier")),
-            vec![
-                InputName::Prefix("showrunner-".into()),
-                InputName::Exact("conf".into()),
-            ],
-        );
-        self.pattern(
-            env_path("SHOWRUNNER_STATE_DIR", home.join(".local/state/showrunner")),
-            vec![
-                InputName::Prefix(String::new()),
-                InputName::Exact("parent".into()),
-            ],
-        );
-        self.pattern(
-            env_path("REVIEW_POOL_STATE", home.join(".local/state/review-pool")),
-            vec![
-                InputName::Prefix(String::new()),
-                InputName::Exact("pool.json".into()),
-            ],
-        );
-        self.pattern(
-            env_path("ASTRA_ROLES_STATE", home.join(".local/state/astra/roles")),
-            vec![InputName::Suffix(".json".into())],
-        );
-        let guilds = env_path("GUILD_ROLES_STATE", home.join(".local/state/guilds/roles"));
-        self.pattern(
-            guilds.clone(),
-            vec![
-                InputName::Prefix(String::new()),
-                InputName::Exact("design.json".into()),
-            ],
-        );
-        self.pattern(
-            guilds,
-            vec![
-                InputName::Prefix(String::new()),
-                InputName::Exact("mesh".into()),
-                InputName::Exact("mesh_roster.json".into()),
-            ],
-        );
-        self.paths.push(env_path(
-            "SHOWRUNNERS_CONFIG",
-            home.join(".claude/config/showrunners.json"),
-        ));
-    }
-
     fn accounts_inputs(&mut self, home: &Path) {
-        for file in ["groups.json", "role_map_cache.json", "login_renewals.json"] {
+        for file in ["groups.json", "login_renewals.json"] {
             self.paths
                 .push(home.join(".local/state/accounts").join(file));
         }
         let usage = home.join(".local/state/agent-notes/usage.json");
         self.paths.push(usage.clone());
         self.clock = ScriptClockInputs::Stored {
-            paths:      vec![
-                usage,
-                home.join(".local/state/accounts/groups.json"),
-                home.join(".local/state/accounts/role_map_cache.json"),
-            ],
+            paths:      vec![usage, home.join(".local/state/accounts/groups.json")],
             revisions:  BTreeMap::new(),
             boundaries: Vec::new(),
         };
@@ -452,28 +355,27 @@ mod tests {
     #[test]
     fn idle_scripts_reuse_unchanged_inputs_and_run_once_after_a_change()
     -> Result<(), Box<dyn Error>> {
-        for script in ["production_tree.py", "accounts.py"] {
-            let directory = tempfile::tempdir()?;
-            let path = directory.path().join(script);
-            fs::write(&path, "first")?;
-            let mut command = InputDrivenCommand::new(vec![path.clone()], Duration::from_secs(300));
-            let runs = Cell::new(0);
-            let run = || {
-                runs.set(runs.get() + 1);
-                runs.get()
-            };
-            let now = Instant::now();
-            assert_eq!(command.read(now, run), 1);
-            assert_eq!(
-                command.read(now + Duration::from_secs(60), run),
-                1,
-                "{script}: unchanged inputs reuse the answer"
-            );
-            fs::write(&path, "changed input")?;
-            assert_eq!(command.read(now + Duration::from_secs(61), run), 2);
-            assert_eq!(command.read(now + Duration::from_secs(62), run), 2);
-            assert_eq!(runs.get(), 2, "{script}: one command per input revision");
-        }
+        let script = "accounts.py";
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join(script);
+        fs::write(&path, "first")?;
+        let mut command = InputDrivenCommand::new(vec![path.clone()], Duration::from_secs(300));
+        let runs = Cell::new(0);
+        let run = || {
+            runs.set(runs.get() + 1);
+            runs.get()
+        };
+        let now = Instant::now();
+        assert_eq!(command.read(now, run), 1);
+        assert_eq!(
+            command.read(now + Duration::from_secs(60), run),
+            1,
+            "{script}: unchanged inputs reuse the answer"
+        );
+        fs::write(&path, "changed input")?;
+        assert_eq!(command.read(now + Duration::from_secs(61), run), 2);
+        assert_eq!(command.read(now + Duration::from_secs(62), run), 2);
+        assert_eq!(runs.get(), 2, "{script}: one command per input revision");
         Ok(())
     }
 
@@ -557,11 +459,6 @@ mod tests {
                 "accounts/accounts.py",
                 "status --json --stored",
                 ".local/state/accounts/login_renewals.json",
-            ),
-            (
-                "production/production_tree.py",
-                "--json",
-                ".claude/scripts/direct/board.sh",
             ),
         ] {
             let path = home.path().join(relative);

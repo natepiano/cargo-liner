@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
+use std::time::SystemTime;
 
 use tui_pane::PERF_LOG_TARGET;
 use tui_pane::SLOW_BG_BATCH_MS;
@@ -24,6 +25,7 @@ use crate::tui::state::OwnedRunMessageUpdate;
 
 impl App {
     pub(in crate::tui) fn poll_background(&mut self) -> PollBackgroundStats {
+        self.poll_github_quota_at(SystemTime::now());
         let mut rebuild_status = RebuildStatus::NotNeeded;
         let mut msg_count = 0;
         let started = Instant::now();
@@ -204,6 +206,7 @@ pub(super) const fn record_background_msg_kind(
         },
         BackgroundMsg::CheckoutInfo { .. }
         | BackgroundMsg::RepoInfo { .. }
+        | BackgroundMsg::NoRepository { .. }
         | BackgroundMsg::GitFirstCommit { .. } => {
             stats.git_info_msgs += 1;
         },

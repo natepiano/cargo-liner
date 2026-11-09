@@ -15,6 +15,10 @@ impl SelectionSync {
 
 #[derive(Debug, Default)]
 pub(in crate::tui) struct SelectionPaths {
+    /// The user's saved choice. Automatic cursor changes do not replace it.
+    /// `terminal::load_tree_state()` initializes it from `tree_state.toml` or the legacy selection
+    /// file. Restore the saved path when selectable. Otherwise select the first visible row
+    /// without saving it.
     pub last_selected:      Option<AbsolutePath>,
     pub selected_project:   Option<AbsolutePath>,
     pub collapsed_selected: Option<AbsolutePath>,

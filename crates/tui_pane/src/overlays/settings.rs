@@ -941,12 +941,17 @@ fn wrap_line_to_width(value: &str, width: usize) -> Vec<String> {
         }
 
         let mut segment = String::new();
-        for ch in word.chars() {
-            let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if !segment.is_empty() && segment.width() + char_width > width {
+        for part in word.split_inclusive('/') {
+            if !segment.is_empty() && segment.width() + part.width() > width {
                 wrapped.push(std::mem::take(&mut segment));
             }
-            segment.push(ch);
+            for ch in part.chars() {
+                let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if !segment.is_empty() && segment.width() + char_width > width {
+                    wrapped.push(std::mem::take(&mut segment));
+                }
+                segment.push(ch);
+            }
         }
         current = segment;
     }

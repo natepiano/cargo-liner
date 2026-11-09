@@ -175,20 +175,11 @@ pub(crate) fn fetch_ci_runs_cached(
     count: u32,
 ) -> (CiFetchResult, Option<RepoMetaInfo>, Option<ServiceSignal>) {
     let (gh_list, list_signal) = client.list_runs(owner, repo, None, count, None);
-    let (gh_runs, github_total) =
-        gh_list.map_or_else(|| (Vec::new(), 0), |list| (list.runs, list.total_count));
-    let (fetched, meta, detail_signal) = fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
-    let cached = load_all_cached_runs(owner, repo);
-    let merged = merge_runs(fetched, cached);
-
-    let result = if gh_runs.is_empty() {
-        CiFetchResult::CacheOnly(merged)
-    } else {
-        CiFetchResult::Loaded {
-            runs: merged,
-            github_total,
-        }
-    };
+    let (result, meta, detail_signal) = complete_ci_fetch(
+        gh_list.map(|list| (list.runs, list.total_count)),
+        load_all_cached_runs(owner, repo),
+        |runs| fetch_recent_runs(client, repo_url, owner, repo, runs),
+    );
     (
         result,
         meta,
@@ -208,31 +199,41 @@ pub(crate) fn fetch_older_runs(
 ) -> (CiFetchResult, Option<ServiceSignal>) {
     let (gh_list, list_signal) =
         client.list_runs(owner, repo, None, count, Some(oldest_created_at));
-    let (gh_runs, github_total) =
-        gh_list.map_or_else(|| (Vec::new(), 0), |list| (list.runs, list.total_count));
-    let (fetched, _meta, detail_signal) =
-        fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
-
-    let mut result = fetched;
-    result.sort_by_key(|run| Reverse(run.run_id));
-
-    let result = if gh_runs.is_empty() {
-        CiFetchResult::CacheOnly(result)
-    } else {
-        CiFetchResult::Loaded {
-            runs: result,
-            github_total,
-        }
-    };
+    let (result, _, detail_signal) = complete_ci_fetch(
+        gh_list.map(|list| (list.runs, list.total_count)),
+        Vec::new(),
+        |runs| fetch_recent_runs(client, repo_url, owner, repo, runs),
+    );
     (
         result,
         background::combine_service_signal(list_signal, detail_signal),
     )
 }
 
+/// Classify the list reply before loading details and merging the cache.
+fn complete_ci_fetch(
+    reply: Option<(Vec<GhRun>, u32)>,
+    cached: Vec<CiRun>,
+    fetch_details: impl FnOnce(&[GhRun]) -> (Vec<CiRun>, Option<RepoMetaInfo>, Option<ServiceSignal>),
+) -> (CiFetchResult, Option<RepoMetaInfo>, Option<ServiceSignal>) {
+    let (listed, total) = match reply {
+        Some((runs, total)) => (runs, Some(total)),
+        None => (Vec::new(), None),
+    };
+    let (fetched, meta, signal) = fetch_details(&listed);
+    let runs = merge_runs(fetched, cached);
+    let result = match total {
+        Some(github_total) => CiFetchResult::Loaded { runs, github_total },
+        None => CiFetchResult::CacheOnly(runs),
+    };
+    (result, meta, signal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ci::CiStatus;
+    use crate::ci::FetchStatus;
 
     #[test]
     fn ci_cache_dir_scopes_runs_by_repo() {
@@ -241,5 +242,79 @@ mod tests {
 
         assert_eq!(main_dir, feature_dir);
         assert!(feature_dir.ends_with("acme/demo"));
+    }
+
+    fn run(id: u64) -> CiRun {
+        CiRun {
+            run_id:          id,
+            created_at:      "2026-11-07T10:00:00Z".to_string(),
+            branch:          "main".to_string(),
+            url:             format!("https://github.com/example/demo/actions/runs/{id}"),
+            ci_status:       CiStatus::Passed,
+            jobs:            Vec::new(),
+            wall_clock_secs: None,
+            commit_title:    None,
+            updated_at:      None,
+            fetched:         FetchStatus::Fetched,
+        }
+    }
+
+    #[test]
+    fn empty_ci_success_keeps_zero_and_cached_runs() {
+        for cached in [vec![run(8), run(9)], Vec::new()] {
+            let expected_ids = cached
+                .iter()
+                .rev()
+                .map(|run| run.run_id)
+                .collect::<Vec<_>>();
+            let (result, _, _) =
+                complete_ci_fetch(Some((Vec::new(), 0)), cached, |_| (Vec::new(), None, None));
+            assert_eq!(
+                match result {
+                    CiFetchResult::Loaded { runs, github_total } => Some((
+                        github_total,
+                        runs.iter().map(|run| run.run_id).collect::<Vec<_>>()
+                    )),
+                    CiFetchResult::CacheOnly(_) => None,
+                },
+                Some((0, expected_ids))
+            );
+        }
+    }
+
+    #[test]
+    fn failed_ci_request_keeps_cached_runs_without_a_count() {
+        for cached in [vec![run(8)], Vec::new()] {
+            let expected_ids = cached.iter().map(|run| run.run_id).collect::<Vec<_>>();
+            let (result, _, _) = complete_ci_fetch(None, cached, |_| (Vec::new(), None, None));
+            assert_eq!(
+                match result {
+                    CiFetchResult::CacheOnly(runs) =>
+                        Some(runs.iter().map(|run| run.run_id).collect::<Vec<_>>()),
+                    CiFetchResult::Loaded { .. } => None,
+                },
+                Some(expected_ids)
+            );
+        }
+    }
+
+    #[test]
+    fn ci_success_keeps_the_api_count_when_run_details_are_empty() {
+        for cached in [vec![run(8)], Vec::new()] {
+            let expected_ids = cached.iter().map(|run| run.run_id).collect::<Vec<_>>();
+            let (result, _, _) = complete_ci_fetch(Some((Vec::new(), 2104)), cached, |_| {
+                (Vec::new(), None, None)
+            });
+            assert_eq!(
+                match result {
+                    CiFetchResult::Loaded { runs, github_total } => Some((
+                        github_total,
+                        runs.iter().map(|run| run.run_id).collect::<Vec<_>>()
+                    )),
+                    CiFetchResult::CacheOnly(_) => None,
+                },
+                Some((2104, expected_ids))
+            );
+        }
     }
 }

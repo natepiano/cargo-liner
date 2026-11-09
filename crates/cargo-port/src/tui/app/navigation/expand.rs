@@ -1,3 +1,5 @@
+use tui_pane::ExpansionChange;
+
 use crate::tui::app::App;
 
 impl App {
@@ -21,6 +23,6 @@ impl App {
         let Some(key) = self.project_list.expand_key_for_row(row) else {
             return false;
         };
-        self.project_list.expanded.insert(key)
+        self.project_list.expanded.expand(key, 0) == ExpansionChange::Changed
     }
 }

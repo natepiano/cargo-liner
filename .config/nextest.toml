@@ -16,18 +16,32 @@ command = { command-line = "crates/cargo-berth/tests/setup-recorded-templates.sh
 filter = 'package(cargo-berth)'
 setup  = 'cargo-berth-templates'
 
-# The child-source-switch reader regression needs a 12-row command pane on a
-# reader that scans every cargo process on the host. Concurrent tests in the
-# same run open enough families to crowd that pane off the tile grid, so the
-# test takes every slot and runs with nothing else beside it.
+[scripts.wrapper.cargo-tile-reader-path]
+command = { command-line = "crates/cargo-tile/src/shim_registration/setup_reader.py list", relative-to = "workspace-root" }
+
+[scripts.setup.cargo-tile-reader-load]
+command = { command-line = "crates/cargo-tile/src/shim_registration/setup_reader.py setup", relative-to = "workspace-root" }
+
+[[profile.default.scripts]]
+filter       = 'binary_id(cargo-tile::unit_tests)'
+list-wrapper = 'cargo-tile-reader-path'
+platform     = 'cfg(target_os = "macos")'
+setup        = 'cargo-tile-reader-load'
+
+# The source-switch test needs a command pane that other reader tests cannot crowd.
+# The SIGKILL test needs an exclusive slot for its short writer-start deadline.
 [[profile.default.overrides]]
-filter           = 'binary_id(cargo-tile::unit_tests) & test(=shim_registration::reader_scenarios::reader_keeps_parent_family_across_its_only_childs_source_switch)'
+filter = """
+binary_id(cargo-tile::unit_tests) & (
+    test(=shim_registration::reader_scenarios::reader_keeps_parent_family_across_its_only_childs_source_switch) |
+    test(=shim_registration::reader_scenarios::reader_scenario_sigkill_ends_its_waiting_writer_group)
+)
+"""
 threads-required = "num-cpus"
-# First in the run, it takes every slot before any other test holds one.
+# These tests take every slot before other tests start.
 priority = 100
 
-# Tests outside this group are unaffected by its limit, so the exclusive slot
-# above stays for the pane-capacity-sensitive child-source-switch reader.
+# This group limits concurrent reader tests. The exclusive tests above use every slot.
 [test-groups.cargo-tile-readers]
 max-threads = 1
 

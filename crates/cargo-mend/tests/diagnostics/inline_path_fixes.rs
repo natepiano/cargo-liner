@@ -1,5 +1,182 @@
 use crate::support::*;
 
+const ABSOLUTE_PATH_PROJECT_MANIFEST: &str = r#"[package]
+name="project"
+version="0.1.0"
+edition="2024"
+[workspace]
+[dependencies]
+dep={path="../dep"}
+"#;
+
+const ABSOLUTE_PATH_DEPENDENCY_MANIFEST: &str = r#"[package]
+name="dep"
+version="0.1.0"
+edition="2024"
+[workspace]
+"#;
+
+const ABSOLUTE_PATH_DEPENDENCY_SOURCE: &str = r#"pub mod events {
+    pub struct PointerCancel {
+        pub entity: u32,
+        pub pointer: Pointer,
+        pub hit: crate::backend::HitData,
+    }
+    pub struct Pointer(pub u32);
+    impl Pointer {
+        pub fn new(id: u32) -> Self {
+            Self(id)
+        }
+    }
+}
+pub mod backend {
+    pub struct HitData(pub f32);
+    impl HitData {
+        pub fn new(depth: f32) -> Self {
+            Self(depth)
+        }
+    }
+}
+pub mod prelude {
+    pub use crate::World;
+    pub use crate::events::*;
+}
+pub struct World;
+impl World {
+    pub fn trigger<T>(&mut self, _: T) {}
+}
+"#;
+
+const ABSOLUTE_PATH_TOOL_SOURCE: &str = r#"use dep::prelude::*;
+
+pub fn run(world: &mut World, pointers: &[u32]) {
+    for pointer in pointers {
+        world.trigger(::dep::events::PointerCancel {
+            entity: 1,
+            pointer: ::dep::events::Pointer::new(*pointer),
+            hit: dep::backend::HitData::new(0.0),
+        });
+    }
+}
+"#;
+
+const ABSOLUTE_PATH_LIBRARY_SOURCE: &str = r#"mod tool;
+pub use tool::run;
+"#;
+
+const ABSOLUTE_PATH_SOURCE_DIRECTORIES: [&str; 2] = ["project/src", "dep/src"];
+const ABSOLUTE_PATH_PROJECT_MANIFEST_PATH: &str = "project/Cargo.toml";
+const ABSOLUTE_PATH_TOOL_SOURCE_PATH: &str = "project/src/tool.rs";
+const ABSOLUTE_PATH_FIXTURE_FILES: [(&str, &str); 5] = [
+    (
+        ABSOLUTE_PATH_PROJECT_MANIFEST_PATH,
+        ABSOLUTE_PATH_PROJECT_MANIFEST,
+    ),
+    ("dep/Cargo.toml", ABSOLUTE_PATH_DEPENDENCY_MANIFEST),
+    ("dep/src/lib.rs", ABSOLUTE_PATH_DEPENDENCY_SOURCE),
+    ("project/src/lib.rs", ABSOLUTE_PATH_LIBRARY_SOURCE),
+    (ABSOLUTE_PATH_TOOL_SOURCE_PATH, ABSOLUTE_PATH_TOOL_SOURCE),
+];
+
+const SHADOWED_STD_MANIFEST: &str = r#"[package]
+name="shadowed_std"
+version="0.1.0"
+edition="2024"
+[workspace]
+"#;
+const SHADOWED_STD_SOURCE: &str = r#"mod other {
+    pub(crate) mod std {
+        pub(crate) mod time {
+            pub(crate) struct Duration;
+        }
+        pub(crate) fn marker() {}
+    }
+}
+mod consumer {
+    use crate::other::std;
+    pub(crate) fn duration() -> ::std::time::Duration {
+        std::marker();
+        ::std::time::Duration::from_secs(1)
+    }
+}
+fn main() { let _ = consumer::duration(); }
+"#;
+const SHADOWED_STD_SOURCE_PATH: &str = "src/main.rs";
+const SHADOWED_STD_MANIFEST_PATH: &str = "Cargo.toml";
+const SHADOWED_STD_SOURCE_DIRECTORY: &str = "src";
+
+#[test]
+fn absolute_paths_keep_the_external_crate_when_its_name_is_shadowed() {
+    let fixture = tempdir().expect("create shadowed std fixture");
+    fs::create_dir_all(fixture.path().join(SHADOWED_STD_SOURCE_DIRECTORY))
+        .expect("create source directory");
+    fs::write(
+        fixture.path().join(SHADOWED_STD_MANIFEST_PATH),
+        SHADOWED_STD_MANIFEST,
+    )
+    .expect("write manifest");
+    fs::write(
+        fixture.path().join(SHADOWED_STD_SOURCE_PATH),
+        SHADOWED_STD_SOURCE,
+    )
+    .expect("write shadowed std fixture");
+    let output = mend_command_for(&fixture.path().join(SHADOWED_STD_MANIFEST_PATH))
+        .arg("--fix")
+        .output()
+        .expect("fix absolute paths with a shadowed crate name");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "mend --fix failed: {stderr}");
+    assert!(
+        !stderr.contains("rolled back"),
+        "unexpected rollback: {stderr}"
+    );
+    let source = fs::read_to_string(fixture.path().join(SHADOWED_STD_SOURCE_PATH))
+        .expect("read fixed shadowed std fixture");
+    assert!(
+        !source.contains("use crate::other::std::time::Duration;"),
+        "{source}"
+    );
+}
+
+#[test]
+fn absolute_inline_paths_with_glob_prelude_build_after_fix() {
+    struct ValidAbsolutePaths;
+
+    impl<'ast> syn::visit::Visit<'ast> for ValidAbsolutePaths {
+        fn visit_path(&mut self, path: &'ast syn::Path) {
+            assert!(
+                path.leading_colon.is_none() || path.segments.len() != 1,
+                "fixed source contains an absolute path without a crate name"
+            );
+            syn::visit::visit_path(self, path);
+        }
+    }
+
+    let fixture = tempdir().expect("create absolute path fixture");
+    for directory in ABSOLUTE_PATH_SOURCE_DIRECTORIES {
+        fs::create_dir_all(fixture.path().join(directory))
+            .expect("create fixture source directory");
+    }
+    for (path, source) in ABSOLUTE_PATH_FIXTURE_FILES {
+        fs::write(fixture.path().join(path), source).expect("write absolute path fixture");
+    }
+    let output = mend_command_for(&fixture.path().join(ABSOLUTE_PATH_PROJECT_MANIFEST_PATH))
+        .arg("--fix")
+        .output()
+        .expect("fix absolute inline paths");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "mend --fix failed: {stderr}");
+    assert!(
+        !stderr.contains("rolled back"),
+        "unexpected rollback: {stderr}"
+    );
+    let tool = fs::read_to_string(fixture.path().join(ABSOLUTE_PATH_TOOL_SOURCE_PATH))
+        .expect("read fixed absolute paths");
+    assert!(tool.contains("world.trigger(PointerCancel {"), "{tool}");
+    let syntax = syn::parse_file(&tool).expect("parse fixed absolute paths");
+    syn::visit::Visit::visit_file(&mut ValidAbsolutePaths, &syntax);
+}
+
 fn basic_inline_type_adds_use(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
     let root = batch.add_module("basic_inline_type_adds_use", &[("mod.rs", "")]);
     fs::create_dir_all(root.join("parent")).expect("create src/parent");

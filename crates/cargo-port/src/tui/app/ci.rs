@@ -7,6 +7,7 @@ use crate::ci;
 use crate::ci::CiRun;
 use crate::project::AbsolutePath;
 use crate::project::CiPagination;
+use crate::project::GithubRunCount;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::project::ProjectPrData;
@@ -24,7 +25,12 @@ pub(in crate::tui) enum CiRunDisplayMode {
 
 impl App {
     /// Insert CI runs from the initial scan for the entry containing `path`.
-    pub(super) fn insert_ci_runs(&mut self, path: &Path, runs: Vec<CiRun>, github_total: u32) {
+    pub(super) fn insert_ci_runs(
+        &mut self,
+        path: &Path,
+        runs: Vec<CiRun>,
+        github_total: GithubRunCount,
+    ) {
         let ci_pagination = self
             .project_list
             .primary_url_for(path)
@@ -34,6 +40,7 @@ impl App {
             });
         if let Some(project_entry) = self.project_list.entry_containing_mut(path) {
             let repo = project_entry.git_repo.get_or_insert_with(Default::default);
+            let github_total = repo.ci_data.github_total().retain_known(github_total);
             repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                 runs,
                 github_total,
@@ -64,14 +71,21 @@ impl App {
             .map_or(CiPagination::HasMore, |project_ci_info| {
                 project_ci_info.ci_pagination
             });
-        let prev_github_total =
-            previous_project_ci_info.map_or(0, |project_ci_info| project_ci_info.github_total);
+        let prev_github_total = previous_project_ci_info
+            .map_or(GithubRunCount::Loading, |project_ci_info| {
+                project_ci_info.github_total
+            });
 
         // Only `CiFetchKind::Sync` returns GitHub's unfiltered total_count. `CiFetchKind::Older`
         // uses created=<{date} and gets a filtered count; `CiFetchResult::CacheOnly` means the
         // network failed. Preserve the previous `github_total` in either case.
         let github_total = match (&ci_fetch_result, ci_fetch_kind) {
-            (CiFetchResult::Loaded { github_total, .. }, CiFetchKind::Sync) => *github_total,
+            (CiFetchResult::Loaded { github_total, .. }, CiFetchKind::Sync) => {
+                GithubRunCount::Known(*github_total)
+            },
+            (CiFetchResult::CacheOnly(_), _) => {
+                prev_github_total.retain_known(GithubRunCount::Unavailable)
+            },
             _ => prev_github_total,
         };
         let new_runs = ci_fetch_result.into_runs();
@@ -87,20 +101,18 @@ impl App {
         // preserves the toast across the chained fetch.
         let chain_older =
             matches!(ci_fetch_kind, CiFetchKind::Sync) && !found_new && merged.last().is_some();
-        // Only `CiFetchKind::Older` marks/clears exhaustion.
-        // `CiFetchKind::Sync` clears it when new runs appear but never
-        // marks it — we don't want a routine refresh to block future
-        // `CiFetchKind::Older` requests.
-        let ci_pagination = match ci_fetch_kind {
-            CiFetchKind::Sync => {
-                if found_new {
-                    if let Some(url) = self.project_list.primary_url_for(&absolute_path)
-                        && let Some(owner_repo) = ci::parse_owner_repo(url)
-                    {
-                        scan::clear_exhausted(owner_repo.owner(), owner_repo.repo());
-                    }
-                    CiPagination::HasMore
-                } else {
+        // New runs clear exhaustion for both fetch kinds.
+        // Only an older fetch with no new runs marks exhaustion.
+        let ci_pagination = if found_new {
+            if let Some(url) = self.project_list.primary_url_for(&absolute_path)
+                && let Some(owner_repo) = ci::parse_owner_repo(url)
+            {
+                scan::clear_exhausted(owner_repo.owner(), owner_repo.repo());
+            }
+            CiPagination::HasMore
+        } else {
+            match ci_fetch_kind {
+                CiFetchKind::Sync => {
                     // Skip the status flash when chaining; the chained
                     // `CiFetchKind::Older` will produce its own outcome
                     // message.
@@ -113,17 +125,8 @@ impl App {
                     // Keep `prev_pagination` so a sync with no new runs preserves the current
                     // `CiPagination`.
                     prev_pagination
-                }
-            },
-            CiFetchKind::Older => {
-                if found_new {
-                    if let Some(url) = self.project_list.primary_url_for(&absolute_path)
-                        && let Some(owner_repo) = ci::parse_owner_repo(url)
-                    {
-                        scan::clear_exhausted(owner_repo.owner(), owner_repo.repo());
-                    }
-                    CiPagination::HasMore
-                } else {
+                },
+                CiFetchKind::Older => {
                     if let Some(url) = self.project_list.primary_url_for(&absolute_path)
                         && let Some(owner_repo) = ci::parse_owner_repo(url)
                     {
@@ -134,8 +137,8 @@ impl App {
                         std::time::Instant::now(),
                     );
                     CiPagination::Exhausted
-                }
-            },
+                },
+            }
         };
 
         self.ci.viewport.set_pos(merged.len());

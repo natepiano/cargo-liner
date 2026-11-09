@@ -53,3 +53,7 @@ mod terminal;
 mod theme;
 #[path = "../src/tiles.rs"]
 mod tiles;
+
+#[cfg(target_os = "linux")]
+#[path = "../src/linux_process_stat.rs"]
+mod linux_process_stat;

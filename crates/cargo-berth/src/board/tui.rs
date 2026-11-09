@@ -39,6 +39,7 @@ use ratatui::widgets::Widget;
 use serde_json::Map;
 use serde_json::Value;
 use tui_pane::AppContext;
+use tui_pane::ColorMode;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::GlobalAction;
@@ -117,6 +118,7 @@ pub(crate) fn run(
 ) -> Result<(), BoardTerminalViewRunFailure> {
     let mut application =
         BoardApplication::new(model).map_err(BoardTerminalViewRunFailure::BeforeOpening)?;
+    application.framework.color_mode = ColorMode::from_environment();
     let mut terminal = setup_terminal().map_err(|error| {
         BoardTerminalViewRunFailure::BeforeOpening(BoardTerminalViewOpeningFailure::TerminalSetup(
             error,
@@ -847,6 +849,10 @@ fn draw(frame: &mut Frame, application: &mut BoardApplication) {
         .areas(frame.area());
     draw_focused_pane(frame, application, body);
     draw_footer(frame, application, footer);
+    application
+        .framework
+        .color_mode
+        .clear_colors(frame.buffer_mut());
 }
 
 fn draw_focused_pane(frame: &mut Frame, application: &mut BoardApplication, area: Rect) {
@@ -866,7 +872,11 @@ fn draw_focused_pane(frame: &mut Frame, application: &mut BoardApplication, area
     });
     let mut grid = GridLines::new(area);
     grid.add_titled(pane_frame, pane_id.title());
-    grid.render(frame.buffer_mut(), pane_chrome(), PaneBorders::Separate);
+    grid.render(
+        frame.buffer_mut(),
+        pane_chrome(application.framework.color_mode),
+        PaneBorders::Separate,
+    );
 }
 
 fn draw_footer(frame: &mut Frame, application: &BoardApplication, area: Rect) {
@@ -929,8 +939,9 @@ fn footer_key(key: String) -> Span<'static> {
     )
 }
 
-const fn pane_chrome() -> PaneChrome {
+const fn pane_chrome(mode: ColorMode) -> PaneChrome {
     PaneChrome {
+        color_mode:      mode,
         active_border:   Style::new().fg(Color::Cyan),
         inactive_border: Style::new().fg(Color::DarkGray),
         active_title:    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
@@ -1276,6 +1287,31 @@ mod tests {
 
     const MARKER_ID: &str = "cargo-berth-pending-bypass-01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a99.json";
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+
+    #[test]
+    fn no_color_board_frame_keeps_the_focused_title_bold() -> FixtureResult<()> {
+        let mut application = BoardApplication::new(&model(&[]))?;
+        application.framework.color_mode = ColorMode::NoColor;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
+        terminal.draw(|frame| draw(frame, &mut application))?;
+        let buffer = terminal.backend().buffer();
+        assert!(
+            buffer
+                .content
+                .iter()
+                .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset),
+            "every frame clears colours"
+        );
+        let title = (0..buffer.area.width)
+            .map(|x| &buffer[(x, 0)])
+            .find(|cell| cell.symbol().chars().any(char::is_alphabetic))
+            .ok_or_else(|| io::Error::other("focused title must render"))?;
+        assert!(
+            title.modifier.contains(Modifier::BOLD),
+            "the focused title stays bold"
+        );
+        Ok(())
+    }
 
     struct ScriptedModelSource {
         position: JournalPosition,

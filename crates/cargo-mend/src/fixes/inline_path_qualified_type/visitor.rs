@@ -23,6 +23,7 @@ use syn::PatTupleStruct;
 use syn::Path;
 use syn::TraitItemFn;
 use syn::TypePath;
+use syn::spanned::Spanned;
 use syn::visit;
 use syn::visit::Visit;
 
@@ -110,9 +111,9 @@ pub(super) struct InlinePathOccurrence {
     /// The original fully-qualified path as written (e.g.
     /// `crate::project::RustProject::Package`).
     pub(super) full_path:              String,
-    /// The path we intend to add as a `use` statement (e.g.
-    /// `crate::project::RustProject`). For enum variants this is the parent
-    /// type, not the variant itself.
+    /// The import segments before resolution (e.g. `crate::project::RustProject`).
+    /// For enum variants, these name the parent type.
+    /// Resolution keeps the absolute anchor from `full_path`.
     pub(super) import_path:            String,
     /// The bare last-segment of `import_path` — the name brought into scope
     /// by the `use` (e.g. `RustProject`). Used for collision detection.
@@ -212,7 +213,10 @@ impl InlinePathVisitor {
             return;
         }
 
-        let full_path = segments.join("::");
+        let mut full_path = segments.join("::");
+        if path.leading_colon.is_some() {
+            full_path.insert_str(0, "::");
+        }
 
         // `IdentifierCase::Pascal` on the penultimate segment means the leaf is almost
         // certainly an enum variant (or associated type/const) of that type.
@@ -231,12 +235,8 @@ impl InlinePathVisitor {
             };
         let import_path = import_segments.join("::");
 
-        // `first_ident_span` and `last_ident_span` use identifier spans to exclude generic
-        // arguments from the replacement range. path.span() includes generic args (e.g.,
-        // `<T>`), but we only want to replace the path portion, leaving generic args in
-        // place. `check_path` already required at least three intra-crate segments or two
-        // external-crate segments.
-        let first_ident_span = path.segments[0].ident.span();
+        // Include the leading `::` when the path has one.
+        // Stop at the last identifier to keep its generic arguments.
         let last_ident_span = path.segments[segments.len() - 1].ident.span();
 
         self.occurrences.push(InlinePathOccurrence {
@@ -244,7 +244,7 @@ impl InlinePathVisitor {
             import_path,
             import_name,
             replacement,
-            span_start: first_ident_span.start(),
+            span_start: path.span().start(),
             span_end: last_ident_span.end(),
             conditional_attributes: self.conditional_attributes.clone(),
         });
@@ -456,10 +456,28 @@ pub(super) fn is_pascal_case(name: &str) -> IdentifierCase {
 mod tests {
     use std::collections::BTreeSet;
 
+    use anyhow::Context;
+
     use super::IdentifierCase;
     use super::InlinePathVisitor;
     use super::is_pascal_case;
     use crate::fixes::imports::ConditionalAttributes;
+    use crate::fixes::imports::ImportSource;
+
+    const ABSOLUTE_PATH_REPLACEMENTS: [(&str, &str); 3] = [
+        (
+            "fn f() { ::dep::events::PointerCancel {}; }",
+            "fn f() { PointerCancel {}; }",
+        ),
+        (
+            "fn f(_: ::dep::events::Widget<u8>) {}",
+            "fn f(_: Widget<u8>) {}",
+        ),
+        (
+            "fn f() { ::dep::events::Event::Cancel; }",
+            "fn f() { Event::Cancel; }",
+        ),
+    ];
 
     fn inspect(text: &str) -> syn::Result<InlinePathVisitor> {
         let syntax = syn::parse_file(text)?;
@@ -472,6 +490,24 @@ mod tests {
         };
         visitor.visit_file(&syntax, &crate::fixes::imports::ImportSource::new(text));
         Ok(visitor)
+    }
+
+    #[test]
+    fn absolute_path_replacements_remove_the_anchor_and_keep_generic_arguments()
+    -> anyhow::Result<()> {
+        for (text, expected) in ABSOLUTE_PATH_REPLACEMENTS {
+            let visitor = inspect(text)?;
+            assert_eq!(visitor.occurrences.len(), 1);
+            let occurrence = &visitor.occurrences[0];
+            let source = ImportSource::new(text);
+            let location = source
+                .locate(occurrence.span_start, occurrence.span_end)
+                .context("locate the absolute path replacement")?;
+            let mut rewritten = text.to_string();
+            rewritten.replace_range(location.start()..location.end(), &occurrence.replacement);
+            assert_eq!(rewritten, expected);
+        }
+        Ok(())
     }
 
     #[test]

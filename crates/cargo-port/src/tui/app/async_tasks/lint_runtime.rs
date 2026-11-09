@@ -23,13 +23,14 @@ impl App {
     pub(super) fn respawn_watcher(&mut self) {
         let watch_roots = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
         let watcher_handle = self.startup_services.spawn_watcher(WatcherStartup {
-            watch_roots:    &watch_roots,
-            background_tx:  self.background.background_sender(),
-            non_rust:       self.config.include_non_rust(),
-            exclude_dirs:   self.config.exclude_dirs(),
-            client:         self.net.http_client(),
-            lint_runtime:   self.lint.runtime_clone(),
-            metadata_store: self.scan.metadata_store_handle(),
+            watch_roots:         &watch_roots,
+            background_tx:       self.background.background_sender(),
+            source_measurements: std::sync::Arc::clone(&self.scan.source_measurements),
+            non_rust:            self.config.include_non_rust(),
+            exclude_dirs:        self.config.exclude_dirs(),
+            client:              self.net.http_client(),
+            lint_runtime:        self.lint.runtime_clone(),
+            metadata_store:      self.scan.metadata_store_handle(),
         });
         self.background.replace_watcher(watcher_handle);
     }

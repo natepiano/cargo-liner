@@ -106,19 +106,26 @@ pub(crate) fn execute(release_request: &ReleaseRequest) -> OutputEnvelope {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Release, &error.to_string());
         },
     };
-    let reconciliation_report =
-        match reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Defer) {
-            Ok(Enrollment::Enrolled(reconciliation_report)) => reconciliation_report,
-            Ok(Enrollment::Unconfigured {
-                expected_configuration_path,
-            }) => {
-                return OutputEnvelope::unconfigured(
-                    CommandVerb::Release,
-                    &expected_configuration_path,
-                );
-            },
-            Err(error) => return error.into_output(CommandVerb::Release),
-        };
+    let reconciliation = if matches!(
+        release_request.selection,
+        ReleaseSelection::IntegrationCheckpoint
+    ) {
+        reconcile::reconcile_for_release(&invocation_directory, release_request.reservation_id)
+    } else {
+        reconcile::reconcile(&invocation_directory, RecoveredBypassReporting::Defer)
+    };
+    let reconciliation_report = match reconciliation {
+        Ok(Enrollment::Enrolled(reconciliation_report)) => reconciliation_report,
+        Ok(Enrollment::Unconfigured {
+            expected_configuration_path,
+        }) => {
+            return OutputEnvelope::unconfigured(
+                CommandVerb::Release,
+                &expected_configuration_path,
+            );
+        },
+        Err(error) => return error.into_output(CommandVerb::Release),
+    };
     let maintenance = reconciliation_report.retention_maintenance.clone();
     release_reconciled_request(release_request, reconciliation_report)
         .with_retention_maintenance(&maintenance)

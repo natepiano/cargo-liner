@@ -1,8 +1,8 @@
 use super::MendRunner;
 use super::RunPlan;
+use super::chain::WrittenPass;
 use super::mend_runner::NextAnalysis;
 use crate::compiler::BuildOutputMode;
-use crate::fixes::imports;
 use crate::fixes::imports::FixSetPresence;
 use crate::reporting::AppliedFixCounts;
 use crate::reporting::AppliedFixes;
@@ -20,7 +20,7 @@ impl MendRunner<'_> {
         let plan_check_duration = planned.check_duration;
         let compiler_warnings = planned.compiler_warnings;
         let compiler_fixable = planned.compiler_fixable;
-        let fix_scans = planned.fix_scans();
+        let fix_scans = planned.function_plan.accepted_scans(planned.fix_scans());
         let applied_pub_use = fix_scans
             .pub_use
             .map_or(0, |pub_use_fix_scan| pub_use_fix_scan.applied);
@@ -31,8 +31,7 @@ impl MendRunner<'_> {
                 FixSetPresence::HasEdits => SubtreeReexportEdits::Written,
             },
         );
-        let fixes =
-            Self::combined_fixes(fix_scans, &planned.sources, &self.selection.package_roots)?;
+        let fixes = &planned.function_plan.fixes;
         if fixes.presence() == FixSetPresence::Empty {
             let notice = Self::build_fix_notice(
                 planned.operation_mode.intent,
@@ -40,6 +39,7 @@ impl MendRunner<'_> {
                 fix_scans,
                 AppliedFixCounts::default(),
             );
+            let notice = planned.function_plan.merge_notice(notice);
             let warning_facts = planned.report.facts.compiler_warning_facts;
             return Ok(ExecutionOutcome {
                 report: planned.report,
@@ -57,18 +57,17 @@ impl MendRunner<'_> {
         // `self.session_snapshot.record` runs before the write, into a snapshot the runner keeps
         // for the whole invocation: an earlier pass's edits are already on disk and
         // a rollback owes the user the tree they started with.
-        self.session_snapshot
-            .record(&fixes)
-            .map_err(MendFailure::Unexpected)?;
-        let applied_fix_counts = imports::apply_fixes(&fixes).map_err(MendFailure::Unexpected)?;
         let validation_output_mode = if self.output_format == OutputFormat::Json {
             BuildOutputMode::Json
         } else {
             BuildOutputMode::Validation
         };
-        match self.build_selection(validation_output_mode) {
-            Ok(checked_selection) => {
-                let validation = &checked_selection.result;
+        let WrittenPass {
+            counts: applied_fix_counts,
+            validation,
+        } = self.write_chain_or_single(&planned, validation_output_mode)?;
+        match validation {
+            Ok(validation) => {
                 let check_duration = plan_check_duration + validation.check_duration;
                 let notice = Self::build_fix_notice(
                     planned.operation_mode.intent,
@@ -76,9 +75,10 @@ impl MendRunner<'_> {
                     fix_scans,
                     applied_fix_counts,
                 );
+                let notice = validation.function_plan.merge_notice(notice);
                 let warning_facts = validation.report.facts.compiler_warning_facts;
                 let report = validation.report.clone();
-                self.next_analysis = NextAnalysis::Validated(Box::new(checked_selection));
+                self.next_analysis = NextAnalysis::Validated(Box::new(validation));
                 Ok(ExecutionOutcome {
                     report,
                     notice,

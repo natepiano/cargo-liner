@@ -1,20 +1,27 @@
 use std::time::Instant;
 
 use ratatui::Frame;
+use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::style::Style;
 
+use super::card;
 use super::layout;
 use super::layout::StackLayout;
+use crate::BLOCK_BORDER_WIDTH;
 use crate::PaneFocusState;
 use crate::ToastPlacement;
 use crate::ToastSettings;
+use crate::constants::MIN_PANE_ROWS_WITH_EDGE_GAP;
 use crate::constants::TOAST_ROW_GAP;
 use crate::constants::TOAST_SIDE_GAP;
 use crate::toasts::ToastFocus;
 use crate::toasts::ToastHitbox;
 use crate::toasts::ToastView;
+use crate::toasts::body;
 use crate::toasts::manager;
+use crate::toasts::view::ToastExitState;
 
 /// Compiled-in palette consumed by toast rendering.
 ///
@@ -72,22 +79,132 @@ fn render_toasts(
     let max_visible = settings.max_visible.get().max(1);
     let start = toasts.len().saturating_sub(max_visible);
     let visible_toasts = &toasts[start..];
+    let mut complete_toasts: Vec<_> = visible_toasts
+        .iter()
+        .map(|toast| {
+            let mut complete = toast.clone();
+            complete.desired_height = toast.settled_height();
+            complete
+        })
+        .collect();
     let gap = TOAST_ROW_GAP;
-    let available = area.height.saturating_sub(TOAST_ROW_GAP.saturating_mul(2));
-    let allocated = layout::allocate_toast_heights(visible_toasts, available, gap);
-    let width = manager::toast_card_width(settings, area.width);
-
-    let layout = StackLayout { width, gap, focus };
+    let required_height = complete_toasts
+        .iter()
+        .map(ToastView::desired_height)
+        .fold(TOAST_ROW_GAP.saturating_mul(2), u16::saturating_add)
+        .saturating_add(gap.saturating_mul(
+            u16::try_from(visible_toasts.len().saturating_sub(1)).unwrap_or(u16::MAX),
+        ));
+    let area = card::area_between_pane_borders(frame, area, settings, required_height);
+    let minimum_card_height =
+        u16::try_from(BLOCK_BORDER_WIDTH.saturating_add(1)).unwrap_or(u16::MAX);
+    let gap_rows = if area == frame.area() {
+        (area.height.saturating_sub(minimum_card_height) / 2)
+            .min(TOAST_ROW_GAP)
+            .saturating_mul(2)
+    } else {
+        let stack_height = required_height.saturating_sub(TOAST_ROW_GAP.saturating_mul(2));
+        let spare_rows = area
+            .height
+            .saturating_sub(stack_height)
+            .min(TOAST_ROW_GAP.saturating_mul(2));
+        if area.height >= MIN_PANE_ROWS_WITH_EDGE_GAP {
+            spare_rows.max(TOAST_ROW_GAP)
+        } else {
+            spare_rows
+        }
+    };
+    let available = area.height.saturating_sub(gap_rows);
+    let width = visible_toasts
+        .iter()
+        .map(card::title_card_width)
+        .fold(manager::toast_card_width(settings, area.width), u16::max)
+        .min(area.width.saturating_sub(TOAST_SIDE_GAP.saturating_mul(2)));
+    for toast in &mut complete_toasts {
+        if toast.exit_state == ToastExitState::Visible {
+            toast.min_height = toast.min_height.max(first_sentence_height(toast, width));
+            toast.desired_height = toast.desired_height.max(toast.min_height);
+        }
+    }
+    let allocated = layout::allocate_toast_heights(&complete_toasts, available, gap);
+    let visible_toasts: Vec<_> = visible_toasts
+        .iter()
+        .map(|toast| {
+            let mut visible = toast.clone();
+            if toast.exit_state == ToastExitState::Visible {
+                visible.desired_height = visible
+                    .desired_height
+                    .max(first_sentence_height(toast, width));
+            }
+            visible
+        })
+        .collect();
+    let drawn_height = visible_toasts
+        .iter()
+        .zip(&allocated)
+        .map(|(toast, allocated)| toast.desired_height().min(*allocated))
+        .filter(|height| *height > 0)
+        .reduce(|height, next| height.saturating_add(gap).saturating_add(next))
+        .unwrap_or(0);
+    let edge_gap = area.height.saturating_sub(drawn_height).min(TOAST_ROW_GAP);
+    let layout = StackLayout {
+        width,
+        gap,
+        edge_gap,
+        focus,
+    };
     let hitboxes = match settings.placement {
         ToastPlacement::TopRight => {
-            layout::render_top_down(frame, area, visible_toasts, &allocated, layout)
+            layout::render_top_down(frame, area, &visible_toasts, &allocated, layout)
         },
         ToastPlacement::BottomRight => {
-            layout::render_bottom_up(frame, area, visible_toasts, &allocated, layout)
+            layout::render_bottom_up(frame, area, &visible_toasts, &allocated, layout)
         },
     };
 
     ToastRenderResult { hitboxes }
+}
+
+/// Keep the first sentence together when the card has enough space.
+fn first_sentence_height(toast: &ToastView, card_width: u16) -> u16 {
+    if !toast.tracked_items().is_empty() {
+        return toast.min_height();
+    }
+    let text = toast.body();
+    let sentence_end = text.char_indices().find_map(|(index, character)| {
+        let end = index + character.len_utf8();
+        (matches!(character, '.' | '?' | '!')
+            && text[end..].chars().next().is_none_or(char::is_whitespace))
+        .then_some(end)
+    });
+    let Some(end) = sentence_end else {
+        return toast.min_height();
+    };
+    let sentence_chars = text[..end]
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .count();
+    let width = u16::try_from(body::card_body_width(card_width)).unwrap_or(u16::MAX);
+    let mut visible_chars = 0;
+    let mut rows = 0_u16;
+    for line in toast.render_body.wrapped_lines(width, Style::default()) {
+        rows = rows.saturating_add(1);
+        visible_chars += line
+            .spans
+            .iter()
+            .map(|span| {
+                span.content
+                    .chars()
+                    .filter(|character| !character.is_whitespace())
+                    .count()
+            })
+            .sum::<usize>();
+        if visible_chars >= sentence_chars {
+            break;
+        }
+    }
+    rows.saturating_add(2)
+        .saturating_add(u16::from(toast.has_action()))
 }
 
 /// Render-time context for [`super::super::Toasts`]'s
@@ -122,6 +239,22 @@ impl<Ctx: crate::AppContext> crate::Renderable<ToastsRenderCtx> for super::super
 }
 
 impl<Ctx: crate::AppContext> super::super::Toasts<Ctx> {
+    /// Return the body width inside a card constrained to this area.
+    #[must_use]
+    pub fn body_width_for_area(&self, area: Rect) -> usize {
+        body::card_body_width(manager::toast_card_width(self.settings(), area.width))
+    }
+
+    /// Return the configured placement corner within the allowed area.
+    #[must_use]
+    pub const fn placement_corner(&self, area: Rect) -> Position {
+        let y = match self.settings().placement {
+            ToastPlacement::TopRight => area.top(),
+            ToastPlacement::BottomRight => area.bottom().saturating_sub(1),
+        };
+        Position::new(area.right().saturating_sub(1), y)
+    }
+
     /// Keep toast cards and their cleared gaps outside protected frame feet.
     /// Frames in other columns leave the toast's original area available.
     #[must_use]
@@ -160,6 +293,7 @@ impl<Ctx: crate::AppContext> super::super::Toasts<Ctx> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::convert::Infallible;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -178,10 +312,13 @@ mod tests {
     use super::*;
     use crate::ACTIVITY_SPINNER;
     use crate::AppContext;
+    use crate::ColorMode;
     use crate::Framework;
     use crate::PaneFocusState;
     use crate::Renderable;
+    use crate::ToastActivation;
     use crate::ToastId;
+    use crate::ToastStyle;
     use crate::Toasts;
     use crate::TrackedItem;
     use crate::TrackedItemActivity;
@@ -339,6 +476,251 @@ mod tests {
                 Rect::new(1, 1, 60, 23)
             );
         }
+    }
+
+    #[test]
+    fn a_toast_keeps_pane_titles_and_connected_borders_without_blank_rows() -> Result<(), Infallible>
+    {
+        for width in [32, 60] {
+            let mut toasts = Toasts::<TestApp>::with_settings(settings_with_width(width));
+            let id = toasts.push("Startup", "Read projects");
+            let now = created_at(&toasts, id) + Duration::from_secs(1);
+            let mut terminal = Terminal::new(TestBackend::new(60, 16))?;
+            terminal.draw(|frame| {
+                let chrome = crate::default_pane_chrome(ColorMode::Colored);
+                frame.render_widget(
+                    chrome.block("Projects".to_string(), false),
+                    Rect::new(0, 0, 30, 16),
+                );
+                frame.render_widget(
+                    chrome.block("No lint runs".to_string(), false),
+                    Rect::new(30, 11, 30, 5),
+                );
+                Renderable::render(
+                    &mut toasts,
+                    frame,
+                    frame.area(),
+                    &ToastsRenderCtx {
+                        now,
+                        pane_focus_state: PaneFocusState::Inactive,
+                    },
+                );
+            })?;
+            let buffer = terminal.backend().buffer();
+            let title: String = (30..60).map(|x| buffer[(x, 11)].symbol()).collect();
+            assert!(
+                title.contains("No lint runs"),
+                "the pane title is cut: {title:?}"
+            );
+            for y in 1..15 {
+                assert!(
+                    (0..60).any(|x| !buffer[(x, y)].symbol().trim().is_empty()),
+                    "blank row {y}"
+                );
+                for x in 0..60 {
+                    if buffer[(x, y)].symbol() == line::VERTICAL {
+                        assert!(
+                            [y - 1, y + 1].into_iter().any(|neighbor| {
+                                matches!(
+                                    buffer[(x, neighbor)].symbol(),
+                                    "│" | "┌"
+                                        | "┐"
+                                        | "└"
+                                        | "┘"
+                                        | "├"
+                                        | "┤"
+                                        | "╭"
+                                        | "╮"
+                                        | "╰"
+                                        | "╯"
+                                )
+                            }),
+                            "isolated border at {x},{y}"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_bottom_right_toast_keeps_a_gap_from_the_last_column_pane_border() -> Result<(), Infallible>
+    {
+        let mut toasts = Toasts::<TestApp>::with_settings(settings_with_width(60));
+        let id = toasts.start_task("Startup", "");
+        let items = [
+            "Cargo metadata",
+            "crates.io",
+            "Disk usage",
+            "GitHub repos",
+            "Languages",
+            "Lint history",
+            "Local git repos",
+            "Test counts",
+        ]
+        .map(|label| TrackedItem::new(label, label));
+        assert!(toasts.set_tracked_items(id, &items));
+        let now = Instant::now() + Duration::from_secs(5);
+        let mut terminal = Terminal::new(TestBackend::new(160, 45))?;
+        let pane = Rect::new(64, 33, 96, 11);
+        terminal.draw(|frame| {
+            let chrome = crate::default_pane_chrome(ColorMode::Colored);
+            for (title, area) in [
+                ("Projects", Rect::new(0, 0, 64, 33)),
+                ("Package", Rect::new(64, 0, 96, 33)),
+                ("No lint runs", Rect::new(0, 33, 64, 11)),
+                ("CI runs — not a git repository", pane),
+            ] {
+                frame.render_widget(chrome.block(title.to_string(), false), area);
+            }
+            Renderable::render(
+                &mut toasts,
+                frame,
+                Rect::new(0, 0, 160, 44),
+                &ToastsRenderCtx {
+                    now,
+                    pane_focus_state: PaneFocusState::Inactive,
+                },
+            );
+        })?;
+        let card = toasts.hits[0].card_rect;
+        let buffer = terminal.backend().buffer();
+        for row in [pane.top(), pane.bottom() - 1] {
+            assert!(
+                !(card.top()..card.bottom()).contains(&row),
+                "toast {card:?} shares the pane border row {row}"
+            );
+        }
+        for row in card.top()..card.bottom() {
+            assert_eq!(buffer[(card.right(), row)].symbol(), " ", "row {row}");
+            let edge: String = (card.right() - 1..=card.right())
+                .map(|column| buffer[(column, row)].symbol())
+                .collect();
+            for pair in ["││", "┐┐", "┘│"] {
+                assert!(!edge.contains(pair), "row {row}: {edge}");
+            }
+        }
+        let title: String = (pane.left()..pane.right())
+            .map(|column| buffer[(column, pane.top())].symbol())
+            .collect();
+        assert!(title.contains("CI runs — not a git repository"), "{title}");
+        for row in 0..44 {
+            let text: String = (0..160)
+                .map(|column| buffer[(column, row)].symbol())
+                .collect();
+            assert!(!text.trim().is_empty(), "blank row {row}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_bottom_right_stack_stays_below_the_pane_border_when_rows_are_hidden()
+    -> Result<(), Infallible> {
+        let mut toasts = Toasts::<TestApp>::with_settings(settings_with_width(60));
+        toasts.push(
+            "Startup",
+            "Metadata\nDisk\nLanguages\nGit\nTests\nLints\nRegistry\nTargets",
+        );
+        let mut terminal = Terminal::new(TestBackend::new(160, 45))?;
+        terminal.draw(|frame| {
+            let chrome = crate::default_pane_chrome(ColorMode::Colored);
+            for (title, area) in [
+                ("Languages", Rect::new(64, 15, 48, 18)),
+                ("CPU cores 32", Rect::new(112, 15, 20, 18)),
+                ("Targets", Rect::new(132, 15, 28, 18)),
+                ("CI runs", Rect::new(64, 33, 96, 8)),
+            ] {
+                frame.render_widget(chrome.block(title.to_string(), false), area);
+            }
+            frame.render_widget(
+                Paragraph::new("Files Code Comments"),
+                Rect::new(90, 16, 21, 1),
+            );
+            frame.render_widget(Paragraph::new("CPU cores 32"), Rect::new(114, 16, 16, 1));
+            frame.render_widget(
+                Paragraph::new("Target Kind Source"),
+                Rect::new(134, 16, 24, 1),
+            );
+            Renderable::render(
+                &mut toasts,
+                frame,
+                Rect::new(0, 0, 160, 41),
+                &ToastsRenderCtx {
+                    now:              Instant::now() + Duration::from_secs(5),
+                    pane_focus_state: PaneFocusState::Inactive,
+                },
+            );
+        })?;
+        let card = toasts.hits[0].card_rect;
+        assert!(card.top() > 33 && card.bottom() <= 40, "{card:?}");
+        let buffer = terminal.backend().buffer();
+        let header: String = (90..158).map(|x| buffer[(x, 16)].symbol()).collect();
+        for text in ["Files Code Comments", "CPU cores 32", "Target Kind Source"] {
+            assert!(header.contains(text), "{header:?}");
+        }
+        assert!(
+            (card.left()..card.right())
+                .any(|x| buffer[(x, card.bottom() - 1)].symbol().contains('▼')),
+            "the bottom border must show the shared page mark"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pane_borders_outside_the_card_keep_the_unrestricted_toast_rect() -> Result<(), Infallible> {
+        for pane in [
+            Rect::new(0, 0, 2, 23),
+            Rect::new(40, 0, 23, 8),
+            Rect::new(0, 8, 64, 8),
+        ] {
+            let mut toasts = Toasts::<TestApp>::with_settings(settings_with_width(60));
+            let id = toasts.push_persistent(
+                "Notice",
+                "Read projects",
+                ToastStyle::Normal,
+                ToastActivation::Informational,
+                3,
+            );
+            let now = created_at(&toasts, id) + Duration::from_secs(1);
+            let mut terminal = Terminal::new(TestBackend::new(64, 24))?;
+            terminal.draw(|frame| {
+                let chrome = crate::default_pane_chrome(ColorMode::Colored);
+                frame.render_widget(chrome.block(String::new(), false), pane);
+                Renderable::render(
+                    &mut toasts,
+                    frame,
+                    Rect::new(1, 1, 62, 21),
+                    &ToastsRenderCtx {
+                        now,
+                        pane_focus_state: PaneFocusState::Inactive,
+                    },
+                );
+            })?;
+            let framed = toasts.hits[0].card_rect;
+            assert_eq!(
+                terminal.backend().buffer()[(framed.x, framed.y)].symbol(),
+                "┌"
+            );
+            terminal.draw(|frame| {
+                Renderable::render(
+                    &mut toasts,
+                    frame,
+                    Rect::new(1, 1, 62, 21),
+                    &ToastsRenderCtx {
+                        now,
+                        pane_focus_state: PaneFocusState::Inactive,
+                    },
+                );
+            })?;
+            let alone = toasts.hits[0].card_rect;
+            assert_eq!(framed, alone);
+            assert_eq!(
+                terminal.backend().buffer()[(alone.x, alone.y)].symbol(),
+                "┌"
+            );
+        }
+        Ok(())
     }
 
     #[test]
@@ -619,7 +1001,7 @@ mod tests {
 
     #[test]
     fn a_toast_keeps_one_cleared_cell_on_each_side() {
-        for (configured_width, area_width, expected_card_width) in [(12, 30, 12), (60, 20, 18)] {
+        for (configured_width, area_width, expected_card_width) in [(12, 30, 14), (60, 20, 18)] {
             let area = Rect::new(5, 1, area_width, 10);
             let mut toasts =
                 Toasts::<TestApp>::with_settings(settings_with_width(configured_width));
@@ -755,7 +1137,8 @@ mod tests {
         let (_, rows) = rendered_plain_toast(TestToastAction::Absent, 6);
         let last_body_row = rows[3].chars().skip(2).take(12).collect::<String>();
 
-        assert!(last_body_row.trim_end().ends_with(ELISION));
+        assert_eq!(last_body_row.trim(), "ghijkl");
+        assert!(rows[4].contains('▼'), "{}", rows[4]);
     }
 
     #[test]
@@ -852,7 +1235,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let lines = card::body_lines_tracked(&tracked, Style::default(), 2, 20);
+        let lines = card::body_lines_tracked(&tracked, Style::default(), 2, 20, 2).lines;
 
         assert_eq!(lines.len(), 2);
         assert_eq!(line_text(&lines[0]), "one");

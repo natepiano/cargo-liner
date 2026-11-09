@@ -31,29 +31,24 @@
 //!
 //! [`Block`]: ratatui::widgets::Block
 
+use std::cell::RefCell;
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::Margin;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::symbols::line::BOTTOM_LEFT;
-use ratatui::symbols::line::BOTTOM_RIGHT;
-use ratatui::symbols::line::CROSS;
-use ratatui::symbols::line::HORIZONTAL;
-use ratatui::symbols::line::HORIZONTAL_DOWN;
-use ratatui::symbols::line::HORIZONTAL_UP;
-use ratatui::symbols::line::TOP_LEFT;
-use ratatui::symbols::line::TOP_RIGHT;
-use ratatui::symbols::line::VERTICAL;
-use ratatui::symbols::line::VERTICAL_LEFT;
-use ratatui::symbols::line::VERTICAL_RIGHT;
+use ratatui::symbols::line;
+use ratatui::symbols::line::Set;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use ratatui::text::Text;
 use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthStr;
 
 use super::chrome;
 use super::chrome::PaneChrome;
 use super::constants::BORDER_LINE_WIDTH;
+use crate::ColorMode;
 use crate::constants::ELISION;
 
 /// Where one pane's box sits for a single frame.
@@ -143,12 +138,118 @@ impl PaneFrame {
     /// Whether the pane is drawn exactly where it was laid out.
     const fn is_still(self) -> bool { self.shift == 0 && within(self.rect, self.clip) }
 
+    /// Consume a text-visibility proof only if a nonblank grapheme of `text`
+    /// will reach the destination through the current pane's copy mapping.
+    ///
+    /// Call immediately before painting this left-aligned text into `area`.
+    /// Scratch-buffer contents on a motion clip's border are excluded, just as
+    /// in the copy itself. Outside `draw_clipped`, the buffer bounds apply.
+    pub fn with_visible_text(buffer: &Buffer, area: Rect, text: &Text<'_>, visible: impl FnOnce()) {
+        for (line, y) in text.lines.iter().zip(area.top()..area.bottom()) {
+            let mut x = area.left();
+            for grapheme in line.styled_graphemes(Style::default()) {
+                let width =
+                    u16::try_from(UnicodeWidthStr::width(grapheme.symbol)).unwrap_or(u16::MAX);
+                let end = x.saturating_add(width);
+                if end > area.right() {
+                    break;
+                }
+                if width > 0
+                    && grapheme.symbol.chars().any(|ch| !ch.is_whitespace())
+                    && TextDestinationScope::copies_fragment(buffer.area, x, y, end)
+                {
+                    visible();
+                    return;
+                }
+                x = end;
+            }
+        }
+    }
+
+    /// Source row copied to this destination row, excluding motion clip borders.
+    fn copied_source_row(self, y: u16) -> Option<u16> {
+        let source = i32::from(y)
+            .checked_sub(self.shift)
+            .and_then(|row| u16::try_from(row).ok())?;
+        if source < self.rect.top() || source >= self.rect.bottom() {
+            return None;
+        }
+        let source_is_inside = source > self.rect.top()
+            && source < self.rect.bottom().saturating_sub(BORDER_LINE_WIDTH);
+        let target_is_clip_border =
+            y == self.clip.top() || y == self.clip.bottom().saturating_sub(BORDER_LINE_WIDTH);
+        if source_is_inside && target_is_clip_border {
+            return None;
+        }
+        Some(source)
+    }
+
     /// Where the row at `y` lands once the shift is applied, or `None`
     /// when that carries it off the buffer entirely.
     fn shifted_row(self, y: u16) -> Option<u16> {
         i32::from(y)
             .checked_add(self.shift)
             .and_then(|row| u16::try_from(row).ok())
+    }
+}
+
+/// One enclosing copy that command text must survive on its way to the screen.
+struct TextDestination {
+    frame:   PaneFrame,
+    visible: Rect,
+}
+
+thread_local! {
+    /// The stack owns all enclosing mappings; an empty stack means direct paint.
+    static TEXT_DESTINATIONS: RefCell<Vec<TextDestination>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Keep each enclosing copy in the visibility proof, restoring it on unwinding.
+struct TextDestinationScope;
+
+impl TextDestinationScope {
+    /// Push only the mapping calculated by the destination copy boundary.
+    fn enter(destination: &ClippedPaneDestination<'_>) -> Self {
+        TEXT_DESTINATIONS.with_borrow_mut(|destinations| {
+            destinations.push(TextDestination {
+                frame:   destination.frame,
+                visible: destination.visible,
+            });
+        });
+        Self
+    }
+
+    /// Whether this entire grapheme survives every copy, innermost first.
+    fn copies_fragment(buffer: Rect, x: u16, mut y: u16, end: u16) -> bool {
+        if x < buffer.left() || end > buffer.right() || y < buffer.top() || y >= buffer.bottom() {
+            return false;
+        }
+        TEXT_DESTINATIONS.with_borrow(|destinations| {
+            for destination in destinations.iter().rev() {
+                let TextDestination { frame, visible } = destination;
+                let Some(target) = frame.shifted_row(y) else {
+                    return false;
+                };
+                if x < visible.left()
+                    || end > visible.right()
+                    || target < visible.top()
+                    || target >= visible.bottom()
+                    || frame.copied_source_row(target) != Some(y)
+                {
+                    return false;
+                }
+                y = target;
+            }
+            true
+        })
+    }
+}
+
+impl Drop for TextDestinationScope {
+    fn drop(&mut self) {
+        TEXT_DESTINATIONS.with_borrow_mut(|destinations| {
+            destinations.pop();
+        });
     }
 }
 
@@ -243,6 +344,7 @@ fn draw_at_destination(
     draw: impl FnOnce(&mut Buffer, Rect),
 ) {
     let frame = destination.frame;
+    let _text_destination = TextDestinationScope::enter(&destination);
     let inner = frame.inner();
     if inner.is_empty() {
         return;
@@ -288,24 +390,10 @@ fn blit(destination: ClippedPaneDestination<'_>, scratch: &Buffer) {
         frame,
         visible,
     } = destination;
-    let (rect, clip) = (frame.rect, frame.clip);
     for y in visible.top()..visible.bottom() {
-        let Some(source) = i32::from(y)
-            .checked_sub(frame.shift)
-            .and_then(|row| u16::try_from(row).ok())
-        else {
+        let Some(source) = frame.copied_source_row(y) else {
             continue;
         };
-        if source < rect.top() || source >= rect.bottom() {
-            continue;
-        }
-        let source_is_inside =
-            source > rect.top() && source < rect.bottom().saturating_sub(BORDER_LINE_WIDTH);
-        let target_is_clip_border =
-            y == clip.top() || y == clip.bottom().saturating_sub(BORDER_LINE_WIDTH);
-        if source_is_inside && target_is_clip_border {
-            continue;
-        }
         for x in visible.left()..visible.right() {
             buffer[(x, y)] = scratch[(x, source)].clone();
         }
@@ -664,7 +752,12 @@ impl GridLines {
                 let Some(cell) = self.cells.get(self.index(x, y)).copied() else {
                     continue;
                 };
-                let Some(glyph) = glyph(cell.sides) else {
+                let symbols = if cell.focused && chrome.color_mode == ColorMode::NoColor {
+                    line::THICK
+                } else {
+                    line::NORMAL
+                };
+                let Some(glyph) = glyph(cell.sides, symbols) else {
                     continue;
                 };
                 let style = if lights_focus && cell.focused {
@@ -764,7 +857,7 @@ impl GridLines {
             OverlayStyle::Title(patch) => chrome.title_style(overlay.frame.focused).patch(patch),
             OverlayStyle::Label(style) => style,
         };
-        let text = Line::from(
+        let mut text = Line::from(
             overlay
                 .text
                 .spans
@@ -772,10 +865,18 @@ impl GridLines {
                 .map(|span| Span::styled(span.content.as_ref(), style.patch(span.style)))
                 .collect::<Vec<_>>(),
         );
-        if matches!(overlay.style, OverlayStyle::Title(_))
-            && overlay.text.width() > row.width.into()
-        {
-            let text_width = row.width.saturating_sub(1);
+        if matches!(overlay.style, OverlayStyle::Title(_)) && text.width() > row.width.into() {
+            while let Some(span) = text.spans.last_mut() {
+                span.content = span.content.trim_end_matches(' ').to_owned().into();
+                if !span.content.is_empty() {
+                    break;
+                }
+                text.spans.pop();
+            }
+        }
+        if matches!(overlay.style, OverlayStyle::Title(_)) && text.width() > row.width.into() {
+            let padding = u16::from(row.width > 1);
+            let text_width = row.width.saturating_sub(1 + padding);
             let mut visible_width = 0;
             let mut elision_style = style;
             for grapheme in text.styled_graphemes(style) {
@@ -804,6 +905,16 @@ impl GridLines {
                 },
                 buffer,
             );
+            if padding > 0 {
+                Line::from(Span::styled(" ", elision_style)).render(
+                    Rect {
+                        x: row.right().saturating_sub(1),
+                        width: 1,
+                        ..row
+                    },
+                    buffer,
+                );
+            }
             return;
         }
         text.render(row, buffer);
@@ -856,26 +967,25 @@ const fn run(at: u16, start: u16, end: u16, back: Side, on: Side) -> Sides {
 }
 
 /// The box-drawing glyph for a cell, or `None` when nothing reaches it.
-const fn glyph(sides: Sides) -> Option<&'static str> {
+const fn glyph(sides: Sides, symbols: Set<'static>) -> Option<&'static str> {
     let up = sides.has(Side::Up);
     let right = sides.has(Side::Right);
     let down = sides.has(Side::Down);
     let left = sides.has(Side::Left);
     match (up, right, down, left) {
         (false, false, false, false) => None,
-        // `VERTICAL` and `HORIZONTAL` cover straight runs and the one-sided stubs a
-        // clipped pane leaves behind, which read as their own axis.
-        (_, false, true, false) | (true, false, false, false) => Some(VERTICAL),
-        (false, true, false, _) | (false, false, false, true) => Some(HORIZONTAL),
-        (false, true, true, false) => Some(TOP_LEFT),
-        (false, false, true, true) => Some(TOP_RIGHT),
-        (true, true, false, false) => Some(BOTTOM_LEFT),
-        (true, false, false, true) => Some(BOTTOM_RIGHT),
-        (true, true, true, false) => Some(VERTICAL_RIGHT),
-        (true, false, true, true) => Some(VERTICAL_LEFT),
-        (false, true, true, true) => Some(HORIZONTAL_DOWN),
-        (true, true, false, true) => Some(HORIZONTAL_UP),
-        (true, true, true, true) => Some(CROSS),
+        // Straight glyphs cover stubs at a clipped pane edge, which read as their own axis.
+        (_, false, true, false) | (true, false, false, false) => Some(symbols.vertical),
+        (false, true, false, _) | (false, false, false, true) => Some(symbols.horizontal),
+        (false, true, true, false) => Some(symbols.top_left),
+        (false, false, true, true) => Some(symbols.top_right),
+        (true, true, false, false) => Some(symbols.bottom_left),
+        (true, false, false, true) => Some(symbols.bottom_right),
+        (true, true, true, false) => Some(symbols.vertical_right),
+        (true, false, true, true) => Some(symbols.vertical_left),
+        (false, true, true, true) => Some(symbols.horizontal_down),
+        (true, true, false, true) => Some(symbols.horizontal_up),
+        (true, true, true, true) => Some(symbols.cross),
     }
 }
 
@@ -906,6 +1016,7 @@ mod tests {
     use ratatui::style::Modifier;
 
     use super::*;
+    use crate::ColorMode;
 
     #[test]
     fn a_moving_pane_clipped_below_the_buffer_stops_at_its_last_row() {
@@ -915,9 +1026,28 @@ mod tests {
         assert_eq!(buffer.area, Rect::new(0, 0, 214, 93));
     }
 
+    #[test]
+    fn grid_line_glyphs_use_the_selected_color_mode() {
+        for (mode, corner, edge) in [
+            (ColorMode::Colored, "┌", "─"),
+            (ColorMode::NoColor, "┏", "━"),
+        ] {
+            let area = Rect::new(0, 0, 5, 3);
+            let mut grid = GridLines::new(area);
+            grid.add(PaneFrame::new(area).with_focus(true));
+            let mut buffer = Buffer::empty(area);
+            let mut styles = chrome();
+            styles.color_mode = mode;
+            grid.render(&mut buffer, styles, PaneBorders::Separate);
+            assert_eq!(buffer[(0, 0)].symbol(), corner);
+            assert_eq!(buffer[(1, 0)].symbol(), edge);
+        }
+    }
+
     /// Border and title shades a test can tell apart.
     fn chrome() -> PaneChrome {
         PaneChrome {
+            color_mode:      ColorMode::Colored,
             active_border:   Style::default().fg(Color::Green),
             inactive_border: Style::default().fg(Color::Red),
             active_title:    Style::default().fg(Color::Green),
@@ -1009,6 +1139,78 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         grid_lines.render(&mut buffer, chrome(), PaneBorders::Shared);
         rows(&buffer, area)
+    }
+
+    #[test]
+    fn a_title_uses_its_trailing_padding_cell_before_it_cuts_text() {
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            for focused in [false, true] {
+                let area = Rect::new(0, 0, 16, 3);
+                let mut grid = GridLines::new(area);
+                grid.add_titled(
+                    PaneFrame::new(area).with_focus(focused),
+                    Line::from(vec![
+                        Span::styled("Not a git repo", Style::default().fg(Color::Blue)),
+                        Span::raw(" "),
+                    ]),
+                );
+                let mut buffer = Buffer::empty(area);
+                grid.render(
+                    &mut buffer,
+                    PaneChrome {
+                        color_mode: mode,
+                        ..chrome()
+                    },
+                    PaneBorders::Separate,
+                );
+                mode.clear_colors(&mut buffer);
+                let title: String = (1..15).map(|x| buffer[(x, 0)].symbol()).collect();
+                assert_eq!(title, "Not a git repo", "{mode:?}, focused={focused}");
+                assert_eq!(
+                    buffer[(15, 0)].symbol(),
+                    if mode == ColorMode::NoColor && focused {
+                        "┓"
+                    } else {
+                        "┐"
+                    }
+                );
+                if mode == ColorMode::Colored {
+                    assert_eq!(buffer[(14, 0)].fg, Color::Blue);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cut_titles_keep_a_blank_cell_before_corners_and_joints() {
+        for mode in [ColorMode::Colored, ColorMode::NoColor] {
+            for shared in [false, true] {
+                let area = Rect::new(0, 0, 32, 4);
+                let pane = Rect::new(0, 0, 16, 4);
+                let mut grid = GridLines::new(area);
+                grid.add_titled(PaneFrame::new(pane), "Workspace - cargo-liner-port ");
+                if shared {
+                    grid.add(PaneFrame::new(Rect::new(15, 0, 17, 4)));
+                }
+                let mut buffer = Buffer::empty(area);
+                grid.render(
+                    &mut buffer,
+                    PaneChrome {
+                        color_mode: mode,
+                        ..chrome()
+                    },
+                    PaneBorders::Shared,
+                );
+                mode.clear_colors(&mut buffer);
+                let title: String = (1..15).map(|x| buffer[(x, 0)].symbol()).collect();
+                assert!(
+                    title.ends_with("… "),
+                    "{mode:?}, shared={shared}: {title:?}"
+                );
+                assert!(title.starts_with("Workspace"), "{title:?}");
+                assert_eq!(buffer[(15, 0)].symbol(), if shared { "┬" } else { "┐" });
+            }
+        }
     }
 
     #[test]
@@ -1253,7 +1455,7 @@ mod tests {
     #[test]
     fn a_title_stops_inside_the_corner() {
         let area = Rect::new(0, 0, 6, 3);
-        assert_eq!(titled(area, PaneFrame::new(area), " Targets ")[0], "┌ Ta…┐");
+        assert_eq!(titled(area, PaneFrame::new(area), " Targets ")[0], "┌ T… ┐");
     }
 
     /// The mark itself is the useful part when that is all the border
@@ -1307,7 +1509,7 @@ mod tests {
     #[test]
     fn title_segments_keep_their_styles_and_focus_weight_when_clipped() {
         for focused in [false, true] {
-            for (width, expected) in [(16, "┌alpha · unit──┐"), (11, "┌alpha · …┐")]
+            for (width, expected) in [(16, "┌alpha · unit──┐"), (11, "┌alpha ·… ┐")]
             {
                 let area = Rect::new(0, 0, width, 3);
                 let chrome = PaneChrome {
@@ -1391,7 +1593,7 @@ mod tests {
             let mut buffer = Buffer::empty(area);
             grid.render(&mut buffer, chrome, PaneBorders::Shared);
 
-            let elision = &buffer[(width - 2, 0)];
+            let elision = &buffer[(width - if width > 3 { 3 } else { 2 }, 0)];
             assert_eq!(elision.symbol(), ELISION);
             assert_eq!(elision.fg, expected);
             assert!(elision.modifier.contains(Modifier::BOLD));
@@ -1414,7 +1616,7 @@ mod tests {
         grid.render(&mut buffer, chrome(), PaneBorders::Shared);
 
         assert_eq!(rows(&buffer, area)[0], "            ");
-        assert_eq!(rows(&buffer, area)[2], "┌unit · te…┐");
+        assert_eq!(rows(&buffer, area)[2], "┌unit · t… ┐");
         assert_eq!(buffer[(1, 2)].fg, Color::Blue);
         assert_eq!(buffer[(7, 2)].fg, Color::Yellow);
         assert!(!rows(&buffer, area)[4].contains("unit"));

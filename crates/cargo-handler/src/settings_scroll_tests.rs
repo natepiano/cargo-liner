@@ -35,9 +35,9 @@ fn settings_scroll_dispatcher_selects_and_edits_a_row_by_key_and_click() {
     let settings = rows(&app);
     let target = (0..settings.rows().len())
         .find(|&index| {
-            settings.target(index) == Some(SettingTarget::AppText(AppSetting::HierarchyCommand))
+            settings.target(index) == Some(SettingTarget::AppText(AppSetting::StaffFile))
         })
-        .expect("hierarchy command row");
+        .expect("staff file row");
     assert!(target > app.framework.settings_pane.viewport().visible_rows());
     key(&mut app, KeyCode::End);
     for _ in 0..settings.rows().len() {
@@ -52,7 +52,7 @@ fn settings_scroll_dispatcher_selects_and_edits_a_row_by_key_and_click() {
     assert!(app.framework.settings_pane.is_editing());
     assert_eq!(
         app.framework.settings_pane.edit_buffer(),
-        app.loaded_config.config.census.hierarchy_command
+        app.loaded_config.config.census.staff_file.0
     );
     key(&mut app, KeyCode::Esc);
     draw(&mut app, &mut terminal);
@@ -63,7 +63,7 @@ fn settings_scroll_dispatcher_selects_and_edits_a_row_by_key_and_click() {
             let line: String = (area.x..area.right())
                 .map(|x| buffer[(x, y)].symbol())
                 .collect();
-            line.contains("hierarchy command")
+            line.contains("staff file")
         })
         .expect("target row is drawn after scrolling");
     key(&mut app, KeyCode::Home);
@@ -73,7 +73,7 @@ fn settings_scroll_dispatcher_selects_and_edits_a_row_by_key_and_click() {
     assert!(app.framework.settings_pane.is_editing());
     assert_eq!(
         app.framework.settings_pane.edit_buffer(),
-        app.loaded_config.config.census.hierarchy_command
+        app.loaded_config.config.census.staff_file.0
     );
 }
 

@@ -13,6 +13,8 @@ mod toolchain_probes;
 mod visibility;
 
 pub(crate) use build::BuildOutputMode;
+pub(crate) use build::RunWrapper;
+pub(crate) use build::RunningExecutable;
 pub(crate) use build::SelectionResult;
 pub(crate) use build::run_cargo_fix;
 pub(crate) use build::run_selection;
@@ -25,6 +27,7 @@ pub(crate) use constants::CARGO_SUBCOMMAND_MEND;
 pub(crate) use constants::DIAGNOSTIC_SEVERITY_ERROR_PREFIX;
 pub(crate) use constants::DIAGNOSTIC_SEVERITY_WARNING_PREFIX;
 pub(crate) use constants::DRIVER_ENV;
+pub(crate) use constants::PRELUDE_MODULE_NAME;
 pub(crate) use constants::SOURCE_DIR_SRC;
 pub(crate) use driver::driver_main;
 pub(crate) use persistence::SourceModuleMount;

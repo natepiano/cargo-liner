@@ -461,12 +461,8 @@ mod tests {
     #[test]
     fn incomplete_log_inventory_still_sweeps_directly_named_pairs() {
         let root = inspected_directory::capture_root();
-        for number in 0..CAPTURE_INVENTORY_LIMIT {
-            fs::write(root.path().join(format!("unrelated-{number}")), "")
-                .expect("unrelated entry");
-        }
         write_pair(root.path());
-        let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("bounded scan");
+        let scan = inspected_directory::scan_with_incomplete_logs(root.path());
         assert!(matches!(scan.log_outcome(), Enumeration::Incomplete));
         assert_eq!(scan.log_entries().count(), CAPTURE_INVENTORY_LIMIT);
         assert_eq!(sweep_everything(&scan), 2);

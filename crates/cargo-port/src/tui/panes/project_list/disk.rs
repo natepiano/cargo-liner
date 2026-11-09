@@ -1,58 +1,22 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
 use std::path::Path;
 
 use ratatui::style::Style;
 use tui_pane::error_color;
-use tui_pane::hover_focus_color;
 use tui_pane::label_color;
 use tui_pane::success_color;
 use tui_pane::warning_color;
 
 use crate::project::RootItem;
 use crate::scan::StorageHeadroom;
-use crate::tui::project_list::VisibleRow;
+use crate::tui::project_list::ProjectPathLookup::Found;
+use crate::tui::project_list::ProjectPathLookup::StaleRoute;
+use crate::tui::project_list::ProjectPathLookup::UnknownPath;
+use crate::tui::project_list_state::DiskCacheKey;
 use crate::tui::project_list_state::ProjectList;
 use crate::tui::render;
 
-/// Number of largest distinct visible disk values highlighted by
-/// [`disk_style`].
-const TOP_DISK_COUNT: usize = 3;
-
-/// Style for a disk value: the theme's high (red) `disk_usage` stop on a
-/// subtle focus tint when `bytes` is among the largest [`TOP_DISK_COUNT`]
-/// distinct values in `sorted_values`, otherwise the logarithmic gradient
-/// from [`disk_color`].
 pub(super) fn disk_style(bytes: Option<u64>, sorted_values: &[u64]) -> Style {
-    if let Some(bytes) = bytes
-        && is_top_disk_value(bytes, sorted_values)
-    {
-        return Style::default()
-            .fg(tui_pane::theme().disk_usage.high.color)
-            .bg(hover_focus_color());
-    }
     disk_color(disk_percentile(bytes, sorted_values))
-}
-
-/// Whether `bytes` is at or above the [`TOP_DISK_COUNT`]-th largest distinct
-/// value in the ascending `sorted_values`. When fewer than [`TOP_DISK_COUNT`]
-/// distinct values exist, the threshold is the smallest, so every visible
-/// value qualifies.
-fn is_top_disk_value(bytes: u64, sorted_values: &[u64]) -> bool {
-    let mut distinct = 0usize;
-    let mut prev = None;
-    let mut threshold = None;
-    for &value in sorted_values.iter().rev() {
-        if prev != Some(value) {
-            distinct += 1;
-            prev = Some(value);
-            threshold = Some(value);
-            if distinct == TOP_DISK_COUNT {
-                break;
-            }
-        }
-    }
-    threshold.is_some_and(|t| bytes >= t)
 }
 
 /// Compute a logarithmic position for `bytes` within the smallest..largest
@@ -109,16 +73,16 @@ pub(super) fn headroom_style(headroom: StorageHeadroom) -> Style {
 }
 
 pub(super) fn formatted_disk(projects: &ProjectList, path: &Path) -> String {
-    let bytes = projects
-        .at_path(path)
-        .and_then(|project| project.disk_usage_bytes)
-        .unwrap_or(0);
-    render::format_bytes(bytes)
+    match projects.at_path(path) {
+        Found(project) => project.disk.total(),
+        UnknownPath | StaleRoute => None,
+    }
+    .map_or_else(|| "…".to_string(), render::format_bytes)
 }
 
 pub(super) fn formatted_disk_for_item(item: &RootItem) -> String {
     item.disk_usage_bytes()
-        .map_or_else(|| render::format_bytes(0), render::format_bytes)
+        .map_or_else(|| "…".to_string(), render::format_bytes)
 }
 
 // Body of `ProjectListPane::render`. Same pattern as the
@@ -126,41 +90,10 @@ pub(super) fn formatted_disk_for_item(item: &RootItem) -> String {
 // ── Disk-cache ───────────────────────────────────────────────────────
 //
 // Builds sorted disk-usage values for the rows currently rendered in the
-// Project pane. Expansion and collapse therefore update both the gradient and
-// the three emphasized values.
+// Project pane. Expansion and collapse update the gradient.
 
-pub(super) fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
-    let mut all_sorted: Vec<u64> = entries
-        .visible_rows()
-        .iter()
-        .filter_map(|row| entries.visible_row_disk_usage(*row))
-        .collect();
-    all_sorted.sort_unstable();
-
-    let child_nodes: HashSet<usize> = entries
-        .visible_rows()
-        .iter()
-        .filter_map(child_row_node_index)
-        .collect();
-    let mut child_sorted = HashMap::new();
-    for node_index in child_nodes {
-        child_sorted.insert(node_index, all_sorted.clone());
-    }
-
-    (all_sorted, child_sorted)
-}
-
-const fn child_row_node_index(row: &VisibleRow) -> Option<usize> {
-    match row {
-        VisibleRow::Root { .. } | VisibleRow::GroupHeader { .. } => None,
-        VisibleRow::Member { node_index, .. }
-        | VisibleRow::MemberVendored { node_index, .. }
-        | VisibleRow::Vendored { node_index, .. }
-        | VisibleRow::WorktreeEntry { node_index, .. }
-        | VisibleRow::WorktreeGroupHeader { node_index, .. }
-        | VisibleRow::WorktreeMember { node_index, .. }
-        | VisibleRow::WorktreeMemberVendored { node_index, .. }
-        | VisibleRow::WorktreeVendored { node_index, .. }
-        | VisibleRow::Submodule { node_index, .. } => Some(*node_index),
-    }
+pub(super) fn compute_disk_cache(key: &DiskCacheKey) -> Vec<u64> {
+    let mut sorted = key.visible_bytes.clone();
+    sorted.sort_unstable();
+    sorted
 }

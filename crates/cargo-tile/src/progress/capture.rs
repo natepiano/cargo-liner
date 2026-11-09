@@ -558,7 +558,6 @@ mod tests {
     use crate::census::scan::CensusSequence;
     use crate::census::scan::ProcessObservation;
     use crate::census::scan::ProcessObservations;
-    use crate::constants::CAPTURE_INVENTORY_LIMIT;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::CAPTURE_REGISTRATION_BYTES;
     use crate::constants::CAPTURE_SWEEP_LIMIT;
@@ -2142,16 +2141,11 @@ mod tests {
     fn incomplete_registration_inventory_sweeps_any_sampled_proven_pair() {
         let root = capture_root();
         let pair = publish(root.path(), 10, "one", "100", "");
-        for index in 0..CAPTURE_INVENTORY_LIMIT {
-            fs::write(
-                root.path()
-                    .join(CAPTURE_LIVE_RUNS_DIR)
-                    .join(format!("unrelated-{index}")),
-                "",
-            )
-            .unwrap();
-        }
-        let scan = RootScan::open(root.path(), &mut RootHistory::default()).unwrap();
+        let scan = crate::root_scan::tests::incomplete_registration_scan(
+            root.path(),
+            &mut RootHistory::default(),
+        )
+        .unwrap();
         assert!(matches!(
             scan.registration_outcome(),
             Enumeration::Incomplete

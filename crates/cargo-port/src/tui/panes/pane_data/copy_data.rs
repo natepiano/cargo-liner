@@ -7,6 +7,7 @@ use super::CopySelectionResult;
 use super::DetailField;
 use super::GitCheckout;
 use super::GitData;
+use super::GitReadHealth;
 use super::GitRow;
 use super::GitStatus;
 use super::LintsData;
@@ -108,7 +109,7 @@ pub fn copy_payload_for_git(data: &GitData, pos: usize) -> CopySelectionResult {
 }
 
 fn git_field_copy_value(data: &GitData, field: DetailField) -> String {
-    if data.failed_reads.field_failed(field) {
+    if data.failed_reads.field_health(field) == GitReadHealth::Unreadable {
         return field.git_value(data);
     }
     match field {
@@ -210,19 +211,24 @@ mod tests {
     use crate::project::AheadBehind;
     use crate::project::CommitDate;
     use crate::project::Comparison;
+    use crate::project::DiskMeasurement;
     use crate::project::FirstCommit;
     use crate::project::ProjectType;
     use crate::project::ResolvedBranch;
+    use crate::tui::panes::DescriptionState;
     use crate::tui::panes::GitProbe;
+    use crate::tui::panes::GithubStars;
     use crate::tui::panes::PackageVersion;
     use crate::tui::panes::pane_data;
     use crate::tui::panes::pane_data::CiEmptyState;
     use crate::tui::panes::pane_data::LintsProjectKind;
+    use crate::tui::panes::pane_data::PackageDeletion;
     use crate::tui::panes::pane_data::PackagePresence;
     use crate::tui::panes::pane_data::PullRequestPolling;
     use crate::tui::panes::pane_data::PullRequestRow;
     use crate::tui::panes::pane_data::PullRequestSection;
     use crate::tui::panes::pane_data::PullRequestSectionState;
+    use crate::tui::panes::pane_data::QuotaObservation;
     use crate::tui::panes::pane_data::RemoteRow;
     use crate::tui::panes::pane_data::RunTargetKind;
     use crate::tui::panes::pane_data::TargetEntry;
@@ -236,6 +242,7 @@ mod tests {
 
     fn package_data(is_rust_project: bool) -> PackageData {
         PackageData {
+            deletion:                 PackageDeletion::Present,
             title:                    if is_rust_project {
                 "Package".to_string()
             } else {
@@ -246,10 +253,10 @@ mod tests {
             primary_section:          None,
             path:                     "~/demo".to_string(),
             version:                  PackageVersion::Manifest("0.1.0".to_string()),
-            description:              None,
+            description:              DescriptionState::KnownEmpty,
             crates_io_rows:           Vec::new(),
             types:                    Some(vec![ProjectType::Library]),
-            disk:                     Some(38_989_922_304),
+            disk:                     DiskMeasurement::TotalOnly(38_989_922_304),
             stats_rows:               Vec::new(),
             test_rows:                Vec::new(),
             package_presence:         PackagePresence::Present,
@@ -257,8 +264,6 @@ mod tests {
             license:                  None,
             homepage:                 None,
             repository:               None,
-            in_project_target:        None,
-            in_project_non_target:    None,
             out_of_tree_target_bytes: None,
             lint_display:             LintDisplay::default(),
             ci_display:               CiDisplay::default(),
@@ -274,13 +279,13 @@ mod tests {
             status:             None,
             vs_local:           GitProbe::Probed(Comparison::NotCompared),
             local_main_branch:  GitProbe::Probed(ResolvedBranch::NotFound),
-            stars:              None,
-            description:        None,
+            stars:              GithubStars::NotGithub,
+            description:        DescriptionState::KnownEmpty,
             inception:          FirstCommit::AwaitingProbe,
             last_commit:        GitProbe::Probed(CommitDate::NoCommits),
             last_fetched:       None,
-            rate_limit_core:    None,
-            rate_limit_graphql: None,
+            rate_limit_core:    QuotaObservation::Unobserved,
+            rate_limit_graphql: QuotaObservation::Unobserved,
             github_status:      AvailabilityStatus::Reachable,
             pull_requests:      PullRequestSection::default(),
             remotes:            super::super::git_data::RemoteRows::default(),
@@ -464,6 +469,7 @@ mod tests {
                 run_target_kind:   RunTargetKind::Binary,
                 source:            TargetSource::workspace_root("demo".into()),
                 project_path:      AbsolutePath::from("/ws"),
+                package_path:      AbsolutePath::from("/ws"),
                 package_name:      "demo".to_string(),
                 src_path:          AbsolutePath::from("/ws/src/main.rs"),
                 required_features: Vec::new(),
@@ -474,6 +480,7 @@ mod tests {
                 run_target_kind:   RunTargetKind::Example,
                 source:            TargetSource::workspace_root("demo".into()),
                 project_path:      AbsolutePath::from("/ws"),
+                package_path:      AbsolutePath::from("/ws"),
                 package_name:      "demo".to_string(),
                 src_path:          AbsolutePath::from("/ws/examples/demo_example.rs"),
                 required_features: Vec::new(),

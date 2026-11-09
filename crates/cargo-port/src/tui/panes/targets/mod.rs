@@ -2,10 +2,19 @@
 //!
 //! Each target occupies one row in the table, which fills the pane body.
 
+#[cfg(test)]
+mod availability_tests;
 mod constants;
 mod data;
 mod pane;
+#[cfg(test)]
+mod readability_tests;
 mod render;
+
+#[cfg(test)]
+mod width_tests;
+#[cfg(test)]
+mod worktree_source_tests;
 
 pub use data::BuildMode;
 pub use data::RunTargetKind;
@@ -15,5 +24,7 @@ pub use data::TargetSource;
 pub use data::TargetsData;
 pub use data::build_target_list_from_data;
 pub use data::lookup_targets_data;
+pub use pane::TargetAvailability;
 pub use pane::TargetsPane;
+pub(super) use render::minimum_width;
 use render::render_targets_pane_body;

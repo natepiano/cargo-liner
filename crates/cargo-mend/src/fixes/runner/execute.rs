@@ -48,7 +48,7 @@ impl MendRunner<'_> {
             OperationIntent::ReadOnly => Ok(ExecutionOutcome {
                 compiler_warning_facts: planned.report.facts.compiler_warning_facts,
                 report: planned.report,
-                notice: None,
+                notice: planned.function_plan.notice(),
                 check_duration,
                 compiler_warnings,
                 compiler_fixable,
@@ -57,21 +57,17 @@ impl MendRunner<'_> {
                 pass_edits: PassEdits::Unchanged,
             }),
             OperationIntent::DryRun => {
-                // Count `previewed` from `Self::combined_fixes`, not the scans: a dry run must
-                // preview the edits an apply would write, and combining is
-                // where conflicting groups are dropped and duplicates collapse.
-                let fix_scans = planned.fix_scans();
-                let previewed = Self::combined_fixes(
-                    fix_scans,
-                    &planned.sources,
-                    &self.selection.package_roots,
-                )?;
+                // Preview the accepted function plan so dry runs count the edits an apply writes.
+                // The plan excludes conflicting groups and duplicate edits.
+                let fix_scans = planned.function_plan.accepted_scans(planned.fix_scans());
+                let previewed = &planned.function_plan.fixes;
                 let execution_notice = Self::build_fix_notice(
                     planned.operation_mode.intent,
                     Some(&planned.report),
                     fix_scans,
                     previewed.counts(),
                 );
+                let execution_notice = planned.function_plan.merge_notice(execution_notice);
                 Ok(ExecutionOutcome {
                     compiler_warning_facts: planned.report.facts.compiler_warning_facts,
                     report: planned.report,
@@ -92,16 +88,24 @@ impl MendRunner<'_> {
         &self,
         build_output_mode: BuildOutputMode,
     ) -> Result<CheckedSelection, MendFailure> {
-        let mut selection_result = compiler::run_selection(
+        let result = compiler::run_selection(
             self.selection,
             self.cargo_plan,
             self.loaded_config,
             build_output_mode,
             self.color_mode,
             self.toolchain_probes,
+            &self.wrapper,
         )?;
-        // Create `ParsedSources` after `compiler::run_selection` because `cargo fix`
-        // may rewrite files during that check.
+        self.scan_checked_sources(result)
+    }
+
+    /// A restored proposal has the same compiler facts as the preceding checked tree.
+    pub(super) fn scan_checked_sources(
+        &self,
+        mut result: SelectionResult,
+    ) -> Result<CheckedSelection, MendFailure> {
+        // Read syntax from the checked tree, including a restored proposal.
         let sources = ParsedSources::for_selection(self.selection);
         let diagnostics_config = &self.loaded_config.diagnostics_config;
         let enabled = |codes: &[DiagnosticCode]| {
@@ -147,7 +151,7 @@ impl MendRunner<'_> {
                 DiagnosticStatus::Disabled => None,
             },
         };
-        let report = &mut selection_result.report;
+        let report = &mut result.report;
         let scan_findings = [
             syntax_scans
                 .prefer_module_import
@@ -177,7 +181,7 @@ impl MendRunner<'_> {
         });
         report.refresh_summary();
         Ok(CheckedSelection {
-            result: selection_result,
+            result,
             scans: syntax_scans,
             sources,
         })
