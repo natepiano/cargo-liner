@@ -1968,7 +1968,7 @@ From phase 38's live check (routed at repair round 4; phase 38 landed because it
 - At merge, the showrunner installs cargo-tile on both machines.
 - Change-review line: none (no visible change), or the faster cargo call if a test can show it.
 
-### Phase 56 — A checkpoint release frees only its own phase's reservation  · status: todo
+### Phase 56 — A checkpoint release frees only its own phase's reservation  · status: done
 
 **Depends on:** none. Phases 31 and 43i join the tile worktree only after this phase merges and berth is installed.
 
