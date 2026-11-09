@@ -4,6 +4,7 @@ use super::ANCESTRY_GAP_HEIGHT;
 use super::AncestryRowUse;
 use super::AncestrySource;
 use super::Arc;
+use super::ArgumentDetail;
 use super::CellTableGap;
 use super::CellTableLayout;
 use super::Color;
@@ -37,6 +38,7 @@ use super::Style;
 use super::SummaryFoot;
 use super::SummaryMemoryTotal;
 use super::TABLE_HEADER_HEIGHT;
+use super::TableKind;
 use super::TableRowEnd;
 use super::TableSeparators;
 use super::TableStateColumn;
@@ -764,6 +766,10 @@ impl PreparedCellRows {
                 let ancestry = ancestry.at(height, *table_demand);
                 let table = tables.at(ancestry.drawn, height.saturating_sub(ancestry.drawn));
                 let mut rows = GroupRowUse::with_ancestry(&ancestry, table.drawn);
+                rows.kept = rows
+                    .kept
+                    .saturating_sub(table.drawn.saturating_sub(table.kept));
+                rows.separator_rows_yielded = table.separator_rows_yielded;
                 rows.drawn = rows.drawn.saturating_add(heading).saturating_add(reading);
                 rows.kept = rows.kept.saturating_add(heading).saturating_add(reading);
                 rows
@@ -842,10 +848,12 @@ enum TableHeightUse {
     },
 }
 
-/// Height prefixes share the group's heading placement with painting.
+/// `DirectoryRowHeights` retains heading placement and command row prefixes for height measurement.
 struct DirectoryRowHeights {
-    heading: DirectoryHeading,
-    rows:    Vec<u16>,
+    heading:   DirectoryHeading,
+    rows:      Vec<u16>,
+    arguments: ArgumentDetail,
+    kind:      TableKind,
 }
 
 impl TableHeightUse {
@@ -879,8 +887,10 @@ impl TableHeightUse {
                     prefix.push(used);
                 }
                 DirectoryRowHeights {
-                    heading: group.heading,
-                    rows:    prefix,
+                    heading:   group.heading,
+                    rows:      prefix,
+                    arguments: layout.view.arguments,
+                    kind:      layout.kind,
                 }
             })
             .collect();
@@ -949,83 +959,84 @@ impl TableHeightUse {
                 body_rows,
                 gap_rows,
                 ..
-            } => {
-                let header = height.min(TABLE_HEADER_HEIGHT);
-                let available = height.saturating_sub(header);
-                let total = *body_rows;
-                let gaps = *gap_rows;
-                let retained =
-                    if separation == DirectorySeparation::YieldEarliest && total <= available {
-                        usize::from(available.saturating_sub(total) / GROUP_GAP_HEIGHT)
-                            .min(groups.len().saturating_sub(1))
-                    } else if total.saturating_add(gaps) <= available {
-                        groups.len().saturating_sub(1)
-                    } else {
-                        0
-                    };
-                let mut separators = TableSeparators {
-                    first:  groups.len().saturating_sub(retained),
-                    groups: groups.len(),
-                };
-                let mut remaining = available;
-                let mut visible = 0_usize;
-                for (index, group) in groups.iter().enumerate() {
-                    let gap = if separators.before(index) {
-                        GROUP_GAP_HEIGHT
-                    } else {
-                        0
-                    };
-                    if remaining < gap.saturating_add(group.heading.rows()).saturating_add(1) {
-                        break;
-                    }
-                    visible += 1;
-                    remaining = remaining
-                        .saturating_sub(gap)
-                        .saturating_sub(group.heading.rows())
-                        .saturating_sub(*group.rows.last().unwrap_or(&0));
-                }
-                if visible < groups.len() && visible > 1 {
-                    let spare =
-                        usize::from(remaining / GROUP_GAP_HEIGHT).min(visible.saturating_sub(1));
-                    separators = TableSeparators {
-                        first:  visible.saturating_sub(spare),
-                        groups: visible,
-                    };
-                    remaining = remaining.saturating_sub(
-                        u16::try_from(spare)
-                            .unwrap_or(u16::MAX)
-                            .saturating_mul(GROUP_GAP_HEIGHT),
-                    );
-                }
-                let drawn = if visible == 0 {
-                    header
-                } else {
-                    header.saturating_add(available.saturating_sub(remaining))
-                };
-                let separator_rows = if separation == DirectorySeparation::YieldEarliest {
-                    u16::try_from(
-                        (0..visible)
-                            .filter(|&index| separators.before(index))
-                            .count(),
-                    )
-                    .unwrap_or(u16::MAX)
-                    .saturating_mul(GROUP_GAP_HEIGHT)
-                } else {
-                    0
-                };
-                GroupRowUse {
-                    drawn,
-                    kept: drawn.saturating_sub(separator_rows),
-                    separator_rows_yielded: if separation == DirectorySeparation::YieldEarliest {
-                        u16::try_from(separators.first.saturating_sub(1))
-                            .unwrap_or(u16::MAX)
-                            .saturating_mul(GROUP_GAP_HEIGHT)
-                    } else {
-                        0
-                    },
-                }
-            },
+            } => measured_table_row_use(groups, *body_rows, *gap_rows, height, separation),
         }
+    }
+}
+
+/// `measured_table_row_use` applies the same `CommandRowBudget` as `reserve_command_rows`.
+fn measured_table_row_use(
+    groups: &[DirectoryRowHeights],
+    body_rows: u16,
+    gap_rows: u16,
+    height: u16,
+    separation: DirectorySeparation,
+) -> GroupRowUse {
+    let header = height.min(TABLE_HEADER_HEIGHT);
+    let available = height.saturating_sub(header);
+    let total = body_rows;
+    let gaps = gap_rows;
+    let retained_gaps = if total.saturating_add(gaps) <= available {
+        gaps
+    } else {
+        0
+    };
+    if groups.iter().all(|group| {
+        group.arguments == ArgumentDetail::Default
+            && group
+                .rows
+                .windows(2)
+                .all(|pair| pair[1].saturating_sub(pair[0]) <= 1)
+    }) {
+        return single_line_table_use(groups, height, retained_gaps, separation);
+    }
+    let processes = groups
+        .iter()
+        .map(|group| group.rows.len().saturating_sub(1))
+        .sum();
+    let headings = groups
+        .iter()
+        .map(|group| usize::from(group.heading.rows()))
+        .sum();
+    let mut budget =
+        CommandRowBudget::new(available.saturating_sub(retained_gaps), processes, headings);
+    let mut hidden = 0;
+    let mut shown = 0;
+    for group in groups {
+        if !budget.heading(group.heading.rows()) {
+            hidden += group.rows.len().saturating_sub(1);
+            continue;
+        }
+        for pair in group.rows.windows(2) {
+            if budget.row(pair[1].saturating_sub(pair[0])) == 0 {
+                hidden += 1;
+            } else {
+                shown += 1;
+            }
+        }
+    }
+    let drawn = if shown == 0 {
+        header
+    } else if hidden > 0 {
+        height
+    } else {
+        header.saturating_add(available.saturating_sub(budget.remaining))
+    };
+    let lendable = if separation == DirectorySeparation::YieldEarliest {
+        retained_gaps
+    } else {
+        0
+    };
+    GroupRowUse {
+        drawn,
+        kept: drawn
+            .saturating_sub(lendable)
+            .saturating_sub(if hidden > 0 { budget.remaining } else { 0 }),
+        separator_rows_yielded: if separation == DirectorySeparation::YieldEarliest {
+            gaps.saturating_sub(retained_gaps)
+        } else {
+            0
+        },
     }
 }
 
@@ -1163,4 +1174,162 @@ impl PreparedTableRows {
     const fn demand(&self) -> usize { self.demand }
 
     fn at(&self, height: u16) -> GroupRowUse { self.rows.at(height, self.separation) }
+}
+
+/// `ProcessRowVisibility` records whether the table height can contain every process.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ProcessRowVisibility {
+    AllFit,
+    SomeHidden,
+}
+
+/// `CommandRowBudget` shares process and argument reservations between measurement and painting.
+struct CommandRowBudget {
+    remaining:  u16,
+    extra:      u16,
+    visibility: ProcessRowVisibility,
+}
+
+impl CommandRowBudget {
+    fn new(height: u16, processes: usize, headings: usize) -> Self {
+        let minimum = processes.saturating_add(headings);
+        let visibility = if minimum > usize::from(height) {
+            ProcessRowVisibility::SomeHidden
+        } else {
+            ProcessRowVisibility::AllFit
+        };
+        Self {
+            remaining: height.saturating_sub(u16::from(
+                visibility == ProcessRowVisibility::SomeHidden
+                    && usize::from(height) > usize::from(headings > 0).saturating_add(1),
+            )),
+            extra: height.saturating_sub(u16::try_from(minimum).unwrap_or(u16::MAX)),
+            visibility,
+        }
+    }
+
+    const fn heading(&mut self, height: u16) -> bool {
+        if self.remaining <= height {
+            return false;
+        }
+        self.remaining = self.remaining.saturating_sub(height);
+        true
+    }
+
+    fn row(&mut self, wanted: u16) -> u16 {
+        let continuation = self.extra.min(wanted.saturating_sub(1));
+        let budget = if self.visibility == ProcessRowVisibility::SomeHidden {
+            self.remaining.min(1)
+        } else {
+            1 + continuation
+        };
+        self.extra = self.extra.saturating_sub(continuation);
+        self.remaining = self.remaining.saturating_sub(budget);
+        budget
+    }
+}
+
+/// `reserve_command_rows` applies `CommandRowBudget` before the painting path selects visible rows.
+pub(super) fn reserve_command_rows(
+    groups: &mut [Vec<super::LaidOutProcessRow<'_>>],
+    directories: &[PathGroup<'_>],
+    height: u16,
+) -> usize {
+    if groups
+        .iter()
+        .flatten()
+        .all(|row| row.lines <= 1 && row.view.arguments == ArgumentDetail::Default)
+    {
+        return 0;
+    }
+    let process_count = groups.iter().map(Vec::len).sum();
+    let headings = directories
+        .iter()
+        .map(|group| usize::from(group.heading.rows()))
+        .sum();
+    let mut budget = CommandRowBudget::new(height, process_count, headings);
+    let mut hidden = 0;
+    for (rows, directory) in groups.iter_mut().zip(directories) {
+        if !budget.heading(directory.heading.rows()) {
+            hidden += rows.len();
+            continue;
+        }
+        for row in rows.iter_mut() {
+            let kept = budget.row(row.lines);
+            if kept == 0 {
+                hidden += 1;
+            }
+            if kept > 0 && kept < row.lines {
+                let cut = row.cut_command_continuation(usize::from(kept));
+                let mut lines = row.cells[super::COMMAND_COLUMN].lines
+                    [..usize::from(kept.saturating_sub(1))]
+                    .to_vec();
+                lines.push(cut);
+                row.cells[super::COMMAND_COLUMN] = super::Text::from(lines);
+            }
+            row.lines = kept.max(1);
+        }
+    }
+    hidden
+}
+
+/// `single_line_table_use` preserves the default argument view's process capacity.
+fn single_line_table_use(
+    groups: &[DirectoryRowHeights],
+    height: u16,
+    gaps: u16,
+    separation: DirectorySeparation,
+) -> GroupRowUse {
+    let header = height.min(TABLE_HEADER_HEIGHT);
+    let available = height.saturating_sub(header);
+    let mut remaining = available;
+    let mut visible = 0;
+    for group in groups {
+        let gap = if visible > 0 && gaps > 0 {
+            GROUP_GAP_HEIGHT
+        } else {
+            0
+        };
+        if remaining < gap.saturating_add(group.heading.rows()).saturating_add(1) {
+            break;
+        }
+        visible += 1;
+        remaining = remaining
+            .saturating_sub(gap)
+            .saturating_sub(group.heading.rows())
+            .saturating_sub(*group.rows.last().unwrap_or(&0));
+    }
+    let separators = TableSeparators {
+        first:  if gaps > 0 { 1 } else { groups.len() },
+        groups: groups.len(),
+    }
+    .for_visible_groups(visible, &mut remaining);
+    let retained = separators.rows(visible);
+    let count = u16::from(
+        visible > 0
+            && visible < groups.len()
+            && remaining > 0
+            && groups
+                .first()
+                .is_some_and(|group| group.kind == TableKind::Summary),
+    );
+    remaining = remaining.saturating_sub(count);
+    let drawn = header.saturating_add(available.saturating_sub(remaining));
+    let lendable = if separation == DirectorySeparation::YieldEarliest {
+        retained
+    } else {
+        0
+    };
+    GroupRowUse {
+        drawn,
+        kept: drawn.saturating_sub(lendable).saturating_sub(count),
+        separator_rows_yielded: if separation == DirectorySeparation::YieldEarliest {
+            u16::try_from(groups.len().saturating_sub(1))
+                .unwrap_or(u16::MAX)
+                .saturating_mul(GROUP_GAP_HEIGHT)
+                .saturating_sub(retained)
+        } else {
+            0
+        },
+    }
 }

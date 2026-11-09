@@ -71,6 +71,8 @@ mod grid_view;
 pub(crate) use grid_view::CellViewport;
 pub(crate) use grid_view::GridView;
 
+use crate::app_global_action;
+
 /// The attract screen, writing its lines and timings to the frame log.
 #[cfg(feature = "attract")]
 pub(crate) type Attract = tui_pane::Attract<FrameLog>;
@@ -269,7 +271,7 @@ impl App {
         let mut tiles = TileGrid::new();
         tiles.set_min_tile_height(MIN_CELL_HEIGHT);
         tiles.set_min_tile_width(MIN_CELL_WIDTH);
-        Ok(Self {
+        let mut app = Self {
             framework,
             keymap: Rc::new(keymap),
             loaded_config,
@@ -293,7 +295,9 @@ impl App {
             favorites_overlay: FavoritesOverlay::default(),
             tree: ProcessHierarchy::default(),
             arguments: ArgumentDetail::default(),
-        })
+        };
+        app_global_action::refresh_toggle_hints(&mut app);
+        Ok(app)
     }
 
     #[cfg(test)]

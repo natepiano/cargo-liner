@@ -234,7 +234,10 @@ impl PreparedCommandCells {
             .by_invocation
             .entry((row.process.invocation_id.clone(), row.process.pid))
             .or_insert_with(|| UnchangedCommandInputs::new(row, view));
-        if source.source.process.command != row.process.command || source.view != *view {
+        if source.source.process.command != row.process.command
+            || source.source.process.path != row.process.path
+            || source.view != *view
+        {
             *source = UnchangedCommandInputs::new(row, view);
         }
         source
@@ -242,6 +245,15 @@ impl PreparedCommandCells {
 
     pub(super) fn widths(&mut self, row: &TrackedRow, view: &CommandView) -> MeasuredCommandWidths {
         self.inputs(row, view).measured_widths()
+    }
+
+    /// Read the cached summary command with its complete directory label.
+    pub(super) fn for_summary_row(
+        &mut self,
+        row: &TrackedRow,
+        layout: &CellTableLayout,
+    ) -> Rc<Text<'static>> {
+        self.for_row(row, layout).text
     }
 
     pub(super) fn for_row(
@@ -300,9 +312,14 @@ impl UnchangedCommandInk {
             return wrapped.prepared.clone();
         }
         let form = CommandForm::for_width(layout.kind, selected, width);
+        let command = wrap_command_cell(row, layout, width, form);
+        let text = match layout.kind {
+            TableKind::Command => command,
+            TableKind::Summary => super::summary_command_cell(row, layout, width, command),
+        };
         let prepared = PreparedCommandCell {
             form,
-            text: Rc::new(wrap_command_cell(row, layout, width, form)),
+            text: Rc::new(text),
         };
         self.wrapped.push(WrappedCommandCell {
             width,

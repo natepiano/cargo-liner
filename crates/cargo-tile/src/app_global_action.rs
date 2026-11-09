@@ -25,11 +25,15 @@
 use crossterm::event::KeyCode;
 use tui_pane::Bindings;
 use tui_pane::Globals;
+use tui_pane::HintToggleState;
 #[cfg(feature = "attract")]
 use tui_pane::KeyBind;
+use tui_pane::StatusLineGlobal;
 use tui_pane::TileAction;
 
 use crate::app::App;
+use crate::app::ArgumentDetail;
+use crate::app::ProcessHierarchy;
 use crate::constants::APP_GLOBALS_SECTION;
 
 // Expand optional actions before action_enum generates its action tables.
@@ -38,17 +42,17 @@ macro_rules! app_global_actions {
         tui_pane::action_enum! {
             #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
             pub(crate) enum AppGlobalAction {
-                AddTile    => ("add_tile",    "Add a tile");
-                RemoveTile => ("remove_tile", "Remove an empty tile");
-                FocusLeft  => ("focus_left",  "Focus the tile to the left");
-                FocusRight => ("focus_right", "Focus the tile to the right");
-                FocusUp    => ("focus_up",    "Focus the tile above");
-                FocusDown  => ("focus_down",  "Focus the tile below");
-                Expand     => ("expand", "Expand the focused cell");
-                Freeze     => ("freeze",      "Freeze the display");
+                AddTile    => ("add_tile", "add_tile", "Add a tile");
+                RemoveTile => ("remove_tile", "remove_tile", "Remove an empty tile");
+                FocusLeft  => ("focus_left", "focus_left", "Focus the tile to the left");
+                FocusRight => ("focus_right", "focus_right", "Focus the tile to the right");
+                FocusUp    => ("focus_up", "focus_up", "Focus the tile above");
+                FocusDown  => ("focus_down", "focus_down", "Focus the tile below");
+                Expand     => ("expand", "expand", "Expand the focused cell");
+                Freeze     => ("freeze", "freeze", "Freeze the display");
                 $($attract)*
-                ProcessTree => ("process_tree", "Show process hierarchy");
-                Arguments => ("arguments", "Show all arguments");
+                ProcessTree => ("process_tree", "processes", "Show process hierarchy");
+                Arguments => ("arguments", "arguments", "Show all arguments");
                 $($favorites)*
             }
         }
@@ -58,14 +62,14 @@ macro_rules! app_global_actions {
 #[cfg(feature = "attract")]
 app_global_actions! {
     (
-        Attract    => ("attract",     "Show the attract screen");
-        RandomizeAttract => ("randomize_attract", "Randomize the attract screen");
-        UndoAttractReplacement => ("undo_attract_replacement", "Undo attract replacement");
+        Attract    => ("attract", "attract", "Show the attract screen");
+        RandomizeAttract => ("randomize_attract", "randomize_attract", "Randomize the attract screen");
+        UndoAttractReplacement => ("undo_attract_replacement", "undo_attract_replacement", "Undo attract replacement");
     )
     (
-        SaveFavorite => ("save_favorite", "Save attract parameters");
-        OpenFavorites => ("open_favorites", "Open attract favorites");
-        RandomFavorite => ("random_favorite", "Show a random favorite");
+        SaveFavorite => ("save_favorite", "save_favorite", "Save attract parameters");
+        OpenFavorites => ("open_favorites", "open_favorites", "Open attract favorites");
+        RandomFavorite => ("random_favorite", "random_favorite", "Show a random favorite");
     )
 }
 
@@ -78,6 +82,19 @@ impl Globals<App> for AppGlobalAction {
     const SECTION_NAME: &'static str = APP_GLOBALS_SECTION;
 
     fn render_order() -> &'static [Self::Actions] { <Self as tui_pane::Action>::ALL }
+
+    fn toggle_hints(app: &App) -> Vec<StatusLineGlobal<Self::Actions>> {
+        vec![
+            tui_pane::StatusLineGlobal::app(Self::ProcessTree).with_toggle(match app.tree {
+                ProcessHierarchy::Hidden => HintToggleState::Off,
+                ProcessHierarchy::Shown => HintToggleState::On,
+            }),
+            tui_pane::StatusLineGlobal::app(Self::Arguments).with_toggle(match app.arguments {
+                ArgumentDetail::Default => HintToggleState::Off,
+                ArgumentDetail::All => HintToggleState::On,
+            }),
+        ]
+    }
 
     fn defaults() -> Bindings<Self::Actions> {
         let mut bindings = tui_pane::bindings! {
@@ -137,6 +154,17 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         #[cfg(feature = "attract")]
         AppGlobalAction::RandomFavorite => tui_pane::show_random_favorite(app),
     }
+    if matches!(
+        action,
+        AppGlobalAction::ProcessTree | AppGlobalAction::Arguments
+    ) {
+        refresh_toggle_hints(app);
+    }
+}
+
+pub(crate) fn refresh_toggle_hints(app: &mut App) {
+    let hints = <AppGlobalAction as Globals<App>>::toggle_hints(app);
+    app.framework.global_shortcuts_pane.set_toggle_hints(&hints);
 }
 
 #[cfg(test)]
