@@ -1359,24 +1359,25 @@ No new `#[allow]` or `#[expect]`; no test takes a second.
 Port of the session's CPU fix 1 (one retained System refreshed in place, Active/Idle pace, 2 s idle discovery, exec name refresh) onto main 655c7948 after the phase 28 ruling. Work order: the session's phases/32m/implementation_prompt.md.
 
 ### Phase 30m — Capture shim cost on main  · status: done
-**Depends on:** Phase 43g (both change `shim_registration/` and the install lifecycle tests).
+#### As-built
 
+- The capture shim (v4) starts no process apart from cargo and `tee` for each cargo call. `cargo-tile`'s native capture entry runs from `main.rs` before argument parsing and takes the boot receipt and the birth stamp (`birth_stamp::capture_boot`, `observe_process`, `BirthStamp::registration_fields`, crate-visible). On the Mac, the added cost of a captured `cargo build` is 23 ms (256 ms before), and of `cargo --version` 11 ms (36 ms before).
+- The stderr mirror is `sh -c 'printf r; exec tee'`, started by `ReadyCaptureMirror::start` in `hook.rs`. The workspace `signal-hook` dependency handles the entry's signals.
+- `census/scan.rs` has one predicate for a matched dispatch and one for the `CargoTransport::NativeCapture` check.
+- The install and reader tests share one native fixture (`shim_registration/native_fixture.rs`) and one prepared capture (`shared_capture.rs`). The native birth tests in `installed.rs` replace the shell conversion tests. The reader templates render the runner path and flags from `constants.rs`.
 
-Port of the approved capture shim cost work (one process per call apart from cargo and tee, boot receipt, shim v4) onto main. Work order: `/tmp/claude/delegate/03f9b80e-dbe5-47c6-b29e-a7e6587ab721/phases/30m/implementation_prompt.md`.
+**Files:**
+- `crates/cargo-tile/src/hook.rs`, `main.rs`, `cargo-capture-shim.sh`, `constants.rs` — the native entry, the mirror and the protocol words.
+- `crates/cargo-tile/src/birth_stamp/` — boot and birth reads for the entry.
+- `crates/cargo-tile/src/shim_registration/` — install, fixture and reader test support.
+- `crates/cargo-tile/src/census/scan.rs` — the two predicates.
+- `crates/cargo-tile/tests/cli_lifecycle.rs`, `tests/shim_modes.rs`; `Cargo.toml`, `Cargo.lock`, `crates/cargo-tile/Cargo.toml`, `CHANGELOG.md`.
 
-**Workers:** 1 writer — `impl`, all authorized capture, installation, census transport and regression-test files in the external work order.
+**Binds later work:** `InvocationOwners` (`roster/invocation_owners.rs`) stays the one invocation identity owner across transport changes. `InstalledShim::repeat_in_same_shell` keeps both live log observations, and the interrupt test keeps its second interrupt after `cargo-stopping` with the `cargo-finished` assertion.
 
-**Protocol words (Phase 44, director 2026-10-30):** the native capture entry and the shim script name the entry program and its `--capture-shim` / `--capture-shim-passthrough` flags only through the constants.rs items Phase 44 adds (no second copy); a test checks that the script uses the same words.
+**Gotchas:** the native entry and the shim script name the entry program and its `--capture-shim` / `--capture-shim-passthrough` flags only through `constants.rs`; a test checks that the script uses the same words. The mirror signals ready before `exec tee`, so a failed `tee` leaves cargo with an unread stderr pipe (the fallback phase owns this).
 
-**Phase 44 follow-ups (director, 2026-10-31):** in `census/scan.rs`, one predicate for `matches!(Self::dispatch(parent, child), DispatchedProcess::Matched { .. })` (three sites) and one for the `CargoTransport::NativeCapture` check (two sites); in `census/command_text.rs` `CargoTransport::from_argv`, the unused capture-parent position is `_`, not `_capture_parent` (style rule 23).
-
-**Forward edits from Phase 46 (director, 2026-11-07):**
-- The external prompt's tree (655c7948) and its worker names are obsolete. Dispatch from the current branch checkpoint with the current workers.
-- `InvocationOwners` (`roster/invocation_owners.rs:19`) stays the one invocation identity owner across transport changes. Add no second identity path.
-
-- The `_capture_parent` change belongs to Phase 43d. This phase does not make it.
-
-**Constraints from Phase 43g (director, 2026-11-08):** keep the reduced repeated-shell fixture work (`InstalledShim::repeat_in_same_shell`) with both live log observations, and the second interrupt after `cargo-stopping` with the `cargo-finished` assertion. Phase 43i runs beside this phase on the reader scenario timing. This phase integrates before Phase 43i: the two share no file, and 43i repair round 2 takes the `census/scan.rs` wait cut on top of this phase (director, 2026-11-08). **Scope (director, 2026-11-08):** this phase also edits `main.rs` (the capture entry call before argument parsing), `birth_stamp/mod.rs` and `birth_stamp/kernel_observation.rs` (crate-visible `capture_boot`, `observe_process`, `BirthStamp::registration_fields`), `Cargo.toml` and `Cargo.lock` (the workspace `signal-hook` dependency), `installed.rs` (the native birth tests replace the shell conversion tests; the six slow install tests from the 43g suites go under 1 s), and the reader templates in `reader_scenario_cases.py` and `reader_scenarios.rs` (render the runner path and flags from the constants). `tee` stays the mirror.
+**Ruled out:** a native mirror pump in this phase (`tee` stays the mirror).
 
 ### Phase 35m — Summary arguments on main  · status: done
 
@@ -1661,7 +1662,7 @@ Phase 43g used its 3 repair rounds on its findings F004 and F005 (two reader sce
 **Files:**
 - `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`, `reader_scenario_cases.py` and `fixture_events.py` — items 0 and 1.
 - `crates/cargo-tile/src/shim_registration/shared_capture.rs` — item 2.
-- `crates/cargo-tile/src/shim_registration/installed.rs` — item 1a's six install tests; `reader_opens_settings_when_resize_and_key_are_pending_together` is in `reader_scenarios.rs`. Phase 30m edits `shim_registration/` at the same time: claim a file it holds `--after` its reservation.
+- `crates/cargo-tile/src/shim_registration/installed.rs` — item 1a's six install tests; `reader_opens_settings_when_resize_and_key_are_pending_together` is in `reader_scenarios.rs`. Phase 30m landed at 354ba054 and released its reservation; it put the six `installed.rs` tests under 1 s. Repair round 2 starts from a copy that holds 354ba054, so the `census/scan.rs` wait cut sits on 30m's `scan.rs`.
 - `crates/cargo-tile/tests/cli_lifecycle.rs`, `crates/cargo-tile/tests/shim_modes.rs`, `crates/cargo-tile/src/app_global_action.rs` — items 3 and 4 (in `app_global_action.rs`, only its test module).
 - `crates/cargo-tile/src/main.rs` and `crates/cargo-tile/src/cli.rs` — item 5's measured cause. Other product files need director routing.
 
@@ -1764,7 +1765,7 @@ User (2026-10-29, via builds and the showrunner): "yes cargo-tile should strive 
 
 **Goal:** when the capture stderr mirror cannot run, cargo runs plain with its own arguments, streams and status.
 
-From phase 30m review 3 (routed at repair round 4). When `sh` runs but `tee` is missing or fails, the capture mirror signals ready before `exec tee` (hook.rs, `ReadyCaptureMirror::start`), so cargo starts with a stderr pipe nobody reads: cargo loses its stderr bytes and can get SIGPIPE. Main's shim has the same defect (`exec tee` in `run_captured`, cargo-capture-shim.sh), so phase 30m did not cause it.
+From phase 30m review 3 (routed at repair round 4). When `sh` runs but `tee` is missing or fails, the capture mirror signals ready before `exec tee` (hook.rs, `ReadyCaptureMirror::start`), so cargo starts with a stderr pipe nobody reads: cargo loses its stderr bytes and can get SIGPIPE. Main's shim had the same defect (`exec tee` in `run_captured`, cargo-capture-shim.sh), so phase 30m did not cause it. Since Phase 30m (354ba054) the shim script starts no mirror: the native capture entry starts `sh -c 'printf r; exec tee'` in `ReadyCaptureMirror::start` (`hook.rs`), and the defect is there.
 
 **Spec:** replace the shell/tee mirror with a native stderr pump made by a fallible constructor before cargo spawns. If the constructor fails: close what it opened, remove the capture publication, and exec the original cargo with its own arguments, streams and status. Keep helper diagnostics private until the capture commits. The guarantee is bounded: an exec acknowledgement followed by EOF is uncertain, and cargo never runs twice. (Astra review, phase 30m F001.)
 
@@ -1774,7 +1775,7 @@ From phase 30m review 3 (routed at repair round 4). When `sh` runs but `tee` is 
 
 **Files:**
 - `crates/cargo-tile/src/hook.rs`
-- `crates/cargo-tile/src/cargo-capture-shim.sh`
+- `crates/cargo-tile/src/cargo-capture-shim.sh` — only if the fallback needs a script change; the mirror is in `hook.rs` since Phase 30m.
 - `crates/cargo-tile/tests/shim_modes.rs`
 
 ### Phase 42 — A delayed cell decides its entry on the frame its text first shows  · status: done (merged c1efe2543)
