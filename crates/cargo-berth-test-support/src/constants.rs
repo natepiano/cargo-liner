@@ -6,3 +6,5 @@
 /// unset. A test suite started from a Claude Code session inherits it, so every
 /// process a test starts clears it; a test that needs it sets it on its own command.
 pub const CLAUDE_CODE_SESSION_ENVIRONMENT: &str = "CLAUDE_CODE_SESSION_ID";
+
+include!("../../cargo-berth/src/git/constants/child.rs");

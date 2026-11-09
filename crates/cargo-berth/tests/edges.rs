@@ -3,34 +3,88 @@
     reason = "tests should panic on unexpected values"
 )]
 
-//! Built-binary tests for ordering-edge replay, locked mutation, and limits.
+//! Behavior tests for edges.
 
-use cargo_berth_test_support::GitDriver;
-use cargo_berth_test_support::IntegrationRepository;
-use cargo_berth_test_support::OptionalLocks;
-use cargo_berth_test_support::RepositoryTemplate;
-use cargo_berth_test_support::assert_success;
-use cargo_berth_test_support::berth_command;
-use cargo_berth_test_support::claim_id;
-use cargo_berth_test_support::deferring_run_path;
-use cargo_berth_test_support::deferring_run_scope;
-use cargo_berth_test_support::json;
-use cargo_berth_test_support::reservation_row;
-use cargo_berth_test_support::write_file;
+#[path = "support/edges_fixtures.rs"]
+mod edges_fixtures;
+use edges_fixtures::BEFORE_RELEASED_PREDECESSOR_REF_RETIRES_ONLY_AFTER_EVERY_SUCCESSOR_IS_TERMINAL;
+use edges_fixtures::BEFORE_SAME_TARGET_EDGE_WAITS_FOR_PREDECESSOR_TO_REACH_INTEGRATION;
+use edges_fixtures::BEFORE_SEQUENCE_REJECTS_EACH_INVALID_IDENTITY_AND_CARRIES_ALERTS;
+use edges_fixtures::BEFORE_SUCCESSOR_HEAD_AND_CURRENT_TRUNK_BOTH_CONTROL_READINESS;
+use edges_fixtures::BERTH_EXECUTABLE;
+use edges_fixtures::CONFIGURATION_PATH;
+use edges_fixtures::CheckpointReadiness;
+use edges_fixtures::CheckpointReadinessHistory;
+use edges_fixtures::EdgeReadinessFixture;
+use edges_fixtures::FIFTH_RUN;
+use edges_fixtures::FIRST_RUN;
+use edges_fixtures::GIT;
+use edges_fixtures::HISTORY_READINESS_INCORPORATED;
+use edges_fixtures::HISTORY_READINESS_MISSING_OBJECT;
+use edges_fixtures::HISTORY_READINESS_NOT_INTEGRATED;
+use edges_fixtures::INITIALIZED_REPOSITORY;
+use edges_fixtures::IntegrationRepository;
+use edges_fixtures::JOURNAL_PATH;
+use edges_fixtures::Output;
+use edges_fixtures::Path;
+use edges_fixtures::PathBuf;
+use edges_fixtures::ReleasedPredecessorRefRetiresOnlyAfterEverySuccessorIsTerminalState;
+use edges_fixtures::SECOND_RUN;
+use edges_fixtures::SESSION_ENVIRONMENT;
+use edges_fixtures::SameTargetEdgeWaitsForPredecessorToReachIntegrationState;
+use edges_fixtures::SequenceRejectsEachInvalidIdentityAndCarriesAlertsState;
+use edges_fixtures::SuccessorHeadAndCurrentTrunkBothControlReadinessState;
+use edges_fixtures::THIRD_RUN;
+use edges_fixtures::TempDir;
+use edges_fixtures::assert_success;
+use edges_fixtures::berth_command;
+use edges_fixtures::claim;
+use edges_fixtures::claim_id;
+use edges_fixtures::defer_answer;
+use edges_fixtures::defer_claim;
+use edges_fixtures::deferred_pair;
+use edges_fixtures::dirty_source;
+use edges_fixtures::foreign_worktree;
+use edges_fixtures::fs;
+use edges_fixtures::git;
+use edges_fixtures::git_status;
+use edges_fixtures::git_stdout;
+use edges_fixtures::json_output;
+use edges_fixtures::reservation_id;
+use edges_fixtures::reservation_ref;
+use edges_fixtures::run_berth;
+use edges_fixtures::run_berth_with_session;
+use edges_fixtures::sequence;
+use edges_fixtures::tempdir;
+use edges_fixtures::waiting_action_for;
+use edges_fixtures::write_file;
+use edges_templates::INITIAL_INTEGRATION_PAIR;
 
 #[path = "support/edges_templates.rs"]
 mod edges_templates;
+
+#[path = "support/recorded_history.rs"]
+mod recorded_history;
+
+pub use cargo_berth_test_support::deferring_run_path;
+use cargo_berth_test_support::json;
+pub use cargo_berth_test_support::reservation_row;
+
 #[path = "support/linked_checkout.rs"]
 mod linked_checkout;
+
 #[path = "support/successor_templates.rs"]
 mod successor_templates;
+
+pub use std::os::unix::fs::PermissionsExt;
+pub use std::thread;
+
 pub use edges_templates::COVER_LANDING;
 pub use edges_templates::CROSS_TARGET_AFTER_PAIR;
 pub use edges_templates::CROSS_TARGET_PAIR;
 pub use edges_templates::DIFFERENT_SUCCESSOR;
 pub use edges_templates::EQUIVALENT_SUCCESSOR;
 pub use edges_templates::HISTORICAL_PROOF;
-pub use edges_templates::INITIAL_INTEGRATION_PAIR;
 pub use edges_templates::LEFT_RIGHT_TREES;
 pub use edges_templates::LEGACY_NEGATIVE_PROTECTED_GAP;
 pub use edges_templates::LEGACY_NEGATIVE_UNRELATED_GAP;
@@ -49,135 +103,42 @@ pub use edges_templates::legacy_negative_template;
 pub use edges_templates::retain_release;
 pub use edges_templates::successor_history_state;
 
-#[test]
-fn board_replays_a_recorded_template_without_its_projection() {
-    let repository = edges_templates::RECORDED_PROJECTION.instantiate();
-    let root = repository.path();
-    let projection = root.join(".git/cargo-berth/reservations.json");
-    assert!(!projection.exists());
-    let board = run_berth(root, &["board", "--json"]);
-    assert_success(&board);
-    assert_eq!(
-        cargo_berth_test_support::board_reservation_ids(&json(&board)).len(),
-        1
-    );
-    assert!(
-        projection.is_file(),
-        "board should rebuild the missing projection from the journal"
-    );
-}
-
-#[test]
-fn initialized_main_copies_keep_independent_owners_and_hook_contexts() {
-    let first = cargo_berth_test_support::fixture_tempdir("first-repository-");
-    let second = cargo_berth_test_support::fixture_tempdir("second-repository-");
-    IntegrationRepository::build_main_template(first.path(), BERTH_EXECUTABLE);
-    IntegrationRepository::build_main_template(second.path(), BERTH_EXECUTABLE);
-    assert_eq!(
-        GIT.stdout(first.path(), ["rev-parse", "HEAD"]),
-        GIT.stdout(second.path(), ["rev-parse", "HEAD"])
-    );
-    for identity in [
-        ".git/cargo-berth/repo-instance-id",
-        ".git/cargo-berth-worktree-id",
-    ] {
-        assert_ne!(
-            fs::read(first.path().join(identity)).expect("first identity should read"),
-            fs::read(second.path().join(identity)).expect("second identity should read")
-        );
-    }
-    for root in [first.path(), second.path()] {
-        let context = fs::read_to_string(root.join(".git/hooks/cargo-berth-hook-context"))
-            .expect("hook context should read");
-        let canonical = fs::canonicalize(root).expect("repository should canonicalize");
-        assert!(context.contains(canonical.to_str().expect("fixture path should be UTF-8")));
-    }
-    let claim = run_berth(
-        first.path(),
-        &["claim", "file:README.md", "--run", FIRST_RUN, "--json"],
-    );
-    assert_success(&claim);
-    let second_board = run_berth(second.path(), &["board", "--json"]);
-    assert_success(&second_board);
-    assert_eq!(
-        cargo_berth_test_support::board_reservation_ids(&json(&second_board)),
-        Vec::<String>::new()
-    );
-    fs::write(first.path().join("README.md"), "private work\n").expect("first source should write");
-    assert_eq!(
-        fs::read_to_string(second.path().join("README.md")).expect("second source should read"),
-        "initial\n"
-    );
-}
-
-/// The `cargo-berth` a managed hook must run, in place of any installed copy.
-const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
-
-/// How this file drives git: no optional locks, with nothing held back from a hook.
-const GIT: GitDriver = GitDriver {
-    executable:          BERTH_EXECUTABLE,
-    optional_locks:      OptionalLocks::Refused,
-    cleared_environment: &[],
-};
-
-/// The repository most tests here start from: a source and a test file committed on `main`,
-/// then `cargo-berth init`.
-const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
-    target_directory: env!("CARGO_TARGET_TMPDIR"),
-    executable:       BERTH_EXECUTABLE,
-    name:             "initialized",
-    build:            build_initialized_repository,
-};
-
-/// The source checkout with berth policy committed before linked lanes branch.
-const CONFIGURED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
-    name: "configured",
-    build: |root| {
-        build_initialized_repository(root);
-        commit_configuration(root);
-    },
-    ..INITIALIZED_REPOSITORY
-};
-
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
-use std::path::PathBuf;
-use std::process::Output;
-use std::thread;
-
-use tempfile::TempDir;
-use tempfile::tempdir;
-
-const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const ALERT_BRANCH_ENVIRONMENT: &str = "CARGO_BERTH_TEST_ALERT_BRANCH";
-const FIFTH_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
-const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+
 const FOURTH_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1e";
+
 const GIT_BINARY: &str = "git";
-const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
+
 const MARKER_PATH: &str = ".git/cargo-berth-run-id";
+
 const MARKER_PATH_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MARKER_PATH";
+
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
-const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
-const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
+
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
+
 const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
+
 const UNAVAILABLE_TARGET_ENVIRONMENT: &str = "CARGO_BERTH_TEST_UNAVAILABLE_TARGET";
+
 const STALE_MARKER_GIT_WRAPPER: &str = r#"#!/bin/sh
 if [ "$1" = "--no-optional-locks" ] && [ "$2" = "rev-parse" ] && [ "$3" = "$CARGO_BERTH_TEST_ALERT_BRANCH" ]; then
     printf '%s\n' "$CARGO_BERTH_TEST_STALE_RUN" > "$CARGO_BERTH_TEST_MARKER_PATH"
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
+
 const STALE_RUN_ENVIRONMENT: &str = "CARGO_BERTH_TEST_STALE_RUN";
-const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
+
 /// The traced prefix of the merge `git::unmerged_branch_paths` computes for a holder.
 const BRANCH_PATH_MERGE_QUERY: &str = "merge-tree --write-tree --name-only ";
+
 /// The traced prefix of the ancestry read that decides whether a holder's run ended.
 const RUN_ENDING_ANCESTRY_QUERY: &str = "merge-base --is-ancestor ";
+
 /// The traced prefix of its diff from trunk to that merge's result tree.
 const BRANCH_PATH_DIFF_QUERY: &str = "diff --name-only -z --no-renames ";
+
 const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
 
 if [ "$1" = "--no-optional-locks" ]; then
@@ -200,293 +161,6 @@ fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 
-#[test]
-fn integration_fixture_copies_keep_checkout_owners_and_ledger_state_private() {
-    let first = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
-    let second = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
-    for relative in [
-        ".git/cargo-berth/repo-instance-id",
-        ".git/cargo-berth-worktree-id",
-    ] {
-        assert_ne!(
-            fs::read_to_string(first.root().join(relative)).expect("first owner should read"),
-            fs::read_to_string(second.root().join(relative)).expect("second owner should read"),
-        );
-    }
-    let linked_owner = |checkout: &Path| {
-        fs::read_to_string(
-            linked_checkout::administrative_directory(checkout).join("cargo-berth-worktree-id"),
-        )
-        .expect("linked owner should read")
-    };
-    assert_ne!(
-        linked_owner(&first.integration),
-        linked_owner(&second.integration)
-    );
-    write_file(&first.integration, "integration.txt", "private change\n");
-    assert_eq!(
-        fs::read_to_string(second.integration.join("integration.txt"))
-            .expect("other copy should read"),
-        "integration\n",
-    );
-    write_file(&first.integration, "integration.txt", "integration\n");
-    let lane = first.main_lane("private-lane");
-    let claimed = first.claim(&lane, "file:private.txt", FIRST_RUN, Some("main"));
-    assert_success(&claimed);
-    let id = claim_id(&claimed);
-    assert_eq!(
-        cargo_berth_test_support::board_reservation_ids(&first.board()),
-        vec![id],
-    );
-    assert_eq!(
-        cargo_berth_test_support::board_reservation_ids(&second.board()),
-        Vec::<String>::new(),
-    );
-}
-
-#[test]
-fn same_target_edge_waits_for_predecessor_to_reach_integration() {
-    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
-    let predecessor = repo.lane("same-target-a", "integration");
-    let successor = repo.lane("same-target-b", "integration");
-    write_file(&predecessor, "shared.txt", "A\n");
-    let claimed = repo.claim(&predecessor, "file:shared.txt", FIRST_RUN, None);
-    assert_success(&claimed);
-    let predecessor_id = claim_id(&claimed);
-    let deferred = repo.defer_claim(&successor, "file:shared.txt", SECOND_RUN, &predecessor_id);
-    assert_success(&deferred);
-    let successor_id = claim_id(&deferred);
-    repo.commit_file(&predecessor, "shared.txt", "A\n", "A work");
-    assert_success(&repo.run(&predecessor, &["release", &predecessor_id, "--json"]));
-
-    let ordered = sequence(
-        repo.root(),
-        &predecessor_id,
-        &successor_id,
-        "A reaches I first",
-    );
-    assert_success(&ordered);
-    assert_eq!(
-        json_output(&ordered)["payload"]["data"]["readiness"],
-        serde_json::json!({
-            "state": "holding",
-            "hold": {"reason": "predecessor_not_on_trunk", "evidence": "not_integrated"}
-        })
-    );
-    let waiting = repo.board();
-    let row = waiting["payload"]["data"]["waiting"]["entries"]
-        .as_array()
-        .expect("waiting entries")
-        .iter()
-        .find(|row| row["successor"] == successor_id)
-        .expect("successor waiting row");
-    assert_eq!(
-        row["action"]["instruction"],
-        "wait for the predecessor to reach integration"
-    );
-    for root in [repo.root(), successor.as_path()] {
-        let configuration = root.join(CONFIGURATION_PATH);
-        let contents = fs::read_to_string(&configuration).expect("gate configuration reads");
-        assert!(contents.contains("gate_mode = \"observe\""));
-        fs::write(
-            configuration,
-            contents.replace("gate_mode = \"observe\"", "gate_mode = \"enforce\""),
-        )
-        .expect("gate configuration writes");
-    }
-    let denied = repo.run(&successor, &["integrate", &successor_id, "--json"]);
-    let denied_json = json(&denied);
-    assert_eq!(
-        denied_json["status"], "blocked_by_ordering",
-        "{denied_json}"
-    );
-    assert!(
-        denied_json["message"]
-            .as_str()
-            .expect("denial message")
-            .contains(&format!(
-                "integrate reservation {predecessor_id} into integration"
-            ))
-    );
-
-    repo.merge_by_commit("same-target-a");
-    let board = repo.board();
-    assert_eq!(
-        waiting_action_for(&board, &successor_id),
-        "successor_must_incorporate_predecessor"
-    );
-    let row = board["payload"]["data"]["waiting"]["entries"]
-        .as_array()
-        .expect("waiting entries")
-        .iter()
-        .find(|row| row["successor"] == successor_id)
-        .expect("successor waiting row");
-    assert!(
-        row["action"]["instruction"]
-            .as_str()
-            .expect("instruction")
-            .contains("current integration")
-    );
-    assert_ne!(
-        repo.git_stdout(repo.root(), &["rev-parse", "main"]),
-        repo.git_stdout(repo.root(), &["rev-parse", "integration"])
-    );
-    repo.git(&successor, &["merge", "--no-edit", "integration"]);
-    let board = repo.board();
-    assert!(settled_edge_for(&board, &successor_id), "{board}");
-}
-
-#[test]
-fn active_cross_target_predecessor_released_during_sequence_has_trunk_evidence() {
-    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
-    let predecessor = repo.lane("active-cross-a", "integration");
-    let successor = repo.main_lane("active-cross-x");
-    write_file(&predecessor, "shared.txt", "A\n");
-    let predecessor_id = claim_id(&repo.claim(&predecessor, "file:shared.txt", FIRST_RUN, None));
-    let successor_id =
-        claim_id(&repo.defer_claim(&successor, "file:shared.txt", SECOND_RUN, &predecessor_id));
-    repo.commit_file(&predecessor, "shared.txt", "A\n", "A work");
-    repo.merge_by_commit("active-cross-a");
-
-    let ordered = sequence(repo.root(), &predecessor_id, &successor_id, "A before X");
-    assert_success(&ordered);
-    assert_eq!(
-        json_output(&ordered)["payload"]["data"]["readiness"],
-        serde_json::json!({"state": "holding", "hold": {"reason": "predecessor_not_on_trunk", "evidence": "not_integrated"}})
-    );
-}
-
-#[test]
-fn cross_target_edge_keeps_earlier_landed_proof_after_target_revalidation() {
-    let cargo_berth_test_support::CrossTargetPair {
-        repository: repo,
-        predecessor_id,
-        successor_id,
-    } = IntegrationRepository::cross_target_pair(edges_templates::CROSS_TARGET_PAIR);
-    repo.git_without_hooks(&repo.integration, &["merge", "--squash", "cross-a"]);
-    repo.git_without_hooks(
-        &repo.integration,
-        &["commit", "--quiet", "-m", "first landing"],
-    );
-    let first_landing = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
-    let first_board = repo.board();
-    assert_eq!(
-        reservation_row(&first_board, &predecessor_id)["integration_evidence"]["status"]["trunk_oid"],
-        first_landing
-    );
-    repo.git_without_hooks(repo.root(), &["merge", "--ff-only", "integration"]);
-
-    write_file(&repo.integration, "later.txt", "later\n");
-    repo.git_without_hooks(&repo.integration, &["add", "later.txt"]);
-    repo.git_without_hooks(
-        &repo.integration,
-        &["commit", "--quiet", "-m", "later target commit"],
-    );
-    let later_landing = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
-    assert_ne!(first_landing, later_landing);
-    let revalidated = repo.board();
-    assert_eq!(
-        reservation_row(&revalidated, &predecessor_id)["integration_evidence"]["status"]["trunk_oid"],
-        later_landing,
-        "revalidation must carry the earlier proof onto the later target tip"
-    );
-
-    let ordered = sequence(
-        repo.root(),
-        &predecessor_id,
-        &successor_id,
-        "landed A before X",
-    );
-    assert_success(&ordered);
-    assert_eq!(
-        json_output(&ordered)["payload"]["data"]["readiness"],
-        serde_json::json!({"state": "holding", "hold": {"reason": "awaiting_successor_incorporation"}})
-    );
-}
-
-#[test]
-fn cross_target_edge_waits_for_integration_to_land_on_main_then_successor() {
-    let cargo_berth_test_support::CrossTargetPair {
-        repository: repo,
-        predecessor_id,
-        successor_id,
-    } = IntegrationRepository::cross_target_pair(edges_templates::CROSS_TARGET_PAIR);
-    let successor = repo.recorded_lane("cross-x");
-    repo.git_without_hooks(
-        &repo.integration,
-        &["merge", "--no-ff", "--no-edit", "cross-a"],
-    );
-
-    let ordered = sequence(
-        repo.root(),
-        &predecessor_id,
-        &successor_id,
-        "A lands before X",
-    );
-    assert_success(&ordered);
-    assert_eq!(
-        json_output(&ordered)["payload"]["data"]["readiness"],
-        serde_json::json!({
-            "state": "holding",
-            "hold": {"reason": "predecessor_not_on_trunk", "evidence": "not_integrated"}
-        }),
-        "the board wire name stays stable while I already contains A"
-    );
-    let board = repo.board();
-    assert_eq!(
-        waiting_action_for(&board, &successor_id),
-        "predecessor_not_integrated"
-    );
-
-    repo.git_without_hooks(repo.root(), &["merge", "--ff-only", "integration"]);
-    let board = repo.board();
-    assert_eq!(
-        waiting_action_for(&board, &successor_id),
-        "successor_must_incorporate_predecessor"
-    );
-    repo.git_without_hooks(&successor, &["merge", "--no-edit", "main"]);
-    let board = repo.board();
-    assert!(settled_edge_for(&board, &successor_id), "{board}");
-}
-
-#[test]
-fn cross_target_edge_is_fulfilled_when_successor_merges_outstanding_predecessor() {
-    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
-    let predecessor = repo.lane("early-a", "integration");
-    let successor = repo.main_lane("early-x");
-    write_file(&predecessor, "shared.txt", "A\n");
-    let claimed = repo.claim(&predecessor, "file:shared.txt", FIRST_RUN, None);
-    assert_success(&claimed);
-    let predecessor_id = claim_id(&claimed);
-    let deferred = repo.defer_claim(&successor, "file:shared.txt", SECOND_RUN, &predecessor_id);
-    assert_success(&deferred);
-    let successor_id = claim_id(&deferred);
-    repo.commit_file(&predecessor, "shared.txt", "A\n", "A work");
-    assert_success(&repo.run(&predecessor, &["release", &predecessor_id, "--json"]));
-    repo.git(&successor, &["merge", "--no-edit", "early-a"]);
-    let ordered = sequence(repo.root(), &predecessor_id, &successor_id, "X contains A");
-    assert_success(&ordered);
-    assert_eq!(
-        json_output(&ordered)["payload"]["data"]["readiness"],
-        serde_json::json!({"state": "fulfilled"})
-    );
-    assert_eq!(
-        repo.git_stdout(repo.root(), &["rev-parse", "main"]),
-        repo.git_stdout(&repo.integration, &["merge-base", "main", "integration"])
-    );
-}
-
-fn waiting_action_for<'board>(board: &'board serde_json::Value, successor_id: &str) -> &'board str {
-    board["payload"]["data"]["waiting"]["entries"]
-        .as_array()
-        .expect("waiting entries")
-        .iter()
-        .find(|row| row["successor"] == successor_id)
-        .expect("successor has a waiting edge")["action"]["reason"]
-        .as_str()
-        .expect("waiting action reason")
-}
-
 fn settled_edge_for(board: &serde_json::Value, successor_id: &str) -> bool {
     board["payload"]["data"]["settled_ordering_constraints"]["entries"]
         .as_array()
@@ -504,209 +178,22 @@ enum AbandonedEndpoint {
     Successor,
 }
 
-struct EdgeReadinessFixture {
-    repository:       TempDir,
-    worktrees:        TempDir,
-    base_head:        String,
-    baseline_journal: Vec<u8>,
-}
-
-impl EdgeReadinessFixture {
-    fn new() -> Self {
-        let repository = CONFIGURED_REPOSITORY.instantiate();
-        let base_head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-        let baseline_journal =
-            fs::read(repository.path().join(JOURNAL_PATH)).expect("initial journal should read");
-        Self {
-            repository,
-            worktrees: tempdir().expect("worktree parent should exist"),
-            base_head,
-            baseline_journal,
-        }
-    }
-
-    fn start_case(&self, case_index: usize) -> (PathBuf, PathBuf) {
-        git(
-            self.repository.path(),
-            &["reset", "--hard", &self.base_head],
-        );
-        fs::write(
-            self.repository.path().join(JOURNAL_PATH),
-            &self.baseline_journal,
-        )
-        .expect("journal should restore before independent readiness case");
-        let projection = self
-            .repository
-            .path()
-            .join(".git/cargo-berth/reservations.json");
-        if projection.exists() {
-            fs::remove_file(projection).expect("prior projection should remove");
-        }
-        let predecessor_root = add_worktree(
-            self.repository.path(),
-            self.worktrees.path(),
-            &format!("predecessor-{case_index}"),
-        );
-        let successor_root = add_worktree(
-            self.repository.path(),
-            self.worktrees.path(),
-            &format!("successor-{case_index}"),
-        );
-        (predecessor_root, successor_root)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum CheckpointReadiness {
-    NotIntegrated,
-    Incorporated,
-    MissingObject,
-}
-
-struct CheckpointedPair {
-    predecessor_root: PathBuf,
-    successor_root:   PathBuf,
-    predecessor_id:   String,
-    successor_id:     String,
-    journal:          Vec<u8>,
-}
-
-impl CheckpointedPair {
-    fn new(fixture: &EdgeReadinessFixture) -> Self {
-        let (predecessor_root, successor_root) = fixture.start_case(0);
-        fs::write(
-            predecessor_root.join("src/lib.rs"),
-            "pub fn predecessor() {}\n",
-        )
-        .expect("predecessor source should write");
-        git(&predecessor_root, &["add", "."]);
-        git(
-            &predecessor_root,
-            &["commit", "--quiet", "-m", "predecessor work"],
-        );
-        let predecessor_id = reservation_id(&claim(&predecessor_root, "tree:src", FIRST_RUN));
-        let successor_id = reservation_id(&defer_claim(
-            &successor_root,
-            "file:src/lib.rs",
-            SECOND_RUN,
-            &predecessor_id,
-        ));
-        assert!(
-            run_berth(&predecessor_root, &["release", &predecessor_id, "--json"])
-                .status
-                .success()
-        );
-        let journal = fs::read(fixture.repository.path().join(JOURNAL_PATH))
-            .expect("checkpoint journal should read");
-        Self {
-            predecessor_root,
-            successor_root,
-            predecessor_id,
-            successor_id,
-            journal,
-        }
-    }
-}
-
-#[test]
-fn checkpoint_readiness_covers_incorporation_and_missing_objects() {
-    let fixture = EdgeReadinessFixture::new();
-    let pair = CheckpointedPair::new(&fixture);
-    for readiness in [
-        CheckpointReadiness::NotIntegrated,
-        CheckpointReadiness::Incorporated,
-        CheckpointReadiness::MissingObject,
-    ] {
-        assert_checkpoint_transition(&fixture, &pair, readiness);
-    }
-}
-
-fn assert_checkpoint_transition(
-    fixture: &EdgeReadinessFixture,
-    pair: &CheckpointedPair,
-    readiness: CheckpointReadiness,
-) {
-    let expected = match readiness {
-        CheckpointReadiness::NotIntegrated => {
-            serde_json::json!({"state": "holding", "hold": {"reason": "predecessor_not_on_trunk", "evidence": "not_integrated"}})
-        },
-        CheckpointReadiness::Incorporated => {
-            git(
-                fixture.repository.path(),
-                &["merge", "--quiet", "predecessor-0"],
-            );
-            git(&pair.successor_root, &["merge", "--quiet", "main"]);
-            serde_json::json!({"state": "fulfilled"})
-        },
-        CheckpointReadiness::MissingObject => {
-            let protected_tip =
-                git_stdout(fixture.repository.path(), &["rev-parse", "predecessor-0"]);
-            git(
-                fixture.repository.path(),
-                &["reset", "--hard", &fixture.base_head],
-            );
-            git(
-                &pair.successor_root,
-                &["reset", "--hard", &fixture.base_head],
-            );
-            git(
-                fixture.repository.path(),
-                &[
-                    "worktree",
-                    "remove",
-                    "--force",
-                    pair.predecessor_root
-                        .to_str()
-                        .expect("worktree path should be UTF-8"),
-                ],
-            );
-            git(
-                fixture.repository.path(),
-                &["branch", "-D", "predecessor-0"],
-            );
-            git(
-                fixture.repository.path(),
-                &["update-ref", "-d", &reservation_ref(&pair.predecessor_id)],
-            );
-            git(
-                fixture.repository.path(),
-                &["update-ref", "-d", &reservation_ref(&pair.successor_id)],
-            );
-            git(
-                fixture.repository.path(),
-                &["update-ref", "-d", "ORIG_HEAD"],
-            );
-            git(&pair.successor_root, &["update-ref", "-d", "ORIG_HEAD"]);
-            git(
-                fixture.repository.path(),
-                &["reflog", "expire", "--expire=now", "--all"],
-            );
-            // These fixture commits are loose objects. Prune them after expiring reflogs;
-            // repacking reachable history cannot affect the missing-object assertion.
-            git(fixture.repository.path(), &["prune", "--expire=now"]);
-            assert!(
-                !git_status(
-                    fixture.repository.path(),
-                    &["cat-file", "-e", &protected_tip]
-                ),
-                "predecessor object must be absent after pruning"
-            );
-            serde_json::json!({"state": "holding", "hold": {"reason": "predecessor_not_on_trunk", "evidence": "object_unknown"}})
-        },
+fn assert_checkpoint_transition(readiness: CheckpointReadiness) {
+    let template = match readiness {
+        CheckpointReadiness::NotIntegrated => HISTORY_READINESS_NOT_INTEGRATED,
+        CheckpointReadiness::Incorporated => HISTORY_READINESS_INCORPORATED,
+        CheckpointReadiness::MissingObject => HISTORY_READINESS_MISSING_OBJECT,
     };
-    fs::write(fixture.repository.path().join(JOURNAL_PATH), &pair.journal)
-        .expect("checkpoint journal should restore before each readiness observation");
-    let projection = fixture
-        .repository
-        .path()
-        .join(".git/cargo-berth/reservations.json");
-    if projection.exists() {
-        fs::remove_file(projection).expect("prior readiness projection should remove");
-    }
+    let repository = template.instantiate();
+    let CheckpointReadinessHistory {
+        predecessor_id,
+        successor_id,
+        expected,
+    } = recorded_history::read(repository.path());
     let sequence = sequence(
-        fixture.repository.path(),
-        &pair.predecessor_id,
-        &pair.successor_id,
+        repository.path(),
+        &predecessor_id,
+        &successor_id,
         "observe checkpoint readiness",
     );
     assert!(sequence.status.success());
@@ -714,17 +201,6 @@ fn assert_checkpoint_transition(
         json_output(&sequence)["payload"]["data"]["readiness"],
         expected
     );
-}
-
-#[test]
-fn confirmed_abandonment_of_either_endpoint_cancels_the_edge() {
-    let fixture = EdgeReadinessFixture::new();
-    for (case_index, case) in [AbandonedEndpoint::Predecessor, AbandonedEndpoint::Successor]
-        .into_iter()
-        .enumerate()
-    {
-        assert_abandoned_endpoint(&fixture, case, case_index);
-    }
 }
 
 fn assert_abandoned_endpoint(
@@ -904,74 +380,6 @@ fn cycle_claim_fixture() -> CycleClaimFixture {
     }
 }
 
-#[test]
-fn widening_claim_refuses_an_indirect_cycle_without_changing_the_journal() {
-    let fixture = cycle_claim_fixture();
-    let root = fixture.repository.path();
-    let [a, b, c] = &fixture.holders;
-    let subject = claim(root, "file:tests/base.rs", FIRST_RUN);
-    assert_success(&subject);
-    let subject = reservation_id(&subject);
-    assert_success(&sequence(root, &subject, b, "subject before B"));
-    assert_success(&sequence(root, b, a, "B before A"));
-    let before = fs::read(root.join(JOURNAL_PATH)).expect("journal should read");
-    let refused = run_berth(
-        root,
-        &[
-            "claim",
-            "--reservation",
-            &subject,
-            "file:src/a.rs",
-            "file:src/b.rs",
-            "file:src/c.rs",
-            "--run",
-            FIRST_RUN,
-            "--after",
-            a,
-            "--before",
-            b,
-            "--before",
-            c,
-            "--overlap-why",
-            "order all three holders",
-            "--json",
-        ],
-    );
-    assert_cycle_claim_refused(root, &refused, &before, &[a, &subject, b]);
-    drop(fixture.worktrees);
-}
-
-#[test]
-fn one_claim_checks_its_new_edges_together_before_appending() {
-    let fixture = cycle_claim_fixture();
-    let root = fixture.repository.path();
-    let [a, b, c] = &fixture.holders;
-    assert_success(&sequence(root, a, b, "A before B"));
-    let before = fs::read(root.join(JOURNAL_PATH)).expect("journal should read");
-    let refused = run_berth(
-        root,
-        &[
-            "claim",
-            "file:src/a.rs",
-            "file:src/b.rs",
-            "file:src/c.rs",
-            "--run",
-            FIRST_RUN,
-            "--before",
-            a,
-            "--after",
-            b,
-            "--before",
-            c,
-            "--overlap-why",
-            "check this answer as one set",
-            "--json",
-        ],
-    );
-    assert_cycle_claim_refused(root, &refused, &before, &[a, b]);
-    drop(fixture.worktrees);
-}
-
 fn assert_cycle_claim_refused(root: &Path, output: &Output, before: &[u8], cycle: &[&str]) {
     assert_eq!(
         output.status.code(),
@@ -1010,189 +418,6 @@ fn assert_cycle_claim_refused(root: &Path, output: &Output, before: &[u8], cycle
         before
     );
     assert_success(&run_berth(root, &["board", "--json"]));
-}
-
-#[test]
-fn claim_time_directions_keep_the_embedded_edge_and_claim_event_id() {
-    assert_claim_time_direction("--after", "holder_before_requester");
-    assert_claim_time_direction("--before", "requester_before_holder");
-}
-
-#[test]
-fn deferred_ordering_is_replayable_and_duplicate_or_reverse_resolution_is_rejected() {
-    let repository = initialized_repository();
-    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    let (holder_id, requester_id) = deferred_pair(repository.path(), &second_root);
-
-    let sequenced = sequence(
-        repository.path(),
-        &holder_id,
-        &requester_id,
-        "the holder API must land first",
-    );
-    let sequenced_json = json_output(&sequenced);
-    assert!(
-        sequenced.status.success(),
-        "sequence failed: {}",
-        String::from_utf8_lossy(&sequenced.stdout)
-    );
-    assert_eq!(sequenced_json["status"], "sequenced");
-    assert_eq!(sequenced_json["exit_code"], 0);
-    assert_eq!(sequenced_json["payload"]["kind"], "sequence");
-    assert_eq!(sequenced_json["payload"]["data"]["status"], "sequenced");
-    assert_eq!(
-        sequenced_json["payload"]["data"]["edge"]["declaration"],
-        "deferred_resolution"
-    );
-    assert_eq!(
-        sequenced_json["payload"]["data"]["edge"]["before"],
-        holder_id
-    );
-    assert_eq!(
-        sequenced_json["payload"]["data"]["edge"]["after"],
-        requester_id
-    );
-    assert_eq!(
-        sequenced_json["payload"]["data"]["readiness"],
-        serde_json::json!({
-            "state": "holding",
-            "hold": {"reason": "awaiting_predecessor_checkpoint"}
-        })
-    );
-    let resolution = last_journal_event(repository.path());
-    assert_eq!(resolution["op"], "resolve_defer");
-    assert_eq!(
-        resolution["edge_id"],
-        sequenced_json["payload"]["data"]["edge"]["edge_id"]
-    );
-    assert_eq!(
-        resolution["event_id"],
-        sequenced_json["payload"]["data"]["edge"]["declaration_event_id"]
-    );
-    assert!(!journal_text(repository.path()).contains("declare_ordering_edge"));
-
-    let duplicate = sequence(repository.path(), &holder_id, &requester_id, "repeat");
-    assert_eq!(duplicate.status.code(), Some(2));
-    let duplicate_json = json_output(&duplicate);
-    assert_eq!(duplicate_json["status"], "duplicate_ordering_edge");
-    assert_eq!(duplicate_json["exit_code"], 2);
-    assert_eq!(duplicate_json["blocked_by"], serde_json::json!([holder_id]));
-
-    let reverse = sequence(repository.path(), &requester_id, &holder_id, "reverse");
-    assert_eq!(reverse.status.code(), Some(2));
-    let reverse_json = json_output(&reverse);
-    assert_eq!(reverse_json["status"], "ordering_cycle");
-    assert_eq!(reverse_json["exit_code"], 2);
-    assert_eq!(reverse_json["blocked_by"], serde_json::json!([holder_id]));
-    assert_eq!(resolve_defer_count(repository.path()), 1);
-}
-
-#[test]
-fn sequence_rejects_each_invalid_identity_and_carries_alerts() {
-    let repository = CONFIGURED_REPOSITORY.instantiate();
-    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    let (holder_id, requester_id) = deferred_pair(repository.path(), &second_root);
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let orphan_root = add_worktree(repository.path(), worktrees.path(), "orphan-alert");
-    fs::write(orphan_root.join("orphan.txt"), "orphan work\n").expect("orphan source should write");
-    git(&orphan_root, &["add", "."]);
-    git(&orphan_root, &["commit", "--quiet", "-m", "orphan work"]);
-    let orphan = claim(&orphan_root, "file:orphan.txt", FIFTH_RUN);
-    let orphan_id = reservation_id(&orphan);
-    assert!(
-        run_berth(&orphan_root, &["release", &orphan_id, "--json"])
-            .status
-            .success()
-    );
-    fs::remove_dir_all(&orphan_root).expect("orphan worktree should be removable");
-    git(repository.path(), &["worktree", "prune", "--expire", "now"]);
-
-    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
-    let session_id = "foreign-sequence-session";
-    let mapped_claim = run_berth_with_session(
-        &third_root,
-        &[
-            "claim",
-            "file:session-sequence",
-            "--run",
-            THIRD_RUN,
-            "--why",
-            "hold the mapped reservation in the third checkout",
-            "--json",
-        ],
-        session_id,
-    );
-    assert!(mapped_claim.status.success());
-
-    let rejected = run_berth_with_session(
-        repository.path(),
-        &[
-            "sequence",
-            &holder_id,
-            &requester_id,
-            "--why",
-            "the holder must land first",
-            "--json",
-        ],
-        session_id,
-    );
-    let rejected_json = json_output(&rejected);
-
-    assert_eq!(rejected.status.code(), Some(5));
-    assert_coordination_identity_rejection(
-        &rejected_json,
-        "session_worktree_mismatch",
-        &["rerun_from_holding_worktree", "claim_separately_here"],
-    );
-    assert_eq!(resolve_defer_count(repository.path()), 0);
-    let mapped_reservation_id = reservation_id(&mapped_claim);
-    let mapping_path = repository.path().join(SESSION_MAPPING_PATH);
-    let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
-    assert!(
-        run_berth(&third_root, &["release", &mapped_reservation_id, "--json"])
-            .status
-            .success()
-    );
-    // Complete automatic settlement before restoring a deliberately stale mapping.
-    assert!(
-        run_berth(repository.path(), &["board", "--json"])
-            .status
-            .success()
-    );
-    fs::write(&mapping_path, stale_mapping).expect("stale session mapping should write");
-
-    let rejected = run_berth_with_session(
-        repository.path(),
-        &[
-            "sequence",
-            &holder_id,
-            &requester_id,
-            "--why",
-            "the holder must land first",
-            "--json",
-        ],
-        session_id,
-    );
-    let rejected_json = json_output(&rejected);
-    let diagnostic = rejected_json["message"]
-        .as_str()
-        .expect("sequence rejection should have a message");
-
-    assert_eq!(rejected.status.code(), Some(5));
-    assert_coordination_identity_rejection(
-        &rejected_json,
-        "stale_session_mapping",
-        &["clear_session_mapping"],
-    );
-    assert!(diagnostic.contains("Harness session mapping"));
-    assert!(!diagnostic.contains("coordination-run marker"));
-    assert_eq!(resolve_defer_count(repository.path()), 0);
-    assert_sequence_stale_marker_rejection(
-        repository.path(),
-        &holder_id,
-        &requester_id,
-        &orphan_id,
-    );
 }
 
 fn assert_sequence_stale_marker_rejection(
@@ -1236,263 +461,6 @@ fn assert_sequence_stale_marker_rejection(
         .expect("rejection should retain the orphan alert alongside derivation failure");
     assert_eq!(orphan_alert["data"]["reservation_id"], orphan_id);
     assert_eq!(resolve_defer_count(repository_root), 0);
-}
-
-#[test]
-fn concurrent_opposite_resolutions_append_exactly_one_edge() {
-    let repository = initialized_repository();
-    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    let (holder_id, requester_id) = deferred_pair(repository.path(), &second_root);
-    let repository_root = repository.path().to_path_buf();
-    let first_holder = holder_id.clone();
-    let first_requester = requester_id.clone();
-    let first = thread::spawn(move || {
-        sequence(
-            &repository_root,
-            &first_holder,
-            &first_requester,
-            "holder first",
-        )
-    });
-    let repository_root = repository.path().to_path_buf();
-    let second = thread::spawn(move || {
-        sequence(
-            &repository_root,
-            &requester_id,
-            &holder_id,
-            "requester first",
-        )
-    });
-    let first = first.join().expect("first sequence process should finish");
-    let second = second
-        .join()
-        .expect("second sequence process should finish");
-    let successes = usize::from(first.status.success()) + usize::from(second.status.success());
-    assert_eq!(successes, 1);
-    assert_eq!(resolve_defer_count(repository.path()), 1);
-}
-
-#[test]
-fn reservation_and_ordering_edge_limits_have_distinct_typed_outcomes() {
-    let reservation_repository = initialized_repository();
-    set_config_limit(reservation_repository.path(), "maximum_reservations", 1);
-    let first = claim(reservation_repository.path(), "tree:src", FIRST_RUN);
-    assert!(first.status.success());
-    // One run, because the limit is what this claim must run into. A second run in this
-    // worktree is refused occupancy before any limit is consulted.
-    let over_limit = claim(reservation_repository.path(), "tree:tests", FIRST_RUN);
-    let over_limit_json = json_output(&over_limit);
-    assert_eq!(over_limit.status.code(), Some(1));
-    assert_eq!(over_limit_json["status"], "reservation_limit_reached");
-    assert_eq!(
-        over_limit_json["payload"]["data"]["status"],
-        "reservation_limit_reached"
-    );
-
-    let edge_repository = initialized_repository();
-    let (_edge_second_directory, edge_second_root) = foreign_worktree(&edge_repository, "second");
-    let (holder_id, requester_id) = deferred_pair(edge_repository.path(), &edge_second_root);
-    set_config_limit(edge_repository.path(), "maximum_ordering_edges", 0);
-    let over_limit = sequence(
-        edge_repository.path(),
-        &holder_id,
-        &requester_id,
-        "the holder must land first",
-    );
-    let over_limit_json = json_output(&over_limit);
-    assert_eq!(over_limit.status.code(), Some(2));
-    assert_eq!(over_limit_json["status"], "ordering_edge_limit_reached");
-    assert_eq!(
-        over_limit_json["payload"]["data"]["reason"]["kind"],
-        "ordering_edge_limit_reached"
-    );
-    assert_eq!(over_limit_json["blocked_by"], serde_json::json!([]));
-    assert_eq!(resolve_defer_count(edge_repository.path()), 0);
-}
-
-#[test]
-fn successor_head_and_current_trunk_both_control_readiness() {
-    let repository = CONFIGURED_REPOSITORY.instantiate();
-    fs::create_dir_all(repository.path().join("left")).expect("left directory should exist");
-    fs::create_dir_all(repository.path().join("right")).expect("right directory should exist");
-    fs::write(repository.path().join("left/shared.rs"), "// left\n")
-        .expect("left source should write");
-    fs::write(repository.path().join("right/shared.rs"), "// right\n")
-        .expect("right source should write");
-    git(repository.path(), &["add", "."]);
-    git(
-        repository.path(),
-        &["commit", "--quiet", "-m", "shared paths"],
-    );
-    let base = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
-    let first_successor_root = add_worktree(repository.path(), worktrees.path(), "successor-one");
-    let second_successor_root = add_worktree(repository.path(), worktrees.path(), "successor-two");
-    fs::write(
-        predecessor_root.join("left/shared.rs"),
-        "// predecessor left\n",
-    )
-    .expect("predecessor left source should write");
-    fs::write(
-        predecessor_root.join("right/shared.rs"),
-        "// predecessor right\n",
-    )
-    .expect("predecessor right source should write");
-    git(&predecessor_root, &["add", "."]);
-    git(
-        &predecessor_root,
-        &["commit", "--quiet", "-m", "predecessor work"],
-    );
-    let predecessor = claim_scopes(&predecessor_root, &["tree:left", "tree:right"], FIRST_RUN);
-    let predecessor_id = reservation_id(&predecessor);
-    let first_successor = defer_claim(
-        &first_successor_root,
-        "file:left/shared.rs",
-        SECOND_RUN,
-        &predecessor_id,
-    );
-    let first_successor_id = reservation_id(&first_successor);
-    let second_successor = defer_claim(
-        &second_successor_root,
-        "file:right/shared.rs",
-        THIRD_RUN,
-        &predecessor_id,
-    );
-    let second_successor_id = reservation_id(&second_successor);
-    let checkpoint = run_berth(&predecessor_root, &["release", &predecessor_id, "--json"]);
-    assert!(checkpoint.status.success());
-    git(repository.path(), &["merge", "--quiet", "predecessor"]);
-
-    let awaiting_incorporation = sequence(
-        repository.path(),
-        &predecessor_id,
-        &first_successor_id,
-        "predecessor first",
-    );
-    let awaiting_incorporation_json = json_output(&awaiting_incorporation);
-    assert!(awaiting_incorporation.status.success());
-    assert_eq!(
-        awaiting_incorporation_json["payload"]["data"]["readiness"],
-        serde_json::json!({
-            "state": "holding",
-            "hold": {"reason": "awaiting_successor_incorporation"}
-        })
-    );
-    assert_eq!(
-        awaiting_incorporation_json["blocked_by"],
-        serde_json::json!([predecessor_id])
-    );
-
-    git(repository.path(), &["reset", "--hard", &base]);
-    let rewritten = sequence(
-        repository.path(),
-        &predecessor_id,
-        &second_successor_id,
-        "predecessor first after rewrite",
-    );
-    assert!(rewritten.status.success());
-    assert_eq!(
-        json_output(&rewritten)["payload"]["data"]["readiness"],
-        serde_json::json!({
-            "state": "holding",
-            "hold": {
-                "reason": "predecessor_not_on_trunk",
-                "evidence": "trunk_rewritten"
-            }
-        })
-    );
-}
-
-#[test]
-fn rewritten_successor_content_is_cached_for_fulfilled_and_holding_edges() {
-    for successor_is_equivalent in [true, false] {
-        let fixture = rewritten_successor_fixture(successor_is_equivalent);
-        retain_protected_tip_release(&fixture);
-        assert!(!git_status(
-            fixture.repository.path(),
-            &[
-                "merge-base",
-                "--is-ancestor",
-                &fixture.protected_tip,
-                &fixture.successor_head,
-            ],
-        ));
-
-        let first = run_berth_with_git_trace(
-            fixture.repository.path(),
-            &[
-                "sequence",
-                &fixture.predecessor_id,
-                &fixture.successor_id,
-                "--why",
-                "predecessor content must reach the successor",
-                "--json",
-            ],
-            "",
-        );
-        assert!(
-            first.output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&first.output.stdout)
-        );
-        assert_eq!(
-            scoped_patch_comparisons_for_target(
-                &first,
-                &fixture.phase_start_head,
-                &fixture.successor_head,
-            ),
-            1
-        );
-        let expected_readiness = if successor_is_equivalent {
-            serde_json::json!({"state": "fulfilled"})
-        } else {
-            serde_json::json!({
-                "state": "holding",
-                "hold": {"reason": "awaiting_successor_incorporation"}
-            })
-        };
-        assert_eq!(
-            json_output(&first.output)["payload"]["data"]["readiness"],
-            expected_readiness
-        );
-        assert_eq!(
-            journal_operation_count(
-                fixture.repository.path(),
-                "successor_scoped_patch_equivalence_checked"
-            ),
-            1
-        );
-        let stable_journal_records = journal_record_count(fixture.repository.path());
-
-        for _ in 0..2 {
-            let replayed =
-                run_berth_with_git_trace(fixture.repository.path(), &["board", "--json"], "");
-            assert!(replayed.output.status.success());
-            assert_eq!(
-                scoped_patch_comparisons_for_target(
-                    &replayed,
-                    &fixture.phase_start_head,
-                    &fixture.successor_head,
-                ),
-                0
-            );
-        }
-        assert_eq!(
-            journal_record_count(fixture.repository.path()),
-            stable_journal_records
-        );
-    }
-}
-
-#[test]
-fn legacy_negative_unrelated_gap_retries_once_under_scoped_contiguity() {
-    assert_legacy_negative_retries_once(SuccessorGap::Unrelated);
-}
-
-#[test]
-fn legacy_negative_protected_gap_retries_once_under_scoped_contiguity() {
-    assert_legacy_negative_retries_once(SuccessorGap::Protected);
 }
 
 fn assert_legacy_negative_retries_once(successor_gap: SuccessorGap) {
@@ -1550,99 +518,6 @@ fn assert_legacy_negative_retries_once(successor_gap: SuccessorGap) {
     }
 }
 
-/// A successor that merged the trunk commit its predecessor's proof names has the predecessor's
-/// work, whatever its own copy of those files says now.
-///
-/// The protected tip alone could not see that: an amending push rewrites the tip away while the
-/// commit the work landed as stays in trunk forever, so every pass fell through to a content
-/// comparison that answered `different` as soon as the successor developed those paths further --
-/// a hold that repeated on every reconciliation with nothing able to clear it. Measured in
-/// `~/rust/hana` on 2026-09-17: seven `successor_scoped_patch_equivalence_checked` verdicts of
-/// `different` across five hours, against a successor branch that was fully merged with main.
-#[test]
-fn a_successor_that_merged_trunk_incorporates_its_predecessor_without_a_comparison() {
-    let fixture = rewritten_successor_fixture(false);
-    let root = fixture.repository.path();
-    retain_protected_tip_release(&fixture);
-    let successor_root = fs::canonicalize(fixture.worktrees.path().join("successor"))
-        .expect("successor worktree should canonicalize");
-
-    let holding = sequence(
-        root,
-        &fixture.predecessor_id,
-        &fixture.successor_id,
-        "the predecessor's work must reach the successor",
-    );
-    assert!(holding.status.success(), "{}", json_output(&holding));
-    assert_eq!(
-        json_output(&holding)["payload"]["data"]["readiness"],
-        serde_json::json!({
-            "state": "holding",
-            "hold": {"reason": "awaiting_successor_incorporation"}
-        }),
-        "the successor has neither the protected tip nor the trunk commit yet"
-    );
-    let verdicts_before = successor_verdicts(root);
-
-    // The successor merges trunk -- which carries the predecessor's work under a commit the
-    // protected tip never reaches -- and then keeps developing the same file, so content alone
-    // answers `different` from here on.
-    let integrated_trunk = git_stdout(root, &["rev-parse", "HEAD"]);
-    git(
-        &successor_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "merge",
-            "--no-ff",
-            "--no-edit",
-            "--quiet",
-            &integrated_trunk,
-        ],
-    );
-    fs::write(
-        successor_root.join("src/lib.rs"),
-        "pub fn successor_moved_on() {}\n",
-    )
-    .expect("successor source should write");
-    git(&successor_root, &["add", "src/lib.rs"]);
-    git(
-        &successor_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "successor work after the merge",
-        ],
-    );
-    let merged_successor_head = git_stdout(&successor_root, &["rev-parse", "HEAD"]);
-
-    let fulfilled_board = run_traced_board(root);
-    let fulfilled = json_output(&fulfilled_board.output);
-    let data = &fulfilled["payload"]["data"];
-    assert_eq!(
-        data["waiting"]["entries"],
-        serde_json::json!([]),
-        "a successor holding the trunk commit the proof names has the work: {data:#}"
-    );
-    assert_eq!(
-        data["settled_ordering_constraints"]["entries"][0]["settlement"],
-        "fulfilled_successor_contains_predecessor"
-    );
-    assert_eq!(
-        successor_verdicts(root),
-        verdicts_before,
-        "ancestry settled it, so no scoped comparison may be run or recorded"
-    );
-    assert_eq!(
-        successor_cherry_queries(&fulfilled_board, &merged_successor_head),
-        0,
-        "the batched ancestry answer already settled this head"
-    );
-}
-
 /// Read the board, keeping the git trace the comparison counters are read from.
 fn run_traced_board(repository_root: &Path) -> TracedBerth {
     let traced = run_berth_with_git_trace(repository_root, &["board", "--json"], "");
@@ -1671,98 +546,6 @@ fn successor_verdicts(root: &Path) -> Vec<serde_json::Value> {
         .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
         .filter(|event| event["op"] == "successor_scoped_patch_equivalence_checked")
         .collect()
-}
-
-#[test]
-fn witness_survives_pruning_and_controls_successors() {
-    let fixture = rewritten_successor_fixture(true);
-    let root = fixture.repository.path();
-    append_edge_fixture_event(
-        root,
-        serde_json::json!({
-            "op": "successor_scoped_patch_equivalence_checked",
-            "predecessor_reservation_id": fixture.predecessor_id,
-            "subject": 1, "successor_head": fixture.successor_head,
-            "verdict": "different",
-        }),
-    );
-
-    let witness = prepare_pruned_witness(&fixture);
-
-    let revalidated = run_berth_with_git_trace(root, &["board", "--json"], "");
-    assert_witness_evidence(
-        &revalidated,
-        &fixture.predecessor_id,
-        "integrated",
-        LostEvidenceAlert::Absent,
-    );
-    assert_explicit_witness_evidence(root, &fixture.predecessor_id, "integrated", &witness);
-
-    git(
-        root,
-        &[
-            "commit",
-            "--quiet",
-            "--allow-empty",
-            "-m",
-            "advance beyond witness",
-        ],
-    );
-    let evaluated_trunk = git_stdout(root, &["rev-parse", "HEAD"]);
-    assert_ne!(evaluated_trunk, witness);
-    let advanced = run_berth_with_git_trace(root, &["board", "--json"], "");
-    assert_witness_evidence(
-        &advanced,
-        &fixture.predecessor_id,
-        "integrated",
-        LostEvidenceAlert::Absent,
-    );
-    let advanced_board = json_output(&advanced.output);
-    let predecessor = witness_reservation_snapshot(&advanced_board, &fixture.predecessor_id);
-    assert_eq!(
-        predecessor["lifecycle"]["disposition"],
-        serde_json::json!({"kind": "rewritten_integration", "evidence": witness})
-    );
-    assert_eq!(
-        predecessor["integration_evidence"]["status"],
-        serde_json::json!({
-            "status": "integrated",
-            "trunk_oid": evaluated_trunk,
-            "proof": "rewritten_witness_ancestor",
-            "witness": {"kind": "historical", "commit": witness},
-        })
-    );
-    assert_explicit_witness_evidence(root, &fixture.predecessor_id, "integrated", &witness);
-
-    let holding = run_berth_with_git_trace(root, &["board", "--json"], "");
-    assert!(holding.output.status.success());
-    assert_eq!(scoped_patch_comparison_count(&holding), 0);
-    assert_eq!(
-        successor_cherry_queries(&holding, &fixture.successor_head),
-        0
-    );
-    assert_eq!(successor_verdicts(root).len(), 1);
-    assert_successor_round_robin_progress(&holding.output, 1, 0);
-
-    let successor_root = fixture.worktrees.path().join("successor");
-    git(&successor_root, &["reset", "--hard", &witness]);
-    // Uncommitted work keeps the successor's run from ending now that its head is on trunk.
-    dirty_source(&successor_root, "tests/successor_pending.rs");
-    let fulfilled = run_berth_with_git_trace(root, &["board", "--json"], "");
-    assert_witness_evidence(
-        &fulfilled,
-        &fixture.predecessor_id,
-        "integrated",
-        LostEvidenceAlert::Absent,
-    );
-    assert_successor_round_robin_progress(&fulfilled.output, 1, 1);
-
-    assert_witness_loss_is_reported_then_recovered(&fixture, root, &witness);
-    assert!(!git_status(
-        root,
-        &["cat-file", "-e", &fixture.protected_tip]
-    ));
-    assert_eq!(journal_operation_count(root, "release"), 1);
 }
 
 /// Take the witness out of trunk, then put it back, and watch the evidence follow both ways.
@@ -1882,7 +665,7 @@ fn prepare_pruned_witness(fixture: &RewrittenSuccessorFixture) -> String {
     commit_successor_fixture_file(
         root,
         "src/lib.rs",
-        "pub fn later_trunk_work() {}\n",
+        "fn later_trunk_work() {}\n",
         "rewrite the integrated hunk after its witness",
     );
     let evaluated_trunk = git_stdout(root, &["rev-parse", "HEAD"]);
@@ -2048,6 +831,1392 @@ fn assert_witness_evidence(
     assert!(alerts.iter().all(|alert| {
         alert["kind"] != "orphaned_outstanding" || alert["reservation_id"] != reservation_id
     }));
+}
+
+/// Derivation scales once per holder checkout, independently of the fixed ancestry batch. A
+/// holder whose extent is empty after doing work also pays one ancestry read to decide whether
+/// its run ended.
+fn assert_merge_observation_budget(queries: &[String], worktrees: usize) {
+    assert!(
+        queries
+            .iter()
+            .filter(|query| query.starts_with(RUN_ENDING_ANCESTRY_QUERY))
+            .count()
+            <= worktrees
+    );
+    assert_eq!(
+        queries
+            .iter()
+            .filter(|query| query.starts_with("status "))
+            .count(),
+        0,
+        "checkout status is read in process"
+    );
+    assert!(
+        queries
+            .iter()
+            .filter(|query| query.starts_with(BRANCH_PATH_MERGE_QUERY))
+            .count()
+            <= worktrees
+    );
+}
+
+fn canonical_git_command_sequence(invocations: &[String]) -> Vec<&str> {
+    let mut commands = invocations
+        .iter()
+        .filter(|line| {
+            !line.starts_with("status ")
+                && !line.starts_with(RUN_ENDING_ANCESTRY_QUERY)
+                && !is_branch_path_query(line)
+        })
+        .filter_map(|line| line.split_whitespace().next())
+        .collect::<Vec<_>>();
+    commands.sort_unstable();
+    commands
+}
+
+fn assert_successor_round_robin_progress(
+    output: &Output,
+    successor_count: usize,
+    compared_count: usize,
+) {
+    let board = json_output(output);
+    let data = &board["payload"]["data"];
+    let waiting = data["waiting"]["entries"]
+        .as_array()
+        .expect("waiting entries should be an array");
+    assert_eq!(waiting.len(), successor_count - compared_count);
+    assert!(
+        waiting
+            .iter()
+            .all(|entry| { entry["action"]["reason"] == "successor_must_incorporate_predecessor" })
+    );
+    let settled = data["settled_ordering_constraints"]["entries"]
+        .as_array()
+        .expect("settled entries should be an array");
+    assert_eq!(settled.len(), compared_count);
+    assert!(
+        settled
+            .iter()
+            .all(|entry| { entry["settlement"] == "fulfilled_successor_contains_predecessor" })
+    );
+}
+
+fn assert_claim_time_direction(flag: &str, direction: &str) {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "src/lib.rs");
+    let holder = claim(repository.path(), "tree:src", FIRST_RUN);
+    let holder_id = reservation_id(&holder);
+    let applied = run_berth(
+        &second_root,
+        &[
+            "claim",
+            "file:src/lib.rs",
+            "--run",
+            SECOND_RUN,
+            flag,
+            &holder_id,
+            "--overlap-why",
+            "the shared API needs an explicit order",
+            "--why",
+            "update the requester",
+            "--json",
+        ],
+    );
+    assert!(applied.status.success());
+    let event = last_journal_event(repository.path());
+    assert_eq!(event["authorization"]["kind"], "sequence");
+    assert_eq!(event["authorization"]["blocker"], holder_id);
+    assert_eq!(event["authorization"]["direction"], direction);
+    assert_ne!(
+        event["authorization"]["edge_id"], event["event_id"],
+        "edge and event identities have different roles"
+    );
+}
+
+fn rewritten_successor_fixture(successor_is_equivalent: bool) -> RewrittenSuccessorFixture {
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let template = if successor_is_equivalent {
+        edges_templates::EQUIVALENT_SUCCESSOR
+    } else {
+        edges_templates::DIFFERENT_SUCCESSOR
+    };
+    let repository = template.instantiate_with_external_worktrees(worktrees.path());
+    let edges_templates::RewrittenSuccessorState {
+        predecessor_id,
+        successor_id,
+        phase_start_head,
+        protected_tip,
+        successor_head,
+    } = edges_templates::successor_history_state(repository.path());
+    RewrittenSuccessorFixture {
+        repository,
+        worktrees,
+        predecessor_id,
+        successor_id,
+        phase_start_head,
+        protected_tip,
+        successor_head,
+    }
+}
+
+/// The middle holder retains its real outgoing work while its checkout is absent.
+fn commit_middle_work(middle_root: &Path) {
+    for path in ["right/before.rs", "right/orphaned.rs", "right/recovered.rs"] {
+        dirty_source(middle_root, path);
+    }
+    git(middle_root, &["add", "right"]);
+    git(
+        middle_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "middle work",
+        ],
+    );
+}
+
+/// Exercise legacy protected-tip cache subjects independently of automatic rewritten witnesses.
+fn retain_protected_tip_release(fixture: &RewrittenSuccessorFixture) {
+    edges_templates::retain_release(fixture.repository.path(), &fixture.predecessor_id);
+}
+
+fn successor_scale_fixture(
+    template: cargo_berth_test_support::LedgerTemplate,
+) -> SuccessorScaleFixture {
+    let repository = template.instantiate();
+    let successor_heads = serde_json::from_slice(
+        &fs::read(repository.path().join(".git/successor-heads.json"))
+            .expect("recorded successor heads should read"),
+    )
+    .expect("recorded successor heads should decode");
+    SuccessorScaleFixture {
+        repository,
+        successor_heads,
+    }
+}
+
+fn predecessor_scale_fixture(
+    template: cargo_berth_test_support::LedgerTemplate,
+) -> PredecessorScaleFixture {
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let repository = template.instantiate_with_external_worktrees(worktrees.path());
+    PredecessorScaleFixture {
+        repository,
+        _worktrees: worktrees,
+    }
+}
+
+fn linked_worktree_administrative_directory(worktree_root: &Path) -> PathBuf {
+    linked_checkout::administrative_directory(worktree_root)
+}
+
+fn readiness_for_predecessor_liveness(
+    fixture: &EdgeReadinessFixture,
+    predecessor_root: &Path,
+    predecessor_id: &str,
+    successor_id: &str,
+    worktree_liveness: ObservedPredecessorLiveness,
+) -> serde_json::Value {
+    match worktree_liveness {
+        ObservedPredecessorLiveness::Live => {},
+        ObservedPredecessorLiveness::Unavailable => git(
+            fixture.repository.path(),
+            &[
+                "worktree",
+                "lock",
+                predecessor_root
+                    .to_str()
+                    .expect("predecessor path should be UTF-8"),
+            ],
+        ),
+        ObservedPredecessorLiveness::OrphanCandidate => {
+            fs::remove_dir_all(predecessor_root).expect("predecessor worktree should be removable");
+        },
+        ObservedPredecessorLiveness::Unknown => {
+            fs::remove_file(
+                linked_worktree_administrative_directory(predecessor_root)
+                    .join("cargo-berth-worktree-id"),
+            )
+            .expect("predecessor identity should be removable");
+        },
+    }
+
+    let sequence = sequence(
+        fixture.repository.path(),
+        predecessor_id,
+        successor_id,
+        "compare predecessor liveness",
+    );
+    let sequence_json = json_output(&sequence);
+    assert!(sequence.status.success());
+    assert_eq!(
+        sequence_json["blocked_by"],
+        serde_json::json!([predecessor_id])
+    );
+    sequence_json["payload"]["data"]["readiness"].clone()
+}
+
+fn reference_exists(repository_root: &Path, reference: &str) -> bool {
+    GIT.succeeds(
+        repository_root,
+        &["show-ref", "--verify", "--quiet", reference],
+    )
+}
+
+fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
+
+fn set_config_limit(repository_root: &Path, key: &str, limit: u32) {
+    let config_path = repository_root.join(".claude/config/berth.toml");
+    let config = fs::read_to_string(&config_path).expect("configuration should read");
+    let updated = config
+        .lines()
+        .map(|line| {
+            if line.starts_with(key) {
+                format!("{key} = {limit}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(config_path, format!("{updated}\n")).expect("configuration should write");
+}
+
+fn resolve_defer_count(repository_root: &Path) -> usize {
+    journal_text(repository_root)
+        .lines()
+        .filter(|line| line.contains("\"op\":\"resolve_defer\""))
+        .count()
+}
+
+fn journal_text(repository_root: &Path) -> String {
+    fs::read_to_string(repository_root.join(JOURNAL_PATH)).expect("journal should read")
+}
+
+fn journal_record_count(repository_root: &Path) -> usize {
+    journal_text(repository_root).lines().count()
+}
+
+fn journal_operation_count(repository_root: &Path, operation: &str) -> usize {
+    journal_text(repository_root)
+        .lines()
+        .filter(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .is_ok_and(|event| event["op"] == operation)
+        })
+        .count()
+}
+
+fn journal_operation_field_values(
+    repository_root: &Path,
+    operation: &str,
+    field: &str,
+) -> Vec<String> {
+    let mut values = journal_text(repository_root)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["op"] == operation)
+        .filter_map(|event| event[field].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn last_journal_event(repository_root: &Path) -> serde_json::Value {
+    serde_json::from_str(
+        journal_text(repository_root)
+            .lines()
+            .last()
+            .expect("journal should contain an event"),
+    )
+    .expect("journal event should decode")
+}
+
+fn run_berth_with_git_trace(
+    repository_root: &Path,
+    arguments: &[&str],
+    unavailable_target: &str,
+) -> TracedBerth {
+    let directory = cargo_berth_test_support::fixture_tempdir("git-trace-");
+    let wrapper_path = directory.path().join(GIT_BINARY);
+    let trace_path = directory.path().join("trace");
+    cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
+        &wrapper_path,
+        TRACING_GIT_WRAPPER,
+    );
+    let original_path = std::env::var_os("PATH").expect("test PATH should exist");
+    let wrapped_path = std::env::join_paths(
+        std::iter::once(directory.path().to_path_buf())
+            .chain(std::env::split_paths(&original_path)),
+    )
+    .expect("wrapped PATH should join");
+    let output = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(arguments)
+        .current_dir(repository_root)
+        .env("PATH", wrapped_path)
+        .env(REAL_GIT_ENVIRONMENT, git_binary())
+        .env(TRACE_ENVIRONMENT, &trace_path)
+        .env(UNAVAILABLE_TARGET_ENVIRONMENT, unavailable_target)
+        .env_remove("CARGO_BERTH_RUN")
+        .env_remove(SESSION_ENVIRONMENT)
+        .output()
+        .expect("cargo-berth should run with traced git");
+    TracedBerth {
+        output,
+        trace_path,
+        _directory: directory,
+    }
+}
+
+fn git_trace(traced: &TracedBerth) -> Vec<String> {
+    fs::read_to_string(&traced.trace_path)
+        .expect("git trace should read")
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn scoped_patch_comparison_count(traced: &TracedBerth) -> usize {
+    git_trace(traced)
+        .iter()
+        .filter(|line| line.starts_with("merge-tree ") && !is_branch_path_query(line))
+        .count()
+}
+
+/// The merge-tree and result-tree diff behind one holder's committed merge-extent paths.
+fn is_branch_path_query(line: &str) -> bool {
+    line.starts_with(BRANCH_PATH_MERGE_QUERY) || line.starts_with(BRANCH_PATH_DIFF_QUERY)
+}
+
+fn scoped_patch_comparisons_for_target(
+    traced: &TracedBerth,
+    phase_start_head: &str,
+    target: &str,
+) -> usize {
+    git_trace(traced)
+        .iter()
+        .filter(|line| {
+            line.starts_with("merge-tree ")
+                && line.contains(&format!("--merge-base={phase_start_head}"))
+                && line.split_whitespace().any(|argument| argument == target)
+        })
+        .count()
+}
+
+fn assert_coordination_identity_rejection(
+    envelope: &serde_json::Value,
+    expected_kind: &str,
+    expected_action_kinds: &[&str],
+) {
+    assert_eq!(envelope["payload"]["kind"], "coordination_identity");
+    assert_eq!(envelope["payload"]["data"]["kind"], expected_kind);
+    let actions = envelope["payload"]["data"]["recovery_actions"]
+        .as_array()
+        .expect("identity rejection should carry recovery actions");
+    assert_ne!(actions.as_slice(), [] as [serde_json::Value; 0]);
+    assert_eq!(
+        actions
+            .iter()
+            .map(|action| action["kind"].as_str().expect("action kind should be text"))
+            .collect::<Vec<_>>(),
+        expected_action_kinds
+    );
+    for action in actions {
+        assert!(
+            action["argv"]
+                .as_array()
+                .is_some_and(|argv| !argv.is_empty())
+        );
+        assert!(
+            action["cwd"]
+                .as_str()
+                .is_some_and(|cwd| Path::new(cwd).is_absolute())
+        );
+    }
+}
+
+fn run_berth_with_stale_marker(
+    repository_root: &Path,
+    alert_branch: &str,
+    arguments: &[&str],
+) -> Output {
+    let wrapper_directory = cargo_berth_test_support::fixture_tempdir("git-marker-");
+    let wrapper_path = wrapper_directory.path().join(GIT_BINARY);
+    cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
+        &wrapper_path,
+        STALE_MARKER_GIT_WRAPPER,
+    );
+    let original_path = std::env::var_os("PATH").expect("test PATH should exist");
+    let wrapped_path = std::env::join_paths(
+        std::iter::once(wrapper_directory.path().to_path_buf())
+            .chain(std::env::split_paths(&original_path)),
+    )
+    .expect("wrapped PATH should join");
+    cargo_berth_test_support::use_git_read_subprocess(&mut berth_command(env!(
+        "CARGO_BIN_EXE_cargo-berth"
+    )))
+    .args(arguments)
+    .current_dir(repository_root)
+    .env("PATH", wrapped_path)
+    .env(ALERT_BRANCH_ENVIRONMENT, alert_branch)
+    .env(MARKER_PATH_ENVIRONMENT, repository_root.join(MARKER_PATH))
+    .env(REAL_GIT_ENVIRONMENT, git_binary())
+    .env(STALE_RUN_ENVIRONMENT, FOURTH_RUN)
+    .env_remove("CARGO_BERTH_RUN")
+    .output()
+    .expect("cargo-berth should run with wrapped git")
+}
+
+fn git_binary() -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").expect("test PATH should exist"))
+        .map(|directory| directory.join(GIT_BINARY))
+        .find(|candidate| {
+            fs::metadata(candidate).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
+        .expect("git should exist on PATH")
+}
+
+#[test]
+fn board_replays_a_recorded_template_without_its_projection() {
+    let repository = edges_templates::RECORDED_PROJECTION.instantiate();
+    let root = repository.path();
+    let projection = root.join(".git/cargo-berth/reservations.json");
+    assert!(!projection.exists());
+    let board = run_berth(root, &["board", "--json"]);
+    assert_success(&board);
+    assert_eq!(
+        cargo_berth_test_support::board_reservation_ids(&json(&board)).len(),
+        1
+    );
+    assert!(
+        projection.is_file(),
+        "board should rebuild the missing projection from the journal"
+    );
+}
+
+#[test]
+fn initialized_main_copies_keep_independent_owners_and_hook_contexts() {
+    let first = cargo_berth_test_support::fixture_tempdir("first-repository-");
+    let second = cargo_berth_test_support::fixture_tempdir("second-repository-");
+    IntegrationRepository::build_main_template(first.path(), BERTH_EXECUTABLE);
+    IntegrationRepository::build_main_template(second.path(), BERTH_EXECUTABLE);
+    assert_eq!(
+        GIT.stdout(first.path(), ["rev-parse", "HEAD"]),
+        GIT.stdout(second.path(), ["rev-parse", "HEAD"])
+    );
+    for identity in [
+        ".git/cargo-berth/repo-instance-id",
+        ".git/cargo-berth-worktree-id",
+    ] {
+        assert_ne!(
+            fs::read(first.path().join(identity)).expect("first identity should read"),
+            fs::read(second.path().join(identity)).expect("second identity should read")
+        );
+    }
+    for root in [first.path(), second.path()] {
+        let context = fs::read_to_string(root.join(".git/hooks/cargo-berth-hook-context"))
+            .expect("hook context should read");
+        let canonical = fs::canonicalize(root).expect("repository should canonicalize");
+        assert!(context.contains(canonical.to_str().expect("fixture path should be UTF-8")));
+    }
+    let claim = run_berth(
+        first.path(),
+        &["claim", "file:README.md", "--run", FIRST_RUN, "--json"],
+    );
+    assert_success(&claim);
+    let second_board = run_berth(second.path(), &["board", "--json"]);
+    assert_success(&second_board);
+    assert_eq!(
+        cargo_berth_test_support::board_reservation_ids(&json(&second_board)),
+        Vec::<String>::new()
+    );
+    fs::write(first.path().join("README.md"), "private work\n").expect("first source should write");
+    assert_eq!(
+        fs::read_to_string(second.path().join("README.md")).expect("second source should read"),
+        "initial\n"
+    );
+}
+
+#[test]
+fn integration_fixture_copies_keep_checkout_owners_and_ledger_state_private() {
+    let first = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
+    let second = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
+    for relative in [
+        ".git/cargo-berth/repo-instance-id",
+        ".git/cargo-berth-worktree-id",
+    ] {
+        assert_ne!(
+            fs::read_to_string(first.root().join(relative)).expect("first owner should read"),
+            fs::read_to_string(second.root().join(relative)).expect("second owner should read"),
+        );
+    }
+    let linked_owner = |checkout: &Path| {
+        fs::read_to_string(
+            linked_checkout::administrative_directory(checkout).join("cargo-berth-worktree-id"),
+        )
+        .expect("linked owner should read")
+    };
+    assert_ne!(
+        linked_owner(&first.integration),
+        linked_owner(&second.integration)
+    );
+    write_file(&first.integration, "integration.txt", "private change\n");
+    assert_eq!(
+        fs::read_to_string(second.integration.join("integration.txt"))
+            .expect("other copy should read"),
+        "integration\n",
+    );
+    write_file(&first.integration, "integration.txt", "integration\n");
+    let lane = first.main_lane("private-lane");
+    let claimed = first.claim(&lane, "file:private.txt", FIRST_RUN, Some("main"));
+    assert_success(&claimed);
+    let id = claim_id(&claimed);
+    assert_eq!(
+        cargo_berth_test_support::board_reservation_ids(&first.board()),
+        vec![id],
+    );
+    assert_eq!(
+        cargo_berth_test_support::board_reservation_ids(&second.board()),
+        Vec::<String>::new(),
+    );
+}
+
+#[test]
+fn same_target_edge_waits_for_predecessor_to_reach_integration() {
+    let repo = IntegrationRepository::from_recorded_template(
+        BEFORE_SAME_TARGET_EDGE_WAITS_FOR_PREDECESSOR_TO_REACH_INTEGRATION,
+    );
+    let SameTargetEdgeWaitsForPredecessorToReachIntegrationState {
+        successor,
+        predecessor_id,
+        successor_id,
+    } = recorded_history::read(repo.root());
+    let ordered = sequence(
+        repo.root(),
+        &predecessor_id,
+        &successor_id,
+        "A reaches I first",
+    );
+    assert_success(&ordered);
+    assert_eq!(
+        json_output(&ordered)["payload"]["data"]["readiness"],
+        serde_json::json!({
+            "state": "holding",
+            "hold": {"reason": "predecessor_not_on_trunk", "evidence": "not_integrated"}
+        })
+    );
+    let waiting = repo.board();
+    let row = waiting["payload"]["data"]["waiting"]["entries"]
+        .as_array()
+        .expect("waiting entries")
+        .iter()
+        .find(|row| row["successor"] == successor_id)
+        .expect("successor waiting row");
+    assert_eq!(
+        row["action"]["instruction"],
+        "wait for the predecessor to reach integration"
+    );
+    for root in [repo.root(), successor.as_path()] {
+        let configuration = root.join(CONFIGURATION_PATH);
+        let contents = fs::read_to_string(&configuration).expect("gate configuration reads");
+        assert!(contents.contains("gate_mode = \"observe\""));
+        fs::write(
+            configuration,
+            contents.replace("gate_mode = \"observe\"", "gate_mode = \"enforce\""),
+        )
+        .expect("gate configuration writes");
+    }
+}
+
+#[test]
+fn active_cross_target_predecessor_released_during_sequence_has_trunk_evidence() {
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
+    let predecessor = repo.lane("active-cross-a", "integration");
+    let successor = repo.main_lane("active-cross-x");
+    write_file(&predecessor, "shared.txt", "A\n");
+    let predecessor_id = claim_id(&repo.claim(&predecessor, "file:shared.txt", FIRST_RUN, None));
+    let successor_id =
+        claim_id(&repo.defer_claim(&successor, "file:shared.txt", SECOND_RUN, &predecessor_id));
+    repo.commit_file(&predecessor, "shared.txt", "A\n", "A work");
+    repo.merge_by_commit("active-cross-a");
+
+    let ordered = sequence(repo.root(), &predecessor_id, &successor_id, "A before X");
+    assert_success(&ordered);
+    assert_eq!(
+        json_output(&ordered)["payload"]["data"]["readiness"],
+        serde_json::json!({"state": "holding", "hold": {"reason": "predecessor_not_on_trunk", "evidence": "not_integrated"}})
+    );
+}
+
+#[test]
+fn cross_target_edge_keeps_earlier_landed_proof_after_target_revalidation() {
+    let cargo_berth_test_support::CrossTargetPair {
+        repository: repo,
+        predecessor_id,
+        successor_id,
+    } = IntegrationRepository::cross_target_pair(edges_templates::CROSS_TARGET_PAIR);
+    repo.git_without_hooks(&repo.integration, &["merge", "--squash", "cross-a"]);
+    repo.git_without_hooks(
+        &repo.integration,
+        &["commit", "--quiet", "-m", "first landing"],
+    );
+    let first_landing = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    let first_board = repo.board();
+    assert_eq!(
+        reservation_row(&first_board, &predecessor_id)["integration_evidence"]["status"]["trunk_oid"],
+        first_landing
+    );
+    repo.git_without_hooks(repo.root(), &["merge", "--ff-only", "integration"]);
+
+    write_file(&repo.integration, "later.txt", "later\n");
+    repo.git_without_hooks(&repo.integration, &["add", "later.txt"]);
+    repo.git_without_hooks(
+        &repo.integration,
+        &["commit", "--quiet", "-m", "later target commit"],
+    );
+    let later_landing = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    assert_ne!(first_landing, later_landing);
+    let revalidated = repo.board();
+    assert_eq!(
+        reservation_row(&revalidated, &predecessor_id)["integration_evidence"]["status"]["trunk_oid"],
+        later_landing,
+        "revalidation must carry the earlier proof onto the later target tip"
+    );
+
+    let ordered = sequence(
+        repo.root(),
+        &predecessor_id,
+        &successor_id,
+        "landed A before X",
+    );
+    assert_success(&ordered);
+    assert_eq!(
+        json_output(&ordered)["payload"]["data"]["readiness"],
+        serde_json::json!({"state": "holding", "hold": {"reason": "awaiting_successor_incorporation"}})
+    );
+}
+
+#[test]
+fn cross_target_edge_waits_for_integration_to_land_on_main_then_successor() {
+    let cargo_berth_test_support::CrossTargetPair {
+        repository: repo,
+        predecessor_id,
+        successor_id,
+    } = IntegrationRepository::cross_target_pair(edges_templates::CROSS_TARGET_PAIR);
+    let successor = repo.recorded_lane("cross-x");
+    repo.git_without_hooks(
+        &repo.integration,
+        &["merge", "--no-ff", "--no-edit", "cross-a"],
+    );
+
+    let ordered = sequence(
+        repo.root(),
+        &predecessor_id,
+        &successor_id,
+        "A lands before X",
+    );
+    assert_success(&ordered);
+    assert_eq!(
+        json_output(&ordered)["payload"]["data"]["readiness"],
+        serde_json::json!({
+            "state": "holding",
+            "hold": {"reason": "predecessor_not_on_trunk", "evidence": "not_integrated"}
+        }),
+        "the board wire name stays stable while I already contains A"
+    );
+    let board = repo.board();
+    assert_eq!(
+        waiting_action_for(&board, &successor_id),
+        "predecessor_not_integrated"
+    );
+
+    repo.git_without_hooks(repo.root(), &["merge", "--ff-only", "integration"]);
+    let board = repo.board();
+    assert_eq!(
+        waiting_action_for(&board, &successor_id),
+        "successor_must_incorporate_predecessor"
+    );
+    repo.git_without_hooks(&successor, &["merge", "--no-edit", "main"]);
+    let board = repo.board();
+    assert!(settled_edge_for(&board, &successor_id), "{board}");
+}
+
+#[test]
+fn cross_target_edge_is_fulfilled_when_successor_merges_outstanding_predecessor() {
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
+    let predecessor = repo.lane("early-a", "integration");
+    let successor = repo.main_lane("early-x");
+    write_file(&predecessor, "shared.txt", "A\n");
+    let claimed = repo.claim(&predecessor, "file:shared.txt", FIRST_RUN, None);
+    assert_success(&claimed);
+    let predecessor_id = claim_id(&claimed);
+    let deferred = repo.defer_claim(&successor, "file:shared.txt", SECOND_RUN, &predecessor_id);
+    assert_success(&deferred);
+    let successor_id = claim_id(&deferred);
+    repo.commit_file(&predecessor, "shared.txt", "A\n", "A work");
+    assert_success(&repo.run(&predecessor, &["release", &predecessor_id, "--json"]));
+    repo.git(&successor, &["merge", "--no-edit", "early-a"]);
+    let ordered = sequence(repo.root(), &predecessor_id, &successor_id, "X contains A");
+    assert_success(&ordered);
+    assert_eq!(
+        json_output(&ordered)["payload"]["data"]["readiness"],
+        serde_json::json!({"state": "fulfilled"})
+    );
+    assert_eq!(
+        repo.git_stdout(repo.root(), &["rev-parse", "main"]),
+        repo.git_stdout(&repo.integration, &["merge-base", "main", "integration"])
+    );
+}
+
+#[test]
+fn checkpoint_readiness_covers_incorporation_and_missing_objects() {
+    for readiness in [
+        CheckpointReadiness::NotIntegrated,
+        CheckpointReadiness::Incorporated,
+        CheckpointReadiness::MissingObject,
+    ] {
+        assert_checkpoint_transition(readiness);
+    }
+}
+
+#[test]
+fn confirmed_abandonment_of_either_endpoint_cancels_the_edge() {
+    let fixture = EdgeReadinessFixture::new();
+    for (case_index, case) in [AbandonedEndpoint::Predecessor, AbandonedEndpoint::Successor]
+        .into_iter()
+        .enumerate()
+    {
+        assert_abandoned_endpoint(&fixture, case, case_index);
+    }
+}
+
+#[test]
+fn widening_claim_refuses_an_indirect_cycle_without_changing_the_journal() {
+    let fixture = cycle_claim_fixture();
+    let root = fixture.repository.path();
+    let [a, b, c] = &fixture.holders;
+    let subject = claim(root, "file:tests/base.rs", FIRST_RUN);
+    assert_success(&subject);
+    let subject = reservation_id(&subject);
+    assert_success(&sequence(root, &subject, b, "subject before B"));
+    assert_success(&sequence(root, b, a, "B before A"));
+    let before = fs::read(root.join(JOURNAL_PATH)).expect("journal should read");
+    let refused = run_berth(
+        root,
+        &[
+            "claim",
+            "--reservation",
+            &subject,
+            "file:src/a.rs",
+            "file:src/b.rs",
+            "file:src/c.rs",
+            "--run",
+            FIRST_RUN,
+            "--after",
+            a,
+            "--before",
+            b,
+            "--before",
+            c,
+            "--overlap-why",
+            "order all three holders",
+            "--json",
+        ],
+    );
+    assert_cycle_claim_refused(root, &refused, &before, &[a, &subject, b]);
+    drop(fixture.worktrees);
+}
+
+#[test]
+fn one_claim_checks_its_new_edges_together_before_appending() {
+    let fixture = cycle_claim_fixture();
+    let root = fixture.repository.path();
+    let [a, b, c] = &fixture.holders;
+    assert_success(&sequence(root, a, b, "A before B"));
+    let before = fs::read(root.join(JOURNAL_PATH)).expect("journal should read");
+    let refused = run_berth(
+        root,
+        &[
+            "claim",
+            "file:src/a.rs",
+            "file:src/b.rs",
+            "file:src/c.rs",
+            "--run",
+            FIRST_RUN,
+            "--before",
+            a,
+            "--after",
+            b,
+            "--before",
+            c,
+            "--overlap-why",
+            "check this answer as one set",
+            "--json",
+        ],
+    );
+    assert_cycle_claim_refused(root, &refused, &before, &[a, b]);
+    drop(fixture.worktrees);
+}
+
+#[test]
+fn claim_time_directions_keep_the_embedded_edge_and_claim_event_id() {
+    assert_claim_time_direction("--after", "holder_before_requester");
+    assert_claim_time_direction("--before", "requester_before_holder");
+}
+
+#[test]
+fn deferred_ordering_is_replayable_and_duplicate_or_reverse_resolution_is_rejected() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (holder_id, requester_id) = deferred_pair(repository.path(), &second_root);
+
+    let sequenced = sequence(
+        repository.path(),
+        &holder_id,
+        &requester_id,
+        "the holder API must land first",
+    );
+    let sequenced_json = json_output(&sequenced);
+    assert!(
+        sequenced.status.success(),
+        "sequence failed: {}",
+        String::from_utf8_lossy(&sequenced.stdout)
+    );
+    assert_eq!(sequenced_json["status"], "sequenced");
+    assert_eq!(sequenced_json["exit_code"], 0);
+    assert_eq!(sequenced_json["payload"]["kind"], "sequence");
+    assert_eq!(sequenced_json["payload"]["data"]["status"], "sequenced");
+    assert_eq!(
+        sequenced_json["payload"]["data"]["edge"]["declaration"],
+        "deferred_resolution"
+    );
+    assert_eq!(
+        sequenced_json["payload"]["data"]["edge"]["before"],
+        holder_id
+    );
+    assert_eq!(
+        sequenced_json["payload"]["data"]["edge"]["after"],
+        requester_id
+    );
+    assert_eq!(
+        sequenced_json["payload"]["data"]["readiness"],
+        serde_json::json!({
+            "state": "holding",
+            "hold": {"reason": "awaiting_predecessor_checkpoint"}
+        })
+    );
+    let resolution = last_journal_event(repository.path());
+    assert_eq!(resolution["op"], "resolve_defer");
+    assert_eq!(
+        resolution["edge_id"],
+        sequenced_json["payload"]["data"]["edge"]["edge_id"]
+    );
+    assert_eq!(
+        resolution["event_id"],
+        sequenced_json["payload"]["data"]["edge"]["declaration_event_id"]
+    );
+    assert!(!journal_text(repository.path()).contains("declare_ordering_edge"));
+
+    let duplicate = sequence(repository.path(), &holder_id, &requester_id, "repeat");
+    assert_eq!(duplicate.status.code(), Some(2));
+    let duplicate_json = json_output(&duplicate);
+    assert_eq!(duplicate_json["status"], "duplicate_ordering_edge");
+    assert_eq!(duplicate_json["exit_code"], 2);
+    assert_eq!(duplicate_json["blocked_by"], serde_json::json!([holder_id]));
+
+    let reverse = sequence(repository.path(), &requester_id, &holder_id, "reverse");
+    assert_eq!(reverse.status.code(), Some(2));
+    let reverse_json = json_output(&reverse);
+    assert_eq!(reverse_json["status"], "ordering_cycle");
+    assert_eq!(reverse_json["exit_code"], 2);
+    assert_eq!(reverse_json["blocked_by"], serde_json::json!([holder_id]));
+    assert_eq!(resolve_defer_count(repository.path()), 1);
+}
+
+#[test]
+fn sequence_rejects_each_invalid_identity_and_carries_alerts() {
+    let repository = BEFORE_SEQUENCE_REJECTS_EACH_INVALID_IDENTITY_AND_CARRIES_ALERTS.instantiate();
+    let SequenceRejectsEachInvalidIdentityAndCarriesAlertsState {
+        holder_id,
+        requester_id,
+        orphan_id,
+        third_root,
+        mapped_reservation_id,
+    } = recorded_history::read(repository.path());
+    let session_id = "foreign-sequence-session";
+    let rejected = run_berth_with_session(
+        repository.path(),
+        &[
+            "sequence",
+            &holder_id,
+            &requester_id,
+            "--why",
+            "the holder must land first",
+            "--json",
+        ],
+        session_id,
+    );
+    let rejected_json = json_output(&rejected);
+
+    assert_eq!(rejected.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &rejected_json,
+        "session_worktree_mismatch",
+        &["rerun_from_holding_worktree", "claim_separately_here"],
+    );
+    assert_eq!(resolve_defer_count(repository.path()), 0);
+    let mapping_path = repository.path().join(SESSION_MAPPING_PATH);
+    let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
+    assert!(
+        run_berth(&third_root, &["release", &mapped_reservation_id, "--json"])
+            .status
+            .success()
+    );
+    // Complete automatic settlement before restoring a deliberately stale mapping.
+    assert!(
+        run_berth(repository.path(), &["board", "--json"])
+            .status
+            .success()
+    );
+    fs::write(&mapping_path, stale_mapping).expect("stale session mapping should write");
+
+    let rejected = run_berth_with_session(
+        repository.path(),
+        &[
+            "sequence",
+            &holder_id,
+            &requester_id,
+            "--why",
+            "the holder must land first",
+            "--json",
+        ],
+        session_id,
+    );
+    let rejected_json = json_output(&rejected);
+    let diagnostic = rejected_json["message"]
+        .as_str()
+        .expect("sequence rejection should have a message");
+
+    assert_eq!(rejected.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &rejected_json,
+        "stale_session_mapping",
+        &["clear_session_mapping"],
+    );
+    assert!(diagnostic.contains("Harness session mapping"));
+    assert!(!diagnostic.contains("coordination-run marker"));
+    assert_eq!(resolve_defer_count(repository.path()), 0);
+    assert_sequence_stale_marker_rejection(
+        repository.path(),
+        &holder_id,
+        &requester_id,
+        &orphan_id,
+    );
+}
+
+#[test]
+fn concurrent_opposite_resolutions_append_exactly_one_edge() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (holder_id, requester_id) = deferred_pair(repository.path(), &second_root);
+    let repository_root = repository.path().to_path_buf();
+    let first_holder = holder_id.clone();
+    let first_requester = requester_id.clone();
+    let first = thread::spawn(move || {
+        sequence(
+            &repository_root,
+            &first_holder,
+            &first_requester,
+            "holder first",
+        )
+    });
+    let repository_root = repository.path().to_path_buf();
+    let second = thread::spawn(move || {
+        sequence(
+            &repository_root,
+            &requester_id,
+            &holder_id,
+            "requester first",
+        )
+    });
+    let first = first.join().expect("first sequence process should finish");
+    let second = second
+        .join()
+        .expect("second sequence process should finish");
+    let successes = usize::from(first.status.success()) + usize::from(second.status.success());
+    assert_eq!(successes, 1);
+    assert_eq!(resolve_defer_count(repository.path()), 1);
+}
+
+#[test]
+fn reservation_and_ordering_edge_limits_have_distinct_typed_outcomes() {
+    let reservation_repository = initialized_repository();
+    set_config_limit(reservation_repository.path(), "maximum_reservations", 1);
+    let first = claim(reservation_repository.path(), "tree:src", FIRST_RUN);
+    assert!(first.status.success());
+    // One run, because the limit is what this claim must run into. A second run in this
+    // worktree is refused occupancy before any limit is consulted.
+    let over_limit = claim(reservation_repository.path(), "tree:tests", FIRST_RUN);
+    let over_limit_json = json_output(&over_limit);
+    assert_eq!(over_limit.status.code(), Some(1));
+    assert_eq!(over_limit_json["status"], "reservation_limit_reached");
+    assert_eq!(
+        over_limit_json["payload"]["data"]["status"],
+        "reservation_limit_reached"
+    );
+
+    let edge_repository = initialized_repository();
+    let (_edge_second_directory, edge_second_root) = foreign_worktree(&edge_repository, "second");
+    let (holder_id, requester_id) = deferred_pair(edge_repository.path(), &edge_second_root);
+    set_config_limit(edge_repository.path(), "maximum_ordering_edges", 0);
+    let over_limit = sequence(
+        edge_repository.path(),
+        &holder_id,
+        &requester_id,
+        "the holder must land first",
+    );
+    let over_limit_json = json_output(&over_limit);
+    assert_eq!(over_limit.status.code(), Some(2));
+    assert_eq!(over_limit_json["status"], "ordering_edge_limit_reached");
+    assert_eq!(
+        over_limit_json["payload"]["data"]["reason"]["kind"],
+        "ordering_edge_limit_reached"
+    );
+    assert_eq!(over_limit_json["blocked_by"], serde_json::json!([]));
+    assert_eq!(resolve_defer_count(edge_repository.path()), 0);
+}
+
+#[test]
+fn successor_head_and_current_trunk_both_control_readiness() {
+    let repository = BEFORE_SUCCESSOR_HEAD_AND_CURRENT_TRUNK_BOTH_CONTROL_READINESS.instantiate();
+    let SuccessorHeadAndCurrentTrunkBothControlReadinessState {
+        base,
+        predecessor_id,
+        first_successor_id,
+        second_successor_id,
+    } = recorded_history::read(repository.path());
+    let awaiting_incorporation = sequence(
+        repository.path(),
+        &predecessor_id,
+        &first_successor_id,
+        "predecessor first",
+    );
+    let awaiting_incorporation_json = json_output(&awaiting_incorporation);
+    assert!(awaiting_incorporation.status.success());
+    assert_eq!(
+        awaiting_incorporation_json["payload"]["data"]["readiness"],
+        serde_json::json!({
+            "state": "holding",
+            "hold": {"reason": "awaiting_successor_incorporation"}
+        })
+    );
+    assert_eq!(
+        awaiting_incorporation_json["blocked_by"],
+        serde_json::json!([predecessor_id])
+    );
+
+    git(repository.path(), &["reset", "--hard", &base]);
+    let rewritten = sequence(
+        repository.path(),
+        &predecessor_id,
+        &second_successor_id,
+        "predecessor first after rewrite",
+    );
+    assert!(rewritten.status.success());
+    assert_eq!(
+        json_output(&rewritten)["payload"]["data"]["readiness"],
+        serde_json::json!({
+            "state": "holding",
+            "hold": {
+                "reason": "predecessor_not_on_trunk",
+                "evidence": "trunk_rewritten"
+            }
+        })
+    );
+}
+
+#[test]
+fn rewritten_successor_content_is_cached_for_fulfilled_and_holding_edges() {
+    for successor_is_equivalent in [true, false] {
+        let fixture = rewritten_successor_fixture(successor_is_equivalent);
+        retain_protected_tip_release(&fixture);
+        assert!(!git_status(
+            fixture.repository.path(),
+            &[
+                "merge-base",
+                "--is-ancestor",
+                &fixture.protected_tip,
+                &fixture.successor_head,
+            ],
+        ));
+
+        let first = run_berth_with_git_trace(
+            fixture.repository.path(),
+            &[
+                "sequence",
+                &fixture.predecessor_id,
+                &fixture.successor_id,
+                "--why",
+                "predecessor content must reach the successor",
+                "--json",
+            ],
+            "",
+        );
+        assert!(
+            first.output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&first.output.stdout)
+        );
+        assert_eq!(
+            scoped_patch_comparisons_for_target(
+                &first,
+                &fixture.phase_start_head,
+                &fixture.successor_head,
+            ),
+            1
+        );
+        let expected_readiness = if successor_is_equivalent {
+            serde_json::json!({"state": "fulfilled"})
+        } else {
+            serde_json::json!({
+                "state": "holding",
+                "hold": {"reason": "awaiting_successor_incorporation"}
+            })
+        };
+        assert_eq!(
+            json_output(&first.output)["payload"]["data"]["readiness"],
+            expected_readiness
+        );
+        assert_eq!(
+            journal_operation_count(
+                fixture.repository.path(),
+                "successor_scoped_patch_equivalence_checked"
+            ),
+            1
+        );
+        let stable_journal_records = journal_record_count(fixture.repository.path());
+
+        for _ in 0..2 {
+            let replayed =
+                run_berth_with_git_trace(fixture.repository.path(), &["board", "--json"], "");
+            assert!(replayed.output.status.success());
+            assert_eq!(
+                scoped_patch_comparisons_for_target(
+                    &replayed,
+                    &fixture.phase_start_head,
+                    &fixture.successor_head,
+                ),
+                0
+            );
+        }
+        assert_eq!(
+            journal_record_count(fixture.repository.path()),
+            stable_journal_records
+        );
+    }
+}
+
+#[test]
+fn legacy_negative_unrelated_gap_retries_once_under_scoped_contiguity() {
+    assert_legacy_negative_retries_once(SuccessorGap::Unrelated);
+}
+
+#[test]
+fn legacy_negative_protected_gap_retries_once_under_scoped_contiguity() {
+    assert_legacy_negative_retries_once(SuccessorGap::Protected);
+}
+
+/// A successor that merged the trunk commit its predecessor's proof names has the predecessor's
+/// work, whatever its own copy of those files says now.
+///
+/// The protected tip alone could not see that: an amending push rewrites the tip away while the
+/// commit the work landed as stays in trunk forever, so every pass fell through to a content
+/// comparison that answered `different` as soon as the successor developed those paths further --
+/// a hold that repeated on every reconciliation with nothing able to clear it. Measured in
+/// `~/rust/hana` on 2026-09-17: seven `successor_scoped_patch_equivalence_checked` verdicts of
+/// `different` across five hours, against a successor branch that was fully merged with main.
+#[test]
+fn a_successor_that_merged_trunk_incorporates_its_predecessor_without_a_comparison() {
+    let fixture = rewritten_successor_fixture(false);
+    let root = fixture.repository.path();
+    retain_protected_tip_release(&fixture);
+    let successor_root = fs::canonicalize(fixture.worktrees.path().join("successor"))
+        .expect("successor worktree should canonicalize");
+
+    let holding = sequence(
+        root,
+        &fixture.predecessor_id,
+        &fixture.successor_id,
+        "the predecessor's work must reach the successor",
+    );
+    assert!(holding.status.success(), "{}", json_output(&holding));
+    assert_eq!(
+        json_output(&holding)["payload"]["data"]["readiness"],
+        serde_json::json!({
+            "state": "holding",
+            "hold": {"reason": "awaiting_successor_incorporation"}
+        }),
+        "the successor has neither the protected tip nor the trunk commit yet"
+    );
+    let verdicts_before = successor_verdicts(root);
+
+    // The successor merges trunk -- which carries the predecessor's work under a commit the
+    // protected tip never reaches -- and then keeps developing the same file, so content alone
+    // answers `different` from here on.
+    let integrated_trunk = git_stdout(root, &["rev-parse", "HEAD"]);
+    git(
+        &successor_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--no-ff",
+            "--no-edit",
+            "--quiet",
+            &integrated_trunk,
+        ],
+    );
+    fs::write(
+        successor_root.join("src/lib.rs"),
+        "pub fn successor_moved_on() {}\n",
+    )
+    .expect("successor source should write");
+    git(&successor_root, &["add", "src/lib.rs"]);
+    git(
+        &successor_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "successor work after the merge",
+        ],
+    );
+    let merged_successor_head = git_stdout(&successor_root, &["rev-parse", "HEAD"]);
+
+    let fulfilled_board = run_traced_board(root);
+    let fulfilled = json_output(&fulfilled_board.output);
+    let data = &fulfilled["payload"]["data"];
+    assert_eq!(
+        data["waiting"]["entries"],
+        serde_json::json!([]),
+        "a successor holding the trunk commit the proof names has the work: {data:#}"
+    );
+    assert_eq!(
+        data["settled_ordering_constraints"]["entries"][0]["settlement"],
+        "fulfilled_successor_contains_predecessor"
+    );
+    assert_eq!(
+        successor_verdicts(root),
+        verdicts_before,
+        "ancestry settled it, so no scoped comparison may be run or recorded"
+    );
+    assert_eq!(
+        successor_cherry_queries(&fulfilled_board, &merged_successor_head),
+        0,
+        "the batched ancestry answer already settled this head"
+    );
+}
+
+#[test]
+fn witness_survives_pruning_and_controls_successors() {
+    let fixture = rewritten_successor_fixture(true);
+    let root = fixture.repository.path();
+    append_edge_fixture_event(
+        root,
+        serde_json::json!({
+            "op": "successor_scoped_patch_equivalence_checked",
+            "predecessor_reservation_id": fixture.predecessor_id,
+            "subject": 1, "successor_head": fixture.successor_head,
+            "verdict": "different",
+        }),
+    );
+
+    let witness = prepare_pruned_witness(&fixture);
+
+    let revalidated = run_berth_with_git_trace(root, &["board", "--json"], "");
+    assert_witness_evidence(
+        &revalidated,
+        &fixture.predecessor_id,
+        "integrated",
+        LostEvidenceAlert::Absent,
+    );
+    assert_explicit_witness_evidence(root, &fixture.predecessor_id, "integrated", &witness);
+
+    git(
+        root,
+        &[
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "advance beyond witness",
+        ],
+    );
+    let evaluated_trunk = git_stdout(root, &["rev-parse", "HEAD"]);
+    assert_ne!(evaluated_trunk, witness);
+    let advanced = run_berth_with_git_trace(root, &["board", "--json"], "");
+    assert_witness_evidence(
+        &advanced,
+        &fixture.predecessor_id,
+        "integrated",
+        LostEvidenceAlert::Absent,
+    );
+    let advanced_board = json_output(&advanced.output);
+    let predecessor = witness_reservation_snapshot(&advanced_board, &fixture.predecessor_id);
+    assert_eq!(
+        predecessor["lifecycle"]["disposition"],
+        serde_json::json!({"kind": "rewritten_integration", "evidence": witness})
+    );
+    assert_eq!(
+        predecessor["integration_evidence"]["status"],
+        serde_json::json!({
+            "status": "integrated",
+            "trunk_oid": evaluated_trunk,
+            "proof": "rewritten_witness_ancestor",
+            "witness": {"kind": "historical", "commit": witness},
+        })
+    );
+    assert_explicit_witness_evidence(root, &fixture.predecessor_id, "integrated", &witness);
+
+    let holding = run_berth_with_git_trace(root, &["board", "--json"], "");
+    assert!(holding.output.status.success());
+    assert_eq!(scoped_patch_comparison_count(&holding), 0);
+    assert_eq!(
+        successor_cherry_queries(&holding, &fixture.successor_head),
+        0
+    );
+    assert_eq!(successor_verdicts(root).len(), 1);
+    assert_successor_round_robin_progress(&holding.output, 1, 0);
+
+    let successor_root = fixture.worktrees.path().join("successor");
+    git(&successor_root, &["reset", "--hard", &witness]);
+    // Uncommitted work keeps the successor's run from ending now that its head is on trunk.
+    dirty_source(&successor_root, "tests/successor_pending.rs");
+    let fulfilled = run_berth_with_git_trace(root, &["board", "--json"], "");
+    assert_witness_evidence(
+        &fulfilled,
+        &fixture.predecessor_id,
+        "integrated",
+        LostEvidenceAlert::Absent,
+    );
+    assert_successor_round_robin_progress(&fulfilled.output, 1, 1);
+
+    assert_witness_loss_is_reported_then_recovered(&fixture, root, &witness);
+    assert!(!git_status(
+        root,
+        &["cat-file", "-e", &fixture.protected_tip]
+    ));
+    assert_eq!(journal_operation_count(root, "release"), 1);
 }
 
 #[test]
@@ -2226,123 +2395,14 @@ fn predecessor_graph_has_fixed_cold_cost() {
     );
 }
 
-/// Derivation scales once per holder checkout, independently of the fixed ancestry batch. A
-/// holder whose extent is empty after doing work also pays one ancestry read to decide whether
-/// its run ended.
-fn assert_merge_observation_budget(queries: &[String], worktrees: usize) {
-    assert!(
-        queries
-            .iter()
-            .filter(|query| query.starts_with(RUN_ENDING_ANCESTRY_QUERY))
-            .count()
-            <= worktrees
-    );
-    assert_eq!(
-        queries
-            .iter()
-            .filter(|query| query.starts_with("status "))
-            .count(),
-        0,
-        "checkout status is read in process"
-    );
-    assert!(
-        queries
-            .iter()
-            .filter(|query| query.starts_with(BRANCH_PATH_MERGE_QUERY))
-            .count()
-            <= worktrees
-    );
-}
-
-fn canonical_git_command_sequence(invocations: &[String]) -> Vec<&str> {
-    let mut commands = invocations
-        .iter()
-        .filter(|line| {
-            !line.starts_with("status ")
-                && !line.starts_with(RUN_ENDING_ANCESTRY_QUERY)
-                && !is_branch_path_query(line)
-        })
-        .filter_map(|line| line.split_whitespace().next())
-        .collect::<Vec<_>>();
-    commands.sort_unstable();
-    commands
-}
-
-fn assert_successor_round_robin_progress(
-    output: &Output,
-    successor_count: usize,
-    compared_count: usize,
-) {
-    let board = json_output(output);
-    let data = &board["payload"]["data"];
-    let waiting = data["waiting"]["entries"]
-        .as_array()
-        .expect("waiting entries should be an array");
-    assert_eq!(waiting.len(), successor_count - compared_count);
-    assert!(
-        waiting
-            .iter()
-            .all(|entry| { entry["action"]["reason"] == "successor_must_incorporate_predecessor" })
-    );
-    let settled = data["settled_ordering_constraints"]["entries"]
-        .as_array()
-        .expect("settled entries should be an array");
-    assert_eq!(settled.len(), compared_count);
-    assert!(
-        settled
-            .iter()
-            .all(|entry| { entry["settlement"] == "fulfilled_successor_contains_predecessor" })
-    );
-}
-
 #[test]
 fn released_predecessor_ref_retires_only_after_every_successor_is_terminal() {
-    let repository = CONFIGURED_REPOSITORY.instantiate();
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
-    let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
-    fs::write(
-        predecessor_root.join("src/lib.rs"),
-        "pub fn predecessor() {}\n",
-    )
-    .expect("predecessor source should write");
-    git(&predecessor_root, &["add", "."]);
-    git(
-        &predecessor_root,
-        &["commit", "--quiet", "-m", "predecessor work"],
-    );
-    let predecessor = claim(&predecessor_root, "tree:src", FIRST_RUN);
-    let predecessor_id = reservation_id(&predecessor);
-    let successor = defer_claim(
-        &successor_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        &predecessor_id,
-    );
-    let successor_id = reservation_id(&successor);
-    let sequence = sequence(
-        repository.path(),
-        &predecessor_id,
-        &successor_id,
-        "predecessor first",
-    );
-    assert!(sequence.status.success());
-    assert!(
-        run_berth(&predecessor_root, &["release", &predecessor_id, "--json"])
-            .status
-            .success()
-    );
-    git(repository.path(), &["merge", "--quiet", "predecessor"]);
-    assert!(
-        run_berth(repository.path(), &["release", &predecessor_id, "--json"])
-            .status
-            .success()
-    );
-    assert!(
-        run_berth(repository.path(), &["release", &predecessor_id, "--json"])
-            .status
-            .success()
-    );
+    let repository = BEFORE_RELEASED_PREDECESSOR_REF_RETIRES_ONLY_AFTER_EVERY_SUCCESSOR_IS_TERMINAL
+        .instantiate();
+    let ReleasedPredecessorRefRetiresOnlyAfterEverySuccessorIsTerminalState {
+        predecessor_id,
+        successor_id,
+    } = recorded_history::read(repository.path());
     let predecessor_ref = reservation_ref(&predecessor_id);
     assert!(reference_exists(repository.path(), &predecessor_ref));
 
@@ -2553,563 +2613,76 @@ fn predecessor_liveness_observations_have_live_edge_readiness_parity() {
     }
 }
 
-fn assert_claim_time_direction(flag: &str, direction: &str) {
-    let repository = initialized_repository();
-    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    dirty_source(repository.path(), "src/lib.rs");
-    let holder = claim(repository.path(), "tree:src", FIRST_RUN);
-    let holder_id = reservation_id(&holder);
-    let applied = run_berth(
-        &second_root,
-        &[
-            "claim",
-            "file:src/lib.rs",
-            "--run",
-            SECOND_RUN,
-            flag,
-            &holder_id,
-            "--overlap-why",
-            "the shared API needs an explicit order",
-            "--why",
-            "update the requester",
-            "--json",
-        ],
+#[test]
+fn same_target_edge_refuses_integration_before_the_predecessor() {
+    let repo = IntegrationRepository::from_recorded_template(
+        edges_fixtures::HISTORY_SAME_TARGET_EDGE_REFUSES_INTEGRATION_BEFORE_THE_PREDECESSOR,
     );
-    assert!(applied.status.success());
-    let event = last_journal_event(repository.path());
-    assert_eq!(event["authorization"]["kind"], "sequence");
-    assert_eq!(event["authorization"]["blocker"], holder_id);
-    assert_eq!(event["authorization"]["direction"], direction);
-    assert_ne!(
-        event["authorization"]["edge_id"], event["event_id"],
-        "edge and event identities have different roles"
-    );
-}
-
-fn deferred_pair(holder_root: &Path, requester_root: &Path) -> (String, String) {
-    dirty_source(holder_root, "src/lib.rs");
-    let holder = claim(holder_root, "tree:src", FIRST_RUN);
-    let holder_id = reservation_id(&holder);
-    let requester = defer_claim(requester_root, "file:src/lib.rs", SECOND_RUN, &holder_id);
-    assert!(requester.status.success());
-    (holder_id, reservation_id(&requester))
-}
-
-fn rewritten_successor_fixture(successor_is_equivalent: bool) -> RewrittenSuccessorFixture {
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let template = if successor_is_equivalent {
-        edges_templates::EQUIVALENT_SUCCESSOR
-    } else {
-        edges_templates::DIFFERENT_SUCCESSOR
-    };
-    let repository = template.instantiate_with_external_worktrees(worktrees.path());
-    let edges_templates::RewrittenSuccessorState {
+    let edges_fixtures::SameTargetEdgeRefusesIntegrationBeforeThePredecessorHistory {
+        successor,
         predecessor_id,
         successor_id,
-        phase_start_head,
-        protected_tip,
-        successor_head,
-    } = edges_templates::successor_history_state(repository.path());
-    RewrittenSuccessorFixture {
-        repository,
-        worktrees,
-        predecessor_id,
-        successor_id,
-        phase_start_head,
-        protected_tip,
-        successor_head,
-    }
-}
-
-/// The middle holder retains its real outgoing work while its checkout is absent.
-fn commit_middle_work(middle_root: &Path) {
-    for path in ["right/before.rs", "right/orphaned.rs", "right/recovered.rs"] {
-        dirty_source(middle_root, path);
-    }
-    git(middle_root, &["add", "right"]);
-    git(
-        middle_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "middle work",
-        ],
+    } = recorded_history::read(repo.root());
+    let denied = repo.run(&successor, &["integrate", &successor_id, "--json"]);
+    let denied_json = json(&denied);
+    assert_eq!(
+        denied_json["status"], "blocked_by_ordering",
+        "{denied_json}"
     );
-}
-
-/// Exercise legacy protected-tip cache subjects independently of automatic rewritten witnesses.
-fn retain_protected_tip_release(fixture: &RewrittenSuccessorFixture) {
-    edges_templates::retain_release(fixture.repository.path(), &fixture.predecessor_id);
-}
-
-fn successor_scale_fixture(
-    template: cargo_berth_test_support::LedgerTemplate,
-) -> SuccessorScaleFixture {
-    let repository = template.instantiate();
-    let successor_heads = serde_json::from_slice(
-        &fs::read(repository.path().join(".git/successor-heads.json"))
-            .expect("recorded successor heads should read"),
-    )
-    .expect("recorded successor heads should decode");
-    SuccessorScaleFixture {
-        repository,
-        successor_heads,
-    }
-}
-
-fn predecessor_scale_fixture(
-    template: cargo_berth_test_support::LedgerTemplate,
-) -> PredecessorScaleFixture {
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let repository = template.instantiate_with_external_worktrees(worktrees.path());
-    PredecessorScaleFixture {
-        repository,
-        _worktrees: worktrees,
-    }
-}
-
-fn sequence(repository_root: &Path, before: &str, after: &str, why: &str) -> Output {
-    run_berth(
-        repository_root,
-        &["sequence", before, after, "--why", why, "--json"],
-    )
-}
-
-/// Claim [`deferring_run_scope`] for `run`, then answer `blocker` on `scope` with `--defer`.
-///
-/// A deferral acquires no reservation, so the answer attaches to the one claimed first, and the
-/// ordering graph holds that reservation against `blocker`.
-fn defer_claim(repository_root: &Path, scope: &str, run: &str, blocker: &str) -> Output {
     assert!(
-        claim(repository_root, &deferring_run_scope(run), run)
-            .status
-            .success()
-    );
-    defer_answer(repository_root, scope, run, blocker)
-}
-
-fn defer_answer(repository_root: &Path, scope: &str, run: &str, blocker: &str) -> Output {
-    run_berth(
-        repository_root,
-        &[
-            "claim",
-            scope,
-            "--run",
-            run,
-            "--defer",
-            blocker,
-            "--overlap-why",
-            "the order is not known yet",
-            "--why",
-            "protect deferred work",
-            "--json",
-        ],
-    )
-}
-
-/// Commit the policy without hooks: before any reservation exists, the trunk gate and the
-/// post-commit drift check write no berth state.
-fn commit_configuration(repository_root: &Path) {
-    git(
-        repository_root,
-        &["add", "--force", ".claude/config/berth.toml"],
-    );
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "configure berth",
-        ],
+        denied_json["message"]
+            .as_str()
+            .expect("denial message")
+            .contains(&format!(
+                "integrate reservation {predecessor_id} into integration"
+            ))
     );
 }
 
-fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> std::path::PathBuf {
-    let worktree_root = parent.join(branch);
-    GIT.add_worktree_without_hooks(repository_root, &worktree_root, branch, "HEAD");
-    worktree_root
-}
-
-fn linked_worktree_administrative_directory(worktree_root: &Path) -> PathBuf {
-    linked_checkout::administrative_directory(worktree_root)
-}
-
-fn readiness_for_predecessor_liveness(
-    fixture: &EdgeReadinessFixture,
-    predecessor_root: &Path,
-    predecessor_id: &str,
-    successor_id: &str,
-    worktree_liveness: ObservedPredecessorLiveness,
-) -> serde_json::Value {
-    match worktree_liveness {
-        ObservedPredecessorLiveness::Live => {},
-        ObservedPredecessorLiveness::Unavailable => git(
-            fixture.repository.path(),
-            &[
-                "worktree",
-                "lock",
-                predecessor_root
-                    .to_str()
-                    .expect("predecessor path should be UTF-8"),
-            ],
-        ),
-        ObservedPredecessorLiveness::OrphanCandidate => {
-            fs::remove_dir_all(predecessor_root).expect("predecessor worktree should be removable");
-        },
-        ObservedPredecessorLiveness::Unknown => {
-            fs::remove_file(
-                linked_worktree_administrative_directory(predecessor_root)
-                    .join("cargo-berth-worktree-id"),
-            )
-            .expect("predecessor identity should be removable");
-        },
-    }
-
-    let sequence = sequence(
-        fixture.repository.path(),
-        predecessor_id,
+#[test]
+fn same_target_edge_requires_incorporation_after_the_predecessor_lands() {
+    let repo = IntegrationRepository::from_recorded_template(
+        edges_fixtures::HISTORY_SAME_TARGET_EDGE_REQUIRES_INCORPORATION_AFTER_THE_PREDECESSOR_LANDS,
+    );
+    let edges_fixtures::SameTargetEdgeRequiresIncorporationAfterThePredecessorLandsHistory {
         successor_id,
-        "compare predecessor liveness",
-    );
-    let sequence_json = json_output(&sequence);
-    assert!(sequence.status.success());
+        ..
+    } = recorded_history::read(repo.root());
+    repo.merge_by_commit("same-target-a");
+    let board = repo.board();
     assert_eq!(
-        sequence_json["blocked_by"],
-        serde_json::json!([predecessor_id])
+        waiting_action_for(&board, &successor_id),
+        "successor_must_incorporate_predecessor"
     );
-    sequence_json["payload"]["data"]["readiness"].clone()
-}
-
-fn reservation_ref(reservation_id: &str) -> String {
-    format!("refs/cargo-berth/reservations/{reservation_id}")
-}
-
-fn reference_exists(repository_root: &Path, reference: &str) -> bool {
-    GIT.succeeds(
-        repository_root,
-        &["show-ref", "--verify", "--quiet", reference],
-    )
-}
-
-fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
-    GIT.stdout(repository_root, arguments)
-}
-
-/// Add a real worktree beside the repository, the second party berth has always refused.
-///
-/// A distinct `--run` inside one worktree now names a second party too, but only a real
-/// worktree can hold a reservation of its own alongside another run's. The returned
-/// directory owns the worktree and must outlive its use.
-fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
-    let directory = tempdir().expect("foreign worktree parent should exist");
-    let root = directory.path().join(name);
-    GIT.add_worktree_without_hooks(repository.path(), &root, name, "HEAD");
-    let configuration = root.join(CONFIGURATION_PATH);
-    if let Some(parent) = configuration.parent() {
-        fs::create_dir_all(parent).expect("foreign worktree configuration should have a directory");
-    }
-    fs::copy(repository.path().join(CONFIGURATION_PATH), configuration)
-        .expect("foreign worktree should share the repository configuration");
-    (directory, root)
-}
-
-fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
-
-fn build_initialized_repository(repository_root: &Path) {
-    git(
-        repository_root,
-        &["init", "--quiet", "--initial-branch", "main"],
-    );
-    git(
-        repository_root,
-        &["config", "user.email", "test@example.com"],
-    );
-    git(repository_root, &["config", "user.name", "Test User"]);
-    git(repository_root, &["config", "maintenance.auto", "false"]);
-    fs::create_dir_all(repository_root.join("src")).expect("source directory should exist");
-    fs::write(repository_root.join("src/lib.rs"), "pub fn value() {}\n")
-        .expect("source should write");
-    fs::create_dir_all(repository_root.join("tests")).expect("tests directory should exist");
-    fs::write(repository_root.join("tests/base.rs"), "// test\n")
-        .expect("test source should write");
-    git(repository_root, &["add", "."]);
-    git(repository_root, &["commit", "--quiet", "-m", "initial"]);
-    let initialized = run_berth(repository_root, &["init", "--json"]);
-    assert!(initialized.status.success());
-}
-
-/// A declared overlap needs actual uncommitted work in the holder's branch.
-fn dirty_source(root: &Path, path: &str) {
-    let file = root.join(path);
-    fs::create_dir_all(file.parent().expect("dirty source has a parent"))
-        .expect("dirty source parent should exist");
-    fs::write(file, "// uncommitted holder work\n").expect("dirty source should write");
-}
-
-fn claim(repository_root: &Path, scope: &str, run: &str) -> Output {
-    claim_scopes(repository_root, &[scope], run)
-}
-
-fn claim_scopes(repository_root: &Path, scopes: &[&str], run: &str) -> Output {
-    let mut arguments = vec!["claim"];
-    arguments.extend_from_slice(scopes);
-    arguments.extend_from_slice(&["--run", run, "--why", "protect test work", "--json"]);
-    run_berth(repository_root, &arguments)
-}
-
-fn set_config_limit(repository_root: &Path, key: &str, limit: u32) {
-    let config_path = repository_root.join(".claude/config/berth.toml");
-    let config = fs::read_to_string(&config_path).expect("configuration should read");
-    let updated = config
-        .lines()
-        .map(|line| {
-            if line.starts_with(key) {
-                format!("{key} = {limit}")
-            } else {
-                line.to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(config_path, format!("{updated}\n")).expect("configuration should write");
-}
-
-fn reservation_id(output: &Output) -> String {
-    json_output(output)["payload"]["data"]["reservation_id"]
-        .as_str()
-        .expect("claim should report a reservation id")
-        .to_owned()
-}
-
-fn resolve_defer_count(repository_root: &Path) -> usize {
-    journal_text(repository_root)
-        .lines()
-        .filter(|line| line.contains("\"op\":\"resolve_defer\""))
-        .count()
-}
-
-fn journal_text(repository_root: &Path) -> String {
-    fs::read_to_string(repository_root.join(JOURNAL_PATH)).expect("journal should read")
-}
-
-fn journal_record_count(repository_root: &Path) -> usize {
-    journal_text(repository_root).lines().count()
-}
-
-fn journal_operation_count(repository_root: &Path, operation: &str) -> usize {
-    journal_text(repository_root)
-        .lines()
-        .filter(|line| {
-            serde_json::from_str::<serde_json::Value>(line)
-                .is_ok_and(|event| event["op"] == operation)
-        })
-        .count()
-}
-
-fn journal_operation_field_values(
-    repository_root: &Path,
-    operation: &str,
-    field: &str,
-) -> Vec<String> {
-    let mut values = journal_text(repository_root)
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|event| event["op"] == operation)
-        .filter_map(|event| event[field].as_str().map(str::to_owned))
-        .collect::<Vec<_>>();
-    values.sort();
-    values.dedup();
-    values
-}
-
-fn last_journal_event(repository_root: &Path) -> serde_json::Value {
-    serde_json::from_str(
-        journal_text(repository_root)
-            .lines()
-            .last()
-            .expect("journal should contain an event"),
-    )
-    .expect("journal event should decode")
-}
-
-fn json_output(output: &Output) -> serde_json::Value {
-    serde_json::from_slice(&output.stdout).expect("command should print JSON")
-}
-
-fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
-    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(arguments)
-        .current_dir(repository_root)
-        .env_remove("CARGO_BERTH_RUN")
-        .env_remove(SESSION_ENVIRONMENT)
-        .output()
-        .expect("cargo-berth should run")
-}
-
-fn run_berth_with_git_trace(
-    repository_root: &Path,
-    arguments: &[&str],
-    unavailable_target: &str,
-) -> TracedBerth {
-    let directory = cargo_berth_test_support::fixture_tempdir("git-trace-");
-    let wrapper_path = directory.path().join(GIT_BINARY);
-    let trace_path = directory.path().join("trace");
-    cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
-        &wrapper_path,
-        TRACING_GIT_WRAPPER,
-    );
-    let original_path = std::env::var_os("PATH").expect("test PATH should exist");
-    let wrapped_path = std::env::join_paths(
-        std::iter::once(directory.path().to_path_buf())
-            .chain(std::env::split_paths(&original_path)),
-    )
-    .expect("wrapped PATH should join");
-    let output = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(arguments)
-        .current_dir(repository_root)
-        .env("PATH", wrapped_path)
-        .env(REAL_GIT_ENVIRONMENT, git_binary())
-        .env(TRACE_ENVIRONMENT, &trace_path)
-        .env(UNAVAILABLE_TARGET_ENVIRONMENT, unavailable_target)
-        .env_remove("CARGO_BERTH_RUN")
-        .env_remove(SESSION_ENVIRONMENT)
-        .output()
-        .expect("cargo-berth should run with traced git");
-    TracedBerth {
-        output,
-        trace_path,
-        _directory: directory,
-    }
-}
-
-fn git_trace(traced: &TracedBerth) -> Vec<String> {
-    fs::read_to_string(&traced.trace_path)
-        .expect("git trace should read")
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
-fn scoped_patch_comparison_count(traced: &TracedBerth) -> usize {
-    git_trace(traced)
-        .iter()
-        .filter(|line| line.starts_with("merge-tree ") && !is_branch_path_query(line))
-        .count()
-}
-
-/// The merge-tree and result-tree diff behind one holder's committed merge-extent paths.
-fn is_branch_path_query(line: &str) -> bool {
-    line.starts_with(BRANCH_PATH_MERGE_QUERY) || line.starts_with(BRANCH_PATH_DIFF_QUERY)
-}
-
-fn scoped_patch_comparisons_for_target(
-    traced: &TracedBerth,
-    phase_start_head: &str,
-    target: &str,
-) -> usize {
-    git_trace(traced)
-        .iter()
-        .filter(|line| {
-            line.starts_with("merge-tree ")
-                && line.contains(&format!("--merge-base={phase_start_head}"))
-                && line.split_whitespace().any(|argument| argument == target)
-        })
-        .count()
-}
-
-fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
-    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(arguments)
-        .current_dir(repository_root)
-        .env_remove("CARGO_BERTH_RUN")
-        .env(SESSION_ENVIRONMENT, session_id)
-        .output()
-        .expect("cargo-berth should run")
-}
-
-fn assert_coordination_identity_rejection(
-    envelope: &serde_json::Value,
-    expected_kind: &str,
-    expected_action_kinds: &[&str],
-) {
-    assert_eq!(envelope["payload"]["kind"], "coordination_identity");
-    assert_eq!(envelope["payload"]["data"]["kind"], expected_kind);
-    let actions = envelope["payload"]["data"]["recovery_actions"]
+    let row = board["payload"]["data"]["waiting"]["entries"]
         .as_array()
-        .expect("identity rejection should carry recovery actions");
-    assert_ne!(actions.as_slice(), [] as [serde_json::Value; 0]);
-    assert_eq!(
-        actions
-            .iter()
-            .map(|action| action["kind"].as_str().expect("action kind should be text"))
-            .collect::<Vec<_>>(),
-        expected_action_kinds
+        .expect("waiting entries")
+        .iter()
+        .find(|row| row["successor"] == successor_id)
+        .expect("successor waiting row");
+    assert!(
+        row["action"]["instruction"]
+            .as_str()
+            .expect("instruction")
+            .contains("current integration")
     );
-    for action in actions {
-        assert!(
-            action["argv"]
-                .as_array()
-                .is_some_and(|argv| !argv.is_empty())
-        );
-        assert!(
-            action["cwd"]
-                .as_str()
-                .is_some_and(|cwd| Path::new(cwd).is_absolute())
-        );
-    }
-}
-
-fn run_berth_with_stale_marker(
-    repository_root: &Path,
-    alert_branch: &str,
-    arguments: &[&str],
-) -> Output {
-    let wrapper_directory = cargo_berth_test_support::fixture_tempdir("git-marker-");
-    let wrapper_path = wrapper_directory.path().join(GIT_BINARY);
-    cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
-        &wrapper_path,
-        STALE_MARKER_GIT_WRAPPER,
+    assert_ne!(
+        repo.git_stdout(repo.root(), &["rev-parse", "main"]),
+        repo.git_stdout(repo.root(), &["rev-parse", "integration"])
     );
-    let original_path = std::env::var_os("PATH").expect("test PATH should exist");
-    let wrapped_path = std::env::join_paths(
-        std::iter::once(wrapper_directory.path().to_path_buf())
-            .chain(std::env::split_paths(&original_path)),
-    )
-    .expect("wrapped PATH should join");
-    cargo_berth_test_support::use_git_read_subprocess(&mut berth_command(env!(
-        "CARGO_BIN_EXE_cargo-berth"
-    )))
-    .args(arguments)
-    .current_dir(repository_root)
-    .env("PATH", wrapped_path)
-    .env(ALERT_BRANCH_ENVIRONMENT, alert_branch)
-    .env(MARKER_PATH_ENVIRONMENT, repository_root.join(MARKER_PATH))
-    .env(REAL_GIT_ENVIRONMENT, git_binary())
-    .env(STALE_RUN_ENVIRONMENT, FOURTH_RUN)
-    .env_remove("CARGO_BERTH_RUN")
-    .output()
-    .expect("cargo-berth should run with wrapped git")
 }
 
-fn git_binary() -> PathBuf {
-    std::env::split_paths(&std::env::var_os("PATH").expect("test PATH should exist"))
-        .map(|directory| directory.join(GIT_BINARY))
-        .find(|candidate| {
-            fs::metadata(candidate).is_ok_and(|metadata| {
-                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-            })
-        })
-        .expect("git should exist on PATH")
-}
-
-fn git(repository_root: &Path, arguments: &[&str]) { GIT.run(repository_root, arguments); }
-
-fn git_status(repository_root: &Path, arguments: &[&str]) -> bool {
-    GIT.succeeds(repository_root, arguments)
+#[test]
+fn same_target_edge_settles_after_successor_incorporation() {
+    let repo = IntegrationRepository::from_recorded_template(
+        edges_fixtures::HISTORY_SAME_TARGET_EDGE_SETTLES_AFTER_SUCCESSOR_INCORPORATION,
+    );
+    let edges_fixtures::SameTargetEdgeSettlesAfterSuccessorIncorporationHistory {
+        successor,
+        successor_id,
+        ..
+    } = recorded_history::read(repo.root());
+    repo.git(&successor, &["merge", "--no-edit", "integration"]);
+    let board = repo.board();
+    assert!(settled_edge_for(&board, &successor_id), "{board}");
 }

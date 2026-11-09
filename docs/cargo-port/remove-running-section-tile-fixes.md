@@ -2027,7 +2027,7 @@ The product file of each cause needs director routing.
 
 **Acceptance gate:** the cargo-berth package suite on natedev and on the Mac, `--no-cache`, and one Mac workspace run, with both tests green and every test under 1 s; lint.
 
-### Phase 58 — cargo-berth tests run under a second  · status: todo
+### Phase 58 — cargo-berth tests run under a second  · status: done
 
 **Depends on:** Phase 56 for edits to `crates/cargo-berth-test-support/`. The measurement in item 1 starts at once.
 
