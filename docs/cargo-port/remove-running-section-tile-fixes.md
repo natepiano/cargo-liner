@@ -1757,7 +1757,7 @@ User (2026-10-29, via builds and the showrunner): "yes cargo-tile should strive 
 - `cargo nextest run -p cargo-tile -p tui_pane`, workspace clippy with `-D warnings`, and `cargo +nightly fmt --check` green on the Mac on the stacked tree.
 - Live on natedev: two cargos build on one target directory under sccache; a capture shows each cargo's mem includes its own rustc memory, and the cargo mems plus the shared and unattributed shares match the processes' RSS sum from `ps` within one scan interval.
 
-### Phase 40 — Capture falls back to plain cargo when its stderr mirror cannot run  · status: todo
+### Phase 40 — Capture falls back to plain cargo when its stderr mirror cannot run  · status: done
 
 **Depends on:** Phase 30m
 
@@ -2018,9 +2018,19 @@ The diagnosis found that none of the four earlier causes came back. The new shar
 
 **Acceptance gate:** the cargo-berth package and one workspace run on natedev and on the Mac, `--no-cache`, with no cargo-berth test at 1 s or more; lint.
 
-### Phase 31 — Ended cells leave whole  · status: todo
+### Phase 31 — Ended cells leave whole  · status: parked
 
 **Depends on:** Phase 35m (both change `render.rs` and `render/command_cache.rs`).
+
+**Parked (showrunner, 2026-11-09):** repair round 4 was the last round, and it ended red. No paired capture was run. Restart from the uncommitted copy tree `/tmp/claude/scratch/until-2026-11-16T0500Z-phase-tile-unit-31-dcj7s6/src` (base 9b85b0e). The copy's hold ends 2026-11-16 05:00 UTC. Its natedev gate gave 7430 pass and 6 fail:
+1. `cargo-handler` `render::layout_stability_tests::added_and_removed_tiles_change_the_grid_allocation`
+2. `cargo-handler` `render::narrow_width_tests::unchanged_account_inputs_keep_the_first_selected_destination`
+3. `cargo-handler` `render::narrow_width_tests::account_refresh_keeps_the_destination_through_animation_frames`
+4. `cargo-tile` `render::tests::entry_ink_tests::a_brightening_readout_matches_fractional_text_channels`
+5. `tui_pane` `tiles::draw::tests::a_large_cell_frame_measures_each_content_allocation_once` (the Summary allocation is measured twice)
+6. `tui_pane` `tiles::grid::tests::falling_tree_demand_keeps_the_first_selected_destination` (the second draw moves Summary from 42 to 26 rows)
+
+Lint did not run: `cargo mend --fix` wrote code that does not compile and rolled back. The showrunner routed that mend defect to port. The phase holds no reservation.
 
 #### Work Order
 
