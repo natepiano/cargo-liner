@@ -27,6 +27,7 @@ pub(crate) mod classify;
 mod claude_seat_tests;
 pub(crate) mod codex;
 mod codex_names;
+mod compaction_markers;
 pub(crate) mod desktop;
 mod herdr;
 pub(crate) mod hierarchy;

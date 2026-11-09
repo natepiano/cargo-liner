@@ -39,8 +39,7 @@ use crate::constants::VERIFY_SCRIPT;
 use crate::theme::Role;
 
 /// One activity, with no contradictory separate turn state.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum AgentActivity {
     /// No activity source reports this row.
     #[default]
@@ -56,6 +55,7 @@ pub(crate) enum AgentActivity {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Activity {
     Thinking,
+    Compacting,
     Writing,
     Reading,
     Git,
@@ -106,6 +106,7 @@ impl AgentActivity {
             Self::Idle => "idle",
             Self::Active(activity) => match activity {
                 Activity::Thinking => "thinking",
+                Activity::Compacting => "compacting",
                 Activity::Writing => "writing",
                 Activity::Reading => "reading",
                 Activity::Git => "git",
@@ -171,12 +172,9 @@ impl<'de> Deserialize<'de> for AgentActivity {
         match value {
             Value::String(ref text) => Ok(Self::from(Some(text.as_str()))),
             Value::Null => Ok(Self::Unreported),
-            Value::Object(mut fields) => {
-                let active = fields
-                    .remove("active")
-                    .ok_or_else(|| serde::de::Error::custom("missing active activity"))?;
-                serde_json::from_value(active)
-                    .map(Self::Active)
+            Value::Object(fields) => {
+                serde_json::from_value::<super::probe::ProbeActivity>(Value::Object(fields))
+                    .map(Self::from)
                     .map_err(serde::de::Error::custom)
             },
             _ => Err(serde::de::Error::custom("invalid activity")),

@@ -1104,46 +1104,25 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 
 **Ruled out:** a saved-sort migration — `AccountsSort` is never saved.
 
-### Phase 70 — A click anywhere on an expandable row opens or closes it  · status: todo
+### Phase 70 — A click anywhere on an expandable row opens or closes it  · status: done
 
-**Depends on:** none; runs beside Phases 21 and 69. `agent_cell.rs`, `render/mod.rs` and `crates/cargo-handler/CHANGELOG.md` wait for the Phase 21 checkpoint.
+#### As-built
 
-#### Work Order
-
-**Goal:** a left press anywhere on an expandable row opens or closes it, in cargo-handler as in the cargo-port project list today. One shared rule in tui_pane decides it.
-
-**Source:** the user, relayed by the showrunner, 2026-11-08: "when will handler deliver mouse clicking on expand/collapse - sharing that code with cargo port i would expect because that already works in the cargo port project list - sharing through tui_pane of course?"
-
-**Constraints:**
-- Phase 63 opens a row only on a press on its `▶`/`▼` marker cells (`MarkerCells`, `interaction.rs` ≈297). The cargo-port project list toggles on a press anywhere on the row (`cargo-port/src/tui/interaction.rs` ≈25 and ≈44, through `ProjectList::toggle_expand_for_row`).
-- Each app keeps its own row hit test: which row is under the pointer. The shared piece is the rule after it: a press on a row toggles that row when the row is a branch, and does nothing more for a leaf.
-- Both apps already implement `tui_pane::ExpansionTree` (`cargo-handler/src/expansion.rs` ≈251, `cargo-port/src/tui/project_list/list.rs` ≈1543). Build the shared rule on that trait, beside `ExpansionModel::collapse_row`.
-- Keep the tui_pane API small: one method on `ExpansionModel` and at most one new public result type. No new trait.
-- Do not edit any cargo-port file. The port unit moves cargo-port onto the shared rule after its Phase 4p.
-- A terminal focus-gain never toggles a row. cargo-port's `ClickMode::FocusOnly` is the model.
-- A press still selects the row, as now. One press resolves once.
-- Do not edit `agent_cell.rs` or `render/mod.rs` until the director says the Phase 21 checkpoint is in. Phase 21 owns both now.
-
-**Spec:**
-1. tui_pane: add the shared row-press rule to `ExpansionModel` in `crates/tui_pane/src/expansion.rs`. It takes the tree and the pressed row. A branch row toggles and the result names the new state. A leaf row changes nothing and the result says so. Unit tests in tui_pane cover a branch that opens, a branch that closes, a leaf, and a branch open by the depth rule.
-2. cargo-handler: a left press on any line of an expandable row toggles that row through the shared rule. Delete `MarkerCells`, the marker clip (`SurfaceSelection::clip_markers`) and the marker columns (`agent_cell::tree_marker_columns`), when nothing else reads them. The `▶`/`▼` glyphs stay drawn.
-3. cargo-handler: `RowClick` keeps one resolution per press. A press on a leaf selects it. A press outside the rows misses.
-4. Tests under 1 s: a press on the body of a branch row toggles it; a press on a continuation line of a wrapped branch row toggles it; a press on a leaf only selects; a second press closes it again. Replace the marker-cell tests.
-5. Report the exact call the port unit uses in cargo-port, in the shape `ProjectList` already has: the method, its arguments and the result it matches.
-6. CHANGELOG: one Changed line in cargo-handler, and one Added line in tui_pane.
+- `tui_pane::ExpansionModel::press_row(&mut self, tree: &T, row: &T::Row) -> RowPressResult` is the shared row-press rule, for any `T: ExpansionTree`. `RowExpansion::Branch` toggles through `ExpansionModel::toggle` and returns `RowPressResult::Toggled(ExpansionState)`. `RowExpansion::Leaf` returns `RowPressResult::Leaf` and changes nothing.
+- cargo-handler resolves a left press anywhere in a painted row's rectangle, continuation lines included, to that row once. The press selects the row and calls `press_row`. The `▶`/`▼` glyphs stay drawn. `MarkerCells`, `RowSpan::with_marker` and `SurfaceSelection::clip_markers` are gone.
+- cargo-port calls the same rule as `expansion.press_row(&tree, &row)` and matches `RowPressResult::{Leaf, Toggled(state)}`. No cargo-port file changed here.
 
 **Files:**
-- `crates/tui_pane/src/expansion.rs`, `crates/tui_pane/src/lib.rs`
-- `crates/tui_pane/CHANGELOG.md` — after the overlap answer on cargo-liner-port's outstanding reservation; the director adds the line
-- `crates/cargo-handler/src/interaction.rs`
-- `crates/cargo-handler/src/expansion.rs`, `crates/cargo-handler/src/expansion_tests.rs`
-- `crates/cargo-handler/src/render/painted_surface.rs`, `crates/cargo-handler/src/render/pinned_accounts_tests.rs`
-- `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/render/mod.rs` — after the Phase 21 checkpoint
-- `crates/cargo-handler/CHANGELOG.md` — after Phases 21 and 69
+- `crates/tui_pane/src/expansion.rs` — `RowPressResult`, `ExpansionModel::press_row`, the `row_press_*` tests
+- `crates/tui_pane/src/lib.rs` — the `RowPressResult` export
+- `crates/cargo-handler/src/interaction.rs` — row-body press resolution
+- `crates/cargo-handler/src/agent_cell.rs` — `row_spans` with no marker columns
+- `crates/cargo-handler/src/expansion.rs`, `crates/cargo-handler/src/expansion_tests.rs` — presses through `press_row`
+- `crates/cargo-handler/src/render/painted_surface.rs`, `crates/cargo-handler/src/render/mod.rs` — painted row rectangles
 
-**Workers:** 1 writer. It owns the listed implementation, fixtures, tests and registrations.
+**Binds later work:** the cargo-port move onto the shared rule calls `ExpansionModel::press_row` and matches `RowPressResult`.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test tui_pane`, `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: two framed shots of a cargo-handler the writer started, before and after a press on the body of a closed row away from its marker, with the row open in the second shot. The checkpoint carries `Change-Review: cargo-handler opens or closes a row on a click anywhere on that row, as the cargo-port project list does | in cargo-handler, click the text of a row that shows ▶ or ▼, away from the marker, and see it open or close`.
+**Gotchas:** a continuation line of a wrapped row resolves to the same row as its first line.
 
 ### Phase 71 — A detached run joins its pane worker's row  · status: done
 
@@ -1172,52 +1151,39 @@ cargo-handler shows an Astra designer and an Astra reviewer session (Codex on gp
 **Gotchas:**
 - A herdr unit has no `mesh_roster.json` and no director file; its run record names the worker by seat name only.
 
-### Phase 72 — A compacting session says compacting  · status: todo
+### Phase 72 — A compacting session says compacting  · status: done
 
-**Depends on:** Phase 71 (`census/activity.rs`). `crates/cargo-handler/CHANGELOG.md` waits for Phases 21, 69, 70 and 71.
+#### As-built
 
-#### Work Order
-
-**Goal:** while a Claude or Codex session compacts its conversation, its row says `compacting`, not `thinking`. Every other case that says `thinking` today stays as it is.
-
-**Source:** the user, relayed by the showrunner, 2026-11-08: "add to the cargo handler - if we're compacting it would be good for the status to say that instead of "thinking" which is what i believe it says right now", and "if there are other conditoins for thinking that is fine - compacting is a special case".
-
-**Constraints:**
-- Today `ActivityRead::take_codex` and `ActivityRead::take_claude` (`census/activity.rs` ≈203 and ≈224) set `Activity::Thinking` at a turn start and leave it until a tool call or the turn end. A compaction is a turn with no tool call, so it draws as `thinking`.
-- Both transcripts write the compaction record only at its end. Claude writes a `system` line with `subtype: "compact_boundary"` and `compactMetadata` (`trigger`, `durationMs`, `precomputed`). Codex writes a top-level `"type": "compacted"` line. Director check, 2026-11-08: a Codex rollout showed `task_started` at 05:05:56 and `compacted` at 05:07:41, 1 m 45 s drawn as `thinking`, with no `user_message` between them.
-- Find a signal that is present while the compaction runs, for each family, on real sessions, and state it before you change code. Leads: the Codex app-server context-compaction item events, and the Claude `PreCompact` hook. A compaction that starts and ends between two scans needs no `compacting` frame.
-- Read only. Never type into, signal or stop a session that you did not start. Copy the transcript lines you need into fixtures.
-- No new check of your own design.
-- The probe report crosses machines with different builds. `AgentActivity` deserialization (`census/activity.rs` ≈167) rejects an unknown `active` value, so the whole probe report fails on an older receiver. Keep the schema-3 vocabulary at the wire boundary, as `census/probe.rs` does for task and child kinds.
-- Constraints from Phase 71: a live detached run overwrites the transcript activity of its worker row in `census/scan.rs` ≈959–972, after the transcript read and the verification read. Three places put the run first:
-  1. `census/scan.rs` ≈967 sets `row.activity` to the run's activity, and ≈970 calls `AstraMembership::with_run_activity`.
-  2. `AstraMembership::activity` (`census/hierarchy.rs` ≈1161, applied in `census/scan.rs` ≈2672) returns `AstraRunActivity::Live` before it reads `PaneWork`.
-  3. `TreeLine::status` (`agent_cell.rs` ≈1680) draws `summary::status_text` when `has_live_run()` holds, and otherwise idle or unknown from `PaneWork`.
-  Spec 5 changes all three so `compacting` wins while the session compacts.
-- `AstraRunActivity::Live` (`census/hierarchy.rs` ≈1087) serializes the run's `Activity` in `astra_member.run` on the probe wire. Keep the run's own activity there; never store `Compacting` in it. A Phase 71 receiver rejects an unknown value in that field.
-
-**Spec:**
-1. State the start and end signal for each family in the summary, with the file and line where cargo-handler reads it.
-2. Add `Activity::Compacting`, with the status word `compacting` and the busy color of `thinking`.
-3. A row says `compacting` from the start signal to the end signal. After the end, the row follows the next transcript line as today.
-4. A turn that is not a compaction keeps today's words.
-5. `compacting` wins over a live run's `waiting` or step name, because the session itself is compacting. After the compaction ends, the run's word returns.
-6. Probe wire: `active` stays `thinking` for a compacting row, and a defaulted compaction extension field carries the compaction. `astra_member.run` keeps the live run's own activity. An older receiver shows `thinking`; a current receiver shows `compacting`.
-7. Tests under 1 s from captured fixtures: a Claude compaction and a Codex compaction each draw `compacting` while open and leave it at the end; an ordinary turn start still draws `thinking`; a compaction during a live run draws `compacting`; an Astra row that compacts draws `compacting`; a compacting probe row decodes as `thinking` without the extension and as `compacting` with it. Each red before its fix.
-8. CHANGELOG: one Added line in cargo-handler.
+- A Claude or Codex session that compacts its conversation shows `compacting` in its row, not `thinking`. The state is `AgentActivity::Active(Activity::Compacting)`; other thinking states do not change.
+- `CompactionMarkers` (`census/compaction_markers.rs`) reads the hook start markers in `~/.local/state/compaction/<sid>.json`. `CompactionMarkers::marker_status` returns `CompactionMarkerStatus::{Closed, Open { started }}`; `CompactionMarkers::activity` and `LocalScanner::find_compaction_transcripts` both use it.
+- A marker opens the state; a missing marker or a native end record in the transcript after the start closes it. Marker reads stop at `CompactionRead::MARKER_BYTE_LIMIT` (4096 bytes). Completion and line results are enums (`CompactionCompletion`, `CompactionLineKind`, `CompactionEnd`), not `bool`.
+- A Codex worker whose rollout is not retained gets its compaction transcript from `find_compaction_transcripts`.
 
 **Files:**
-- `crates/cargo-handler/src/census/activity.rs`, `crates/cargo-handler/src/census/activity_regression_tests.rs`
-- `crates/cargo-handler/src/census/fixtures/` — new compaction fixtures
-- `crates/cargo-handler/src/census/codex.rs`, `crates/cargo-handler/src/census/tier.rs` — only where the start signal is read; name the file in the summary before its edit
-- `crates/cargo-handler/src/census/probe.rs` — the compaction extension field and its compatibility tests
-- `crates/cargo-handler/src/census/scan.rs` — the run-activity precedence, after the Phase 71 checkpoint
-- `crates/cargo-handler/src/census/hierarchy.rs`, `crates/cargo-handler/src/agent_cell.rs` — the Astra status paths, after the Phase 71 checkpoint
-- `crates/cargo-handler/CHANGELOG.md` — after Phases 21, 69, 70 and 71
+- `crates/cargo-handler/src/census/compaction_markers.rs` — the marker reader and compaction end detection
+- `crates/cargo-handler/src/census/activity.rs` — `Activity::Compacting` and its `compacting` label
+- `crates/cargo-handler/src/census/scan.rs` — `find_compaction_transcripts` and the per-scan marker cache
+- `crates/cargo-handler/src/census/codex.rs`, `tier.rs`, `probe.rs`, `hierarchy.rs` — compaction state for Codex rows, tiers and the probe report
+- `crates/cargo-handler/src/agent_cell.rs` — the `compacting` status text
+- `crates/cargo-handler/src/census/activity_regression_tests.rs`, `census/fixtures/compaction_signals.json` — compaction regressions
 
-**Workers:** 1 writer. It owns the listed implementation, fixtures, tests and registrations.
+**Gotchas:** The `~/.claude` hook owns the marker: it writes it on PreCompact and deletes it on Stop, UserPromptSubmit, the Codex turn start and PostCompact. cargo-handler never deletes a marker. A rejected repeated compact leaves its marker until the next prompt clears it.
 
-**Acceptance gate:** `bash ~/.claude/scripts/direct/verify.sh test cargo-handler` and `bash ~/.claude/scripts/direct/verify.sh lint cargo-handler` clean. No test takes a second. Live on natedev: a framed capture from a cargo-handler the writer started, showing a session row that says `compacting` during a compaction of a session the writer started. The checkpoint carries `Change-Review: a session that compacts its conversation says compacting, not thinking | in cargo-handler, find a session while it compacts: its row says compacting until the compaction ends`.
+**Ruled out:** a Codex home outside `~/.codex*` — every real home matches, so the single-user rule skips it.
+
+### Phase 75 — The nested Astra reviewer test finishes in under a second  · status: done
+
+#### As-built
+
+- `AstraFixture::new` sets `PRAGMA synchronous=OFF` on its temporary SQLite database before it creates the threads table. `astra_nested_reviewer_keeps_its_session_when_staff_fields_are_missing` takes 0.034 s alone (0.061 s before); its four cases and every assert are unchanged.
+
+**Files:**
+- `crates/cargo-handler/src/census/astra_role_tests.rs` — the Astra role fixture and tests
+
+**Gotchas:** SQLite setup was the cost: 90.7 ms over four fixtures, against 6.6 ms of scanning. Durability waits under load pushed the test to 1.154 s in the package run; the herdr name wait had no part in it.
+
+**Ruled out:** a longer timeout, or the four cases split into separate tests.
 
 ### Phase 74 — The model-read transcript test finishes in under a second  · status: done
 
@@ -1893,16 +1859,17 @@ A script name inside `bash -c` remains unrecognized. Roster cache keys are files
 **Source:** the showrunner, 2026-11-04, from the user's words "anything handler needs to do to support the staff file should be done so we can retire any mechanism scripts that are legacy".
 
 **Constraints from prior phases:**
-- Phase 67: placement accepts Codex managers (`census/placement.rs` ≈261). Since Phase 71, `read_worker_runs` (`census/scan.rs` ≈1015) also accepts non-Claude rows as directors. Reuse the Phase 67 pane placement, add a detached-run regression under a Codex director, and keep the Phase 67 pane-worker tests in `census/pane_worker_placement_tests.rs` when worker-role publication changes.
+- Phase 67: placement accepts Codex managers (`census/placement.rs` ≈261). Since Phase 71, `read_worker_runs` (`census/scan.rs` ≈1091) also accepts non-Claude rows as directors. Reuse the Phase 67 pane placement, add a detached-run regression under a Codex director, and keep the Phase 67 pane-worker tests in `census/pane_worker_placement_tests.rs` when worker-role publication changes.
 - Phase 42: `DispatchPairing` (`census/placement.rs` ≈159) joins a shell to its exact worker in one final tile through `DispatchPairing::join` (≈171), and `resolve_dispatches` (≈300) builds it. Its fixture is `census/fixtures/dispatch_pairing.json`. Its tests are in `census/worker_dispatch/tests.rs`, `agent_cell/tests/tree_tests.rs`, `census/scan/activity_scan_tests.rs` and `census/hierarchy_file_tests.rs`. Spec 2 changes the identities and keeps this behavior.
 - Phase 21: Astra worker membership comes from checked staff rows (`AstraMembership` in `census/hierarchy.rs`, `SessionIdentity::with_astra` in `census/scan.rs`). Keep it and its tests in `census/astra_role_tests.rs` when worker-role publication changes.
 - Phase 71: a live run record that names a pane worker sets that worker's row to `waiting` or the step name, and folds the run's processes into that row. Keep its captured pane-run regressions in `census/activity_regression_tests.rs` and `census/worker_dispatch/tests.rs` green, the `impl`-finishes-first case of `census/fixtures/pane_detached_tile.json` included. Two Phase 71 paths find a worker with no roster:
-  1. `run_directors` (`census/scan.rs` ≈220) takes a run's director from the unit's recorded owner in `progress_history_state.json` (`UnitDirectorSource` in `census/worker_dispatch/sessions.rs` ≈32, read ≈168), before the roster.
-  2. `LiveWorkerRun::worker` (`census/activity.rs` ≈755) joins a record's seat name to the one staff edge under that director, and falls back to `RunWorkerIdentity::NamedSeat`.
-- Phase 64: `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈414). `scan_staged` stays nonblocking.
+  1. `run_directors` (`census/scan.rs` ≈224) takes a run's director from the unit's recorded owner in `progress_history_state.json` (`UnitDirectorSource` in `census/worker_dispatch/sessions.rs` ≈32, read ≈168), before the roster.
+  2. `LiveWorkerRun::worker` (`census/activity.rs` ≈742) joins a record's seat name to the one staff edge under that director, and falls back to `RunWorkerIdentity::NamedSeat`.
+- Phase 64: `LocalScanner::scan` creates one `HerdrProbeDeadline` before `scan_staged`, so the scan and the name wait share one bound (`census/scan.rs` ≈546).
+- Phase 72: compaction markers are read in `census/compaction_markers.rs` (`CompactionMarkers`). Their row state is `Activity::Compacting`. Keep the compaction regressions in `census/activity_regression_tests.rs` green. `scan_staged` stays nonblocking.
 
 **Spec:**
-1. Read the announced 3n worker role through the existing schema-2 `StaffFileReader`. Extend `StaffFields`, `StaffRoster` and the shared `StaffSnapshot`; add no second reader. Reuse the checked staff ID, current session and parent session that the staff reader retains. Derive the unit from that validated parent identity. Replace `HierarchyEdges::with_worker_roles` with the staff role result in each of its callers: scheduler publication (`census/schedule.rs` ≈675) and the probe report (`census/probe.rs` ≈427, in `scan_configured` since Phase 66). Use named results for unavailable membership, a root member and a managed member when extending the identity lookups. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
+1. Read the announced 3n worker role through the existing schema-2 `StaffFileReader`. Extend `StaffFields`, `StaffRoster` and the shared `StaffSnapshot`; add no second reader. Reuse the checked staff ID, current session and parent session that the staff reader retains. Derive the unit from that validated parent identity. Replace `HierarchyEdges::with_worker_roles` with the staff role result in each of its callers: scheduler publication (`census/schedule.rs` ≈668) and the probe report (`census/probe.rs` ≈597, in `scan_configured` since Phase 66). Use named results for unavailable membership, a root member and a managed member when extending the identity lookups. Preserve unknown-kind handling, whole-forest validation, mtime reuse and missing-file fallback.
 2. Replace roster-backed discovery in `LocalScanner::read_worker_runs` before removing `mesh_roster.json` reads and fixtures. Select the current worker and director through the same staff snapshot. Keep the Phase 71 recorded-owner director source and the named-seat join when the roster reads go. Keep live supervisor session discovery in `SessionRoots::managed_sessions` and the shared `RunRecords` reader. Preserve existing launcher parsing in `census/worker_dispatch/options.rs` and `DispatchDirectory::{Recorded, FromChild}`. Move Phase 42's `DispatchPairing` to staff-only identities and keep its behavior. Remove obsolete roster cache state after its consumers use staff membership.
 3. Remove the `role_map_cache.json` read in `census/command_inputs.rs`.
 4. Keep `mesh_runs` and `WorkerReference::{Staff, LegacyThread}` semantics. Resolve staff IDs again when the staff snapshot changes, even when run files do not change. Preserve live-supervisor record-path checks, finite start times and discovered run directories. A recognized command supplies only the step name; every other live run shows `waiting`. Keep one row per current thread, waiting or gate-step activity, independent director activity and completion removal. Keep legacy `director` fallback where legacy identity still needs it. A script name inside `bash -c` gives no step name.

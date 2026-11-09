@@ -12,7 +12,6 @@ use std::iter;
 use std::num::NonZeroU64;
 use std::ops::Deref;
 use std::ops::DerefMut;
-use std::ops::Range;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Alignment;
@@ -93,7 +92,6 @@ use crate::constants::TREE_TYPE_HEADER;
 use crate::constants::TRUNCATION_MARK;
 use crate::footer_colors::FooterColors;
 use crate::footer_colors::FooterTint;
-use crate::interaction::MarkerCells;
 use crate::interaction::RowIdentity as SelectedRow;
 use crate::interaction::RowOwner;
 use crate::interaction::RowSpan;
@@ -1021,26 +1019,13 @@ impl AgentTile<'_> {
         lines.iter().map(|line| line.identity.clone()).collect()
     }
 
-    /// Store marker columns from the same lead that the session column paints.
+    /// Return a `RowSpan` for each visible row.
     pub(crate) fn row_spans(&self) -> Vec<RowSpan> {
         let lines = match self {
             Self::Agent(entry) => &entry.lines,
             Self::Unassigned(entry) => &entry.lines,
         };
-        lines
-            .iter()
-            .enumerate()
-            .map(|(index, line)| {
-                let marker = match line.expansion {
-                    TreeMarker::Leaf => MarkerCells::Absent,
-                    TreeMarker::Open | TreeMarker::Closed => MarkerCells::Branch {
-                        column: summary::cell_width(SECTION_HEADER_INDENT)
-                            .saturating_add(summary::cell_width(&line.lead()).saturating_sub(2)),
-                    },
-                };
-                crate::interaction::RowSpan::single(index).with_marker(marker)
-            })
-            .collect()
+        (0..lines.len()).map(RowSpan::single).collect()
     }
 
     pub(crate) fn set_viewport(&self, viewport: &Viewport) {
@@ -1677,7 +1662,9 @@ impl TreeLine<'_> {
             LineSubject::TileRoot(_) | LineSubject::Agent(_) | LineSubject::UnassignedSession
         ) && let AstraSessionMembership::Member(member) = self.row.session_id.astra_membership()
         {
-            let text = if member.has_live_run() {
+            let text = if self.row.activity == AgentActivity::Active(Activity::Compacting)
+                || member.has_live_run()
+            {
                 summary::status_text(self.row)
             } else {
                 match member.work() {
@@ -3395,12 +3382,6 @@ fn place_line(row: &AgentRow) -> Line<'static> {
 /// `width` cells across: what equal left and right indents leave.
 fn header_width(width: u16) -> u16 {
     width.saturating_sub(summary::cell_width(SECTION_HEADER_INDENT).saturating_mul(2))
-}
-
-/// Painted table columns relative to the tile content, with both heading insets removed.
-pub(crate) fn tree_marker_columns(area: Rect) -> Range<u16> {
-    let tree = header_indented(area);
-    tree.x.saturating_sub(area.x)..tree.right().saturating_sub(area.x)
 }
 
 /// The tree area with the heading indent reserved on both sides.

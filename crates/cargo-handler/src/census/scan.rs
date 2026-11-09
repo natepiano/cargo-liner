@@ -81,6 +81,10 @@ use super::codex::OpenThreadRows;
 use super::codex::ResumeRequest;
 use super::codex_names::SessionName;
 use super::codex_names::SessionNames;
+use super::compaction_markers::CompactionFamily;
+use super::compaction_markers::CompactionMarkerStatus;
+use super::compaction_markers::CompactionMarkers;
+use super::compaction_markers::CompactionTranscript;
 use super::desktop;
 use super::desktop::TmuxLayout;
 use super::desktop::WindowEntry;
@@ -277,6 +281,7 @@ pub(super) struct LocalScanner {
     codex_start_window:  CodexStartWindow,
     herdr_probe_wait:    HerdrProbeWait,
     transcript_activity: HashMap<PathBuf, TranscriptRead>,
+    compactions:         CompactionMarkers,
     transcript_models:   TranscriptModels,
     subagent_activity:   HashMap<PathBuf, TranscriptRead>,
     subagent_reads:      SubagentReads,
@@ -356,6 +361,9 @@ impl LocalScanner {
         home: &Path,
     ) -> Vec<AgentRow> {
         self.desktop_source = DesktopSource::Windows(Vec::new());
+        self.compactions
+            .set_directory(home.join(".local/state/compaction"));
+        self.codex_logs.refresh(processes, Some(home));
         let mut answer = Vec::new();
         self.scan_stages(
             processes,
@@ -485,6 +493,7 @@ impl LocalScanner {
             codex_start_window: crate::config::CodexStartWindow::default(),
             herdr_probe_wait: HerdrProbeWait::default(),
             transcript_activity: HashMap::new(),
+            compactions: CompactionMarkers::for_current_user(),
             transcript_models: super::transcript::TranscriptModels::default(),
             subagent_activity: HashMap::new(),
             subagent_reads: SubagentReads::default(),
@@ -666,6 +675,7 @@ impl LocalScanner {
         let run_made = startup_log::startup_stage("attach_children", || {
             tree::attach_children(rows, processes, &sources)
         });
+        self.find_compaction_transcripts(processes, rows, home);
         self.attach_row_models(rows, &models, &sources.subagents, &transcripts);
         startup_log::startup_stage("transcript_activity_and_worker_names", || {
             self.attach_activity_with_runs(
@@ -681,6 +691,41 @@ impl LocalScanner {
         });
         startup_log::startup_stage("attach_desktops", || self.attach_desktops(processes, rows));
         startup_log::startup_stage("attach_branches", || branch::attach_branches(rows, home));
+    }
+
+    /// Find native completion files only for marked Codex sessions without retained rollouts.
+    fn find_compaction_transcripts(
+        &mut self,
+        processes: &[ProcessEntry],
+        rows: &[AgentRow],
+        home: Option<&Path>,
+    ) {
+        let ids: Vec<_> = rows
+            .iter()
+            .flat_map(|row| {
+                row.session_id
+                    .ids()
+                    .filter(|_| row.agent != Agent::Claude)
+                    .chain(
+                        row.children
+                            .iter()
+                            .filter_map(|child| match &child.thread_id {
+                                CodexThreadId::Recorded(id) => Some(id.as_str()),
+                                CodexThreadId::Unrecorded => None,
+                            }),
+                    )
+            })
+            .filter(|id| {
+                matches!(self.rollouts.thread(id), ThreadRollout::NotRetained)
+                    && matches!(
+                        self.compactions.marker_status(id, CompactionFamily::Codex),
+                        CompactionMarkerStatus::Open { .. }
+                    )
+            })
+            .map(str::to_owned)
+            .collect();
+        self.rollouts
+            .find_compaction_transcripts(processes, home, &ids);
     }
 
     /// `read_process_models` reads each process's own conversation without inheriting host values.
@@ -927,6 +972,7 @@ impl LocalScanner {
         runs: &HashMap<String, WorkerRun>,
         run_made: &HashSet<String>,
     ) {
+        self.compactions.begin_scan();
         let mut seen_transcripts = HashSet::new();
         let table = classify::pid_table(processes);
         let mut verification_activity = VerificationProcesses::new(processes);
@@ -971,6 +1017,7 @@ impl LocalScanner {
                     row.session_id = std::mem::take(&mut row.session_id).with_astra(member);
                 }
             }
+            self.apply_row_compaction(row, transcripts);
             for child in &mut row.children {
                 let CodexThreadId::Recorded(id) = &child.thread_id else {
                     continue;
@@ -1005,10 +1052,39 @@ impl LocalScanner {
                         child.activity = *activity;
                     }
                 }
+                child.activity = self.compactions.activity(
+                    id,
+                    CompactionFamily::Codex,
+                    self.rollouts.transcript(id),
+                    child.activity,
+                );
             }
         }
+        self.compactions.finish_scan();
         self.transcript_activity
             .retain(|path, _| seen_transcripts.contains(path));
+    }
+
+    /// `apply_row_compaction` resolves the marker after transcript and run activity.
+    fn apply_row_compaction(&mut self, row: &mut AgentRow, transcripts: &HashMap<u32, PathBuf>) {
+        if let Some(id) = row.session_id.ids().next() {
+            let family = if row.agent == Agent::Claude {
+                CompactionFamily::Claude
+            } else {
+                CompactionFamily::Codex
+            };
+            let transcript = match family {
+                CompactionFamily::Claude => transcripts
+                    .get(&row.pid)
+                    .map_or(CompactionTranscript::Unavailable, |path| {
+                        CompactionTranscript::File(path)
+                    }),
+                CompactionFamily::Codex => self.rollouts.transcript(id),
+            };
+            row.activity = self
+                .compactions
+                .activity(id, family, transcript, row.activity);
+        }
     }
 
     /// Read every required run directory before selecting the latest run for each thread.
@@ -3181,6 +3257,7 @@ mod tests {
             codex_start_window:  crate::config::CodexStartWindow::default(),
             herdr_probe_wait:    HerdrProbeWait::default(),
             transcript_activity: HashMap::new(),
+            compactions:         CompactionMarkers::default(),
             transcript_models:   super::transcript::TranscriptModels::default(),
             subagent_activity:   HashMap::new(),
             subagent_reads:      SubagentReads::default(),
@@ -3894,6 +3971,10 @@ mod process_cache_tests {
 #[cfg(test)]
 impl LocalScanner {
     pub(super) fn set_herdr_for_test(&mut self, herdr: HerdrNames) { self.herdr = herdr; }
+
+    pub(super) fn use_fixture_run_events(&mut self) {
+        self.run_records = activity::RunRecords::for_test();
+    }
 
     pub(super) fn scan_astra_for_test(
         &mut self,
